@@ -1,0 +1,13 @@
+machine:
+  kernel:
+    modules:
+      - name: nvidia
+      - name: nvidia_uvm
+      - name: nvidia_drm
+      - name: nvidia_modeset
+  sysctls:
+    net.core.bpf_jit_harden: "1"  # NVIDIA GPU requirement
+  nodeLabels:
+    nvidia.com/gpu.present: "true"
+    gpu.nvidia.com/model: "rtx-a2000"
+    gpu.nvidia.com/class: "professional"
