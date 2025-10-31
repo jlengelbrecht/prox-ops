@@ -1,0 +1,302 @@
+---
+clusterName: kubernetes
+
+talosVersion: "${talosVersion}"
+kubernetesVersion: "${kubernetesVersion}"
+
+endpoint: https://10.20.67.20:6443
+additionalApiServerCertSans: &sans
+  - "127.0.0.1"
+  - "10.20.67.20"
+additionalMachineCertSans: *sans
+
+clusterPodNets: ["10.42.0.0/16"]
+clusterSvcNets: ["10.43.0.0/16"]
+
+# Disable built-in CNI to use Cilium
+cniConfig:
+  name: none
+
+nodes:
+  - hostname: "k8s-ctrl-1"
+    ipAddress: "10.20.67.1"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515
+    controlPlane: true
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "bc:24:11:af:26:d4"
+        dhcp: false
+        addresses:
+          - "10.20.67.1/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+        vip:
+          ip: "10.20.67.20"
+  - hostname: "k8s-ctrl-2"
+    ipAddress: "10.20.67.2"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515
+    controlPlane: true
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "aa:54:cd:f6:a1:d0"
+        dhcp: false
+        addresses:
+          - "10.20.67.2/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+        vip:
+          ip: "10.20.67.20"
+  - hostname: "k8s-ctrl-3"
+    ipAddress: "10.20.67.3"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515
+    controlPlane: true
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "be:9c:fd:2c:54:85"
+        dhcp: false
+        addresses:
+          - "10.20.67.3/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+        vip:
+          ip: "10.20.67.20"
+  - hostname: "k8s-work-1"
+    ipAddress: "10.20.67.4"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "b2:dc:2e:72:8c:ec"
+        dhcp: false
+        addresses:
+          - "10.20.67.4/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-2"
+    ipAddress: "10.20.67.5"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "06:64:c3:76:9a:98"
+        dhcp: false
+        addresses:
+          - "10.20.67.5/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-3"
+    ipAddress: "10.20.67.6"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "36:30:ad:44:40:cd"
+        dhcp: false
+        addresses:
+          - "10.20.67.6/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+    patches:
+      - "@./patches/k8s-work-3/nvidia-containerd.yaml"
+      - "@./patches/k8s-work-3/nvidia-gpu.yaml"
+  - hostname: "k8s-work-4"
+    ipAddress: "10.20.67.7"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "22:d1:14:e2:ee:49"
+        dhcp: false
+        addresses:
+          - "10.20.67.7/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-5"
+    ipAddress: "10.20.67.8"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "bc:24:11:e7:ef:7f"
+        dhcp: false
+        addresses:
+          - "10.20.67.8/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-6"
+    ipAddress: "10.20.67.9"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "0e:eb:7c:a2:2e:cc"
+        dhcp: false
+        addresses:
+          - "10.20.67.9/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-7"
+    ipAddress: "10.20.67.10"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "bc:24:11:6b:75:fe"
+        dhcp: false
+        addresses:
+          - "10.20.67.10/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-8"
+    ipAddress: "10.20.67.11"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "bc:24:11:16:f6:dd"
+        dhcp: false
+        addresses:
+          - "10.20.67.11/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-9"
+    ipAddress: "10.20.67.12"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "bc:24:11:27:e7:a3"
+        dhcp: false
+        addresses:
+          - "10.20.67.12/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-10"
+    ipAddress: "10.20.67.13"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "bc:24:11:57:87:b2"
+        dhcp: false
+        addresses:
+          - "10.20.67.13/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-11"
+    ipAddress: "10.20.67.14"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "bc:24:11:7c:38:8e"
+        dhcp: false
+        addresses:
+          - "10.20.67.14/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+  - hostname: "k8s-work-12"
+    ipAddress: "10.20.67.15"
+    installDisk: "/dev/sda"
+    machineSpec:
+      secureboot: false
+    talosImageURL: factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e
+    controlPlane: false
+    networkInterfaces:
+      - deviceSelector:
+          hardwareAddr: "bc:24:11:a9:aa:be"
+        dhcp: false
+        addresses:
+          - "10.20.67.15/23"
+        routes:
+          - network: "0.0.0.0/0"
+            gateway: "10.20.66.1"
+        mtu: 1500
+    patches:
+      - "@./patches/k8s-work-12/nvidia-containerd.yaml"
+      - "@./patches/k8s-work-12/nvidia-gpu.yaml"
+
+# Global patches
+patches:
+  - "@./patches/global/machine-files.yaml"
+  - "@./patches/global/machine-kubelet.yaml"
+  - "@./patches/global/machine-network.yaml"
+  - "@./patches/global/machine-sysctls.yaml"
+  - "@./patches/global/machine-time.yaml"
+
+# Controller patches
+controlPlane:
+  patches:
+    - "@./patches/controller/admission-controller-patch.yaml"
+    - "@./patches/controller/cluster.yaml"
+

@@ -1,0 +1,94 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: nvidia-device-plugin
+spec:
+  chart:
+    spec:
+      chart: nvidia-device-plugin
+      version: 0.17.1
+      sourceRef:
+        kind: HelmRepository
+        name: nvidia-device-plugin
+        namespace: kube-system
+  interval: 1h
+  timeout: 10m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    # Only run on nodes with NVIDIA GPUs
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                # Match nodes with the nvidia.com/gpu.present label
+                - key: nvidia.com/gpu.present
+                  operator: In
+                  values:
+                    - "true"
+
+    # Tolerations for GPU nodes (if you add taints later)
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      - key: CriticalAddonsOnly
+        operator: Exists
+
+    # Use RuntimeClass for containerd with NVIDIA runtime
+    runtimeClassName: nvidia
+
+    # Device plugin configuration
+    config:
+      name: default
+      default: |-
+        version: v1
+        flags:
+          migStrategy: none
+          failOnInitError: true
+          nvidiaDriverRoot: /
+          plugin:
+            passDeviceSpecs: false
+            deviceListStrategy:
+              - envvar
+            deviceIDStrategy: uuid
+
+    # Resources for the device plugin pods
+    resources:
+      requests:
+        cpu: 50m
+        memory: 100Mi
+      limits:
+        memory: 200Mi
+
+    # Priority class for critical system pods
+    priorityClassName: system-node-critical
+
+    # Update strategy
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
+
+    # Enable GFD (GPU Feature Discovery) to expose GPU properties as node labels
+    gfd:
+      enabled: true
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      resources:
+        requests:
+          cpu: 50m
+          memory: 100Mi
+        limits:
+          memory: 200Mi
