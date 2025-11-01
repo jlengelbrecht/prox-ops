@@ -1,0 +1,246 @@
+# =============================================================================
+# Terraform Variables - Example Configuration
+# =============================================================================
+#
+# Copy this file to terraform.tfvars and fill in your actual values:
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# IMPORTANT: terraform.tfvars should be added to .gitignore to avoid
+# committing sensitive credentials
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Proxmox Configuration
+# -----------------------------------------------------------------------------
+
+# Proxmox API endpoint (include protocol and port)
+# Example: "https://proxmox.example.com:8006"
+proxmox_endpoint = "https://YOUR_PROXMOX_IP:8006"
+
+# Proxmox username with API access
+# Example: "root@pam" or "terraform@pve"
+proxmox_username = "root@pam"
+
+# Proxmox password or API token
+# For API token, use format: "USER@REALM!TOKENID=SECRET"
+proxmox_password = "YOUR_PROXMOX_PASSWORD"
+
+# Skip TLS verification (set to true for self-signed certificates)
+proxmox_insecure = true
+
+# SSH user for Proxmox host (used for template creation)
+proxmox_ssh_user = "root"
+
+# Proxmox node name where VMs will be created
+# Run 'pvesh get /nodes' on Proxmox to list available nodes
+proxmox_node = "YOUR_PROXMOX_NODE_NAME"
+
+# -----------------------------------------------------------------------------
+# Talos Configuration
+# -----------------------------------------------------------------------------
+
+# Talos Linux version to deploy
+talos_version = "1.11.3"
+
+# Talos factory schematic IDs
+# These are from your existing talconfig.yaml
+talos_schematic_controlplane = "ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515"
+talos_schematic_worker       = "990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e"
+
+# -----------------------------------------------------------------------------
+# VM Template Configuration
+# -----------------------------------------------------------------------------
+
+# VM IDs for templates (must be unique and not in use)
+template_vm_id_controlplane = 9000
+template_vm_id_worker       = 9001
+
+# -----------------------------------------------------------------------------
+# Network Configuration
+# -----------------------------------------------------------------------------
+
+# Proxmox network bridge
+network_bridge = "vmbr0"
+
+# Network gateway
+network_gateway = "10.20.66.1"
+
+# Network netmask (/23 = 255.255.254.0)
+network_netmask = "255.255.254.0"
+
+# -----------------------------------------------------------------------------
+# Storage Configuration
+# -----------------------------------------------------------------------------
+
+# Proxmox storage pool for VM disks
+# Run 'pvesh get /storage' on Proxmox to list available storage
+vm_storage_pool = "local-lvm"
+
+# CPU type for VMs
+cpu_type = "x86-64-v2-AES"
+
+# -----------------------------------------------------------------------------
+# Control Plane Resources
+# -----------------------------------------------------------------------------
+
+controlplane_cpu_cores  = 4
+controlplane_memory_mb  = 8192
+controlplane_disk_size_gb = 100
+
+# -----------------------------------------------------------------------------
+# Worker Resources
+# -----------------------------------------------------------------------------
+
+worker_cpu_cores       = 6
+worker_memory_mb       = 16384
+worker_disk_size_gb    = 200
+
+# -----------------------------------------------------------------------------
+# GPU Worker Resources
+# -----------------------------------------------------------------------------
+
+gpu_worker_cpu_cores      = 8
+gpu_worker_memory_mb      = 32768
+gpu_worker_disk_size_gb   = 300
+
+# -----------------------------------------------------------------------------
+# Node Definitions
+# -----------------------------------------------------------------------------
+
+# Control Plane Nodes (3 nodes)
+control_nodes = [
+  {
+    name       = "k8s-ctrl-1"
+    hostname   = "k8s-ctrl-1"
+    ip_address = "10.20.67.1"
+    mac_addr   = "bc:24:11:af:26:d4"
+    vm_id      = 8001
+  },
+  {
+    name       = "k8s-ctrl-2"
+    hostname   = "k8s-ctrl-2"
+    ip_address = "10.20.67.2"
+    mac_addr   = "aa:54:cd:f6:a1:d0"
+    vm_id      = 8002
+  },
+  {
+    name       = "k8s-ctrl-3"
+    hostname   = "k8s-ctrl-3"
+    ip_address = "10.20.67.3"
+    mac_addr   = "be:9c:fd:2c:54:85"
+    vm_id      = 8003
+  }
+]
+
+# Worker Nodes (12 nodes, including 2 GPU workers)
+worker_nodes = [
+  {
+    name       = "k8s-work-1"
+    hostname   = "k8s-work-1"
+    ip_address = "10.20.67.4"
+    mac_addr   = "b2:dc:2e:72:8c:ec"
+    vm_id      = 8004
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-2"
+    hostname   = "k8s-work-2"
+    ip_address = "10.20.67.5"
+    mac_addr   = "06:64:c3:76:9a:98"
+    vm_id      = 8005
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-3"
+    hostname   = "k8s-work-3"
+    ip_address = "10.20.67.6"
+    mac_addr   = "36:30:ad:44:40:cd"
+    vm_id      = 8006
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-4"
+    hostname   = "k8s-work-4"
+    ip_address = "10.20.67.7"
+    mac_addr   = "22:d1:14:e2:ee:49"
+    vm_id      = 8007
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-5"
+    hostname   = "k8s-work-5"
+    ip_address = "10.20.67.8"
+    mac_addr   = "bc:24:11:e7:ef:7f"
+    vm_id      = 8008
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-6"
+    hostname   = "k8s-work-6"
+    ip_address = "10.20.67.9"
+    mac_addr   = "0e:eb:7c:a2:2e:cc"
+    vm_id      = 8009
+    is_gpu     = true
+    gpu_model  = "rtx-a2000"
+  },
+  {
+    name       = "k8s-work-7"
+    hostname   = "k8s-work-7"
+    ip_address = "10.20.67.10"
+    mac_addr   = "bc:24:11:6b:75:fe"
+    vm_id      = 8010
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-8"
+    hostname   = "k8s-work-8"
+    ip_address = "10.20.67.11"
+    mac_addr   = "bc:24:11:16:f6:dd"
+    vm_id      = 8011
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-9"
+    hostname   = "k8s-work-9"
+    ip_address = "10.20.67.12"
+    mac_addr   = "bc:24:11:27:e7:a3"
+    vm_id      = 8012
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-10"
+    hostname   = "k8s-work-10"
+    ip_address = "10.20.67.13"
+    mac_addr   = "bc:24:11:57:87:b2"
+    vm_id      = 8013
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-11"
+    hostname   = "k8s-work-11"
+    ip_address = "10.20.67.14"
+    mac_addr   = "bc:24:11:7c:38:8e"
+    vm_id      = 8014
+    is_gpu     = false
+    gpu_model  = ""
+  },
+  {
+    name       = "k8s-work-12"
+    hostname   = "k8s-work-12"
+    ip_address = "10.20.67.15"
+    mac_addr   = "bc:24:11:a9:aa:be"
+    vm_id      = 8015
+    is_gpu     = true
+    gpu_model  = "rtx-a5000"
+  }
+]
