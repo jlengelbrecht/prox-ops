@@ -125,52 +125,6 @@ spec:
               target_label: __path__
               replacement: /var/log/pods/*$1/*.log
 
-        # Systemd journal logs
-        - job_name: journal
-          journal:
-            path: /var/log/journal
-            max_age: 12h
-            labels:
-              job: systemd-journal
-          relabel_configs:
-            # Add hostname
-            - source_labels:
-                - __journal__hostname
-              target_label: node
-            # Add systemd unit
-            - source_labels:
-                - __journal__systemd_unit
-              target_label: unit
-            # Add syslog identifier
-            - source_labels:
-                - __journal_syslog_identifier
-              target_label: syslog_identifier
-          pipeline_stages:
-            # Drop noisy journal entries
-            - match:
-                selector: '{unit="systemd-journald.service"}'
-                action: drop
-            - match:
-                selector: '{syslog_identifier="systemd"} |~ "Started|Stopped|Reached target"'
-                action: drop
-
-    # Volume mounts
-    extraVolumes:
-      - name: pods
-        hostPath:
-          path: /var/log/pods
-      - name: journal
-        hostPath:
-          path: /var/log/journal
-
-    extraVolumeMounts:
-      - name: pods
-        mountPath: /var/log/pods
-        readOnly: true
-      - name: journal
-        mountPath: /var/log/journal
-        readOnly: true
-
     # Service configuration
     service:
       enabled: true
