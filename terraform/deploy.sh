@@ -95,6 +95,14 @@ check_prerequisites() {
         return 1
     fi
 
+    # Check SSH agent
+    if [ -z "${SSH_AUTH_SOCK:-}" ]; then
+        log_warning "SSH agent not running"
+        log_info "Start SSH agent and add key: eval \$(ssh-agent) && ssh-add ~/.ssh/id_rsa"
+    else
+        log_success "SSH agent is running"
+    fi
+
     # Check SSH connectivity to Proxmox
     log_info "Checking Proxmox connectivity..."
     local proxmox_host
@@ -105,7 +113,8 @@ check_prerequisites() {
             log_success "Proxmox SSH connectivity OK"
         else
             log_warning "Cannot connect to Proxmox via SSH: root@$proxmox_host"
-            log_info "Ensure SSH key is configured or SSH password authentication is enabled"
+            log_info "Ensure SSH key is configured or add it to SSH agent:"
+            log_info "  ssh-add ~/.ssh/id_rsa"
             log_info "Template creation requires SSH access"
         fi
     fi

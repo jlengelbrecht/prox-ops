@@ -53,10 +53,16 @@ variable "cpu_cores" {
   type        = number
 }
 
+variable "cpu_sockets" {
+  description = "Number of CPU sockets"
+  type        = number
+  default     = 1
+}
+
 variable "cpu_type" {
   description = "CPU type"
   type        = string
-  default     = "x86-64-v2-AES"
+  default     = "host"
 }
 
 variable "memory_mb" {
@@ -74,9 +80,34 @@ variable "vm_storage_pool" {
   type        = string
 }
 
+# Security Configuration
+variable "enable_secure_boot" {
+  description = "Enable Secure Boot with TPM 2.0 (REQUIRED for DMZ)"
+  type        = bool
+  default     = true
+}
+
+variable "enable_tpm" {
+  description = "Enable TPM 2.0 state disk (REQUIRED for Secure Boot)"
+  type        = bool
+  default     = true
+}
+
+variable "enable_firewall" {
+  description = "Enable firewall on network devices"
+  type        = bool
+  default     = true
+}
+
 # GPU Configuration
+variable "gpu_passthrough_mapping" {
+  description = "PCI resource mapping ID for GPU passthrough (e.g., 'thor-gpu')"
+  type        = string
+  default     = ""
+}
+
 variable "gpu_passthrough_devices" {
-  description = "List of GPU devices to passthrough"
+  description = "List of GPU devices to passthrough (deprecated - use gpu_passthrough_mapping)"
   type = list(object({
     device  = string
     mapping = optional(string)
