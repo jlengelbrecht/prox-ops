@@ -72,12 +72,10 @@ spec:
     operator:
       create: false
 
-    replicaCount: 1
+    replicaCount: 3
 
     persistence:
-      enabled: true
-      storageClassName: ceph-block
-      size: 10Gi
+      enabled: false
 
     resources:
       limits:
@@ -93,3 +91,16 @@ spec:
 
     podAnnotations:
       secret.reloader.stakater.com/reload: "onepassword-connect"
+
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - connect
+              topologyKey: kubernetes.io/hostname
