@@ -1,0 +1,121 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: node-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: node-alerts
+      interval: 30s
+      rules:
+        # Critical: Node is down
+        - alert: NodeDown
+          expr: up{job="node-exporter"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: node
+          annotations:
+            summary: "Node {{ $labels.instance }} is down"
+            description: "Node exporter on {{ $labels.instance }} has been down for more than 5 minutes."
+            runbook_url: "https://github.com/jlengelbrecht/prox-ops/tree/main/.claude/.ai-docs/troubleshooting"
+
+        # Warning: High CPU usage
+        - alert: NodeHighCPUUsage
+          expr: (100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 80
+          for: 10m
+          labels:
+            severity: warning
+            component: node
+          annotations:
+            summary: "Node {{ $labels.instance }} CPU usage is above 80%"
+            description: "CPU usage on {{ $labels.instance }} has been above 80% for more than 10 minutes. Current value: {{ $value | humanize }}%"
+            runbook_url: "https://github.com/jlengelbrecht/prox-ops/tree/main/.claude/.ai-docs/troubleshooting"
+
+        # Critical: Very high CPU usage
+        - alert: NodeCriticalCPUUsage
+          expr: (100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 95
+          for: 5m
+          labels:
+            severity: critical
+            component: node
+          annotations:
+            summary: "Node {{ $labels.instance }} CPU usage is critically high (>95%)"
+            description: "CPU usage on {{ $labels.instance }} has been above 95% for more than 5 minutes. Current value: {{ $value | humanize }}%"
+            runbook_url: "https://github.com/jlengelbrecht/prox-ops/tree/main/.claude/.ai-docs/troubleshooting"
+
+        # Warning: High memory usage
+        - alert: NodeHighMemoryUsage
+          expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+          for: 10m
+          labels:
+            severity: warning
+            component: node
+          annotations:
+            summary: "Node {{ $labels.instance }} memory usage is above 85%"
+            description: "Memory usage on {{ $labels.instance }} has been above 85% for more than 10 minutes. Current value: {{ $value | humanize }}%"
+            runbook_url: "https://github.com/jlengelbrecht/prox-ops/tree/main/.claude/.ai-docs/troubleshooting"
+
+        # Critical: Very high memory usage
+        - alert: NodeCriticalMemoryUsage
+          expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 95
+          for: 5m
+          labels:
+            severity: critical
+            component: node
+          annotations:
+            summary: "Node {{ $labels.instance }} memory usage is critically high (>95%)"
+            description: "Memory usage on {{ $labels.instance }} has been above 95% for more than 5 minutes. Current value: {{ $value | humanize }}%"
+            runbook_url: "https://github.com/jlengelbrecht/prox-ops/tree/main/.claude/.ai-docs/troubleshooting"
+
+        # Warning: High disk usage
+        - alert: NodeHighDiskUsage
+          expr: (node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs"} * 100) < 15
+          for: 10m
+          labels:
+            severity: warning
+            component: node
+          annotations:
+            summary: "Node {{ $labels.instance }} disk {{ $labels.mountpoint }} has less than 15% free space"
+            description: "Disk {{ $labels.mountpoint }} on {{ $labels.instance }} has less than 15% free space remaining. Available: {{ $value | humanize }}%"
+            runbook_url: "https://github.com/jlengelbrecht/prox-ops/tree/main/.claude/.ai-docs/troubleshooting"
+
+        # Critical: Very high disk usage
+        - alert: NodeCriticalDiskUsage
+          expr: (node_filesystem_avail_bytes{fstype=~"ext4|xfs"} / node_filesystem_size_bytes{fstype=~"ext4|xfs"} * 100) < 5
+          for: 5m
+          labels:
+            severity: critical
+            component: node
+          annotations:
+            summary: "Node {{ $labels.instance }} disk {{ $labels.mountpoint }} has less than 5% free space"
+            description: "Disk {{ $labels.mountpoint }} on {{ $labels.instance }} is critically full with less than 5% free space. Available: {{ $value | humanize }}%"
+            runbook_url: "https://github.com/jlengelbrecht/prox-ops/tree/main/.claude/.ai-docs/troubleshooting"
+
+        # Warning: High network errors
+        - alert: NodeHighNetworkErrors
+          expr: rate(node_network_receive_errs_total[5m]) > 10
+          for: 10m
+          labels:
+            severity: warning
+            component: node
+          annotations:
+            summary: "Node {{ $labels.instance }} interface {{ $labels.device }} has high network receive errors"
+            description: "Network interface {{ $labels.device }} on {{ $labels.instance }} is experiencing high receive error rate. Current rate: {{ $value | humanize }}/s"
+            runbook_url: "https://github.com/jlengelbrecht/prox-ops/tree/main/.claude/.ai-docs/troubleshooting"
+
+        # Warning: Clock skew detected
+        - alert: NodeClockSkew
+          expr: abs(node_timex_offset_seconds) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+            component: node
+          annotations:
+            summary: "Node {{ $labels.instance }} has clock skew"
+            description: "Clock on {{ $labels.instance }} is out of sync by {{ $value | humanize }} seconds."
+            runbook_url: "https://github.com/jlengelbrecht/prox-ops/tree/main/.claude/.ai-docs/troubleshooting"

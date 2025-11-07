@@ -1,0 +1,63 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: storage-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: storage-alerts
+      interval: 30s
+      rules:
+        - alert: PVCNearlyFull
+          expr: (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100 > 85
+          for: 10m
+          labels:
+            severity: warning
+            component: storage
+          annotations:
+            summary: "PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} is {{ $value | humanize }}% full"
+            description: "PVC has been over 85% full for more than 10 minutes."
+
+        - alert: PVCCriticallyFull
+          expr: (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) * 100 > 95
+          for: 5m
+          labels:
+            severity: critical
+            component: storage
+          annotations:
+            summary: "PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} is critically full ({{ $value | humanize }}%)"
+            description: "Immediate action required - PVC is over 95% full."
+
+        - alert: PVCFillingUp
+          expr: predict_linear(kubelet_volume_stats_used_bytes[6h], 4 * 24 * 3600) > kubelet_volume_stats_capacity_bytes
+          for: 1h
+          labels:
+            severity: warning
+            component: storage
+          annotations:
+            summary: "PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} predicted to fill in 4 days"
+            description: "Based on current growth rate, PVC will be full within 4 days."
+
+        - alert: PersistentVolumeNotAvailable
+          expr: kube_persistentvolume_status_phase{phase=~"Failed|Pending"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            component: storage
+          annotations:
+            summary: "PersistentVolume {{ $labels.persistentvolume }} is in {{ $labels.phase }} state"
+            description: "PV has been in {{ $labels.phase }} state for more than 5 minutes."
+
+        - alert: PVCNotBound
+          expr: kube_persistentvolumeclaim_status_phase{phase!="Bound"} == 1
+          for: 10m
+          labels:
+            severity: critical
+            component: storage
+          annotations:
+            summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is not bound"
+            description: "PVC has been in {{ $labels.phase }} state for more than 10 minutes."

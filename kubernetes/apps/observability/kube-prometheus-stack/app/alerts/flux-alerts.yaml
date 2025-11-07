@@ -1,0 +1,63 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: flux-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: flux-alerts
+      interval: 30s
+      rules:
+        - alert: FluxReconciliationFailure
+          expr: sum by (namespace, name, kind) (gotk_reconcile_condition{status="False",type="Ready"}) > 0
+          for: 10m
+          labels:
+            severity: critical
+            component: flux
+          annotations:
+            summary: "Flux {{ $labels.kind }} {{ $labels.namespace }}/{{ $labels.name }} reconciliation failing"
+            description: "Flux resource has failed reconciliation for more than 10 minutes."
+
+        - alert: FluxResourceSuspended
+          expr: sum by (namespace, name, kind) (gotk_suspend_status{suspended="true"}) > 0
+          for: 30m
+          labels:
+            severity: warning
+            component: flux
+          annotations:
+            summary: "Flux {{ $labels.kind }} {{ $labels.namespace }}/{{ $labels.name }} is suspended"
+            description: "Flux resource has been suspended for more than 30 minutes."
+
+        - alert: HelmReleaseStuck
+          expr: sum by (namespace, name) (gotk_reconcile_condition{kind="HelmRelease",status="Unknown",type="Ready"}) > 0
+          for: 15m
+          labels:
+            severity: warning
+            component: flux
+          annotations:
+            summary: "HelmRelease {{ $labels.namespace }}/{{ $labels.name }} is stuck"
+            description: "HelmRelease has been in Unknown state for more than 15 minutes."
+
+        - alert: GitRepositorySyncFailure
+          expr: sum by (namespace, name) (gotk_reconcile_condition{kind="GitRepository",status="False",type="Ready"}) > 0
+          for: 10m
+          labels:
+            severity: critical
+            component: flux
+          annotations:
+            summary: "GitRepository {{ $labels.namespace }}/{{ $labels.name }} sync failing"
+            description: "GitRepository has failed to sync for more than 10 minutes. Flux GitOps is broken."
+
+        - alert: FluxSlowReconciliation
+          expr: histogram_quantile(0.99, sum by (le, namespace, name, kind) (rate(gotk_reconcile_duration_seconds_bucket[5m]))) > 300
+          for: 10m
+          labels:
+            severity: warning
+            component: flux
+          annotations:
+            summary: "Flux {{ $labels.kind }} {{ $labels.namespace }}/{{ $labels.name }} reconciliation is slow"
+            description: "Flux resource is taking more than 5 minutes to reconcile (p99: {{ $value | humanizeDuration }})."
