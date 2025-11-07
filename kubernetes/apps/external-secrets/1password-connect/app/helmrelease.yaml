@@ -26,6 +26,16 @@ spec:
       credentials_base64: ""
       credentialsName: onepassword-connect
       credentialsKey: 1password-credentials.json
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
 
     operator:
       create: false
