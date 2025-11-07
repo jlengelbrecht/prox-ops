@@ -13,22 +13,5 @@ spec:
     name: flux-system
     namespace: flux-system
   targetNamespace: observability
-  wait: true
+  wait: false
   timeout: 15m
-  healthChecks:
-    - apiVersion: apps/v1
-      kind: Deployment
-      name: kube-prometheus-stack-operator
-      namespace: observability
-    - apiVersion: apps/v1
-      kind: Deployment
-      name: kube-prometheus-stack-grafana
-      namespace: observability
-    - apiVersion: apps/v1
-      kind: StatefulSet
-      name: prometheus-kube-prometheus-stack-prometheus
-      namespace: observability
-    - apiVersion: apps/v1
-      kind: StatefulSet
-      name: alertmanager-kube-prometheus-stack-alertmanager
-      namespace: observability
