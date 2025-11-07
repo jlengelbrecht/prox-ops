@@ -1,0 +1,63 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: pod-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: pod-alerts
+      interval: 30s
+      rules:
+        - alert: PodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+            component: pod
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+            description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted {{ $value | humanize }} times in the last 15 minutes."
+
+        - alert: PodNotReady
+          expr: sum by (namespace, pod) (kube_pod_status_phase{phase=~"Pending|Unknown|Failed"}) > 0
+          for: 15m
+          labels:
+            severity: critical
+            component: pod
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} not ready for 15+ minutes"
+            description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is in {{ $labels.phase }} phase."
+
+        - alert: ContainerWaiting
+          expr: sum by (namespace, pod, container) (kube_pod_container_status_waiting_reason) > 0
+          for: 10m
+          labels:
+            severity: warning
+            component: pod
+          annotations:
+            summary: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} is waiting"
+            description: "Container has been waiting for more than 10 minutes. Reason: {{ $labels.reason }}"
+
+        - alert: StatefulSetReplicasMismatch
+          expr: kube_statefulset_status_replicas_ready != kube_statefulset_status_replicas
+          for: 15m
+          labels:
+            severity: critical
+            component: statefulset
+          annotations:
+            summary: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} has replica mismatch"
+            description: "StatefulSet has {{ $labels.replicas }} desired replicas but only {{ $value }} are ready."
+
+        - alert: JobFailed
+          expr: kube_job_status_failed > 0
+          for: 5m
+          labels:
+            severity: warning
+            component: job
+          annotations:
+            summary: "Job {{ $labels.namespace }}/{{ $labels.job_name }} has failed"
+            description: "Job {{ $labels.job_name }} in namespace {{ $labels.namespace }} has failed."
