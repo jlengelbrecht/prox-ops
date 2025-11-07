@@ -1,0 +1,32 @@
+---
+# Rook External Cluster ConfigMaps
+# Generated from Proxmox Ceph cluster via create-external-cluster-resources.py
+# Monitor endpoints include all 4 monitors from Proxmox cluster
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rook-ceph-mon-endpoints
+  namespace: rook-ceph
+data:
+  data: Baldar=10.20.66.4:6789,Odin=10.20.66.6:6789,Thor=10.20.66.7:6789,Heimdall=10.20.66.8:6789
+  maxMonId: "3"
+  mapping: '{}'
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: external-cluster-user-command
+  namespace: rook-ceph
+data:
+  args: |
+    [Configurations]
+    namespace = rook-ceph
+    rgw-pool-prefix = default
+    format = json
+    cephfs-filesystem-name = k8s-fs
+    cephfs-metadata-pool-name = k8s-fs_metadata
+    cephfs-data-pool-name = k8s-fs_data
+    rbd-data-pool-name = k8s-rbd
+    skip-monitoring-endpoint = True

@@ -1,0 +1,64 @@
+---
+# External Ceph Cluster
+# Connects to Proxmox-managed Ceph cluster (FSID: 98a8f0b5-4faa-4463-a637-f10d97012eb3)
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph-external
+  namespace: rook-ceph
+spec:
+  external:
+    enable: true
+  dataDirHostPath: /var/lib/rook
+  cephVersion:
+    image: quay.io/ceph/ceph:v19.2.3
+    allowUnsupported: false
+  healthCheck:
+    daemonHealth:
+      mon:
+        interval: 45s
+        timeout: 600s
+  mon:
+    # For external cluster, monitor endpoints come from the ConfigMap
+    allowMultiplePerNode: false
+  monitoring:
+    enabled: true
+    externalMgrEndpoints:
+      - ip: 10.20.66.6  # Odin (active manager)
+      - ip: 10.20.66.4  # Baldar (standby)
+      - ip: 10.20.66.7  # Thor (standby)
+      - ip: 10.20.66.8  # Heimdall (standby)
+    externalMgrPrometheusPort: 9283
+  crashCollector:
+    disable: true
+  logCollector:
+    enabled: false
+  cleanupPolicy:
+    confirmation: ""
+    sanitizeDisks:
+      method: quick
+      dataSource: zero
+      iteration: 1
+    allowUninstallWithVolumes: false
+  priorityClassNames:
+    all: system-node-critical
+    mgr: system-cluster-critical
+    mon: system-node-critical
+    osd: system-node-critical
+  resources:
+    mgr:
+      limits:
+        memory: "1Gi"
+      requests:
+        cpu: "100m"
+        memory: "512Mi"
+    mon:
+      limits:
+        memory: "1Gi"
+      requests:
+        cpu: "100m"
+        memory: "512Mi"
+  # CSI driver configuration
+  csi:
+    readAffinity:
+      enabled: false
