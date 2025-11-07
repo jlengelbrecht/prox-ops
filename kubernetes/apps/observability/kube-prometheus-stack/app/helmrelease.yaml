@@ -82,6 +82,9 @@ spec:
     grafana:
       enabled: true
 
+      # Disable default datasource provisioning from chart
+      forceDeployDatasources: false
+
       # Admin credentials from secret
       admin:
         existingSecret: grafana-admin
@@ -138,6 +141,19 @@ spec:
       defaultDashboardsEnabled: true
       defaultDashboardsTimezone: UTC
 
+      # Datasources - manually provision since we disabled chart defaults
+      datasources:
+        datasources.yaml:
+          apiVersion: 1
+          datasources:
+            - name: Prometheus
+              type: prometheus
+              url: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090
+              access: proxy
+              isDefault: true
+              jsonData:
+                timeInterval: 30s
+
       # Dashboard providers
       dashboardProviders:
         dashboardproviders.yaml:
@@ -164,10 +180,7 @@ spec:
           provider:
             foldersFromFilesStructure: true
         datasources:
-          enabled: true
-          defaultDatasourceEnabled: true
-          label: grafana_datasource
-          labelValue: "1"
+          enabled: false
 
     # AlertManager configuration
     alertmanager:
