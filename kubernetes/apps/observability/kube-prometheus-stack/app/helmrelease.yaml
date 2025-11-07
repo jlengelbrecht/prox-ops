@@ -1,0 +1,298 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kube-prometheus-stack
+  namespace: observability
+spec:
+  chart:
+    spec:
+      chart: kube-prometheus-stack
+      version: 68.2.2
+      sourceRef:
+        kind: HelmRepository
+        name: prometheus-community
+        namespace: observability
+  interval: 1h
+  timeout: 15m
+  install:
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  values:
+    # Common labels for all resources
+    commonLabels:
+      app.kubernetes.io/part-of: kube-prometheus-stack
+
+    # Prometheus configuration
+    prometheus:
+      enabled: true
+      prometheusSpec:
+        # Data retention
+        retention: 30d
+        retentionSize: "90GB"
+
+        # Resource limits
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2Gi
+          limits:
+            cpu: 2000m
+            memory: 4Gi
+
+        # Storage configuration
+        storageSpec:
+          volumeClaimTemplate:
+            spec:
+              storageClassName: ceph-block
+              accessModes:
+                - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 100Gi
+
+        # Service monitors
+        serviceMonitorSelectorNilUsesHelmValues: false
+        podMonitorSelectorNilUsesHelmValues: false
+        ruleSelectorNilUsesHelmValues: false
+
+        # Enable remote write receiver (for future use)
+        enableRemoteWriteReceiver: false
+
+        # Enable feature flags
+        enableFeatures: []
+
+        # Scrape configs
+        additionalScrapeConfigs: []
+
+        # Pod configuration
+        podMetadata:
+          labels:
+            app: prometheus
+
+        # Replicas (for homelab, single replica is sufficient)
+        replicas: 1
+
+        # WAL compression
+        walCompression: true
+
+    # Grafana configuration
+    grafana:
+      enabled: true
+
+      # Admin credentials from secret
+      admin:
+        existingSecret: grafana-admin
+        userKey: admin-user
+        passwordKey: admin-password
+
+      # Persistence
+      persistence:
+        enabled: true
+        type: pvc
+        storageClassName: ceph-block
+        accessModes:
+          - ReadWriteOnce
+        size: 10Gi
+
+      # Service configuration for LoadBalancer
+      service:
+        type: LoadBalancer
+        port: 80
+        targetPort: 3000
+        annotations:
+          io.cilium/lb-ipam-ips: "10.20.67.24"
+
+      # Ingress disabled (using LoadBalancer)
+      ingress:
+        enabled: false
+
+      # Resource limits
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+      # Grafana configuration
+      grafana.ini:
+        server:
+          domain: grafana.homelab0.org
+          root_url: "http://grafana.homelab0.org"
+        analytics:
+          check_for_updates: false
+          reporting_enabled: false
+        log:
+          mode: console
+        paths:
+          data: /var/lib/grafana/
+          logs: /var/log/grafana
+          plugins: /var/lib/grafana/plugins
+          provisioning: /etc/grafana/provisioning
+
+      # Default dashboards
+      defaultDashboardsEnabled: true
+      defaultDashboardsTimezone: UTC
+
+      # Datasources
+      datasources:
+        datasources.yaml:
+          apiVersion: 1
+          datasources:
+            - name: Prometheus
+              type: prometheus
+              url: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090
+              access: proxy
+              isDefault: true
+              jsonData:
+                timeInterval: 30s
+
+      # Dashboard providers
+      dashboardProviders:
+        dashboardproviders.yaml:
+          apiVersion: 1
+          providers:
+            - name: 'default'
+              orgId: 1
+              folder: ''
+              type: file
+              disableDeletion: false
+              editable: true
+              options:
+                path: /var/lib/grafana/dashboards/default
+
+      # Sidecar for dashboard discovery
+      sidecar:
+        dashboards:
+          enabled: true
+          defaultFolderName: "General"
+          label: grafana_dashboard
+          labelValue: "1"
+          folderAnnotation: grafana_folder
+          searchNamespace: ALL
+          provider:
+            foldersFromFilesStructure: true
+        datasources:
+          enabled: true
+          defaultDatasourceEnabled: true
+          label: grafana_datasource
+          labelValue: "1"
+
+    # AlertManager configuration
+    alertmanager:
+      enabled: true
+      alertmanagerSpec:
+        # Resource limits
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+        # Storage configuration
+        storage:
+          volumeClaimTemplate:
+            spec:
+              storageClassName: ceph-block
+              accessModes:
+                - ReadWriteOnce
+              resources:
+                requests:
+                  storage: 5Gi
+
+        # Replicas
+        replicas: 1
+
+        # Retention
+        retention: 168h  # 7 days
+
+        # Pod configuration
+        podMetadata:
+          labels:
+            app: alertmanager
+
+    # Prometheus Operator configuration
+    prometheusOperator:
+      enabled: true
+
+      # Resource limits
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+
+      # Prometheus config reloader
+      prometheusConfigReloader:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 64Mi
+
+    # Kube State Metrics
+    kubeStateMetrics:
+      enabled: true
+
+    # Node Exporter
+    nodeExporter:
+      enabled: true
+
+      # Resource limits
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+    # Default rules
+    defaultRules:
+      create: true
+      rules:
+        alertmanager: true
+        etcd: true
+        configReloaders: true
+        general: true
+        k8s: true
+        kubeApiserverAvailability: true
+        kubeApiserverSlos: true
+        kubeControllerManager: true
+        kubelet: true
+        kubeProxy: true
+        kubePrometheusGeneral: true
+        kubePrometheusNodeRecording: true
+        kubernetesApps: true
+        kubernetesResources: true
+        kubernetesStorage: true
+        kubernetesSystem: true
+        kubeSchedulerAlerting: true
+        kubeSchedulerRecording: true
+        kubeStateMetrics: true
+        network: true
+        node: true
+        nodeExporterAlerting: true
+        nodeExporterRecording: true
+        prometheus: true
+        prometheusOperator: true
+
+    # Global configuration
+    global:
+      rbac:
+        create: true
+        createAggregateClusterRoles: true
