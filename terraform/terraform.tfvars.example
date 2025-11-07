@@ -1,69 +1,140 @@
 # =============================================================================
-# Terraform Variables - Example Configuration
+# Terraform Variables - Multi-Node Proxmox Cluster Configuration
 # =============================================================================
 #
-# Copy this file to terraform.tfvars and fill in your actual values:
-#   cp terraform.tfvars.example terraform.tfvars
+# This example shows how to configure Terraform for automated Talos Linux
+# deployment across a 4-node Proxmox cluster (Baldar, Heimdall, Odin, Thor).
 #
-# IMPORTANT: terraform.tfvars should be added to .gitignore to avoid
-# committing sensitive credentials
+# SETUP INSTRUCTIONS:
+# 1. Copy this file: cp terraform.tfvars.example terraform.tfvars
+# 2. Update all values marked with YOUR_* placeholders
+# 3. Verify SSH keys are loaded: ssh-add -l
+# 4. Test connectivity: ssh root@PROXMOX_NODE
+#
+# IMPORTANT: terraform.tfvars is in .gitignore to protect secrets
 #
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Proxmox Configuration
+# Proxmox API Endpoints (All 4 Cluster Nodes)
 # -----------------------------------------------------------------------------
+# Each Proxmox node requires its own API endpoint for template creation
+# Format: https://HOSTNAME_OR_IP:8006
+#
+# REQUIREMENT: All nodes must be reachable from your management machine
+# SECURITY: Use API tokens instead of root@pam for production
 
-# Proxmox API endpoint (include protocol and port)
-# Example: "https://proxmox.example.com:8006"
-proxmox_endpoint = "https://YOUR_PROXMOX_IP:8006"
+proxmox_endpoints = {
+  baldar   = "https://YOUR_BALDAR_IP:8006"    # Example: "https://10.20.66.10:8006"
+  heimdall = "https://YOUR_HEIMDALL_IP:8006"  # Example: "https://10.20.66.11:8006"
+  odin     = "https://YOUR_ODIN_IP:8006"      # Example: "https://10.20.66.12:8006"
+  thor     = "https://YOUR_THOR_IP:8006"      # Example: "https://10.20.66.13:8006"
+}
 
-# Proxmox username with API access
-# Example: "root@pam" or "terraform@pve"
+# -----------------------------------------------------------------------------
+# Proxmox Authentication
+# -----------------------------------------------------------------------------
+# Option 1: Root user (quick start, less secure)
 proxmox_username = "root@pam"
+proxmox_password = "YOUR_ROOT_PASSWORD"
 
-# Proxmox password or API token
-# For API token, use format: "USER@REALM!TOKENID=SECRET"
-proxmox_password = "YOUR_PROXMOX_PASSWORD"
+# Option 2: API Token (recommended for production)
+# Create token: Datacenter -> API Tokens -> Add
+# Then use format: "USERNAME@REALM!TOKEN_NAME"
+# proxmox_username = "terraform@pve!automation"
+# proxmox_password = "YOUR_API_TOKEN_SECRET"  # Just the secret, not full token
 
-# Skip TLS verification (set to true for self-signed certificates)
+# Skip TLS verification (true for self-signed certs in homelab)
 proxmox_insecure = true
 
-# SSH user for Proxmox host (used for template creation)
+# -----------------------------------------------------------------------------
+# SSH Configuration
+# -----------------------------------------------------------------------------
+# SSH user for Proxmox nodes (used for template creation via qm commands)
+# REQUIREMENT: User must have root/sudo privileges
+# REQUIREMENT: SSH key must be loaded in ssh-agent: ssh-add ~/.ssh/id_rsa
+#
+# Test before running Terraform:
+#   for node in baldar heimdall odin thor; do
+#     ssh root@$node "hostname && qm list" || echo "FAILED: $node"
+#   done
+
 proxmox_ssh_user = "root"
 
-# Proxmox node name where VMs will be created
-# Run 'pvesh get /nodes' on Proxmox to list available nodes
-proxmox_node = "YOUR_PROXMOX_NODE_NAME"
-
 # -----------------------------------------------------------------------------
-# Talos Configuration
+# Talos Linux Configuration
 # -----------------------------------------------------------------------------
+# Talos version to deploy
+# IMPORTANT: Must use secure-boot compatible version for DMZ deployment
+# Verify at: https://github.com/siderolabs/talos/releases
 
-# Talos Linux version to deploy
 talos_version = "1.11.3"
 
-# Talos factory schematic IDs
-# These are from your existing talconfig.yaml
-talos_schematic_controlplane = "ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515"
-talos_schematic_worker       = "990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e"
+# -----------------------------------------------------------------------------
+# Talos Factory Schematics
+# -----------------------------------------------------------------------------
+# Generate at: https://factory.talos.dev/
+#
+# SECURITY REQUIREMENT: Must create SECURE BOOT compatible schematics
+#
+# Controller Schematic:
+#   - Talos Version: 1.11.3
+#   - Extensions: qemu-guest-agent
+#   - Secure Boot: ENABLED
+#
+# Worker Schematic:
+#   - Talos Version: 1.11.3
+#   - Extensions: qemu-guest-agent
+#   - Secure Boot: ENABLED
+#
+# BEFORE DEPLOYING:
+# 1. Visit https://factory.talos.dev/
+# 2. Select Talos 1.11.3
+# 3. Check "Secure Boot" support
+# 4. Add extension: siderolabs/qemu-guest-agent
+# 5. Click "Generate"
+# 6. Copy the schematic ID (long hex string)
+# 7. Paste below
+
+talos_schematic_controlplane = "YOUR_CONTROLLER_SCHEMATIC_ID"  # Example: "ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515"
+talos_schematic_worker       = "YOUR_WORKER_SCHEMATIC_ID"      # Example: "990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e"
 
 # -----------------------------------------------------------------------------
-# VM Template Configuration
+# Template ID Scheme
 # -----------------------------------------------------------------------------
+# Each Proxmox node gets 2 templates (controller + worker) for flexibility
+# Default IDs: 9000-9007 (2 per node × 4 nodes)
+#
+# You can customize if needed, but defaults are recommended
 
-# VM IDs for templates (must be unique and not in use)
-template_vm_id_controlplane = 9000
-template_vm_id_worker       = 9001
+template_ids = {
+  baldar = {
+    controller = 9000
+    worker     = 9001
+  }
+  heimdall = {
+    controller = 9002
+    worker     = 9003
+  }
+  odin = {
+    controller = 9004
+    worker     = 9005
+  }
+  thor = {
+    controller = 9006
+    worker     = 9007
+  }
+}
 
 # -----------------------------------------------------------------------------
 # Network Configuration
 # -----------------------------------------------------------------------------
+# Network bridge for cluster network (VLAN 67)
+# Based on your existing setup: vmbr1
 
-# Proxmox network bridge
-network_bridge = "vmbr0"
+network_bridge = "vmbr1"
 
-# Network gateway
+# Network gateway (from existing VMs: 10.20.66.1)
 network_gateway = "10.20.66.1"
 
 # Network netmask (/23 = 255.255.254.0)
@@ -72,175 +143,298 @@ network_netmask = "255.255.254.0"
 # -----------------------------------------------------------------------------
 # Storage Configuration
 # -----------------------------------------------------------------------------
-
 # Proxmox storage pool for VM disks
-# Run 'pvesh get /storage' on Proxmox to list available storage
-vm_storage_pool = "local-lvm"
+# CRITICAL: Must use "vms-ceph" (Ceph cluster storage)
+# This matches your existing VM configuration
 
-# CPU type for VMs
-cpu_type = "x86-64-v2-AES"
+vm_storage_pool = "vms-ceph"
+
+# CPU type: "host" provides best performance for homelab
+# CRITICAL: Do NOT use "x86-64-v2-AES" - existing VMs use "host"
+cpu_type = "host"
+
+# -----------------------------------------------------------------------------
+# Security Configuration (MANDATORY for DMZ)
+# -----------------------------------------------------------------------------
+# These settings are REQUIRED for DMZ connectivity
+# Do NOT disable unless you know what you're doing
+
+enable_secure_boot = true  # REQUIRED: Secure Boot with pre-enrolled keys
+enable_tpm         = true  # REQUIRED: TPM 2.0 for Secure Boot
+enable_firewall    = true  # REQUIRED: Firewall on all network devices
 
 # -----------------------------------------------------------------------------
 # Control Plane Resources
 # -----------------------------------------------------------------------------
+# Based on existing VMs: 16GB RAM, 4 cores (2 sockets × 2 cores), 100G disk
 
-controlplane_cpu_cores  = 4
-controlplane_memory_mb  = 8192
+controlplane_cpu_cores   = 4
+controlplane_cpu_sockets = 2
+controlplane_memory_mb   = 16384  # 16GB
 controlplane_disk_size_gb = 100
 
 # -----------------------------------------------------------------------------
 # Worker Resources
 # -----------------------------------------------------------------------------
+# Based on existing VMs: 32GB RAM, 16 cores (2 sockets × 8 cores), 100G disk
 
-worker_cpu_cores       = 6
-worker_memory_mb       = 16384
-worker_disk_size_gb    = 200
-
-# -----------------------------------------------------------------------------
-# GPU Worker Resources
-# -----------------------------------------------------------------------------
-
-gpu_worker_cpu_cores      = 8
-gpu_worker_memory_mb      = 32768
-gpu_worker_disk_size_gb   = 300
+worker_cpu_cores   = 16
+worker_cpu_sockets = 2
+worker_memory_mb   = 32768  # 32GB
+worker_disk_size_gb = 100
 
 # -----------------------------------------------------------------------------
-# Node Definitions
+# GPU Worker Resources (Same as regular workers in this deployment)
 # -----------------------------------------------------------------------------
 
-# Control Plane Nodes (3 nodes)
+gpu_worker_cpu_cores   = 16
+gpu_worker_cpu_sockets = 2
+gpu_worker_memory_mb   = 32768
+gpu_worker_disk_size_gb = 100
+
+# -----------------------------------------------------------------------------
+# Control Plane Node Definitions (3 nodes)
+# -----------------------------------------------------------------------------
+# Each node specifies:
+#   - name: Unique identifier
+#   - hostname: Kubernetes node name
+#   - ip_address: Static IP (managed via Talos config)
+#   - mac_addr: MAC address (for DHCP reservation or identification)
+#   - vm_id: Proxmox VM ID (unique across cluster)
+#   - proxmox_node: Which Proxmox host to deploy on (Baldar, Heimdall, Odin, Thor)
+
 control_nodes = [
   {
-    name       = "k8s-ctrl-1"
-    hostname   = "k8s-ctrl-1"
-    ip_address = "10.20.67.1"
-    mac_addr   = "bc:24:11:af:26:d4"
-    vm_id      = 8001
+    name         = "k8s-ctrl-1"
+    hostname     = "k8s-ctrl-1"
+    ip_address   = "10.20.67.1"
+    mac_addr     = "bc:24:11:af:26:d4"
+    vm_id        = 8001
+    proxmox_node = "Baldar"  # Deploy to Baldar
   },
   {
-    name       = "k8s-ctrl-2"
-    hostname   = "k8s-ctrl-2"
-    ip_address = "10.20.67.2"
-    mac_addr   = "aa:54:cd:f6:a1:d0"
-    vm_id      = 8002
+    name         = "k8s-ctrl-2"
+    hostname     = "k8s-ctrl-2"
+    ip_address   = "10.20.67.2"
+    mac_addr     = "aa:54:cd:f6:a1:d0"
+    vm_id        = 8002
+    proxmox_node = "Heimdall"  # Deploy to Heimdall
   },
   {
-    name       = "k8s-ctrl-3"
-    hostname   = "k8s-ctrl-3"
-    ip_address = "10.20.67.3"
-    mac_addr   = "be:9c:fd:2c:54:85"
-    vm_id      = 8003
+    name         = "k8s-ctrl-3"
+    hostname     = "k8s-ctrl-3"
+    ip_address   = "10.20.67.3"
+    mac_addr     = "be:9c:fd:2c:54:85"
+    vm_id        = 8003
+    proxmox_node = "Odin"  # Deploy to Odin
   }
 ]
 
-# Worker Nodes (12 nodes, including 2 GPU workers)
+# -----------------------------------------------------------------------------
+# Worker Node Definitions (12 nodes, including 2 GPU workers)
+# -----------------------------------------------------------------------------
+# GPU workers (work-6, work-12) include additional fields:
+#   - is_gpu: true
+#   - gpu_model: Model identifier (for tagging)
+#   - gpu_mapping: PCI resource mapping ID (CRITICAL for GPU passthrough)
+#
+# BEFORE DEPLOYING GPU WORKERS:
+# 1. Create PCI resource mappings on Proxmox:
+#    pvesh create /cluster/mapping/pci \
+#      --id thor-gpu \
+#      --map "node=Thor,path=0000:af:00.0,id=10de:2231,iommugroup=10,subsystem-id=10de:147e"
+#
+#    pvesh create /cluster/mapping/pci \
+#      --id heimdall-gpu \
+#      --map "node=Heimdall,path=0000:82:00.0,id=10de:2531,iommugroup=7,subsystem-id=10de:151d"
+#
+# 2. Grant permissions to Terraform token:
+#    pveum acl modify /mapping/pci/thor-gpu --token 'YOUR_TOKEN' --role PVEMappingUser
+#    pveum acl modify /mapping/pci/heimdall-gpu --token 'YOUR_TOKEN' --role PVEMappingUser
+#
+# See: .claude/.ai-docs/openai-deepresearch/GPU_MAPPINGS_PROXMOX.md
+
 worker_nodes = [
+  # Standard workers (10 nodes)
   {
-    name       = "k8s-work-1"
-    hostname   = "k8s-work-1"
-    ip_address = "10.20.67.4"
-    mac_addr   = "b2:dc:2e:72:8c:ec"
-    vm_id      = 8004
-    is_gpu     = false
-    gpu_model  = ""
+    name         = "k8s-work-1"
+    hostname     = "k8s-work-1"
+    ip_address   = "10.20.67.4"
+    mac_addr     = "b2:dc:2e:72:8c:ec"
+    vm_id        = 8004
+    proxmox_node = "Baldar"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
   },
   {
-    name       = "k8s-work-2"
-    hostname   = "k8s-work-2"
-    ip_address = "10.20.67.5"
-    mac_addr   = "06:64:c3:76:9a:98"
-    vm_id      = 8005
-    is_gpu     = false
-    gpu_model  = ""
+    name         = "k8s-work-2"
+    hostname     = "k8s-work-2"
+    ip_address   = "10.20.67.5"
+    mac_addr     = "06:64:c3:76:9a:98"
+    vm_id        = 8005
+    proxmox_node = "Heimdall"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
   },
   {
-    name       = "k8s-work-3"
-    hostname   = "k8s-work-3"
-    ip_address = "10.20.67.6"
-    mac_addr   = "36:30:ad:44:40:cd"
-    vm_id      = 8006
-    is_gpu     = false
-    gpu_model  = ""
+    name         = "k8s-work-3"
+    hostname     = "k8s-work-3"
+    ip_address   = "10.20.67.6"
+    mac_addr     = "36:30:ad:44:40:cd"
+    vm_id        = 8006
+    proxmox_node = "Odin"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
   },
   {
-    name       = "k8s-work-4"
-    hostname   = "k8s-work-4"
-    ip_address = "10.20.67.7"
-    mac_addr   = "22:d1:14:e2:ee:49"
-    vm_id      = 8007
-    is_gpu     = false
-    gpu_model  = ""
+    name         = "k8s-work-4"
+    hostname     = "k8s-work-4"
+    ip_address   = "10.20.67.7"
+    mac_addr     = "22:d1:14:e2:ee:49"
+    vm_id        = 8007
+    proxmox_node = "Thor"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
   },
   {
-    name       = "k8s-work-5"
-    hostname   = "k8s-work-5"
-    ip_address = "10.20.67.8"
-    mac_addr   = "bc:24:11:e7:ef:7f"
-    vm_id      = 8008
-    is_gpu     = false
-    gpu_model  = ""
+    name         = "k8s-work-5"
+    hostname     = "k8s-work-5"
+    ip_address   = "10.20.67.8"
+    mac_addr     = "bc:24:11:e7:ef:7f"
+    vm_id        = 8008
+    proxmox_node = "Baldar"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
+  },
+
+  # GPU Worker on Heimdall (RTX A2000)
+  {
+    name         = "k8s-work-6"
+    hostname     = "k8s-work-6"
+    ip_address   = "10.20.67.9"
+    mac_addr     = "0e:eb:7c:a2:2e:cc"
+    vm_id        = 8009
+    proxmox_node = "Heimdall"
+    is_gpu       = true
+    gpu_model    = "rtx-a2000"
+    gpu_mapping  = "heimdall-gpu"  # PCI resource mapping created on Proxmox
+  },
+
+  {
+    name         = "k8s-work-7"
+    hostname     = "k8s-work-7"
+    ip_address   = "10.20.67.10"
+    mac_addr     = "bc:24:11:6b:75:fe"
+    vm_id        = 8010
+    proxmox_node = "Odin"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
   },
   {
-    name       = "k8s-work-6"
-    hostname   = "k8s-work-6"
-    ip_address = "10.20.67.9"
-    mac_addr   = "0e:eb:7c:a2:2e:cc"
-    vm_id      = 8009
-    is_gpu     = true
-    gpu_model  = "rtx-a2000"
+    name         = "k8s-work-8"
+    hostname     = "k8s-work-8"
+    ip_address   = "10.20.67.11"
+    mac_addr     = "bc:24:11:16:f6:dd"
+    vm_id        = 8011
+    proxmox_node = "Thor"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
   },
   {
-    name       = "k8s-work-7"
-    hostname   = "k8s-work-7"
-    ip_address = "10.20.67.10"
-    mac_addr   = "bc:24:11:6b:75:fe"
-    vm_id      = 8010
-    is_gpu     = false
-    gpu_model  = ""
+    name         = "k8s-work-9"
+    hostname     = "k8s-work-9"
+    ip_address   = "10.20.67.12"
+    mac_addr     = "bc:24:11:27:e7:a3"
+    vm_id        = 8012
+    proxmox_node = "Baldar"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
   },
   {
-    name       = "k8s-work-8"
-    hostname   = "k8s-work-8"
-    ip_address = "10.20.67.11"
-    mac_addr   = "bc:24:11:16:f6:dd"
-    vm_id      = 8011
-    is_gpu     = false
-    gpu_model  = ""
+    name         = "k8s-work-10"
+    hostname     = "k8s-work-10"
+    ip_address   = "10.20.67.13"
+    mac_addr     = "bc:24:11:57:87:b2"
+    vm_id        = 8013
+    proxmox_node = "Heimdall"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
   },
   {
-    name       = "k8s-work-9"
-    hostname   = "k8s-work-9"
-    ip_address = "10.20.67.12"
-    mac_addr   = "bc:24:11:27:e7:a3"
-    vm_id      = 8012
-    is_gpu     = false
-    gpu_model  = ""
+    name         = "k8s-work-11"
+    hostname     = "k8s-work-11"
+    ip_address   = "10.20.67.14"
+    mac_addr     = "bc:24:11:7c:38:8e"
+    vm_id        = 8014
+    proxmox_node = "Odin"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
   },
+
+  # GPU Worker on Thor (RTX A5000)
   {
-    name       = "k8s-work-10"
-    hostname   = "k8s-work-10"
-    ip_address = "10.20.67.13"
-    mac_addr   = "bc:24:11:57:87:b2"
-    vm_id      = 8013
-    is_gpu     = false
-    gpu_model  = ""
-  },
-  {
-    name       = "k8s-work-11"
-    hostname   = "k8s-work-11"
-    ip_address = "10.20.67.14"
-    mac_addr   = "bc:24:11:7c:38:8e"
-    vm_id      = 8014
-    is_gpu     = false
-    gpu_model  = ""
-  },
-  {
-    name       = "k8s-work-12"
-    hostname   = "k8s-work-12"
-    ip_address = "10.20.67.15"
-    mac_addr   = "bc:24:11:a9:aa:be"
-    vm_id      = 8015
-    is_gpu     = true
-    gpu_model  = "rtx-a5000"
+    name         = "k8s-work-12"
+    hostname     = "k8s-work-12"
+    ip_address   = "10.20.67.15"
+    mac_addr     = "bc:24:11:a9:aa:be"
+    vm_id        = 8015
+    proxmox_node = "Thor"
+    is_gpu       = true
+    gpu_model    = "rtx-a5000"
+    gpu_mapping  = "thor-gpu"  # PCI resource mapping created on Proxmox
   }
 ]
+
+# =============================================================================
+# DEPLOYMENT CHECKLIST
+# =============================================================================
+#
+# Before running `terraform apply`:
+#
+# [ ] 1. Created secure-boot compatible schematics at factory.talos.dev
+# [ ] 2. Updated schematic IDs above
+# [ ] 3. Updated Proxmox endpoints (all 4 nodes)
+# [ ] 4. Updated Proxmox credentials (username/password or API token)
+# [ ] 5. SSH keys loaded: ssh-add ~/.ssh/id_rsa
+# [ ] 6. SSH connectivity tested to all 4 Proxmox nodes
+# [ ] 7. Created GPU PCI resource mappings (if using GPU workers)
+# [ ] 8. Granted PVEMappingUser permissions to Terraform token
+# [ ] 9. Verified storage pool "vms-ceph" exists on all nodes
+# [ ] 10. Verified network bridge "vmbr1" exists on all nodes
+#
+# Deployment Commands:
+#
+#   # Initialize Terraform
+#   terraform init
+#
+#   # Validate configuration
+#   terraform validate
+#
+#   # Preview changes (creates 8 templates + 15 VMs)
+#   terraform plan
+#
+#   # Apply configuration
+#   terraform apply
+#
+# Expected Timeline:
+#   - Template creation: 10-15 minutes (parallel across all nodes)
+#   - VM deployment: 5-10 minutes (parallel)
+#   - Total: ~25 minutes for full cluster
+#
+# After Deployment:
+#   - VMs will be created and started automatically
+#   - Apply Talos configurations using talosctl
+#   - Bootstrap Kubernetes cluster
+#   - See: CLAUDE.md for Talos bootstrap instructions
+#
+# =============================================================================

@@ -6,14 +6,26 @@
 # Template Information
 # -----------------------------------------------------------------------------
 
-output "template_controlplane_id" {
-  description = "Control plane template VM ID"
-  value       = module.talos_template_controlplane.template_id
-}
-
-output "template_worker_id" {
-  description = "Worker template VM ID"
-  value       = module.talos_template_worker.template_id
+output "template_ids" {
+  description = "All template VM IDs across all nodes"
+  value = {
+    baldar = {
+      controller = var.template_ids.baldar.controller
+      worker     = var.template_ids.baldar.worker
+    }
+    heimdall = {
+      controller = var.template_ids.heimdall.controller
+      worker     = var.template_ids.heimdall.worker
+    }
+    odin = {
+      controller = var.template_ids.odin.controller
+      worker     = var.template_ids.odin.worker
+    }
+    thor = {
+      controller = var.template_ids.thor.controller
+      worker     = var.template_ids.thor.worker
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -75,12 +87,12 @@ output "gpu_worker_nodes" {
 output "cluster_summary" {
   description = "Cluster deployment summary"
   value = {
-    total_nodes        = length(var.control_nodes) + length(var.worker_nodes)
+    total_nodes         = length(var.control_nodes) + length(var.worker_nodes)
     control_plane_count = length(var.control_nodes)
-    worker_count       = length(var.worker_nodes)
-    gpu_worker_count   = length([for node in var.worker_nodes : node if node.is_gpu])
-    talos_version      = var.talos_version
-    proxmox_node       = var.proxmox_node
+    worker_count        = length(var.worker_nodes)
+    gpu_worker_count    = length([for node in var.worker_nodes : node if node.is_gpu])
+    talos_version       = var.talos_version
+    proxmox_nodes       = ["Baldar", "Heimdall", "Odin", "Thor"]
   }
 }
 

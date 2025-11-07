@@ -1,35 +1,41 @@
+# =============================================================================
 # Proxmox Connection Variables
-variable "proxmox_endpoint" {
-  description = "Proxmox API endpoint (e.g., https://proxmox.example.com:8006)"
-  type        = string
+# =============================================================================
+
+# Proxmox API endpoints for all 4 cluster nodes
+variable "proxmox_endpoints" {
+  description = "Map of Proxmox node names to their API endpoints"
+  type = object({
+    baldar   = string
+    heimdall = string
+    odin     = string
+    thor     = string
+  })
 }
 
 variable "proxmox_username" {
-  description = "Proxmox username (e.g., root@pam)"
+  description = "Proxmox username (e.g., root@pam or terraform@pve!token) - Set via TF_VAR_proxmox_username environment variable"
   type        = string
+  default     = ""  # Set via environment variable TF_VAR_proxmox_username
 }
 
 variable "proxmox_password" {
-  description = "Proxmox password"
+  description = "Proxmox password or API token secret - Set via TF_VAR_proxmox_password environment variable"
   type        = string
   sensitive   = true
+  default     = ""  # Set via environment variable TF_VAR_proxmox_password
 }
 
 variable "proxmox_insecure" {
-  description = "Skip TLS verification for Proxmox API"
+  description = "Skip TLS verification for Proxmox API (set true for self-signed certs)"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "proxmox_ssh_user" {
-  description = "SSH user for Proxmox host (for template creation)"
+  description = "SSH user for Proxmox hosts (for template creation via SSH)"
   type        = string
   default     = "root"
-}
-
-variable "proxmox_node" {
-  description = "Proxmox node name where VMs will be created"
-  type        = string
 }
 
 # Talos Configuration
@@ -68,7 +74,7 @@ variable "template_vm_id_worker" {
 variable "network_bridge" {
   description = "Proxmox network bridge"
   type        = string
-  default     = "vmbr0"
+  default     = "vmbr1"
 }
 
 variable "network_gateway" {
@@ -83,30 +89,111 @@ variable "network_netmask" {
   default     = "255.255.254.0"  # /23
 }
 
+# =============================================================================
 # VM Resource Configuration
+# =============================================================================
+
 variable "vm_storage_pool" {
-  description = "Proxmox storage pool for VM disks"
+  description = "Proxmox storage pool for VM disks (e.g., vms-ceph, local-lvm)"
   type        = string
-  default     = "local-lvm"
+  default     = "vms-ceph"
 }
 
 variable "cpu_type" {
-  description = "CPU type for VMs"
+  description = "CPU type for VMs (host provides best performance for homelab)"
   type        = string
-  default     = "x86-64-v2-AES"
+  default     = "host"
 }
 
+# =============================================================================
+# Security Configuration (MANDATORY for DMZ)
+# =============================================================================
+
+variable "enable_secure_boot" {
+  description = "Enable Secure Boot with TPM 2.0 (REQUIRED for DMZ connectivity)"
+  type        = bool
+  default     = true
+}
+
+variable "enable_tpm" {
+  description = "Enable TPM 2.0 state disk (REQUIRED for Secure Boot)"
+  type        = bool
+  default     = true
+}
+
+variable "enable_firewall" {
+  description = "Enable firewall on network devices"
+  type        = bool
+  default     = true
+}
+
+# =============================================================================
+# Template ID Scheme (2 templates per node × 4 nodes = 8 total)
+# =============================================================================
+# Each node gets both controller and worker templates for flexibility
+# and future auto-scaling capabilities
+
+variable "template_ids" {
+  description = "Template VM IDs for each node and type"
+  type = object({
+    baldar = object({
+      controller = number
+      worker     = number
+    })
+    heimdall = object({
+      controller = number
+      worker     = number
+    })
+    odin = object({
+      controller = number
+      worker     = number
+    })
+    thor = object({
+      controller = number
+      worker     = number
+    })
+  })
+  default = {
+    baldar = {
+      controller = 9000
+      worker     = 9001
+    }
+    heimdall = {
+      controller = 9002
+      worker     = 9003
+    }
+    odin = {
+      controller = 9004
+      worker     = 9005
+    }
+    thor = {
+      controller = 9006
+      worker     = 9007
+    }
+  }
+}
+
+# =============================================================================
 # Control Plane Configuration
+# =============================================================================
+# Based on existing VM specs: 16GB RAM, 4 cores (2 sockets × 2 cores), 100G disk
+
 variable "controlplane_cpu_cores" {
   description = "CPU cores for control plane nodes"
   type        = number
   default     = 4
 }
 
+variable "controlplane_cpu_sockets" {
+  description = "CPU sockets for control plane nodes"
+  type        = number
+  default     = 2
+}
+
 variable "controlplane_memory_mb" {
   description = "Memory in MB for control plane nodes"
   type        = number
-  default     = 8192
+  default     = 16384  # 16GB
 }
 
 variable "controlplane_disk_size_gb" {
@@ -115,30 +202,49 @@ variable "controlplane_disk_size_gb" {
   default     = 100
 }
 
+# =============================================================================
 # Worker Configuration
+# =============================================================================
+# Based on existing VM specs: 32GB RAM, 16 cores (2 sockets × 8 cores), 100G disk
+
 variable "worker_cpu_cores" {
   description = "CPU cores for worker nodes"
   type        = number
-  default     = 6
+  default     = 16
+}
+
+variable "worker_cpu_sockets" {
+  description = "CPU sockets for worker nodes"
+  type        = number
+  default     = 2
 }
 
 variable "worker_memory_mb" {
   description = "Memory in MB for worker nodes"
   type        = number
-  default     = 16384
+  default     = 32768  # 32GB
 }
 
 variable "worker_disk_size_gb" {
   description = "Disk size in GB for worker nodes"
   type        = number
-  default     = 200
+  default     = 100
 }
 
-# GPU Worker Configuration
+# =============================================================================
+# GPU Worker Configuration (Same as regular workers in this deployment)
+# =============================================================================
+
 variable "gpu_worker_cpu_cores" {
   description = "CPU cores for GPU worker nodes"
   type        = number
-  default     = 8
+  default     = 16
+}
+
+variable "gpu_worker_cpu_sockets" {
+  description = "CPU sockets for GPU worker nodes"
+  type        = number
+  default     = 2
 }
 
 variable "gpu_worker_memory_mb" {
@@ -150,30 +256,36 @@ variable "gpu_worker_memory_mb" {
 variable "gpu_worker_disk_size_gb" {
   description = "Disk size in GB for GPU worker nodes"
   type        = number
-  default     = 300
+  default     = 100
 }
 
+# =============================================================================
 # Node Definitions
+# =============================================================================
+
 variable "control_nodes" {
-  description = "Control plane node definitions"
+  description = "Control plane node definitions with Proxmox node assignment"
   type = list(object({
-    name       = string
-    ip_address = string
-    mac_addr   = string
-    vm_id      = number
-    hostname   = string
+    name         = string
+    hostname     = string
+    ip_address   = string
+    mac_addr     = string
+    vm_id        = number
+    proxmox_node = string  # Which Proxmox host to deploy on (baldar, heimdall, odin, thor)
   }))
 }
 
 variable "worker_nodes" {
-  description = "Worker node definitions"
+  description = "Worker node definitions with GPU and node assignment"
   type = list(object({
-    name       = string
-    ip_address = string
-    mac_addr   = string
-    vm_id      = number
-    hostname   = string
-    is_gpu     = optional(bool, false)
-    gpu_model  = optional(string, "")
+    name         = string
+    hostname     = string
+    ip_address   = string
+    mac_addr     = string
+    vm_id        = number
+    proxmox_node = string  # Which Proxmox host to deploy on
+    is_gpu       = optional(bool, false)
+    gpu_model    = optional(string, "")
+    gpu_mapping  = optional(string, "")  # PCI resource mapping ID (e.g., "thor-gpu")
   }))
 }
