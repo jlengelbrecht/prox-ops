@@ -21,6 +21,48 @@ spec:
     cleanupOnFail: true
     remediation:
       retries: 3
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: onepassword-connect
+            patch: |
+              - op: add
+                path: /spec/template/spec/securityContext
+                value:
+                  runAsNonRoot: true
+                  runAsUser: 999
+                  runAsGroup: 999
+                  fsGroup: 999
+                  seccompProfile:
+                    type: RuntimeDefault
+              - op: add
+                path: /spec/template/spec/containers/0/securityContext
+                value:
+                  runAsNonRoot: true
+                  runAsUser: 999
+                  runAsGroup: 999
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+                  readOnlyRootFilesystem: false
+              - op: add
+                path: /spec/template/spec/containers/1/securityContext
+                value:
+                  runAsNonRoot: true
+                  runAsUser: 999
+                  runAsGroup: 999
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+                  readOnlyRootFilesystem: false
   values:
     connect:
       credentials_base64: ""
