@@ -157,6 +157,18 @@ spec:
               isDefault: true
               jsonData:
                 timeInterval: 30s
+            - name: Loki
+              type: loki
+              url: http://loki:3100
+              access: proxy
+              isDefault: false
+              jsonData:
+                maxLines: 1000
+                derivedFields:
+                  - datasourceUid: Prometheus
+                    matcherRegex: "traceID=(\\w+)"
+                    name: TraceID
+                    url: "$${__value.raw}"
 
       # Dashboard providers
       dashboardProviders:

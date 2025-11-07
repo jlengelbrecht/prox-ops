@@ -1,0 +1,240 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: loki
+  namespace: observability
+spec:
+  chart:
+    spec:
+      chart: loki
+      version: 6.23.0
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: observability
+  interval: 1h
+  timeout: 15m
+  install:
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  values:
+    # Deployment mode - single binary for homelab simplicity
+    deploymentMode: SingleBinary
+
+    # Single binary configuration
+    singleBinary:
+      replicas: 1
+
+      # Resource limits
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: 2000m
+          memory: 2Gi
+
+      # Use existing PVC
+      persistence:
+        enabled: true
+        storageClass: ceph-block
+        size: 200Gi
+        # Use existing PVC we created
+        existingClaim: loki-data
+
+      # Extra volumes for WAL and other data
+      extraVolumes:
+        - name: tmp
+          emptyDir: {}
+
+      extraVolumeMounts:
+        - name: tmp
+          mountPath: /tmp
+
+      # Pod configuration
+      podAnnotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+
+      # Autoscaling disabled for homelab
+      autoscaling:
+        enabled: false
+
+    # Loki configuration
+    loki:
+      # Storage configuration
+      storage:
+        type: filesystem
+        filesystem:
+          chunks_directory: /var/loki/chunks
+          rules_directory: /var/loki/rules
+
+      # Schema configuration
+      schemaConfig:
+        configs:
+          - from: "2024-01-01"
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+              prefix: loki_index_
+              period: 24h
+
+      # Limits configuration
+      limits_config:
+        retention_period: 336h  # 14 days
+        max_query_length: 0h  # No limit on query time range
+        max_query_lookback: 336h  # Can query back 14 days
+        max_query_series: 10000
+        max_entries_limit_per_query: 5000
+        max_streams_per_user: 10000
+        ingestion_rate_mb: 15
+        ingestion_burst_size_mb: 20
+        per_stream_rate_limit: 5MB
+        per_stream_rate_limit_burst: 15MB
+        reject_old_samples: true
+        reject_old_samples_max_age: 168h  # 7 days
+        creation_grace_period: 10m
+        enforce_metric_name: false
+        max_cache_freshness_per_query: 10m
+        split_queries_by_interval: 15m
+
+      # Compactor for retention enforcement
+      compactor:
+        working_directory: /var/loki/compactor
+        compaction_interval: 10m
+        retention_enabled: true
+        retention_delete_delay: 2h
+        retention_delete_worker_count: 150
+        delete_request_store: filesystem
+
+      # Query scheduler
+      query_scheduler:
+        max_outstanding_requests_per_tenant: 256
+
+      # Querier configuration
+      querier:
+        max_concurrent: 4
+
+      # Query frontend
+      query_range:
+        align_queries_with_step: true
+        cache_results: true
+        max_retries: 5
+        results_cache:
+          cache:
+            embedded_cache:
+              enabled: true
+              max_size_mb: 500
+
+      # Storage configuration details
+      storage_config:
+        tsdb_shipper:
+          active_index_directory: /var/loki/tsdb-index
+          cache_location: /var/loki/tsdb-cache
+          cache_ttl: 24h
+        filesystem:
+          directory: /var/loki/chunks
+
+      # Server configuration
+      server:
+        http_listen_port: 3100
+        grpc_listen_port: 9095
+        log_level: info
+        log_format: logfmt
+
+      # Common configuration
+      common:
+        path_prefix: /var/loki
+        replication_factor: 1
+        ring:
+          kvstore:
+            store: inmemory
+
+      # Analytics disabled
+      analytics:
+        reporting_enabled: false
+
+    # Monitoring
+    monitoring:
+      dashboards:
+        enabled: false
+      rules:
+        enabled: false
+      serviceMonitor:
+        enabled: true
+        labels:
+          prometheus: kube-prometheus-stack
+      selfMonitoring:
+        enabled: false
+        grafanaAgent:
+          installOperator: false
+
+    # Loki service
+    service:
+      type: ClusterIP
+      port: 3100
+      targetPort: 3100
+      labels:
+        app: loki
+
+    # Test pod disabled
+    test:
+      enabled: false
+
+    # Gateway disabled (not needed for single binary)
+    gateway:
+      enabled: false
+
+    # Backend components disabled (using single binary)
+    backend:
+      replicas: 0
+
+    read:
+      replicas: 0
+
+    write:
+      replicas: 0
+
+    # Ingester disabled (using single binary)
+    ingester:
+      replicas: 0
+
+    # Querier disabled (using single binary)
+    querier:
+      replicas: 0
+
+    # Query frontend disabled (using single binary)
+    queryFrontend:
+      replicas: 0
+
+    # Query scheduler disabled (using single binary)
+    queryScheduler:
+      replicas: 0
+
+    # Distributor disabled (using single binary)
+    distributor:
+      replicas: 0
+
+    # Compactor disabled (using single binary)
+    compactor:
+      replicas: 0
+
+    # Index gateway disabled (using single binary)
+    indexGateway:
+      replicas: 0
+
+    # Bloom compactor disabled
+    bloomCompactor:
+      replicas: 0
+
+    # Bloom gateway disabled
+    bloomGateway:
+      replicas: 0
