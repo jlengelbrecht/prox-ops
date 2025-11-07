@@ -94,11 +94,20 @@ jobs:
               echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Generate GitHub App Token
+        if: ${{ steps.diff.outputs.diff != '' }}
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Add Comment
         if: ${{ steps.diff.outputs.diff != '' }}
         continue-on-error: true
         uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
         with:
+          repo-token: ${{ steps.generate-token.outputs.token }}
           message-id: "${{ github.event.pull_request.number }}/kubernetes/${{ matrix.resources }}"
           message-failure: Diff was not successful
           message: |
