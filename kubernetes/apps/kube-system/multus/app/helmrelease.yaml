@@ -1,0 +1,67 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: multus
+spec:
+  chart:
+    spec:
+      chart: multus
+      version: 1.0.1
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s-labs
+        namespace: kube-system
+  interval: 1h
+  timeout: 10m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  values:
+    # Multus CNI container configuration
+    multus:
+      image:
+        repository: ghcr.io/k8snetworkplumbingwg/multus-cni
+        tag: v4.2.3
+      resources:
+        requests:
+          cpu: 50m
+          memory: 100Mi
+        limits:
+          memory: 200Mi
+
+    # CNI plugins init container configuration
+    cni-plugins:
+      image:
+        repository: ghcr.io/home-operations/cni-plugins
+        tag: 1.8.0
+      resources:
+        requests:
+          cpu: 10m
+          memory: 50Mi
+        limits:
+          memory: 100Mi
+
+    # CNI paths configuration
+    # CRITICAL: Talos Linux uses /var/lib/cni/conf instead of /etc/cni/net.d
+    cni:
+      netPath: /var/lib/cni/conf  # Talos-specific CNI config path
+      binPath: /opt/cni/bin        # Standard CNI binary path
+
+    # SECURITY NOTE: bjw-s chart uses capability-based security instead of privileged mode
+    # The chart automatically sets:
+    #   - readOnlyRootFilesystem: true
+    #   - allowPrivilegeEscalation: false
+    #   - capabilities: NET_ADMIN only (not fully privileged)
+    # This is MORE secure than traditional CNI deployments while still functional
+    #
+    # Rationale: Multus needs NET_ADMIN capability to:
+    #   - Manipulate network interfaces
+    #   - Configure network namespaces
+    #   - Set up CNI chaining with Cilium
+    # The bjw-s chart achieves this without requiring privileged: true
