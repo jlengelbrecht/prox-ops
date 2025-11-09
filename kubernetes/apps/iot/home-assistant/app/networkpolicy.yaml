@@ -30,10 +30,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: rook-ceph
-    # Allow external access for integrations and updates
-    - to:
-        - namespaceSelector: {}
-      ports:
+    # Allow external internet access for integrations and updates
+    # No 'to' selector = allow to any destination
+    - ports:
         - protocol: TCP
           port: 443
         - protocol: TCP
