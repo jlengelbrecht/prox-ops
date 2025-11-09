@@ -29,6 +29,11 @@ spec:
   nodeSelector:
     matchLabels:
       kubernetes.io/os: linux
+  # Only announce services without network label (default pool)
+  serviceSelector:
+    matchExpressions:
+      - key: network
+        operator: DoesNotExist
 
 # ====================================
 # DMZ VLAN 81 (eth2) - 10.20.81.0/24
@@ -61,6 +66,10 @@ spec:
   nodeSelector:
     matchLabels:
       kubernetes.io/os: linux
+  # Only announce DMZ services
+  serviceSelector:
+    matchLabels:
+      network: dmz
 
 # ====================================
 # IoT VLAN 62 (eth1) - 10.20.62.0/24
@@ -93,6 +102,10 @@ spec:
   nodeSelector:
     matchLabels:
       kubernetes.io/os: linux
+  # Only announce IoT services
+  serviceSelector:
+    matchLabels:
+      network: iot
 
 # ====================================
 # SERVICE LABELING GUIDE
