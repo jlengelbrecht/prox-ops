@@ -1,3 +1,12 @@
+# Cilium Multi-VLAN LoadBalancer Configuration
+# Implements network segmentation for LoadBalancer services
+# STORY-020: Cilium Multi-VLAN LoadBalancer Segmentation
+
+# ====================================
+# CLUSTER VLAN 66 (eth0) - 10.20.66.0/23
+# ====================================
+# Primary cluster network for internal services
+# Services: k8s-gateway, envoy-internal, envoy-external, grafana
 ---
 apiVersion: cilium.io/v2alpha1
 kind: CiliumLoadBalancerIPPool
@@ -14,10 +23,84 @@ metadata:
   name: l2-policy
 spec:
   loadBalancerIPs: true
-  # NOTE: interfaces might need to be set if you have more than one active NIC on your hosts
-  # interfaces:
-  #   - ^eno[0-9]+
-  #   - ^eth[0-9]+
+  # Restrict to eth0 interface only (cluster network)
+  interfaces:
+    - ^eth0$
   nodeSelector:
     matchLabels:
       kubernetes.io/os: linux
+
+# ====================================
+# DMZ VLAN 81 (eth2) - 10.20.81.0/24
+# ====================================
+# DMZ network for externally-facing services
+# Future services: Plex, game servers, public-facing apps
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: dmz-pool
+spec:
+  allowFirstLastIPs: "No"
+  blocks:
+    - start: "10.20.81.100"
+      stop: "10.20.81.150"
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: dmz-l2-policy
+spec:
+  loadBalancerIPs: true
+  # Restrict to eth2 interface only (DMZ network)
+  interfaces:
+    - ^eth2$
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/os: linux
+
+# ====================================
+# IoT VLAN 62 (eth1) - 10.20.62.0/24
+# ====================================
+# IoT network for home automation services
+# Future services: Home Assistant, MQTT, Zigbee2MQTT
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: iot-pool
+spec:
+  allowFirstLastIPs: "No"
+  blocks:
+    - start: "10.20.62.100"
+      stop: "10.20.62.150"
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: iot-l2-policy
+spec:
+  loadBalancerIPs: true
+  # Restrict to eth1 interface only (IoT network)
+  interfaces:
+    - ^eth1$
+  nodeSelector:
+    matchLabels:
+      kubernetes.io/os: linux
+
+# ====================================
+# SERVICE LABELING GUIDE
+# ====================================
+# To deploy a service on a specific VLAN, use one of these methods:
+#
+# Method 1: Specify exact IP from the desired pool
+# metadata:
+#   annotations:
+#     io.cilium/lb-ipam-ips: "10.20.81.100"  # DMZ VLAN
+#
+# Method 2: Let Cilium auto-assign from pool (based on CIDR match)
+# The service will be assigned an IP from the pool that matches
+# the requested IP range
+#
+# Default behavior: Services without specific annotations will
+# use the default "pool" (cluster VLAN 66)
