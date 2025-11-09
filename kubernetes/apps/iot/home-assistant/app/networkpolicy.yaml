@@ -12,33 +12,41 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow ingress from anywhere on port 8123 (LoadBalancer will handle access)
-    - ports:
+    # Allow ingress only from IoT VLAN (10.20.62.0/23)
+    # Defense in depth: LoadBalancer IP is on IoT VLAN, but enforce at pod level
+    - from:
+        - ipBlock:
+            cidr: 10.20.62.0/23
+      ports:
         - protocol: TCP
           port: 8123
   egress:
-    # Allow DNS
+    # Allow DNS to CoreDNS pods only (not entire kube-system namespace)
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
       ports:
         - protocol: UDP
           port: 53
-    # Allow Rook-Ceph storage access
+        - protocol: TCP
+          port: 53
+    # Allow internet access for integrations and updates
+    # Block private IP ranges to prevent SSRF attacks
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: rook-ceph
-    # Allow external access for integrations and updates
-    - to:
-        - namespaceSelector: {}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8      # Private network
+              - 172.16.0.0/12   # Private network
+              - 192.168.0.0/16  # Private network
+              - 169.254.0.0/16  # Link-local
+              - 127.0.0.0/8     # Loopback
       ports:
         - protocol: TCP
           port: 443
         - protocol: TCP
           port: 80
-    # Allow IoT VLAN access via secondary interface (net1)
-    # This is enforced at VLAN level, but allow here for cluster communication
-    - to:
-        - podSelector: {}
