@@ -12,11 +12,13 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow ingress only from IoT VLAN (10.20.62.0/23)
-    # Defense in depth: LoadBalancer IP is on IoT VLAN, but enforce at pod level
+    # Allow ingress from IoT VLAN (10.20.62.0/23) and management VLAN (10.20.65.0/24)
+    # Defense in depth: LoadBalancer IP is on IoT VLAN, but allow management access
     - from:
         - ipBlock:
             cidr: 10.20.62.0/23
+        - ipBlock:
+            cidr: 10.20.65.0/24
       ports:
         - protocol: TCP
           port: 8123
