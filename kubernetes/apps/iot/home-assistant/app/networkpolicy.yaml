@@ -12,11 +12,21 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow ingress only from IoT VLAN (10.20.62.0/23)
-    # Defense in depth: LoadBalancer IP is on IoT VLAN, but enforce at pod level
+    # Allow ingress from IoT VLAN (10.20.62.0/23) for direct device access
     - from:
         - ipBlock:
             cidr: 10.20.62.0/23
+      ports:
+        - protocol: TCP
+          port: 8123
+    # Allow ingress from envoy-internal for DNS-based access (homeassistant.homelab0.org)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: network
+          podSelector:
+            matchLabels:
+              gateway.envoyproxy.io/owning-gateway-name: envoy-internal
       ports:
         - protocol: TCP
           port: 8123
