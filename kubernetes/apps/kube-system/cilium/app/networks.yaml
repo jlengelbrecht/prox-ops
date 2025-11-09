@@ -45,6 +45,9 @@ spec:
   blocks:
     - start: "10.20.81.100"
       stop: "10.20.81.150"
+  serviceSelector:
+    matchLabels:
+      network: dmz
 ---
 apiVersion: cilium.io/v2alpha1
 kind: CiliumL2AnnouncementPolicy
@@ -74,6 +77,9 @@ spec:
   blocks:
     - start: "10.20.62.100"
       stop: "10.20.62.150"
+  serviceSelector:
+    matchLabels:
+      network: iot
 ---
 apiVersion: cilium.io/v2alpha1
 kind: CiliumL2AnnouncementPolicy
@@ -91,16 +97,22 @@ spec:
 # ====================================
 # SERVICE LABELING GUIDE
 # ====================================
-# To deploy a service on a specific VLAN, use one of these methods:
+# To deploy a service on a specific VLAN, add a network label:
 #
-# Method 1: Specify exact IP from the desired pool
+# IoT VLAN 62 (10.20.62.100-150):
 # metadata:
-#   annotations:
-#     io.cilium/lb-ipam-ips: "10.20.81.100"  # DMZ VLAN
+#   labels:
+#     network: iot
 #
-# Method 2: Let Cilium auto-assign from pool (based on CIDR match)
-# The service will be assigned an IP from the pool that matches
-# the requested IP range
+# DMZ VLAN 81 (10.20.81.100-150):
+# metadata:
+#   labels:
+#     network: dmz
 #
-# Default behavior: Services without specific annotations will
+# Cluster VLAN 66 (10.20.66.0/23):
+# metadata:
+#   labels:
+#     network: cluster  # or no label (default)
+#
+# Default behavior: Services without a network label will
 # use the default "pool" (cluster VLAN 66)
