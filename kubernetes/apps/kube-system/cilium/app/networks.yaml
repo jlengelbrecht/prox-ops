@@ -63,9 +63,11 @@ spec:
   # Restrict to eth2 interface only (DMZ network)
   interfaces:
     - ^eth2$
+  # Only select worker nodes (exclude control plane nodes without eth1/eth2)
   nodeSelector:
-    matchLabels:
-      kubernetes.io/os: linux
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: DoesNotExist
   # Only announce DMZ services
   serviceSelector:
     matchLabels:
@@ -99,9 +101,11 @@ spec:
   # Restrict to eth1 interface only (IoT network)
   interfaces:
     - ^eth1$
+  # Only select worker nodes (exclude control plane nodes without eth1/eth2)
   nodeSelector:
-    matchLabels:
-      kubernetes.io/os: linux
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: DoesNotExist
   # Only announce IoT services
   serviceSelector:
     matchLabels:
