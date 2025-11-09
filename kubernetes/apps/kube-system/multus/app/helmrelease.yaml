@@ -1,0 +1,102 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: multus
+spec:
+  chart:
+    spec:
+      chart: multus-cni
+      version: 2.1.2  # Latest Bitnami version
+      sourceRef:
+        kind: HelmRepository
+        name: bitnami
+        namespace: flux-system
+  interval: 1h
+  timeout: 10m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  values:
+    image:
+      repository: ghcr.io/k8snetworkplumbingwg/multus-cni
+      tag: v4.2.3  # Updated from v4.1.0 for security patches
+
+    cni:
+      # Paths for Talos Linux - CRITICAL for proper operation
+      paths:
+        config: /var/lib/cni/conf
+        bin: /opt/cni/bin
+
+      # Use Cilium as the default CNI plugin
+      confDir: /var/lib/cni/conf
+      binDir: /opt/cni/bin
+
+      # This is the name of the CNI config file to create
+      configFileName: "00-multus.conf"
+
+      # Ensure proper chaining with Cilium
+      readinessindicatorfile: /var/lib/cni/conf/ready
+
+    # Resources for Multus pods
+    resources:
+      requests:
+        cpu: 50m
+        memory: 100Mi
+      limits:
+        memory: 200Mi
+
+    # Run on all nodes including control plane
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: CriticalAddonsOnly
+        operator: Exists
+
+    # Priority for system-critical add-on
+    priorityClassName: system-node-critical
+
+    # Host networking required for CNI operations
+    hostNetwork: true
+    hostPID: true
+
+    # Security context for CNI operations
+    securityContext:
+      # SECURITY NOTE: Privileged mode required for CNI network namespace operations
+      # Multus needs to manipulate network interfaces and mount namespaces
+      # This is standard for CNI plugins and cannot be avoided
+      privileged: true
+
+      # Additional hardening where possible:
+      readOnlyRootFilesystem: false  # CNI needs to write to /host/var/run/multus
+      allowPrivilegeEscalation: true  # Required for network operations
+
+    # Additional configuration
+    config:
+      # Enable logging for troubleshooting
+      logLevel: info
+      logFile: /var/log/multus.log
+
+      # Cilium as the default CNI
+      clusterNetwork: "cilium"
+
+      # Default network name
+      defaultNetworks: []
+
+      # Multus readiness indicator
+      readinessindicatorfile: /var/lib/cni/conf/ready
+
+      # Keep existing network on errors
+      forceCNIVersion: false
+
+    # DaemonSet update strategy
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
