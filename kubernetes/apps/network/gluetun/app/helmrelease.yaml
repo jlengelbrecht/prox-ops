@@ -1,0 +1,108 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: gluetun
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: gluetun
+  interval: 1h
+  values:
+    controllers:
+      gluetun:
+        containers:
+          app:
+            image:
+              repository: ghcr.io/qdm12/gluetun
+              tag: v3.39.1
+            env:
+              # VPN Provider Configuration
+              - name: VPN_SERVICE_PROVIDER
+                value: "custom"
+              - name: VPN_TYPE
+                value: "wireguard"
+
+              # HTTP Proxy Configuration (CRITICAL)
+              - name: HTTPPROXY
+                value: "on"
+              - name: HTTPPROXY_LOG
+                value: "on"
+
+              # Firewall Kill Switch (CRITICAL)
+              - name: FIREWALL
+                value: "on"
+              - name: FIREWALL_VPN_INPUT_PORTS
+                value: "8888,8388,8000"
+              - name: FIREWALL_OUTBOUND_SUBNETS
+                value: ""
+
+              # Logging
+              - name: LOG_LEVEL
+                value: "info"
+              - name: TZ
+                value: "America/New_York"
+
+            # Credentials from 1Password via ExternalSecret
+            envFrom:
+              - secretRef:
+                  name: gluetun-surfshark-credentials
+
+            # Security Context (from security-guardian review)
+            securityContext:
+              capabilities:
+                drop: [ALL]
+                add: [NET_ADMIN]  # Required for WireGuard
+              seccompProfile:
+                type: RuntimeDefault
+              readOnlyRootFilesystem: false  # Gluetun needs /tmp
+              runAsNonRoot: false  # Gluetun requires root
+
+            # Resource Limits
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+
+            # Probes
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /v1/openvpn/status
+                    port: &controlPort 8000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /v1/openvpn/status
+                    port: *controlPort
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+
+    # Service Configuration
+    service:
+      app:
+        controller: gluetun
+        ports:
+          http-proxy:
+            port: 8888  # HTTP proxy (primary)
+            protocol: TCP
+          socks-proxy:
+            port: 8388  # SOCKS5 proxy (future)
+            protocol: TCP
+          control:
+            port: *controlPort  # Gluetun control server
+            protocol: TCP
