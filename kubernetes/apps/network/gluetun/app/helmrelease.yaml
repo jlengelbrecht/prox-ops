@@ -19,9 +19,11 @@ spec:
             env:
               # VPN Provider Configuration
               - name: VPN_SERVICE_PROVIDER
-                value: "custom"
+                value: "surfshark"
               - name: VPN_TYPE
                 value: "wireguard"
+              - name: SERVER_COUNTRIES
+                value: "United States"
 
               # HTTP Proxy Configuration (CRITICAL)
               - name: HTTPPROXY
@@ -35,7 +37,17 @@ spec:
               - name: FIREWALL_VPN_INPUT_PORTS
                 value: "8888,8388,8000"
               - name: FIREWALL_OUTBOUND_SUBNETS
+                value: "10.43.0.0/16"
+              - name: FIREWALL_INPUT_PORTS
                 value: ""
+              - name: DISABLE_IPV6
+                value: "yes"
+
+              # DNS Configuration
+              - name: DOT
+                value: "off"
+              - name: DNS_KEEP_NAMESERVER
+                value: "on"
 
               # Logging
               - name: LOG_LEVEL
@@ -57,6 +69,7 @@ spec:
                 type: RuntimeDefault
               readOnlyRootFilesystem: false  # Gluetun needs /tmp
               runAsNonRoot: false  # Gluetun requires root
+              runAsUser: 0  # Explicitly run as root UID
 
             # Resource Limits
             resources:
