@@ -1,0 +1,97 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: unifi-dns
+  namespace: network
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: external-dns
+      version: 1.15.0
+      sourceRef:
+        kind: HelmRepository
+        name: external-dns
+        namespace: network
+      interval: 30m
+  values:
+    fullnameOverride: unifi-dns
+
+    # Log level
+    logLevel: info
+    logFormat: json
+
+    # Provider configuration
+    provider:
+      name: webhook
+      webhook:
+        image:
+          repository: ghcr.io/kashalls/external-dns-unifi-webhook
+          tag: v0.7.0
+        env:
+          - name: UNIFI_USER
+            valueFrom:
+              secretKeyRef:
+                name: unifi-dns-secret
+                key: UNIFI_USER
+          - name: UNIFI_PASS
+            valueFrom:
+              secretKeyRef:
+                name: unifi-dns-secret
+                key: UNIFI_PASS
+          - name: UNIFI_HOST
+            valueFrom:
+              secretKeyRef:
+                name: unifi-dns-secret
+                key: UNIFI_HOST
+          - name: UNIFI_SKIP_TLS_VERIFY
+            value: "false"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http-webhook
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http-webhook
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+
+    # External-DNS configuration
+    interval: 5m
+
+    # Domain filter
+    domainFilters:
+      - homelab0.org
+
+    # Sources to watch
+    sources:
+      - gateway-httproute
+      - service
+
+    # Policy
+    policy: sync
+
+    # Registry
+    registry: txt
+    txtOwnerId: k8s-unifi-dns
+    txtPrefix: k8s.
+
+    # ServiceAccount
+    serviceAccount:
+      create: true
+      name: unifi-dns
+
+    # Resources
+    resources:
+      requests:
+        cpu: 10m
+        memory: 50Mi
+      limits:
+        cpu: 100m
+        memory: 100Mi
