@@ -44,6 +44,19 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # Allow access to Gluetun VPN proxy for outbound traffic routing
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: network
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gluetun
+      ports:
+        - protocol: TCP
+          port: 8888  # HTTP proxy
+        - protocol: TCP
+          port: 8388  # SOCKS5 proxy
     # Allow internet access for integrations and updates
     # Block private IP ranges to prevent SSRF attacks
     - to:

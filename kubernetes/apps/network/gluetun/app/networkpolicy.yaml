@@ -13,8 +13,23 @@ spec:
     - Ingress
     - Egress
 
-  # Ingress: Only allow pods in same namespace to use Gluetun as gateway
+  # Ingress: Allow proxy access from network and iot namespaces
   ingress:
+    # Allow pods from network and iot namespaces to use proxy
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: network
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: iot
+      ports:
+        - protocol: TCP
+          port: 8888  # HTTP proxy
+        - protocol: TCP
+          port: 8388  # SOCKS5 proxy
+
+    # Allow control server only from network namespace (admin access)
     - from:
         - namespaceSelector:
             matchLabels:
@@ -22,10 +37,6 @@ spec:
       ports:
         - protocol: TCP
           port: 8000  # Control server
-        - protocol: TCP
-          port: 8888  # HTTP proxy
-        - protocol: TCP
-          port: 8388  # SOCKS5 proxy
 
   # Egress: Allow VPN connection + Kubernetes DNS + tunneled traffic
   egress:
