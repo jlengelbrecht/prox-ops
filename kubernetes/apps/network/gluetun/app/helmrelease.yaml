@@ -76,6 +76,7 @@ spec:
               readOnlyRootFilesystem: false  # Gluetun needs /tmp
               runAsNonRoot: false  # Gluetun requires root
               runAsUser: 0  # Explicitly run as root UID
+              allowPrivilegeEscalation: false  # Prevent setuid/setgid escalation
 
             # Resource Limits
             resources:
@@ -125,3 +126,13 @@ spec:
           control:
             port: *controlPort  # Gluetun control server
             protocol: TCP
+
+    # Persistence - TUN device for WireGuard
+    persistence:
+      dev-tun:
+        enabled: true
+        type: hostPath
+        hostPath: /dev/net/tun
+        hostPathType: CharDevice
+        globalMounts:
+          - path: /dev/net/tun
