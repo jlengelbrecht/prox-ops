@@ -1,0 +1,117 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: plex
+  namespace: media
+spec:
+  chart:
+    spec:
+      chart: app-template
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: media
+  interval: 1h
+  values:
+    controllers:
+      plex:
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/onedr0p/plex
+              tag: 1.41.3.9314-a0bfb8370
+            env:
+              TZ: America/New_York
+              PLEX_CLAIM: ""
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /identity
+                    port: 32400
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /identity
+                    port: 32400
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 1000m
+                memory: 2Gi
+                nvidia.com/gpu: 1
+              limits:
+                cpu: 6000m
+                memory: 8Gi
+                nvidia.com/gpu: 1
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+    defaultPodOptions:
+      runtimeClassName: nvidia
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: gpu.nvidia.com/model
+                    operator: In
+                    values:
+                      - rtx-a2000
+      annotations:
+        security.homelab/gpu-required: "NVIDIA GPU for hardware transcoding"
+        security.homelab/network: "DMZ VLAN 81 - direct internet access"
+      securityContext:
+        runAsUser: 568
+        runAsGroup: 568
+        fsGroup: 568
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+    persistence:
+      config:
+        enabled: true
+        existingClaim: plex-config
+        globalMounts:
+          - path: /config
+      transcode:
+        enabled: true
+        existingClaim: plex-transcode
+        globalMounts:
+          - path: /transcode
+      media:
+        enabled: true
+        existingClaim: plex-media
+        globalMounts:
+          - path: /data
+            readOnly: true
+    service:
+      app:
+        controller: plex
+        type: LoadBalancer
+        labels:
+          network: dmz
+        ports:
+          http:
+            port: 32400
+            protocol: TCP
