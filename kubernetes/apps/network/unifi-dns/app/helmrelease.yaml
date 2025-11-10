@@ -45,8 +45,12 @@ spec:
               secretKeyRef:
                 name: unifi-dns-secret
                 key: UNIFI_HOST
+          # SECURITY: TLS verification disabled for UDM self-signed cert
+          # UDM cert only includes 127.0.0.1/fe80::1 in SAN, not 10.20.66.1
+          # Risk: Vulnerable to MITM on 10.20.66.0/24 network segment
+          # Acceptable for homelab with network segmentation + physical control
           - name: UNIFI_SKIP_TLS_VERIFY
-            value: "false"
+            value: "true"
         livenessProbe:
           httpGet:
             path: /healthz
