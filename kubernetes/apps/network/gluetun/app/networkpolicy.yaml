@@ -24,7 +24,7 @@ spec:
           port: 8000  # Control server (if enabled)
         # Add application ports here as needed (e.g., qBittorrent, Prowlarr)
 
-  # Egress: Allow VPN connection + Kubernetes DNS
+  # Egress: Allow VPN connection + Kubernetes DNS + tunneled traffic
   egress:
     # Allow DNS queries to CoreDNS
     - to:
@@ -38,23 +38,29 @@ spec:
         - protocol: UDP
           port: 53
 
-    # Allow VPN connection to Surfshark
+    # Allow VPN connection to Surfshark WireGuard endpoints (external IPs)
     - to:
-        - podSelector: {}  # Any pod (VPN endpoint is external)
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8      # Private networks
+              - 172.16.0.0/12
+              - 192.168.0.0/16
       ports:
         - protocol: UDP
           port: 51820  # WireGuard
 
-    # Allow access to Kubernetes API (for health checks if needed)
+    # Allow tunneled traffic to internet after VPN is established
+    # Gluetun's internal firewall (FIREWALL_OUTBOUND_SUBNETS) controls what can egress
     - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: default
-      ports:
-        - protocol: TCP
-          port: 443
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8      # Private networks (except allowed subnets)
+              - 172.16.0.0/12
+              - 192.168.0.0/16
 
-    # Allow access to pod network (for firewall outbound subnets)
+    # Allow access to pod network (for proxy traffic from other pods)
     - to:
         - podSelector: {}
       # Ports controlled by Gluetun firewall configuration
