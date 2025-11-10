@@ -12,6 +12,15 @@ spec:
     # Allow from internet (DMZ VLAN) for external Plex clients
     - fromEntities:
         - world
+    # Allow ingress from envoy-internal Gateway for internal access (plex.homelab0.org)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
     # Allow DNS queries
     - fromEndpoints:
         - matchLabels:
