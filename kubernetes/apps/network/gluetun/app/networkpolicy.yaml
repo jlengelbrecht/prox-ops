@@ -1,0 +1,60 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/networking.k8s.io/networkpolicy_v1.json
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gluetun
+  namespace: network
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gluetun
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # Ingress: Only allow pods in same namespace to use Gluetun as gateway
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: network
+      ports:
+        - protocol: TCP
+          port: 8000  # Control server (if enabled)
+        # Add application ports here as needed (e.g., qBittorrent, Prowlarr)
+
+  # Egress: Allow VPN connection + Kubernetes DNS
+  egress:
+    # Allow DNS queries to CoreDNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+
+    # Allow VPN connection to Surfshark
+    - to:
+        - podSelector: {}  # Any pod (VPN endpoint is external)
+      ports:
+        - protocol: UDP
+          port: 51820  # WireGuard
+
+    # Allow access to Kubernetes API (for health checks if needed)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+      ports:
+        - protocol: TCP
+          port: 443
+
+    # Allow access to pod network (for firewall outbound subnets)
+    - to:
+        - podSelector: {}
+      # Ports controlled by Gluetun firewall configuration
