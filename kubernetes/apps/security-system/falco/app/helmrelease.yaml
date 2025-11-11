@@ -49,7 +49,7 @@ spec:
             Shell spawned in DMZ container
             (user=%user.name container=%container.name shell=%proc.name
             parent=%proc.pname cmdline=%proc.cmdline)
-          priority: CRITICAL
+          priority: critical
           tags: [container, shell, dmz, plex]
 
         - rule: Unexpected Network Connection from Plex
@@ -63,7 +63,7 @@ spec:
             Unexpected connection from Plex
             (user=%user.name container=%container.name
             connection=%fd.name)
-          priority: HIGH
+          priority: warning
           tags: [network, dmz, plex]
 
         - rule: Privilege Escalation Attempt
@@ -75,7 +75,7 @@ spec:
             Privilege escalation attempt
             (user=%user.name container=%container.name
             command=%proc.cmdline)
-          priority: CRITICAL
+          priority: critical
           tags: [privilege_escalation, container]
 
         - rule: Sensitive File Access in Container
@@ -87,7 +87,7 @@ spec:
             Sensitive file accessed
             (user=%user.name container=%container.name
             file=%fd.name)
-          priority: HIGH
+          priority: warning
           tags: [filesystem, container]
 
     # Falco exporter for Prometheus
@@ -114,13 +114,6 @@ spec:
       metrics:
         enabled: true
         interval: 1h
-
-      # Output channels
-      outputs:
-        rate: 1
-        max_burst: 1000
-        stdout_output:
-          enabled: true
 
     # Resource limits
     resources:
