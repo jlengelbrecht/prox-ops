@@ -49,7 +49,7 @@ spec:
             Shell spawned in DMZ container
             (user=%user.name container=%container.name shell=%proc.name
             parent=%proc.pname cmdline=%proc.cmdline)
-          priority: critical
+          priority: CRITICAL
           tags: [container, shell, dmz, plex]
 
         # Commented out until we can define allowed_plex_ips list
@@ -76,7 +76,7 @@ spec:
             Privilege escalation attempt
             (user=%user.name container=%container.name
             command=%proc.cmdline)
-          priority: critical
+          priority: CRITICAL
           tags: [privilege_escalation, container]
 
         - rule: Sensitive File Access in Container
@@ -88,7 +88,7 @@ spec:
             Sensitive file accessed
             (user=%user.name container=%container.name
             file=%fd.name)
-          priority: warning
+          priority: WARNING
           tags: [filesystem, container]
 
     # Falco exporter for Prometheus
