@@ -118,6 +118,13 @@ spec:
         enabled: true
         interval: 1h
 
+      # eBPF buffer configuration for Talos Linux
+      # Reduce buffer size to 1MB (preset 1) for Talos kernel compatibility
+      # Default 8MB (preset 4) causes perf buffer mmap errors
+      engine:
+        ebpf:
+          buf_size_preset: 1
+
     # Resource limits
     resources:
       limits:
