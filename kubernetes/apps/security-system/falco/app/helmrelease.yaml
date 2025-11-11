@@ -29,7 +29,9 @@ spec:
     # eBPF driver configuration
     driver:
       enabled: true
-      kind: modern_ebpf
+      kind: ebpf  # Switching to classic eBPF driver for better Talos compatibility
+      loader:
+        enabled: true  # Required for classic eBPF driver to download/build probe
 
     # DaemonSet configuration
     tolerations:
