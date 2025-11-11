@@ -1,0 +1,131 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: falco
+  namespace: security-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: falco
+      version: 4.12.x
+      sourceRef:
+        kind: HelmRepository
+        name: falcosecurity
+        namespace: security-system
+      interval: 12h
+  install:
+    remediation:
+      retries: 3
+    crds: CreateReplace
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+    crds: CreateReplace
+  values:
+    # eBPF driver configuration
+    driver:
+      enabled: true
+      kind: modern_ebpf
+
+    # DaemonSet configuration
+    tolerations:
+      - effect: NoSchedule
+        operator: Exists
+
+    # Custom rules for homelab
+    customRules:
+      homelab-threats.yaml: |-
+        - rule: Shell Spawned in DMZ Container
+          desc: Detect shell execution in DMZ namespace (Plex)
+          condition: >
+            spawned_process and container and
+            k8s.ns.name = "media" and
+            proc.name in (shell_binaries)
+          output: >
+            Shell spawned in DMZ container
+            (user=%user.name container=%container.name shell=%proc.name
+            parent=%proc.pname cmdline=%proc.cmdline)
+          priority: CRITICAL
+          tags: [container, shell, dmz, plex]
+
+        - rule: Unexpected Network Connection from Plex
+          desc: Detect suspicious outbound connections from Plex
+          condition: >
+            outbound and container and
+            k8s.ns.name = "media" and
+            k8s.pod.label.app = "plex" and
+            not fd.sip in (allowed_plex_ips)
+          output: >
+            Unexpected connection from Plex
+            (user=%user.name container=%container.name
+            connection=%fd.name)
+          priority: HIGH
+          tags: [network, dmz, plex]
+
+        - rule: Privilege Escalation Attempt
+          desc: Detect privilege escalation in any container
+          condition: >
+            spawned_process and container and
+            proc.name in (su, sudo, setuid, capsh)
+          output: >
+            Privilege escalation attempt
+            (user=%user.name container=%container.name
+            command=%proc.cmdline)
+          priority: CRITICAL
+          tags: [privilege_escalation, container]
+
+        - rule: Sensitive File Access in Container
+          desc: Detect access to sensitive files
+          condition: >
+            open_read and container and
+            fd.name in (/etc/shadow, /etc/sudoers, /root/.ssh/*)
+          output: >
+            Sensitive file accessed
+            (user=%user.name container=%container.name
+            file=%fd.name)
+          priority: HIGH
+          tags: [filesystem, container]
+
+    # Falco exporter for Prometheus
+    falcosidekick:
+      enabled: true
+      webui:
+        enabled: false
+      config:
+        prometheus:
+          extralabels: "cluster:homelab"
+
+    # ServiceMonitor for Prometheus scraping
+    serviceMonitor:
+      enabled: true
+
+    # Output configuration
+    falco:
+      json_output: true
+      json_include_output_property: true
+      log_stderr: true
+      log_syslog: false
+
+      # Metrics
+      metrics:
+        enabled: true
+        interval: 1h
+
+      # Output channels
+      outputs:
+        rate: 1
+        max_burst: 1000
+        stdout_output:
+          enabled: true
+
+    # Resource limits
+    resources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 256Mi
