@@ -1,0 +1,164 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "description": "Flux Components",
+      "groupName": "Flux",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": [
+        "^ghcr\\.io\\/controlplaneio-fluxcd\\/.*",
+        "flux-operator",
+        "flux-instance"
+      ],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} components"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Cilium CNI",
+      "groupName": "Cilium",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["cilium"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} CNI"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Rook-Ceph Storage",
+      "groupName": "Rook-Ceph",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["rook", "ceph"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} storage"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Prometheus Stack (Prometheus + Grafana + AlertManager)",
+      "groupName": "kube-prometheus-stack",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": [
+        "kube-prometheus-stack",
+        "prometheus",
+        "grafana",
+        "alertmanager"
+      ],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} monitoring"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Loki Stack (Loki + Promtail)",
+      "groupName": "Loki",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["loki", "promtail"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} logging"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "External Secrets Management",
+      "groupName": "External Secrets",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": [
+        "external-secrets",
+        "1password-connect",
+        "onepassword"
+      ],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} management"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Envoy Gateway",
+      "groupName": "Envoy Gateway",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": [
+        "envoy-gateway",
+        "envoyproxy"
+      ],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} API"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "External DNS Components",
+      "groupName": "External DNS",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": [
+        "external-dns",
+        "cloudflare-dns",
+        "unifi-dns"
+      ],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} components"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "NVIDIA GPU Support",
+      "groupName": "NVIDIA",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": [
+        "nvidia-device-plugin",
+        "nvidia",
+        "gpu-operator"
+      ],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} GPU support"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "System Utilities",
+      "groupName": "System Utilities",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackageNames": [
+        "metrics-server",
+        "reloader",
+        "spegel"
+      ],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}}"
+      },
+      "separateMinorPatch": false
+    },
+    {
+      "description": "Certificate Management",
+      "groupName": "cert-manager",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["cert-manager"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} certificates"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Multi-CNI Support",
+      "groupName": "Multus",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["multus", "cni-plugins"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} CNI"
+      },
+      "separateMinorPatch": true
+    },
+    {
+      "description": "bjw-s App Template",
+      "groupName": "bjw-s-app-template",
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["app-template"],
+      "matchRepositories": ["ghcr.io/bjw-s-labs/helm"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} charts"
+      },
+      "separateMinorPatch": false
+    }
+  ]
+}

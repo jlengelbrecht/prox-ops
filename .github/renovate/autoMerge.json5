@@ -1,0 +1,77 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "packageRules": [
+    {
+      "description": "Auto-merge container digests for vetted official images",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "branch",
+      "ignoreTests": true,
+      "matchUpdateTypes": ["digest"],
+      "matchPackageNames": [
+        "ghcr.io/home-assistant/home-assistant",
+        "ghcr.io/controlplaneio-fluxcd/flux-operator",
+        "ghcr.io/controlplaneio-fluxcd/flux-instance",
+        "docker.io/cloudflare/cloudflared",
+        "ghcr.io/coredns/coredns",
+        "mirror.gcr.io/coredns/coredns"
+      ]
+    },
+    {
+      "description": "Auto-merge container digests for trusted maintainers",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "branch",
+      "ignoreTests": true,
+      "matchUpdateTypes": ["digest"],
+      "matchPackageNames": [
+        "ghcr.io/onedr0p/plex",
+        "ghcr.io/qdm12/gluetun",
+        "ghcr.io/spegel-org/spegel",
+        "ghcr.io/stakater/reloader",
+        "ghcr.io/k8snetworkplumbingwg/multus-cni",
+        "ghcr.io/kashalls/external-dns-unifi-webhook"
+      ]
+    },
+    {
+      "description": "Auto-merge patch updates for stable system charts",
+      "matchDatasources": ["helm"],
+      "automerge": true,
+      "automergeType": "branch",
+      "matchUpdateTypes": ["patch"],
+      "matchPackageNames": [
+        "cert-manager",
+        "external-secrets",
+        "metrics-server",
+        "reloader",
+        "spegel"
+      ]
+    },
+    {
+      "description": "Auto-merge GitHub Actions digest updates",
+      "matchDatasources": ["github-actions"],
+      "automerge": true,
+      "automergeType": "branch",
+      "matchUpdateTypes": ["digest"],
+      "ignoreTests": true
+    },
+    {
+      "description": "Require manual review for critical infrastructure",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchPackagePatterns": [
+        "cilium",
+        "rook",
+        "ceph",
+        "kube-prometheus-stack",
+        "envoy-gateway",
+        "nvidia"
+      ]
+    },
+    {
+      "description": "Require manual review for major and minor updates",
+      "matchUpdateTypes": ["major", "minor"],
+      "automerge": false
+    }
+  ]
+}
