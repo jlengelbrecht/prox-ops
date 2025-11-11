@@ -52,19 +52,20 @@ spec:
           priority: critical
           tags: [container, shell, dmz, plex]
 
-        - rule: Unexpected Network Connection from Plex
-          desc: Detect suspicious outbound connections from Plex
-          condition: >
-            outbound and container and
-            k8s.ns.name = "media" and
-            k8s.pod.label.app = "plex" and
-            not fd.sip in (allowed_plex_ips)
-          output: >
-            Unexpected connection from Plex
-            (user=%user.name container=%container.name
-            connection=%fd.name)
-          priority: warning
-          tags: [network, dmz, plex]
+        # Commented out until we can define allowed_plex_ips list
+        # - rule: Unexpected Network Connection from Plex
+        #   desc: Detect suspicious outbound connections from Plex
+        #   condition: >
+        #     outbound and container and
+        #     k8s.ns.name = "media" and
+        #     k8s.pod.label.app = "plex" and
+        #     not fd.sip in (allowed_plex_ips)
+        #   output: >
+        #     Unexpected connection from Plex
+        #     (user=%user.name container=%container.name
+        #     connection=%fd.name)
+        #   priority: warning
+        #   tags: [network, dmz, plex]
 
         - rule: Privilege Escalation Attempt
           desc: Detect privilege escalation in any container
