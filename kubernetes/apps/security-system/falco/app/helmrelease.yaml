@@ -32,6 +32,8 @@ spec:
       kind: ebpf  # Switching to classic eBPF driver for better Talos compatibility
       loader:
         enabled: true  # Required for classic eBPF driver to download/build probe
+      ebpf:
+        bufSizePreset: 1  # 1MB buffer for Talos kernel compatibility (default 4 = 8MB causes mmap errors)
 
     # DaemonSet configuration
     tolerations:
@@ -117,13 +119,6 @@ spec:
       metrics:
         enabled: true
         interval: 1h
-
-      # eBPF buffer configuration for Talos Linux
-      # Reduce buffer size to 1MB (preset 1) for Talos kernel compatibility
-      # Default 8MB (preset 4) causes perf buffer mmap errors
-      engine:
-        ebpf:
-          buf_size_preset: 1
 
     # Resource limits
     resources:
