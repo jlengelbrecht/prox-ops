@@ -1,0 +1,60 @@
+---
+name: Renovate
+
+on:
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: Dry Run
+        default: false
+        required: false
+        type: boolean
+      logLevel:
+        description: Log Level
+        default: debug
+        required: false
+        type: choice
+        options:
+          - info
+          - debug
+          - trace
+  schedule:
+    - cron: "0 * * * *"
+  push:
+    branches: ["main"]
+    paths:
+      - .github/renovate.json5
+      - .github/renovate/**.json5
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  renovate:
+    name: Renovate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Token
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: "${{ secrets.BOT_APP_ID }}"
+          private-key: "${{ secrets.BOT_APP_PRIVATE_KEY }}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: "${{ steps.app-token.outputs.token }}"
+
+      - name: Override default config from dispatch variables
+        shell: bash
+        run: |
+          echo "RENOVATE_DRY_RUN=${{ inputs.dryRun || 'false' }}" >> "${GITHUB_ENV}"
+          echo "LOG_LEVEL=${{ inputs.logLevel || 'debug' }}" >> "${GITHUB_ENV}"
+
+      - name: Renovate
+        uses: renovatebot/github-action@v40.3.13
+        with:
+          configurationFile: .github/renovate.json5
+          token: "${{ steps.app-token.outputs.token }}"
