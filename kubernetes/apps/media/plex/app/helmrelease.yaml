@@ -87,6 +87,8 @@ spec:
         runAsNonRoot: true
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups:
+          - 1000  # ubuntu group for NFS media access
         seccompProfile:
           type: RuntimeDefault
     persistence:
@@ -105,7 +107,6 @@ spec:
         existingClaim: plex-media
         globalMounts:
           - path: /data
-            readOnly: true
     service:
       app:
         controller: plex
