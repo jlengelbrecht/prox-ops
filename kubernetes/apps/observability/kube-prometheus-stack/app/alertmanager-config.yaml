@@ -1,7 +1,19 @@
 ---
 # AlertManager Configuration Secret
 # This configures notification routing and receivers
-# User needs to provide Slack webhook URL and channel details
+# User needs to provide Discord webhook URLs
+#
+# How to create Discord webhooks:
+# 1. Go to your Discord server
+# 2. Right-click a channel → Edit Channel → Integrations → Webhooks
+# 3. Click "New Webhook" or "Create Webhook"
+# 4. Copy the webhook URL
+# 5. Replace DISCORD_WEBHOOK_URL placeholders below with your webhook URLs
+#
+# You can use:
+# - One webhook for all alerts (simple)
+# - Different webhooks for different channels (organized)
+# - Multiple webhooks per receiver (redundancy)
 apiVersion: v1
 kind: Secret
 metadata:
@@ -12,8 +24,6 @@ stringData:
   alertmanager.yaml: |
     global:
       resolve_timeout: 5m
-      # PLACEHOLDER: Add your Slack API URL here if using Slack
-      # slack_api_url: 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
 
     # Inhibition rules - prevent alert spam
     inhibit_rules:
@@ -157,87 +167,71 @@ stringData:
 
       # Critical alerts receiver
       - name: 'critical-alerts'
-        # PLACEHOLDER: Configure Slack notifications
-        # Uncomment and configure after providing Slack webhook:
-        # slack_configs:
-        #   - channel: '#alerts-critical'
-        #     title: 'CRITICAL: {{ .GroupLabels.alertname }}'
-        #     text: |
-        #       {{ range .Alerts }}
-        #       *Alert:* {{ .Labels.alertname }}
-        #       *Severity:* {{ .Labels.severity }}
-        #       *Namespace:* {{ .Labels.namespace }}
-        #       *Description:* {{ .Annotations.description }}
-        #       *Details:* {{ .Annotations.summary }}
-        #       {{ end }}
+        # PLACEHOLDER: Configure Discord webhook
+        # Uncomment and replace DISCORD_WEBHOOK_URL with your webhook:
+        # webhook_configs:
+        #   - url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN'
         #     send_resolved: true
-        #     color: 'danger'
+        #     http_config:
+        #       follow_redirects: true
+        #     max_alerts: 10
 
       # High severity alerts
       - name: 'high-alerts'
-        # PLACEHOLDER: Configure Slack notifications
-        # slack_configs:
-        #   - channel: '#alerts-high'
-        #     title: 'HIGH: {{ .GroupLabels.alertname }}'
+        # PLACEHOLDER: Configure Discord webhook
+        # webhook_configs:
+        #   - url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN'
         #     send_resolved: true
-        #     color: 'warning'
 
-      # Security alerts
+      # Security alerts (Tetragon)
       - name: 'security-alerts'
-        # PLACEHOLDER: Configure Slack notifications for security team
-        # slack_configs:
-        #   - channel: '#security-alerts'
-        #     title: 'SECURITY: {{ .GroupLabels.alertname }}'
+        # PLACEHOLDER: Configure Discord webhook
+        # Recommended: Use dedicated #security channel
+        # webhook_configs:
+        #   - url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN'
         #     send_resolved: true
-        #     color: 'danger'
 
       # GPU alerts
       - name: 'gpu-alerts'
-        # PLACEHOLDER: Configure notifications
-        # slack_configs:
-        #   - channel: '#gpu-alerts'
-        #     title: 'GPU: {{ .GroupLabels.alertname }}'
+        # PLACEHOLDER: Configure Discord webhook
+        # webhook_configs:
+        #   - url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN'
         #     send_resolved: true
 
-      # Storage alerts
+      # Storage alerts (Ceph)
       - name: 'storage-alerts'
-        # PLACEHOLDER: Configure notifications
-        # slack_configs:
-        #   - channel: '#storage-alerts'
-        #     title: 'STORAGE: {{ .GroupLabels.alertname }}'
+        # PLACEHOLDER: Configure Discord webhook
+        # webhook_configs:
+        #   - url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN'
         #     send_resolved: true
 
       # DMZ (Plex) alerts
       - name: 'dmz-alerts'
-        # PLACEHOLDER: Configure notifications
-        # slack_configs:
-        #   - channel: '#dmz-alerts'
-        #     title: 'DMZ: {{ .GroupLabels.alertname }}'
+        # PLACEHOLDER: Configure Discord webhook
+        # webhook_configs:
+        #   - url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN'
         #     send_resolved: true
 
       # IoT (Home Assistant) alerts
       - name: 'iot-alerts'
-        # PLACEHOLDER: Configure notifications
-        # slack_configs:
-        #   - channel: '#iot-alerts'
-        #     title: 'IoT: {{ .GroupLabels.alertname }}'
+        # PLACEHOLDER: Configure Discord webhook
+        # webhook_configs:
+        #   - url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN'
         #     send_resolved: true
 
       # Warning alerts
       - name: 'warning-alerts'
-        # PLACEHOLDER: Configure notifications
-        # slack_configs:
-        #   - channel: '#alerts-warning'
-        #     title: 'WARNING: {{ .GroupLabels.alertname }}'
+        # PLACEHOLDER: Configure Discord webhook
+        # webhook_configs:
+        #   - url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN'
         #     send_resolved: true
-        #     color: 'warning'
 
-      # Info alerts
+      # Info alerts (optional - low priority)
       - name: 'info-alerts'
-        # PLACEHOLDER: Configure notifications (optional - may want to skip)
-        # slack_configs:
-        #   - channel: '#alerts-info'
-        #     title: 'INFO: {{ .GroupLabels.alertname }}'
+        # PLACEHOLDER: Configure Discord webhook
+        # Note: You may want to skip info alerts or use a separate low-priority channel
+        # webhook_configs:
+        #   - url: 'https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN'
         #     send_resolved: false
 
     # Templates for notifications (optional - for future customization)
