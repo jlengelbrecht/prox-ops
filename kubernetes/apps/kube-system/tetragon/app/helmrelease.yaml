@@ -47,14 +47,21 @@ spec:
           cpu: 250m
           memory: 400Mi
 
-      # Export settings
-      exportFilename: /var/run/cilium/tetragon/tetragon.log
+      # Export settings - JSON logs to stdout for Promtail/Loki
+      exportFilename: stdout
       exportRateLimit: 1000  # events/second
+
+      # Enable JSON export for structured logging
+      exportAllowList: "{}"
+      exportDenyList: "{}"
 
       # gRPC server for tetra CLI
       grpc:
         enabled: true
         address: "localhost:54321"
+
+      # Enable field filters for better log structure
+      enableK8sAPI: true
 
     # Tetragon Operator configuration
     tetragonOperator:

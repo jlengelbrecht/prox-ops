@@ -2,7 +2,13 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
+  # Cluster-wide policies
+  - ./privilege-escalation.yaml
+  # Media namespace (DMZ - Plex)
   - ./shell-detection-dmz.yaml
   - ./network-monitoring-dmz.yaml
-  - ./privilege-escalation.yaml
   - ./sensitive-file-access-dmz.yaml
+  # IoT namespace (Home Assistant)
+  - ./iot-shell-detection.yaml
+  - ./iot-network-monitoring.yaml
+  - ./iot-sensitive-file-access.yaml
