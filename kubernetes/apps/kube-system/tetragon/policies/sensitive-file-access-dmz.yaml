@@ -28,9 +28,6 @@ spec:
         - "/home/*/.ssh/"      # User SSH keys
         - "/etc/kubernetes/"   # K8s configs
         - "/var/run/secrets/"  # K8s service account tokens
-      matchNamespaces:
-      - namespace: "media"
-        operator: "In"
       matchActions:
       - action: Post  # LOG: Record sensitive file access
 ---
@@ -63,8 +60,5 @@ spec:
         values:
         - "1"  # O_WRONLY
         - "2"  # O_RDWR
-      matchNamespaces:
-      - namespace: "media"
-        operator: "In"
       matchActions:
       - action: Post  # LOG: Record config modifications
