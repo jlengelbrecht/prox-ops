@@ -239,6 +239,179 @@ spec:
           labels:
             app: alertmanager
 
+      # AlertManager routing configuration
+      config:
+        global:
+          resolve_timeout: 5m
+
+        # Inhibition rules - prevent alert spam
+        inhibit_rules:
+          - source_matchers:
+              - severity = "critical"
+            target_matchers:
+              - severity = "warning"
+            equal:
+              - namespace
+              - alertname
+          - source_matchers:
+              - severity =~ "warning|critical"
+            target_matchers:
+              - severity = "info"
+            equal:
+              - namespace
+              - alertname
+          - source_matchers:
+              - alertname = "NodeDown"
+            target_matchers:
+              - alertname =~ "Node.*"
+            equal:
+              - node
+
+        # Routing tree
+        route:
+          receiver: 'default'
+          group_by:
+            - alertname
+            - namespace
+            - severity
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+
+          routes:
+            # Critical alerts - immediate notification
+            - matchers:
+                - severity = "critical"
+              receiver: 'critical-alerts'
+              group_wait: 10s
+              group_interval: 2m
+              repeat_interval: 1h
+              continue: false
+
+            # High severity alerts
+            - matchers:
+                - severity = "high"
+              receiver: 'high-alerts'
+              group_wait: 30s
+              group_interval: 5m
+              repeat_interval: 2h
+              continue: false
+
+            # Security alerts (Tetragon)
+            - matchers:
+                - alertname =~ ".*Tetragon.*|.*Security.*"
+              receiver: 'security-alerts'
+              group_wait: 30s
+              group_interval: 5m
+              repeat_interval: 2h
+              continue: false
+
+            # GPU alerts
+            - matchers:
+                - alertname =~ ".*GPU.*"
+              receiver: 'general-alerts'
+              group_wait: 1m
+              group_interval: 10m
+              repeat_interval: 4h
+              continue: false
+
+            # Storage alerts (Ceph)
+            - matchers:
+                - alertname =~ ".*Ceph.*|.*Storage.*"
+              receiver: 'general-alerts'
+              group_wait: 1m
+              group_interval: 10m
+              repeat_interval: 4h
+              continue: false
+
+            # DMZ namespace (Plex)
+            - matchers:
+                - namespace = "media"
+              receiver: 'general-alerts'
+              group_wait: 1m
+              group_interval: 10m
+              repeat_interval: 4h
+              continue: false
+
+            # IoT namespace (Home Assistant)
+            - matchers:
+                - namespace = "iot"
+              receiver: 'general-alerts'
+              group_wait: 1m
+              group_interval: 10m
+              repeat_interval: 4h
+              continue: false
+
+            # Warning alerts
+            - matchers:
+                - severity = "warning"
+              receiver: 'general-alerts'
+              group_wait: 2m
+              group_interval: 15m
+              repeat_interval: 6h
+              continue: false
+
+            # Info alerts (low priority)
+            - matchers:
+                - severity = "info"
+              receiver: 'info-alerts'
+              group_wait: 5m
+              group_interval: 30m
+              repeat_interval: 12h
+              continue: false
+
+            # Watchdog alert (required)
+            - matchers:
+                - alertname = "Watchdog"
+              receiver: 'null'
+
+        # Receivers configuration with alertmanager-discord webhook adapter
+        # All receivers point to the internal service which handles Discord formatting
+        receivers:
+          - name: 'null'
+            # No notifications for null receiver
+
+          - name: 'default'
+            # No notifications for default receiver
+
+          - name: 'critical-alerts'
+            webhook_configs:
+              - url: 'http://alertmanager-discord.observability.svc.cluster.local:9094/webhook'
+                send_resolved: true
+                http_config:
+                  follow_redirects: true
+                max_alerts: 10
+
+          - name: 'security-alerts'
+            webhook_configs:
+              - url: 'http://alertmanager-discord.observability.svc.cluster.local:9094/webhook'
+                send_resolved: true
+                http_config:
+                  follow_redirects: true
+                max_alerts: 10
+
+          - name: 'general-alerts'
+            webhook_configs:
+              - url: 'http://alertmanager-discord.observability.svc.cluster.local:9094/webhook'
+                send_resolved: true
+                http_config:
+                  follow_redirects: true
+                max_alerts: 10
+
+          - name: 'high-alerts'
+            webhook_configs:
+              - url: 'http://alertmanager-discord.observability.svc.cluster.local:9094/webhook'
+                send_resolved: true
+                max_alerts: 10
+
+          - name: 'info-alerts'
+            webhook_configs:
+              - url: 'http://alertmanager-discord.observability.svc.cluster.local:9094/webhook'
+                send_resolved: false
+                max_alerts: 10
+
+        templates: []
+
     # Prometheus Operator configuration
     prometheusOperator:
       enabled: true
