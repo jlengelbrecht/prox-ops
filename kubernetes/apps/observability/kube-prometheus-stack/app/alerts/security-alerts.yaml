@@ -37,7 +37,6 @@ data:
                 Pod: {{ $labels.pod }}
                 Binary: {{ $labels.binary }}
                 Count: {{ $value }}
-              runbook_url: "https://example.com/runbooks/tetragon-dmz-shell"
 
           # CRITICAL: Shell execution in IoT namespace (Home Assistant)
           - alert: TetragonIoTShellExecution
@@ -61,7 +60,6 @@ data:
                 Pod: {{ $labels.pod }}
                 Binary: {{ $labels.binary }}
                 Count: {{ $value }}
-              runbook_url: "https://example.com/runbooks/tetragon-iot-shell"
 
           # CRITICAL: Privilege escalation attempts
           - alert: TetragonPrivilegeEscalation
@@ -82,7 +80,6 @@ data:
                 Pod: {{ $labels.pod }}
                 Binary: {{ $labels.binary }}
                 Count: {{ $value }}
-              runbook_url: "https://example.com/runbooks/privilege-escalation"
 
           # CRITICAL: Enforcement actions (SIGKILL)
           - alert: TetragonEnforcementAction
@@ -101,7 +98,6 @@ data:
                 Namespace: {{ $labels.namespace }}
                 Policy: {{ $labels.policy_name }}
                 Count: {{ $value }}
-              runbook_url: "https://example.com/runbooks/tetragon-enforcement"
 
           # HIGH: Unusual file access in sensitive directories
           - alert: TetragonSensitiveFileAccess
@@ -123,7 +119,6 @@ data:
                 Pod: {{ $labels.pod }}
                 Path pattern: {{ $labels.path }}
                 Count: {{ $value }}
-              runbook_url: "https://example.com/runbooks/sensitive-file-access"
 
           # HIGH: Network connection anomalies
           - alert: TetragonAnomalousConnections
@@ -143,7 +138,6 @@ data:
                 Namespace: {{ $labels.namespace }}
                 Pod: {{ $labels.pod }}
                 Rate: {{ $value | humanize }}/sec
-              runbook_url: "https://example.com/runbooks/network-anomaly"
 
           # WARNING: Configuration file modifications
           - alert: TetragonConfigModification
@@ -163,7 +157,6 @@ data:
                 Namespace: {{ $labels.namespace }}
                 Pod: {{ $labels.pod }}
                 Count: {{ $value }}
-              runbook_url: "https://example.com/runbooks/config-modification"
 
           # WARNING: Tetragon event rate spike
           - alert: TetragonEventRateHigh
@@ -180,7 +173,6 @@ data:
                 This may indicate unusual system activity or misconfiguration.
                 Namespace: {{ $labels.namespace }}
                 Rate: {{ $value | humanize }}/sec
-              runbook_url: "https://example.com/runbooks/event-rate-high"
 
           # INFO: Tetragon metrics collection working
           - alert: TetragonMetricsAvailable
@@ -213,7 +205,6 @@ data:
                 Tetragon monitoring agent is not responding.
                 Runtime security monitoring is unavailable.
                 Instance: {{ $labels.instance }}
-              runbook_url: "https://example.com/runbooks/tetragon-down"
 
           # WARNING: Tetragon policy errors
           - alert: TetragonPolicyErrors
@@ -231,4 +222,3 @@ data:
                 Tetragon encountered errors applying security policies.
                 Policy: {{ $labels.policy_name }}
                 Count: {{ $value }}
-              runbook_url: "https://example.com/runbooks/policy-errors"
