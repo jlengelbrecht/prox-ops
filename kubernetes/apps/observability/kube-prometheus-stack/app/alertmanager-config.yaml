@@ -1,0 +1,244 @@
+---
+# AlertManager Configuration Secret
+# This configures notification routing and receivers
+# User needs to provide Slack webhook URL and channel details
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-kube-prometheus-stack-alertmanager
+  namespace: observability
+type: Opaque
+stringData:
+  alertmanager.yaml: |
+    global:
+      resolve_timeout: 5m
+      # PLACEHOLDER: Add your Slack API URL here if using Slack
+      # slack_api_url: 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
+
+    # Inhibition rules - prevent alert spam
+    inhibit_rules:
+      # Inhibit warning alerts if critical alert is firing for same resource
+      - source_matchers:
+          - severity = "critical"
+        target_matchers:
+          - severity = "warning"
+        equal:
+          - namespace
+          - alertname
+
+      # Inhibit info alerts if warning or critical is firing
+      - source_matchers:
+          - severity =~ "warning|critical"
+        target_matchers:
+          - severity = "info"
+        equal:
+          - namespace
+          - alertname
+
+      # Inhibit node alerts if node is known to be down
+      - source_matchers:
+          - alertname = "NodeDown"
+        target_matchers:
+          - alertname =~ "Node.*"
+        equal:
+          - node
+
+    # Routing tree
+    route:
+      # Default receiver for all alerts
+      receiver: 'default'
+
+      # Group alerts by these labels to reduce notification noise
+      group_by:
+        - alertname
+        - namespace
+        - severity
+
+      # Wait time before sending initial notification
+      group_wait: 30s
+
+      # Wait time before sending notifications about new alerts in existing group
+      group_interval: 5m
+
+      # Wait time before re-sending notification if alert is still firing
+      repeat_interval: 4h
+
+      # Child routes for specific alert types
+      routes:
+        # Critical alerts - immediate notification, short grouping
+        - matchers:
+            - severity = "critical"
+          receiver: 'critical-alerts'
+          group_wait: 10s
+          group_interval: 2m
+          repeat_interval: 1h
+          continue: false
+
+        # High severity alerts
+        - matchers:
+            - severity = "high"
+          receiver: 'high-alerts'
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 2h
+          continue: false
+
+        # Security alerts (Tetragon)
+        - matchers:
+            - alertname =~ ".*Tetragon.*|.*Security.*"
+          receiver: 'security-alerts'
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 2h
+          continue: false
+
+        # GPU alerts
+        - matchers:
+            - alertname =~ ".*GPU.*"
+          receiver: 'gpu-alerts'
+          group_wait: 1m
+          group_interval: 10m
+          repeat_interval: 4h
+          continue: false
+
+        # Storage alerts (Ceph)
+        - matchers:
+            - alertname =~ ".*Ceph.*|.*Storage.*"
+          receiver: 'storage-alerts'
+          group_wait: 1m
+          group_interval: 10m
+          repeat_interval: 4h
+          continue: false
+
+        # DMZ namespace (Plex) alerts
+        - matchers:
+            - namespace = "media"
+          receiver: 'dmz-alerts'
+          group_wait: 1m
+          group_interval: 10m
+          repeat_interval: 4h
+          continue: false
+
+        # IoT namespace (Home Assistant) alerts
+        - matchers:
+            - namespace = "iot"
+          receiver: 'iot-alerts'
+          group_wait: 1m
+          group_interval: 10m
+          repeat_interval: 4h
+          continue: false
+
+        # Warning alerts
+        - matchers:
+            - severity = "warning"
+          receiver: 'warning-alerts'
+          group_wait: 2m
+          group_interval: 15m
+          repeat_interval: 6h
+          continue: false
+
+        # Info alerts (low priority)
+        - matchers:
+            - severity = "info"
+          receiver: 'info-alerts'
+          group_wait: 5m
+          group_interval: 30m
+          repeat_interval: 12h
+          continue: false
+
+    # Receivers configuration
+    receivers:
+      # Default receiver - logs only (no notifications)
+      - name: 'default'
+        # PLACEHOLDER: Add webhook_configs here if you want default notifications
+        # Example:
+        # webhook_configs:
+        #   - url: 'http://localhost:9093'
+
+      # Critical alerts receiver
+      - name: 'critical-alerts'
+        # PLACEHOLDER: Configure Slack notifications
+        # Uncomment and configure after providing Slack webhook:
+        # slack_configs:
+        #   - channel: '#alerts-critical'
+        #     title: 'CRITICAL: {{ .GroupLabels.alertname }}'
+        #     text: |
+        #       {{ range .Alerts }}
+        #       *Alert:* {{ .Labels.alertname }}
+        #       *Severity:* {{ .Labels.severity }}
+        #       *Namespace:* {{ .Labels.namespace }}
+        #       *Description:* {{ .Annotations.description }}
+        #       *Details:* {{ .Annotations.summary }}
+        #       {{ end }}
+        #     send_resolved: true
+        #     color: 'danger'
+
+      # High severity alerts
+      - name: 'high-alerts'
+        # PLACEHOLDER: Configure Slack notifications
+        # slack_configs:
+        #   - channel: '#alerts-high'
+        #     title: 'HIGH: {{ .GroupLabels.alertname }}'
+        #     send_resolved: true
+        #     color: 'warning'
+
+      # Security alerts
+      - name: 'security-alerts'
+        # PLACEHOLDER: Configure Slack notifications for security team
+        # slack_configs:
+        #   - channel: '#security-alerts'
+        #     title: 'SECURITY: {{ .GroupLabels.alertname }}'
+        #     send_resolved: true
+        #     color: 'danger'
+
+      # GPU alerts
+      - name: 'gpu-alerts'
+        # PLACEHOLDER: Configure notifications
+        # slack_configs:
+        #   - channel: '#gpu-alerts'
+        #     title: 'GPU: {{ .GroupLabels.alertname }}'
+        #     send_resolved: true
+
+      # Storage alerts
+      - name: 'storage-alerts'
+        # PLACEHOLDER: Configure notifications
+        # slack_configs:
+        #   - channel: '#storage-alerts'
+        #     title: 'STORAGE: {{ .GroupLabels.alertname }}'
+        #     send_resolved: true
+
+      # DMZ (Plex) alerts
+      - name: 'dmz-alerts'
+        # PLACEHOLDER: Configure notifications
+        # slack_configs:
+        #   - channel: '#dmz-alerts'
+        #     title: 'DMZ: {{ .GroupLabels.alertname }}'
+        #     send_resolved: true
+
+      # IoT (Home Assistant) alerts
+      - name: 'iot-alerts'
+        # PLACEHOLDER: Configure notifications
+        # slack_configs:
+        #   - channel: '#iot-alerts'
+        #     title: 'IoT: {{ .GroupLabels.alertname }}'
+        #     send_resolved: true
+
+      # Warning alerts
+      - name: 'warning-alerts'
+        # PLACEHOLDER: Configure notifications
+        # slack_configs:
+        #   - channel: '#alerts-warning'
+        #     title: 'WARNING: {{ .GroupLabels.alertname }}'
+        #     send_resolved: true
+        #     color: 'warning'
+
+      # Info alerts
+      - name: 'info-alerts'
+        # PLACEHOLDER: Configure notifications (optional - may want to skip)
+        # slack_configs:
+        #   - channel: '#alerts-info'
+        #     title: 'INFO: {{ .GroupLabels.alertname }}'
+        #     send_resolved: false
+
+    # Templates for notifications (optional - for future customization)
+    templates: []

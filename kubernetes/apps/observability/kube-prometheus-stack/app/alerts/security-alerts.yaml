@@ -1,0 +1,234 @@
+---
+# Tetragon Security Alert Rules
+# Runtime security monitoring for DMZ (Plex) and IoT (Home Assistant) namespaces
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tetragon-security-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+data:
+  tetragon-security-alerts.yaml: |
+    groups:
+      - name: tetragon-security
+        interval: 30s
+        rules:
+          # CRITICAL: Shell execution in DMZ namespace (Plex)
+          - alert: TetragonDMZShellExecution
+            expr: |
+              increase(tetragon_events_total{
+                namespace="media",
+                type="process_exec",
+                binary=~".*/sh|.*/bash|.*/zsh"
+              }[5m]) > 0
+            for: 1m
+            labels:
+              severity: critical
+              namespace: media
+              category: security
+            annotations:
+              summary: "Shell execution detected in DMZ namespace"
+              description: |
+                Shell execution attempt detected in media namespace (Plex DMZ).
+                This may indicate a security breach or unauthorized access.
+                Namespace: {{ $labels.namespace }}
+                Pod: {{ $labels.pod }}
+                Binary: {{ $labels.binary }}
+                Count: {{ $value }}
+              runbook_url: "https://example.com/runbooks/tetragon-dmz-shell"
+
+          # CRITICAL: Shell execution in IoT namespace (Home Assistant)
+          - alert: TetragonIoTShellExecution
+            expr: |
+              increase(tetragon_events_total{
+                namespace="iot",
+                type="process_exec",
+                binary=~".*/sh|.*/bash|.*/zsh"
+              }[5m]) > 0
+            for: 1m
+            labels:
+              severity: critical
+              namespace: iot
+              category: security
+            annotations:
+              summary: "Shell execution detected in IoT namespace"
+              description: |
+                Shell execution attempt detected in IoT namespace (Home Assistant).
+                This may indicate a security breach or unauthorized access.
+                Namespace: {{ $labels.namespace }}
+                Pod: {{ $labels.pod }}
+                Binary: {{ $labels.binary }}
+                Count: {{ $value }}
+              runbook_url: "https://example.com/runbooks/tetragon-iot-shell"
+
+          # CRITICAL: Privilege escalation attempts
+          - alert: TetragonPrivilegeEscalation
+            expr: |
+              increase(tetragon_events_total{
+                type="process_exec",
+                binary=~".*/sudo|.*/su"
+              }[5m]) > 0
+            for: 1m
+            labels:
+              severity: critical
+              category: security
+            annotations:
+              summary: "Privilege escalation attempt detected"
+              description: |
+                Attempted privilege escalation detected via sudo/su.
+                Namespace: {{ $labels.namespace }}
+                Pod: {{ $labels.pod }}
+                Binary: {{ $labels.binary }}
+                Count: {{ $value }}
+              runbook_url: "https://example.com/runbooks/privilege-escalation"
+
+          # CRITICAL: Enforcement actions (SIGKILL)
+          - alert: TetragonEnforcementAction
+            expr: |
+              increase(tetragon_policy_events_total{
+                action="SIGKILL"
+              }[5m]) > 0
+            for: 1m
+            labels:
+              severity: high
+              category: security
+            annotations:
+              summary: "Tetragon enforcement action taken"
+              description: |
+                Tetragon blocked and killed a process due to policy violation.
+                Namespace: {{ $labels.namespace }}
+                Policy: {{ $labels.policy_name }}
+                Count: {{ $value }}
+              runbook_url: "https://example.com/runbooks/tetragon-enforcement"
+
+          # HIGH: Unusual file access in sensitive directories
+          - alert: TetragonSensitiveFileAccess
+            expr: |
+              increase(tetragon_events_total{
+                type=~".*file.*",
+                path=~".*/etc/.*|.*/root/.*|.*/var/.*",
+                namespace=~"media|iot"
+              }[15m]) > 10
+            for: 5m
+            labels:
+              severity: high
+              category: security
+            annotations:
+              summary: "High rate of sensitive file access detected"
+              description: |
+                Elevated file access to sensitive directories detected.
+                Namespace: {{ $labels.namespace }}
+                Pod: {{ $labels.pod }}
+                Path pattern: {{ $labels.path }}
+                Count: {{ $value }}
+              runbook_url: "https://example.com/runbooks/sensitive-file-access"
+
+          # HIGH: Network connection anomalies
+          - alert: TetragonAnomalousConnections
+            expr: |
+              rate(tetragon_events_total{
+                type=~".*connect.*",
+                namespace=~"media|iot"
+              }[5m]) > 10
+            for: 5m
+            labels:
+              severity: high
+              category: security
+            annotations:
+              summary: "High rate of network connections detected"
+              description: |
+                Anomalously high network connection rate detected.
+                Namespace: {{ $labels.namespace }}
+                Pod: {{ $labels.pod }}
+                Rate: {{ $value | humanize }}/sec
+              runbook_url: "https://example.com/runbooks/network-anomaly"
+
+          # WARNING: Configuration file modifications
+          - alert: TetragonConfigModification
+            expr: |
+              increase(tetragon_events_total{
+                type="file_write",
+                path=~".*\\.conf|.*\\.config|.*\\.yaml|.*\\.yml"
+              }[15m]) > 5
+            for: 5m
+            labels:
+              severity: warning
+              category: security
+            annotations:
+              summary: "Configuration file modifications detected"
+              description: |
+                Multiple configuration file modifications detected.
+                Namespace: {{ $labels.namespace }}
+                Pod: {{ $labels.pod }}
+                Count: {{ $value }}
+              runbook_url: "https://example.com/runbooks/config-modification"
+
+          # WARNING: Tetragon event rate spike
+          - alert: TetragonEventRateHigh
+            expr: |
+              rate(tetragon_events_total[5m]) > 100
+            for: 10m
+            labels:
+              severity: warning
+              category: security
+            annotations:
+              summary: "Tetragon event rate unusually high"
+              description: |
+                Tetragon is generating events at an elevated rate.
+                This may indicate unusual system activity or misconfiguration.
+                Namespace: {{ $labels.namespace }}
+                Rate: {{ $value | humanize }}/sec
+              runbook_url: "https://example.com/runbooks/event-rate-high"
+
+          # INFO: Tetragon metrics collection working
+          - alert: TetragonMetricsAvailable
+            expr: |
+              up{job="tetragon"} == 1
+            for: 5m
+            labels:
+              severity: info
+              category: monitoring
+            annotations:
+              summary: "Tetragon metrics are being collected"
+              description: |
+                Tetragon is successfully exporting metrics to Prometheus.
+                This is an informational alert confirming monitoring is active.
+
+      - name: tetragon-agent-health
+        interval: 1m
+        rules:
+          # CRITICAL: Tetragon agent down
+          - alert: TetragonAgentDown
+            expr: |
+              up{job="tetragon"} == 0
+            for: 5m
+            labels:
+              severity: critical
+              category: monitoring
+            annotations:
+              summary: "Tetragon agent is down"
+              description: |
+                Tetragon monitoring agent is not responding.
+                Runtime security monitoring is unavailable.
+                Instance: {{ $labels.instance }}
+              runbook_url: "https://example.com/runbooks/tetragon-down"
+
+          # WARNING: Tetragon policy errors
+          - alert: TetragonPolicyErrors
+            expr: |
+              increase(tetragon_policy_events_total{
+                action="error"
+              }[15m]) > 0
+            for: 5m
+            labels:
+              severity: warning
+              category: security
+            annotations:
+              summary: "Tetragon policy errors detected"
+              description: |
+                Tetragon encountered errors applying security policies.
+                Policy: {{ $labels.policy_name }}
+                Count: {{ $value }}
+              runbook_url: "https://example.com/runbooks/policy-errors"

@@ -1,0 +1,85 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: nvidia-dcgm-exporter
+  namespace: kube-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: dcgm-exporter
+      version: 3.6.0
+      sourceRef:
+        kind: HelmRepository
+        name: nvidia
+        namespace: flux-system
+      interval: 12h
+  maxHistory: 2
+  install:
+    createNamespace: false
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  uninstall:
+    keepHistory: false
+  values:
+    # NVIDIA DCGM Exporter configuration
+    # Exports GPU metrics for Prometheus/Grafana
+
+    image:
+      repository: nvcr.io/nvidia/k8s/dcgm-exporter
+      tag: 3.3.8-3.6.0-ubuntu22.04
+      pullPolicy: IfNotPresent
+
+    # Run as DaemonSet on GPU nodes only
+    daemonsetKind: DaemonSet
+
+    # Node selector to only run on GPU nodes
+    nodeSelector:
+      nvidia.com/gpu.present: "true"
+
+    # Tolerations for GPU nodes
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+    # Security context
+    securityContext:
+      capabilities:
+        add:
+          - SYS_ADMIN
+      privileged: true
+
+    # Resource limits
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+    # Arguments for DCGM exporter
+    arguments:
+      - "-f"
+      - "/etc/dcgm-exporter/dcp-metrics-included.csv"
+
+    # Service configuration
+    service:
+      enable: true
+      type: ClusterIP
+      port: 9400
+      address: ":9400"
+
+    # ServiceMonitor for Prometheus Operator
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      honorLabels: false
+      additionalLabels:
+        release: kube-prometheus-stack
