@@ -1,0 +1,42 @@
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: network-monitoring-dmz
+  namespace: media
+spec:
+  # HIGH: Monitor outbound network connections from DMZ (Plex)
+  # Detection-only mode - logs connections without blocking
+  kprobes:
+  - call: "tcp_connect"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+    selectors:
+    - matchNamespaces:
+      - namespace: "media"
+        operator: "In"
+      matchActions:
+      - action: Post  # LOG ONLY: Record connections for analysis
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: udp-monitoring-dmz
+  namespace: media
+spec:
+  # HIGH: Monitor UDP traffic from DMZ (Plex discovery, DLNA)
+  # Detection-only mode
+  kprobes:
+  - call: "udp_sendmsg"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+    selectors:
+    - matchNamespaces:
+      - namespace: "media"
+        operator: "In"
+      matchActions:
+      - action: Post  # LOG ONLY

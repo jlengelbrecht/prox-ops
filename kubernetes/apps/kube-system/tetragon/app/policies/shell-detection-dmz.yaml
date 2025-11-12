@@ -1,0 +1,32 @@
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: shell-detection-dmz
+  namespace: media
+spec:
+  # CRITICAL: Shell execution in DMZ containers (Plex)
+  # Detect and BLOCK shell spawns in media namespace
+  kprobes:
+  - call: "sys_execve"
+    syscall: true
+    args:
+    - index: 0
+      type: "string"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "In"
+        values:
+        - "/bin/bash"
+        - "/bin/sh"
+        - "/bin/dash"
+        - "/bin/zsh"
+        - "/usr/bin/bash"
+        - "/usr/bin/sh"
+      matchNamespaces:
+      - namespace: "media"
+        operator: "In"
+      matchActions:
+      - action: Sigkill  # ENFORCE: Kill process attempting shell
+      - action: Post     # LOG: Send event to Prometheus/stdout
