@@ -1,0 +1,868 @@
+---
+# Rook-Ceph Storage Monitoring Dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-storage
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+    grafana_folder: "Storage"
+data:
+  storage-monitoring.json: |-
+    {
+      "annotations": {
+        "list": [
+          {
+            "datasource": "Prometheus",
+            "enable": true,
+            "expr": "ALERTS{alertname=~\".*Ceph.*|.*Storage.*\",alertstate=\"firing\"}",
+            "iconColor": "red",
+            "name": "Storage Alerts",
+            "tagKeys": "alertname,severity",
+            "textFormat": "{{ alertname }}: {{ annotations.description }}",
+            "titleFormat": "Storage Alert"
+          }
+        ]
+      },
+      "description": "Rook-Ceph cluster monitoring - OSD health, pool statistics, and PVC usage",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "datasource": "Prometheus",
+          "description": "Overall Ceph cluster health status",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [
+                {"type": "value", "value": "0", "text": "HEALTH_ERR", "color": "red"},
+                {"type": "value", "value": "1", "text": "HEALTH_WARN", "color": "yellow"},
+                {"type": "value", "value": "2", "text": "HEALTH_OK", "color": "green"}
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "red", "value": null},
+                  {"color": "yellow", "value": 1},
+                  {"color": "green", "value": 2}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+          "id": 1,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "ceph_health_status",
+              "legendFormat": "Health Status",
+              "refId": "A"
+            }
+          ],
+          "title": "Cluster Health",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Total cluster storage capacity",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null}
+                ]
+              },
+              "unit": "bytes"
+            }
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+          "id": 2,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "ceph_cluster_total_bytes",
+              "legendFormat": "Total Capacity",
+              "refId": "A"
+            }
+          ],
+          "title": "Total Capacity",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Total storage used (raw)",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "red", "value": 85}
+                ]
+              },
+              "unit": "percent"
+            }
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+          "id": 3,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "(ceph_cluster_total_used_raw_bytes / ceph_cluster_total_bytes) * 100",
+              "legendFormat": "Used %",
+              "refId": "A"
+            }
+          ],
+          "title": "Storage Used",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Storage usage percentage",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "max": 100,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "orange", "value": 80},
+                  {"color": "red", "value": 90}
+                ]
+              },
+              "unit": "percent"
+            }
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+          "id": 4,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "(ceph_cluster_total_used_raw_bytes / ceph_cluster_total_bytes) * 100",
+              "legendFormat": "Usage %",
+              "refId": "A"
+            }
+          ],
+          "title": "Storage Usage %",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Number of OSDs in the cluster",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+          "id": 5,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "count(ceph_osd_metadata)",
+              "legendFormat": "Total OSDs",
+              "refId": "A"
+            }
+          ],
+          "title": "Total OSDs",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Storage capacity and usage over time",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 30,
+                "gradientMode": "none",
+                "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {"type": "linear"},
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {"group": "A", "mode": "none"},
+                "thresholdsStyle": {"mode": "off"}
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              },
+              "unit": "bytes"
+            }
+          },
+          "gridPos": {"h": 8, "w": 20, "x": 0, "y": 4},
+          "id": 6,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max", "current"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "ceph_cluster_total_bytes",
+              "legendFormat": "Total Capacity",
+              "refId": "A"
+            },
+            {
+              "expr": "ceph_cluster_total_used_raw_bytes",
+              "legendFormat": "Used (Raw)",
+              "refId": "B"
+            },
+            {
+              "expr": "ceph_cluster_total_bytes - ceph_cluster_total_used_raw_bytes",
+              "legendFormat": "Available",
+              "refId": "C"
+            }
+          ],
+          "title": "Cluster Capacity Trend",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "OSD status breakdown",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "color-background"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 1},
+                  {"color": "red", "value": 3}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 7, "w": 10, "x": 0, "y": 12},
+          "id": 7,
+          "options": {
+            "showHeader": true,
+            "sortBy": []
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "count by (status) (ceph_osd_up)",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "OSD Status",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true
+                },
+                "indexByName": {
+                  "status": 0,
+                  "Value": 1
+                },
+                "renameByName": {
+                  "Value": "Count",
+                  "status": "Status"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "IOPS (read and write operations per second)",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {"type": "linear"},
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {"group": "A", "mode": "none"},
+                "thresholdsStyle": {"mode": "off"}
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              },
+              "unit": "iops"
+            }
+          },
+          "gridPos": {"h": 7, "w": 10, "x": 10, "y": 12},
+          "id": 8,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "rate(ceph_osd_op_r[5m])",
+              "legendFormat": "Read IOPS",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(ceph_osd_op_w[5m])",
+              "legendFormat": "Write IOPS",
+              "refId": "B"
+            }
+          ],
+          "title": "Cluster IOPS",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Cluster throughput (read and write)",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {"type": "linear"},
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {"group": "A", "mode": "none"},
+                "thresholdsStyle": {"mode": "off"}
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              },
+              "unit": "Bps"
+            }
+          },
+          "gridPos": {"h": 7, "w": 20, "x": 0, "y": 19},
+          "id": 9,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max", "current"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "rate(ceph_osd_op_r_out_bytes[5m])",
+              "legendFormat": "Read Throughput",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(ceph_osd_op_w_in_bytes[5m])",
+              "legendFormat": "Write Throughput",
+              "refId": "B"
+            }
+          ],
+          "title": "Cluster Throughput",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Pool statistics and usage",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              },
+              "unit": "bytes"
+            }
+          },
+          "gridPos": {"h": 8, "w": 20, "x": 0, "y": 26},
+          "id": 10,
+          "options": {
+            "showHeader": true,
+            "sortBy": [{"desc": true, "displayName": "Used"}]
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "ceph_pool_stored",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "A"
+            },
+            {
+              "expr": "ceph_pool_max_avail",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "B"
+            }
+          ],
+          "title": "Pool Statistics",
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "instance": true,
+                  "job": true,
+                  "namespace": true,
+                  "pool_id": true
+                },
+                "indexByName": {
+                  "name": 0,
+                  "Value #A": 1,
+                  "Value #B": 2
+                },
+                "renameByName": {
+                  "Value #A": "Used",
+                  "Value #B": "Available",
+                  "name": "Pool Name"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "PVC usage across namespaces",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              },
+              "unit": "bytes"
+            }
+          },
+          "gridPos": {"h": 8, "w": 20, "x": 0, "y": 34},
+          "id": 11,
+          "options": {
+            "showHeader": true,
+            "sortBy": [{"desc": true, "displayName": "Capacity"}]
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~\".*\"}",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "A"
+            },
+            {
+              "expr": "kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\".*\"}",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "B"
+            }
+          ],
+          "title": "PVC Usage",
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "endpoint": true,
+                  "instance": true,
+                  "job": true,
+                  "node": true,
+                  "service": true
+                },
+                "indexByName": {
+                  "namespace": 0,
+                  "persistentvolumeclaim": 1,
+                  "Value #A": 2,
+                  "Value #B": 3
+                },
+                "renameByName": {
+                  "Value #A": "Capacity",
+                  "Value #B": "Used",
+                  "namespace": "Namespace",
+                  "persistentvolumeclaim": "PVC Name"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "OSD latency (apply and commit)",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+                "lineInterpolation": "smooth",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {"type": "linear"},
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {"group": "A", "mode": "none"},
+                "thresholdsStyle": {"mode": "off"}
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              },
+              "unit": "ms"
+            }
+          },
+          "gridPos": {"h": 7, "w": 20, "x": 0, "y": 42},
+          "id": 12,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "avg(ceph_osd_apply_latency_ms)",
+              "legendFormat": "Apply Latency",
+              "refId": "A"
+            },
+            {
+              "expr": "avg(ceph_osd_commit_latency_ms)",
+              "legendFormat": "Commit Latency",
+              "refId": "B"
+            }
+          ],
+          "title": "OSD Latency",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Placement Group (PG) states",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "mappings": []
+            }
+          },
+          "gridPos": {"h": 8, "w": 10, "x": 0, "y": 49},
+          "id": 13,
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "showLegend": true,
+              "values": ["value"]
+            },
+            "pieType": "pie",
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "ceph_pg_total",
+              "legendFormat": "Total PGs",
+              "refId": "A"
+            },
+            {
+              "expr": "ceph_pg_active",
+              "legendFormat": "Active",
+              "refId": "B"
+            },
+            {
+              "expr": "ceph_pg_degraded",
+              "legendFormat": "Degraded",
+              "refId": "C"
+            }
+          ],
+          "title": "Placement Group States",
+          "type": "piechart"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Monitor quorum status",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 10, "x": 10, "y": 49},
+          "id": 14,
+          "options": {
+            "showHeader": true,
+            "sortBy": []
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "ceph_mon_quorum_status",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "Monitor Quorum",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "instance": true,
+                  "job": true,
+                  "namespace": true
+                },
+                "indexByName": {
+                  "monitor": 0,
+                  "Value": 1
+                },
+                "renameByName": {
+                  "Value": "In Quorum",
+                  "monitor": "Monitor"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 38,
+      "tags": ["storage", "ceph", "rook", "pvc"],
+      "templating": {
+        "list": [
+          {
+            "current": {
+              "selected": false,
+              "text": "All",
+              "value": "$__all"
+            },
+            "datasource": "Prometheus",
+            "definition": "label_values(ceph_pool_stored, name)",
+            "hide": 0,
+            "includeAll": true,
+            "multi": true,
+            "name": "pool",
+            "options": [],
+            "query": {
+              "query": "label_values(ceph_pool_stored, name)",
+              "refId": "PrometheusVariableQueryEditor-VariableQuery"
+            },
+            "refresh": 1,
+            "regex": "",
+            "skipUrlSync": false,
+            "sort": 1,
+            "type": "query"
+          }
+        ]
+      },
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Storage (Rook-Ceph)",
+      "uid": "storage-rook-ceph",
+      "version": 1
+    }

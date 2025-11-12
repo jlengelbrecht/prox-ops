@@ -1,0 +1,802 @@
+---
+# Comprehensive Cluster Overview Dashboard
+# Single-pane-of-glass for cluster health monitoring
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-cluster-overview
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+    grafana_folder: "Cluster"
+data:
+  cluster-overview.json: |-
+    {
+      "annotations": {
+        "list": [
+          {
+            "datasource": "Prometheus",
+            "enable": true,
+            "expr": "ALERTS{alertstate=\"firing\"}",
+            "iconColor": "red",
+            "name": "Firing Alerts",
+            "tagKeys": "alertname,severity",
+            "textFormat": "{{ alertname }}: {{ annotations.description }}",
+            "titleFormat": "Alert"
+          }
+        ]
+      },
+      "description": "Comprehensive Kubernetes cluster health overview - single pane of glass",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "datasource": "Prometheus",
+          "description": "Total number of nodes in the cluster",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "red", "value": null},
+                  {"color": "yellow", "value": 10},
+                  {"color": "green", "value": 15}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 0, "y": 0},
+          "id": 1,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "count(kube_node_info)",
+              "legendFormat": "Nodes",
+              "refId": "A"
+            }
+          ],
+          "title": "Total Nodes",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Total running pods across all namespaces",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 500},
+                  {"color": "red", "value": 800}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 3, "y": 0},
+          "id": 2,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_phase{phase=\"Running\"})",
+              "legendFormat": "Running Pods",
+              "refId": "A"
+            }
+          ],
+          "title": "Running Pods",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Number of GPUs available in cluster",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "red", "value": null},
+                  {"color": "yellow", "value": 1},
+                  {"color": "green", "value": 2}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 6, "y": 0},
+          "id": 3,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "count(DCGM_FI_DEV_GPU_TEMP)",
+              "legendFormat": "GPUs",
+              "refId": "A"
+            }
+          ],
+          "title": "Total GPUs",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Rook-Ceph storage usage percentage",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "max": 100,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "red", "value": 85}
+                ]
+              },
+              "unit": "percent"
+            }
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 9, "y": 0},
+          "id": 4,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "(ceph_cluster_total_used_raw_bytes / ceph_cluster_total_bytes) * 100",
+              "legendFormat": "Storage Used",
+              "refId": "A"
+            }
+          ],
+          "title": "Storage Usage",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Number of currently firing alerts",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 1},
+                  {"color": "orange", "value": 5},
+                  {"color": "red", "value": 10}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 12, "y": 0},
+          "id": 5,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "count(ALERTS{alertstate=\"firing\"})",
+              "legendFormat": "Firing Alerts",
+              "refId": "A"
+            }
+          ],
+          "title": "Active Alerts",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Cluster-wide CPU usage percentage",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "max": 100,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "red", "value": 90}
+                ]
+              },
+              "unit": "percent"
+            }
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 15, "y": 0},
+          "id": 6,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "(1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * 100",
+              "legendFormat": "CPU Usage",
+              "refId": "A"
+            }
+          ],
+          "title": "Cluster CPU",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Cluster-wide memory usage percentage",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "max": 100,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 75},
+                  {"color": "red", "value": 90}
+                ]
+              },
+              "unit": "percent"
+            }
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 18, "y": 0},
+          "id": 7,
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "justifyMode": "center",
+            "orientation": "auto",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "(1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes)) * 100",
+              "legendFormat": "Memory Usage",
+              "refId": "A"
+            }
+          ],
+          "title": "Cluster Memory",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Node CPU and memory utilization heatmap",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "color-background"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 60},
+                  {"color": "orange", "value": 80},
+                  {"color": "red", "value": 90}
+                ]
+              },
+              "unit": "percent"
+            }
+          },
+          "gridPos": {"h": 8, "w": 21, "x": 0, "y": 4},
+          "id": 8,
+          "options": {
+            "showHeader": true,
+            "sortBy": []
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "(1 - avg by (node) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * 100",
+              "format": "table",
+              "legendFormat": "{{ node }}",
+              "refId": "A"
+            },
+            {
+              "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+              "format": "table",
+              "legendFormat": "",
+              "refId": "B"
+            },
+            {
+              "expr": "(node_filesystem_size_bytes{mountpoint=\"/\"} - node_filesystem_avail_bytes{mountpoint=\"/\"}) / node_filesystem_size_bytes{mountpoint=\"/\"} * 100",
+              "format": "table",
+              "legendFormat": "",
+              "refId": "C"
+            }
+          ],
+          "title": "Node Resource Heatmap",
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "instance": true,
+                  "job": true
+                },
+                "indexByName": {
+                  "node": 0,
+                  "Value #A": 1,
+                  "Value #B": 2,
+                  "Value #C": 3
+                },
+                "renameByName": {
+                  "Value #A": "CPU %",
+                  "Value #B": "Memory %",
+                  "Value #C": "Disk %",
+                  "node": "Node"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "24-hour CPU usage trend across cluster",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {"type": "linear"},
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {"group": "A", "mode": "none"},
+                "thresholdsStyle": {"mode": "off"}
+              },
+              "mappings": [],
+              "max": 100,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              },
+              "unit": "percent"
+            }
+          },
+          "gridPos": {"h": 7, "w": 10, "x": 0, "y": 12},
+          "id": 9,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "(1 - avg by (node) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * 100",
+              "legendFormat": "{{ node }}",
+              "refId": "A"
+            }
+          ],
+          "title": "CPU Usage Trend (24h)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "24-hour memory usage trend across cluster",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 20,
+                "gradientMode": "none",
+                "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+                "lineInterpolation": "smooth",
+                "lineWidth": 2,
+                "pointSize": 5,
+                "scaleDistribution": {"type": "linear"},
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {"group": "A", "mode": "none"},
+                "thresholdsStyle": {"mode": "off"}
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              },
+              "unit": "bytes"
+            }
+          },
+          "gridPos": {"h": 7, "w": 11, "x": 10, "y": 12},
+          "id": 10,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
+              "legendFormat": "{{ node }}",
+              "refId": "A"
+            }
+          ],
+          "title": "Memory Usage Trend (24h)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Network traffic across all nodes",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "hideFrom": {"tooltip": false, "viz": false, "legend": false},
+                "lineInterpolation": "smooth",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {"type": "linear"},
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {"group": "A", "mode": "none"},
+                "thresholdsStyle": {"mode": "off"}
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}]
+              },
+              "unit": "Bps"
+            }
+          },
+          "gridPos": {"h": 6, "w": 21, "x": 0, "y": 19},
+          "id": 11,
+          "options": {
+            "legend": {
+              "calcs": ["mean", "max"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "sum by (node) (rate(node_network_receive_bytes_total{device!~\"lo|veth.*|cilium.*|cali.*\"}[5m]))",
+              "legendFormat": "{{ node }} RX",
+              "refId": "A"
+            },
+            {
+              "expr": "sum by (node) (rate(node_network_transmit_bytes_total{device!~\"lo|veth.*|cilium.*|cali.*\"}[5m]))",
+              "legendFormat": "{{ node }} TX",
+              "refId": "B"
+            }
+          ],
+          "title": "Network Traffic (24h)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Top 10 pods by CPU usage",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 0.5},
+                  {"color": "red", "value": 1}
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 8, "w": 10, "x": 0, "y": 25},
+          "id": 12,
+          "options": {
+            "showHeader": true,
+            "sortBy": [{"desc": true, "displayName": "CPU Cores"}]
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "topk(10, sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{container!=\"\",container!=\"POD\"}[5m])))",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "Top 10 Pods by CPU",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true
+                },
+                "indexByName": {
+                  "namespace": 0,
+                  "pod": 1,
+                  "Value": 2
+                },
+                "renameByName": {
+                  "Value": "CPU Cores",
+                  "namespace": "Namespace",
+                  "pod": "Pod"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Top 10 pods by memory usage",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 1073741824},
+                  {"color": "red", "value": 4294967296}
+                ]
+              },
+              "unit": "bytes"
+            }
+          },
+          "gridPos": {"h": 8, "w": 11, "x": 10, "y": 25},
+          "id": 13,
+          "options": {
+            "showHeader": true,
+            "sortBy": [{"desc": true, "displayName": "Memory"}]
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "topk(10, sum by (namespace, pod) (container_memory_working_set_bytes{container!=\"\",container!=\"POD\"}))",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "Top 10 Pods by Memory",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true
+                },
+                "indexByName": {
+                  "namespace": 0,
+                  "pod": 1,
+                  "Value": 2
+                },
+                "renameByName": {
+                  "Value": "Memory",
+                  "namespace": "Namespace",
+                  "pod": "Pod"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Recent Kubernetes events",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
+              }
+            }
+          },
+          "gridPos": {"h": 6, "w": 21, "x": 0, "y": 33},
+          "id": 14,
+          "options": {
+            "showHeader": true,
+            "sortBy": []
+          },
+          "pluginVersion": "10.0.0",
+          "targets": [
+            {
+              "expr": "kube_pod_status_phase{phase=\"Failed\"}",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "title": "Failed Pods",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "Value": true,
+                  "__name__": true,
+                  "endpoint": true,
+                  "instance": true,
+                  "job": true,
+                  "phase": true,
+                  "service": true,
+                  "uid": true
+                },
+                "indexByName": {},
+                "renameByName": {
+                  "namespace": "Namespace",
+                  "pod": "Pod"
+                }
+              }
+            }
+          ],
+          "type": "table"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 38,
+      "tags": ["kubernetes", "cluster", "overview"],
+      "templating": {
+        "list": []
+      },
+      "time": {
+        "from": "now-24h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Cluster Overview",
+      "uid": "cluster-overview",
+      "version": 1
+    }
