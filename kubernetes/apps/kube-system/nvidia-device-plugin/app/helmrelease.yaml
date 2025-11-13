@@ -7,7 +7,7 @@ spec:
   chart:
     spec:
       chart: nvidia-device-plugin
-      version: 0.17.1
+      version: 0.13.0  # Downgrade to Talos-recommended stable version
       sourceRef:
         kind: HelmRepository
         name: nvidia-device-plugin
@@ -22,6 +22,16 @@ spec:
     remediation:
       retries: 3
   values:
+    # CRITICAL: Use nvidia runtime to inject NVIDIA libraries
+    runtimeClassName: nvidia
+
+    # CRITICAL: Add SYS_ADMIN capability for library access with volume-mounts
+    # This is required for v0.16+ but won't hurt in v0.13.0
+    securityContext:
+      capabilities:
+        add:
+          - SYS_ADMIN
+
     # Only run on nodes with NVIDIA GPUs
     affinity:
       nodeAffinity:
@@ -42,18 +52,6 @@ spec:
       - key: CriticalAddonsOnly
         operator: Exists
 
-    # Device plugin configuration
-    config:
-      map:
-        default: |-
-          version: v1
-          flags:
-            migStrategy: none
-            failOnInitError: true
-            nvidiaDriverRoot: /
-            deviceDiscoveryStrategy: nvml
-      default: "default"
-
     # Resources for the device plugin pods
     resources:
       requests:
@@ -70,19 +68,3 @@ spec:
       type: RollingUpdate
       rollingUpdate:
         maxUnavailable: 1
-
-    # Enable GFD (GPU Feature Discovery) to expose GPU properties as node labels
-    gfd:
-      enabled: true
-      nodeSelector:
-        nvidia.com/gpu.present: "true"
-      tolerations:
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
-      resources:
-        requests:
-          cpu: 50m
-          memory: 100Mi
-        limits:
-          memory: 200Mi
