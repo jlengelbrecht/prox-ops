@@ -7,6 +7,17 @@ machine:
       - name: nvidia_modeset
   sysctls:
     net.core.bpf_jit_harden: "1"  # NVIDIA GPU requirement
+  files:
+    - op: create
+      path: /etc/cri/conf.d/30-nvidia-runtime.part
+      content: |
+        [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia]
+          privileged_without_host_devices = false
+          runtime_engine = ""
+          runtime_root = ""
+          runtime_type = "io.containerd.runc.v2"
+        [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia.options]
+          BinaryName = "/usr/local/bin/nvidia-container-runtime"
   nodeLabels:
     nvidia.com/gpu.present: "true"
     gpu.nvidia.com/model: "rtx-a5000"
