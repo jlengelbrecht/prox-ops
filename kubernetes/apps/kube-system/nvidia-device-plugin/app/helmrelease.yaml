@@ -22,9 +22,9 @@ spec:
     remediation:
       retries: 3
   values:
-    # Device plugin does NOT need runtimeClassName: nvidia
-    # Only GPU workloads (Plex, etc.) should use runtimeClassName: nvidia in their pod specs
-    # The device plugin just discovers GPUs and advertises them to Kubernetes
+    # Use nvidia runtime to provide access to NVIDIA libraries (libnvidia-ml.so) for NVML discovery
+    # The runtime will mount /usr/lib from host so the device plugin can initialize NVML
+    runtimeClassName: nvidia
 
     # Only run on nodes with NVIDIA GPUs
     affinity:
