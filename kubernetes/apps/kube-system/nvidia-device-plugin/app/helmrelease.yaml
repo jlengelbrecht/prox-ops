@@ -22,6 +22,9 @@ spec:
     remediation:
       retries: 3
   values:
+    # Use nvidia runtime so device plugin can access NVIDIA libraries
+    runtimeClassName: nvidia
+
     # Only run on nodes with NVIDIA GPUs
     affinity:
       nodeAffinity:
@@ -43,7 +46,6 @@ spec:
         operator: Exists
 
     # Device plugin configuration
-    # Note: Device plugin does NOT need nvidia runtime - only workloads using GPUs do
     config:
       map:
         default: |-
