@@ -42,6 +42,19 @@ spec:
             cpu: 2000m
             memory: 4Gi
 
+        # Startup probe - allow extended time for WAL replay after downtime
+        # WAL replay can take 20-30 minutes with 546 segments
+        startupProbe:
+          httpGet:
+            path: /-/ready
+            port: 9090
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 180  # 180 * 10s = 30 minutes max startup time
+
         # Storage configuration
         storageSpec:
           volumeClaimTemplate:
