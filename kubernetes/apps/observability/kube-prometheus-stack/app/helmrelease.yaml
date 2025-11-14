@@ -182,19 +182,9 @@ spec:
                     name: TraceID
                     url: "$${__value.raw}"
 
-      # Dashboard providers
-      dashboardProviders:
-        dashboardproviders.yaml:
-          apiVersion: 1
-          providers:
-            - name: 'default'
-              orgId: 1
-              folder: ''
-              type: file
-              disableDeletion: false
-              editable: true
-              options:
-                path: /var/lib/grafana/dashboards/default
+      # Dashboard providers - disabled, using sidecar instead
+      # All dashboards are discovered via sidecar from ConfigMaps with label grafana_dashboard: "1"
+      dashboardProviders: {}
 
       # Sidecar for dashboard discovery
       sidecar:
