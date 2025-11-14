@@ -36,11 +36,11 @@ output "control_plane_nodes" {
   description = "Control plane node information"
   value = {
     for name, node in module.control_plane_nodes : name => {
-      vm_id      = node.vm_id
-      vm_name    = node.vm_name
-      ip_address = node.ip_address
+      vm_id       = node.vm_id
+      vm_name     = node.vm_name
+      ip_address  = node.ip_address
       mac_address = node.mac_address
-      node_name  = node.node_name
+      node_name   = node.node_name
     }
   }
 }
@@ -102,7 +102,7 @@ output "cluster_summary" {
 
 output "next_steps" {
   description = "Next steps after Terraform deployment"
-  value = <<-EOT
+  value       = <<-EOT
 
   Terraform deployment complete!
 
