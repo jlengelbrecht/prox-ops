@@ -43,17 +43,10 @@ spec:
             memory: 4Gi
 
         # Startup probe - allow extended time for WAL replay after downtime
-        # WAL replay can take 20-30 minutes with 546 segments
+        # WAL replay can take up to 40 minutes with 548 segments
+        # Chart default periodSeconds is 15s, so 240 failures = 60 minutes max startup
         startupProbe:
-          httpGet:
-            path: /-/ready
-            port: 9090
-            scheme: HTTP
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          successThreshold: 1
-          failureThreshold: 180  # 180 * 10s = 30 minutes max startup time
+          failureThreshold: 240  # 240 * 15s (chart default) = 60 min max startup
 
         # Storage configuration
         storageSpec:
