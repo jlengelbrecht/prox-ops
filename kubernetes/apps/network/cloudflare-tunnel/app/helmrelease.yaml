@@ -69,11 +69,32 @@ spec:
         data:
           config.yaml: |-
             ingress:
-              - hostname: "*.${SECRET_DOMAIN}"
+              # Grafana (observability dashboard)
+              - hostname: "grafana.${SECRET_DOMAIN}"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
                 originRequest:
                   http2Origin: true
-                  originServerName: external.${SECRET_DOMAIN}
+                  originServerName: grafana.${SECRET_DOMAIN}
+
+              # Echo test application
+              - hostname: "echo.${SECRET_DOMAIN}"
                 service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: echo.${SECRET_DOMAIN}
+
+              # Flux webhook
+              - hostname: "flux-webhook.${SECRET_DOMAIN}"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: flux-webhook.${SECRET_DOMAIN}
+
+              # NOTE: Apps NOT routed through Cloudflare tunnel:
+              # - Plex (DMZ): UDM SE port forward for high bandwidth streaming
+              # - Home Assistant (IoT): Internal-only access via cluster DNS
+
+              # Catch-all 404 for undefined hostnames
               - service: http_status:404
     persistence:
       config-file:
