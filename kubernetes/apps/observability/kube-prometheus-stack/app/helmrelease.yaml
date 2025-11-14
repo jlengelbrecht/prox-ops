@@ -174,8 +174,12 @@ spec:
               url: http://loki:3100
               access: proxy
               isDefault: false
+              # Disable alert rule management - Loki is for logs, not Prometheus-style metrics
+              editable: false
               jsonData:
                 maxLines: 1000
+                # Disable alerting UI - Loki uses LogQL, not PromQL for alerts
+                manageAlerts: false
                 derivedFields:
                   - datasourceUid: Prometheus
                     matcherRegex: "traceID=(\\w+)"
