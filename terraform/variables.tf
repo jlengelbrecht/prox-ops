@@ -16,14 +16,14 @@ variable "proxmox_endpoints" {
 variable "proxmox_username" {
   description = "Proxmox username (e.g., root@pam or terraform@pve!token) - Set via TF_VAR_proxmox_username environment variable"
   type        = string
-  default     = ""  # Set via environment variable TF_VAR_proxmox_username
+  default     = "" # Set via environment variable TF_VAR_proxmox_username
 }
 
 variable "proxmox_password" {
   description = "Proxmox password or API token secret - Set via TF_VAR_proxmox_password environment variable"
   type        = string
   sensitive   = true
-  default     = ""  # Set via environment variable TF_VAR_proxmox_password
+  default     = "" # Set via environment variable TF_VAR_proxmox_password
 }
 
 variable "proxmox_insecure" {
@@ -86,7 +86,7 @@ variable "network_gateway" {
 variable "network_netmask" {
   description = "Network netmask"
   type        = string
-  default     = "255.255.254.0"  # /23
+  default     = "255.255.254.0" # /23
 }
 
 # =============================================================================
@@ -193,7 +193,7 @@ variable "controlplane_cpu_sockets" {
 variable "controlplane_memory_mb" {
   description = "Memory in MB for control plane nodes"
   type        = number
-  default     = 16384  # 16GB
+  default     = 16384 # 16GB
 }
 
 variable "controlplane_disk_size_gb" {
@@ -222,7 +222,7 @@ variable "worker_cpu_sockets" {
 variable "worker_memory_mb" {
   description = "Memory in MB for worker nodes"
   type        = number
-  default     = 32768  # 32GB
+  default     = 32768 # 32GB
 }
 
 variable "worker_disk_size_gb" {
@@ -271,7 +271,7 @@ variable "control_nodes" {
     ip_address   = string
     mac_addr     = string
     vm_id        = number
-    proxmox_node = string  # Which Proxmox host to deploy on (baldar, heimdall, odin, thor)
+    proxmox_node = string # Which Proxmox host to deploy on (baldar, heimdall, odin, thor)
   }))
 }
 
@@ -283,9 +283,9 @@ variable "worker_nodes" {
     ip_address   = string
     mac_addr     = string
     vm_id        = number
-    proxmox_node = string  # Which Proxmox host to deploy on
+    proxmox_node = string # Which Proxmox host to deploy on
     is_gpu       = optional(bool, false)
     gpu_model    = optional(string, "")
-    gpu_mapping  = optional(string, "")  # PCI resource mapping ID (e.g., "thor-gpu")
+    gpu_mapping  = optional(string, "") # PCI resource mapping ID (e.g., "thor-gpu")
   }))
 }

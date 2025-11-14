@@ -18,7 +18,7 @@ locals {
   raw_image_path = "/tmp/talos-images/${var.schematic_id}.raw"
 
   # Template naming
-  template_desc  = "Talos ${var.talos_version} - Schematic: ${var.schematic_id}"
+  template_desc = "Talos ${var.talos_version} - Schematic: ${var.schematic_id}"
 }
 
 # Download and decompress Talos nocloud image

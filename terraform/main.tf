@@ -40,73 +40,73 @@ locals {
   templates = {
     # Baldar templates
     baldar_controller = {
-      node_name     = "baldar"
-      node_host     = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
-      template_id   = var.template_ids.baldar.controller
-      template_name = "talos-${var.talos_version}-controller-baldar"
-      schematic_id  = var.talos_schematic_controlplane
+      node_name      = "baldar"
+      node_host      = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
+      template_id    = var.template_ids.baldar.controller
+      template_name  = "talos-${var.talos_version}-controller-baldar"
+      schematic_id   = var.talos_schematic_controlplane
       provider_alias = "baldar"
     }
     baldar_worker = {
-      node_name     = "baldar"
-      node_host     = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
-      template_id   = var.template_ids.baldar.worker
-      template_name = "talos-${var.talos_version}-worker-baldar"
-      schematic_id  = var.talos_schematic_worker
+      node_name      = "baldar"
+      node_host      = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
+      template_id    = var.template_ids.baldar.worker
+      template_name  = "talos-${var.talos_version}-worker-baldar"
+      schematic_id   = var.talos_schematic_worker
       provider_alias = "baldar"
     }
 
     # Heimdall templates
     heimdall_controller = {
-      node_name     = "heimdall"
-      node_host     = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
-      template_id   = var.template_ids.heimdall.controller
-      template_name = "talos-${var.talos_version}-controller-heimdall"
-      schematic_id  = var.talos_schematic_controlplane
+      node_name      = "heimdall"
+      node_host      = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
+      template_id    = var.template_ids.heimdall.controller
+      template_name  = "talos-${var.talos_version}-controller-heimdall"
+      schematic_id   = var.talos_schematic_controlplane
       provider_alias = "heimdall"
     }
     heimdall_worker = {
-      node_name     = "heimdall"
-      node_host     = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
-      template_id   = var.template_ids.heimdall.worker
-      template_name = "talos-${var.talos_version}-worker-heimdall"
-      schematic_id  = var.talos_schematic_worker
+      node_name      = "heimdall"
+      node_host      = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
+      template_id    = var.template_ids.heimdall.worker
+      template_name  = "talos-${var.talos_version}-worker-heimdall"
+      schematic_id   = var.talos_schematic_worker
       provider_alias = "heimdall"
     }
 
     # Odin templates
     odin_controller = {
-      node_name     = "odin"
-      node_host     = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
-      template_id   = var.template_ids.odin.controller
-      template_name = "talos-${var.talos_version}-controller-odin"
-      schematic_id  = var.talos_schematic_controlplane
+      node_name      = "odin"
+      node_host      = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
+      template_id    = var.template_ids.odin.controller
+      template_name  = "talos-${var.talos_version}-controller-odin"
+      schematic_id   = var.talos_schematic_controlplane
       provider_alias = "odin"
     }
     odin_worker = {
-      node_name     = "odin"
-      node_host     = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
-      template_id   = var.template_ids.odin.worker
-      template_name = "talos-${var.talos_version}-worker-odin"
-      schematic_id  = var.talos_schematic_worker
+      node_name      = "odin"
+      node_host      = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
+      template_id    = var.template_ids.odin.worker
+      template_name  = "talos-${var.talos_version}-worker-odin"
+      schematic_id   = var.talos_schematic_worker
       provider_alias = "odin"
     }
 
     # Thor templates
     thor_controller = {
-      node_name     = "thor"
-      node_host     = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
-      template_id   = var.template_ids.thor.controller
-      template_name = "talos-${var.talos_version}-controller-thor"
-      schematic_id  = var.talos_schematic_controlplane
+      node_name      = "thor"
+      node_host      = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
+      template_id    = var.template_ids.thor.controller
+      template_name  = "talos-${var.talos_version}-controller-thor"
+      schematic_id   = var.talos_schematic_controlplane
       provider_alias = "thor"
     }
     thor_worker = {
-      node_name     = "thor"
-      node_host     = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
-      template_id   = var.template_ids.thor.worker
-      template_name = "talos-${var.talos_version}-worker-thor"
-      schematic_id  = var.talos_schematic_worker
+      node_name      = "thor"
+      node_host      = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
+      template_id    = var.template_ids.thor.worker
+      template_name  = "talos-${var.talos_version}-worker-thor"
+      schematic_id   = var.talos_schematic_worker
       provider_alias = "thor"
     }
   }
@@ -172,19 +172,19 @@ module "template_baldar_controller" {
     proxmox = proxmox.baldar
   }
 
-  talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_controlplane
-  template_vm_id   = var.template_ids.baldar.controller
-  template_name    = "talos-${var.talos_version}-controller-baldar"
-  proxmox_node     = "Baldar"
-  proxmox_host     = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
-  proxmox_ssh_user = var.proxmox_ssh_user
-  network_bridge   = var.network_bridge
-  vm_storage_pool  = var.vm_storage_pool
-  cpu_type         = var.cpu_type
+  talos_version      = var.talos_version
+  schematic_id       = var.talos_schematic_controlplane
+  template_vm_id     = var.template_ids.baldar.controller
+  template_name      = "talos-${var.talos_version}-controller-baldar"
+  proxmox_node       = "Baldar"
+  proxmox_host       = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
+  proxmox_ssh_user   = var.proxmox_ssh_user
+  network_bridge     = var.network_bridge
+  vm_storage_pool    = var.vm_storage_pool
+  cpu_type           = var.cpu_type
   enable_secure_boot = var.enable_secure_boot
-  enable_tpm       = var.enable_tpm
-  enable_firewall  = var.enable_firewall
+  enable_tpm         = var.enable_tpm
+  enable_firewall    = var.enable_firewall
 
   # First template - no dependencies
 }
@@ -195,19 +195,19 @@ module "template_baldar_worker" {
     proxmox = proxmox.baldar
   }
 
-  talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_worker
-  template_vm_id   = var.template_ids.baldar.worker
-  template_name    = "talos-${var.talos_version}-worker-baldar"
-  proxmox_node     = "Baldar"
-  proxmox_host     = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
-  proxmox_ssh_user = var.proxmox_ssh_user
-  network_bridge   = var.network_bridge
-  vm_storage_pool  = var.vm_storage_pool
-  cpu_type         = var.cpu_type
+  talos_version      = var.talos_version
+  schematic_id       = var.talos_schematic_worker
+  template_vm_id     = var.template_ids.baldar.worker
+  template_name      = "talos-${var.talos_version}-worker-baldar"
+  proxmox_node       = "Baldar"
+  proxmox_host       = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
+  proxmox_ssh_user   = var.proxmox_ssh_user
+  network_bridge     = var.network_bridge
+  vm_storage_pool    = var.vm_storage_pool
+  cpu_type           = var.cpu_type
   enable_secure_boot = var.enable_secure_boot
-  enable_tpm       = var.enable_tpm
-  enable_firewall  = var.enable_firewall
+  enable_tpm         = var.enable_tpm
+  enable_firewall    = var.enable_firewall
 
   # Wait for Baldar controller before deploying worker
   depends_on = [module.template_baldar_controller]
@@ -220,19 +220,19 @@ module "template_heimdall_controller" {
     proxmox = proxmox.heimdall
   }
 
-  talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_controlplane
-  template_vm_id   = var.template_ids.heimdall.controller
-  template_name    = "talos-${var.talos_version}-controller-heimdall"
-  proxmox_node     = "Heimdall"
-  proxmox_host     = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
-  proxmox_ssh_user = var.proxmox_ssh_user
-  network_bridge   = var.network_bridge
-  vm_storage_pool  = var.vm_storage_pool
-  cpu_type         = var.cpu_type
+  talos_version      = var.talos_version
+  schematic_id       = var.talos_schematic_controlplane
+  template_vm_id     = var.template_ids.heimdall.controller
+  template_name      = "talos-${var.talos_version}-controller-heimdall"
+  proxmox_node       = "Heimdall"
+  proxmox_host       = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
+  proxmox_ssh_user   = var.proxmox_ssh_user
+  network_bridge     = var.network_bridge
+  vm_storage_pool    = var.vm_storage_pool
+  cpu_type           = var.cpu_type
   enable_secure_boot = var.enable_secure_boot
-  enable_tpm       = var.enable_tpm
-  enable_firewall  = var.enable_firewall
+  enable_tpm         = var.enable_tpm
+  enable_firewall    = var.enable_firewall
 
   # Wait for Baldar worker before starting
   depends_on = [module.template_baldar_worker]
@@ -244,19 +244,19 @@ module "template_heimdall_worker" {
     proxmox = proxmox.heimdall
   }
 
-  talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_worker
-  template_vm_id   = var.template_ids.heimdall.worker
-  template_name    = "talos-${var.talos_version}-worker-heimdall"
-  proxmox_node     = "Heimdall"
-  proxmox_host     = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
-  proxmox_ssh_user = var.proxmox_ssh_user
-  network_bridge   = var.network_bridge
-  vm_storage_pool  = var.vm_storage_pool
-  cpu_type         = var.cpu_type
+  talos_version      = var.talos_version
+  schematic_id       = var.talos_schematic_worker
+  template_vm_id     = var.template_ids.heimdall.worker
+  template_name      = "talos-${var.talos_version}-worker-heimdall"
+  proxmox_node       = "Heimdall"
+  proxmox_host       = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
+  proxmox_ssh_user   = var.proxmox_ssh_user
+  network_bridge     = var.network_bridge
+  vm_storage_pool    = var.vm_storage_pool
+  cpu_type           = var.cpu_type
   enable_secure_boot = var.enable_secure_boot
-  enable_tpm       = var.enable_tpm
-  enable_firewall  = var.enable_firewall
+  enable_tpm         = var.enable_tpm
+  enable_firewall    = var.enable_firewall
 
   # Wait for Heimdall controller before deploying worker
   depends_on = [module.template_heimdall_controller]
@@ -269,19 +269,19 @@ module "template_odin_controller" {
     proxmox = proxmox.odin
   }
 
-  talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_controlplane
-  template_vm_id   = var.template_ids.odin.controller
-  template_name    = "talos-${var.talos_version}-controller-odin"
-  proxmox_node     = "Odin"
-  proxmox_host     = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
-  proxmox_ssh_user = var.proxmox_ssh_user
-  network_bridge   = var.network_bridge
-  vm_storage_pool  = var.vm_storage_pool
-  cpu_type         = var.cpu_type
+  talos_version      = var.talos_version
+  schematic_id       = var.talos_schematic_controlplane
+  template_vm_id     = var.template_ids.odin.controller
+  template_name      = "talos-${var.talos_version}-controller-odin"
+  proxmox_node       = "Odin"
+  proxmox_host       = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
+  proxmox_ssh_user   = var.proxmox_ssh_user
+  network_bridge     = var.network_bridge
+  vm_storage_pool    = var.vm_storage_pool
+  cpu_type           = var.cpu_type
   enable_secure_boot = var.enable_secure_boot
-  enable_tpm       = var.enable_tpm
-  enable_firewall  = var.enable_firewall
+  enable_tpm         = var.enable_tpm
+  enable_firewall    = var.enable_firewall
 
   # Wait for Heimdall worker before starting
   depends_on = [module.template_heimdall_worker]
@@ -293,19 +293,19 @@ module "template_odin_worker" {
     proxmox = proxmox.odin
   }
 
-  talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_worker
-  template_vm_id   = var.template_ids.odin.worker
-  template_name    = "talos-${var.talos_version}-worker-odin"
-  proxmox_node     = "Odin"
-  proxmox_host     = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
-  proxmox_ssh_user = var.proxmox_ssh_user
-  network_bridge   = var.network_bridge
-  vm_storage_pool  = var.vm_storage_pool
-  cpu_type         = var.cpu_type
+  talos_version      = var.talos_version
+  schematic_id       = var.talos_schematic_worker
+  template_vm_id     = var.template_ids.odin.worker
+  template_name      = "talos-${var.talos_version}-worker-odin"
+  proxmox_node       = "Odin"
+  proxmox_host       = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
+  proxmox_ssh_user   = var.proxmox_ssh_user
+  network_bridge     = var.network_bridge
+  vm_storage_pool    = var.vm_storage_pool
+  cpu_type           = var.cpu_type
   enable_secure_boot = var.enable_secure_boot
-  enable_tpm       = var.enable_tpm
-  enable_firewall  = var.enable_firewall
+  enable_tpm         = var.enable_tpm
+  enable_firewall    = var.enable_firewall
 
   # Wait for Odin controller before deploying worker
   depends_on = [module.template_odin_controller]
@@ -318,19 +318,19 @@ module "template_thor_controller" {
     proxmox = proxmox.thor
   }
 
-  talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_controlplane
-  template_vm_id   = var.template_ids.thor.controller
-  template_name    = "talos-${var.talos_version}-controller-thor"
-  proxmox_node     = "Thor"
-  proxmox_host     = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
-  proxmox_ssh_user = var.proxmox_ssh_user
-  network_bridge   = var.network_bridge
-  vm_storage_pool  = var.vm_storage_pool
-  cpu_type         = var.cpu_type
+  talos_version      = var.talos_version
+  schematic_id       = var.talos_schematic_controlplane
+  template_vm_id     = var.template_ids.thor.controller
+  template_name      = "talos-${var.talos_version}-controller-thor"
+  proxmox_node       = "Thor"
+  proxmox_host       = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
+  proxmox_ssh_user   = var.proxmox_ssh_user
+  network_bridge     = var.network_bridge
+  vm_storage_pool    = var.vm_storage_pool
+  cpu_type           = var.cpu_type
   enable_secure_boot = var.enable_secure_boot
-  enable_tpm       = var.enable_tpm
-  enable_firewall  = var.enable_firewall
+  enable_tpm         = var.enable_tpm
+  enable_firewall    = var.enable_firewall
 
   # Wait for Odin worker before starting
   depends_on = [module.template_odin_worker]
@@ -342,19 +342,19 @@ module "template_thor_worker" {
     proxmox = proxmox.thor
   }
 
-  talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_worker
-  template_vm_id   = var.template_ids.thor.worker
-  template_name    = "talos-${var.talos_version}-worker-thor"
-  proxmox_node     = "Thor"
-  proxmox_host     = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
-  proxmox_ssh_user = var.proxmox_ssh_user
-  network_bridge   = var.network_bridge
-  vm_storage_pool  = var.vm_storage_pool
-  cpu_type         = var.cpu_type
+  talos_version      = var.talos_version
+  schematic_id       = var.talos_schematic_worker
+  template_vm_id     = var.template_ids.thor.worker
+  template_name      = "talos-${var.talos_version}-worker-thor"
+  proxmox_node       = "Thor"
+  proxmox_host       = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
+  proxmox_ssh_user   = var.proxmox_ssh_user
+  network_bridge     = var.network_bridge
+  vm_storage_pool    = var.vm_storage_pool
+  cpu_type           = var.cpu_type
   enable_secure_boot = var.enable_secure_boot
-  enable_tpm       = var.enable_tpm
-  enable_firewall  = var.enable_firewall
+  enable_tpm         = var.enable_tpm
+  enable_firewall    = var.enable_firewall
 
   # Wait for Thor controller before deploying worker (last in chain)
   depends_on = [module.template_thor_controller]
@@ -377,15 +377,15 @@ module "control_plane_nodes" {
     module.template_thor_controller
   ]
 
-  hostname        = each.value.hostname
-  vm_id           = each.value.vm_id
-  proxmox_node    = each.value.proxmox_node
+  hostname     = each.value.hostname
+  vm_id        = each.value.vm_id
+  proxmox_node = each.value.proxmox_node
 
   # Use the controller template from the assigned Proxmox node
   template_vm_id = (
-    each.value.proxmox_node == "Baldar"   ? var.template_ids.baldar.controller :
+    each.value.proxmox_node == "Baldar" ? var.template_ids.baldar.controller :
     each.value.proxmox_node == "Heimdall" ? var.template_ids.heimdall.controller :
-    each.value.proxmox_node == "Odin"     ? var.template_ids.odin.controller :
+    each.value.proxmox_node == "Odin" ? var.template_ids.odin.controller :
     var.template_ids.thor.controller
   )
 
@@ -401,8 +401,8 @@ module "control_plane_nodes" {
   memory_mb    = var.controlplane_memory_mb
   disk_size_gb = var.controlplane_disk_size_gb
 
-  vm_storage_pool = var.vm_storage_pool
-  auto_start      = true
+  vm_storage_pool   = var.vm_storage_pool
+  auto_start        = true
   enable_ballooning = false
   enable_protection = false
 
@@ -430,15 +430,15 @@ module "worker_nodes" {
     module.template_thor_worker
   ]
 
-  hostname        = each.value.hostname
-  vm_id           = each.value.vm_id
-  proxmox_node    = each.value.proxmox_node
+  hostname     = each.value.hostname
+  vm_id        = each.value.vm_id
+  proxmox_node = each.value.proxmox_node
 
   # Use the worker template from the assigned Proxmox node
   template_vm_id = (
-    each.value.proxmox_node == "Baldar"   ? var.template_ids.baldar.worker :
+    each.value.proxmox_node == "Baldar" ? var.template_ids.baldar.worker :
     each.value.proxmox_node == "Heimdall" ? var.template_ids.heimdall.worker :
-    each.value.proxmox_node == "Odin"     ? var.template_ids.odin.worker :
+    each.value.proxmox_node == "Odin" ? var.template_ids.odin.worker :
     var.template_ids.thor.worker
   )
 
@@ -455,8 +455,8 @@ module "worker_nodes" {
   memory_mb    = each.value.is_gpu ? var.gpu_worker_memory_mb : var.worker_memory_mb
   disk_size_gb = each.value.is_gpu ? var.gpu_worker_disk_size_gb : var.worker_disk_size_gb
 
-  vm_storage_pool = var.vm_storage_pool
-  auto_start      = true
+  vm_storage_pool   = var.vm_storage_pool
+  auto_start        = true
   enable_ballooning = false
   enable_protection = false
 

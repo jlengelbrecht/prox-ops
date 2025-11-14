@@ -42,9 +42,21 @@ variable "ip_address" {
 }
 
 variable "network_bridge" {
-  description = "Network bridge name"
+  description = "Network bridge for all interfaces - 10G bond (vmbr1)"
   type        = string
-  default     = "vmbr0"
+  default     = "vmbr1"
+}
+
+variable "iot_vlan_tag" {
+  description = "VLAN tag for IoT network (eth1)"
+  type        = number
+  default     = 62
+}
+
+variable "dmz_vlan_tag" {
+  description = "VLAN tag for DMZ network (eth2)"
+  type        = number
+  default     = 81
 }
 
 # Resource Configuration
@@ -144,31 +156,31 @@ variable "enable_protection" {
 variable "timeout_create" {
   description = "Timeout for VM creation"
   type        = number
-  default     = 1800  # 30 minutes
+  default     = 1800 # 30 minutes
 }
 
 variable "timeout_clone" {
   description = "Timeout for VM cloning"
   type        = number
-  default     = 600  # 10 minutes
+  default     = 600 # 10 minutes
 }
 
 variable "timeout_migrate" {
   description = "Timeout for VM migration"
   type        = number
-  default     = 600  # 10 minutes
+  default     = 600 # 10 minutes
 }
 
 variable "timeout_reboot" {
   description = "Timeout for VM reboot"
   type        = number
-  default     = 300  # 5 minutes
+  default     = 300 # 5 minutes
 }
 
 variable "timeout_shutdown" {
   description = "Timeout for VM shutdown"
   type        = number
-  default     = 300  # 5 minutes
+  default     = 300 # 5 minutes
 }
 
 # Tags

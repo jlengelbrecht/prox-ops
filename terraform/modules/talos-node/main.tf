@@ -55,7 +55,7 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
     cores   = var.cpu_cores
     sockets = var.cpu_sockets
     type    = var.cpu_type
-    numa    = true  # Enable NUMA for better CPU pinning
+    numa    = true # Enable NUMA for better CPU pinning
   }
 
   # Memory Configuration - Consolidated dynamic block
@@ -71,23 +71,48 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
     interface    = "scsi0"
     size         = var.disk_size_gb
     iothread     = true
-    ssd          = true  # emulatessd for better performance
+    ssd          = true # emulatessd for better performance
     discard      = "on"
   }
 
   # Network Configuration
-  # Primary network interface (VLAN 67 - Kubernetes cluster network)
+  # ALL interfaces use vmbr1 (10G bond)
+
+  # eth0: Default/native network (no VLAN tag) - Kubernetes cluster communication
+  # CRITICAL: MAC address must be preserved (DHCP reservations documented)
+  # All nodes (controllers + workers) get eth0 on vmbr1 native VLAN (10.20.66.0/23)
   network_device {
-    bridge      = var.network_bridge
+    bridge      = var.network_bridge # vmbr1 (10G bond)
     mac_address = upper(replace(var.mac_address, "-", ":"))
     model       = "virtio"
-    firewall    = var.enable_firewall  # REQUIRED for DMZ security
+    firewall    = var.enable_firewall
   }
 
-  # Additional network interfaces for workers (VLAN 62, 81)
-  # Workers need 3 NICs total, controllers only need 1
-  # This will be added via cloud-init or Talos configuration
-  # Note: Multiple NIC configuration is handled in Talos machineconfig
+  # eth1: IoT VLAN 62 - Workers only
+  # Used by Multus NetworkAttachmentDefinition (iot-vlan62) for IoT device access
+  # Required for: Home Assistant, Zigbee, Z-Wave, IoT workloads
+  dynamic "network_device" {
+    for_each = var.is_controlplane ? [] : [1]
+    content {
+      bridge   = var.network_bridge   # vmbr1 (10G bond)
+      vlan_id  = var.iot_vlan_tag     # 62
+      model    = "virtio"
+      firewall = var.enable_firewall
+    }
+  }
+
+  # eth2: DMZ VLAN 81 - Workers only
+  # Used by Multus NetworkAttachmentDefinition (dmz-vlan81) for DMZ workloads
+  # Required for: Plex, public-facing services
+  dynamic "network_device" {
+    for_each = var.is_controlplane ? [] : [1]
+    content {
+      bridge   = var.network_bridge   # vmbr1 (10G bond)
+      vlan_id  = var.dmz_vlan_tag     # 81
+      model    = "virtio"
+      firewall = var.enable_firewall
+    }
+  }
 
   # Boot Configuration
   boot_order = ["scsi0"]
@@ -187,10 +212,10 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
   protection = var.enable_protection
 
   # Timeout settings
-  timeout_create  = var.timeout_create
-  timeout_clone   = var.timeout_clone
-  timeout_migrate = var.timeout_migrate
-  timeout_reboot  = var.timeout_reboot
+  timeout_create      = var.timeout_create
+  timeout_clone       = var.timeout_clone
+  timeout_migrate     = var.timeout_migrate
+  timeout_reboot      = var.timeout_reboot
   timeout_shutdown_vm = var.timeout_shutdown
 }
 
@@ -198,10 +223,10 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
 output "vm_info" {
   description = "VM information for Talos configuration"
   value = {
-    vm_id      = proxmox_virtual_environment_vm.talos_node.vm_id
-    name       = proxmox_virtual_environment_vm.talos_node.name
-    node_name  = proxmox_virtual_environment_vm.talos_node.node_name
+    vm_id       = proxmox_virtual_environment_vm.talos_node.vm_id
+    name        = proxmox_virtual_environment_vm.talos_node.name
+    node_name   = proxmox_virtual_environment_vm.talos_node.node_name
     mac_address = var.mac_address
-    ip_address = var.ip_address
+    ip_address  = var.ip_address
   }
 }
