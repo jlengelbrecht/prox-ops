@@ -1,0 +1,24 @@
+---
+# PodDisruptionBudget for GitHub Actions Runners
+# Ensures controlled eviction during node maintenance
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: github-runners-pdb
+  namespace: github-actions
+  labels:
+    app.kubernetes.io/name: gha-runner-scale-set
+    app.kubernetes.io/component: pdb
+spec:
+  # Allow all runners to be evicted if absolutely necessary
+  # But limit voluntary disruptions to one at a time
+  minAvailable: 0
+  maxUnavailable: 1
+
+  # Select runner pods
+  selector:
+    matchLabels:
+      actions.github.com/scale-set-name: cattle-upgrade
+
+  # Optional: Track disruptions
+  unhealthyPodEvictionPolicy: IfHealthyBudget
