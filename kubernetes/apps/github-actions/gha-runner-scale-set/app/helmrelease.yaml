@@ -29,12 +29,10 @@ spec:
     # GitHub App authentication (secret created by ExternalSecret)
     githubConfigSecret: github-runner-registration
 
-    # Scaling configuration
-    minRunners: 2
-    maxRunners: 5
-
-    # Runner group (default for repository-level runners)
-    runnerGroup: "default"
+    # Scaling configuration (fixed 3 runners for cattle upgrade resilience)
+    # Per Opus's design: 3 runners with anti-affinity ensures 2 survive any single node drain
+    minRunners: 3
+    maxRunners: 3
 
     # Runner template
     template:
@@ -82,8 +80,9 @@ spec:
           - name: work
             emptyDir: {}
 
-        # Node affinity (prefer worker nodes, avoid control plane)
+        # Affinity rules (CRITICAL for cattle upgrade resilience)
         affinity:
+          # Node affinity: prefer worker nodes, avoid control plane
           nodeAffinity:
             preferredDuringSchedulingIgnoredDuringExecution:
               - weight: 100
@@ -91,6 +90,19 @@ spec:
                   matchExpressions:
                     - key: node-role.kubernetes.io/control-plane
                       operator: DoesNotExist
+
+          # Pod anti-affinity: REQUIRED - force runners on different nodes
+          # This ensures that when any single node is drained during cattle upgrade,
+          # at least 2 runners survive to continue the workflow
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchExpressions:
+                    - key: actions.github.com/scale-set-name
+                      operator: In
+                      values:
+                        - cattle-upgrade
+                topologyKey: kubernetes.io/hostname
 
         # Tolerations (avoid GPU nodes unless necessary)
         tolerations: []
