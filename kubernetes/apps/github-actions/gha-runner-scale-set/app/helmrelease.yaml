@@ -29,10 +29,11 @@ spec:
     # GitHub App authentication (secret created by ExternalSecret)
     githubConfigSecret: github-runner-registration
 
-    # CRITICAL FIX: Dynamic scaling instead of pre-provisioned runners
-    # Previous config (minRunners: 3) created unusable pre-provisioned runners
-    # that couldn't acquire jobs due to ARC's ephemeral architecture
-    minRunners: 0   # Don't pre-provision - create on-demand
+    # Scaling configuration
+    # minRunners: 1 maintains one "warm" runner to avoid race conditions
+    # where jobs are canceled before on-demand runners can start (ARC issue #4000)
+    # The JIT token bug with minRunners > 0 was fixed in ARC 0.13.0
+    minRunners: 1   # One warm runner for immediate job pickup
     maxRunners: 10  # Allow scaling for parallel jobs
 
     # Runner template
