@@ -10,9 +10,8 @@ metadata:
     app.kubernetes.io/name: gha-runner-scale-set
     app.kubernetes.io/component: pdb
 spec:
-  # Allow all runners to be evicted if absolutely necessary
-  # But limit voluntary disruptions to one at a time
-  minAvailable: 0
+  # Limit voluntary disruptions to one runner at a time during node drains
+  # No minAvailable set, allowing all runners to be evicted if necessary
   maxUnavailable: 1
 
   # Select runner pods
