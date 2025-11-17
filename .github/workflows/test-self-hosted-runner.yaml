@@ -17,7 +17,7 @@ on:
 jobs:
   test-runner-basic:
     name: Test Basic Runner Functionality
-    runs-on: [self-hosted, cattle-upgrade]
+    runs-on: cattle-upgrade
     if: inputs.test_type == 'basic' || inputs.test_type == ''
     steps:
       - name: Checkout code
@@ -59,7 +59,7 @@ jobs:
 
   test-runner-kubectl:
     name: Test kubectl Access
-    runs-on: [self-hosted, cattle-upgrade]
+    runs-on: cattle-upgrade
     if: inputs.test_type == 'kubectl'
     steps:
       - name: Install kubectl
@@ -99,7 +99,7 @@ jobs:
 
   test-runner-terraform:
     name: Test Terraform Access
-    runs-on: [self-hosted, cattle-upgrade]
+    runs-on: cattle-upgrade
     if: inputs.test_type == 'terraform'
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
