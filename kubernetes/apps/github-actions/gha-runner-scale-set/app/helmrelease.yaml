@@ -29,10 +29,11 @@ spec:
     # GitHub App authentication (secret created by ExternalSecret)
     githubConfigSecret: github-runner-registration
 
-    # Scaling configuration (fixed 3 runners for cattle upgrade resilience)
-    # Per Opus's design: 3 runners with anti-affinity ensures 2 survive any single node drain
-    minRunners: 3
-    maxRunners: 3
+    # CRITICAL FIX: Dynamic scaling instead of pre-provisioned runners
+    # Previous config (minRunners: 3) created unusable pre-provisioned runners
+    # that couldn't acquire jobs due to ARC's ephemeral architecture
+    minRunners: 0   # Don't pre-provision - create on-demand
+    maxRunners: 10  # Allow scaling for parallel jobs
 
     # Runner template
     template:
@@ -70,6 +71,18 @@ spec:
                 drop:
                   - ALL
 
+            # Add pre-stop hook for graceful shutdown during node drain
+            lifecycle:
+              preStop:
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - |
+                      # Give running job time to checkpoint/save state
+                      echo "PreStop hook: Graceful shutdown initiated"
+                      sleep 25
+
             # Volume mounts for tools
             volumeMounts:
               - name: work
@@ -80,7 +93,10 @@ spec:
           - name: work
             emptyDir: {}
 
-        # Affinity rules (CRITICAL for cattle upgrade resilience)
+        # Graceful termination
+        terminationGracePeriodSeconds: 30
+
+        # Affinity rules for spreading runners across nodes
         affinity:
           # Node affinity: prefer worker nodes, avoid control plane
           nodeAffinity:
@@ -91,18 +107,19 @@ spec:
                     - key: node-role.kubernetes.io/control-plane
                       operator: DoesNotExist
 
-          # Pod anti-affinity: REQUIRED - force runners on different nodes
-          # This ensures that when any single node is drained during cattle upgrade,
-          # at least 2 runners survive to continue the workflow
+          # Pod anti-affinity: PREFERRED (not required) to spread runners
+          # Changed from required to preferred for better scheduling flexibility
           podAntiAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-              - labelSelector:
-                  matchExpressions:
-                    - key: actions.github.com/scale-set-name
-                      operator: In
-                      values:
-                        - cattle-upgrade
-                topologyKey: kubernetes.io/hostname
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                podAffinityTerm:
+                  labelSelector:
+                    matchExpressions:
+                      - key: actions.github.com/scale-set-name
+                        operator: In
+                        values:
+                          - cattle-upgrade
+                  topologyKey: kubernetes.io/hostname
 
         # Tolerations (avoid GPU nodes unless necessary)
         tolerations: []
