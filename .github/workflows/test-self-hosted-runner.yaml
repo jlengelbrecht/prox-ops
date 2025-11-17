@@ -67,7 +67,10 @@ jobs:
           # Check if kubectl is available
           if ! command -v kubectl &> /dev/null; then
             echo "kubectl not found, installing..."
-            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+            curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+            curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
+            echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
             chmod +x kubectl
             mkdir -p ~/.local/bin
             mv kubectl ~/.local/bin/
@@ -109,12 +112,15 @@ jobs:
         run: |
           if ! command -v terraform &> /dev/null; then
             echo "Terraform not found, installing..."
-            curl -LO "https://releases.hashicorp.com/terraform/1.11.3/terraform_1.11.3_linux_amd64.zip"
-            unzip terraform_1.11.3_linux_amd64.zip
+            TERRAFORM_VERSION="1.11.3"
+            curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+            curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+            sha256sum --check --ignore-missing terraform_${TERRAFORM_VERSION}_SHA256SUMS
+            unzip terraform_${TERRAFORM_VERSION}_linux_amd64.zip
             mkdir -p ~/.local/bin
             mv terraform ~/.local/bin/
             echo "$HOME/.local/bin" >> $GITHUB_PATH
-            rm terraform_1.11.3_linux_amd64.zip
+            rm terraform_${TERRAFORM_VERSION}_linux_amd64.zip terraform_${TERRAFORM_VERSION}_SHA256SUMS
           fi
           terraform version
 
