@@ -1,0 +1,98 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: gha-runner-scale-set
+  namespace: github-actions
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: gha-runner-scale-set
+  interval: 1h
+  dependsOn:
+    - name: gha-runner-scale-set-controller
+      namespace: github-actions
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    # Runner scale set name (used in runs-on: [self-hosted, cattle-upgrade])
+    runnerScaleSetName: "cattle-upgrade"
+
+    # GitHub configuration
+    githubConfigUrl: "https://github.com/jlengelbrecht/prox-ops"
+
+    # GitHub App authentication (secret created by ExternalSecret)
+    githubConfigSecret: github-runner-registration
+
+    # Scaling configuration
+    minRunners: 2
+    maxRunners: 5
+
+    # Runner group (default for repository-level runners)
+    runnerGroup: "default"
+
+    # Runner template
+    template:
+      spec:
+        # Service account with kubectl/cluster access
+        serviceAccountName: github-actions-runner
+
+        # Container spec
+        containers:
+          - name: runner
+            image: ghcr.io/actions/actions-runner:2.329.0
+            imagePullPolicy: IfNotPresent
+
+            # Resource allocation
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+              limits:
+                cpu: 2000m
+                memory: 4Gi
+
+            # Security context
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1001
+              fsGroup: 1001
+              capabilities:
+                drop:
+                  - ALL
+              seccompProfile:
+                type: RuntimeDefault
+              allowPrivilegeEscalation: false
+
+            # Volume mounts for tools
+            volumeMounts:
+              - name: work
+                mountPath: /home/runner/_work
+
+        # Volumes
+        volumes:
+          - name: work
+            emptyDir: {}
+
+        # Node affinity (prefer worker nodes, avoid control plane)
+        affinity:
+          nodeAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                    - key: node-role.kubernetes.io/control-plane
+                      operator: DoesNotExist
+
+        # Tolerations (avoid GPU nodes unless necessary)
+        tolerations: []
+
+    # Controller service account
+    controllerServiceAccount:
+      name: gha-runner-scale-set-controller
+      namespace: github-actions
