@@ -42,6 +42,14 @@ spec:
         # Service account with kubectl/cluster access
         serviceAccountName: github-actions-runner
 
+        # Pod-level security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          fsGroup: 1001
+          seccompProfile:
+            type: RuntimeDefault
+
         # Container spec
         containers:
           - name: runner
@@ -57,17 +65,12 @@ spec:
                 cpu: 2000m
                 memory: 4Gi
 
-            # Security context
+            # Security context (container-level)
             securityContext:
-              runAsNonRoot: true
-              runAsUser: 1001
-              fsGroup: 1001
+              allowPrivilegeEscalation: false
               capabilities:
                 drop:
                   - ALL
-              seccompProfile:
-                type: RuntimeDefault
-              allowPrivilegeEscalation: false
 
             # Volume mounts for tools
             volumeMounts:
