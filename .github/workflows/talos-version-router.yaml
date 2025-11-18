@@ -1,0 +1,198 @@
+---
+name: Talos Version Router - Route to Correct Upgrade Workflow
+
+# PURPOSE: Detect Talos version changes from Renovate PRs and route to the
+# appropriate upgrade workflow based on semantic versioning change type:
+# - MAJOR/MINOR changes (1.11.x → 1.12.x) → cattle workflow (destroy/recreate)
+# - PATCH changes (1.11.3 → 1.11.5) → pets workflow (talosctl upgrade)
+
+on:
+  # Trigger 1: Automatic detection when terraform/variables.tf is pushed to main
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/variables.tf'
+
+  # Trigger 2: Manual trigger with force options
+  workflow_dispatch:
+    inputs:
+      force_cattle:
+        description: 'Force cattle upgrade workflow (skip version detection)'
+        required: false
+        type: boolean
+        default: false
+      test_mode:
+        description: 'Testing mode (2 nodes) vs Production mode (15 nodes)'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  # Job 1: Detect version change and classify upgrade type
+  detect-version-change:
+    name: Detect Talos Version Change
+    runs-on: ubuntu-latest
+    outputs:
+      old_version: ${{ steps.detect.outputs.old_version }}
+      new_version: ${{ steps.detect.outputs.new_version }}
+      upgrade_type: ${{ steps.detect.outputs.upgrade_type }}
+      should_upgrade: ${{ steps.detect.outputs.should_upgrade }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 2  # Need current + previous commit for comparison
+
+      - name: Extract and compare versions
+        id: detect
+        run: |
+          echo "=== Talos Version Detection ==="
+
+          # Manual trigger with force_cattle: skip detection, use cattle workflow
+          if [[ "${{ inputs.force_cattle }}" == "true" ]]; then
+            echo "Manual trigger with force_cattle enabled - routing to cattle workflow"
+            NEW_VERSION=$(grep 'default.*=.*"' terraform/variables.tf | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            echo "old_version=0.0.0" >> $GITHUB_OUTPUT
+            echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+            echo "upgrade_type=cattle" >> $GITHUB_OUTPUT
+            echo "should_upgrade=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Extract new version from current commit (HEAD)
+          NEW_VERSION=$(grep 'default.*=.*"' terraform/variables.tf | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+
+          if [[ -z "$NEW_VERSION" ]]; then
+            echo "ERROR: Could not extract new version from terraform/variables.tf"
+            exit 1
+          fi
+
+          echo "Current version (HEAD): ${NEW_VERSION}"
+
+          # Extract old version from previous commit (HEAD^)
+          git checkout HEAD^ -- terraform/variables.tf
+          OLD_VERSION=$(grep 'default.*=.*"' terraform/variables.tf | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+
+          # Restore current version
+          git checkout HEAD -- terraform/variables.tf
+
+          if [[ -z "$OLD_VERSION" ]]; then
+            echo "ERROR: Could not extract old version from previous commit"
+            exit 1
+          fi
+
+          echo "Previous version (HEAD^): ${OLD_VERSION}"
+
+          # Check if versions are identical (no upgrade needed)
+          if [[ "$OLD_VERSION" == "$NEW_VERSION" ]]; then
+            echo "No version change detected (${OLD_VERSION} → ${NEW_VERSION})"
+            echo "old_version=${OLD_VERSION}" >> $GITHUB_OUTPUT
+            echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+            echo "upgrade_type=none" >> $GITHUB_OUTPUT
+            echo "should_upgrade=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Parse semantic version components
+          OLD_MAJOR=$(echo "$OLD_VERSION" | cut -d. -f1)
+          OLD_MINOR=$(echo "$OLD_VERSION" | cut -d. -f2)
+          OLD_PATCH=$(echo "$OLD_VERSION" | cut -d. -f3)
+
+          NEW_MAJOR=$(echo "$NEW_VERSION" | cut -d. -f1)
+          NEW_MINOR=$(echo "$NEW_VERSION" | cut -d. -f2)
+          NEW_PATCH=$(echo "$NEW_VERSION" | cut -d. -f3)
+
+          echo "Old version components: ${OLD_MAJOR}.${OLD_MINOR}.${OLD_PATCH}"
+          echo "New version components: ${NEW_MAJOR}.${NEW_MINOR}.${NEW_PATCH}"
+
+          # Determine upgrade type based on semantic versioning
+          if [[ "$NEW_MAJOR" != "$OLD_MAJOR" ]]; then
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="MAJOR"
+          elif [[ "$NEW_MINOR" != "$OLD_MINOR" ]]; then
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="MINOR"
+          elif [[ "$NEW_PATCH" != "$OLD_PATCH" ]]; then
+            UPGRADE_TYPE="pets"
+            CHANGE_TYPE="PATCH"
+          else
+            echo "ERROR: Versions differ but no component changed (logic error)"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Detection Results ==="
+          echo "Old version: ${OLD_VERSION}"
+          echo "New version: ${NEW_VERSION}"
+          echo "Change type: ${CHANGE_TYPE} (${OLD_VERSION} → ${NEW_VERSION})"
+          echo "Upgrade workflow: ${UPGRADE_TYPE}"
+          echo ""
+
+          # Set outputs for downstream jobs
+          echo "old_version=${OLD_VERSION}" >> $GITHUB_OUTPUT
+          echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "upgrade_type=${UPGRADE_TYPE}" >> $GITHUB_OUTPUT
+          echo "should_upgrade=true" >> $GITHUB_OUTPUT
+
+      - name: Version detection summary
+        run: |
+          echo "### Talos Version Change Detected" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Attribute | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Old Version | \`${{ steps.detect.outputs.old_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| New Version | \`${{ steps.detect.outputs.new_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Upgrade Type | **${{ steps.detect.outputs.upgrade_type }}** |" >> $GITHUB_STEP_SUMMARY
+          echo "| Should Upgrade | ${{ steps.detect.outputs.should_upgrade }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "${{ steps.detect.outputs.upgrade_type }}" == "cattle" ]]; then
+            echo "🐄 **Cattle Workflow** will be triggered (destroy/recreate nodes)" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ steps.detect.outputs.upgrade_type }}" == "pets" ]]; then
+            echo "🐕 **Pets Workflow** will be triggered (in-place upgrade via talosctl)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⏭️ No upgrade needed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # Job 2: Route to cattle workflow for MAJOR/MINOR upgrades
+  trigger-cattle-upgrade:
+    name: Trigger Cattle Upgrade Workflow
+    needs: detect-version-change
+    if: needs.detect-version-change.outputs.should_upgrade == 'true' && needs.detect-version-change.outputs.upgrade_type == 'cattle'
+    uses: ./.github/workflows/upgrade-cattle.yaml
+    with:
+      old_version: ${{ needs.detect-version-change.outputs.old_version }}
+      new_version: ${{ needs.detect-version-change.outputs.new_version }}
+      test_mode: ${{ inputs.test_mode || true }}  # Default to test mode if not specified
+    secrets: inherit
+
+  # Job 3: Route to pets workflow for PATCH upgrades (STUB - not yet implemented)
+  trigger-pets-upgrade:
+    name: Trigger Pets Upgrade Workflow (STUB)
+    needs: detect-version-change
+    if: needs.detect-version-change.outputs.should_upgrade == 'true' && needs.detect-version-change.outputs.upgrade_type == 'pets'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pets workflow placeholder
+        run: |
+          echo "=== Pets Upgrade Workflow (Not Yet Implemented) ==="
+          echo "Old version: ${{ needs.detect-version-change.outputs.old_version }}"
+          echo "New version: ${{ needs.detect-version-change.outputs.new_version }}"
+          echo ""
+          echo "This would trigger the pets upgrade workflow (STORY-046)"
+          echo "Pets workflow uses talosctl upgrade for in-place updates"
+          echo "Suitable for PATCH version changes (e.g., 1.11.3 → 1.11.5)"
+          echo ""
+          echo "For now, returning success (no-op)"
+          exit 0
+
+      - name: Summary
+        run: |
+          echo "### Pets Upgrade Workflow (Placeholder)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Note**: Pets workflow not yet implemented (see STORY-046)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version Change**: \`${{ needs.detect-version-change.outputs.old_version }}\` → \`${{ needs.detect-version-change.outputs.new_version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This is a **PATCH version change** which should use in-place upgrade via talosctl." >> $GITHUB_STEP_SUMMARY

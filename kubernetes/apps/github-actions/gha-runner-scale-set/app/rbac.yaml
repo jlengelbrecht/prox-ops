@@ -38,10 +38,22 @@ kind: ClusterRole
 metadata:
   name: github-actions-runner-cluster
 rules:
-  # Node management (for cattle upgrades)
+  # Node operations (required for cattle upgrade workflow)
   - apiGroups: [""]
     resources: ["nodes"]
-    verbs: ["get", "list", "watch", "patch", "update"]
+    verbs: ["get", "list", "watch", "patch"]  # patch required for cordon/uncordon
+  # IMPORTANT: We CANNOT restrict to nodes/status because kubectl cordon/uncordon
+  # modifies .spec.unschedulable which is part of the nodes resource.
+  # This is a Kubernetes API limitation - there is no way to grant ONLY cordon
+  # permission without granting general node patch.
+  # Pod eviction (required for kubectl drain during cattle upgrades)
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  # Pod read access (required for drain to list pods on node)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
   # HelmReleases and Kustomizations (read-only cluster-wide)
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]

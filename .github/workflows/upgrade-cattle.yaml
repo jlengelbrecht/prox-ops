@@ -1,0 +1,653 @@
+---
+name: Cattle Upgrade - MAJOR/MINOR Talos Versions (Terraform Destroy/Recreate)
+
+# SCOPE: This workflow handles MAJOR and MINOR Talos version upgrades
+# Examples: v1.11.x → v1.12.x (MINOR), v1.x → v2.x (MAJOR)
+#
+# For PATCH version upgrades (e.g., v1.11.3 → v1.11.5), use the pets workflow
+# (talosctl upgrade command - see STORY-046)
+#
+# TESTING MODE: Defaults to 2 worker nodes only (k8s-work-1, k8s-work-2)
+# PRODUCTION MODE: Targets all 15 nodes (3 control plane + 12 workers)
+
+on:
+  # Primary trigger: Called by version router workflow
+  workflow_call:
+    inputs:
+      old_version:
+        description: 'Previous Talos version (e.g., 1.11.3)'
+        required: true
+        type: string
+      new_version:
+        description: 'New Talos version (e.g., 1.12.0)'
+        required: true
+        type: string
+      test_mode:
+        description: 'Testing mode (2 nodes) vs Production mode (15 nodes)'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      PROXMOX_USERNAME:
+        required: true
+      PROXMOX_PASSWORD:
+        required: true
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_DEFAULT_REGION:
+        required: true
+
+concurrency:
+  group: cattle-upgrade-global  # Lock ALL cattle upgrades cluster-wide
+  cancel-in-progress: false
+
+jobs:
+  # DISABLED FOR INITIAL TESTING - Enable after worker validation succeeds
+  # upgrade-control-plane:
+  #   name: Upgrade Control Plane Node ${{ matrix.node }}
+  #   runs-on: gha-runner-scale-set
+  #   if: inputs.test_mode == false  # Only run in production mode
+  #   strategy:
+  #     max-parallel: 1  # One control plane node at a time
+  #     matrix:
+  #       node:
+  #         - k8s-ctrl-1
+  #         - k8s-ctrl-2
+  #         - k8s-ctrl-3
+  #
+  #   env:
+  #     NODE_NAME: ${{ matrix.node }}
+  #     MODULE_TYPE: control_plane_nodes
+  #     OLD_VERSION: ${{ inputs.old_version }}
+  #     NEW_VERSION: ${{ inputs.new_version }}
+  #
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+  #
+  #     - name: Log upgrade context
+  #       run: |
+  #         echo "=== Cattle Upgrade Context ==="
+  #         echo "Node: ${NODE_NAME}"
+  #         echo "Module: ${MODULE_TYPE}"
+  #         echo "Version: ${OLD_VERSION} → ${NEW_VERSION}"
+  #         echo "Test Mode: ${{ inputs.test_mode }}"
+  #         echo "Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+  #
+  #     - name: Install kubectl
+  #       run: |
+  #         KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+  #         curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+  #         curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
+  #         echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+  #         chmod +x kubectl
+  #         mkdir -p ~/.local/bin
+  #         mv kubectl ~/.local/bin/
+  #         echo "$HOME/.local/bin" >> $GITHUB_PATH
+  #
+  #     - name: Install Terraform
+  #       run: |
+  #         TERRAFORM_VERSION="1.11.3"
+  #         curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+  #         curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+  #         sha256sum --check --ignore-missing "terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+  #         unzip "terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+  #         mkdir -p ~/.local/bin
+  #         mv terraform ~/.local/bin/
+  #         echo "$HOME/.local/bin" >> $GITHUB_PATH
+  #         rm "terraform_${TERRAFORM_VERSION}_linux_amd64.zip" "terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+  #
+  #     - name: Install AWS CLI
+  #       run: |
+  #         echo "Installing AWS CLI..."
+  #         curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+  #         unzip -q awscliv2.zip
+  #         sudo ./aws/install
+  #         aws --version
+  #
+  #     - name: Verify tool installations
+  #       run: |
+  #         echo "=== kubectl version ==="
+  #         kubectl version --client
+  #         echo ""
+  #         echo "=== Terraform version ==="
+  #         terraform version
+  #
+  #     - name: Initialize Terraform
+  #       working-directory: ./terraform
+  #       env:
+  #         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  #       run: |
+  #         terraform init
+  #
+  #     - name: Validate target parameters
+  #       run: |
+  #         echo "=== Parameter Validation ==="
+  #
+  #         # Ensure NODE_NAME matches expected pattern
+  #         if [[ ! "$NODE_NAME" =~ ^k8s-(ctrl|work)-[0-9]+$ ]]; then
+  #           echo "ERROR: Invalid NODE_NAME format: ${NODE_NAME}"
+  #           echo "Expected pattern: k8s-(ctrl|work)-[0-9]+"
+  #           exit 1
+  #         fi
+  #         echo "✓ NODE_NAME validated: ${NODE_NAME}"
+  #
+  #         # Ensure MODULE_TYPE is whitelisted
+  #         if [[ "$MODULE_TYPE" != "control_plane_nodes" ]] && [[ "$MODULE_TYPE" != "worker_nodes" ]]; then
+  #           echo "ERROR: Invalid MODULE_TYPE: ${MODULE_TYPE}"
+  #           echo "Allowed values: control_plane_nodes, worker_nodes"
+  #           exit 1
+  #         fi
+  #         echo "✓ MODULE_TYPE validated: ${MODULE_TYPE}"
+  #
+  #         echo "=== Parameter validation PASSED ==="
+  #
+  #     - name: Cordon node
+  #       continue-on-error: false
+  #       run: |
+  #         echo "=== AUDIT: Cordoning Node ==="
+  #         echo "AUDIT: Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  #         echo "AUDIT: Node: ${NODE_NAME}"
+  #         echo "AUDIT: Executed by: ${{ github.actor }}"
+  #         echo "AUDIT: Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+  #
+  #         echo "Cordoning node ${NODE_NAME}..."
+  #         kubectl cordon "${NODE_NAME}"
+  #         kubectl get node "${NODE_NAME}"
+  #
+  #     - name: Drain node
+  #       continue-on-error: false
+  #       timeout-minutes: 5
+  #       run: |
+  #         echo "Draining node ${NODE_NAME} (timeout: 5 minutes)..."
+  #         kubectl drain "${NODE_NAME}" \
+  #           --ignore-daemonsets \
+  #           --delete-emptydir-data \
+  #           --force \
+  #           --timeout=300s
+  #         echo "Node ${NODE_NAME} drained successfully"
+  #
+  #     - name: Plan node destruction
+  #       working-directory: ./terraform
+  #       env:
+  #         TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+  #         TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+  #         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  #       run: |
+  #         echo "=== Planning Terraform Destroy ==="
+  #         terraform plan -destroy \
+  #           -target="module.${MODULE_TYPE}[\"${NODE_NAME}\"]" \
+  #           -out=destroy.tfplan
+  #
+  #         # Validate plan output
+  #         echo "=== Extracting resources to be deleted ==="
+  #         terraform show -json destroy.tfplan | \
+  #           jq -r '.resource_changes[] | select(.change.actions == ["delete"]) | .address' > resources_to_delete.txt
+  #
+  #         echo "Resources to delete:"
+  #         cat resources_to_delete.txt
+  #
+  #         # Verify ONLY the expected VM will be deleted
+  #         expected="module.${MODULE_TYPE}[\"${NODE_NAME}\"]"
+  #         resource_count=$(wc -l < resources_to_delete.txt)
+  #
+  #         if [[ $resource_count -ne 1 ]]; then
+  #           echo "ERROR: Terraform destroy would affect ${resource_count} resources (expected 1)"
+  #           echo "Resources:"
+  #           cat resources_to_delete.txt
+  #           exit 1
+  #         fi
+  #
+  #         if ! grep -q "$expected" resources_to_delete.txt; then
+  #           echo "ERROR: Terraform destroy would affect unexpected resources:"
+  #           cat resources_to_delete.txt
+  #           echo ""
+  #           echo "Expected resource: ${expected}"
+  #           exit 1
+  #         fi
+  #
+  #         echo "✓ Terraform plan validation PASSED"
+  #         echo "✓ Will destroy exactly 1 resource: ${expected}"
+  #
+  #     - name: Backup Terraform state before destroy
+  #       working-directory: ./terraform
+  #       env:
+  #         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  #       run: |
+  #         echo "Backing up Terraform state before destroy..."
+  #         aws s3 cp s3://prox-ops-terraform-state/terraform.tfstate \
+  #           s3://prox-ops-terraform-state/backups/pre-destroy-${NODE_NAME}-$(date +%s).tfstate
+  #         echo "✓ State backup created"
+  #
+  #     - name: Destroy node via Terraform
+  #       id: destroy
+  #       continue-on-error: false
+  #       working-directory: ./terraform
+  #       timeout-minutes: 10
+  #       env:
+  #         TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+  #         TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+  #         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  #       run: |
+  #         echo "Destroying node ${NODE_NAME} via Terraform..."
+  #         terraform destroy \
+  #           -target="module.${MODULE_TYPE}[\"${NODE_NAME}\"]" \
+  #           -auto-approve
+  #         echo "Node ${NODE_NAME} destroyed successfully"
+  #         echo "destroyed=true" >> $GITHUB_OUTPUT
+  #
+  #     - name: Recreate node via Terraform
+  #       id: recreate
+  #       continue-on-error: false
+  #       working-directory: ./terraform
+  #       timeout-minutes: 15
+  #       env:
+  #         TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+  #         TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+  #         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  #       run: |
+  #         echo "Recreating node ${NODE_NAME} via Terraform..."
+  #         terraform apply \
+  #           -target="module.${MODULE_TYPE}[\"${NODE_NAME}\"]" \
+  #           -auto-approve
+  #         echo "Node ${NODE_NAME} created successfully"
+  #         echo "recreated=true" >> $GITHUB_OUTPUT
+  #
+  #     - name: Rollback - Attempt to recreate node if apply failed
+  #       id: rollback
+  #       if: failure() && steps.destroy.outputs.destroyed == 'true' && steps.recreate.outputs.recreated != 'true'
+  #       continue-on-error: true
+  #       working-directory: ./terraform
+  #       timeout-minutes: 15
+  #       env:
+  #         TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+  #         TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+  #         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  #         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  #         AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+  #       run: |
+  #         echo "ROLLBACK: Recreate failed, attempting recovery..."
+  #         terraform apply \
+  #           -target="module.${MODULE_TYPE}[\"${NODE_NAME}\"]" \
+  #           -auto-approve
+  #
+  #     - name: Check rollback status
+  #       if: steps.rollback.conclusion == 'failure'
+  #       run: |
+  #         echo "::error::CRITICAL: Node ${NODE_NAME} destroyed but recreation failed"
+  #         echo "::error::Manual intervention required immediately"
+  #         echo "::error::Cluster is operating with REDUCED CAPACITY"
+  #         echo "::error::Contact @jlengelbrecht immediately"
+  #         exit 1
+  #
+  #     - name: Wait for node to become Ready
+  #       continue-on-error: false
+  #       timeout-minutes: 10
+  #       run: |
+  #         echo "Waiting for node ${NODE_NAME} to become Ready (timeout: 10 minutes)..."
+  #         kubectl wait --for=condition=Ready "node/${NODE_NAME}" --timeout=600s
+  #         echo "Node ${NODE_NAME} is Ready"
+  #
+  #     - name: Uncordon node
+  #       continue-on-error: false
+  #       run: |
+  #         echo "=== AUDIT: Uncordoning Node ==="
+  #         echo "AUDIT: Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  #         echo "AUDIT: Node: ${NODE_NAME}"
+  #
+  #         echo "Uncordoning node ${NODE_NAME}..."
+  #         kubectl uncordon "${NODE_NAME}"
+  #         kubectl get node "${NODE_NAME}"
+  #
+  #     - name: Validate node health
+  #       continue-on-error: false
+  #       run: |
+  #         echo "=== Node Status ==="
+  #         kubectl get node "${NODE_NAME}" -o wide
+  #         echo ""
+  #         echo "=== Node Conditions ==="
+  #         kubectl get node "${NODE_NAME}" -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}'
+  #         echo ""
+  #         echo "=== Pods on Node ==="
+  #         kubectl get pods --all-namespaces -o wide --field-selector "spec.nodeName=${NODE_NAME}"
+  #
+  #     - name: Validate cluster health
+  #       continue-on-error: false
+  #       run: |
+  #         echo "=== All Nodes ==="
+  #         kubectl get nodes
+  #         echo ""
+  #         echo "=== HelmReleases Status ==="
+  #         kubectl get helmreleases --all-namespaces
+  #         echo ""
+  #         echo "=== Kustomizations Status ==="
+  #         kubectl get kustomizations --all-namespaces -n flux-system
+  #
+  #     - name: Notify on failure
+  #       if: failure()
+  #       run: |
+  #         echo "❌ Cattle upgrade failed for node ${NODE_NAME}"
+  #         echo "Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+  #
+  #     - name: Notify on success
+  #       if: success()
+  #       run: |
+  #         echo "✅ Cattle upgrade completed successfully for node ${NODE_NAME}"
+  #         echo "Node is Ready and rejoined the cluster"
+
+  # Worker Nodes Upgrade Job - Sequential, one at a time
+  upgrade-workers:
+    name: Upgrade Worker Node ${{ matrix.node }}
+    runs-on: gha-runner-scale-set
+    strategy:
+      max-parallel: 1  # One worker node at a time
+      matrix:
+        # Dynamic node selection based on test_mode input
+        node: ${{ inputs.test_mode == true && fromJSON('["k8s-work-1","k8s-work-2"]') || fromJSON('["k8s-work-1","k8s-work-2","k8s-work-3","k8s-work-4","k8s-work-5","k8s-work-6","k8s-work-11","k8s-work-12","k8s-work-13","k8s-work-14","k8s-work-15","k8s-work-16"]') }}
+
+    env:
+      NODE_NAME: ${{ matrix.node }}
+      MODULE_TYPE: worker_nodes
+      OLD_VERSION: ${{ inputs.old_version }}
+      NEW_VERSION: ${{ inputs.new_version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Log upgrade context
+        run: |
+          echo "=== Cattle Upgrade Context ==="
+          echo "Node: ${NODE_NAME}"
+          echo "Module: ${MODULE_TYPE}"
+          echo "Version: ${OLD_VERSION} → ${NEW_VERSION}"
+          echo "Test Mode: ${{ inputs.test_mode }}"
+          echo "Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Install kubectl
+        run: |
+          KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+          curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          chmod +x kubectl
+          mkdir -p ~/.local/bin
+          mv kubectl ~/.local/bin/
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install Terraform
+        run: |
+          TERRAFORM_VERSION="1.11.3"
+          curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+          sha256sum --check --ignore-missing "terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+          unzip "terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          mkdir -p ~/.local/bin
+          mv terraform ~/.local/bin/
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          rm "terraform_${TERRAFORM_VERSION}_linux_amd64.zip" "terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+
+      - name: Install AWS CLI
+        run: |
+          echo "Installing AWS CLI..."
+          curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          sudo ./aws/install
+          aws --version
+
+      - name: Verify tool installations
+        run: |
+          echo "=== kubectl version ==="
+          kubectl version --client
+          echo ""
+          echo "=== Terraform version ==="
+          terraform version
+          echo ""
+          echo "=== AWS CLI version ==="
+          aws --version
+
+      - name: Initialize Terraform
+        working-directory: ./terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          terraform init
+
+      - name: Validate target parameters
+        run: |
+          echo "=== Parameter Validation ==="
+
+          # Ensure NODE_NAME matches expected pattern
+          if [[ ! "$NODE_NAME" =~ ^k8s-(ctrl|work)-[0-9]+$ ]]; then
+            echo "ERROR: Invalid NODE_NAME format: ${NODE_NAME}"
+            echo "Expected pattern: k8s-(ctrl|work)-[0-9]+"
+            exit 1
+          fi
+          echo "✓ NODE_NAME validated: ${NODE_NAME}"
+
+          # Ensure MODULE_TYPE is whitelisted
+          if [[ "$MODULE_TYPE" != "control_plane_nodes" ]] && [[ "$MODULE_TYPE" != "worker_nodes" ]]; then
+            echo "ERROR: Invalid MODULE_TYPE: ${MODULE_TYPE}"
+            echo "Allowed values: control_plane_nodes, worker_nodes"
+            exit 1
+          fi
+          echo "✓ MODULE_TYPE validated: ${MODULE_TYPE}"
+
+          echo "=== Parameter validation PASSED ==="
+
+      - name: Cordon node
+        continue-on-error: false
+        run: |
+          echo "=== AUDIT: Cordoning Node ==="
+          echo "AUDIT: Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          echo "AUDIT: Node: ${NODE_NAME}"
+          echo "AUDIT: Executed by: ${{ github.actor }}"
+          echo "AUDIT: Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          echo "Cordoning node ${NODE_NAME}..."
+          kubectl cordon "${NODE_NAME}"
+          kubectl get node "${NODE_NAME}"
+
+      - name: Drain node
+        continue-on-error: false
+        timeout-minutes: 5
+        run: |
+          echo "Draining node ${NODE_NAME} (timeout: 5 minutes)..."
+          kubectl drain "${NODE_NAME}" \
+            --ignore-daemonsets \
+            --delete-emptydir-data \
+            --force \
+            --timeout=300s
+          echo "Node ${NODE_NAME} drained successfully"
+
+      - name: Plan node destruction
+        working-directory: ./terraform
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          echo "=== Planning Terraform Destroy ==="
+          terraform plan -destroy \
+            -target="module.${MODULE_TYPE}[\"${NODE_NAME}\"]" \
+            -out=destroy.tfplan
+
+          # Validate plan output
+          echo "=== Extracting resources to be deleted ==="
+          terraform show -json destroy.tfplan | \
+            jq -r '.resource_changes[] | select(.change.actions == ["delete"]) | .address' > resources_to_delete.txt
+
+          echo "Resources to delete:"
+          cat resources_to_delete.txt
+
+          # Verify ONLY the expected VM will be deleted
+          expected="module.${MODULE_TYPE}[\"${NODE_NAME}\"]"
+          resource_count=$(wc -l < resources_to_delete.txt)
+
+          if [[ $resource_count -ne 1 ]]; then
+            echo "ERROR: Terraform destroy would affect ${resource_count} resources (expected 1)"
+            echo "Resources:"
+            cat resources_to_delete.txt
+            exit 1
+          fi
+
+          if ! grep -q "$expected" resources_to_delete.txt; then
+            echo "ERROR: Terraform destroy would affect unexpected resources:"
+            cat resources_to_delete.txt
+            echo ""
+            echo "Expected resource: ${expected}"
+            exit 1
+          fi
+
+          echo "✓ Terraform plan validation PASSED"
+          echo "✓ Will destroy exactly 1 resource: ${expected}"
+
+      - name: Backup Terraform state before destroy
+        working-directory: ./terraform
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          echo "Backing up Terraform state before destroy..."
+          aws s3 cp s3://prox-ops-terraform-state/terraform.tfstate \
+            s3://prox-ops-terraform-state/backups/pre-destroy-${NODE_NAME}-$(date +%s).tfstate
+          echo "✓ State backup created"
+
+      - name: Destroy node via Terraform
+        id: destroy
+        continue-on-error: false
+        working-directory: ./terraform
+        timeout-minutes: 10
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          echo "Destroying node ${NODE_NAME} via Terraform..."
+          terraform destroy \
+            -target="module.${MODULE_TYPE}[\"${NODE_NAME}\"]" \
+            -auto-approve
+          echo "Node ${NODE_NAME} destroyed successfully"
+          echo "destroyed=true" >> $GITHUB_OUTPUT
+
+      - name: Recreate node via Terraform
+        id: recreate
+        continue-on-error: false
+        working-directory: ./terraform
+        timeout-minutes: 15
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          echo "Recreating node ${NODE_NAME} via Terraform..."
+          terraform apply \
+            -target="module.${MODULE_TYPE}[\"${NODE_NAME}\"]" \
+            -auto-approve
+          echo "Node ${NODE_NAME} created successfully"
+          echo "recreated=true" >> $GITHUB_OUTPUT
+
+      - name: Rollback - Attempt to recreate node if apply failed
+        id: rollback
+        if: failure() && steps.destroy.outputs.destroyed == 'true' && steps.recreate.outputs.recreated != 'true'
+        continue-on-error: true
+        working-directory: ./terraform
+        timeout-minutes: 15
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          echo "ROLLBACK: Recreate failed, attempting recovery..."
+          terraform apply \
+            -target="module.${MODULE_TYPE}[\"${NODE_NAME}\"]" \
+            -auto-approve
+
+      - name: Check rollback status
+        if: steps.rollback.conclusion == 'failure'
+        run: |
+          echo "::error::CRITICAL: Node ${NODE_NAME} destroyed but recreation failed"
+          echo "::error::Manual intervention required immediately"
+          echo "::error::Cluster is operating with REDUCED CAPACITY"
+          echo "::error::Contact @jlengelbrecht immediately"
+          exit 1
+
+      - name: Wait for node to become Ready
+        continue-on-error: false
+        timeout-minutes: 10
+        run: |
+          echo "Waiting for node ${NODE_NAME} to become Ready (timeout: 10 minutes)..."
+          kubectl wait --for=condition=Ready "node/${NODE_NAME}" --timeout=600s
+          echo "Node ${NODE_NAME} is Ready"
+
+      - name: Uncordon node
+        continue-on-error: false
+        run: |
+          echo "=== AUDIT: Uncordoning Node ==="
+          echo "AUDIT: Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          echo "AUDIT: Node: ${NODE_NAME}"
+
+          echo "Uncordoning node ${NODE_NAME}..."
+          kubectl uncordon "${NODE_NAME}"
+          kubectl get node "${NODE_NAME}"
+
+      - name: Validate node health
+        continue-on-error: false
+        run: |
+          echo "=== Node Status ==="
+          kubectl get node "${NODE_NAME}" -o wide
+          echo ""
+          echo "=== Node Conditions ==="
+          kubectl get node "${NODE_NAME}" -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.message}{"\n"}{end}'
+          echo ""
+          echo "=== Pods on Node ==="
+          kubectl get pods --all-namespaces -o wide --field-selector "spec.nodeName=${NODE_NAME}"
+
+      - name: Validate cluster health
+        continue-on-error: false
+        run: |
+          echo "=== All Nodes ==="
+          kubectl get nodes
+          echo ""
+          echo "=== HelmReleases Status ==="
+          kubectl get helmreleases --all-namespaces
+          echo ""
+          echo "=== Kustomizations Status ==="
+          kubectl get kustomizations --all-namespaces -n flux-system
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Cattle upgrade failed for node ${NODE_NAME}"
+          echo "Version: ${OLD_VERSION} → ${NEW_VERSION}"
+          echo "Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Cattle upgrade completed successfully for node ${NODE_NAME}"
+          echo "Version: ${OLD_VERSION} → ${NEW_VERSION}"
+          echo "Node is Ready and rejoined the cluster"
