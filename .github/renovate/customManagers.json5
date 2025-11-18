@@ -22,6 +22,17 @@
         "registryUrl=(?<registryUrl>\\S+)\\n.*?oci:\\/\\/(?<depName>[^:]+):(?<currentValue>.*)"
       ],
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Monitor Talos version in Terraform variables",
+      "fileMatch": ["^terraform/variables\\.tf$"],
+      "matchStrings": [
+        "variable \"talos_version\"[^}]+default\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "siderolabs/talos",
+      "versioningTemplate": "semver"
     }
   ]
 }
