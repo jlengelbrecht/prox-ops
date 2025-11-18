@@ -53,7 +53,9 @@ spec:
         # Container spec
         containers:
           - name: runner
-            image: ghcr.io/actions/actions-runner:2.329.0
+            # Using onedr0p's custom image to fix ARC 0.13.0 label propagation bug
+            # Official image (ghcr.io/actions/actions-runner:2.329.0) has issues with empty labels
+            image: ghcr.io/home-operations/actions-runner:2.329.0
             imagePullPolicy: IfNotPresent
 
             # Resource allocation
