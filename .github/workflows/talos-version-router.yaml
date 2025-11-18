@@ -36,11 +36,13 @@ jobs:
       - name: Detect version change
         id: detect
         run: |
+          set -euo pipefail
+
           # Extract old version from previous commit
-          OLD_VERSION=$(git show HEAD^:terraform/variables.tf | grep -A2 'variable "talos_version"' | grep 'default' | cut -d'"' -f2)
+          OLD_VERSION=$(git show HEAD^:terraform/variables.tf | grep -A3 'variable "talos_version"' | grep 'default' | cut -d'"' -f2)
 
           # Extract new version from current commit
-          NEW_VERSION=$(git show HEAD:terraform/variables.tf | grep -A2 'variable "talos_version"' | grep 'default' | cut -d'"' -f2)
+          NEW_VERSION=$(git show HEAD:terraform/variables.tf | grep -A3 'variable "talos_version"' | grep 'default' | cut -d'"' -f2)
 
           # SECURITY: Validate version format (semver only: digits.digits.digits)
           if ! [[ "$OLD_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
