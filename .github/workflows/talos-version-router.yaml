@@ -36,6 +36,8 @@ jobs:
       - name: Detect version change
         id: detect
         run: |
+          set -euo pipefail
+
           # Extract old version from previous commit
           OLD_VERSION=$(git show HEAD^:terraform/variables.tf | grep -A3 'variable "talos_version"' | grep 'default' | cut -d'"' -f2)
 
