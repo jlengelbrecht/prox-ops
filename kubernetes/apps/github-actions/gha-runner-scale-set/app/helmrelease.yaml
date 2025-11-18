@@ -66,11 +66,14 @@ spec:
                 memory: 4Gi
 
             # CRITICAL FIX: ARC 0.13.0 doesn't propagate runnerScaleSetName to GitHub as a label
-            # We must explicitly set RUNNER_LABELS env var to force runner registration with label
+            # We must explicitly set runner label env vars to force runner registration with label
             # Without this, runners register with labels:[] and workflows stay queued forever
             # Reference: ChatGPT Deep Research (arc-empty-labels-issue.md)
+            # Trying both env var names since different runner versions may use different names
             env:
               - name: RUNNER_LABELS
+                value: "cattle-upgrade"
+              - name: ACTIONS_RUNNER_INPUT_LABELS
                 value: "cattle-upgrade"
 
             # Security context (container-level)
