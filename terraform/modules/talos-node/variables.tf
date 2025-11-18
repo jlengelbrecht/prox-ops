@@ -47,6 +47,16 @@ variable "network_bridge" {
   default     = "vmbr0"
 }
 
+variable "additional_network_devices" {
+  description = "Additional network interfaces for multi-VLAN workers (IoT VLAN 62, DMZ VLAN 81)"
+  type = list(object({
+    bridge  = string
+    vlan_id = number
+    model   = string
+  }))
+  default = []
+}
+
 # Resource Configuration
 variable "cpu_cores" {
   description = "Number of CPU cores"

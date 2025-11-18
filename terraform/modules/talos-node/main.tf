@@ -84,10 +84,21 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
     firewall    = var.enable_firewall  # REQUIRED for DMZ security
   }
 
-  # Additional network interfaces for workers (VLAN 62, 81)
-  # Workers need 3 NICs total, controllers only need 1
-  # This will be added via cloud-init or Talos configuration
-  # Note: Multiple NIC configuration is handled in Talos machineconfig
+  # Additional network interfaces for workers (VLAN 62 IoT, VLAN 81 DMZ)
+  # Workers need 3 NICs total for network segmentation:
+  # - NIC 0: Primary cluster network (VLAN 67)
+  # - NIC 1: IoT network (VLAN 62) for IoT namespace workloads
+  # - NIC 2: DMZ network (VLAN 81) for DMZ namespace workloads (Plex)
+  # Controllers only need 1 NIC (primary cluster network)
+  dynamic "network_device" {
+    for_each = var.additional_network_devices
+    content {
+      bridge   = network_device.value.bridge
+      vlan_id  = network_device.value.vlan_id
+      model    = network_device.value.model
+      firewall = var.enable_firewall
+    }
+  }
 
   # Boot Configuration
   boot_order = ["scsi0"]
@@ -170,11 +181,10 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
   )
 
   # Lifecycle
+  # Note: Removed network_device from ignore_changes to allow Terraform to manage
+  # additional NICs (VLAN 62, 81) for network segmentation
   lifecycle {
-    ignore_changes = [
-      # Ignore changes to network device order as Talos manages this
-      network_device,
-    ]
+    ignore_changes = []
   }
 
   # Startup configuration
