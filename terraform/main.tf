@@ -448,6 +448,10 @@ module "worker_nodes" {
   ip_address      = each.value.ip_address
   network_bridge  = var.network_bridge
 
+  # Multi-VLAN network configuration for workers
+  # Workers get 3 NICs: primary cluster (67), IoT (62), DMZ (81)
+  additional_network_devices = lookup(each.value, "additional_network_devices", [])
+
   # Use GPU resources for GPU nodes, regular worker resources otherwise
   cpu_cores    = each.value.is_gpu ? var.gpu_worker_cpu_cores : var.worker_cpu_cores
   cpu_sockets  = each.value.is_gpu ? var.gpu_worker_cpu_sockets : var.worker_cpu_sockets
