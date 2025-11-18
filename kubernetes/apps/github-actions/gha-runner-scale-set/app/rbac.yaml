@@ -42,6 +42,18 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  # Pod eviction (for node drain during cattle upgrades)
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  # Pod read access (for drain to list pods on nodes)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # Deployment read access (for health checks)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
   # HelmReleases and Kustomizations (read-only cluster-wide)
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
