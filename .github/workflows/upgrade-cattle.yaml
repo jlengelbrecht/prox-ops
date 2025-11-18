@@ -33,6 +33,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
+  TERRAFORM_STATE_BUCKET: prox-ops-terraform-state
+  TERRAFORM_VERSION: "1.10.3"
 
 jobs:
   # ==========================================================================
@@ -46,10 +48,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate version inputs
+        run: |
+          if ! [[ "${{ inputs.old_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid old_version format: '${{ inputs.old_version }}'"
+            exit 1
+          fi
+          if ! [[ "${{ inputs.new_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid new_version format: '${{ inputs.new_version }}'"
+            exit 1
+          fi
+          echo "✅ Version inputs validated"
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.10.3"
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -189,10 +203,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.10.3"
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -212,8 +235,17 @@ jobs:
 
           # Wait up to 2 minutes for etcd to be healthy
           for i in {1..12}; do
-            HEALTHY_MEMBERS=$(kubectl exec -n kube-system \
-              etcd-k8s-ctrl-1 -- etcdctl member list 2>/dev/null | grep started | wc -l || echo "0")
+            # Find any healthy etcd pod
+            ETCD_POD=$(kubectl get pod -n kube-system -l component=etcd \
+              --field-selector=status.phase=Running -o name 2>/dev/null | head -n1)
+
+            if [[ -z "$ETCD_POD" ]]; then
+              echo "::error::No healthy etcd pods found"
+              exit 1
+            fi
+
+            HEALTHY_MEMBERS=$(kubectl exec -n kube-system "$ETCD_POD" -- \
+              etcdctl member list 2>/dev/null | grep started | wc -l || echo "0")
 
             echo "Attempt $i/12: $HEALTHY_MEMBERS healthy etcd members"
 
@@ -235,7 +267,7 @@ jobs:
       - name: Cordon node
         run: |
           echo "Cordoning ${{ matrix.node }}..."
-          kubectl cordon ${{ matrix.node }}
+          kubectl cordon "${{ matrix.node }}"
 
       - name: Drain node
         timeout-minutes: 10
@@ -243,10 +275,11 @@ jobs:
           echo "::group::Draining ${{ matrix.node }}"
           echo "Evicting all pods from ${{ matrix.node }}..."
 
-          kubectl drain ${{ matrix.node }} \
+          kubectl drain "${{ matrix.node }}" \
             --ignore-daemonsets \
             --delete-emptydir-data \
             --force \
+            --grace-period=60 \
             --timeout=300s
 
           echo "✅ Node drained successfully"
@@ -258,14 +291,14 @@ jobs:
           echo "Creating state backup before destroy..."
 
           # SECURITY: Check for state lock before proceeding
-          if aws s3 ls s3://prox-ops-terraform-state/.terraform.tfstate.lock.info 2>/dev/null; then
+          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
             echo "::error::Terraform state is locked - another operation in progress"
             echo "::error::Wait for other operation to complete or manually remove lock if stale"
             exit 1
           fi
 
-          aws s3 cp s3://prox-ops-terraform-state/terraform.tfstate \
-            s3://prox-ops-terraform-state/backups/pre-upgrade-${{ matrix.node }}-$(date +%s).tfstate
+          aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
+            s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node }}-$(date +%s).tfstate
 
       - name: Destroy VM
         working-directory: ./terraform
@@ -303,20 +336,28 @@ jobs:
           echo "Waiting for ${{ matrix.node }} to become Ready..."
 
           for i in {1..60}; do
-            if kubectl wait --for=condition=Ready node/${{ matrix.node }} --timeout=10s 2>/dev/null; then
+            if kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=10s 2>/dev/null; then
               echo "✅ Node is Ready"
               break
             fi
+
+            # Show node status every minute (every 6 attempts)
+            if [[ $((i % 6)) -eq 0 ]]; then
+              echo "Node status after $i attempts:"
+              kubectl get node "${{ matrix.node }}" || true
+              kubectl describe node "${{ matrix.node }}" | tail -20 || true
+            fi
+
             echo "Attempt $i/60: Node not ready yet..."
             sleep 10
           done
 
           # Final check
-          kubectl wait --for=condition=Ready node/${{ matrix.node }} --timeout=30s
+          kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=30s
 
       - name: Verify version
         run: |
-          NODE_VERSION=$(kubectl get node ${{ matrix.node }} -o jsonpath='{.status.nodeInfo.kubeletVersion}')
+          NODE_VERSION=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.nodeInfo.kubeletVersion}')
           echo "Node version: $NODE_VERSION"
 
           if [[ "$NODE_VERSION" != *"${{ inputs.new_version }}"* ]]; then
@@ -329,7 +370,7 @@ jobs:
       - name: Uncordon node
         run: |
           echo "Uncordoning ${{ matrix.node }}..."
-          kubectl uncordon ${{ matrix.node }}
+          kubectl uncordon "${{ matrix.node }}"
 
       - name: Upgrade summary
         run: |
@@ -347,7 +388,10 @@ jobs:
   upgrade-workers:
     name: Upgrade Worker ${{ matrix.node }}
     needs: [rebuild-templates, upgrade-control-plane]
-    if: always() && needs.rebuild-templates.result == 'success'
+    if: |
+      always() &&
+      needs.rebuild-templates.result == 'success' &&
+      (inputs.test_mode || needs.upgrade-control-plane.result == 'success')
     runs-on: gha-runner-scale-set
     timeout-minutes: 30
     strategy:
@@ -359,10 +403,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.10.3"
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -382,7 +435,7 @@ jobs:
 
           # Ensure CoreDNS has replicas on other nodes
           OTHER_DNS=$(kubectl get pods -n kube-system -l k8s-app=kube-dns \
-            -o wide 2>/dev/null | grep -v '${{ matrix.node }}' | grep Running | wc -l || echo "0")
+            -o wide 2>/dev/null | grep -vF '${{ matrix.node }}' | grep Running | wc -l || echo "0")
 
           echo "CoreDNS replicas on other nodes: $OTHER_DNS"
 
@@ -394,7 +447,7 @@ jobs:
 
           # Check for Rook-Ceph OSDs on this node
           OSD_COUNT=$(kubectl get pods -n rook-ceph -l app=rook-ceph-osd \
-            -o wide 2>/dev/null | grep '${{ matrix.node }}' | grep Running | wc -l || echo "0")
+            -o wide 2>/dev/null | grep -F '${{ matrix.node }}' | grep Running | wc -l || echo "0")
 
           if [[ $OSD_COUNT -gt 0 ]]; then
             echo "::notice::Node has $OSD_COUNT Ceph OSD(s)"
@@ -410,7 +463,7 @@ jobs:
       - name: Cordon node
         run: |
           echo "Cordoning ${{ matrix.node }}..."
-          kubectl cordon ${{ matrix.node }}
+          kubectl cordon "${{ matrix.node }}"
 
       - name: Drain node
         timeout-minutes: 10
@@ -418,16 +471,17 @@ jobs:
           echo "::group::Draining ${{ matrix.node }}"
           echo "Evicting all pods from ${{ matrix.node }}..."
 
-          kubectl drain ${{ matrix.node }} \
+          kubectl drain "${{ matrix.node }}" \
             --ignore-daemonsets \
             --delete-emptydir-data \
             --force \
+            --grace-period=60 \
             --timeout=300s
 
           # Show pods remaining (should be only daemonsets)
           echo ""
           echo "Pods remaining on node (daemonsets only):"
-          kubectl get pods --all-namespaces -o wide 2>/dev/null | grep '${{ matrix.node }}' || echo "None"
+          kubectl get pods --all-namespaces -o wide 2>/dev/null | grep -F '${{ matrix.node }}' || echo "None"
 
           echo "✅ Node drained successfully"
           echo "::endgroup::"
@@ -438,14 +492,14 @@ jobs:
           echo "Creating state backup before destroy..."
 
           # SECURITY: Check for state lock before proceeding
-          if aws s3 ls s3://prox-ops-terraform-state/.terraform.tfstate.lock.info 2>/dev/null; then
+          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
             echo "::error::Terraform state is locked - another operation in progress"
             echo "::error::Wait for other operation to complete or manually remove lock if stale"
             exit 1
           fi
 
-          aws s3 cp s3://prox-ops-terraform-state/terraform.tfstate \
-            s3://prox-ops-terraform-state/backups/pre-upgrade-${{ matrix.node }}-$(date +%s).tfstate
+          aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
+            s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node }}-$(date +%s).tfstate
 
       - name: Destroy VM
         working-directory: ./terraform
@@ -483,20 +537,28 @@ jobs:
           echo "Waiting for ${{ matrix.node }} to become Ready..."
 
           for i in {1..60}; do
-            if kubectl wait --for=condition=Ready node/${{ matrix.node }} --timeout=10s 2>/dev/null; then
+            if kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=10s 2>/dev/null; then
               echo "✅ Node is Ready"
               break
             fi
+
+            # Show node status every minute (every 6 attempts)
+            if [[ $((i % 6)) -eq 0 ]]; then
+              echo "Node status after $i attempts:"
+              kubectl get node "${{ matrix.node }}" || true
+              kubectl describe node "${{ matrix.node }}" | tail -20 || true
+            fi
+
             echo "Attempt $i/60: Node not ready yet..."
             sleep 10
           done
 
           # Final check
-          kubectl wait --for=condition=Ready node/${{ matrix.node }} --timeout=30s
+          kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=30s
 
       - name: Verify version
         run: |
-          NODE_VERSION=$(kubectl get node ${{ matrix.node }} -o jsonpath='{.status.nodeInfo.kubeletVersion}')
+          NODE_VERSION=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.nodeInfo.kubeletVersion}')
           echo "Node version: $NODE_VERSION"
 
           if [[ "$NODE_VERSION" != *"${{ inputs.new_version }}"* ]]; then
@@ -534,7 +596,7 @@ jobs:
           ./talosctl version --client
 
           # Determine node IP
-          NODE_IP=$(kubectl get node ${{ matrix.node }} -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+          NODE_IP=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
           echo "Node IP: $NODE_IP"
 
           # Apply GPU-specific patches
@@ -548,16 +610,16 @@ jobs:
           sleep 30
 
           # Wait for node to be ready again
-          kubectl wait --for=condition=Ready node/${{ matrix.node }} --timeout=300s
+          kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=300s
 
           # Validate GPU detected
           echo "Validating GPU detection..."
-          GPU_PRESENT=$(kubectl get node ${{ matrix.node }} -o jsonpath='{.metadata.labels}' | \
-            grep -o "nvidia.com/gpu.present" || echo "")
+          GPU_PRESENT=$(kubectl get node "${{ matrix.node }}" \
+            -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' || echo "")
 
-          if [[ -z "$GPU_PRESENT" ]]; then
+          if [[ "$GPU_PRESENT" != "true" ]]; then
             echo "::error::GPU not detected on ${{ matrix.node }}"
-            echo "::error::GPU patch may have failed"
+            echo "::error::Expected label nvidia.com/gpu.present=true, got: '$GPU_PRESENT'"
             exit 1
           fi
 
@@ -568,7 +630,7 @@ jobs:
       - name: Uncordon node
         run: |
           echo "Uncordoning ${{ matrix.node }}..."
-          kubectl uncordon ${{ matrix.node }}
+          kubectl uncordon "${{ matrix.node }}"
 
       - name: Post-upgrade validation
         run: |
@@ -625,6 +687,15 @@ jobs:
     runs-on: gha-runner-scale-set
     timeout-minutes: 10
     steps:
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+          kubectl version --client
+
       - name: Check all nodes upgraded
         run: |
           echo "::group::Validating node versions"
@@ -636,7 +707,7 @@ jobs:
           echo "Node version check:"
 
           for node in $(kubectl get nodes -o name | cut -d/ -f2); do
-            VERSION=$(kubectl get node $node -o jsonpath='{.status.nodeInfo.kubeletVersion}')
+            VERSION=$(kubectl get node "$node" -o jsonpath='{.status.nodeInfo.kubeletVersion}')
             echo "  $node: $VERSION"
 
             if [[ "$VERSION" != *"$EXPECTED_VERSION"* ]]; then
@@ -661,22 +732,24 @@ jobs:
 
           # Check k8s-work-4 (RTX A2000)
           echo "Checking k8s-work-4 (RTX A2000)..."
-          GPU_4=$(kubectl get node k8s-work-4 -o jsonpath='{.metadata.labels}' | \
-            grep -o "nvidia.com/gpu.present" || echo "")
+          GPU_4=$(kubectl get node k8s-work-4 \
+            -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' || echo "")
 
-          if [[ -z "$GPU_4" ]]; then
+          if [[ "$GPU_4" != "true" ]]; then
             echo "::error::GPU not detected on k8s-work-4"
+            echo "::error::Expected label nvidia.com/gpu.present=true, got: '$GPU_4'"
             exit 1
           fi
           echo "✅ k8s-work-4: GPU detected"
 
           # Check k8s-work-14 (RTX A5000)
           echo "Checking k8s-work-14 (RTX A5000)..."
-          GPU_14=$(kubectl get node k8s-work-14 -o jsonpath='{.metadata.labels}' | \
-            grep -o "nvidia.com/gpu.present" || echo "")
+          GPU_14=$(kubectl get node k8s-work-14 \
+            -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' || echo "")
 
-          if [[ -z "$GPU_14" ]]; then
+          if [[ "$GPU_14" != "true" ]]; then
             echo "::error::GPU not detected on k8s-work-14"
+            echo "::error::Expected label nvidia.com/gpu.present=true, got: '$GPU_14'"
             exit 1
           fi
           echo "✅ k8s-work-14: GPU detected"
@@ -692,8 +765,13 @@ jobs:
           # Check HelmReleases
           echo "Checking HelmRelease status..."
           FAILED_HR=$(kubectl get helmreleases --all-namespaces -o json 2>/dev/null | \
-            jq -r '.items[] | select(.status.conditions[0].status != "True") |
-              "\(.metadata.namespace)/\(.metadata.name): \(.status.conditions[0].message)"' || echo "")
+            jq -r '.items[] |
+              select(
+                (.status.conditions // []) |
+                map(select(.type == "Ready" and .status != "True")) |
+                length > 0
+              ) |
+              "\(.metadata.namespace)/\(.metadata.name): \(.status.conditions[] | select(.type == "Ready") | .message // "Unknown")"' || echo "")
 
           if [[ -n "$FAILED_HR" ]]; then
             echo "::warning::Some HelmReleases unhealthy:"
@@ -729,7 +807,7 @@ jobs:
 
           ### Phase Results
           - ✅ Template Rebuild: ${{ needs.rebuild-templates.result }}
-          - ${{ inputs.test_mode && '⏭️ ' || '✅ ' }}Control Plane Upgrade: ${{ needs.upgrade-control-plane.result || 'skipped' }}
+          - ${{ inputs.test_mode && '⏭️ ' || '✅ ' }}Control Plane Upgrade: ${{ inputs.test_mode && 'skipped (test mode)' || needs.upgrade-control-plane.result }}
           - ✅ Worker Upgrade: ${{ needs.upgrade-workers.result }}
           - ✅ Validation: success
 

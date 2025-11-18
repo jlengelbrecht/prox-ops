@@ -7,6 +7,16 @@ on:
       - main
     paths:
       - terraform/variables.tf
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: Test mode (only 2 workers, skip control plane)
+        type: boolean
+        default: true
+      force_cattle:
+        description: Force cattle upgrade (skip version detection)
+        type: boolean
+        default: false
 
 jobs:
   detect-version-change:
@@ -34,12 +44,12 @@ jobs:
 
           # SECURITY: Validate version format (semver only: digits.digits.digits)
           if ! [[ "$OLD_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid old version format: $OLD_VERSION (expected semver X.Y.Z)"
+            echo "::error::Invalid old version format: '$OLD_VERSION' (expected semver X.Y.Z)"
             exit 1
           fi
 
           if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid new version format: $NEW_VERSION (expected semver X.Y.Z)"
+            echo "::error::Invalid new version format: '$NEW_VERSION' (expected semver X.Y.Z)"
             exit 1
           fi
 
@@ -108,7 +118,7 @@ jobs:
     with:
       old_version: ${{ needs.detect-version-change.outputs.old_version }}
       new_version: ${{ needs.detect-version-change.outputs.new_version }}
-      test_mode: true  # Default to test mode (2 workers only)
+      test_mode: ${{ inputs.test_mode || true }}
 
   route-to-pets:
     name: Route to Pets Workflow
