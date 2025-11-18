@@ -36,6 +36,11 @@ spec:
     minRunners: 1   # One warm runner for immediate job pickup
     maxRunners: 10  # Allow scaling for parallel jobs
 
+    # Container mode configuration (following onedr0p's pattern)
+    # Required for runners to properly register with labels
+    containerMode:
+      type: "kubernetes"
+
     # Runner template
     template:
       spec:
@@ -54,9 +59,18 @@ spec:
         containers:
           - name: runner
             # Using onedr0p's custom image to fix ARC 0.13.0 label propagation bug
-            # Official image (ghcr.io/actions/actions-runner:2.329.0) has issues with empty labels
-            image: ghcr.io/home-operations/actions-runner:2.329.0
+            # Pinned by digest for reproducibility and supply chain security
+            # Official image (ghcr.io/actions/actions-runner:2.329.0) has empty label bug
+            image: ghcr.io/home-operations/actions-runner@sha256:1d26dc36431014527e0d920e7b84878dcf8fd69fb9639598de1af5ccf9210131
             imagePullPolicy: IfNotPresent
+
+            # Explicit command override (following onedr0p's pattern)
+            command: ["/home/runner/run.sh"]
+
+            # Environment variables (following onedr0p's pattern)
+            env:
+              - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
+                value: "false"
 
             # Resource allocation
             resources:
