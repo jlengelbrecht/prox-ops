@@ -36,9 +36,10 @@ spec:
     minRunners: 1   # One warm runner for immediate job pickup
     maxRunners: 10  # Allow scaling for parallel jobs
 
-    # containerMode: kubernetes removed - only needed for workflows using container: steps
-    # Our cattle workflow runs bash/terraform/kubectl directly in runner pod
-    # This mode was causing "Failed to resolve action download info" errors
+    # Container mode configuration (following onedr0p's pattern)
+    # Required for runners to properly register with labels
+    containerMode:
+      type: "kubernetes"
 
     # Runner template
     template:
@@ -63,6 +64,14 @@ spec:
             image: ghcr.io/home-operations/actions-runner@sha256:1d26dc36431014527e0d920e7b84878dcf8fd69fb9639598de1af5ccf9210131
             imagePullPolicy: IfNotPresent
 
+            # Explicit command override (following onedr0p's pattern)
+            command: ["/home/runner/run.sh"]
+
+            # Environment variables (following onedr0p's pattern)
+            env:
+              - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
+                value: "false"
+
             # Resource allocation
             resources:
               requests:
@@ -74,10 +83,6 @@ spec:
 
             # Following onedr0p pattern: do NOT set explicit RUNNER_LABELS env vars
             # Let ARC default to HelmRelease name (gha-runner-scale-set) for label propagation
-
-            # Note: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER env var removed
-            # Only needed with containerMode: kubernetes (which we removed)
-            # Workflows run directly in runner pod for better tool/credential access
 
             # Security context (container-level)
             securityContext:
