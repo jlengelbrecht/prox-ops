@@ -36,6 +36,10 @@ spec:
     minRunners: 1   # One warm runner for immediate job pickup
     maxRunners: 10  # Allow scaling for parallel jobs
 
+    # containerMode: kubernetes removed - only needed for workflows using container: steps
+    # Our cattle workflow runs bash/terraform/kubectl directly in runner pod
+    # This mode was causing "Failed to resolve action download info" errors
+
     # Runner template
     template:
       spec:
@@ -70,6 +74,10 @@ spec:
 
             # Following onedr0p pattern: do NOT set explicit RUNNER_LABELS env vars
             # Let ARC default to HelmRelease name (gha-runner-scale-set) for label propagation
+
+            # Note: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER env var removed
+            # Only needed with containerMode: kubernetes (which we removed)
+            # Workflows run directly in runner pod for better tool/credential access
 
             # Security context (container-level)
             securityContext:
