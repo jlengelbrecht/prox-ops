@@ -60,6 +60,11 @@ jobs:
           fi
           echo "✅ Version inputs validated"
 
+      - name: Setup Node.js (required for Terraform action)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -203,14 +208,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
-          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          kubectl version --client
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -403,14 +404,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
-          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          kubectl version --client
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -687,14 +684,13 @@ jobs:
     runs-on: gha-runner-scale-set
     timeout-minutes: 10
     steps:
-      - name: Install kubectl
-        run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
-          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
-          chmod +x kubectl
-          sudo mv kubectl /usr/local/bin/
-          kubectl version --client
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
 
       - name: Check all nodes upgraded
         run: |
