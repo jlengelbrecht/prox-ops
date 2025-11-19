@@ -50,6 +50,8 @@ jobs:
     name: Rebuild Templates v${{ inputs.new_version }}
     runs-on: gha-runner-scale-set
     timeout-minutes: 60
+    # Skip template rebuild if versions are identical (prevents VM destruction due to implicit clone dependencies)
+    if: inputs.old_version != inputs.new_version
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -621,7 +623,7 @@ jobs:
     needs: [rebuild-templates, upgrade-control-plane]
     if: |
       always() &&
-      needs.rebuild-templates.result == 'success' &&
+      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (inputs.test_mode || needs.upgrade-control-plane.result == 'success')
     runs-on: gha-runner-scale-set
     timeout-minutes: 30
@@ -1305,7 +1307,7 @@ jobs:
           EOF
 
           # Exit with error if any critical phase failed
-          if [[ "${{ needs.rebuild-templates.result }}" != "success" ]]; then
+          if [[ "${{ needs.rebuild-templates.result }}" != "success" ]] && [[ "${{ needs.rebuild-templates.result }}" != "skipped" ]]; then
             echo "::error::Template rebuild failed - upgrade incomplete"
             exit 1
           fi
