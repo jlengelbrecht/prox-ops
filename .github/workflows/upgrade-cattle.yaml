@@ -340,17 +340,37 @@ jobs:
           kubectl cordon "${{ matrix.node.name }}"
 
       - name: Drain node
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
           echo "::group::Draining ${{ matrix.node.name }}"
-          echo "Evicting all pods from ${{ matrix.node.name }}..."
+          echo "Attempting graceful drain (respects PodDisruptionBudget)..."
 
-          kubectl drain "${{ matrix.node.name }}" \
+          # Layer 3: Graceful drain with timeout + force drain fallback
+          # Try graceful drain first (respects PDB)
+          if timeout 240 kubectl drain "${{ matrix.node.name }}" \
             --ignore-daemonsets \
             --delete-emptydir-data \
-            --force \
-            --grace-period=60 \
-            --timeout=300s
+            --grace-period=30; then
+
+            echo "✅ Graceful drain succeeded"
+          else
+            echo "⚠️  Graceful drain timed out (likely PDB blocking runner eviction)"
+            echo "Falling back to force drain..."
+
+            # Force drain bypasses PDB (used when runner pod is on this node)
+            kubectl drain "${{ matrix.node.name }}" \
+              --ignore-daemonsets \
+              --delete-emptydir-data \
+              --disable-eviction \
+              --force \
+              --grace-period=0
+
+            echo "✅ Force drain completed"
+            echo "ℹ️  If runner pod was evicted, GitHub will re-queue job to surviving runner"
+
+            # Give GitHub Actions time to detect runner termination and re-queue
+            sleep 30
+          fi
 
           echo "✅ Node drained successfully"
           echo "::endgroup::"
@@ -718,17 +738,37 @@ jobs:
           kubectl cordon "${{ matrix.node }}"
 
       - name: Drain node
-        timeout-minutes: 10
+        timeout-minutes: 5
         run: |
           echo "::group::Draining ${{ matrix.node }}"
-          echo "Evicting all pods from ${{ matrix.node }}..."
+          echo "Attempting graceful drain (respects PodDisruptionBudget)..."
 
-          kubectl drain "${{ matrix.node }}" \
+          # Layer 3: Graceful drain with timeout + force drain fallback
+          # Try graceful drain first (respects PDB)
+          if timeout 240 kubectl drain "${{ matrix.node }}" \
             --ignore-daemonsets \
             --delete-emptydir-data \
-            --force \
-            --grace-period=60 \
-            --timeout=300s
+            --grace-period=30; then
+
+            echo "✅ Graceful drain succeeded"
+          else
+            echo "⚠️  Graceful drain timed out (likely PDB blocking runner eviction)"
+            echo "Falling back to force drain..."
+
+            # Force drain bypasses PDB (used when runner pod is on this node)
+            kubectl drain "${{ matrix.node }}" \
+              --ignore-daemonsets \
+              --delete-emptydir-data \
+              --disable-eviction \
+              --force \
+              --grace-period=0
+
+            echo "✅ Force drain completed"
+            echo "ℹ️  If runner pod was evicted, GitHub will re-queue job to surviving runner"
+
+            # Give GitHub Actions time to detect runner termination and re-queue
+            sleep 30
+          fi
 
           # Show pods remaining (should be only daemonsets)
           echo ""

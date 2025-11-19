@@ -30,11 +30,11 @@ spec:
     githubConfigSecret: github-runner-registration
 
     # Scaling configuration
-    # minRunners: 1 maintains one "warm" runner to avoid race conditions
-    # where jobs are canceled before on-demand runners can start (ARC issue #4000)
-    # The JIT token bug with minRunners > 0 was fixed in ARC 0.13.0
-    minRunners: 1   # One warm runner for immediate job pickup
-    maxRunners: 10  # Allow scaling for parallel jobs
+    # minRunners: 3 ensures redundancy for cattle upgrades (Layer 1 of resilient architecture)
+    # 3 runners across 12 workers with REQUIRED anti-affinity = 2 runners survive any single node drain
+    # When runner's node drains, GitHub auto-re-queues job to surviving runners
+    minRunners: 3   # Three runners for cattle upgrade resilience
+    maxRunners: 6   # Allow scaling for parallel jobs while maintaining distribution
 
     # Container mode configuration (following onedr0p's pattern)
     # Required for runners to properly register with labels
@@ -115,8 +115,9 @@ spec:
           - name: work
             emptyDir: {}
 
-        # Graceful termination (60s: 25s preStop + 35s for runner cleanup)
-        terminationGracePeriodSeconds: 60
+        # Graceful termination period for runner cleanup during node drain
+        # Reduced to 30s to work with workflow drain timeout (Layer 3)
+        terminationGracePeriodSeconds: 30
 
         # Affinity rules for spreading runners across nodes
         affinity:
@@ -129,19 +130,18 @@ spec:
                     - key: node-role.kubernetes.io/control-plane
                       operator: DoesNotExist
 
-          # Pod anti-affinity: PREFERRED (not required) to spread runners
-          # Changed from required to preferred for better scheduling flexibility
+          # Pod anti-affinity: REQUIRED to force runners onto DIFFERENT nodes
+          # CRITICAL for cattle upgrade resilience - ensures 2 runners survive any single node drain
+          # This is Layer 1 of the resilient architecture
           podAntiAffinity:
-            preferredDuringSchedulingIgnoredDuringExecution:
-              - weight: 100
-                podAffinityTerm:
-                  labelSelector:
-                    matchExpressions:
-                      - key: actions.github.com/scale-set-name
-                        operator: In
-                        values:
-                          - gha-runner-scale-set
-                  topologyKey: kubernetes.io/hostname
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchExpressions:
+                    - key: actions.github.com/scale-set-name
+                      operator: In
+                      values:
+                        - gha-runner-scale-set
+                topologyKey: kubernetes.io/hostname
 
         # Tolerations (avoid GPU nodes unless necessary)
         tolerations: []
