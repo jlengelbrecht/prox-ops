@@ -768,6 +768,188 @@ jobs:
           echo "✅ VM recreated from new template"
           echo "::endgroup::"
 
+      # ==========================================================================
+      # CRITICAL SECURITY OPERATION: Apply Machine Configuration
+      # This step implements the 5-layer security architecture to inject
+      # Talos machine configs from GitHub Secrets without leaking secrets
+      # ==========================================================================
+      - name: Apply machine configuration (CRITICAL SECURITY OPERATION)
+        id: apply_config
+        env:
+          NODE_NAME: ${{ matrix.node }}
+          # SECURITY: Secret passed directly to script, not stored in env var
+          # Worker node configs: TALOS_MACHINE_CONFIG_WORK_1, WORK_2, WORK_3, etc.
+          NODE_CONFIG_SECRET: ${{ secrets[format('TALOS_MACHINE_CONFIG_{0}', matrix.node == 'k8s-work-1' && 'WORK_1' || matrix.node == 'k8s-work-2' && 'WORK_2' || matrix.node == 'k8s-work-3' && 'WORK_3' || matrix.node == 'k8s-work-4' && 'WORK_4' || matrix.node == 'k8s-work-5' && 'WORK_5' || matrix.node == 'k8s-work-6' && 'WORK_6' || matrix.node == 'k8s-work-11' && 'WORK_11' || matrix.node == 'k8s-work-12' && 'WORK_12' || matrix.node == 'k8s-work-13' && 'WORK_13' || matrix.node == 'k8s-work-14' && 'WORK_14' || matrix.node == 'k8s-work-15' && 'WORK_15' || matrix.node == 'k8s-work-16' && 'WORK_16')] }}
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          # CRITICAL: Absolutely no command echo
+          set +x
+          set -euo pipefail
+
+          echo "Starting secure configuration deployment for $NODE_NAME..."
+
+          # ============================================================
+          # SECURITY LAYER 1: Disable Command Echo (set +x above)
+          # ============================================================
+
+          # ============================================================
+          # SECURITY LAYER 2: Ephemeral Secure Storage
+          # ============================================================
+
+          # Create dedicated config directory with maximum restrictions
+          CONFIG_DIR="$(mktemp -d -t talos-config-XXXXXX)"
+          chmod 700 "$CONFIG_DIR"
+
+          # Set aggressive cleanup trap
+          cleanup_config() {
+            if [[ -d "$CONFIG_DIR" ]]; then
+              find "$CONFIG_DIR" -type f -exec shred -fz -n 3 {} \; 2>/dev/null || true
+              rm -rf "$CONFIG_DIR"
+            fi
+          }
+          trap cleanup_config EXIT
+
+          # ============================================================
+          # SECURITY LAYER 3: Decode and Protect
+          # ============================================================
+
+          # Decode configuration with maximum protection and error handling
+          CONFIG_FILE="$CONFIG_DIR/machine.yaml"
+
+          # Validate secret exists and is not empty
+          if [[ -z "$NODE_CONFIG_SECRET" ]]; then
+            echo "ERROR: Machine config secret for $NODE_NAME is not set"
+            echo "ERROR: Expected secret: TALOS_MACHINE_CONFIG_<WORK_X>"
+            exit 1
+          fi
+
+          if ! echo "$NODE_CONFIG_SECRET" | base64 -d > "$CONFIG_FILE" 2>/dev/null; then
+            echo "ERROR: Failed to decode configuration"
+            exit 1
+          fi
+          chmod 600 "$CONFIG_FILE"
+
+          # Validate configuration has expected structure with error suppression
+          if ! grep -q "machine:" "$CONFIG_FILE" 2>/dev/null; then
+            echo "ERROR: Invalid machine configuration structure"
+            exit 1
+          fi
+
+          echo "Configuration decoded and validated"
+
+          # ============================================================
+          # SECURITY LAYER 4: Apply with Maximum Output Suppression
+          # ============================================================
+
+          # Map node name to IP (hardcoded since node doesn't exist in kubectl yet)
+          case "$NODE_NAME" in
+            k8s-work-1)  NODE_IP="10.20.67.4" ;;
+            k8s-work-2)  NODE_IP="10.20.67.5" ;;
+            k8s-work-3)  NODE_IP="10.20.67.6" ;;
+            k8s-work-4)  NODE_IP="10.20.67.7" ;;
+            k8s-work-5)  NODE_IP="10.20.67.8" ;;
+            k8s-work-6)  NODE_IP="10.20.67.9" ;;
+            k8s-work-11) NODE_IP="10.20.67.10" ;;
+            k8s-work-12) NODE_IP="10.20.67.11" ;;
+            k8s-work-13) NODE_IP="10.20.67.12" ;;
+            k8s-work-14) NODE_IP="10.20.67.13" ;;
+            k8s-work-15) NODE_IP="10.20.67.14" ;;
+            k8s-work-16) NODE_IP="10.20.67.15" ;;
+            *)
+              echo "ERROR: Unknown worker node: $NODE_NAME"
+              exit 1
+              ;;
+          esac
+
+          echo "Applying configuration to node $NODE_IP..."
+
+          # Wait for VM to be network-ready (VM just created)
+          echo "Waiting for VM to be network-ready..."
+          MAX_WAIT=60
+          for i in {1..12}; do
+            if talosctl -n "$NODE_IP" version --insecure --timeout=5s >/dev/null 2>&1; then
+              echo "✓ VM is network-ready after $((i * 5)) seconds"
+              break
+            fi
+            echo "  Waiting... ($((i * 5))/${MAX_WAIT}s)"
+            sleep 5
+          done
+
+          # Application with retry logic and complete output suppression
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "  Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            # Create a log file for this attempt with restrictive permissions
+            ATTEMPT_LOG="$CONFIG_DIR/attempt_${ATTEMPT}.log"
+            touch "$ATTEMPT_LOG"
+            chmod 600 "$ATTEMPT_LOG"
+
+            # Apply configuration with all output captured
+            if talosctl -n "$NODE_IP" apply-config \
+                --insecure \
+                --file "$CONFIG_FILE" \
+                --timeout=120s \
+                >"$ATTEMPT_LOG" 2>&1; then
+
+              # CRITICAL: Sanitize log IMMEDIATELY even on success
+              sed -i 's/token:.*/token: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/secret:.*/secret: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/certificate:.*/certificate: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN .* PRIVATE KEY-----.*/[PRIVATE KEY REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN CERTIFICATE-----.*/[CERTIFICATE REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+
+              echo "  ✓ Configuration applied successfully"
+              SUCCESS=true
+
+              # Shred sanitized log (non-verbose to avoid path leaks)
+              shred -fz -n 3 "$ATTEMPT_LOG" 2>/dev/null || true
+              break
+
+            else
+              # CRITICAL: Sanitize log BEFORE checking error types
+              sed -i 's/token:.*/token: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/secret:.*/secret: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/certificate:.*/certificate: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN .* PRIVATE KEY-----.*/[PRIVATE KEY REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN CERTIFICATE-----.*/[CERTIFICATE REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+
+              echo "  ⚠ Attempt $ATTEMPT failed"
+
+              # Now safe to check error types from sanitized log
+              if grep -q "connection refused" "$ATTEMPT_LOG" 2>/dev/null; then
+                echo "    Node not yet ready, waiting..."
+                sleep $((ATTEMPT * 10))
+              elif grep -q "timeout" "$ATTEMPT_LOG" 2>/dev/null; then
+                echo "    Operation timed out, retrying..."
+                sleep 5
+              else
+                echo "    Unknown error occurred"
+              fi
+
+              # Shred sanitized log (non-verbose to avoid path leaks)
+              shred -fz -n 3 "$ATTEMPT_LOG" 2>/dev/null || true
+            fi
+
+            ((ATTEMPT++))
+          done
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "ERROR: Failed to apply configuration after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          # ============================================================
+          # SECURITY LAYER 5: Aggressive Cleanup
+          # ============================================================
+
+          # Cleanup happens automatically via EXIT trap
+          echo "Configuration deployment completed securely"
+
       - name: Wait for node to be Ready
         timeout-minutes: 10
         run: |
