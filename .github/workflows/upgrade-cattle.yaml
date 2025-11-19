@@ -1334,7 +1334,7 @@ jobs:
 
           ### Phase Results
           - $TEMPLATE_EMOJI Template Rebuild: ${{ needs.rebuild-templates.result }}
-          - ${{ inputs.test_mode && '$CTRL_EMOJI' || '$CTRL_EMOJI' }} Control Plane Upgrade: ${{ inputs.test_mode && 'skipped (test mode)' || needs.upgrade-control-plane.result }}
+          - $CTRL_EMOJI Control Plane Upgrade: ${{ inputs.test_mode && 'skipped (test mode)' || needs.upgrade-control-plane.result }}
           - $WORKER_EMOJI Worker Upgrade: ${{ needs.upgrade-workers.result }}
           - ${{ job.status == 'success' && '✅' || '❌' }} Validation: ${{ job.status }}
 
