@@ -31,6 +31,12 @@ on:
         type: boolean
         default: true
 
+# Prevent concurrent cattle upgrades (Terraform state lock protection)
+# Never cancel in-progress runs (destructive operations must complete)
+concurrency:
+  group: cattle-upgrade
+  cancel-in-progress: false
+
 env:
   AWS_REGION: us-east-1
   TERRAFORM_STATE_BUCKET: prox-ops-terraform-state
@@ -88,6 +94,43 @@ jobs:
       - name: Initialize Terraform
         working-directory: ./terraform
         run: terraform init
+
+      - name: Clear stale Terraform locks
+        working-directory: ./terraform
+        continue-on-error: true
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "Checking for stale Terraform state locks..."
+
+          # Try a terraform plan with short lock timeout to detect locks
+          # Capture both stdout and stderr to parse lock ID
+          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+            echo "Lock detected. Output:"
+            echo "$LOCK_OUTPUT"
+
+            # Extract lock ID from error message (format: "ID: <uuid>")
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s{8})[a-f0-9-]{36}' | head -1)
+
+            if [ -n "$LOCK_ID" ]; then
+              echo ""
+              echo "Found stale lock ID: $LOCK_ID"
+              echo "Attempting to force-unlock..."
+
+              if terraform force-unlock -force "$LOCK_ID"; then
+                echo "✓ Successfully cleared stale lock"
+              else
+                echo "✗ Failed to unlock (may require manual intervention)"
+                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+              fi
+            else
+              echo "Could not extract lock ID from error message"
+              echo "Lock may need to be cleared manually"
+            fi
+          else
+            echo "✓ No lock detected - state is accessible"
+          fi
 
       - name: Destroy all old templates
         working-directory: ./terraform
