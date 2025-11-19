@@ -53,9 +53,11 @@ runs:
         chmod 600 "$HOME/.talos/config"
 
         # Generate kubeconfig from talosconfig
+        # Use --nodes flag to target first control plane node (required when talosconfig has multiple nodes)
         mkdir -p "$HOME/.kube"
         "$HOME/.local/bin/talosctl" kubeconfig \
           --talosconfig="$HOME/.talos/config" \
+          --nodes=10.20.67.1 \
           --merge=false \
           "$HOME/.kube/config"
         chmod 600 "$HOME/.kube/config"
