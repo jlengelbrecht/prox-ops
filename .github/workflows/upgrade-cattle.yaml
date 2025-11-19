@@ -718,6 +718,61 @@ jobs:
 
           echo "✅ Node running correct version: $NODE_VERSION"
 
+      - name: Apply global patches
+        timeout-minutes: 5
+        run: |
+          echo "::group::Applying global patches to ${{ matrix.node }}"
+          echo "These patches ensure consistent sysctls, kubelet config, network, and time settings"
+
+          # Download talosctl for the new version
+          echo "Installing talosctl v${{ inputs.new_version }}..."
+
+          # Download binary
+          curl -sL "https://github.com/siderolabs/talos/releases/download/v${{ inputs.new_version }}/talosctl-linux-amd64" \
+            -o talosctl
+
+          # Download checksums
+          curl -sL "https://github.com/siderolabs/talos/releases/download/v${{ inputs.new_version }}/sha512sum.txt" \
+            -o sha512sum.txt
+
+          # SECURITY: Verify checksum
+          if ! sha512sum -c --ignore-missing sha512sum.txt 2>&1 | grep -q "talosctl-linux-amd64: OK"; then
+            echo "::error::Checksum verification failed for talosctl v${{ inputs.new_version }}"
+            exit 1
+          fi
+
+          chmod +x talosctl
+          ./talosctl version --client
+
+          # Determine node IP
+          NODE_IP=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+          echo "Node IP: $NODE_IP"
+
+          # Apply global patches in order
+          echo "Applying global patches..."
+
+          GLOBAL_PATCHES=("machine-kubelet" "machine-network" "machine-sysctls" "machine-time")
+
+          for patch in "${GLOBAL_PATCHES[@]}"; do
+            echo "  → Applying talos/patches/global/${patch}.yaml..."
+            ./talosctl patch machineconfig \
+              --nodes $NODE_IP \
+              --patch-file talos/patches/global/${patch}.yaml
+          done
+
+          echo "✅ All global patches applied"
+
+          # Wait for patches to be processed
+          echo "Waiting for patches to be applied (30s)..."
+          sleep 30
+
+          # Wait for node to be ready again
+          echo "Waiting for node to become Ready..."
+          kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=300s
+
+          echo "✅ Global patches successfully applied to ${{ matrix.node }}"
+          echo "::endgroup::"
+
       - name: Apply GPU patches
         if: matrix.node == 'k8s-work-4' || matrix.node == 'k8s-work-14'
         timeout-minutes: 5
