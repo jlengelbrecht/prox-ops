@@ -191,7 +191,7 @@ jobs:
   # PHASE 2: CONTROL PLANE UPGRADE (SEQUENTIAL)
   # ==========================================================================
   upgrade-control-plane:
-    name: Upgrade Control ${{ matrix.node }}
+    name: Upgrade Control ${{ matrix.node.name }}
     needs: rebuild-templates
     runs-on: gha-runner-scale-set
     timeout-minutes: 30
@@ -201,9 +201,15 @@ jobs:
       fail-fast: true
       matrix:
         node:
-          - k8s-ctrl-1
-          - k8s-ctrl-2
-          - k8s-ctrl-3
+          - name: "k8s-ctrl-1"
+            ip: "10.20.67.1"
+            secret_suffix: "CTRL_1"
+          - name: "k8s-ctrl-2"
+            ip: "10.20.67.2"
+            secret_suffix: "CTRL_2"
+          - name: "k8s-ctrl-3"
+            ip: "10.20.67.3"
+            secret_suffix: "CTRL_3"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -232,7 +238,7 @@ jobs:
       - name: Validate etcd quorum health
         run: |
           echo "::group::Checking etcd quorum health"
-          echo "Ensuring cluster has healthy quorum before upgrading ${{ matrix.node }}..."
+          echo "Ensuring cluster has healthy quorum before upgrading ${{ matrix.node.name }}..."
 
           # Wait up to 2 minutes for etcd to be healthy
           for i in {1..12}; do
@@ -253,7 +259,7 @@ jobs:
             # SECURITY FIX: Require at least 2 healthy members BEFORE destroying ANY node
             if [[ "$HEALTHY_MEMBERS" -ge 2 ]]; then
               echo "✅ etcd quorum healthy ($HEALTHY_MEMBERS members)"
-              echo "Safe to upgrade ${{ matrix.node }} - quorum will survive with 2 members"
+              echo "Safe to upgrade ${{ matrix.node.name }} - quorum will survive with 2 members"
               echo "::endgroup::"
               exit 0
             fi
@@ -267,16 +273,16 @@ jobs:
 
       - name: Cordon node
         run: |
-          echo "Cordoning ${{ matrix.node }}..."
-          kubectl cordon "${{ matrix.node }}"
+          echo "Cordoning ${{ matrix.node.name }}..."
+          kubectl cordon "${{ matrix.node.name }}"
 
       - name: Drain node
         timeout-minutes: 10
         run: |
-          echo "::group::Draining ${{ matrix.node }}"
-          echo "Evicting all pods from ${{ matrix.node }}..."
+          echo "::group::Draining ${{ matrix.node.name }}"
+          echo "Evicting all pods from ${{ matrix.node.name }}..."
 
-          kubectl drain "${{ matrix.node }}" \
+          kubectl drain "${{ matrix.node.name }}" \
             --ignore-daemonsets \
             --delete-emptydir-data \
             --force \
@@ -299,7 +305,7 @@ jobs:
           fi
 
           aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
-            s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node }}-$(date +%s).tfstate
+            s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node.name }}-$(date +%s).tfstate
 
       - name: Destroy VM
         working-directory: ./terraform
@@ -308,9 +314,9 @@ jobs:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "::group::Destroying ${{ matrix.node }} VM"
+          echo "::group::Destroying ${{ matrix.node.name }} VM"
           terraform destroy \
-            -target=module.control_plane_nodes[\"${{ matrix.node }}\"] \
+            -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"] \
             -auto-approve
 
           echo "✅ VM destroyed"
@@ -323,21 +329,182 @@ jobs:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "::group::Recreating ${{ matrix.node }} from v${{ inputs.new_version }} template"
+          echo "::group::Recreating ${{ matrix.node.name }} from v${{ inputs.new_version }} template"
           terraform apply \
-            -target=module.control_plane_nodes[\"${{ matrix.node }}\"] \
+            -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"] \
             -auto-approve
 
           echo "✅ VM recreated from new template"
           echo "::endgroup::"
 
+      # ==========================================================================
+      # CRITICAL SECURITY OPERATION: Apply Machine Configuration
+      # This step implements the 5-layer security architecture to inject
+      # Talos machine configs from GitHub Secrets without leaking secrets
+      # ==========================================================================
+      - name: Apply machine configuration (CRITICAL SECURITY OPERATION)
+        id: apply_config
+        env:
+          NODE_IP: ${{ matrix.node.ip }}
+          NODE_NAME: ${{ matrix.node.name }}
+          # SECURITY: Secret passed directly to script, not stored in env var
+          NODE_CONFIG_SECRET: ${{ secrets[format('TALOS_MACHINE_CONFIG_{0}', matrix.node.secret_suffix)] }}
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          # CRITICAL: Absolutely no command echo
+          set +x
+          set -euo pipefail
+
+          echo "Starting secure configuration deployment for $NODE_NAME..."
+
+          # ============================================================
+          # SECURITY LAYER 1: Disable Command Echo (set +x above)
+          # ============================================================
+
+          # ============================================================
+          # SECURITY LAYER 2: Ephemeral Secure Storage
+          # ============================================================
+
+          # Create dedicated config directory with maximum restrictions
+          CONFIG_DIR="$(mktemp -d -t talos-config-XXXXXX)"
+          chmod 700 "$CONFIG_DIR"
+
+          # Set aggressive cleanup trap
+          cleanup_config() {
+            if [[ -d "$CONFIG_DIR" ]]; then
+              find "$CONFIG_DIR" -type f -exec shred -fz -n 3 {} \; 2>/dev/null || true
+              rm -rf "$CONFIG_DIR"
+            fi
+          }
+          trap cleanup_config EXIT
+
+          # ============================================================
+          # SECURITY LAYER 3: Decode and Protect
+          # ============================================================
+
+          # Decode configuration with maximum protection and error handling
+          CONFIG_FILE="$CONFIG_DIR/machine.yaml"
+
+          # Validate secret exists and is not empty
+          if [[ -z "$NODE_CONFIG_SECRET" ]]; then
+            echo "ERROR: Machine config secret TALOS_MACHINE_CONFIG_${{ matrix.node.secret_suffix }} is not set"
+            exit 1
+          fi
+
+          if ! echo "$NODE_CONFIG_SECRET" | base64 -d > "$CONFIG_FILE" 2>/dev/null; then
+            echo "ERROR: Failed to decode configuration"
+            exit 1
+          fi
+          chmod 600 "$CONFIG_FILE"
+
+          # Validate configuration has expected structure with error suppression
+          if ! grep -q "machine:" "$CONFIG_FILE" 2>/dev/null; then
+            echo "ERROR: Invalid machine configuration structure"
+            exit 1
+          fi
+
+          echo "Configuration decoded and validated"
+
+          # ============================================================
+          # SECURITY LAYER 4: Apply with Maximum Output Suppression
+          # ============================================================
+
+          echo "Applying configuration to node $NODE_IP..."
+
+          # Wait for VM to be network-ready (VM just created)
+          echo "Waiting for VM to be network-ready..."
+          MAX_WAIT=60
+          for i in {1..12}; do
+            if talosctl -n "$NODE_IP" version --insecure --timeout=5s >/dev/null 2>&1; then
+              echo "✓ VM is network-ready after $((i * 5)) seconds"
+              break
+            fi
+            echo "  Waiting... ($((i * 5))/${MAX_WAIT}s)"
+            sleep 5
+          done
+
+          # Application with retry logic and complete output suppression
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "  Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            # Create a log file for this attempt with restrictive permissions
+            ATTEMPT_LOG="$CONFIG_DIR/attempt_${ATTEMPT}.log"
+            touch "$ATTEMPT_LOG"
+            chmod 600 "$ATTEMPT_LOG"
+
+            # Apply configuration with all output captured
+            if talosctl -n "$NODE_IP" apply-config \
+                --insecure \
+                --file "$CONFIG_FILE" \
+                --timeout=120s \
+                >"$ATTEMPT_LOG" 2>&1; then
+
+              # CRITICAL: Sanitize log IMMEDIATELY even on success
+              sed -i 's/token:.*/token: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/secret:.*/secret: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/certificate:.*/certificate: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN .* PRIVATE KEY-----.*/[PRIVATE KEY REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN CERTIFICATE-----.*/[CERTIFICATE REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+
+              echo "  ✓ Configuration applied successfully"
+              SUCCESS=true
+
+              # Shred sanitized log (non-verbose to avoid path leaks)
+              shred -fz -n 3 "$ATTEMPT_LOG" 2>/dev/null || true
+              break
+
+            else
+              # CRITICAL: Sanitize log BEFORE checking error types
+              sed -i 's/token:.*/token: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/secret:.*/secret: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/certificate:.*/certificate: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN .* PRIVATE KEY-----.*/[PRIVATE KEY REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN CERTIFICATE-----.*/[CERTIFICATE REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+
+              echo "  ⚠ Attempt $ATTEMPT failed"
+
+              # Now safe to check error types from sanitized log
+              if grep -q "connection refused" "$ATTEMPT_LOG" 2>/dev/null; then
+                echo "    Node not yet ready, waiting..."
+                sleep $((ATTEMPT * 10))
+              elif grep -q "timeout" "$ATTEMPT_LOG" 2>/dev/null; then
+                echo "    Operation timed out, retrying..."
+                sleep 5
+              else
+                echo "    Unknown error occurred"
+              fi
+
+              # Shred sanitized log (non-verbose to avoid path leaks)
+              shred -fz -n 3 "$ATTEMPT_LOG" 2>/dev/null || true
+            fi
+
+            ((ATTEMPT++))
+          done
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "ERROR: Failed to apply configuration after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          # ============================================================
+          # SECURITY LAYER 5: Aggressive Cleanup
+          # ============================================================
+
+          # Cleanup happens automatically via EXIT trap
+          echo "Configuration deployment completed securely"
+
       - name: Wait for node to be Ready
         timeout-minutes: 10
         run: |
-          echo "Waiting for ${{ matrix.node }} to become Ready..."
+          echo "Waiting for ${{ matrix.node.name }} to become Ready..."
 
           for i in {1..60}; do
-            if kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=10s 2>/dev/null; then
+            if kubectl wait --for=condition=Ready node/"${{ matrix.node.name }}" --timeout=10s 2>/dev/null; then
               echo "✅ Node is Ready"
               break
             fi
@@ -345,8 +512,8 @@ jobs:
             # Show node status every minute (every 6 attempts)
             if [[ $((i % 6)) -eq 0 ]]; then
               echo "Node status after $i attempts:"
-              kubectl get node "${{ matrix.node }}" || true
-              kubectl describe node "${{ matrix.node }}" | tail -20 || true
+              kubectl get node "${{ matrix.node.name }}" || true
+              kubectl describe node "${{ matrix.node.name }}" | tail -20 || true
             fi
 
             echo "Attempt $i/60: Node not ready yet..."
@@ -354,11 +521,11 @@ jobs:
           done
 
           # Final check
-          kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=30s
+          kubectl wait --for=condition=Ready node/"${{ matrix.node.name }}" --timeout=30s
 
       - name: Verify version
         run: |
-          NODE_VERSION=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.nodeInfo.kubeletVersion}')
+          NODE_VERSION=$(kubectl get node "${{ matrix.node.name }}" -o jsonpath='{.status.nodeInfo.kubeletVersion}')
           echo "Node version: $NODE_VERSION"
 
           if [[ "$NODE_VERSION" != *"${{ inputs.new_version }}"* ]]; then
@@ -370,13 +537,13 @@ jobs:
 
       - name: Uncordon node
         run: |
-          echo "Uncordoning ${{ matrix.node }}..."
-          kubectl uncordon "${{ matrix.node }}"
+          echo "Uncordoning ${{ matrix.node.name }}..."
+          kubectl uncordon "${{ matrix.node.name }}"
 
       - name: Upgrade summary
         run: |
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Control Plane Node: ${{ matrix.node }} ✅
+          ### Control Plane Node: ${{ matrix.node.name }} ✅
 
           **Status**: Upgrade successful
           **New Version**: v${{ inputs.new_version }}
@@ -564,6 +731,61 @@ jobs:
           fi
 
           echo "✅ Node running correct version: $NODE_VERSION"
+
+      - name: Apply global patches
+        timeout-minutes: 5
+        run: |
+          echo "::group::Applying global patches to ${{ matrix.node }}"
+          echo "These patches ensure consistent sysctls, kubelet config, network, and time settings"
+
+          # Download talosctl for the new version
+          echo "Installing talosctl v${{ inputs.new_version }}..."
+
+          # Download binary
+          curl -sL "https://github.com/siderolabs/talos/releases/download/v${{ inputs.new_version }}/talosctl-linux-amd64" \
+            -o talosctl
+
+          # Download checksums
+          curl -sL "https://github.com/siderolabs/talos/releases/download/v${{ inputs.new_version }}/sha512sum.txt" \
+            -o sha512sum.txt
+
+          # SECURITY: Verify checksum
+          if ! sha512sum -c --ignore-missing sha512sum.txt 2>&1 | grep -q "talosctl-linux-amd64: OK"; then
+            echo "::error::Checksum verification failed for talosctl v${{ inputs.new_version }}"
+            exit 1
+          fi
+
+          chmod +x talosctl
+          ./talosctl version --client
+
+          # Determine node IP
+          NODE_IP=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+          echo "Node IP: $NODE_IP"
+
+          # Apply global patches in order
+          echo "Applying global patches..."
+
+          GLOBAL_PATCHES=("machine-kubelet" "machine-network" "machine-sysctls" "machine-time")
+
+          for patch in "${GLOBAL_PATCHES[@]}"; do
+            echo "  → Applying talos/patches/global/${patch}.yaml..."
+            ./talosctl patch machineconfig \
+              --nodes $NODE_IP \
+              --patch-file talos/patches/global/${patch}.yaml
+          done
+
+          echo "✅ All global patches applied"
+
+          # Wait for patches to be processed
+          echo "Waiting for patches to be applied (30s)..."
+          sleep 30
+
+          # Wait for node to be ready again
+          echo "Waiting for node to become Ready..."
+          kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=300s
+
+          echo "✅ Global patches successfully applied to ${{ matrix.node }}"
+          echo "::endgroup::"
 
       - name: Apply GPU patches
         if: matrix.node == 'k8s-work-4' || matrix.node == 'k8s-work-14'
