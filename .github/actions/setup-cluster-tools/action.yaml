@@ -52,15 +52,39 @@ runs:
         echo "${{ inputs.talosconfig }}" | base64 -d > "$HOME/.talos/config"
         chmod 600 "$HOME/.talos/config"
 
-        # Generate kubeconfig from talosconfig
-        # Use --nodes flag to target first control plane node (required when talosconfig has multiple nodes)
+        # Generate kubeconfig from talosconfig with resilient control plane fallback
+        # Try each control plane node until one succeeds (handles node maintenance/upgrades)
         mkdir -p "$HOME/.kube"
-        "$HOME/.local/bin/talosctl" kubeconfig \
-          --talosconfig="$HOME/.talos/config" \
-          --nodes=10.20.67.1 \
-          --merge=false \
-          "$HOME/.kube/config"
-        chmod 600 "$HOME/.kube/config"
 
-        # Verify kubeconfig was generated correctly
+        CONTROL_PLANE_IPS=("10.20.67.1" "10.20.67.2" "10.20.67.3")
+        KUBECONFIG_GENERATED=false
+
+        for NODE_IP in "${CONTROL_PLANE_IPS[@]}"; do
+          echo "Attempting kubeconfig generation from control plane node: $NODE_IP"
+
+          if "$HOME/.local/bin/talosctl" kubeconfig \
+            --talosconfig="$HOME/.talos/config" \
+            --nodes="$NODE_IP" \
+            --merge=false \
+            --force \
+            "$HOME/.kube/config" 2>&1; then
+
+            echo "✅ Successfully generated kubeconfig from $NODE_IP"
+            chmod 600 "$HOME/.kube/config"
+            KUBECONFIG_GENERATED=true
+            break
+          else
+            echo "⚠️  Failed to reach $NODE_IP, trying next control plane node..."
+          fi
+        done
+
+        # Verify kubeconfig was generated from at least one control plane
+        if [[ "$KUBECONFIG_GENERATED" != "true" ]]; then
+          echo "❌ ERROR: Failed to generate kubeconfig from any control plane node"
+          echo "Tried nodes: ${CONTROL_PLANE_IPS[*]}"
+          exit 1
+        fi
+
+        # Verify kubeconfig is valid
+        echo "Verifying kubeconfig..."
         "$HOME/.local/bin/kubectl" config view --minify
