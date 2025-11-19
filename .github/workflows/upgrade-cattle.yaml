@@ -606,12 +606,23 @@ jobs:
           kubectl uncordon "${{ matrix.node.name }}"
 
       - name: Upgrade summary
+        if: always()
         run: |
-          cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Control Plane Node: ${{ matrix.node.name }} ✅
+          # Determine status emoji and message based on job status
+          if [[ "${{ job.status }}" == "success" ]]; then
+            STATUS_EMOJI="✅"
+            STATUS_MSG="Upgrade successful"
+          else
+            STATUS_EMOJI="❌"
+            STATUS_MSG="Upgrade failed"
+          fi
 
-          **Status**: Upgrade successful
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ### Control Plane Node: ${{ matrix.node.name }} $STATUS_EMOJI
+
+          **Status**: $STATUS_MSG
           **New Version**: v${{ inputs.new_version }}
+          **Job Status**: ${{ job.status }}
           **Duration**: ${{ job.duration || 'N/A' }}
           EOF
 
@@ -1146,11 +1157,21 @@ jobs:
             GPU_STATUS=" (GPU node)"
           fi
 
-          cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Worker Node: ${{ matrix.node }}$GPU_STATUS ✅
+          # Determine status emoji and message based on job status
+          if [[ "${{ job.status }}" == "success" ]]; then
+            STATUS_EMOJI="✅"
+            STATUS_MSG="Upgrade successful"
+          else
+            STATUS_EMOJI="❌"
+            STATUS_MSG="Upgrade failed"
+          fi
 
-          **Status**: Upgrade successful
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ### Worker Node: ${{ matrix.node }}$GPU_STATUS $STATUS_EMOJI
+
+          **Status**: $STATUS_MSG
           **New Version**: v${{ inputs.new_version }}
+          **Job Status**: ${{ job.status }}
           EOF
 
   # ==========================================================================
@@ -1273,18 +1294,49 @@ jobs:
       - name: Final summary
         if: always()
         run: |
+          # Determine emojis based on actual phase results
+          case "${{ needs.rebuild-templates.result }}" in
+            success) TEMPLATE_EMOJI="✅" ;;
+            skipped) TEMPLATE_EMOJI="⏭️" ;;
+            failure) TEMPLATE_EMOJI="❌" ;;
+            *) TEMPLATE_EMOJI="❓" ;;
+          esac
+
+          case "${{ needs.upgrade-control-plane.result }}" in
+            success) CTRL_EMOJI="✅" ;;
+            skipped) CTRL_EMOJI="⏭️" ;;
+            failure) CTRL_EMOJI="❌" ;;
+            *) CTRL_EMOJI="❓" ;;
+          esac
+
+          case "${{ needs.upgrade-workers.result }}" in
+            success) WORKER_EMOJI="✅" ;;
+            skipped) WORKER_EMOJI="⏭️" ;;
+            failure) WORKER_EMOJI="❌" ;;
+            *) WORKER_EMOJI="❓" ;;
+          esac
+
+          # Determine overall workflow status
+          if [[ "${{ job.status }}" == "success" ]]; then
+            OVERALL_EMOJI="🎉"
+            OVERALL_TITLE="Cattle Upgrade Complete"
+          else
+            OVERALL_EMOJI="⚠️"
+            OVERALL_TITLE="Cattle Upgrade Failed"
+          fi
+
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ## Cattle Upgrade Complete 🎉
+          ## $OVERALL_TITLE $OVERALL_EMOJI
 
           **Old Version**: v${{ inputs.old_version }}
           **New Version**: v${{ inputs.new_version }}
           **Test Mode**: ${{ inputs.test_mode }}
 
           ### Phase Results
-          - ✅ Template Rebuild: ${{ needs.rebuild-templates.result }}
-          - ${{ inputs.test_mode && '⏭️ ' || '✅ ' }}Control Plane Upgrade: ${{ inputs.test_mode && 'skipped (test mode)' || needs.upgrade-control-plane.result }}
-          - ✅ Worker Upgrade: ${{ needs.upgrade-workers.result }}
-          - ✅ Validation: success
+          - $TEMPLATE_EMOJI Template Rebuild: ${{ needs.rebuild-templates.result }}
+          - $CTRL_EMOJI Control Plane Upgrade: ${{ inputs.test_mode && 'skipped (test mode)' || needs.upgrade-control-plane.result }}
+          - $WORKER_EMOJI Worker Upgrade: ${{ needs.upgrade-workers.result }}
+          - ${{ job.status == 'success' && '✅' || '❌' }} Validation: ${{ job.status }}
 
           ### Cluster State
           \`\`\`
