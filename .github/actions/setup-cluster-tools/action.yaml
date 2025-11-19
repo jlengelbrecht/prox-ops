@@ -27,7 +27,8 @@ runs:
         mkdir -p "$HOME/.local/bin"
         mv kubectl "$HOME/.local/bin/"
         echo "$HOME/.local/bin" >> $GITHUB_PATH
-        kubectl version --client
+        # Use full path since $GITHUB_PATH updates don't take effect until next step
+        "$HOME/.local/bin/kubectl" version --client
 
     - name: Setup kubeconfig
       shell: bash
