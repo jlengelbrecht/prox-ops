@@ -30,9 +30,35 @@ runs:
         # Use full path since $GITHUB_PATH updates don't take effect until next step
         "$HOME/.local/bin/kubectl" version --client
 
+    - name: Install talosctl
+      shell: bash
+      run: |
+        # Get latest Talos release version dynamically
+        TALOS_VERSION=$(curl -sL https://api.github.com/repos/siderolabs/talos/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        echo "Installing talosctl ${TALOS_VERSION}..."
+        curl -LO "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
+        curl -LO "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/sha512sum.txt"
+        grep talosctl-linux-amd64 sha512sum.txt | sha512sum --check
+        chmod +x talosctl-linux-amd64
+        mv talosctl-linux-amd64 "$HOME/.local/bin/talosctl"
+        # Use full path since $GITHUB_PATH updates don't take effect until next step
+        "$HOME/.local/bin/talosctl" version --client
+
     - name: Setup kubeconfig
       shell: bash
       run: |
+        # Save talosconfig
+        mkdir -p "$HOME/.talos"
+        echo "${{ inputs.talosconfig }}" | base64 -d > "$HOME/.talos/config"
+        chmod 600 "$HOME/.talos/config"
+
+        # Generate kubeconfig from talosconfig
         mkdir -p "$HOME/.kube"
-        echo "${{ inputs.talosconfig }}" | base64 -d > "$HOME/.kube/config"
+        "$HOME/.local/bin/talosctl" kubeconfig \
+          --talosconfig="$HOME/.talos/config" \
+          --merge=false \
+          "$HOME/.kube/config"
         chmod 600 "$HOME/.kube/config"
+
+        # Verify kubeconfig was generated correctly
+        "$HOME/.local/bin/kubectl" config view --minify
