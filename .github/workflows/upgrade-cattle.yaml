@@ -623,7 +623,7 @@ jobs:
     needs: [rebuild-templates, upgrade-control-plane]
     if: |
       always() &&
-      needs.rebuild-templates.result == 'success' &&
+      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (inputs.test_mode || needs.upgrade-control-plane.result == 'success')
     runs-on: gha-runner-scale-set
     timeout-minutes: 30
@@ -1307,7 +1307,7 @@ jobs:
           EOF
 
           # Exit with error if any critical phase failed
-          if [[ "${{ needs.rebuild-templates.result }}" != "success" ]]; then
+          if [[ "${{ needs.rebuild-templates.result }}" != "success" ]] && [[ "${{ needs.rebuild-templates.result }}" != "skipped" ]]; then
             echo "::error::Template rebuild failed - upgrade incomplete"
             exit 1
           fi
