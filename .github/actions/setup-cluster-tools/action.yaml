@@ -1,0 +1,37 @@
+name: Setup Cluster Tools
+description: Install Node.js, kubectl, and configure kubeconfig for cluster access
+inputs:
+  talosconfig:
+    description: Base64-encoded Talos/Kubernetes config
+    required: true
+  node-version:
+    description: Node.js version to install
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js (required for Terraform action)
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Install kubectl
+      shell: bash
+      run: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+        echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+        chmod +x kubectl
+        mkdir -p "$HOME/.local/bin"
+        mv kubectl "$HOME/.local/bin/"
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+        kubectl version --client
+
+    - name: Setup kubeconfig
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.kube"
+        echo "${{ inputs.talosconfig }}" | base64 -d > "$HOME/.kube/config"
+        chmod 600 "$HOME/.kube/config"
