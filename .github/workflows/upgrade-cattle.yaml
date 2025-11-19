@@ -608,8 +608,14 @@ jobs:
       - name: Upgrade summary
         if: always()
         run: |
+          # Store GHA expressions in bash variables first
+          NODE_NAME="${{ matrix.node.name }}"
+          NEW_VERSION="${{ inputs.new_version }}"
+          JOB_STATUS="${{ job.status }}"
+          JOB_DURATION="${{ job.duration || 'N/A' }}"
+
           # Determine status emoji and message based on job status
-          if [[ "${{ job.status }}" == "success" ]]; then
+          if [[ "$JOB_STATUS" == "success" ]]; then
             STATUS_EMOJI="✅"
             STATUS_MSG="Upgrade successful"
           else
@@ -618,12 +624,12 @@ jobs:
           fi
 
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Control Plane Node: ${{ matrix.node.name }} $STATUS_EMOJI
+          ### Control Plane Node: $NODE_NAME $STATUS_EMOJI
 
           **Status**: $STATUS_MSG
-          **New Version**: v${{ inputs.new_version }}
-          **Job Status**: ${{ job.status }}
-          **Duration**: ${{ job.duration || 'N/A' }}
+          **New Version**: v$NEW_VERSION
+          **Job Status**: $JOB_STATUS
+          **Duration**: $JOB_DURATION
           EOF
 
   # ==========================================================================
@@ -1152,13 +1158,18 @@ jobs:
       - name: Upgrade summary
         if: always()
         run: |
+          # Store GHA expressions in bash variables first
+          NODE_NAME="${{ matrix.node }}"
+          NEW_VERSION="${{ inputs.new_version }}"
+          JOB_STATUS="${{ job.status }}"
+
           GPU_STATUS=""
-          if [[ "${{ matrix.node }}" == "k8s-work-4" ]] || [[ "${{ matrix.node }}" == "k8s-work-14" ]]; then
+          if [[ "$NODE_NAME" == "k8s-work-4" ]] || [[ "$NODE_NAME" == "k8s-work-14" ]]; then
             GPU_STATUS=" (GPU node)"
           fi
 
           # Determine status emoji and message based on job status
-          if [[ "${{ job.status }}" == "success" ]]; then
+          if [[ "$JOB_STATUS" == "success" ]]; then
             STATUS_EMOJI="✅"
             STATUS_MSG="Upgrade successful"
           else
@@ -1167,11 +1178,11 @@ jobs:
           fi
 
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Worker Node: ${{ matrix.node }}$GPU_STATUS $STATUS_EMOJI
+          ### Worker Node: $NODE_NAME$GPU_STATUS $STATUS_EMOJI
 
           **Status**: $STATUS_MSG
-          **New Version**: v${{ inputs.new_version }}
-          **Job Status**: ${{ job.status }}
+          **New Version**: v$NEW_VERSION
+          **Job Status**: $JOB_STATUS
           EOF
 
   # ==========================================================================
