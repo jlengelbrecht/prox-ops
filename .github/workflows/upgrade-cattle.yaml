@@ -386,6 +386,12 @@ jobs:
           # Decode configuration with maximum protection and error handling
           CONFIG_FILE="$CONFIG_DIR/machine.yaml"
 
+          # Validate secret exists and is not empty
+          if [[ -z "$NODE_CONFIG_SECRET" ]]; then
+            echo "ERROR: Machine config secret TALOS_MACHINE_CONFIG_${{ matrix.node.secret_suffix }} is not set"
+            exit 1
+          fi
+
           if ! echo "$NODE_CONFIG_SECRET" | base64 -d > "$CONFIG_FILE" 2>/dev/null; then
             echo "ERROR: Failed to decode configuration"
             exit 1
@@ -407,8 +413,16 @@ jobs:
           echo "Applying configuration to node $NODE_IP..."
 
           # Wait for VM to be network-ready (VM just created)
-          echo "Waiting for VM network initialization (30s)..."
-          sleep 30
+          echo "Waiting for VM to be network-ready..."
+          MAX_WAIT=60
+          for i in {1..12}; do
+            if talosctl -n "$NODE_IP" version --insecure --timeout=5s >/dev/null 2>&1; then
+              echo "✓ VM is network-ready after $((i * 5)) seconds"
+              break
+            fi
+            echo "  Waiting... ($((i * 5))/${MAX_WAIT}s)"
+            sleep 5
+          done
 
           # Application with retry logic and complete output suppression
           MAX_ATTEMPTS=3
