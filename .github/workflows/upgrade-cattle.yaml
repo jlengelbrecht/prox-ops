@@ -92,6 +92,8 @@ jobs:
           echo "Destroying 8 templates (4 hosts × 2 roles)..."
 
           terraform destroy \
+            -input=false \
+            -auto-approve \
             -target=module.template_baldar_controller \
             -target=module.template_baldar_worker \
             -target=module.template_heimdall_controller \
@@ -99,8 +101,7 @@ jobs:
             -target=module.template_odin_controller \
             -target=module.template_odin_worker \
             -target=module.template_thor_controller \
-            -target=module.template_thor_worker \
-            -auto-approve
+            -target=module.template_thor_worker
 
           echo "All old templates destroyed successfully"
           echo "::endgroup::"
@@ -117,6 +118,8 @@ jobs:
           echo "Expected duration: ~45 minutes (8 templates × ~5-6 min each)"
 
           terraform apply \
+            -input=false \
+            -auto-approve \
             -target=module.template_baldar_controller \
             -target=module.template_baldar_worker \
             -target=module.template_heimdall_controller \
@@ -124,8 +127,7 @@ jobs:
             -target=module.template_odin_controller \
             -target=module.template_odin_worker \
             -target=module.template_thor_controller \
-            -target=module.template_thor_worker \
-            -auto-approve
+            -target=module.template_thor_worker
 
           echo "All new templates created successfully"
           echo "::endgroup::"
@@ -316,8 +318,9 @@ jobs:
         run: |
           echo "::group::Destroying ${{ matrix.node.name }} VM"
           terraform destroy \
-            -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"] \
-            -auto-approve
+            -input=false \
+            -auto-approve \
+            -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"]
 
           echo "✅ VM destroyed"
           echo "::endgroup::"
@@ -331,8 +334,9 @@ jobs:
         run: |
           echo "::group::Recreating ${{ matrix.node.name }} from v${{ inputs.new_version }} template"
           terraform apply \
-            -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"] \
-            -auto-approve
+            -input=false \
+            -auto-approve \
+            -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"]
 
           echo "✅ VM recreated from new template"
           echo "::endgroup::"
@@ -674,8 +678,9 @@ jobs:
         run: |
           echo "::group::Destroying ${{ matrix.node }} VM"
           terraform destroy \
-            -target=module.worker_nodes[\"${{ matrix.node }}\"] \
-            -auto-approve
+            -input=false \
+            -auto-approve \
+            -target=module.worker_nodes[\"${{ matrix.node }}\"]
 
           echo "✅ VM destroyed"
           echo "::endgroup::"
@@ -689,8 +694,9 @@ jobs:
         run: |
           echo "::group::Recreating ${{ matrix.node }} from v${{ inputs.new_version }} template"
           terraform apply \
-            -target=module.worker_nodes[\"${{ matrix.node }}\"] \
-            -auto-approve
+            -input=false \
+            -auto-approve \
+            -target=module.worker_nodes[\"${{ matrix.node }}\"]
 
           echo "✅ VM recreated from new template"
           echo "::endgroup::"
