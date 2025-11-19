@@ -73,13 +73,15 @@ spec:
                 value: "false"
 
             # Resource allocation
+            # Increased from 500m/1Gi to 1000m/2Gi (requests) and 2000m/4Gi to 4000m/8Gi (limits)
+            # to support long-running Terraform operations (destroy/create templates across 4 Proxmox hosts)
             resources:
               requests:
-                cpu: 500m
-                memory: 1Gi
+                cpu: 1000m
+                memory: 2Gi
               limits:
-                cpu: 2000m
-                memory: 4Gi
+                cpu: 4000m
+                memory: 8Gi
 
             # Following onedr0p pattern: do NOT set explicit RUNNER_LABELS env vars
             # Let ARC default to HelmRelease name (gha-runner-scale-set) for label propagation
