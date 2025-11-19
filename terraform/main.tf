@@ -369,13 +369,8 @@ module "control_plane_nodes" {
   source   = "./modules/talos-node"
   for_each = { for node in var.control_nodes : node.name => node }
 
-  # Determine which template to use based on node assignment
-  depends_on = [
-    module.template_baldar_controller,
-    module.template_heimdall_controller,
-    module.template_odin_controller,
-    module.template_thor_controller
-  ]
+  # Templates are independent of VMs - VMs clone from templates but don't depend on them
+  # Removing depends_on prevents cascade deletion when destroying templates
 
   hostname        = each.value.hostname
   vm_id           = each.value.vm_id
@@ -423,12 +418,8 @@ module "worker_nodes" {
   source   = "./modules/talos-node"
   for_each = { for node in var.worker_nodes : node.name => node }
 
-  depends_on = [
-    module.template_baldar_worker,
-    module.template_heimdall_worker,
-    module.template_odin_worker,
-    module.template_thor_worker
-  ]
+  # Templates are independent of VMs - VMs clone from templates but don't depend on them
+  # Removing depends_on prevents cascade deletion when destroying templates
 
   hostname        = each.value.hostname
   vm_id           = each.value.vm_id
