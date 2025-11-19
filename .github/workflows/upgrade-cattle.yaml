@@ -77,6 +77,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Setup Proxmox SSH key
+        env:
+          PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
+          chmod 600 ~/.ssh/proxmox_terraform
+
       - name: Initialize Terraform
         working-directory: ./terraform
         run: terraform init
@@ -232,6 +240,14 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Proxmox SSH key
+        env:
+          PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
+          chmod 600 ~/.ssh/proxmox_terraform
 
       - name: Initialize Terraform
         working-directory: ./terraform
@@ -591,6 +607,14 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Proxmox SSH key
+        env:
+          PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
+          chmod 600 ~/.ssh/proxmox_terraform
 
       - name: Initialize Terraform
         working-directory: ./terraform
