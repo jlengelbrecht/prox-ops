@@ -33,7 +33,9 @@ runs:
     - name: Install talosctl
       shell: bash
       run: |
-        TALOS_VERSION="v1.11.5"
+        # Get latest Talos release version dynamically
+        TALOS_VERSION=$(curl -sL https://api.github.com/repos/siderolabs/talos/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        echo "Installing talosctl ${TALOS_VERSION}..."
         curl -LO "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
         curl -LO "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/sha512sum.txt"
         grep talosctl-linux-amd64 sha512sum.txt | sha512sum --check
