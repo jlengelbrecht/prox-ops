@@ -32,9 +32,9 @@ on:
         default: true
 
 # Prevent concurrent cattle upgrades (Terraform state lock protection)
-# Never cancel in-progress runs (destructive operations must complete)
+# Cancel old queued runs when new run starts (prevents zombie workflow blocking)
 concurrency:
-  group: cattle-upgrade
+  group: cattle-upgrade-v2
   cancel-in-progress: true
 
 env:
