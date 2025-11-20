@@ -208,9 +208,6 @@ module "template_baldar_worker" {
   enable_secure_boot = var.enable_secure_boot
   enable_tpm       = var.enable_tpm
   enable_firewall  = var.enable_firewall
-
-  # Wait for Baldar controller before deploying worker
-  depends_on = [module.template_baldar_controller]
 }
 
 # --- Heimdall Templates ---
@@ -233,9 +230,6 @@ module "template_heimdall_controller" {
   enable_secure_boot = var.enable_secure_boot
   enable_tpm       = var.enable_tpm
   enable_firewall  = var.enable_firewall
-
-  # Wait for Baldar worker before starting
-  depends_on = [module.template_baldar_worker]
 }
 
 module "template_heimdall_worker" {
@@ -257,9 +251,6 @@ module "template_heimdall_worker" {
   enable_secure_boot = var.enable_secure_boot
   enable_tpm       = var.enable_tpm
   enable_firewall  = var.enable_firewall
-
-  # Wait for Heimdall controller before deploying worker
-  depends_on = [module.template_heimdall_controller]
 }
 
 # --- Odin Templates ---
@@ -282,9 +273,6 @@ module "template_odin_controller" {
   enable_secure_boot = var.enable_secure_boot
   enable_tpm       = var.enable_tpm
   enable_firewall  = var.enable_firewall
-
-  # Wait for Heimdall worker before starting
-  depends_on = [module.template_heimdall_worker]
 }
 
 module "template_odin_worker" {
@@ -306,9 +294,6 @@ module "template_odin_worker" {
   enable_secure_boot = var.enable_secure_boot
   enable_tpm       = var.enable_tpm
   enable_firewall  = var.enable_firewall
-
-  # Wait for Odin controller before deploying worker
-  depends_on = [module.template_odin_controller]
 }
 
 # --- Thor Templates ---
@@ -331,9 +316,6 @@ module "template_thor_controller" {
   enable_secure_boot = var.enable_secure_boot
   enable_tpm       = var.enable_tpm
   enable_firewall  = var.enable_firewall
-
-  # Wait for Odin worker before starting
-  depends_on = [module.template_odin_worker]
 }
 
 module "template_thor_worker" {
@@ -355,9 +337,6 @@ module "template_thor_worker" {
   enable_secure_boot = var.enable_secure_boot
   enable_tpm       = var.enable_tpm
   enable_firewall  = var.enable_firewall
-
-  # Wait for Thor controller before deploying worker (last in chain)
-  depends_on = [module.template_thor_controller]
 }
 
 # =============================================================================
