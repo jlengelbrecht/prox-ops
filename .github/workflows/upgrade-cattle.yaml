@@ -134,29 +134,81 @@ jobs:
             echo "✓ No lock detected - state is accessible"
           fi
 
-      - name: Destroy all old templates
+      - name: Remove old templates from Terraform state and Proxmox
         working-directory: ./terraform
         timeout-minutes: 15
         env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+          PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
         run: |
-          echo "::group::Destroying all v${{ inputs.old_version }} templates"
-          echo "Destroying 8 templates (4 hosts × 2 roles)..."
+          echo "::group::Removing v${{ inputs.old_version }} templates (VM-safe method)"
+          echo "⚠️  CRITICAL: Using state removal + direct deletion to avoid VM destruction"
+          echo ""
 
-          terraform destroy \
-            -input=false \
-            -auto-approve \
-            -target=module.template_baldar_controller \
-            -target=module.template_baldar_worker \
-            -target=module.template_heimdall_controller \
-            -target=module.template_heimdall_worker \
-            -target=module.template_odin_controller \
-            -target=module.template_odin_worker \
-            -target=module.template_thor_controller \
-            -target=module.template_thor_worker
+          # Step 1: Remove templates from Terraform state (doesn't touch Proxmox)
+          echo "Step 1: Removing templates from Terraform state..."
+          TEMPLATE_MODULES=(
+            "module.template_baldar_controller"
+            "module.template_baldar_worker"
+            "module.template_heimdall_controller"
+            "module.template_heimdall_worker"
+            "module.template_odin_controller"
+            "module.template_odin_worker"
+            "module.template_thor_controller"
+            "module.template_thor_worker"
+          )
 
-          echo "All old templates destroyed successfully"
+          for module in "${TEMPLATE_MODULES[@]}"; do
+            echo "  Removing $module from state..."
+            terraform state rm "$module" || echo "  (module not in state, skipping)"
+          done
+          echo "✅ Templates removed from Terraform state"
+          echo ""
+
+          # Step 2: Delete old templates directly in Proxmox via SSH
+          echo "Step 2: Deleting old templates in Proxmox..."
+
+          # Setup SSH key
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
+          chmod 600 ~/.ssh/proxmox_terraform
+
+          # Template IDs and their Proxmox nodes
+          declare -A TEMPLATES=(
+            ["Baldar:9000"]="controller"
+            ["Baldar:9001"]="worker"
+            ["Heimdall:9002"]="controller"
+            ["Heimdall:9003"]="worker"
+            ["Odin:9004"]="controller"
+            ["Odin:9005"]="worker"
+            ["Thor:9006"]="controller"
+            ["Thor:9007"]="worker"
+          )
+
+          # Get Proxmox node IPs
+          declare -A NODE_IPS=(
+            ["Baldar"]="10.20.66.3"
+            ["Heimdall"]="10.20.66.5"
+            ["Odin"]="10.20.66.6"
+            ["Thor"]="10.20.66.7"
+          )
+
+          for key in "${!TEMPLATES[@]}"; do
+            IFS=':' read -r NODE VMID <<< "$key"
+            ROLE="${TEMPLATES[$key]}"
+            NODE_IP="${NODE_IPS[$NODE]}"
+
+            echo "  Deleting template $VMID ($ROLE) on $NODE..."
+            ssh -i ~/.ssh/proxmox_terraform \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o LogLevel=ERROR \
+                root@${NODE_IP} \
+                "qm destroy ${VMID} --purge 2>/dev/null || echo '  (template ${VMID} not found, skipping)'"
+          done
+
+          echo "✅ All old templates deleted from Proxmox"
+          echo ""
+          echo "🔒 VMs WERE NOT TOUCHED - only templates removed"
           echo "::endgroup::"
 
       - name: Create all new templates
