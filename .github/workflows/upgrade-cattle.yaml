@@ -48,7 +48,7 @@ jobs:
   # ==========================================================================
   rebuild-templates:
     name: Rebuild Templates v${{ inputs.new_version }}
-    runs-on: k8s-cattle
+    runs-on: cattle-runner
     timeout-minutes: 60
     # Skip template rebuild if versions are identical (prevents VM destruction due to implicit clone dependencies)
     if: inputs.old_version != inputs.new_version
@@ -248,7 +248,7 @@ jobs:
   upgrade-control-plane:
     name: Upgrade Control ${{ matrix.node.name }}
     needs: rebuild-templates
-    runs-on: k8s-cattle
+    runs-on: cattle-runner
     timeout-minutes: 30
     if: inputs.test_mode == false
     strategy:
@@ -660,7 +660,7 @@ jobs:
       always() &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (inputs.test_mode || needs.upgrade-control-plane.result == 'success')
-    runs-on: k8s-cattle
+    runs-on: cattle-runner
     timeout-minutes: 30
     strategy:
       max-parallel: 1
@@ -1230,7 +1230,7 @@ jobs:
     name: Validate Cluster Health
     needs: [rebuild-templates, upgrade-control-plane, upgrade-workers]
     if: always()
-    runs-on: k8s-cattle
+    runs-on: cattle-runner
     timeout-minutes: 10
     steps:
       - name: Checkout repository
