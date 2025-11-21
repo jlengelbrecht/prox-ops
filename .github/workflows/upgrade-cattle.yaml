@@ -134,19 +134,29 @@ jobs:
             echo "✓ No lock detected - state is accessible"
           fi
 
-      - name: Destroy all old templates
+      - name: Plan template changes (SAFETY MODE - NO EXECUTION)
         working-directory: ./terraform
         timeout-minutes: 15
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "::group::Destroying all v${{ inputs.old_version }} templates"
-          echo "Destroying 8 templates (4 hosts × 2 roles)..."
+          echo "::group::Terraform Plan for Template Rebuild (SAFETY MODE)"
+          echo "================================================================"
+          echo "SAFETY MODE ENABLED: This workflow will ONLY show what Terraform"
+          echo "WOULD do when targeting templates. It will NOT execute any changes."
+          echo ""
+          echo "This is to identify the bug causing Terraform to destroy VMs"
+          echo "instead of just rebuilding templates."
+          echo "================================================================"
+          echo ""
+          echo "Running terraform plan for 8 template modules..."
+          echo ""
 
-          terraform destroy \
+          # SAFETY: Run plan only, no apply/destroy
+          terraform plan \
             -input=false \
-            -auto-approve \
+            -out=template-rebuild.tfplan \
             -target=module.template_baldar_controller \
             -target=module.template_baldar_worker \
             -target=module.template_heimdall_controller \
@@ -156,71 +166,85 @@ jobs:
             -target=module.template_thor_controller \
             -target=module.template_thor_worker
 
-          echo "All old templates destroyed successfully"
+          echo ""
+          echo "================================================================"
+          echo "Plan completed. Review the output above to identify:"
+          echo "  1. What resources Terraform wants to destroy"
+          echo "  2. What resources Terraform wants to create"
+          echo "  3. Whether VM modules are incorrectly included"
+          echo ""
+          echo "Expected: Only template_* modules should be affected"
+          echo "BUG: If worker_nodes or control_plane_nodes appear, the bug exists"
+          echo "================================================================"
           echo "::endgroup::"
 
-      - name: Create all new templates
-        working-directory: ./terraform
-        timeout-minutes: 50
-        env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-        run: |
-          echo "::group::Creating all v${{ inputs.new_version }} templates"
-          echo "Creating 8 templates (sequential due to depends_on constraints)..."
-          echo "Expected duration: ~45 minutes (8 templates × ~5-6 min each)"
-
-          terraform apply \
-            -input=false \
-            -auto-approve \
-            -target=module.template_baldar_controller \
-            -target=module.template_baldar_worker \
-            -target=module.template_heimdall_controller \
-            -target=module.template_heimdall_worker \
-            -target=module.template_odin_controller \
-            -target=module.template_odin_worker \
-            -target=module.template_thor_controller \
-            -target=module.template_thor_worker
-
-          echo "All new templates created successfully"
+          # Show plan summary
+          echo ""
+          echo "::group::Plan Summary"
+          terraform show -no-color template-rebuild.tfplan | head -100
           echo "::endgroup::"
 
-      - name: Validate templates exist
+      - name: Analyze plan output for bugs
         working-directory: ./terraform
         run: |
-          echo "::group::Validating template creation"
-          echo "Verifying all 8 templates exist in Terraform state..."
+          echo "::group::Plan Analysis - Identifying Terraform Bug"
+          echo "Analyzing terraform plan output to identify unintended targets..."
+          echo ""
 
-          # Query Terraform state for template modules
-          TEMPLATES=(
-            "module.template_baldar_controller"
-            "module.template_baldar_worker"
-            "module.template_heimdall_controller"
-            "module.template_heimdall_worker"
-            "module.template_odin_controller"
-            "module.template_odin_worker"
-            "module.template_thor_controller"
-            "module.template_thor_worker"
-          )
-
-          ALL_VALID=true
-          for template in "${TEMPLATES[@]}"; do
-            if terraform state show "$template" &>/dev/null; then
-              echo "✅ $template exists"
-            else
-              echo "❌ $template NOT FOUND"
-              ALL_VALID=false
-            fi
-          done
-
-          if [[ "$ALL_VALID" != "true" ]]; then
-            echo "::error::Template validation failed - not all templates exist"
+          # Check if plan file exists
+          if [[ ! -f template-rebuild.tfplan ]]; then
+            echo "::error::Plan file not found - terraform plan may have failed"
             exit 1
           fi
 
+          # Show full plan in readable format
+          echo "Full plan output:"
+          terraform show -no-color template-rebuild.tfplan > plan-full.txt
+          cat plan-full.txt
+
           echo ""
-          echo "✅ All 8 templates validated successfully"
-          echo "Ready to proceed with VM upgrades"
+          echo "================================================================"
+          echo "BUG DETECTION ANALYSIS"
+          echo "================================================================"
+
+          # Check for unintended VM module targets
+          echo ""
+          echo "Checking for unintended VM modules in plan..."
+
+          if grep -q "module.control_plane_nodes" plan-full.txt; then
+            echo "::error::BUG DETECTED: control_plane_nodes module found in plan"
+            echo "::error::This would destroy control plane VMs!"
+            echo ""
+            grep "module.control_plane_nodes" plan-full.txt
+            echo ""
+          else
+            echo "✅ No control_plane_nodes in plan"
+          fi
+
+          if grep -q "module.worker_nodes" plan-full.txt; then
+            echo "::error::BUG DETECTED: worker_nodes module found in plan"
+            echo "::error::This would destroy worker VMs!"
+            echo ""
+            grep "module.worker_nodes" plan-full.txt
+            echo ""
+          else
+            echo "✅ No worker_nodes in plan"
+          fi
+
+          # Show resources to be destroyed
+          echo ""
+          echo "Resources Terraform plans to DESTROY:"
+          grep -A 5 "# .* will be destroyed" plan-full.txt | head -50 || echo "None"
+
+          # Show resources to be created
+          echo ""
+          echo "Resources Terraform plans to CREATE:"
+          grep -A 5 "# .* will be created" plan-full.txt | head -50 || echo "None"
+
+          echo ""
+          echo "================================================================"
+          echo "SAFETY STATUS: No changes executed (plan-only mode)"
+          echo "================================================================"
           echo "::endgroup::"
 
       - name: Template rebuild summary
