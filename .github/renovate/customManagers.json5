@@ -25,10 +25,11 @@
     },
     {
       "customType": "regex",
-      "description": "Monitor Talos version in Terraform variables",
-      "fileMatch": ["^terraform/variables\\.tf$"],
+      "description": "Monitor Talos version in Terraform variables and tfvars",
+      "fileMatch": ["^terraform/variables\\.tf$", "^terraform/terraform\\.tfvars$"],
       "matchStrings": [
-        "variable\\s+\"talos_version\"\\s*\\{[\\s\\S]*?default\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+        "variable\\s+\"talos_version\"\\s*\\{[\\s\\S]*?default\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "talos_version\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
       ],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "siderolabs/talos",
