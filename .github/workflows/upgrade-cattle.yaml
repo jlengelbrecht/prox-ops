@@ -51,7 +51,8 @@ jobs:
     runs-on: cattle-runner
     timeout-minutes: 60
     # Skip template rebuild if versions are identical (prevents VM destruction due to implicit clone dependencies)
-    if: inputs.old_version != inputs.new_version
+    # UNLESS test_mode is enabled (for terraform plan bug investigation)
+    if: inputs.old_version != inputs.new_version || inputs.test_mode == true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
