@@ -273,23 +273,47 @@ jobs:
           echo "::endgroup::"
 
       - name: Template rebuild summary
+        working-directory: ./terraform
         run: |
-          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          cat >> $GITHUB_STEP_SUMMARY <<'EOF'
           ## Phase 1: Template Rebuild ✅
 
-          **Status**: All templates successfully rebuilt
+          **Status**: Plan-only mode (no changes executed)
 
-          ### Templates Created
+          ### Templates Targeted
           - Baldar: controller + worker
           - Heimdall: controller + worker
           - Odin: controller + worker
           - Thor: controller + worker
 
-          **Total**: 8 templates
-          **Version**: v${{ inputs.new_version }}
-
-          VMs created from these templates will run Talos **v${{ inputs.new_version }}**.
+          **Total**: 8 template modules
           EOF
+
+          # Add terraform plan output to summary
+          if [[ -f plan-full.txt ]]; then
+            cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+
+          ### Terraform Plan Output
+
+          <details>
+          <summary>Click to expand full terraform plan</summary>
+
+          ```
+          EOF
+            cat plan-full.txt >> $GITHUB_STEP_SUMMARY
+            cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+          ```
+
+          </details>
+
+          **Safety**: No terraform apply/destroy executed - plan-only mode
+          EOF
+          else
+            cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+
+          **Note**: Terraform plan output not available
+          EOF
+          fi
 
   # ==========================================================================
   # PHASE 2: CONTROL PLANE UPGRADE (SEQUENTIAL)
@@ -705,17 +729,15 @@ jobs:
   upgrade-workers:
     name: Upgrade Worker ${{ matrix.node }}
     needs: [rebuild-templates, upgrade-control-plane]
-    if: |
-      always() &&
-      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
-      (inputs.test_mode || needs.upgrade-control-plane.result == 'success')
+    # Skip worker upgrades if test_mode is enabled (matches control plane behavior)
+    if: inputs.test_mode == false
     runs-on: cattle-runner
     timeout-minutes: 30
     strategy:
       max-parallel: 1
       fail-fast: false
       matrix:
-        node: ${{ inputs.test_mode && fromJSON('["k8s-work-1","k8s-work-2"]') || fromJSON('["k8s-work-1","k8s-work-2","k8s-work-3","k8s-work-4","k8s-work-5","k8s-work-6","k8s-work-11","k8s-work-12","k8s-work-13","k8s-work-14","k8s-work-15","k8s-work-16"]') }}
+        node: ["k8s-work-1","k8s-work-2","k8s-work-3","k8s-work-4","k8s-work-5","k8s-work-6","k8s-work-11","k8s-work-12","k8s-work-13","k8s-work-14","k8s-work-15","k8s-work-16"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
