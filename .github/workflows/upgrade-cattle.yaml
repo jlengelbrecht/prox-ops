@@ -211,12 +211,15 @@ jobs:
           echo ""
           echo "Checking for unintended VM modules in plan..."
 
+          BUG_DETECTED=false
+
           if grep -q "module.control_plane_nodes" plan-full.txt; then
             echo "::error::BUG DETECTED: control_plane_nodes module found in plan"
             echo "::error::This would destroy control plane VMs!"
             echo ""
             grep "module.control_plane_nodes" plan-full.txt
             echo ""
+            BUG_DETECTED=true
           else
             echo "✅ No control_plane_nodes in plan"
           fi
@@ -227,8 +230,29 @@ jobs:
             echo ""
             grep "module.worker_nodes" plan-full.txt
             echo ""
+            BUG_DETECTED=true
           else
             echo "✅ No worker_nodes in plan"
+          fi
+
+          # FAIL WORKFLOW if VM modules detected
+          if [ "$BUG_DETECTED" = true ]; then
+            echo ""
+            echo "================================================================"
+            echo "❌ WORKFLOW FAILED: Terraform would destroy VM nodes"
+            echo "================================================================"
+            echo "::error::Terraform plan includes VM modules (control_plane_nodes or worker_nodes)"
+            echo "::error::This is the bug causing cluster outages!"
+            echo "::error::Workflow terminated to prevent accidental node destruction"
+            echo "::error::Review plan output above to identify root cause"
+            echo ""
+            echo "Next steps:"
+            echo "1. Document findings in .claude/.ai-docs/troubleshooting/CLUSTER_OUTAGE_2025-11-21.md"
+            echo "2. Identify why Terraform dependency graph includes VM modules"
+            echo "3. Implement permanent fix"
+            echo "4. Re-test until plan shows ONLY template modules"
+            echo ""
+            exit 1
           fi
 
           # Show resources to be destroyed
