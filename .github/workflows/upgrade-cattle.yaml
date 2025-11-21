@@ -729,8 +729,12 @@ jobs:
   upgrade-workers:
     name: Upgrade Worker ${{ matrix.node }}
     needs: [rebuild-templates, upgrade-control-plane]
-    # Skip worker upgrades if test_mode is enabled (matches control plane behavior)
-    if: inputs.test_mode == false
+    # Skip worker upgrades if test_mode is enabled, or if dependencies failed
+    # Workers only run when: test_mode=false AND templates succeeded AND control plane succeeded
+    if: |
+      inputs.test_mode == false &&
+      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
+      (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
     runs-on: cattle-runner
     timeout-minutes: 30
     strategy:
