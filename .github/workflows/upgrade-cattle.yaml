@@ -48,7 +48,7 @@ jobs:
   # ==========================================================================
   rebuild-templates:
     name: Rebuild Templates v${{ inputs.new_version }}
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 60
     # Skip template rebuild if versions are identical (prevents VM destruction due to implicit clone dependencies)
     # UNLESS test_mode is enabled (for terraform plan bug investigation)
@@ -321,7 +321,7 @@ jobs:
   upgrade-control-plane:
     name: Upgrade Control ${{ matrix.node.name }}
     needs: rebuild-templates
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 30
     if: inputs.test_mode == false
     strategy:
@@ -735,7 +735,7 @@ jobs:
       inputs.test_mode == false &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 30
     strategy:
       max-parallel: 1
@@ -1305,7 +1305,7 @@ jobs:
     name: Validate Cluster Health
     needs: [rebuild-templates, upgrade-control-plane, upgrade-workers]
     if: always()
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 10
     steps:
       - name: Checkout repository
