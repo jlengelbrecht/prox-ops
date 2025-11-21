@@ -4,6 +4,9 @@ kind: Kustomization
 metadata:
   name: envoy-gateway-operator
 spec:
+  dependsOn:
+    - name: cert-manager-operator
+      namespace: cert-manager
   healthChecks:
     - apiVersion: apps/v1
       kind: Deployment
