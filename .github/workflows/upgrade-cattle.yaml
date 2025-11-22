@@ -16,6 +16,10 @@ on:
         description: Test mode (only 2 workers, skip control plane)
         type: boolean
         default: true
+      templates_only:
+        description: Only rebuild templates (skip VM upgrades) - used for PATCH upgrades
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       old_version:
@@ -30,6 +34,10 @@ on:
         description: Test mode (only 2 workers, skip control plane)
         type: boolean
         default: true
+      templates_only:
+        description: Only rebuild templates (skip VM upgrades) - used for PATCH upgrades
+        type: boolean
+        default: false
 
 # Prevent concurrent cattle upgrades (Terraform state lock protection)
 # Cancel old queued runs when new run starts (prevents zombie workflow blocking)
@@ -524,7 +532,7 @@ jobs:
     needs: rebuild-templates
     runs-on: cattle-runner
     timeout-minutes: 30
-    if: inputs.test_mode == false
+    if: inputs.test_mode == false && inputs.templates_only == false
     strategy:
       max-parallel: 1
       fail-fast: true
@@ -930,10 +938,11 @@ jobs:
   upgrade-workers:
     name: Upgrade Worker ${{ matrix.node }}
     needs: [rebuild-templates, upgrade-control-plane]
-    # Skip worker upgrades if test_mode is enabled, or if dependencies failed
-    # Workers only run when: test_mode=false AND templates succeeded AND control plane succeeded
+    # Skip worker upgrades if test_mode is enabled, templates_only is enabled, or if dependencies failed
+    # Workers only run when: test_mode=false AND templates_only=false AND templates succeeded AND control plane succeeded
     if: |
       inputs.test_mode == false &&
+      inputs.templates_only == false &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
     runs-on: cattle-runner
@@ -1505,7 +1514,7 @@ jobs:
   validate-cluster:
     name: Validate Cluster Health
     needs: [rebuild-templates, upgrade-control-plane, upgrade-workers]
-    if: always()
+    if: always() && inputs.templates_only == false
     runs-on: cattle-runner
     timeout-minutes: 10
     steps:
