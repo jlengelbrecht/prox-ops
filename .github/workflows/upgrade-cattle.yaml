@@ -367,21 +367,16 @@ jobs:
           echo "================================================================"
           echo ""
 
-          # Copilot #3: Validate plan file exists before apply
-          if [[ ! -f template-rebuild.tfplan ]]; then
-            echo "::error::Plan file template-rebuild.tfplan not found"
-            echo "::error::Cannot execute terraform apply without validated plan"
-            exit 1
-          fi
-          echo "✓ Plan file exists and is ready to apply"
-          echo ""
-
           echo "This step will:"
           echo "  1. Destroy old templates (8 templates)"
           echo "  2. Download new Talos images"
           echo "  3. Create new templates with updated version"
           echo ""
           echo "NOTE: VMs are NOT affected - only templates are rebuilt"
+          echo ""
+          echo "IMPORTANT: Not using plan file for batched execution"
+          echo "Reason: Terraform ignores -target flags when applying from plan file"
+          echo "Solution: Inline plan+apply for each batch ensures targets are honored"
           echo "================================================================"
           echo ""
 
@@ -389,8 +384,12 @@ jobs:
           # Strategy: 2 templates at a time across different Proxmox nodes
           # Reduces parallel Ceph writes from 8 → 2 (75% reduction in contention)
           # Estimated time: 4 batches × 2 min + delays = ~9.5 minutes
+          #
+          # CRITICAL: Do NOT use saved plan file (template-rebuild.tfplan)
+          # Terraform ignores -target flags when applying from a plan file!
+          # Instead, we let terraform create inline plans for each batch.
 
-          echo "Applying validated terraform plan in batches..."
+          echo "Applying template changes in batches..."
           echo "Batching strategy: 2 templates per batch across different nodes"
           echo ""
 
@@ -400,8 +399,7 @@ jobs:
           echo "================================================================"
           terraform apply -input=false -auto-approve \
             -target=module.template_baldar_controller \
-            -target=module.template_heimdall_controller \
-            template-rebuild.tfplan
+            -target=module.template_heimdall_controller
 
           echo ""
           echo "✓ Batch 1 complete. Waiting 30 seconds for Ceph to settle..."
@@ -414,8 +412,7 @@ jobs:
           echo "================================================================"
           terraform apply -input=false -auto-approve \
             -target=module.template_odin_controller \
-            -target=module.template_thor_controller \
-            template-rebuild.tfplan
+            -target=module.template_thor_controller
 
           echo ""
           echo "✓ Batch 2 complete. Waiting 30 seconds for Ceph to settle..."
@@ -428,8 +425,7 @@ jobs:
           echo "================================================================"
           terraform apply -input=false -auto-approve \
             -target=module.template_baldar_worker \
-            -target=module.template_heimdall_worker \
-            template-rebuild.tfplan
+            -target=module.template_heimdall_worker
 
           echo ""
           echo "✓ Batch 3 complete. Waiting 30 seconds for Ceph to settle..."
@@ -442,8 +438,7 @@ jobs:
           echo "================================================================"
           terraform apply -input=false -auto-approve \
             -target=module.template_odin_worker \
-            -target=module.template_thor_worker \
-            template-rebuild.tfplan
+            -target=module.template_thor_worker
 
           echo ""
           echo "================================================================"
