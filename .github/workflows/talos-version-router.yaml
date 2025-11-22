@@ -123,15 +123,13 @@ jobs:
       test_mode: ${{ inputs.test_mode || true }}
 
   route-to-pets:
-    name: Route to Pets Workflow
+    name: Route to Pets Workflow (Templates Only)
     needs: detect-version-change
     if: needs.detect-version-change.outputs.version_changed == 'true' && needs.detect-version-change.outputs.upgrade_type == 'pets'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Pets workflow placeholder
-        run: |
-          echo "::notice::PATCH upgrade detected: ${{ needs.detect-version-change.outputs.old_version }} → ${{ needs.detect-version-change.outputs.new_version }}"
-          echo "::warning::Pets workflow (in-place talosctl upgrade) not yet implemented"
-          echo ""
-          echo "For now, PATCH upgrades should be done manually:"
-          echo "  talosctl upgrade --nodes <node> --image factory.talos.dev/installer/<schematic>:v${{ needs.detect-version-change.outputs.new_version }}"
+    uses: ./.github/workflows/upgrade-cattle.yaml
+    secrets: inherit
+    with:
+      old_version: ${{ needs.detect-version-change.outputs.old_version }}
+      new_version: ${{ needs.detect-version-change.outputs.new_version }}
+      test_mode: false
+      templates_only: true  # Only rebuild templates, skip VM upgrades
