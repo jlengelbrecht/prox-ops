@@ -385,13 +385,70 @@ jobs:
           echo "================================================================"
           echo ""
 
-          # Apply the validated plan
-          echo "Applying validated terraform plan..."
-          terraform apply -input=false template-rebuild.tfplan
+          # Apply templates in batches to avoid Ceph lock contention
+          # Strategy: 2 templates at a time across different Proxmox nodes
+          # Reduces parallel Ceph writes from 8 → 2 (75% reduction in contention)
+          # Estimated time: 4 batches × 2 min + delays = ~9.5 minutes
+
+          echo "Applying validated terraform plan in batches..."
+          echo "Batching strategy: 2 templates per batch across different nodes"
+          echo ""
+
+          # Batch 1: Baldar controller + Heimdall controller (different nodes)
+          echo "================================================================"
+          echo "Batch 1/4: Creating controller templates on Baldar + Heimdall"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_baldar_controller \
+            -target=module.template_heimdall_controller \
+            template-rebuild.tfplan
+
+          echo ""
+          echo "✓ Batch 1 complete. Waiting 30 seconds for Ceph to settle..."
+          sleep 30
+
+          # Batch 2: Odin controller + Thor controller (different nodes)
+          echo ""
+          echo "================================================================"
+          echo "Batch 2/4: Creating controller templates on Odin + Thor"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_odin_controller \
+            -target=module.template_thor_controller \
+            template-rebuild.tfplan
+
+          echo ""
+          echo "✓ Batch 2 complete. Waiting 30 seconds for Ceph to settle..."
+          sleep 30
+
+          # Batch 3: Baldar worker + Heimdall worker (different nodes)
+          echo ""
+          echo "================================================================"
+          echo "Batch 3/4: Creating worker templates on Baldar + Heimdall"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_baldar_worker \
+            -target=module.template_heimdall_worker \
+            template-rebuild.tfplan
+
+          echo ""
+          echo "✓ Batch 3 complete. Waiting 30 seconds for Ceph to settle..."
+          sleep 30
+
+          # Batch 4: Odin worker + Thor worker (different nodes)
+          echo ""
+          echo "================================================================"
+          echo "Batch 4/4: Creating worker templates on Odin + Thor"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_odin_worker \
+            -target=module.template_thor_worker \
+            template-rebuild.tfplan
 
           echo ""
           echo "================================================================"
-          echo "✅ Template rebuild completed successfully"
+          echo "✅ All 4 batches completed successfully"
+          echo "✅ Template rebuild completed: 8 templates created"
           echo "================================================================"
           echo "::endgroup::"
 

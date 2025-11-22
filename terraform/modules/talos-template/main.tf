@@ -85,18 +85,40 @@ resource "null_resource" "create_template" {
     ]
   }
 
-  # Upload the raw disk image via file provisioner
-  # TechDufus uses rsync for large file reliability, but Terraform's file provisioner works well
-  provisioner "file" {
-    connection {
-      type        = "ssh"
-      host        = var.proxmox_host
-      user        = var.proxmox_ssh_user
-      private_key = file("~/.ssh/proxmox_terraform")
-    }
+  # Upload the raw disk image with retry logic
+  # Uses SCP with 3 retry attempts to handle transient network issues
+  # during large file transfers (1.7GB Talos images)
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -e
 
-    source      = local.raw_image_path
-    destination = "/var/lib/vz/template/talos/${var.schematic_id}.raw"
+      echo "[Template Upload] Uploading ${var.schematic_id}.raw to ${var.proxmox_host}..."
+      echo "[Template Upload] File size: $(du -h ${local.raw_image_path} | cut -f1)"
+
+      # Retry logic: 3 attempts with 10 second delays
+      for attempt in {1..3}; do
+        echo "[Template Upload] Attempt $attempt of 3..."
+
+        if scp -i ~/.ssh/proxmox_terraform \
+               -o StrictHostKeyChecking=no \
+               -o UserKnownHostsFile=/dev/null \
+               -o ServerAliveInterval=30 \
+               -o ServerAliveCountMax=3 \
+               ${local.raw_image_path} \
+               ${var.proxmox_ssh_user}@${var.proxmox_host}:/var/lib/vz/template/talos/${var.schematic_id}.raw; then
+          echo "[Template Upload] ✓ Upload successful on attempt $attempt"
+          exit 0
+        else
+          if [ $attempt -lt 3 ]; then
+            echo "[Template Upload] ✗ Upload failed, retrying in 10 seconds..."
+            sleep 10
+          else
+            echo "[Template Upload] ✗ Upload failed after 3 attempts"
+            exit 1
+          fi
+        fi
+      done
+    EOT
   }
 
   # Create VM template with settings from user's existing configurations
