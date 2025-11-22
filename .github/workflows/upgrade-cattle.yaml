@@ -135,26 +135,34 @@ jobs:
             echo "✓ No lock detected - state is accessible"
           fi
 
-      - name: Plan template changes (SAFETY MODE - NO EXECUTION)
+          # Ensure clean exit
+          exit 0
+
+      - name: Plan template changes
         working-directory: ./terraform
         timeout-minutes: 15
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "::group::Terraform Plan for Template Rebuild (SAFETY MODE)"
+          echo "::group::Terraform Plan for Template Rebuild"
           echo "================================================================"
-          echo "SAFETY MODE ENABLED: This workflow will ONLY show what Terraform"
-          echo "WOULD do when targeting templates. It will NOT execute any changes."
-          echo ""
-          echo "This is to identify the bug causing Terraform to destroy VMs"
-          echo "instead of just rebuilding templates."
+          echo "Planning template rebuild for 8 template modules"
           echo "================================================================"
           echo ""
-          echo "Running terraform plan for 8 template modules..."
+          echo "This step will plan changes for:"
+          echo "  - Baldar: controller + worker templates"
+          echo "  - Heimdall: controller + worker templates"
+          echo "  - Odin: controller + worker templates"
+          echo "  - Thor: controller + worker templates"
+          echo ""
+          echo "Total: 8 template modules (16 null_resources)"
+          echo ""
+          echo "NOTE: Only templates are targeted - VMs are NOT affected"
+          echo "================================================================"
           echo ""
 
-          # SAFETY: Run plan only, no apply/destroy
+          # Generate plan for validation
           terraform plan \
             -input=false \
             -out=template-rebuild.tfplan \
@@ -256,6 +264,37 @@ jobs:
             exit 1
           fi
 
+          # POSITIVE ASSERTION: Verify template modules ARE present (Opus recommendation)
+          echo ""
+          echo "Verifying template modules are present in plan..."
+          TEMPLATE_COUNT=0
+          for module in template_baldar_controller template_baldar_worker \
+                        template_heimdall_controller template_heimdall_worker \
+                        template_odin_controller template_odin_worker \
+                        template_thor_controller template_thor_worker; do
+            if grep -q "module.$module" plan-full.txt; then
+              TEMPLATE_COUNT=$((TEMPLATE_COUNT + 1))
+              echo "  ✓ Found module.$module"
+            else
+              echo "  ⚠ Missing module.$module"
+            fi
+          done
+
+          if [[ $TEMPLATE_COUNT -eq 0 ]]; then
+            echo ""
+            echo "::error::VALIDATION FAILED: No template modules found in plan"
+            echo "::error::Expected 8 template modules, found 0"
+            echo "::error::This likely indicates a configuration error"
+            exit 1
+          elif [[ $TEMPLATE_COUNT -lt 8 ]]; then
+            echo ""
+            echo "::warning::Only $TEMPLATE_COUNT/8 template modules found in plan"
+            echo "::warning::Expected all 8 template modules to be affected"
+          else
+            echo ""
+            echo "✅ All 8 template modules found in plan"
+          fi
+
           # Show resources to be destroyed
           echo ""
           echo "Resources Terraform plans to DESTROY:"
@@ -268,17 +307,17 @@ jobs:
 
           echo ""
           echo "================================================================"
-          echo "SAFETY STATUS: No changes executed (plan-only mode)"
+          echo "Validation passed - plan contains ONLY templates"
           echo "================================================================"
           echo "::endgroup::"
 
-      - name: Template rebuild summary
+      - name: Template rebuild plan summary
         working-directory: ./terraform
         run: |
           cat >> $GITHUB_STEP_SUMMARY <<'EOF'
-          ## Phase 1: Template Rebuild ✅
+          ## Phase 1: Template Rebuild Plan ✅
 
-          **Status**: Plan-only mode (no changes executed)
+          **Status**: Plan generated and validated
 
           ### Templates Targeted
           - Baldar: controller + worker
@@ -286,7 +325,7 @@ jobs:
           - Odin: controller + worker
           - Thor: controller + worker
 
-          **Total**: 8 template modules
+          **Total**: 8 template modules (16 null_resources)
           EOF
 
           # Add terraform plan output to summary
@@ -306,7 +345,7 @@ jobs:
 
           </details>
 
-          **Safety**: No terraform apply/destroy executed - plan-only mode
+          **Validation**: Plan will be validated before execution
           EOF
           else
             cat >> $GITHUB_STEP_SUMMARY <<'EOF'
@@ -314,6 +353,116 @@ jobs:
           **Note**: Terraform plan output not available
           EOF
           fi
+
+      - name: Execute template rebuild
+        working-directory: ./terraform
+        timeout-minutes: 20
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Executing Template Rebuild"
+          echo "================================================================"
+          echo "VALIDATION PASSED - Executing template rebuild"
+          echo "================================================================"
+          echo ""
+
+          # Copilot #3: Validate plan file exists before apply
+          if [[ ! -f template-rebuild.tfplan ]]; then
+            echo "::error::Plan file template-rebuild.tfplan not found"
+            echo "::error::Cannot execute terraform apply without validated plan"
+            exit 1
+          fi
+          echo "✓ Plan file exists and is ready to apply"
+          echo ""
+
+          echo "This step will:"
+          echo "  1. Destroy old templates (8 templates)"
+          echo "  2. Download new Talos images"
+          echo "  3. Create new templates with updated version"
+          echo ""
+          echo "NOTE: VMs are NOT affected - only templates are rebuilt"
+          echo "================================================================"
+          echo ""
+
+          # Apply the validated plan
+          echo "Applying validated terraform plan..."
+          terraform apply -input=false template-rebuild.tfplan
+
+          echo ""
+          echo "================================================================"
+          echo "✅ Template rebuild completed successfully"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Verify template rebuild
+        working-directory: ./terraform
+        timeout-minutes: 10  # Copilot #6: Add timeout for consistency and safety
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Verifying Template Rebuild"
+          echo "Running terraform refresh to verify new templates..."
+
+          terraform refresh \
+            -input=false \
+            -target=module.template_baldar_controller \
+            -target=module.template_baldar_worker \
+            -target=module.template_heimdall_controller \
+            -target=module.template_heimdall_worker \
+            -target=module.template_odin_controller \
+            -target=module.template_odin_worker \
+            -target=module.template_thor_controller \
+            -target=module.template_thor_worker
+
+          echo ""
+          echo "Terraform refresh complete"
+
+          # Copilot #5: Verify templates exist in state (not just refresh)
+          echo ""
+          echo "Verifying template modules are present in Terraform state..."
+
+          MISSING_TEMPLATES=()
+          for module in template_baldar_controller template_baldar_worker \
+                        template_heimdall_controller template_heimdall_worker \
+                        template_odin_controller template_odin_worker \
+                        template_thor_controller template_thor_worker; do
+            if terraform state list | grep -q "module.$module"; then
+              echo "  ✓ module.$module present in state"
+            else
+              echo "  ✗ module.$module MISSING from state"
+              MISSING_TEMPLATES+=("$module")
+            fi
+          done
+
+          if [[ ${#MISSING_TEMPLATES[@]} -gt 0 ]]; then
+            echo ""
+            echo "::error::Template verification failed: ${#MISSING_TEMPLATES[@]} modules missing from state"
+            for module in "${MISSING_TEMPLATES[@]}"; do
+              echo "::error::Missing: module.$module"
+            done
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All 8 template modules present in Terraform state"
+          echo "✅ Templates successfully rebuilt and verified"
+          echo "::endgroup::"
+
+          # Update summary
+          cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+
+          ### Template Rebuild Execution ✅
+
+          Templates have been successfully rebuilt and verified:
+          - Old templates destroyed
+          - New Talos images downloaded
+          - New templates created with updated version
+          - All 8 template modules present in Terraform state
+
+          **Next**: Control plane and worker nodes will be upgraded sequentially
+          EOF
 
   # ==========================================================================
   # PHASE 2: CONTROL PLANE UPGRADE (SEQUENTIAL)
