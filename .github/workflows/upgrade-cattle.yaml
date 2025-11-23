@@ -122,7 +122,8 @@ jobs:
             echo "$LOCK_OUTPUT"
 
             # Extract lock ID from error message (format: "ID: <uuid>")
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s{8})[a-f0-9-]{36}' | head -1)
+            # Use \s+ for flexible whitespace matching across Terraform versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s+)[a-f0-9-]{36}' | head -1)
 
             if [ -n "$LOCK_ID" ]; then
               echo ""
@@ -596,7 +597,8 @@ jobs:
             echo "$LOCK_OUTPUT"
 
             # Extract lock ID from error message (format: "ID: <uuid>")
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s{8})[a-f0-9-]{36}' | head -1)
+            # Use \s+ for flexible whitespace matching across Terraform versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s+)[a-f0-9-]{36}' | head -1)
 
             if [ -n "$LOCK_ID" ]; then
               echo ""
@@ -632,8 +634,9 @@ jobs:
               --field-selector=status.phase=Running -o name 2>/dev/null | head -n1)
 
             if [[ -z "$ETCD_POD" ]]; then
-              echo "::error::No healthy etcd pods found"
-              exit 1
+              echo "⚠️  Attempt $i/30: No healthy etcd pods found yet, waiting..."
+              sleep 10
+              continue
             fi
 
             HEALTHY_MEMBERS=$(kubectl exec -n kube-system "$ETCD_POD" -- \
@@ -1239,8 +1242,8 @@ jobs:
           NODE_IP="${{ matrix.node.ip }}"
           EXPECTED_VERSION="v${{ inputs.new_version }}"
 
-          # Extract version from talosctl
-          VERSION=$(talosctl version --nodes "$NODE_IP" --short 2>/dev/null | grep "Tag:" | awk '{print $2}')
+          # Extract version from talosctl using JSON parsing for reliability
+          VERSION=$(talosctl version --nodes "$NODE_IP" --json 2>/dev/null | jq -r '.server.tag // empty')
 
           echo "Node Talos version: $VERSION"
           echo "Expected version: $EXPECTED_VERSION"
@@ -1267,8 +1270,9 @@ jobs:
               --field-selector=status.phase=Running -o name 2>/dev/null | head -n1)
 
             if [[ -z "$ETCD_POD" ]]; then
-              echo "::error::No healthy etcd pods found"
-              exit 1
+              echo "⚠️  Attempt $i/30: No healthy etcd pods found yet, waiting..."
+              sleep 10
+              continue
             fi
 
             # Count healthy members
