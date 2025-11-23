@@ -136,25 +136,32 @@ resource "null_resource" "create_template" {
       # CRITICAL: --machine q35 MUST be set during creation (cannot be changed after)
       "qm create ${var.template_vm_id} --name ${var.template_name} --machine q35 --memory 2048 --cores 2 --net0 virtio,bridge=${var.network_bridge}",
 
-      "echo '[Template Creation] Step 3: Importing disk...'",
-      # Import the raw disk image
-      "qm importdisk ${var.template_vm_id} /var/lib/vz/template/talos/${var.schematic_id}.raw ${var.vm_storage_pool}",
-
-      "echo '[Template Creation] Step 4: Configuring VM...'",
-      # Attach disk with virtio-scsi (better performance, matches user pattern)
-      "qm set ${var.template_vm_id} --scsihw virtio-scsi-pci --scsi0 ${var.vm_storage_pool}:vm-${var.template_vm_id}-disk-0",
-
-      # Configure boot order
-      "qm set ${var.template_vm_id} --boot order=scsi0",
-
-      # Set BIOS to OVMF (UEFI) - required for Talos
+      "echo '[Template Creation] Step 3: Setting UEFI BIOS...'",
+      # MUST set BIOS to OVMF before disk operations for proper UEFI support
       "qm set ${var.template_vm_id} --bios ovmf",
 
-      # Add EFI disk - Secure Boot REQUIRES pre-enrolled keys for DMZ security
-      "qm set ${var.template_vm_id} --efidisk0 ${var.vm_storage_pool}:0,efitype=4m,pre-enrolled-keys=${var.enable_secure_boot ? 1 : 0}",
+      "echo '[Template Creation] Step 4: Adding EFI disk...'",
+      # Add EFI disk with proper allocation size (:1 not :0)
+      "qm set ${var.template_vm_id} --efidisk0 ${var.vm_storage_pool}:1,efitype=4m,pre-enrolled-keys=${var.enable_secure_boot ? 1 : 0}",
 
-      # Add TPM 2.0 state disk (REQUIRED for Secure Boot)
-      var.enable_tpm ? "qm set ${var.template_vm_id} --tpmstate0 ${var.vm_storage_pool}:1,version=v2.0" : "echo 'TPM disabled'",
+      "echo '[Template Creation] Step 5: Adding TPM disk (if enabled)...'",
+      # Add TPM 2.0 state disk if enabled
+      var.enable_tpm ? "qm set ${var.template_vm_id} --tpmstate0 ${var.vm_storage_pool}:1,version=v2.0" : "echo 'TPM disabled, skipping...'",
+
+      "echo '[Template Creation] Step 6: Importing OS disk...'",
+      # Import the raw disk image (becomes unused0)
+      "qm importdisk ${var.template_vm_id} /var/lib/vz/template/talos/${var.schematic_id}.raw ${var.vm_storage_pool} --format raw",
+
+      "echo '[Template Creation] Step 7: Moving unused disk to scsi0...'",
+      # CRITICAL FIX: Move unused0 to scsi0 using correct syntax
+      "qm set ${var.template_vm_id} --scsi0 ${var.template_vm_id}:unused0",
+
+      "echo '[Template Creation] Step 8: Configuring VM settings...'",
+      # Configure SCSI hardware
+      "qm set ${var.template_vm_id} --scsihw virtio-scsi-pci",
+
+      # Configure boot order to scsi0 (disk is now attached)
+      "qm set ${var.template_vm_id} --boot order=scsi0",
 
       # Configure CPU type (host provides best performance and feature support)
       "qm set ${var.template_vm_id} --cpu ${var.cpu_type}",
@@ -177,9 +184,24 @@ resource "null_resource" "create_template" {
       # Set description
       "qm set ${var.template_vm_id} --description '${local.template_desc}'",
 
-      "echo '[Template Creation] Step 5: Converting to template...'",
+      "echo '[Template Creation] Step 9: Converting to template...'",
       # Convert VM to template (makes it read-only and clonable)
       "qm template ${var.template_vm_id}",
+
+      "echo '[Template Creation] Step 10: Verifying template configuration...'",
+      # Verify the template was created correctly
+      "echo 'Template configuration:'",
+      "qm config ${var.template_vm_id} | grep -E '^(boot|scsi0|efidisk0|tpmstate0|unused)' || true",
+
+      # Check for critical issues
+      "if qm config ${var.template_vm_id} | grep -q '^unused'; then",
+      "  echo 'WARNING: Template still has unused disks - attachment may have failed!'",
+      "fi",
+
+      "if qm config ${var.template_vm_id} | grep -q 'boot: order=net0'; then",
+      "  echo 'ERROR: Boot order is set to network instead of disk!'",
+      "  exit 1",
+      "fi",
 
       "echo '[Template Creation] Complete: ${var.template_name} (ID: ${var.template_vm_id})'"
     ]
