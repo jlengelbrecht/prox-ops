@@ -70,9 +70,9 @@ jobs:
       - name: Validate test flags are mutually exclusive
         run: |
           count=0
-          [[ "${{ inputs.test_templates }}" == "true" ]] && ((count++))
-          [[ "${{ inputs.test_controllers }}" == "true" ]] && ((count++))
-          [[ "${{ inputs.test_workers }}" == "true" ]] && ((count++))
+          [[ "${{ inputs.test_templates }}" == "true" ]] && count=$((count + 1))
+          [[ "${{ inputs.test_controllers }}" == "true" ]] && count=$((count + 1))
+          [[ "${{ inputs.test_workers }}" == "true" ]] && count=$((count + 1))
 
           if [[ $count -gt 1 ]]; then
             echo "::error::Multiple test flags set. Only one test flag can be true at a time."
