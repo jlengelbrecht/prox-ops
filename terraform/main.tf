@@ -36,7 +36,7 @@
 
 locals {
   # Template configurations for all nodes
-  # Each Proxmox node gets both a controller and worker template
+  # Each Proxmox node gets both a base and GPU template
   templates = {
     # Baldar templates
     baldar_base = {
