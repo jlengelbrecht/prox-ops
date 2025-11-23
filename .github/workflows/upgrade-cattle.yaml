@@ -217,14 +217,14 @@ jobs:
           terraform plan \
             -input=false \
             -out=template-rebuild.tfplan \
-            -target=module.template_baldar_controller \
-            -target=module.template_baldar_worker \
-            -target=module.template_heimdall_controller \
-            -target=module.template_heimdall_worker \
-            -target=module.template_odin_controller \
-            -target=module.template_odin_worker \
-            -target=module.template_thor_controller \
-            -target=module.template_thor_worker
+            -target=module.template_baldar_base \
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_base \
+            -target=module.template_heimdall_gpu \
+            -target=module.template_odin_base \
+            -target=module.template_odin_gpu \
+            -target=module.template_thor_base \
+            -target=module.template_thor_gpu
 
           echo ""
           echo "================================================================"
@@ -319,10 +319,10 @@ jobs:
           echo ""
           echo "Verifying template modules are present in plan..."
           TEMPLATE_COUNT=0
-          for module in template_baldar_controller template_baldar_worker \
-                        template_heimdall_controller template_heimdall_worker \
-                        template_odin_controller template_odin_worker \
-                        template_thor_controller template_thor_worker; do
+          for module in template_baldar_base template_baldar_gpu \
+                        template_heimdall_base template_heimdall_gpu \
+                        template_odin_base template_odin_gpu \
+                        template_thor_base template_thor_gpu; do
             if grep -q "module.$module" plan-full.txt; then
               TEMPLATE_COUNT=$((TEMPLATE_COUNT + 1))
               echo "  ✓ Found module.$module"
@@ -449,8 +449,8 @@ jobs:
           echo "Batch 1/4: Creating controller templates on Baldar + Heimdall"
           echo "================================================================"
           terraform apply -input=false -auto-approve \
-            -target=module.template_baldar_controller \
-            -target=module.template_heimdall_controller
+            -target=module.template_baldar_base \
+            -target=module.template_heimdall_base
 
           echo ""
           echo "✓ Batch 1 complete. Waiting 30 seconds for Ceph to settle..."
@@ -462,8 +462,8 @@ jobs:
           echo "Batch 2/4: Creating controller templates on Odin + Thor"
           echo "================================================================"
           terraform apply -input=false -auto-approve \
-            -target=module.template_odin_controller \
-            -target=module.template_thor_controller
+            -target=module.template_odin_base \
+            -target=module.template_thor_base
 
           echo ""
           echo "✓ Batch 2 complete. Waiting 30 seconds for Ceph to settle..."
@@ -475,8 +475,8 @@ jobs:
           echo "Batch 3/4: Creating worker templates on Baldar + Heimdall"
           echo "================================================================"
           terraform apply -input=false -auto-approve \
-            -target=module.template_baldar_worker \
-            -target=module.template_heimdall_worker
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_gpu
 
           echo ""
           echo "✓ Batch 3 complete. Waiting 30 seconds for Ceph to settle..."
@@ -488,8 +488,8 @@ jobs:
           echo "Batch 4/4: Creating worker templates on Odin + Thor"
           echo "================================================================"
           terraform apply -input=false -auto-approve \
-            -target=module.template_odin_worker \
-            -target=module.template_thor_worker
+            -target=module.template_odin_gpu \
+            -target=module.template_thor_gpu
 
           echo ""
           echo "================================================================"
@@ -510,14 +510,14 @@ jobs:
 
           terraform refresh \
             -input=false \
-            -target=module.template_baldar_controller \
-            -target=module.template_baldar_worker \
-            -target=module.template_heimdall_controller \
-            -target=module.template_heimdall_worker \
-            -target=module.template_odin_controller \
-            -target=module.template_odin_worker \
-            -target=module.template_thor_controller \
-            -target=module.template_thor_worker
+            -target=module.template_baldar_base \
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_base \
+            -target=module.template_heimdall_gpu \
+            -target=module.template_odin_base \
+            -target=module.template_odin_gpu \
+            -target=module.template_thor_base \
+            -target=module.template_thor_gpu
 
           echo ""
           echo "Terraform refresh complete"
@@ -527,10 +527,10 @@ jobs:
           echo "Verifying template modules are present in Terraform state..."
 
           MISSING_TEMPLATES=()
-          for module in template_baldar_controller template_baldar_worker \
-                        template_heimdall_controller template_heimdall_worker \
-                        template_odin_controller template_odin_worker \
-                        template_thor_controller template_thor_worker; do
+          for module in template_baldar_base template_baldar_gpu \
+                        template_heimdall_base template_heimdall_gpu \
+                        template_odin_base template_odin_gpu \
+                        template_thor_base template_thor_gpu; do
             if terraform state list | grep -q "module.$module"; then
               echo "  ✓ module.$module present in state"
             else
