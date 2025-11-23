@@ -576,7 +576,10 @@ jobs:
     runs-on: cattle-runner
     timeout-minutes: 30
     # Run when: test_controllers=true OR production mode (all test flags false)
-    if: inputs.test_controllers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)
+    # Also require rebuild-templates to have succeeded OR been skipped (not failed)
+    if: |
+      (inputs.test_controllers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
+      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped')
     strategy:
       max-parallel: 1
       fail-fast: true
