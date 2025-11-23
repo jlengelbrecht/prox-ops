@@ -12,12 +12,16 @@ on:
         description: New Talos version to upgrade to
         type: string
         required: true
-      test_mode:
-        description: Test mode (only 2 workers, skip control plane)
+      test_templates:
+        description: Test only template rebuild (skip controllers & workers)
         type: boolean
-        default: true
-      templates_only:
-        description: Only rebuild templates (skip VM upgrades) - used for PATCH upgrades
+        default: false
+      test_controllers:
+        description: Test only controllers (1 controller, skip templates & workers)
+        type: boolean
+        default: false
+      test_workers:
+        description: Test only workers (2 workers, skip templates & controllers)
         type: boolean
         default: false
   workflow_dispatch:
@@ -30,12 +34,16 @@ on:
         description: New Talos version to upgrade to
         type: string
         required: true
-      test_mode:
-        description: Test mode (only 2 workers, skip control plane)
+      test_templates:
+        description: Test only template rebuild (skip controllers & workers)
         type: boolean
-        default: true
-      templates_only:
-        description: Only rebuild templates (skip VM upgrades) - used for PATCH upgrades
+        default: false
+      test_controllers:
+        description: Test only controllers (1 controller, skip templates & workers)
+        type: boolean
+        default: false
+      test_workers:
+        description: Test only workers (2 workers, skip templates & controllers)
         type: boolean
         default: false
 
@@ -58,9 +66,9 @@ jobs:
     name: Rebuild Templates v${{ inputs.new_version }}
     runs-on: cattle-runner
     timeout-minutes: 60
-    # Skip template rebuild if versions are identical (prevents VM destruction due to implicit clone dependencies)
-    # UNLESS test_mode is enabled (for terraform plan bug investigation)
-    if: inputs.old_version != inputs.new_version || inputs.test_mode == true
+    # Run templates when: test_templates=true OR production mode (all test flags false)
+    # Skip when: test_controllers=true OR test_workers=true (templates already exist)
+    if: inputs.test_controllers == false && inputs.test_workers == false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -533,21 +541,25 @@ jobs:
     needs: rebuild-templates
     runs-on: cattle-runner
     timeout-minutes: 30
-    if: inputs.test_mode == false && inputs.templates_only == false
+    # Run controllers when: test_controllers=true OR production mode (all test flags false)
+    # Skip when: test_templates=true OR test_workers=true
+    if: inputs.test_templates == false && inputs.test_workers == false
     strategy:
       max-parallel: 1
       fail-fast: true
       matrix:
-        node:
-          - name: "k8s-ctrl-1"
-            ip: "10.20.67.1"
-            secret_suffix: "CTRL_1"
-          - name: "k8s-ctrl-2"
-            ip: "10.20.67.2"
-            secret_suffix: "CTRL_2"
-          - name: "k8s-ctrl-3"
-            ip: "10.20.67.3"
-            secret_suffix: "CTRL_3"
+        # When test_controllers=true: Only k8s-ctrl-1
+        # When production (all test flags false): All 3 controllers
+        node: >-
+          ${{
+            inputs.test_controllers == true && fromJSON('[
+              {"name": "k8s-ctrl-1", "ip": "10.20.67.1", "secret_suffix": "CTRL_1"}
+            ]') || fromJSON('[
+              {"name": "k8s-ctrl-1", "ip": "10.20.67.1", "secret_suffix": "CTRL_1"},
+              {"name": "k8s-ctrl-2", "ip": "10.20.67.2", "secret_suffix": "CTRL_2"},
+              {"name": "k8s-ctrl-3", "ip": "10.20.67.3", "secret_suffix": "CTRL_3"}
+            ]')
+          }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -1361,11 +1373,12 @@ jobs:
   upgrade-workers:
     name: Upgrade Worker ${{ matrix.node }}
     needs: [rebuild-templates, upgrade-control-plane]
-    # Skip worker upgrades if test_mode is enabled, templates_only is enabled, or if dependencies failed
-    # Workers only run when: test_mode=false AND templates_only=false AND templates succeeded AND control plane succeeded
+    # Run workers when: test_workers=true OR production mode (all test flags false)
+    # Skip when: test_templates=true OR test_controllers=true
+    # Also require dependencies to have succeeded or been skipped
     if: |
-      inputs.test_mode == false &&
-      inputs.templates_only == false &&
+      inputs.test_templates == false &&
+      inputs.test_controllers == false &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
     runs-on: cattle-runner
@@ -1374,7 +1387,13 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
-        node: ["k8s-work-1","k8s-work-2","k8s-work-3","k8s-work-4","k8s-work-5","k8s-work-6","k8s-work-11","k8s-work-12","k8s-work-13","k8s-work-14","k8s-work-15","k8s-work-16"]
+        # When test_workers=true: Only k8s-work-1 and k8s-work-2 (2 workers)
+        # When production (all test flags false): All 12 workers
+        node: >-
+          ${{
+            inputs.test_workers == true && fromJSON('["k8s-work-1","k8s-work-2"]') ||
+            fromJSON('["k8s-work-1","k8s-work-2","k8s-work-3","k8s-work-4","k8s-work-5","k8s-work-6","k8s-work-11","k8s-work-12","k8s-work-13","k8s-work-14","k8s-work-15","k8s-work-16"]')
+          }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
