@@ -677,27 +677,27 @@ jobs:
           echo "::group::Checking etcd quorum health"
           echo "Ensuring cluster has healthy quorum before upgrading ${{ matrix.node.name }}..."
 
+          # Get all control plane IPs
+          CTRL_NODES="10.20.67.1,10.20.67.2,10.20.67.3"
+
           # Wait up to 2 minutes for etcd to be healthy
           for i in {1..12}; do
-            # Find any healthy etcd pod
-            ETCD_POD=$(kubectl get pod -n kube-system -l component=etcd \
-              --field-selector=status.phase=Running -o name 2>/dev/null | head -n1)
+            # Count healthy etcd voting members using talosctl
+            # In Talos, etcd runs as a system service, not a Kubernetes pod
+            HEALTHY_MEMBERS=$(talosctl --nodes "$CTRL_NODES" etcd members 2>/dev/null | \
+              grep -c "false$" || echo "0")  # Count lines ending with "false" (non-learner members)
 
-            if [[ -z "$ETCD_POD" ]]; then
-              echo "⚠️  Attempt $i/30: No healthy etcd pods found yet, waiting..."
-              sleep 10
-              continue
-            fi
-
-            HEALTHY_MEMBERS=$(kubectl exec -n kube-system "$ETCD_POD" -- \
-              etcdctl member list 2>/dev/null | grep started | wc -l || echo "0")
-
-            echo "Attempt $i/12: $HEALTHY_MEMBERS healthy etcd members"
+            echo "Attempt $i/12: $HEALTHY_MEMBERS healthy etcd voting members"
 
             # SECURITY FIX: Require at least 2 healthy members BEFORE destroying ANY node
             if [[ "$HEALTHY_MEMBERS" -ge 2 ]]; then
-              echo "✅ etcd quorum healthy ($HEALTHY_MEMBERS members)"
+              echo "✅ etcd quorum healthy ($HEALTHY_MEMBERS voting members)"
               echo "Safe to upgrade ${{ matrix.node.name }} - quorum will survive with 2 members"
+
+              # Show member list for visibility
+              echo "Current etcd members:"
+              talosctl --nodes "$CTRL_NODES" etcd members | head -n 5
+
               echo "::endgroup::"
               exit 0
             fi
@@ -706,7 +706,7 @@ jobs:
           done
 
           echo "::error::Cannot proceed: etcd quorum at risk"
-          echo "::error::Only $HEALTHY_MEMBERS healthy members (need at least 2 before destroying any node)"
+          echo "::error::Only $HEALTHY_MEMBERS healthy voting members (need at least 2 before destroying any node)"
           exit 1
 
       - name: Cordon node
@@ -1313,31 +1313,24 @@ jobs:
           echo "::group::Verifying etcd quorum restored"
           echo "Ensuring ${{ matrix.node.name }} rejoined etcd cluster..."
 
+          # Get all control plane IPs
+          CTRL_NODES="10.20.67.1,10.20.67.2,10.20.67.3"
+
           # Wait up to 5 minutes for etcd to fully restore
           for i in {1..30}; do
-            # Find any healthy etcd pod
-            ETCD_POD=$(kubectl get pod -n kube-system -l component=etcd \
-              --field-selector=status.phase=Running -o name 2>/dev/null | head -n1)
+            # Count healthy etcd voting members using talosctl
+            # In Talos, etcd runs as a system service, not a Kubernetes pod
+            HEALTHY_MEMBERS=$(talosctl --nodes "$CTRL_NODES" etcd members 2>/dev/null | \
+              grep -c "false$" || echo "0")  # Count lines ending with "false" (non-learner members)
 
-            if [[ -z "$ETCD_POD" ]]; then
-              echo "⚠️  Attempt $i/30: No healthy etcd pods found yet, waiting..."
-              sleep 10
-              continue
-            fi
-
-            # Count healthy members
-            HEALTHY_MEMBERS=$(kubectl exec -n kube-system "$ETCD_POD" -- \
-              etcdctl member list 2>/dev/null | grep started | wc -l || echo "0")
-
-            echo "Attempt $i/30: $HEALTHY_MEMBERS healthy etcd members"
+            echo "Attempt $i/30: $HEALTHY_MEMBERS healthy etcd voting members"
 
             # Require 3 healthy members (quorum fully restored)
             if [[ "$HEALTHY_MEMBERS" -eq 3 ]]; then
-              echo "✅ etcd quorum fully restored (3/3 members)"
+              echo "✅ etcd quorum fully restored (3/3 voting members)"
 
               # Verify this node is a member
-              MEMBER_LIST=$(kubectl exec -n kube-system "$ETCD_POD" -- \
-                etcdctl member list 2>/dev/null)
+              MEMBER_LIST=$(talosctl --nodes "$CTRL_NODES" etcd members 2>/dev/null)
 
               echo "etcd member list:"
               echo "$MEMBER_LIST"
@@ -1356,7 +1349,7 @@ jobs:
           done
 
           echo "::error::etcd quorum not fully restored after 5 minutes"
-          echo "::error::Only $HEALTHY_MEMBERS/3 members healthy"
+          echo "::error::Only $HEALTHY_MEMBERS/3 voting members healthy"
           exit 1
 
       - name: Allow workload rebalancing
