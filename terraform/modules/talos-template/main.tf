@@ -35,22 +35,22 @@ resource "null_resource" "download_talos_image" {
       set -e
       mkdir -p /tmp/talos-images
 
-      # Download image if not already present (idempotent)
-      if [ ! -f "${local.raw_image_path}" ]; then
-        echo "[1/3] Downloading Talos ${var.talos_version} image for schematic ${var.schematic_id}..."
+      # Download compressed image if not present
+      if [ ! -f "${local.image_path}" ]; then
+        echo "[1/2] Downloading Talos ${var.talos_version} image for schematic ${var.schematic_id}..."
         curl -fsSL --progress-bar "${local.image_url}" -o "${local.image_path}"
-
-        echo "[2/3] Decompressing image (this may take a few minutes)..."
-        # Remove existing .raw file if present, then decompress
-        rm -f "${local.raw_image_path}"
-        xz -d -k "${local.image_path}"
-
-        echo "[3/3] Image ready: ${local.raw_image_path}"
-        ls -lh "${local.raw_image_path}"
       else
-        echo "Image already exists: ${local.raw_image_path}"
-        ls -lh "${local.raw_image_path}"
+        echo "[1/2] Compressed image already cached: ${local.image_path}"
       fi
+
+      # Always decompress (overwrites existing .raw file for idempotency)
+      # Multiple templates may share the same schematic (e.g., all GPU templates)
+      # so we force decompression to handle parallel builds safely
+      echo "[2/2] Decompressing image (overwrites if exists)..."
+      xz -d -k -f "${local.image_path}"
+
+      echo "Image ready: ${local.raw_image_path}"
+      ls -lh "${local.raw_image_path}"
     EOT
   }
 }
@@ -136,7 +136,7 @@ resource "null_resource" "create_template" {
       "echo '[Template Creation] Step 2: Creating base VM...'",
       # Create base VM with minimal resources (will be overridden by clones)
       # CRITICAL: --machine q35 MUST be set during creation (cannot be changed after)
-      "qm create ${var.template_vm_id} --name ${var.template_name} --machine q35 --memory 2048 --cores 2 --net0 virtio,bridge=${var.network_bridge}",
+      "qm create ${var.template_vm_id} --name ${var.template_name} --machine q35 --memory 2048 --cores 2 --net0 virtio,bridge=${var.network_bridge}${var.enable_firewall ? ",firewall=1" : ""}",
 
       "echo '[Template Creation] Step 3: Setting UEFI BIOS...'",
       # MUST set BIOS to OVMF before disk operations for proper UEFI support
@@ -180,9 +180,6 @@ resource "null_resource" "create_template" {
 
       # Disable memory ballooning (critical for Kubernetes stability)
       "qm set ${var.template_vm_id} --balloon 0",
-
-      # Enable firewall on network device (REQUIRED for DMZ security)
-      var.enable_firewall ? "qm set ${var.template_vm_id} --ipconfig0 ip=dhcp,firewall=1" : "echo 'Firewall disabled'",
 
       # Set description
       "qm set ${var.template_vm_id} --description '${local.template_desc}'",
