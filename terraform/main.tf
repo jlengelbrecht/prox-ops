@@ -404,12 +404,19 @@ module "worker_nodes" {
   vm_id           = each.value.vm_id
   proxmox_node    = each.value.proxmox_node
 
-  # Use the worker template from the assigned Proxmox node
+  # Use GPU template for GPU workers, base template for non-GPU workers
   template_vm_id = (
-    each.value.proxmox_node == "Baldar"   ? var.template_ids.baldar.worker :
-    each.value.proxmox_node == "Heimdall" ? var.template_ids.heimdall.worker :
-    each.value.proxmox_node == "Odin"     ? var.template_ids.odin.worker :
-    var.template_ids.thor.worker
+    each.value.is_gpu ?
+      # GPU workers use the GPU template (.worker)
+      (each.value.proxmox_node == "Baldar"   ? var.template_ids.baldar.worker :
+       each.value.proxmox_node == "Heimdall" ? var.template_ids.heimdall.worker :
+       each.value.proxmox_node == "Odin"     ? var.template_ids.odin.worker :
+       var.template_ids.thor.worker) :
+      # Non-GPU workers use the base template (.controller)
+      (each.value.proxmox_node == "Baldar"   ? var.template_ids.baldar.controller :
+       each.value.proxmox_node == "Heimdall" ? var.template_ids.heimdall.controller :
+       each.value.proxmox_node == "Odin"     ? var.template_ids.odin.controller :
+       var.template_ids.thor.controller)
   )
 
   is_controlplane = false
