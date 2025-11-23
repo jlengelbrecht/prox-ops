@@ -20,6 +20,10 @@ on:
         description: Only rebuild templates (skip VM upgrades) - used for PATCH upgrades
         type: boolean
         default: false
+      test_controllers_only:
+        description: Test mode for controllers (only k8s-ctrl-1, skip workers)
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       old_version:
@@ -36,6 +40,10 @@ on:
         default: true
       templates_only:
         description: Only rebuild templates (skip VM upgrades) - used for PATCH upgrades
+        type: boolean
+        default: false
+      test_controllers_only:
+        description: Test mode for controllers (only k8s-ctrl-1, skip workers)
         type: boolean
         default: false
 
@@ -533,21 +541,21 @@ jobs:
     needs: rebuild-templates
     runs-on: cattle-runner
     timeout-minutes: 30
-    if: inputs.test_mode == false && inputs.templates_only == false
+    if: (inputs.test_mode == false && inputs.templates_only == false) || inputs.test_controllers_only == true
     strategy:
       max-parallel: 1
       fail-fast: true
       matrix:
-        node:
-          - name: "k8s-ctrl-1"
-            ip: "10.20.67.1"
-            secret_suffix: "CTRL_1"
-          - name: "k8s-ctrl-2"
-            ip: "10.20.67.2"
-            secret_suffix: "CTRL_2"
-          - name: "k8s-ctrl-3"
-            ip: "10.20.67.3"
-            secret_suffix: "CTRL_3"
+        node: >-
+          ${{
+            inputs.test_controllers_only == true && fromJSON('[
+              {"name": "k8s-ctrl-1", "ip": "10.20.67.1", "secret_suffix": "CTRL_1"}
+            ]') || fromJSON('[
+              {"name": "k8s-ctrl-1", "ip": "10.20.67.1", "secret_suffix": "CTRL_1"},
+              {"name": "k8s-ctrl-2", "ip": "10.20.67.2", "secret_suffix": "CTRL_2"},
+              {"name": "k8s-ctrl-3", "ip": "10.20.67.3", "secret_suffix": "CTRL_3"}
+            ]')
+          }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -1361,11 +1369,12 @@ jobs:
   upgrade-workers:
     name: Upgrade Worker ${{ matrix.node }}
     needs: [rebuild-templates, upgrade-control-plane]
-    # Skip worker upgrades if test_mode is enabled, templates_only is enabled, or if dependencies failed
-    # Workers only run when: test_mode=false AND templates_only=false AND templates succeeded AND control plane succeeded
+    # Skip worker upgrades if test_mode is enabled, templates_only is enabled, test_controllers_only is enabled, or if dependencies failed
+    # Workers only run when: test_mode=false AND templates_only=false AND test_controllers_only=false AND templates succeeded AND control plane succeeded
     if: |
       inputs.test_mode == false &&
       inputs.templates_only == false &&
+      inputs.test_controllers_only == false &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
     runs-on: cattle-runner
