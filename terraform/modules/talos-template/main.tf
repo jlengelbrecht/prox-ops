@@ -45,9 +45,10 @@ resource "null_resource" "download_talos_image" {
 
       # Always decompress (overwrites existing .raw file for idempotency)
       # Multiple templates may share the same schematic (e.g., all GPU templates)
-      # so we force decompression to handle parallel builds safely
+      # Explicitly remove .raw file first, then decompress
       echo "[2/2] Decompressing image (overwrites if exists)..."
-      xz -d -k -f "${local.image_path}"
+      rm -f "${local.raw_image_path}"
+      xz -d -k "${local.image_path}"
 
       echo "Image ready: ${local.raw_image_path}"
       ls -lh "${local.raw_image_path}"

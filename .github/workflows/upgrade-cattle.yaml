@@ -444,52 +444,52 @@ jobs:
           echo "Batching strategy: 2 templates per batch across different nodes"
           echo ""
 
-          # Batch 1: Baldar controller + Heimdall controller (different nodes)
+          # Batch 1: Baldar base + Heimdall GPU (different nodes, different schematics)
           echo "================================================================"
-          echo "Batch 1/4: Creating controller templates on Baldar + Heimdall"
+          echo "Batch 1/4: Creating templates on Baldar (base) + Heimdall (GPU)"
           echo "================================================================"
           terraform apply -input=false -auto-approve \
             -target=module.template_baldar_base \
-            -target=module.template_heimdall_base
+            -target=module.template_heimdall_gpu
 
           echo ""
           echo "✓ Batch 1 complete. Waiting 30 seconds for Ceph to settle..."
           sleep 30
 
-          # Batch 2: Odin controller + Thor controller (different nodes)
+          # Batch 2: Baldar GPU + Heimdall base (different nodes, different schematics)
           echo ""
           echo "================================================================"
-          echo "Batch 2/4: Creating controller templates on Odin + Thor"
+          echo "Batch 2/4: Creating templates on Baldar (GPU) + Heimdall (base)"
           echo "================================================================"
           terraform apply -input=false -auto-approve \
-            -target=module.template_odin_base \
-            -target=module.template_thor_base
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_base
 
           echo ""
           echo "✓ Batch 2 complete. Waiting 30 seconds for Ceph to settle..."
           sleep 30
 
-          # Batch 3: Baldar worker + Heimdall worker (different nodes)
+          # Batch 3: Odin base + Thor GPU (different nodes, different schematics)
           echo ""
           echo "================================================================"
-          echo "Batch 3/4: Creating worker templates on Baldar + Heimdall"
+          echo "Batch 3/4: Creating templates on Odin (base) + Thor (GPU)"
           echo "================================================================"
           terraform apply -input=false -auto-approve \
-            -target=module.template_baldar_gpu \
-            -target=module.template_heimdall_gpu
+            -target=module.template_odin_base \
+            -target=module.template_thor_gpu
 
           echo ""
           echo "✓ Batch 3 complete. Waiting 30 seconds for Ceph to settle..."
           sleep 30
 
-          # Batch 4: Odin worker + Thor worker (different nodes)
+          # Batch 4: Odin GPU + Thor base (different nodes, different schematics)
           echo ""
           echo "================================================================"
-          echo "Batch 4/4: Creating worker templates on Odin + Thor"
+          echo "Batch 4/4: Creating templates on Odin (GPU) + Thor (base)"
           echo "================================================================"
           terraform apply -input=false -auto-approve \
             -target=module.template_odin_gpu \
-            -target=module.template_thor_gpu
+            -target=module.template_thor_base
 
           echo ""
           echo "================================================================"
