@@ -12,12 +12,16 @@ on:
         description: New Talos version to upgrade to
         type: string
         required: true
-      test_mode:
-        description: Test mode (only 2 workers, skip control plane)
+      test_templates:
+        description: Test only template rebuild (skip controllers & workers)
         type: boolean
-        default: true
-      templates_only:
-        description: Only rebuild templates (skip VM upgrades) - used for PATCH upgrades
+        default: false
+      test_controllers:
+        description: Test only controllers (1 controller, skip templates & workers)
+        type: boolean
+        default: false
+      test_workers:
+        description: Test only workers (2 workers, skip templates & controllers)
         type: boolean
         default: false
   workflow_dispatch:
@@ -30,12 +34,16 @@ on:
         description: New Talos version to upgrade to
         type: string
         required: true
-      test_mode:
-        description: Test mode (only 2 workers, skip control plane)
+      test_templates:
+        description: Test only template rebuild (skip controllers & workers)
         type: boolean
-        default: true
-      templates_only:
-        description: Only rebuild templates (skip VM upgrades) - used for PATCH upgrades
+        default: false
+      test_controllers:
+        description: Test only controllers (1 controller, skip templates & workers)
+        type: boolean
+        default: false
+      test_workers:
+        description: Test only workers (2 workers, skip templates & controllers)
         type: boolean
         default: false
 
@@ -52,15 +60,49 @@ env:
 
 jobs:
   # ==========================================================================
+  # INPUT VALIDATION: Ensure test flags are mutually exclusive
+  # ==========================================================================
+  validate-inputs:
+    name: Validate Input Flags
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate test flags are mutually exclusive
+        run: |
+          count=0
+          [[ "${{ inputs.test_templates }}" == "true" ]] && ((count++))
+          [[ "${{ inputs.test_controllers }}" == "true" ]] && ((count++))
+          [[ "${{ inputs.test_workers }}" == "true" ]] && ((count++))
+
+          if [[ $count -gt 1 ]]; then
+            echo "::error::Multiple test flags set. Only one test flag can be true at a time."
+            echo "::error::test_templates=${{ inputs.test_templates }}"
+            echo "::error::test_controllers=${{ inputs.test_controllers }}"
+            echo "::error::test_workers=${{ inputs.test_workers }}"
+            exit 1
+          fi
+
+          echo "✅ Input validation passed"
+          if [[ $count -eq 0 ]]; then
+            echo "Mode: Production (all nodes will be upgraded)"
+          elif [[ "${{ inputs.test_templates }}" == "true" ]]; then
+            echo "Mode: Template testing only"
+          elif [[ "${{ inputs.test_controllers }}" == "true" ]]; then
+            echo "Mode: Controller testing (1 controller only)"
+          elif [[ "${{ inputs.test_workers }}" == "true" ]]; then
+            echo "Mode: Worker testing (2 workers only)"
+          fi
+
+  # ==========================================================================
   # PHASE 1: TEMPLATE REBUILD (CRITICAL - MISSING IN PREVIOUS IMPLEMENTATION)
   # ==========================================================================
   rebuild-templates:
     name: Rebuild Templates v${{ inputs.new_version }}
     runs-on: cattle-runner
     timeout-minutes: 60
-    # Skip template rebuild if versions are identical (prevents VM destruction due to implicit clone dependencies)
-    # UNLESS test_mode is enabled (for terraform plan bug investigation)
-    if: inputs.old_version != inputs.new_version || inputs.test_mode == true
+    needs: validate-inputs
+    # Run when: test_templates=true OR production mode (all test flags false)
+    if: inputs.test_templates == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -530,24 +572,27 @@ jobs:
   # ==========================================================================
   upgrade-control-plane:
     name: Upgrade Control ${{ matrix.node.name }}
-    needs: rebuild-templates
+    needs: [validate-inputs, rebuild-templates]
     runs-on: cattle-runner
     timeout-minutes: 30
-    if: inputs.test_mode == false && inputs.templates_only == false
+    # Run when: test_controllers=true OR production mode (all test flags false)
+    if: inputs.test_controllers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)
     strategy:
       max-parallel: 1
       fail-fast: true
       matrix:
-        node:
-          - name: "k8s-ctrl-1"
-            ip: "10.20.67.1"
-            secret_suffix: "CTRL_1"
-          - name: "k8s-ctrl-2"
-            ip: "10.20.67.2"
-            secret_suffix: "CTRL_2"
-          - name: "k8s-ctrl-3"
-            ip: "10.20.67.3"
-            secret_suffix: "CTRL_3"
+        # When test_controllers=true: Only k8s-ctrl-1
+        # When production (all test flags false): All 3 controllers
+        node: >-
+          ${{
+            inputs.test_controllers == true && fromJSON('[
+              {"name": "k8s-ctrl-1", "ip": "10.20.67.1", "secret_suffix": "CTRL_1"}
+            ]') || fromJSON('[
+              {"name": "k8s-ctrl-1", "ip": "10.20.67.1", "secret_suffix": "CTRL_1"},
+              {"name": "k8s-ctrl-2", "ip": "10.20.67.2", "secret_suffix": "CTRL_2"},
+              {"name": "k8s-ctrl-3", "ip": "10.20.67.3", "secret_suffix": "CTRL_3"}
+            ]')
+          }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -1360,12 +1405,11 @@ jobs:
   # ==========================================================================
   upgrade-workers:
     name: Upgrade Worker ${{ matrix.node }}
-    needs: [rebuild-templates, upgrade-control-plane]
-    # Skip worker upgrades if test_mode is enabled, templates_only is enabled, or if dependencies failed
-    # Workers only run when: test_mode=false AND templates_only=false AND templates succeeded AND control plane succeeded
+    needs: [validate-inputs, rebuild-templates, upgrade-control-plane]
+    # Run when: test_workers=true OR production mode (all test flags false)
+    # Also require dependencies to have succeeded or been skipped
     if: |
-      inputs.test_mode == false &&
-      inputs.templates_only == false &&
+      (inputs.test_workers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
     runs-on: cattle-runner
@@ -1374,7 +1418,13 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
-        node: ["k8s-work-1","k8s-work-2","k8s-work-3","k8s-work-4","k8s-work-5","k8s-work-6","k8s-work-11","k8s-work-12","k8s-work-13","k8s-work-14","k8s-work-15","k8s-work-16"]
+        # When test_workers=true: Only k8s-work-1 and k8s-work-2 (2 workers)
+        # When production (all test flags false): All 12 workers
+        node: >-
+          ${{
+            inputs.test_workers == true && fromJSON('["k8s-work-1","k8s-work-2"]') ||
+            fromJSON('["k8s-work-1","k8s-work-2","k8s-work-3","k8s-work-4","k8s-work-5","k8s-work-6","k8s-work-11","k8s-work-12","k8s-work-13","k8s-work-14","k8s-work-15","k8s-work-16"]')
+          }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -1936,8 +1986,8 @@ jobs:
   # ==========================================================================
   validate-cluster:
     name: Validate Cluster Health
-    needs: [rebuild-templates, upgrade-control-plane, upgrade-workers]
-    if: always() && inputs.templates_only == false
+    needs: [validate-inputs, rebuild-templates, upgrade-control-plane, upgrade-workers]
+    if: always() && inputs.test_templates == false
     runs-on: cattle-runner
     timeout-minutes: 10
     steps:
@@ -1980,7 +2030,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Validate GPU nodes
-        if: inputs.test_mode == false
+        if: inputs.test_workers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)
         run: |
           echo "::group::Validating GPU functionality"
 
@@ -2088,11 +2138,11 @@ jobs:
 
           **Old Version**: v${{ inputs.old_version }}
           **New Version**: v${{ inputs.new_version }}
-          **Test Mode**: ${{ inputs.test_mode }}
+          **Test Flags**: Templates=${{ inputs.test_templates }}, Controllers=${{ inputs.test_controllers }}, Workers=${{ inputs.test_workers }}
 
           ### Phase Results
           - $TEMPLATE_EMOJI Template Rebuild: ${{ needs.rebuild-templates.result }}
-          - $CTRL_EMOJI Control Plane Upgrade: ${{ inputs.test_mode && 'skipped (test mode)' || needs.upgrade-control-plane.result }}
+          - $CTRL_EMOJI Control Plane Upgrade: ${{ needs.upgrade-control-plane.result }}
           - $WORKER_EMOJI Worker Upgrade: ${{ needs.upgrade-workers.result }}
           - ${{ job.status == 'success' && '✅' || '❌' }} Validation: ${{ job.status }}
 
@@ -2101,19 +2151,28 @@ jobs:
           $(kubectl get nodes -o wide)
           \`\`\`
 
-          $(if [[ "${{ inputs.test_mode }}" == "true" ]]; then
+          $(
+          TEST_RUN=false
+          if [[ "${{ inputs.test_templates }}" == "true" ]]; then
             echo "### Next Steps"
             echo ""
-            echo "This was a **test mode** run (2 workers only)."
+            echo "This was a **template test** run only."
+            echo "To upgrade controllers: \`gh workflow run upgrade-cattle.yaml -f old_version=${{ inputs.old_version }} -f new_version=${{ inputs.new_version }} -f test_controllers=true\`"
+            TEST_RUN=true
+          elif [[ "${{ inputs.test_controllers }}" == "true" ]]; then
+            echo "### Next Steps"
             echo ""
-            echo "To run full production upgrade:"
-            echo "\`\`\`"
-            echo "gh workflow run upgrade-cattle.yaml \\"
-            echo "  --field old_version=${{ inputs.old_version }} \\"
-            echo "  --field new_version=${{ inputs.new_version }} \\"
-            echo "  --field test_mode=false"
-            echo "\`\`\`"
-          fi)
+            echo "This was a **controller test** run (1 controller only)."
+            echo "To upgrade all controllers: \`gh workflow run upgrade-cattle.yaml -f old_version=${{ inputs.old_version }} -f new_version=${{ inputs.new_version }}\`"
+            TEST_RUN=true
+          elif [[ "${{ inputs.test_workers }}" == "true" ]]; then
+            echo "### Next Steps"
+            echo ""
+            echo "This was a **worker test** run (2 workers only)."
+            echo "To upgrade all workers: \`gh workflow run upgrade-cattle.yaml -f old_version=${{ inputs.old_version }} -f new_version=${{ inputs.new_version }}\`"
+            TEST_RUN=true
+          fi
+          )
           EOF
 
           # Exit with error if any critical phase failed
@@ -2122,7 +2181,8 @@ jobs:
             exit 1
           fi
 
-          if [[ "${{ inputs.test_mode }}" == "false" ]] && [[ "${{ needs.upgrade-control-plane.result }}" != "success" ]]; then
+          # Only fail on controller errors if controllers were supposed to run
+          if [[ "${{ inputs.test_templates }}" == "false" ]] && [[ "${{ inputs.test_workers }}" == "false" ]] && [[ "${{ needs.upgrade-control-plane.result }}" != "success" ]] && [[ "${{ needs.upgrade-control-plane.result }}" != "skipped" ]]; then
             echo "::error::Control plane upgrade failed"
             exit 1
           fi
