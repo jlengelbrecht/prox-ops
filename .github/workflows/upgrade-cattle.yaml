@@ -580,6 +580,46 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
+      - name: Clear stale Terraform locks
+        working-directory: ./terraform
+        continue-on-error: true
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "Checking for stale Terraform state locks..."
+
+          # Try a terraform plan with short lock timeout to detect locks
+          # Capture both stdout and stderr to parse lock ID
+          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+            echo "Lock detected. Output:"
+            echo "$LOCK_OUTPUT"
+
+            # Extract lock ID from error message (format: "ID: <uuid>")
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s{8})[a-f0-9-]{36}' | head -1)
+
+            if [ -n "$LOCK_ID" ]; then
+              echo ""
+              echo "Found stale lock ID: $LOCK_ID"
+              echo "Attempting to force-unlock..."
+
+              if terraform force-unlock -force "$LOCK_ID"; then
+                echo "✓ Successfully cleared stale lock"
+              else
+                echo "✗ Failed to unlock (may require manual intervention)"
+                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+              fi
+            else
+              echo "Could not extract lock ID from error message"
+              echo "Lock may need to be cleared manually"
+            fi
+          else
+            echo "✓ No lock detected - state is accessible"
+          fi
+
+          # Ensure clean exit
+          exit 0
+
       - name: Validate etcd quorum health
         run: |
           echo "::group::Checking etcd quorum health"
@@ -672,36 +712,279 @@ jobs:
           aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
             s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node.name }}-$(date +%s).tfstate
 
-      - name: Destroy VM
+      - name: Plan controller destruction
         working-directory: ./terraform
         timeout-minutes: 5
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "::group::Destroying ${{ matrix.node.name }} VM"
-          terraform destroy \
+          echo "::group::Planning destruction of ${{ matrix.node.name }}"
+
+          terraform plan \
             -input=false \
-            -auto-approve \
+            -destroy \
+            -out=controller-destroy-${{ matrix.node.name }}.tfplan \
             -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"]
 
-          echo "✅ VM destroyed"
+          echo "Plan saved to controller-destroy-${{ matrix.node.name }}.tfplan"
           echo "::endgroup::"
 
-      - name: Recreate VM from new template
+      - name: Validate destruction plan
+        working-directory: ./terraform
+        run: |
+          echo "::group::Validating destruction plan for ${{ matrix.node.name }}"
+
+          # Check plan file exists
+          if [[ ! -f controller-destroy-${{ matrix.node.name }}.tfplan ]]; then
+            echo "::error::Plan file not found"
+            exit 1
+          fi
+
+          # Show full plan
+          terraform show -no-color controller-destroy-${{ matrix.node.name }}.tfplan > destroy-plan-full.txt
+          cat destroy-plan-full.txt
+
+          echo ""
+          echo "================================================================"
+          echo "SAFETY VALIDATION - Negative Assertions"
+          echo "================================================================"
+
+          BUG_DETECTED=false
+
+          # NEGATIVE ASSERTION: No other controllers
+          for other_ctrl in k8s-ctrl-1 k8s-ctrl-2 k8s-ctrl-3; do
+            if [[ "$other_ctrl" == "${{ matrix.node.name }}" ]]; then
+              continue  # Skip self
+            fi
+
+            if grep -q "module.control_plane_nodes\[\"$other_ctrl\"\]" destroy-plan-full.txt; then
+              echo "::error::SAFETY VIOLATION: Plan includes $other_ctrl"
+              echo "::error::This would destroy multiple controllers!"
+              BUG_DETECTED=true
+            fi
+          done
+
+          # NEGATIVE ASSERTION: No workers
+          if grep -q "module.worker_nodes" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes worker_nodes"
+            echo "::error::This would destroy worker VMs!"
+            BUG_DETECTED=true
+          fi
+
+          # NEGATIVE ASSERTION: No templates
+          if grep -q "module.template_" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes template modules"
+            echo "::error::This would destroy templates!"
+            BUG_DETECTED=true
+          fi
+
+          if [ "$BUG_DETECTED" = true ]; then
+            echo ""
+            echo "::error::Terraform plan includes unintended targets"
+            echo "::error::Workflow terminated to prevent accidental destruction"
+            exit 1
+          fi
+
+          echo "✅ Negative assertions passed - no unintended targets"
+
+          # POSITIVE ASSERTION: Verify specific controller IS in plan
+          if ! grep -q "module.control_plane_nodes\[\"${{ matrix.node.name }}\"\]" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Target controller not found in plan"
+            echo "::error::Expected: module.control_plane_nodes[\"${{ matrix.node.name }}\"]"
+            exit 1
+          fi
+
+          echo "✅ Positive assertion passed - target controller found"
+
+          # Count VMs to be destroyed (should be exactly 1)
+          VM_COUNT=$(grep -c "module.control_plane_nodes\[\"${{ matrix.node.name }}\"\]" destroy-plan-full.txt || echo "0")
+          echo "VMs to be destroyed: $VM_COUNT"
+
+          if [[ $VM_COUNT -ne 1 ]]; then
+            echo "::warning::Expected exactly 1 VM to be destroyed, found $VM_COUNT"
+          fi
+
+          echo ""
+          echo "================================================================"
+          echo "Validation passed - safe to destroy ${{ matrix.node.name }}"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Destroy VM with retry
         working-directory: ./terraform
         timeout-minutes: 10
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "::group::Recreating ${{ matrix.node.name }} from v${{ inputs.new_version }} template"
-          terraform apply \
+          echo "::group::Destroying ${{ matrix.node.name }} VM with retry logic"
+
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "Destroy attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            if terraform apply \
+                -input=false \
+                -auto-approve \
+                controller-destroy-${{ matrix.node.name }}.tfplan; then
+
+              echo "✅ VM destroyed successfully on attempt $ATTEMPT"
+              SUCCESS=true
+              break
+            else
+              EXIT_CODE=$?
+              echo "⚠️  Destroy attempt $ATTEMPT failed with exit code $EXIT_CODE"
+
+              if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+                WAIT_TIME=$((ATTEMPT * 10))
+                echo "Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              fi
+            fi
+
+            ((ATTEMPT++))
+          done
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "::error::Failed to destroy VM after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+      - name: Plan controller recreation
+        working-directory: ./terraform
+        timeout-minutes: 5
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Planning recreation of ${{ matrix.node.name }}"
+
+          terraform plan \
             -input=false \
-            -auto-approve \
+            -out=controller-create-${{ matrix.node.name }}.tfplan \
             -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"]
 
-          echo "✅ VM recreated from new template"
+          echo "Plan saved to controller-create-${{ matrix.node.name }}.tfplan"
+          echo "::endgroup::"
+
+      - name: Validate recreation plan
+        working-directory: ./terraform
+        run: |
+          echo "::group::Validating recreation plan for ${{ matrix.node.name }}"
+
+          # Check plan file exists
+          if [[ ! -f controller-create-${{ matrix.node.name }}.tfplan ]]; then
+            echo "::error::Plan file not found"
+            exit 1
+          fi
+
+          # Show full plan
+          terraform show -no-color controller-create-${{ matrix.node.name }}.tfplan > create-plan-full.txt
+          cat create-plan-full.txt
+
+          echo ""
+          echo "================================================================"
+          echo "SAFETY VALIDATION - Negative Assertions"
+          echo "================================================================"
+
+          BUG_DETECTED=false
+
+          # NEGATIVE ASSERTION: No other controllers
+          for other_ctrl in k8s-ctrl-1 k8s-ctrl-2 k8s-ctrl-3; do
+            if [[ "$other_ctrl" == "${{ matrix.node.name }}" ]]; then
+              continue  # Skip self
+            fi
+
+            if grep -q "module.control_plane_nodes\[\"$other_ctrl\"\]" create-plan-full.txt; then
+              echo "::error::SAFETY VIOLATION: Plan includes $other_ctrl"
+              BUG_DETECTED=true
+            fi
+          done
+
+          # NEGATIVE ASSERTION: No workers
+          if grep -q "module.worker_nodes" create-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes worker_nodes"
+            BUG_DETECTED=true
+          fi
+
+          # NEGATIVE ASSERTION: No templates
+          if grep -q "module.template_" create-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes template modules"
+            BUG_DETECTED=true
+          fi
+
+          if [ "$BUG_DETECTED" = true ]; then
+            echo ""
+            echo "::error::Terraform plan includes unintended targets"
+            echo "::error::Workflow terminated to prevent accidental operations"
+            exit 1
+          fi
+
+          echo "✅ Negative assertions passed - no unintended targets"
+
+          # POSITIVE ASSERTION: Verify specific controller IS in plan
+          if ! grep -q "module.control_plane_nodes\[\"${{ matrix.node.name }}\"\]" create-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Target controller not found in plan"
+            exit 1
+          fi
+
+          echo "✅ Positive assertion passed - target controller found"
+
+          echo ""
+          echo "================================================================"
+          echo "Validation passed - safe to recreate ${{ matrix.node.name }}"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Recreate VM with retry
+        working-directory: ./terraform
+        timeout-minutes: 15
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Recreating ${{ matrix.node.name }} from v${{ inputs.new_version }} template with retry logic"
+
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "Recreate attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            if terraform apply \
+                -input=false \
+                -auto-approve \
+                controller-create-${{ matrix.node.name }}.tfplan; then
+
+              echo "✅ VM recreated successfully on attempt $ATTEMPT"
+              SUCCESS=true
+              break
+            else
+              EXIT_CODE=$?
+              echo "⚠️  Recreate attempt $ATTEMPT failed with exit code $EXIT_CODE"
+
+              if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+                WAIT_TIME=$((ATTEMPT * 10))
+                echo "Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              fi
+            fi
+
+            ((ATTEMPT++))
+          done
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "::error::Failed to recreate VM after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
           echo "::endgroup::"
 
       # ==========================================================================
@@ -890,17 +1173,153 @@ jobs:
           # Final check
           kubectl wait --for=condition=Ready node/"${{ matrix.node.name }}" --timeout=30s
 
-      - name: Verify version
+      - name: Verify machine configuration applied
+        timeout-minutes: 2
         run: |
-          NODE_VERSION=$(kubectl get node "${{ matrix.node.name }}" -o jsonpath='{.status.nodeInfo.kubeletVersion}')
-          echo "Node version: $NODE_VERSION"
+          echo "::group::Verifying machine configuration"
+          NODE_IP="${{ matrix.node.ip }}"
+          NODE_NAME="${{ matrix.node.name }}"
 
-          if [[ "$NODE_VERSION" != *"${{ inputs.new_version }}"* ]]; then
-            echo "::error::Version mismatch: expected v${{ inputs.new_version }}, got $NODE_VERSION"
+          echo "Retrieving applied machine configuration..."
+
+          # Get current machine config from node
+          if ! talosctl -n "$NODE_IP" get machineconfig -o yaml > /tmp/applied-config.yaml 2>/dev/null; then
+            echo "::error::Failed to retrieve machine config from $NODE_NAME"
             exit 1
           fi
 
-          echo "✅ Node running correct version: $NODE_VERSION"
+          echo "✅ Machine config retrieved"
+
+          # Verify config is not empty
+          if [[ ! -s /tmp/applied-config.yaml ]]; then
+            echo "::error::Machine config is empty"
+            exit 1
+          fi
+
+          # Check for expected sections (proves config was applied)
+          echo "Verifying configuration structure..."
+
+          EXPECTED_SECTIONS=("machine:" "cluster:" "network:")
+          MISSING_SECTIONS=()
+
+          for section in "${EXPECTED_SECTIONS[@]}"; do
+            if grep -q "$section" /tmp/applied-config.yaml; then
+              echo "  ✓ Found $section"
+            else
+              echo "  ✗ Missing $section"
+              MISSING_SECTIONS+=("$section")
+            fi
+          done
+
+          if [[ ${#MISSING_SECTIONS[@]} -gt 0 ]]; then
+            echo "::error::Machine config missing required sections: ${MISSING_SECTIONS[*]}"
+            exit 1
+          fi
+
+          echo "✅ Machine configuration structure verified"
+
+          # Verify node can communicate with cluster (proves config is functional)
+          echo "Verifying node cluster connectivity..."
+
+          if talosctl -n "$NODE_IP" health --timeout=30s >/dev/null 2>&1; then
+            echo "✅ Node health check passed (config is functional)"
+          else
+            echo "::warning::Health check failed, but node is Ready (may be transient)"
+          fi
+
+          rm -f /tmp/applied-config.yaml
+          echo "::endgroup::"
+
+      - name: Verify Talos version
+        timeout-minutes: 2
+        run: |
+          echo "Verifying Talos version on ${{ matrix.node.name }}..."
+
+          # Get Talos version from node (not Kubernetes version)
+          NODE_IP="${{ matrix.node.ip }}"
+          EXPECTED_VERSION="v${{ inputs.new_version }}"
+
+          # Extract version from talosctl
+          VERSION=$(talosctl version --nodes "$NODE_IP" --short 2>/dev/null | grep "Tag:" | awk '{print $2}')
+
+          echo "Node Talos version: $VERSION"
+          echo "Expected version: $EXPECTED_VERSION"
+
+          if [[ "$VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::Version mismatch on ${{ matrix.node.name }}"
+            echo "::error::Expected: $EXPECTED_VERSION"
+            echo "::error::Got: $VERSION"
+            exit 1
+          fi
+
+          echo "✅ Node running correct Talos version: $VERSION"
+
+      - name: Verify etcd quorum restored
+        timeout-minutes: 5
+        run: |
+          echo "::group::Verifying etcd quorum restored"
+          echo "Ensuring ${{ matrix.node.name }} rejoined etcd cluster..."
+
+          # Wait up to 5 minutes for etcd to fully restore
+          for i in {1..30}; do
+            # Find any healthy etcd pod
+            ETCD_POD=$(kubectl get pod -n kube-system -l component=etcd \
+              --field-selector=status.phase=Running -o name 2>/dev/null | head -n1)
+
+            if [[ -z "$ETCD_POD" ]]; then
+              echo "::error::No healthy etcd pods found"
+              exit 1
+            fi
+
+            # Count healthy members
+            HEALTHY_MEMBERS=$(kubectl exec -n kube-system "$ETCD_POD" -- \
+              etcdctl member list 2>/dev/null | grep started | wc -l || echo "0")
+
+            echo "Attempt $i/30: $HEALTHY_MEMBERS healthy etcd members"
+
+            # Require 3 healthy members (quorum fully restored)
+            if [[ "$HEALTHY_MEMBERS" -eq 3 ]]; then
+              echo "✅ etcd quorum fully restored (3/3 members)"
+
+              # Verify this node is a member
+              MEMBER_LIST=$(kubectl exec -n kube-system "$ETCD_POD" -- \
+                etcdctl member list 2>/dev/null)
+
+              echo "etcd member list:"
+              echo "$MEMBER_LIST"
+
+              # Check if this node's IP is in member list
+              if echo "$MEMBER_LIST" | grep -q "${{ matrix.node.ip }}"; then
+                echo "✅ ${{ matrix.node.name }} is an active etcd member"
+                echo "::endgroup::"
+                exit 0
+              else
+                echo "⚠️  ${{ matrix.node.name }} not yet in member list, waiting..."
+              fi
+            fi
+
+            sleep 10
+          done
+
+          echo "::error::etcd quorum not fully restored after 5 minutes"
+          echo "::error::Only $HEALTHY_MEMBERS/3 members healthy"
+          exit 1
+
+      - name: Allow workload rebalancing
+        timeout-minutes: 1
+        run: |
+          echo "Allowing Kubernetes time to rebalance workloads..."
+          echo "Waiting 30 seconds for scheduler to redistribute pods..."
+
+          sleep 30
+
+          # Show pod distribution after rebalancing
+          echo ""
+          echo "Pod distribution on ${{ matrix.node.name }}:"
+          kubectl get pods --all-namespaces --field-selector spec.nodeName=${{ matrix.node.name }} \
+            --no-headers 2>/dev/null | wc -l | xargs echo "Pods running on node:"
+
+          echo "✅ Rebalancing period complete"
 
       - name: Uncordon node
         run: |
