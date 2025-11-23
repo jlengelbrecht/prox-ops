@@ -41,7 +41,9 @@ resource "null_resource" "download_talos_image" {
         curl -fsSL --progress-bar "${local.image_url}" -o "${local.image_path}"
 
         echo "[2/3] Decompressing image (this may take a few minutes)..."
-        xz -d -k -f "${local.image_path}"
+        # Remove existing .raw file if present, then decompress
+        rm -f "${local.raw_image_path}"
+        xz -d -k "${local.image_path}"
 
         echo "[3/3] Image ready: ${local.raw_image_path}"
         ls -lh "${local.raw_image_path}"
@@ -178,9 +180,6 @@ resource "null_resource" "create_template" {
 
       # Disable memory ballooning (critical for Kubernetes stability)
       "qm set ${var.template_vm_id} --balloon 0",
-
-      # Enable NUMA for better CPU pinning and performance
-      "qm set ${var.template_vm_id} --numa 1",
 
       # Enable firewall on network device (REQUIRED for DMZ security)
       var.enable_firewall ? "qm set ${var.template_vm_id} --ipconfig0 ip=dhcp,firewall=1" : "echo 'Firewall disabled'",
