@@ -153,8 +153,12 @@ resource "null_resource" "create_template" {
       "qm importdisk ${var.template_vm_id} /var/lib/vz/template/talos/${var.schematic_id}.raw ${var.vm_storage_pool} --format raw",
 
       "echo '[Template Creation] Step 7: Moving unused disk to scsi0...'",
-      # CRITICAL FIX: Move unused0 to scsi0 using correct syntax
-      "qm set ${var.template_vm_id} --scsi0 ${var.template_vm_id}:unused0",
+      # Extract the full disk path from unused0 (e.g., vms-ceph:vm-9000-disk-4)
+      "DISK_PATH=$(qm config ${var.template_vm_id} | grep '^unused0:' | awk '{print $2}' | cut -d',' -f1)",
+      # Validate disk path extraction succeeded before attempting attachment
+      "if [ -z \"$DISK_PATH\" ]; then echo 'ERROR: Failed to extract disk path from unused0'; exit 1; fi",
+      # Attach the disk to scsi0 using the full storage path (quoted to prevent word splitting)
+      "qm set ${var.template_vm_id} --scsi0 \"$DISK_PATH\"",
 
       "echo '[Template Creation] Step 8: Configuring VM settings...'",
       # Configure SCSI hardware

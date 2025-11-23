@@ -36,77 +36,77 @@
 
 locals {
   # Template configurations for all nodes
-  # Each Proxmox node gets both a controller and worker template
+  # Each Proxmox node gets both a base and GPU template
   templates = {
     # Baldar templates
-    baldar_controller = {
+    baldar_base = {
       node_name     = "baldar"
       node_host     = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
       template_id   = var.template_ids.baldar.controller
-      template_name = "talos-${var.talos_version}-controller-baldar"
-      schematic_id  = var.talos_schematic_controlplane
+      template_name = "talos-${var.talos_version}-base-baldar"
+      schematic_id  = var.talos_schematic_base
       provider_alias = "baldar"
     }
-    baldar_worker = {
+    baldar_gpu = {
       node_name     = "baldar"
       node_host     = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
       template_id   = var.template_ids.baldar.worker
-      template_name = "talos-${var.talos_version}-worker-baldar"
-      schematic_id  = var.talos_schematic_worker
+      template_name = "talos-${var.talos_version}-gpu-baldar"
+      schematic_id  = var.talos_schematic_gpu
       provider_alias = "baldar"
     }
 
     # Heimdall templates
-    heimdall_controller = {
+    heimdall_base = {
       node_name     = "heimdall"
       node_host     = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
       template_id   = var.template_ids.heimdall.controller
-      template_name = "talos-${var.talos_version}-controller-heimdall"
-      schematic_id  = var.talos_schematic_controlplane
+      template_name = "talos-${var.talos_version}-base-heimdall"
+      schematic_id  = var.talos_schematic_base
       provider_alias = "heimdall"
     }
-    heimdall_worker = {
+    heimdall_gpu = {
       node_name     = "heimdall"
       node_host     = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
       template_id   = var.template_ids.heimdall.worker
-      template_name = "talos-${var.talos_version}-worker-heimdall"
-      schematic_id  = var.talos_schematic_worker
+      template_name = "talos-${var.talos_version}-gpu-heimdall"
+      schematic_id  = var.talos_schematic_gpu
       provider_alias = "heimdall"
     }
 
     # Odin templates
-    odin_controller = {
+    odin_base = {
       node_name     = "odin"
       node_host     = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
       template_id   = var.template_ids.odin.controller
-      template_name = "talos-${var.talos_version}-controller-odin"
-      schematic_id  = var.talos_schematic_controlplane
+      template_name = "talos-${var.talos_version}-base-odin"
+      schematic_id  = var.talos_schematic_base
       provider_alias = "odin"
     }
-    odin_worker = {
+    odin_gpu = {
       node_name     = "odin"
       node_host     = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
       template_id   = var.template_ids.odin.worker
-      template_name = "talos-${var.talos_version}-worker-odin"
-      schematic_id  = var.talos_schematic_worker
+      template_name = "talos-${var.talos_version}-gpu-odin"
+      schematic_id  = var.talos_schematic_gpu
       provider_alias = "odin"
     }
 
     # Thor templates
-    thor_controller = {
+    thor_base = {
       node_name     = "thor"
       node_host     = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
       template_id   = var.template_ids.thor.controller
-      template_name = "talos-${var.talos_version}-controller-thor"
-      schematic_id  = var.talos_schematic_controlplane
+      template_name = "talos-${var.talos_version}-base-thor"
+      schematic_id  = var.talos_schematic_base
       provider_alias = "thor"
     }
-    thor_worker = {
+    thor_gpu = {
       node_name     = "thor"
       node_host     = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
       template_id   = var.template_ids.thor.worker
-      template_name = "talos-${var.talos_version}-worker-thor"
-      schematic_id  = var.talos_schematic_worker
+      template_name = "talos-${var.talos_version}-gpu-thor"
+      schematic_id  = var.talos_schematic_gpu
       provider_alias = "thor"
     }
   }
@@ -166,16 +166,16 @@ locals {
 # upload timeouts. Each template waits for the previous one to complete.
 
 # --- Baldar Templates ---
-module "template_baldar_controller" {
+module "template_baldar_base" {
   source = "./modules/talos-template"
   providers = {
     proxmox = proxmox.baldar
   }
 
   talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_controlplane
+  schematic_id     = var.talos_schematic_base
   template_vm_id   = var.template_ids.baldar.controller
-  template_name    = "talos-${var.talos_version}-controller-baldar"
+  template_name    = "talos-${var.talos_version}-base-baldar"
   proxmox_node     = "Baldar"
   proxmox_host     = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
   proxmox_ssh_user = var.proxmox_ssh_user
@@ -189,16 +189,16 @@ module "template_baldar_controller" {
   # First template - no dependencies
 }
 
-module "template_baldar_worker" {
+module "template_baldar_gpu" {
   source = "./modules/talos-template"
   providers = {
     proxmox = proxmox.baldar
   }
 
   talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_worker
+  schematic_id     = var.talos_schematic_gpu
   template_vm_id   = var.template_ids.baldar.worker
-  template_name    = "talos-${var.talos_version}-worker-baldar"
+  template_name    = "talos-${var.talos_version}-gpu-baldar"
   proxmox_node     = "Baldar"
   proxmox_host     = split("//", split(":", var.proxmox_endpoints.baldar)[1])[1]
   proxmox_ssh_user = var.proxmox_ssh_user
@@ -211,16 +211,16 @@ module "template_baldar_worker" {
 }
 
 # --- Heimdall Templates ---
-module "template_heimdall_controller" {
+module "template_heimdall_base" {
   source = "./modules/talos-template"
   providers = {
     proxmox = proxmox.heimdall
   }
 
   talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_controlplane
+  schematic_id     = var.talos_schematic_base
   template_vm_id   = var.template_ids.heimdall.controller
-  template_name    = "talos-${var.talos_version}-controller-heimdall"
+  template_name    = "talos-${var.talos_version}-base-heimdall"
   proxmox_node     = "Heimdall"
   proxmox_host     = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
   proxmox_ssh_user = var.proxmox_ssh_user
@@ -232,16 +232,16 @@ module "template_heimdall_controller" {
   enable_firewall  = var.enable_firewall
 }
 
-module "template_heimdall_worker" {
+module "template_heimdall_gpu" {
   source = "./modules/talos-template"
   providers = {
     proxmox = proxmox.heimdall
   }
 
   talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_worker
+  schematic_id     = var.talos_schematic_gpu
   template_vm_id   = var.template_ids.heimdall.worker
-  template_name    = "talos-${var.talos_version}-worker-heimdall"
+  template_name    = "talos-${var.talos_version}-gpu-heimdall"
   proxmox_node     = "Heimdall"
   proxmox_host     = split("//", split(":", var.proxmox_endpoints.heimdall)[1])[1]
   proxmox_ssh_user = var.proxmox_ssh_user
@@ -254,16 +254,16 @@ module "template_heimdall_worker" {
 }
 
 # --- Odin Templates ---
-module "template_odin_controller" {
+module "template_odin_base" {
   source = "./modules/talos-template"
   providers = {
     proxmox = proxmox.odin
   }
 
   talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_controlplane
+  schematic_id     = var.talos_schematic_base
   template_vm_id   = var.template_ids.odin.controller
-  template_name    = "talos-${var.talos_version}-controller-odin"
+  template_name    = "talos-${var.talos_version}-base-odin"
   proxmox_node     = "Odin"
   proxmox_host     = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
   proxmox_ssh_user = var.proxmox_ssh_user
@@ -275,16 +275,16 @@ module "template_odin_controller" {
   enable_firewall  = var.enable_firewall
 }
 
-module "template_odin_worker" {
+module "template_odin_gpu" {
   source = "./modules/talos-template"
   providers = {
     proxmox = proxmox.odin
   }
 
   talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_worker
+  schematic_id     = var.talos_schematic_gpu
   template_vm_id   = var.template_ids.odin.worker
-  template_name    = "talos-${var.talos_version}-worker-odin"
+  template_name    = "talos-${var.talos_version}-gpu-odin"
   proxmox_node     = "Odin"
   proxmox_host     = split("//", split(":", var.proxmox_endpoints.odin)[1])[1]
   proxmox_ssh_user = var.proxmox_ssh_user
@@ -297,16 +297,16 @@ module "template_odin_worker" {
 }
 
 # --- Thor Templates ---
-module "template_thor_controller" {
+module "template_thor_base" {
   source = "./modules/talos-template"
   providers = {
     proxmox = proxmox.thor
   }
 
   talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_controlplane
+  schematic_id     = var.talos_schematic_base
   template_vm_id   = var.template_ids.thor.controller
-  template_name    = "talos-${var.talos_version}-controller-thor"
+  template_name    = "talos-${var.talos_version}-base-thor"
   proxmox_node     = "Thor"
   proxmox_host     = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
   proxmox_ssh_user = var.proxmox_ssh_user
@@ -318,16 +318,16 @@ module "template_thor_controller" {
   enable_firewall  = var.enable_firewall
 }
 
-module "template_thor_worker" {
+module "template_thor_gpu" {
   source = "./modules/talos-template"
   providers = {
     proxmox = proxmox.thor
   }
 
   talos_version    = var.talos_version
-  schematic_id     = var.talos_schematic_worker
+  schematic_id     = var.talos_schematic_gpu
   template_vm_id   = var.template_ids.thor.worker
-  template_name    = "talos-${var.talos_version}-worker-thor"
+  template_name    = "talos-${var.talos_version}-gpu-thor"
   proxmox_node     = "Thor"
   proxmox_host     = split("//", split(":", var.proxmox_endpoints.thor)[1])[1]
   proxmox_ssh_user = var.proxmox_ssh_user
@@ -404,12 +404,19 @@ module "worker_nodes" {
   vm_id           = each.value.vm_id
   proxmox_node    = each.value.proxmox_node
 
-  # Use the worker template from the assigned Proxmox node
+  # Use GPU template for GPU workers, base template for non-GPU workers
   template_vm_id = (
-    each.value.proxmox_node == "Baldar"   ? var.template_ids.baldar.worker :
-    each.value.proxmox_node == "Heimdall" ? var.template_ids.heimdall.worker :
-    each.value.proxmox_node == "Odin"     ? var.template_ids.odin.worker :
-    var.template_ids.thor.worker
+    each.value.is_gpu ?
+      # GPU workers use the GPU template (.worker)
+      (each.value.proxmox_node == "Baldar"   ? var.template_ids.baldar.worker :
+       each.value.proxmox_node == "Heimdall" ? var.template_ids.heimdall.worker :
+       each.value.proxmox_node == "Odin"     ? var.template_ids.odin.worker :
+       var.template_ids.thor.worker) :
+      # Non-GPU workers use the base template (.controller)
+      (each.value.proxmox_node == "Baldar"   ? var.template_ids.baldar.controller :
+       each.value.proxmox_node == "Heimdall" ? var.template_ids.heimdall.controller :
+       each.value.proxmox_node == "Odin"     ? var.template_ids.odin.controller :
+       var.template_ids.thor.controller)
   )
 
   is_controlplane = false

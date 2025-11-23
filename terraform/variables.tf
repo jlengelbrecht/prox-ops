@@ -45,14 +45,14 @@ variable "talos_version" {
   default     = "1.11.5"
 }
 
-variable "talos_schematic_controlplane" {
-  description = "Talos factory schematic ID for control plane nodes"
+variable "talos_schematic_base" {
+  description = "Talos factory schematic ID for base nodes (controllers + regular workers). Extensions: QEMU Guest Agent only"
   type        = string
   default     = "ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515"
 }
 
-variable "talos_schematic_worker" {
-  description = "Talos factory schematic ID for worker nodes"
+variable "talos_schematic_gpu" {
+  description = "Talos factory schematic ID for GPU worker nodes. Extensions: QEMU Guest Agent + NVIDIA drivers + NVIDIA Container Toolkit"
   type        = string
   default     = "990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e"
 }
