@@ -164,8 +164,8 @@ jobs:
             echo "$LOCK_OUTPUT"
 
             # Extract lock ID from error message (format: "ID: <uuid>")
-            # Use \s+ for flexible whitespace matching across Terraform versions
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s+)[a-f0-9-]{36}' | head -1)
+            # Use \K assertion for reliable regex across grep versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
 
             if [ -n "$LOCK_ID" ]; then
               echo ""
@@ -647,8 +647,8 @@ jobs:
             echo "$LOCK_OUTPUT"
 
             # Extract lock ID from error message (format: "ID: <uuid>")
-            # Use \s+ for flexible whitespace matching across Terraform versions
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s+)[a-f0-9-]{36}' | head -1)
+            # Use \K assertion for reliable regex across grep versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
 
             if [ -n "$LOCK_ID" ]; then
               echo ""
@@ -1570,8 +1570,8 @@ jobs:
             echo "$LOCK_OUTPUT"
 
             # Extract lock ID from error message (format: "ID: <uuid>")
-            # Use \s+ for flexible whitespace matching across Terraform versions
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s+)[a-f0-9-]{36}' | head -1)
+            # Use \K assertion for reliable regex across grep versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
 
             if [ -n "$LOCK_ID" ]; then
               echo ""
@@ -2089,22 +2089,24 @@ jobs:
             restartPolicy: Never
           EOF
 
-          # Wait for pod completion
-          kubectl wait --for=condition=Completed pod/gpu-test-${{ matrix.node }} --timeout=60s || {
-            echo "::error::GPU test pod failed"
+          # Wait for pod completion (use Succeeded phase, not Completed condition)
+          if kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/gpu-test-${{ matrix.node }} --timeout=60s; then
+            # Show GPU info on success
+            echo "GPU test output:"
             kubectl logs pod/gpu-test-${{ matrix.node }}
+
+            # Clean up test pod
+            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+
+            echo "✅ GPU validation successful for ${{ matrix.node }}"
+          else
+            # Handle failure
+            POD_PHASE=$(kubectl get pod gpu-test-${{ matrix.node }} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+            echo "::error::GPU test pod did not succeed (phase: $POD_PHASE)"
+            kubectl logs pod/gpu-test-${{ matrix.node }} 2>/dev/null || echo "Could not retrieve logs"
             kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
             exit 1
-          }
-
-          # Show GPU info
-          echo "GPU test output:"
-          kubectl logs pod/gpu-test-${{ matrix.node }}
-
-          # Clean up test pod
-          kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
-
-          echo "✅ GPU validation successful for ${{ matrix.node }}"
+          fi
           echo "::endgroup::"
 
       - name: Verify version
