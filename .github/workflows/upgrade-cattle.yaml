@@ -1420,12 +1420,28 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
+        # Enhanced matrix with GPU metadata and template type
         # When test_workers=true: Only k8s-work-1 and k8s-work-2 (2 workers)
         # When production (all test flags false): All 12 workers
-        node: >-
+        include: >-
           ${{
-            inputs.test_workers == true && fromJSON('["k8s-work-1","k8s-work-2"]') ||
-            fromJSON('["k8s-work-1","k8s-work-2","k8s-work-3","k8s-work-4","k8s-work-5","k8s-work-6","k8s-work-11","k8s-work-12","k8s-work-13","k8s-work-14","k8s-work-15","k8s-work-16"]')
+            inputs.test_workers == true && fromJSON('[
+              {"node": "k8s-work-1", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-2", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"}
+            ]') || fromJSON('[
+              {"node": "k8s-work-1", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-2", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-3", "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
+              {"node": "k8s-work-4", "is_gpu": true, "proxmox_node": "heimdall", "template_type": "gpu", "gpu_model": "rtx-a2000"},
+              {"node": "k8s-work-5", "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-6", "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-11", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-12", "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
+              {"node": "k8s-work-13", "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-14", "is_gpu": true, "proxmox_node": "thor", "template_type": "gpu", "gpu_model": "rtx-a5000"},
+              {"node": "k8s-work-15", "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
+              {"node": "k8s-work-16", "is_gpu": false, "proxmox_node": "odin", "template_type": "base"}
+            ]')
           }}
     steps:
       - name: Checkout repository
@@ -1538,6 +1554,47 @@ jobs:
           echo "✅ Node drained successfully"
           echo "::endgroup::"
 
+      - name: Clear stale Terraform locks
+        working-directory: ./terraform
+        continue-on-error: true
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "Checking for stale Terraform state locks..."
+
+          # Try a terraform plan with short lock timeout to detect locks
+          # Capture both stdout and stderr to parse lock ID
+          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+            echo "Lock detected. Output:"
+            echo "$LOCK_OUTPUT"
+
+            # Extract lock ID from error message (format: "ID: <uuid>")
+            # Use \s+ for flexible whitespace matching across Terraform versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP '(?<=ID:\s+)[a-f0-9-]{36}' | head -1)
+
+            if [ -n "$LOCK_ID" ]; then
+              echo ""
+              echo "Found stale lock ID: $LOCK_ID"
+              echo "Attempting to force-unlock..."
+
+              if terraform force-unlock -force "$LOCK_ID"; then
+                echo "✓ Successfully cleared stale lock"
+              else
+                echo "✗ Failed to unlock (may require manual intervention)"
+                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+              fi
+            else
+              echo "Could not extract lock ID from error message"
+              echo "Lock may need to be cleared manually"
+            fi
+          else
+            echo "✓ No lock detected - state is accessible"
+          fi
+
+          # Ensure clean exit
+          exit 0
+
       - name: Backup Terraform state
         working-directory: ./terraform
         run: |
@@ -1553,20 +1610,192 @@ jobs:
           aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
             s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node }}-$(date +%s).tfstate
 
-      - name: Destroy VM
+      - name: Plan worker destruction
         working-directory: ./terraform
         timeout-minutes: 5
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "::group::Destroying ${{ matrix.node }} VM"
-          terraform destroy \
+          echo "::group::Planning destruction of ${{ matrix.node }}"
+
+          terraform plan \
             -input=false \
-            -auto-approve \
+            -destroy \
+            -out=worker-destroy-${{ matrix.node }}.tfplan \
             -target=module.worker_nodes[\"${{ matrix.node }}\"]
 
-          echo "✅ VM destroyed"
+          echo "Plan saved to worker-destroy-${{ matrix.node }}.tfplan"
+          echo "::endgroup::"
+
+      - name: Validate destruction plan
+        working-directory: ./terraform
+        run: |
+          echo "::group::Validating destruction plan for ${{ matrix.node }}"
+
+          # Check plan file exists
+          if [[ ! -f worker-destroy-${{ matrix.node }}.tfplan ]]; then
+            echo "::error::Plan file not found"
+            exit 1
+          fi
+
+          # Show full plan
+          terraform show -no-color worker-destroy-${{ matrix.node }}.tfplan > destroy-plan-full.txt
+          cat destroy-plan-full.txt
+
+          echo ""
+          echo "================================================================"
+          echo "SAFETY VALIDATION - Negative Assertions"
+          echo "================================================================"
+
+          BUG_DETECTED=false
+
+          # NEGATIVE ASSERTION 1: No controllers
+          for ctrl in k8s-ctrl-1 k8s-ctrl-2 k8s-ctrl-3; do
+            if grep -q "module.control_plane_nodes\[\"$ctrl\"\]" destroy-plan-full.txt; then
+              echo "::error::SAFETY VIOLATION: Plan includes controller $ctrl"
+              echo "::error::This would destroy control plane nodes!"
+              BUG_DETECTED=true
+            fi
+          done
+
+          # NEGATIVE ASSERTION 2: No templates
+          if grep -q "module.template_" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes template modules"
+            echo "::error::This would destroy VM templates!"
+            BUG_DETECTED=true
+          fi
+
+          # NEGATIVE ASSERTION 3: No other workers
+          for other_worker in k8s-work-1 k8s-work-2 k8s-work-3 k8s-work-4 k8s-work-5 \
+                             k8s-work-6 k8s-work-11 k8s-work-12 k8s-work-13 \
+                             k8s-work-14 k8s-work-15 k8s-work-16; do
+            if [[ "$other_worker" == "${{ matrix.node }}" ]]; then
+              continue  # Skip self
+            fi
+
+            if grep -q "module.worker_nodes\[\"$other_worker\"\]" destroy-plan-full.txt; then
+              echo "::error::SAFETY VIOLATION: Plan includes $other_worker"
+              echo "::error::This would destroy multiple workers!"
+              BUG_DETECTED=true
+            fi
+          done
+
+          if [ "$BUG_DETECTED" = true ]; then
+            echo ""
+            echo "::error::Terraform plan includes unintended targets"
+            echo "::error::Workflow terminated to prevent accidental destruction"
+            exit 1
+          fi
+
+          echo "✅ Negative assertions passed - no unintended targets"
+
+          # POSITIVE ASSERTION: Verify target worker IS in plan
+          if ! grep -q "module.worker_nodes\[\"${{ matrix.node }}\"\]" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Target worker not found in plan"
+            echo "::error::Expected: module.worker_nodes[\"${{ matrix.node }}\"]"
+            exit 1
+          fi
+
+          echo "✅ Positive assertion passed - target worker found"
+
+          # Count VMs to be destroyed (should be exactly 1)
+          VM_COUNT=$(grep -c "module.worker_nodes\[\"${{ matrix.node }}\"\]" destroy-plan-full.txt || echo "0")
+          echo "VMs to be destroyed: $VM_COUNT"
+
+          if [[ $VM_COUNT -ne 1 ]]; then
+            echo "::error::Expected exactly 1 VM to be destroyed, found $VM_COUNT"
+            exit 1
+          fi
+
+          echo ""
+          echo "================================================================"
+          echo "Validation passed - safe to destroy ${{ matrix.node }}"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Destroy VM with retry
+        working-directory: ./terraform
+        timeout-minutes: 10
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Destroying ${{ matrix.node }} VM with retry logic"
+
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "Destroy attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            if terraform apply \
+                -input=false \
+                -auto-approve \
+                worker-destroy-${{ matrix.node }}.tfplan; then
+
+              echo "✅ VM destroyed successfully on attempt $ATTEMPT"
+              SUCCESS=true
+              break
+            else
+              EXIT_CODE=$?
+              echo "⚠️  Destroy attempt $ATTEMPT failed with exit code $EXIT_CODE"
+
+              if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+                WAIT_TIME=$((ATTEMPT * 10))
+                echo "Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+
+                # Clear potential state lock
+                echo "Checking for state lock..."
+                if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
+                  echo "State lock detected, clearing..."
+                  aws s3 rm s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info || true
+                fi
+              fi
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo "::error::Failed to destroy VM after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+      - name: Verify correct template exists
+        working-directory: ./terraform
+        run: |
+          echo "::group::Verifying template for ${{ matrix.node }}"
+
+          # Determine expected template
+          TEMPLATE_TYPE="${{ matrix.template_type }}"
+          PROXMOX_NODE="${{ matrix.proxmox_node }}"
+          echo "Node type: $TEMPLATE_TYPE"
+          echo "Proxmox host: $PROXMOX_NODE"
+
+          # Verify template exists in Terraform state
+          echo "Checking for template_${PROXMOX_NODE}_${TEMPLATE_TYPE} module..."
+
+          if terraform state list | grep -q "module.template_${PROXMOX_NODE}_${TEMPLATE_TYPE}"; then
+            echo "✅ Template module template_${PROXMOX_NODE}_${TEMPLATE_TYPE} exists in state"
+          else
+            echo "::error::Required template module template_${PROXMOX_NODE}_${TEMPLATE_TYPE} not found in Terraform state"
+            echo "::error::Available templates:"
+            terraform state list | grep "module.template_" || echo "None found"
+            exit 1
+          fi
+
+          # Log template selection for audit
+          echo "GPU enabled: ${{ matrix.is_gpu }}"
+          if [[ "${{ matrix.is_gpu }}" == "true" ]]; then
+            echo "GPU model: ${{ matrix.gpu_model }}"
+          fi
+
+          echo "✅ Template verified and ready for VM creation"
           echo "::endgroup::"
 
       - name: Recreate VM from new template
@@ -1791,6 +2020,92 @@ jobs:
 
           # Final check
           kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=30s
+
+      - name: Validate GPU functionality
+        if: matrix.is_gpu == true
+        timeout-minutes: 5
+        run: |
+          echo "::group::Validating GPU for ${{ matrix.node }}"
+
+          # Wait for NVIDIA operator to detect GPU
+          echo "Waiting for NVIDIA device plugin..."
+          RETRY_COUNT=0
+          MAX_RETRIES=30
+
+          while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
+            if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
+              echo "✅ GPU detected by Kubernetes"
+              break
+            fi
+            echo "Waiting for GPU detection (attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
+            sleep 10
+            RETRY_COUNT=$((RETRY_COUNT+1))
+          done
+
+          if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
+            echo "::error::GPU not detected after $MAX_RETRIES attempts"
+            exit 1
+          fi
+
+          # Verify GPU count
+          GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
+          echo "GPU count: $GPU_COUNT"
+
+          if [[ "$GPU_COUNT" != "1" ]]; then
+            echo "::error::Expected 1 GPU, found $GPU_COUNT"
+            exit 1
+          fi
+
+          # Verify node labels
+          echo "Checking GPU labels..."
+          kubectl get nodes ${{ matrix.node }} --show-labels | grep -q "nvidia.com/gpu.present=true" || {
+            echo "::error::GPU present label missing"
+            exit 1
+          }
+
+          # Check for GPU model label (warning only if missing)
+          kubectl get nodes ${{ matrix.node }} --show-labels | grep -q "gpu.nvidia.com/model=${{ matrix.gpu_model }}" || {
+            echo "::warning::GPU model label missing or incorrect (expected: ${{ matrix.gpu_model }})"
+          }
+
+          # Test GPU with a pod
+          echo "Testing GPU with nvidia-smi pod..."
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: gpu-test-${{ matrix.node }}
+            namespace: default
+          spec:
+            nodeSelector:
+              kubernetes.io/hostname: ${{ matrix.node }}
+            containers:
+            - name: nvidia-smi
+              image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu20.04
+              command: ["nvidia-smi"]
+              resources:
+                limits:
+                  nvidia.com/gpu: 1
+            restartPolicy: Never
+          EOF
+
+          # Wait for pod completion
+          kubectl wait --for=condition=Completed pod/gpu-test-${{ matrix.node }} --timeout=60s || {
+            echo "::error::GPU test pod failed"
+            kubectl logs pod/gpu-test-${{ matrix.node }}
+            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+            exit 1
+          }
+
+          # Show GPU info
+          echo "GPU test output:"
+          kubectl logs pod/gpu-test-${{ matrix.node }}
+
+          # Clean up test pod
+          kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+
+          echo "✅ GPU validation successful for ${{ matrix.node }}"
+          echo "::endgroup::"
 
       - name: Verify version
         run: |
