@@ -2011,6 +2011,12 @@ jobs:
             # Get node IP address for talosctl
             NODE_IP=$(kubectl get node "$node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
 
+            if [[ -z "$NODE_IP" ]]; then
+              echo "::error::Failed to resolve IP for node $node"
+              FAILED_NODES="$FAILED_NODES $node(no-ip)"
+              continue
+            fi
+
             # Get Talos version from node using JSON parsing
             VERSION=$(talosctl version --nodes "$NODE_IP" --json 2>/dev/null | jq -r '.version.tag // empty')
             echo "  $node: $VERSION"
