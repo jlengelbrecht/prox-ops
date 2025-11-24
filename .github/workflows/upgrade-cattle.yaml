@@ -2109,17 +2109,31 @@ jobs:
           fi
           echo "::endgroup::"
 
-      - name: Verify version
+      - name: Verify Talos version
+        timeout-minutes: 2
         run: |
-          NODE_VERSION=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.nodeInfo.kubeletVersion}')
-          echo "Node version: $NODE_VERSION"
+          echo "Verifying Talos version on ${{ matrix.node }}..."
 
-          if [[ "$NODE_VERSION" != *"${{ inputs.new_version }}"* ]]; then
-            echo "::error::Version mismatch: expected v${{ inputs.new_version }}, got $NODE_VERSION"
+          # Get node IP from kubectl
+          NODE_IP=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+          EXPECTED_VERSION="v${{ inputs.new_version }}"
+
+          echo "Node IP: $NODE_IP"
+          echo "Expected Talos version: $EXPECTED_VERSION"
+
+          # Extract version from talosctl using JSON parsing for reliability
+          VERSION=$(talosctl version --nodes "$NODE_IP" --json 2>/dev/null | jq -r '.version.tag // empty')
+
+          echo "Node Talos version: $VERSION"
+
+          if [[ "$VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::Version mismatch on ${{ matrix.node }}"
+            echo "::error::Expected: $EXPECTED_VERSION"
+            echo "::error::Got: $VERSION"
             exit 1
           fi
 
-          echo "✅ Node running correct version: $NODE_VERSION"
+          echo "✅ Node running correct Talos version: $VERSION"
 
       - name: Apply global patches
         timeout-minutes: 5
