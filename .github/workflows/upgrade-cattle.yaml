@@ -1407,8 +1407,10 @@ jobs:
     name: Upgrade Worker ${{ matrix.node }}
     needs: [validate-inputs, rebuild-templates, upgrade-control-plane]
     # Run when: test_workers=true OR production mode (all test flags false)
-    # Also require dependencies to have succeeded or been skipped
+    # Use always() to force evaluation even when dependencies are skipped
+    # Also require dependencies to have succeeded or been skipped (not failed)
     if: |
+      always() &&
       (inputs.test_workers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
