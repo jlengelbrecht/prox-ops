@@ -684,8 +684,9 @@ jobs:
           for i in {1..12}; do
             # Count healthy etcd voting members using talosctl
             # In Talos, etcd runs as a system service, not a Kubernetes pod
+            # Query all control plane nodes for connectivity, then deduplicate by member ID
             HEALTHY_MEMBERS=$(talosctl --nodes "$CTRL_NODES" etcd members 2>/dev/null | \
-              grep -c "false$" || echo "0")  # Count lines ending with "false" (non-learner members)
+              awk '/false$/ {print $2}' | sort -u | wc -l || echo "0")  # Extract IDs (col 2), deduplicate, count unique
 
             echo "Attempt $i/12: $HEALTHY_MEMBERS healthy etcd voting members"
 
@@ -1320,8 +1321,9 @@ jobs:
           for i in {1..30}; do
             # Count healthy etcd voting members using talosctl
             # In Talos, etcd runs as a system service, not a Kubernetes pod
+            # Query all control plane nodes for connectivity, then deduplicate by member ID
             HEALTHY_MEMBERS=$(talosctl --nodes "$CTRL_NODES" etcd members 2>/dev/null | \
-              grep -c "false$" || echo "0")  # Count lines ending with "false" (non-learner members)
+              awk '/false$/ {print $2}' | sort -u | wc -l || echo "0")  # Extract IDs (col 2), deduplicate, count unique
 
             echo "Attempt $i/30: $HEALTHY_MEMBERS healthy etcd voting members"
 
