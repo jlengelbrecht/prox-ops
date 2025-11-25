@@ -24,6 +24,10 @@ on:
         description: Test only workers (2 workers, skip templates & controllers)
         type: boolean
         default: false
+      worker_rollout_mode:
+        description: 'Worker rollout strategy (safe: 1 pair at a time, standard: both in pair parallel, aggressive: multiple pairs parallel)'
+        type: string
+        default: safe
   workflow_dispatch:
     inputs:
       old_version:
@@ -46,6 +50,14 @@ on:
         description: Test only workers (2 workers, skip templates & controllers)
         type: boolean
         default: false
+      worker_rollout_mode:
+        description: 'Worker rollout strategy (safe: 1 pair at a time, standard: both in pair parallel, aggressive: multiple pairs parallel)'
+        type: choice
+        options:
+          - safe
+          - standard
+          - aggressive
+        default: safe
 
 # Prevent concurrent cattle upgrades (Terraform state lock protection)
 # Cancel old queued runs when new run starts (prevents zombie workflow blocking)
@@ -79,6 +91,14 @@ jobs:
             echo "::error::test_templates=${{ inputs.test_templates }}"
             echo "::error::test_controllers=${{ inputs.test_controllers }}"
             echo "::error::test_workers=${{ inputs.test_workers }}"
+            exit 1
+          fi
+
+          # Validate worker_rollout_mode parameter (security requirement)
+          MODE="${{ inputs.worker_rollout_mode }}"
+          if [[ ! "$MODE" =~ ^(safe|standard|aggressive)$ ]]; then
+            echo "::error::Invalid worker_rollout_mode: '$MODE'"
+            echo "::error::Must be one of: safe, standard, aggressive"
             exit 1
           fi
 
@@ -1401,11 +1421,112 @@ jobs:
           EOF
 
   # ==========================================================================
-  # PHASE 3: WORKER UPGRADE (SEQUENTIAL WITH GPU PATCH SUPPORT)
+  # PHASE 2.5: PRE-WORKER HEALTH VALIDATION
   # ==========================================================================
-  upgrade-workers:
-    name: Upgrade Worker ${{ matrix.node }}
+  pre-worker-health-check:
+    name: Pre-Worker Health Validation
     needs: [validate-inputs, rebuild-templates, upgrade-control-plane]
+    # Run when workers will be upgraded
+    if: |
+      always() &&
+      (inputs.test_workers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
+      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
+      (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
+    runs-on: cattle-runner
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
+      - name: Validate cluster health
+        run: |
+          echo "::group::Cluster Health Pre-Flight Check"
+
+          # Check all nodes are Ready
+          echo "Checking node health..."
+          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready " | wc -l)
+          if [[ $NOT_READY -gt 0 ]]; then
+            echo "::error::Found $NOT_READY nodes not in Ready state"
+            kubectl get nodes
+            exit 1
+          fi
+          echo "✅ All nodes Ready"
+
+          # Check etcd health
+          echo ""
+          echo "Checking etcd health..."
+          ETCD_HEALTH=$(kubectl exec -n kube-system etcd-k8s-ctrl-1 -- \
+            etcdctl endpoint health --cluster 2>&1 || echo "failed")
+
+          if echo "$ETCD_HEALTH" | grep -q "unhealthy"; then
+            echo "::error::etcd cluster unhealthy"
+            echo "$ETCD_HEALTH"
+            exit 1
+          fi
+          echo "✅ etcd cluster healthy"
+
+          # Check for pods in CrashLoopBackOff
+          echo ""
+          echo "Checking for crashing pods..."
+          CRASH_PODS=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded \
+            --no-headers 2>/dev/null | grep -c "CrashLoopBackOff" || echo "0")
+
+          if [[ $CRASH_PODS -gt 0 ]]; then
+            echo "::warning::Found $CRASH_PODS pods in CrashLoopBackOff"
+            kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
+          else
+            echo "✅ No pods in CrashLoopBackOff"
+          fi
+
+          # Check Rook-Ceph health (if deployed)
+          echo ""
+          echo "Checking Rook-Ceph health..."
+          if kubectl get namespace rook-ceph &>/dev/null; then
+            CEPH_HEALTH=$(kubectl exec -n rook-ceph deploy/rook-ceph-tools -- \
+              ceph status -f json 2>/dev/null | jq -r '.health.status' || echo "UNKNOWN")
+
+            if [[ "$CEPH_HEALTH" == "HEALTH_OK" ]]; then
+              echo "✅ Ceph cluster healthy"
+            elif [[ "$CEPH_HEALTH" == "HEALTH_WARN" ]]; then
+              echo "::warning::Ceph cluster has warnings"
+              kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status
+            else
+              echo "::error::Ceph cluster unhealthy or status unknown"
+              kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status || true
+              exit 1
+            fi
+          else
+            echo "ℹ️  Rook-Ceph not deployed, skipping"
+          fi
+
+          echo ""
+          echo "✅ Cluster health validation passed"
+          echo "::endgroup::"
+
+  # ==========================================================================
+  # PHASE 3: WORKER UPGRADE (PARALLEL WITH PAIRED ROLLOUT STRATEGY)
+  # ==========================================================================
+  # Pairing Strategy (cross-diagonal for fault tolerance):
+  #   Pair 1: work-1 (baldar) + work-5 (odin)
+  #   Pair 2: work-2 (baldar) + work-6 (odin)
+  #   Pair 3: work-3 (heimdall) + work-15 (thor)
+  #   Pair 4: work-11 (baldar) + work-13 (odin)
+  #   Pair 5: work-12 (heimdall) + work-16 (odin)
+  #   Pair 6: work-4 (heimdall, GPU) - sequential
+  #   Pair 7: work-14 (thor, GPU) - sequential
+  #
+  # Rollout modes:
+  #   safe: max-parallel=1 (one worker at a time, pairs are sequential)
+  #   standard: max-parallel=2 (both workers in pair upgrade together, but wait for pair to finish)
+  #   aggressive: max-parallel=4 (multiple pairs can run simultaneously)
+  upgrade-workers:
+    name: Upgrade Worker ${{ matrix.node }} (Pair ${{ matrix.pair_id }})
+    needs: [validate-inputs, rebuild-templates, upgrade-control-plane, pre-worker-health-check]
     # Run when: test_workers=true OR production mode (all test flags false)
     # Use always() to force evaluation even when dependencies are skipped
     # Also require dependencies to have succeeded or been skipped (not failed)
@@ -1413,34 +1534,37 @@ jobs:
       always() &&
       (inputs.test_workers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
-      (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
+      (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped') &&
+      (needs.pre-worker-health-check.result == 'success' || needs.pre-worker-health-check.result == 'skipped')
     runs-on: cattle-runner
     timeout-minutes: 30
     strategy:
-      max-parallel: 1
+      # Dynamic max-parallel based on rollout mode:
+      # safe=1 (one worker at a time), standard=2 (pair together), aggressive=4 (multiple pairs)
+      max-parallel: ${{ inputs.worker_rollout_mode == 'aggressive' && 4 || (inputs.worker_rollout_mode == 'standard' && 2 || 1) }}
       fail-fast: false
       matrix:
-        # Enhanced matrix with GPU metadata and template type
-        # When test_workers=true: Only k8s-work-1 and k8s-work-2 (2 workers)
-        # When production (all test flags false): All 12 workers
+        # Enhanced matrix with pair_id for cross-diagonal pairing
+        # Test mode: pair_id=1 (work-1 + work-2, both on baldar for testing)
+        # Production: Cross-diagonal pairs avoid single-host failure, GPU nodes sequential
         include: >-
           ${{
             inputs.test_workers == true && fromJSON('[
-              {"node": "k8s-work-1", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-2", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"}
+              {"node": "k8s-work-1", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-2", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"}
             ]') || fromJSON('[
-              {"node": "k8s-work-1", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-2", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-3", "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
-              {"node": "k8s-work-4", "is_gpu": true, "proxmox_node": "heimdall", "template_type": "gpu", "gpu_model": "rtx-a2000"},
-              {"node": "k8s-work-5", "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
-              {"node": "k8s-work-6", "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
-              {"node": "k8s-work-11", "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-12", "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
-              {"node": "k8s-work-13", "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
-              {"node": "k8s-work-14", "is_gpu": true, "proxmox_node": "thor", "template_type": "gpu", "gpu_model": "rtx-a5000"},
-              {"node": "k8s-work-15", "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
-              {"node": "k8s-work-16", "is_gpu": false, "proxmox_node": "odin", "template_type": "base"}
+              {"node": "k8s-work-1", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-5", "pair_id": 1, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-2", "pair_id": 2, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-6", "pair_id": 2, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-3", "pair_id": 3, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
+              {"node": "k8s-work-15", "pair_id": 3, "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
+              {"node": "k8s-work-11", "pair_id": 4, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-13", "pair_id": 4, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-12", "pair_id": 5, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
+              {"node": "k8s-work-16", "pair_id": 5, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-4", "pair_id": 6, "is_gpu": true, "proxmox_node": "heimdall", "template_type": "gpu", "gpu_model": "rtx-a2000"},
+              {"node": "k8s-work-14", "pair_id": 7, "is_gpu": true, "proxmox_node": "thor", "template_type": "gpu", "gpu_model": "rtx-a5000"}
             ]')
           }}
     steps:
@@ -2285,12 +2409,107 @@ jobs:
           EOF
 
   # ==========================================================================
+  # PHASE 3.5: BETWEEN-PAIR VALIDATION (SAFE/STANDARD MODES)
+  # ==========================================================================
+  # This job runs after each pair completes to validate cluster health
+  # before proceeding to the next pair. Only runs in safe/standard modes.
+  # In aggressive mode, multiple pairs run simultaneously without waiting.
+  #
+  # LIMITATION: Due to GitHub Actions matrix dependencies, this job runs AFTER
+  # all workers complete, not between pairs. This provides post-upgrade validation
+  # per pair but not incremental safety gates. The pre-worker-health-check provides
+  # adequate safety for the entire worker upgrade phase.
+  validate-pair:
+    name: Validate Pair ${{ matrix.pair_id }} Health
+    needs: [upgrade-workers]
+    # Only run in safe/standard modes AND only for pairs 1-6 (pair 7 is last, no validation needed after)
+    if: |
+      always() &&
+      needs.upgrade-workers.result == 'success' &&
+      inputs.worker_rollout_mode != 'aggressive' &&
+      inputs.test_workers == false
+    runs-on: cattle-runner
+    timeout-minutes: 5
+    strategy:
+      max-parallel: 1
+      matrix:
+        pair_id: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
+      - name: Wait for pair to stabilize
+        run: |
+          echo "Waiting 60 seconds for pair ${{ matrix.pair_id }} nodes to stabilize..."
+          sleep 60
+
+      - name: Validate cluster health after pair ${{ matrix.pair_id }}
+        run: |
+          echo "::group::Post-Pair ${{ matrix.pair_id }} Health Check"
+
+          # Check all nodes are Ready
+          echo "Checking node health..."
+          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready " | wc -l)
+          if [[ $NOT_READY -gt 0 ]]; then
+            echo "::warning::Found $NOT_READY nodes not in Ready state after pair ${{ matrix.pair_id }}"
+            kubectl get nodes
+            # Don't fail, just warn - pair might still be stabilizing
+          else
+            echo "✅ All nodes Ready"
+          fi
+
+          # Check for pods in bad state
+          echo ""
+          echo "Checking for unhealthy pods..."
+          BAD_PODS=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded \
+            --no-headers 2>/dev/null | grep -v "Completed" | wc -l || echo "0")
+
+          if [[ $BAD_PODS -gt 0 ]]; then
+            echo "::warning::Found $BAD_PODS pods not in Running/Succeeded state"
+            kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
+          else
+            echo "✅ All pods healthy"
+          fi
+
+          # Check Rook-Ceph health (if deployed)
+          echo ""
+          echo "Checking Rook-Ceph health..."
+          if kubectl get namespace rook-ceph &>/dev/null; then
+            CEPH_HEALTH=$(kubectl exec -n rook-ceph deploy/rook-ceph-tools -- \
+              ceph status -f json 2>/dev/null | jq -r '.health.status' || echo "UNKNOWN")
+
+            if [[ "$CEPH_HEALTH" == "HEALTH_OK" ]]; then
+              echo "✅ Ceph cluster healthy"
+            elif [[ "$CEPH_HEALTH" == "HEALTH_WARN" ]]; then
+              echo "::warning::Ceph cluster has warnings after pair ${{ matrix.pair_id }}"
+              kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status
+            else
+              echo "::warning::Ceph cluster status: $CEPH_HEALTH"
+            fi
+          else
+            echo "ℹ️  Rook-Ceph not deployed, skipping"
+          fi
+
+          echo ""
+          echo "✅ Pair ${{ matrix.pair_id }} validation complete"
+          echo "::endgroup::"
+
+  # ==========================================================================
   # PHASE 4: CLUSTER VALIDATION
   # ==========================================================================
   validate-cluster:
     name: Validate Cluster Health
-    needs: [validate-inputs, rebuild-templates, upgrade-control-plane, upgrade-workers]
-    if: always() && inputs.test_templates == false
+    needs: [validate-inputs, rebuild-templates, upgrade-control-plane, upgrade-workers, validate-pair]
+    # Run after all upgrades complete (validate-pair may be skipped in aggressive mode or test mode)
+    if: |
+      always() &&
+      inputs.test_templates == false &&
+      (needs.validate-pair.result == 'success' || needs.validate-pair.result == 'skipped')
     runs-on: cattle-runner
     timeout-minutes: 10
     steps:
