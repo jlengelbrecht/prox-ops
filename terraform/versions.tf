@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.10.0"  # Required for S3 native state locking (use_lockfile parameter)
 
   required_providers {
     proxmox = {
