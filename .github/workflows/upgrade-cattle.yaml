@@ -2141,25 +2141,10 @@ jobs:
           echo "::group::Applying global patches to ${{ matrix.node }}"
           echo "These patches ensure consistent sysctls, kubelet config, network, and time settings"
 
-          # Download talosctl for the new version
-          echo "Installing talosctl v${{ inputs.new_version }}..."
-
-          # Download binary
-          curl -sL "https://github.com/siderolabs/talos/releases/download/v${{ inputs.new_version }}/talosctl-linux-amd64" \
-            -o talosctl
-
-          # Download checksums
-          curl -sL "https://github.com/siderolabs/talos/releases/download/v${{ inputs.new_version }}/sha512sum.txt" \
-            -o sha512sum.txt
-
-          # SECURITY: Verify checksum
-          if ! sha512sum -c --ignore-missing sha512sum.txt 2>&1 | grep -q "talosctl-linux-amd64: OK"; then
-            echo "::error::Checksum verification failed for talosctl v${{ inputs.new_version }}"
-            exit 1
-          fi
-
-          chmod +x talosctl
-          ./talosctl version --client
+          # Use pre-installed talosctl from setup-cluster-tools
+          echo "Using pre-installed talosctl..."
+          which talosctl
+          talosctl version --client
 
           # Determine node IP
           NODE_IP=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
@@ -2172,7 +2157,7 @@ jobs:
 
           for patch in "${GLOBAL_PATCHES[@]}"; do
             echo "  → Applying talos/patches/global/${patch}.yaml..."
-            ./talosctl patch machineconfig \
+            talosctl patch machineconfig \
               --nodes $NODE_IP \
               --patch-file talos/patches/global/${patch}.yaml
           done
@@ -2197,25 +2182,10 @@ jobs:
           echo "::group::Applying GPU patches for ${{ matrix.node }}"
           echo "Detected GPU node: ${{ matrix.node }}"
 
-          # Download talosctl for the new version
-          echo "Installing talosctl v${{ inputs.new_version }}..."
-
-          # Download binary
-          curl -sL "https://github.com/siderolabs/talos/releases/download/v${{ inputs.new_version }}/talosctl-linux-amd64" \
-            -o talosctl
-
-          # Download checksums
-          curl -sL "https://github.com/siderolabs/talos/releases/download/v${{ inputs.new_version }}/sha512sum.txt" \
-            -o sha512sum.txt
-
-          # SECURITY: Verify checksum
-          if ! sha512sum -c --ignore-missing sha512sum.txt 2>&1 | grep -q "talosctl-linux-amd64: OK"; then
-            echo "::error::Checksum verification failed for talosctl v${{ inputs.new_version }}"
-            exit 1
-          fi
-
-          chmod +x talosctl
-          ./talosctl version --client
+          # Use pre-installed talosctl from setup-cluster-tools
+          echo "Using pre-installed talosctl..."
+          which talosctl
+          talosctl version --client
 
           # Determine node IP
           NODE_IP=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
@@ -2223,7 +2193,7 @@ jobs:
 
           # Apply GPU-specific patches
           echo "Applying GPU patch from talos/patches/${{ matrix.node }}/nvidia-gpu.yaml..."
-          ./talosctl patch machineconfig \
+          talosctl patch machineconfig \
             --nodes $NODE_IP \
             --patch-file talos/patches/${{ matrix.node }}/nvidia-gpu.yaml
 
