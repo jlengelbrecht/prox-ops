@@ -329,8 +329,8 @@ worker_nodes = [
 
   # Odin workers (3)
   {
-    name         = "k8s-work-11"
-    hostname     = "k8s-work-11"
+    name         = "k8s-work-7"
+    hostname     = "k8s-work-7"
     ip_address   = "10.20.67.10"
     mac_addr     = "bc:24:11:6b:75:fe"
     vm_id        = 910
@@ -352,8 +352,8 @@ worker_nodes = [
     ]
   },
   {
-    name         = "k8s-work-12"
-    hostname     = "k8s-work-12"
+    name         = "k8s-work-8"
+    hostname     = "k8s-work-8"
     ip_address   = "10.20.67.11"
     mac_addr     = "bc:24:11:16:f6:dd"
     vm_id        = 911
@@ -375,8 +375,8 @@ worker_nodes = [
     ]
   },
   {
-    name         = "k8s-work-13"
-    hostname     = "k8s-work-13"
+    name         = "k8s-work-9"
+    hostname     = "k8s-work-9"
     ip_address   = "10.20.67.12"
     mac_addr     = "bc:24:11:27:e7:a3"
     vm_id        = 912
@@ -400,8 +400,8 @@ worker_nodes = [
 
   # Thor workers (3) - GPU Worker on Thor (RTX A5000)
   {
-    name         = "k8s-work-14"
-    hostname     = "k8s-work-14"
+    name         = "k8s-work-10"
+    hostname     = "k8s-work-10"
     ip_address   = "10.20.67.13"
     mac_addr     = "BC:24:11:57:87:B2"
     vm_id        = 913
@@ -423,8 +423,8 @@ worker_nodes = [
     ]
   },
   {
-    name         = "k8s-work-15"
-    hostname     = "k8s-work-15"
+    name         = "k8s-work-11"
+    hostname     = "k8s-work-11"
     ip_address   = "10.20.67.14"
     mac_addr     = "BC:24:11:7C:38:8E"
     vm_id        = 914
@@ -446,8 +446,8 @@ worker_nodes = [
     ]
   },
   {
-    name         = "k8s-work-16"
-    hostname     = "k8s-work-16"
+    name         = "k8s-work-12"
+    hostname     = "k8s-work-12"
     ip_address   = "10.20.67.15"
     mac_addr     = "bc:24:11:a9:aa:be"
     vm_id        = 915
