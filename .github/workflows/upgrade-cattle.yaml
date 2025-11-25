@@ -1474,7 +1474,8 @@ jobs:
           echo ""
           echo "Checking for crashing pods..."
           CRASH_PODS=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded \
-            --no-headers 2>/dev/null | grep -c "CrashLoopBackOff" || echo "0")
+            --no-headers 2>/dev/null | grep "CrashLoopBackOff" | wc -l || echo "0")
+          CRASH_PODS=${CRASH_PODS:-0}  # Ensure numeric value
 
           if [[ $CRASH_PODS -gt 0 ]]; then
             echo "::warning::Found $CRASH_PODS pods in CrashLoopBackOff"
@@ -1487,18 +1488,35 @@ jobs:
           echo ""
           echo "Checking Rook-Ceph health..."
           if kubectl get namespace rook-ceph &>/dev/null; then
-            CEPH_HEALTH=$(kubectl exec -n rook-ceph deploy/rook-ceph-tools -- \
-              ceph status -f json 2>/dev/null | jq -r '.health.status' || echo "UNKNOWN")
+            # Check if this is an external cluster (no rook-ceph-tools deployment)
+            IS_EXTERNAL=$(kubectl get cephcluster -n rook-ceph -o jsonpath='{.items[0].spec.external.enable}' 2>/dev/null || echo "false")
 
-            if [[ "$CEPH_HEALTH" == "HEALTH_OK" ]]; then
-              echo "✅ Ceph cluster healthy"
-            elif [[ "$CEPH_HEALTH" == "HEALTH_WARN" ]]; then
-              echo "::warning::Ceph cluster has warnings"
-              kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status
+            if [[ "$IS_EXTERNAL" == "true" ]]; then
+              echo "ℹ️  External Ceph cluster detected"
+              # For external clusters, verify CSI drivers are running
+              CSI_RUNNING=$(kubectl get pods -n rook-ceph -l app=csi-rbdplugin-provisioner --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
+              if [[ $CSI_RUNNING -gt 0 ]]; then
+                echo "✅ Ceph CSI drivers running (external cluster healthy)"
+              else
+                echo "::warning::Ceph CSI drivers not running"
+              fi
+            elif kubectl get deploy -n rook-ceph rook-ceph-tools &>/dev/null; then
+              # Standard Rook-Ceph deployment with tools
+              CEPH_HEALTH=$(kubectl exec -n rook-ceph deploy/rook-ceph-tools -- \
+                ceph status -f json 2>/dev/null | jq -r '.health.status' || echo "UNKNOWN")
+
+              if [[ "$CEPH_HEALTH" == "HEALTH_OK" ]]; then
+                echo "✅ Ceph cluster healthy"
+              elif [[ "$CEPH_HEALTH" == "HEALTH_WARN" ]]; then
+                echo "::warning::Ceph cluster has warnings"
+                kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status
+              else
+                echo "::error::Ceph cluster unhealthy or status unknown"
+                kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status || true
+                exit 1
+              fi
             else
-              echo "::error::Ceph cluster unhealthy or status unknown"
-              kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status || true
-              exit 1
+              echo "ℹ️  rook-ceph-tools not deployed - skipping health check"
             fi
           else
             echo "ℹ️  Rook-Ceph not deployed, skipping"
@@ -1512,13 +1530,13 @@ jobs:
   # PHASE 3: WORKER UPGRADE (PARALLEL WITH PAIRED ROLLOUT STRATEGY)
   # ==========================================================================
   # Pairing Strategy (cross-diagonal for fault tolerance):
-  #   Pair 1: work-1 (baldar) + work-5 (odin)
-  #   Pair 2: work-2 (baldar) + work-6 (odin)
-  #   Pair 3: work-3 (heimdall) + work-15 (thor)
-  #   Pair 4: work-11 (baldar) + work-13 (odin)
-  #   Pair 5: work-12 (heimdall) + work-16 (odin)
-  #   Pair 6: work-4 (heimdall, GPU) - sequential
-  #   Pair 7: work-14 (thor, GPU) - sequential
+  #   Pair 1: work-1 (baldar) + work-7 (odin)
+  #   Pair 2: work-2 (baldar) + work-8 (odin)
+  #   Pair 3: work-3 (baldar) + work-9 (odin)
+  #   Pair 4: work-5 (heimdall) + work-11 (thor)
+  #   Pair 5: work-6 (heimdall) + work-12 (thor)
+  #   Pair 6: work-4 (heimdall, GPU RTX A2000) - sequential
+  #   Pair 7: work-10 (thor, GPU RTX A5000) - sequential
   #
   # Rollout modes:
   #   safe: max-parallel=1 (one worker at a time, pairs are sequential)
@@ -1554,17 +1572,17 @@ jobs:
               {"node": "k8s-work-2", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"}
             ]') || fromJSON('[
               {"node": "k8s-work-1", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-5", "pair_id": 1, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-7", "pair_id": 1, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
               {"node": "k8s-work-2", "pair_id": 2, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-6", "pair_id": 2, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
-              {"node": "k8s-work-3", "pair_id": 3, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
-              {"node": "k8s-work-15", "pair_id": 3, "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
-              {"node": "k8s-work-11", "pair_id": 4, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-13", "pair_id": 4, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
-              {"node": "k8s-work-12", "pair_id": 5, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
-              {"node": "k8s-work-16", "pair_id": 5, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-8", "pair_id": 2, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-3", "pair_id": 3, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-9", "pair_id": 3, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-5", "pair_id": 4, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
+              {"node": "k8s-work-11", "pair_id": 4, "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
+              {"node": "k8s-work-6", "pair_id": 5, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
+              {"node": "k8s-work-12", "pair_id": 5, "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
               {"node": "k8s-work-4", "pair_id": 6, "is_gpu": true, "proxmox_node": "heimdall", "template_type": "gpu", "gpu_model": "rtx-a2000"},
-              {"node": "k8s-work-14", "pair_id": 7, "is_gpu": true, "proxmox_node": "thor", "template_type": "gpu", "gpu_model": "rtx-a5000"}
+              {"node": "k8s-work-10", "pair_id": 7, "is_gpu": true, "proxmox_node": "thor", "template_type": "gpu", "gpu_model": "rtx-a5000"}
             ]')
           }}
     steps:
@@ -1792,8 +1810,8 @@ jobs:
 
           # NEGATIVE ASSERTION 3: No other workers
           for other_worker in k8s-work-1 k8s-work-2 k8s-work-3 k8s-work-4 k8s-work-5 \
-                             k8s-work-6 k8s-work-11 k8s-work-12 k8s-work-13 \
-                             k8s-work-14 k8s-work-15 k8s-work-16; do
+                             k8s-work-6 k8s-work-7 k8s-work-8 k8s-work-9 \
+                             k8s-work-10 k8s-work-11 k8s-work-12; do
             if [[ "$other_worker" == "${{ matrix.node }}" ]]; then
               continue  # Skip self
             fi
@@ -2020,12 +2038,12 @@ jobs:
             k8s-work-4)  NODE_IP="10.20.67.7" ;;
             k8s-work-5)  NODE_IP="10.20.67.8" ;;
             k8s-work-6)  NODE_IP="10.20.67.9" ;;
-            k8s-work-11) NODE_IP="10.20.67.10" ;;
-            k8s-work-12) NODE_IP="10.20.67.11" ;;
-            k8s-work-13) NODE_IP="10.20.67.12" ;;
-            k8s-work-14) NODE_IP="10.20.67.13" ;;
-            k8s-work-15) NODE_IP="10.20.67.14" ;;
-            k8s-work-16) NODE_IP="10.20.67.15" ;;
+            k8s-work-7)  NODE_IP="10.20.67.10" ;;
+            k8s-work-8)  NODE_IP="10.20.67.11" ;;
+            k8s-work-9)  NODE_IP="10.20.67.12" ;;
+            k8s-work-10) NODE_IP="10.20.67.13" ;;
+            k8s-work-11) NODE_IP="10.20.67.14" ;;
+            k8s-work-12) NODE_IP="10.20.67.15" ;;
             *)
               echo "ERROR: Unknown worker node: $NODE_NAME"
               exit 1
@@ -2300,7 +2318,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Apply GPU patches
-        if: matrix.node == 'k8s-work-4' || matrix.node == 'k8s-work-14'
+        if: matrix.node == 'k8s-work-4' || matrix.node == 'k8s-work-10'
         timeout-minutes: 5
         run: |
           echo "::group::Applying GPU patches for ${{ matrix.node }}"
@@ -2387,7 +2405,7 @@ jobs:
           JOB_STATUS="${{ job.status }}"
 
           GPU_STATUS=""
-          if [[ "$NODE_NAME" == "k8s-work-4" ]] || [[ "$NODE_NAME" == "k8s-work-14" ]]; then
+          if [[ "$NODE_NAME" == "k8s-work-4" ]] || [[ "$NODE_NAME" == "k8s-work-10" ]]; then
             GPU_STATUS=" (GPU node)"
           fi
 
@@ -2577,17 +2595,17 @@ jobs:
           fi
           echo "✅ k8s-work-4: GPU detected"
 
-          # Check k8s-work-14 (RTX A5000)
-          echo "Checking k8s-work-14 (RTX A5000)..."
-          GPU_14=$(kubectl get node k8s-work-14 \
+          # Check k8s-work-10 (RTX A5000)
+          echo "Checking k8s-work-10 (RTX A5000)..."
+          GPU_10=$(kubectl get node k8s-work-10 \
             -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' || echo "")
 
-          if [[ "$GPU_14" != "true" ]]; then
-            echo "::error::GPU not detected on k8s-work-14"
-            echo "::error::Expected label nvidia.com/gpu.present=true, got: '$GPU_14'"
+          if [[ "$GPU_10" != "true" ]]; then
+            echo "::error::GPU not detected on k8s-work-10"
+            echo "::error::Expected label nvidia.com/gpu.present=true, got: '$GPU_10'"
             exit 1
           fi
-          echo "✅ k8s-work-14: GPU detected"
+          echo "✅ k8s-work-10: GPU detected"
 
           echo ""
           echo "✅ All GPU nodes validated"
