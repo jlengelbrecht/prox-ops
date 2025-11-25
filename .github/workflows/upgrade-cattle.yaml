@@ -27,7 +27,7 @@ on:
       worker_rollout_mode:
         description: 'Worker rollout strategy (safe: 1 pair at a time, standard: both in pair parallel, aggressive: multiple pairs parallel)'
         type: string
-        default: safe
+        default: standard
   workflow_dispatch:
     inputs:
       old_version:
@@ -57,7 +57,7 @@ on:
           - safe
           - standard
           - aggressive
-        default: safe
+        default: standard
 
 # Prevent concurrent cattle upgrades (Terraform state lock protection)
 # Cancel old queued runs when new run starts (prevents zombie workflow blocking)
