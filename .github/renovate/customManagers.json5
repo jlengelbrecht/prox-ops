@@ -34,6 +34,17 @@
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "siderolabs/talos",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Monitor Terraform version in GitHub Actions workflows",
+      "fileMatch": ["^\\.github/workflows/.+\\.ya?ml$"],
+      "matchStrings": [
+        "TERRAFORM_VERSION:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "hashicorp/terraform",
+      "versioningTemplate": "semver"
     }
   ]
 }
