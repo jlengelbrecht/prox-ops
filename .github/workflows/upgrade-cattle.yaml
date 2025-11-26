@@ -2163,94 +2163,6 @@ jobs:
           # Final check
           kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=30s
 
-      - name: Validate GPU functionality
-        if: matrix.is_gpu == true
-        timeout-minutes: 5
-        run: |
-          echo "::group::Validating GPU for ${{ matrix.node }}"
-
-          # Wait for NVIDIA operator to detect GPU
-          echo "Waiting for NVIDIA device plugin..."
-          RETRY_COUNT=0
-          MAX_RETRIES=30
-
-          while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
-            if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
-              echo "✅ GPU detected by Kubernetes"
-              break
-            fi
-            echo "Waiting for GPU detection (attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
-            sleep 10
-            RETRY_COUNT=$((RETRY_COUNT+1))
-          done
-
-          if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
-            echo "::error::GPU not detected after $MAX_RETRIES attempts"
-            exit 1
-          fi
-
-          # Verify GPU count
-          GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
-          echo "GPU count: $GPU_COUNT"
-
-          if [[ "$GPU_COUNT" != "1" ]]; then
-            echo "::error::Expected 1 GPU, found $GPU_COUNT"
-            exit 1
-          fi
-
-          # Verify node labels
-          echo "Checking GPU labels..."
-          kubectl get nodes ${{ matrix.node }} --show-labels | grep -q "nvidia.com/gpu.present=true" || {
-            echo "::error::GPU present label missing"
-            exit 1
-          }
-
-          # Check for GPU model label (warning only if missing)
-          kubectl get nodes ${{ matrix.node }} --show-labels | grep -q "gpu.nvidia.com/model=${{ matrix.gpu_model }}" || {
-            echo "::warning::GPU model label missing or incorrect (expected: ${{ matrix.gpu_model }})"
-          }
-
-          # Test GPU with a pod
-          echo "Testing GPU with nvidia-smi pod..."
-          cat <<EOF | kubectl apply -f -
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: gpu-test-${{ matrix.node }}
-            namespace: default
-          spec:
-            runtimeClassName: nvidia
-            nodeSelector:
-              kubernetes.io/hostname: ${{ matrix.node }}
-            containers:
-            - name: nvidia-smi
-              image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu20.04
-              command: ["nvidia-smi"]
-              resources:
-                limits:
-                  nvidia.com/gpu: 1
-            restartPolicy: Never
-          EOF
-
-          # Wait for pod completion (use Succeeded phase, not Completed condition)
-          if kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/gpu-test-${{ matrix.node }} --timeout=60s; then
-            # Show GPU info on success
-            echo "GPU test output:"
-            kubectl logs pod/gpu-test-${{ matrix.node }}
-
-            # Clean up test pod
-            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
-
-            echo "✅ GPU validation successful for ${{ matrix.node }}"
-          else
-            # Handle failure
-            POD_PHASE=$(kubectl get pod gpu-test-${{ matrix.node }} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-            echo "::error::GPU test pod did not succeed (phase: $POD_PHASE)"
-            kubectl logs pod/gpu-test-${{ matrix.node }} 2>/dev/null || echo "Could not retrieve logs"
-            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
-            exit 1
-          fi
-          echo "::endgroup::"
 
       - name: Verify Talos version
         timeout-minutes: 2
@@ -2367,6 +2279,95 @@ jobs:
           echo "Uncordoning ${{ matrix.node }}..."
           kubectl uncordon "${{ matrix.node }}"
 
+
+      - name: Validate GPU functionality
+        if: matrix.is_gpu == true
+        timeout-minutes: 5
+        run: |
+          echo "::group::Validating GPU for ${{ matrix.node }}"
+
+          # Wait for NVIDIA operator to detect GPU
+          echo "Waiting for NVIDIA device plugin..."
+          RETRY_COUNT=0
+          MAX_RETRIES=30
+
+          while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
+            if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
+              echo "✅ GPU detected by Kubernetes"
+              break
+            fi
+            echo "Waiting for GPU detection (attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
+            sleep 10
+            RETRY_COUNT=$((RETRY_COUNT+1))
+          done
+
+          if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
+            echo "::error::GPU not detected after $MAX_RETRIES attempts"
+            exit 1
+          fi
+
+          # Verify GPU count
+          GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
+          echo "GPU count: $GPU_COUNT"
+
+          if [[ "$GPU_COUNT" != "1" ]]; then
+            echo "::error::Expected 1 GPU, found $GPU_COUNT"
+            exit 1
+          fi
+
+          # Verify node labels
+          echo "Checking GPU labels..."
+          kubectl get nodes ${{ matrix.node }} --show-labels | grep -q "nvidia.com/gpu.present=true" || {
+            echo "::error::GPU present label missing"
+            exit 1
+          }
+
+          # Check for GPU model label (warning only if missing)
+          kubectl get nodes ${{ matrix.node }} --show-labels | grep -q "gpu.nvidia.com/model=${{ matrix.gpu_model }}" || {
+            echo "::warning::GPU model label missing or incorrect (expected: ${{ matrix.gpu_model }})"
+          }
+
+          # Test GPU with a pod
+          echo "Testing GPU with nvidia-smi pod..."
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: gpu-test-${{ matrix.node }}
+            namespace: default
+          spec:
+            runtimeClassName: nvidia
+            nodeSelector:
+              kubernetes.io/hostname: ${{ matrix.node }}
+            containers:
+            - name: nvidia-smi
+              image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu20.04
+              command: ["nvidia-smi"]
+              resources:
+                limits:
+                  nvidia.com/gpu: 1
+            restartPolicy: Never
+          EOF
+
+          # Wait for pod completion (use Succeeded phase, not Completed condition)
+          if kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/gpu-test-${{ matrix.node }} --timeout=60s; then
+            # Show GPU info on success
+            echo "GPU test output:"
+            kubectl logs pod/gpu-test-${{ matrix.node }}
+
+            # Clean up test pod
+            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+
+            echo "✅ GPU validation successful for ${{ matrix.node }}"
+          else
+            # Handle failure
+            POD_PHASE=$(kubectl get pod gpu-test-${{ matrix.node }} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+            echo "::error::GPU test pod did not succeed (phase: $POD_PHASE)"
+            kubectl logs pod/gpu-test-${{ matrix.node }} 2>/dev/null || echo "Could not retrieve logs"
+            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+            exit 1
+          fi
+          echo "::endgroup::"
       - name: Post-upgrade validation
         run: |
           echo "::group::Post-upgrade validation"
