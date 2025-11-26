@@ -50,7 +50,8 @@ spec:
   gatewayClassName: envoy
   infrastructure:
     annotations:
-      external-dns.alpha.kubernetes.io/hostname: external.${SECRET_DOMAIN}
+      # NOTE: external.${SECRET_DOMAIN} DNS is managed by DNSEndpoint (CNAME to tunnel)
+      # Do NOT add external-dns hostname annotation here - it conflicts with tunnel routing
       lbipam.cilium.io/ips: "10.20.67.23"
   listeners:
     - name: http
