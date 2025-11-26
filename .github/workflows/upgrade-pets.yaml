@@ -373,13 +373,22 @@ jobs:
       - name: Template rebuild summary
         if: always()
         run: |
+          STATUS="${{ job.status }}"
+          EMOJI="✅"
+          if [[ "$STATUS" != "success" ]]; then
+            EMOJI="❌"
+            STATUS="Failed"
+          else
+            STATUS="Success"
+          fi
+
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Template: ${{ matrix.template.host }}-${{ matrix.template.role }} ${{ success() && '✅' || '❌' }}
+          ### Template: ${{ matrix.template.host }}-${{ matrix.template.role }} $EMOJI
 
           **Host**: ${{ matrix.template.host }}
           **Role**: ${{ matrix.template.role }}
           **New Version**: v${{ inputs.new_version }}
-          **Status**: ${{ success() && 'Success' || 'Failed' }}
+          **Status**: $STATUS
           EOF
 
   # ==========================================================================
@@ -458,12 +467,21 @@ jobs:
       - name: Upgrade summary
         if: always()
         run: |
+          STATUS="${{ job.status }}"
+          EMOJI="✅"
+          if [[ "$STATUS" != "success" ]]; then
+            EMOJI="❌"
+            STATUS="Failed"
+          else
+            STATUS="Success"
+          fi
+
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Control Plane Node: ${{ matrix.node.name }} ${{ success() && '✅' || '❌' }}
+          ### Control Plane Node: ${{ matrix.node.name }} $EMOJI
 
           **IP**: ${{ matrix.node.ip }}
           **Target Version**: v${{ inputs.new_version }}
-          **Status**: ${{ success() && 'Success' || 'Failed' }}
+          **Status**: $STATUS
           EOF
 
   # ==========================================================================
@@ -583,17 +601,26 @@ jobs:
       - name: Upgrade summary
         if: always()
         run: |
+          STATUS="${{ job.status }}"
+          EMOJI="✅"
+          if [[ "$STATUS" != "success" ]]; then
+            EMOJI="❌"
+            STATUS="Failed"
+          else
+            STATUS="Success"
+          fi
+
           GPU_STATUS=""
           if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
             GPU_STATUS=" (GPU: ${{ matrix.node.gpu_model }})"
           fi
 
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Worker Node: ${{ matrix.node.name }}$GPU_STATUS ${{ success() && '✅' || '❌' }}
+          ### Worker Node: ${{ matrix.node.name }}$GPU_STATUS $EMOJI
 
           **IP**: ${{ matrix.node.ip }}
           **Target Version**: v${{ inputs.new_version }}
-          **Status**: ${{ success() && 'Success' || 'Failed' }}
+          **Status**: $STATUS
           EOF
 
   # ==========================================================================
@@ -672,6 +699,14 @@ jobs:
             OVERALL_EMOJI="❌"
           fi
 
+          VALIDATION_STATUS="${{ job.status }}"
+          VALIDATION_EMOJI="✅"
+          VALIDATION_TEXT="Success"
+          if [[ "$VALIDATION_STATUS" != "success" ]]; then
+            VALIDATION_EMOJI="❌"
+            VALIDATION_TEXT="Failed"
+          fi
+
           cat >> $GITHUB_STEP_SUMMARY <<EOF
           ## Pets Upgrade Complete $OVERALL_EMOJI
 
@@ -684,7 +719,7 @@ jobs:
           - ${{ needs.rebuild-templates.result == 'success' && '✅' || needs.rebuild-templates.result == 'skipped' && '⏭️' || '❌' }} Template Rebuild: ${{ needs.rebuild-templates.result }}
           - ${{ needs.upgrade-control-plane.result == 'success' && '✅' || '❌' }} Control Plane Upgrade: ${{ needs.upgrade-control-plane.result }}
           - ${{ needs.upgrade-workers.result == 'success' && '✅' || '❌' }} Worker Upgrade: ${{ needs.upgrade-workers.result }}
-          - ${{ success() && '✅' || '❌' }} Post-Upgrade Validation: ${{ success() && 'Success' || 'Failed' }}
+          - $VALIDATION_EMOJI Post-Upgrade Validation: $VALIDATION_TEXT
 
           ### Cluster State
           \`\`\`
