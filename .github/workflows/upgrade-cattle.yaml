@@ -2657,7 +2657,7 @@ jobs:
 
           # Check GitRepository connected to GitHub
           echo "Checking Flux GitRepository..."
-          GITREPO_STATUS=$(kubectl get gitrepositories.source.toolkit.fluxcd.io flux-system             -n flux-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+          GITREPO_STATUS=$(kubectl get gitrepositories.source.toolkit.fluxcd.io flux-system -n flux-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
 
           if [[ "$GITREPO_STATUS" != "True" ]]; then
             echo "::error::Flux GitRepository not connected to GitHub"
@@ -2666,20 +2666,13 @@ jobs:
             exit 1
           fi
 
-          GITREPO_URL=$(kubectl get gitrepositories.source.toolkit.fluxcd.io flux-system             -n flux-system -o jsonpath='{.spec.url}' 2>/dev/null || echo "")
+          GITREPO_URL=$(kubectl get gitrepositories.source.toolkit.fluxcd.io flux-system -n flux-system -o jsonpath='{.spec.url}' 2>/dev/null || echo "")
           echo "✅ Flux connected to: $GITREPO_URL"
 
           # Check core Kustomizations reconciling
           echo ""
           echo "Checking core Flux Kustomizations..."
-          FAILED_KUST=$(kubectl get kustomizations.kustomize.toolkit.fluxcd.io -n flux-system -o json 2>/dev/null |             jq -r '.items[] |
-              select(.metadata.name as $name | ["cluster-apps", "external-secrets-operator", "1password-connect"] | index($name)) |
-              select(
-                (.status.conditions // []) |
-                map(select(.type == "Ready" and .status != "True")) |
-                length > 0
-              ) |
-              "\(.metadata.name): \(.status.conditions[] | select(.type == "Ready") | .message // "Unknown")"' || echo "")
+          FAILED_KUST=$(kubectl get kustomizations.kustomize.toolkit.fluxcd.io -n flux-system -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name as $name | ["cluster-apps", "external-secrets-operator", "1password-connect"] | index($name)) | select((.status.conditions // []) | map(select(.type == "Ready" and .status != "True")) | length > 0) | "\(.metadata.name): \(.status.conditions[] | select(.type == "Ready") | .message // "Unknown")"' || echo "")
 
           if [[ -n "$FAILED_KUST" ]]; then
             echo "::error::Core Flux Kustomizations not reconciling:"
@@ -2688,7 +2681,7 @@ jobs:
           fi
 
           echo "✅ Core Flux Kustomizations reconciling:"
-          kubectl get kustomizations.kustomize.toolkit.fluxcd.io -n flux-system             -o custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,MESSAGE:.status.conditions[?(@.type=="Ready")].message |             grep -E "(cluster-apps|external-secrets-operator|1password-connect)" || true
+          kubectl get kustomizations.kustomize.toolkit.fluxcd.io -n flux-system -o custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,MESSAGE:.status.conditions[?(@.type=="Ready")].message | grep -E "(cluster-apps|external-secrets-operator|1password-connect)" || true
 
           echo ""
           echo "✅ Flux GitOps functional"
