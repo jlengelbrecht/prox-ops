@@ -231,8 +231,9 @@ jobs:
       - name: Taint template resource
         working-directory: terraform
         run: |
-          echo "Tainting template: ${{ matrix.template.host }}-${{ matrix.template.role }}"
-          terraform taint 'module.template_${{ matrix.template.host }}_${{ matrix.template.role }}.proxmox_virtual_environment_vm.talos_template' || true
+          MODULE_SUFFIX="${{ matrix.template.role == 'controller' && 'base' || 'gpu' }}"
+          echo "Tainting template: ${{ matrix.template.host }}-$MODULE_SUFFIX"
+          terraform taint "module.template_${{ matrix.template.host }}_${MODULE_SUFFIX}.proxmox_virtual_environment_vm.talos_template" || true
 
       - name: Rebuild template
         working-directory: terraform
@@ -240,20 +241,21 @@ jobs:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "Rebuilding template: ${{ matrix.template.host }}-${{ matrix.template.role }}"
+          MODULE_SUFFIX="${{ matrix.template.role == 'controller' && 'base' || 'gpu' }}"
+          echo "Rebuilding template: ${{ matrix.template.host }}-$MODULE_SUFFIX"
           terraform apply -auto-approve \
-            -target='module.template_${{ matrix.template.host }}_${{ matrix.template.role }}.proxmox_virtual_environment_vm.talos_template'
+            -target="module.template_${{ matrix.template.host }}_${MODULE_SUFFIX}.proxmox_virtual_environment_vm.talos_template"
 
       - name: Template rebuild summary
         if: always()
         run: |
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Template: ${{ matrix.template.host }}-${{ matrix.template.role }} ${{ job.status == 'success' && '✅' || '❌' }}
+          ### Template: ${{ matrix.template.host }}-${{ matrix.template.role }} ${{ success() && '✅' || '❌' }}
 
           **Host**: ${{ matrix.template.host }}
           **Role**: ${{ matrix.template.role }}
           **New Version**: v${{ inputs.new_version }}
-          **Status**: ${{ job.status }}
+          **Status**: ${{ success() && 'Success' || 'Failed' }}
           EOF
 
   # ==========================================================================
@@ -333,11 +335,11 @@ jobs:
         if: always()
         run: |
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Control Plane Node: ${{ matrix.node.name }} ${{ job.status == 'success' && '✅' || '❌' }}
+          ### Control Plane Node: ${{ matrix.node.name }} ${{ success() && '✅' || '❌' }}
 
           **IP**: ${{ matrix.node.ip }}
           **Target Version**: v${{ inputs.new_version }}
-          **Status**: ${{ job.status }}
+          **Status**: ${{ success() && 'Success' || 'Failed' }}
           EOF
 
   # ==========================================================================
@@ -463,11 +465,11 @@ jobs:
           fi
 
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Worker Node: ${{ matrix.node.name }}$GPU_STATUS ${{ job.status == 'success' && '✅' || '❌' }}
+          ### Worker Node: ${{ matrix.node.name }}$GPU_STATUS ${{ success() && '✅' || '❌' }}
 
           **IP**: ${{ matrix.node.ip }}
           **Target Version**: v${{ inputs.new_version }}
-          **Status**: ${{ job.status }}
+          **Status**: ${{ success() && 'Success' || 'Failed' }}
           EOF
 
   # ==========================================================================
@@ -558,7 +560,7 @@ jobs:
           - ${{ needs.rebuild-templates.result == 'success' && '✅' || needs.rebuild-templates.result == 'skipped' && '⏭️' || '❌' }} Template Rebuild: ${{ needs.rebuild-templates.result }}
           - ${{ needs.upgrade-control-plane.result == 'success' && '✅' || '❌' }} Control Plane Upgrade: ${{ needs.upgrade-control-plane.result }}
           - ${{ needs.upgrade-workers.result == 'success' && '✅' || '❌' }} Worker Upgrade: ${{ needs.upgrade-workers.result }}
-          - ${{ job.status == 'success' && '✅' || '❌' }} Post-Upgrade Validation: ${{ job.status }}
+          - ${{ success() && '✅' || '❌' }} Post-Upgrade Validation: ${{ success() && 'Success' || 'Failed' }}
 
           ### Cluster State
           \`\`\`
