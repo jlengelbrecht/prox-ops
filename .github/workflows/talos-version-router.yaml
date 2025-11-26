@@ -27,6 +27,7 @@ jobs:
       old_version: ${{ steps.detect.outputs.old_version }}
       new_version: ${{ steps.detect.outputs.new_version }}
       upgrade_type: ${{ steps.detect.outputs.upgrade_type }}
+      is_downgrade: ${{ steps.detect.outputs.is_downgrade }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -78,38 +79,88 @@ jobs:
           NEW_MINOR=$(echo $NEW_VERSION | cut -d. -f2)
           NEW_PATCH=$(echo $NEW_VERSION | cut -d. -f3)
 
-          # Determine upgrade type
-          if [[ "$OLD_MAJOR" != "$NEW_MAJOR" ]] || [[ "$OLD_MINOR" != "$NEW_MINOR" ]]; then
+          # Comprehensive version comparison with downgrade detection
+          IS_DOWNGRADE="false"
+          UPGRADE_TYPE=""
+          CHANGE_TYPE=""
+
+          if [[ "$NEW_MAJOR" -gt "$OLD_MAJOR" ]]; then
+            # Major upgrade: 1.x.x → 2.x.x
             UPGRADE_TYPE="cattle"
-            echo "Detected MAJOR/MINOR upgrade: $OLD_VERSION → $NEW_VERSION"
-            echo "Routing to: CATTLE workflow (destroy and recreate)"
-          else
+            CHANGE_TYPE="MAJOR UPGRADE"
+          elif [[ "$NEW_MAJOR" -lt "$OLD_MAJOR" ]]; then
+            # Major downgrade: 2.x.x → 1.x.x
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="MAJOR DOWNGRADE"
+            IS_DOWNGRADE="true"
+          elif [[ "$NEW_MINOR" -gt "$OLD_MINOR" ]]; then
+            # Minor upgrade: 1.11.x → 1.12.x
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="MINOR UPGRADE"
+          elif [[ "$NEW_MINOR" -lt "$OLD_MINOR" ]]; then
+            # Minor downgrade: 1.12.x → 1.11.x
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="MINOR DOWNGRADE"
+            IS_DOWNGRADE="true"
+          elif [[ "$NEW_PATCH" -gt "$OLD_PATCH" ]]; then
+            # Patch upgrade: 1.11.3 → 1.11.4
             UPGRADE_TYPE="pets"
-            echo "Detected PATCH upgrade: $OLD_VERSION → $NEW_VERSION"
-            echo "Routing to: PETS workflow (in-place upgrade)"
+            CHANGE_TYPE="PATCH UPGRADE"
+          elif [[ "$NEW_PATCH" -lt "$OLD_PATCH" ]]; then
+            # Patch downgrade: 1.11.4 → 1.11.3
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="PATCH DOWNGRADE"
+            IS_DOWNGRADE="true"
+          else
+            # This shouldn't happen (caught by version equality check above)
+            echo "::error::Unexpected version comparison result"
+            exit 1
           fi
 
           echo "upgrade_type=$UPGRADE_TYPE" >> $GITHUB_OUTPUT
+          echo "is_downgrade=$IS_DOWNGRADE" >> $GITHUB_OUTPUT
+
+          echo "Detected $CHANGE_TYPE: $OLD_VERSION → $NEW_VERSION"
+          echo "Routing to: $UPGRADE_TYPE workflow"
 
           # Output summary
           cat >> $GITHUB_STEP_SUMMARY <<EOF
           ## Talos Version Change Detected
 
+          **Change Type**: $CHANGE_TYPE
           **Old Version**: \`$OLD_VERSION\`
           **New Version**: \`$NEW_VERSION\`
-          **Upgrade Type**: \`$UPGRADE_TYPE\`
+          **Routing Decision**: \`$UPGRADE_TYPE\` workflow
 
           ### Version Analysis
           - Old: MAJOR=$OLD_MAJOR, MINOR=$OLD_MINOR, PATCH=$OLD_PATCH
           - New: MAJOR=$NEW_MAJOR, MINOR=$NEW_MINOR, PATCH=$NEW_PATCH
 
-          ### Next Step
-          $(if [[ "$UPGRADE_TYPE" == "cattle" ]]; then
-            echo "Triggering **cattle** workflow (templates + VMs)"
-          else
-            echo "Triggering **pets** workflow (in-place talosctl upgrade)"
-          fi)
+          ### Workflow Selection
           EOF
+
+          if [[ "$IS_DOWNGRADE" == "true" ]]; then
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ⚠️ **DOWNGRADE DETECTED**
+          - Downgrades require destructive rebuild via cattle workflow
+          - All nodes will be destroyed and recreated
+          - Ensure you have backups before proceeding
+          EOF
+          elif [[ "$UPGRADE_TYPE" == "cattle" ]]; then
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          **Cattle Workflow** (Destructive Rebuild)
+          - Used for major/minor upgrades
+          - Rebuilds templates and recreates all VMs
+          - Safer for significant version changes
+          EOF
+          else
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          **Pets Workflow** (In-Place Upgrade)
+          - Used for patch upgrades only
+          - Preserves existing VMs
+          - Faster with minimal disruption
+          EOF
+          fi
 
   route-to-cattle:
     name: Route to Cattle Workflow
@@ -123,13 +174,15 @@ jobs:
       test_mode: ${{ inputs.test_mode || true }}
 
   route-to-pets:
-    name: Route to Pets Workflow (Templates Only)
+    name: Route to Pets Workflow
     needs: detect-version-change
-    if: needs.detect-version-change.outputs.version_changed == 'true' && needs.detect-version-change.outputs.upgrade_type == 'pets'
-    uses: ./.github/workflows/upgrade-cattle.yaml
+    if: |
+      needs.detect-version-change.outputs.version_changed == 'true' &&
+      needs.detect-version-change.outputs.upgrade_type == 'pets' &&
+      needs.detect-version-change.outputs.is_downgrade == 'false'
+    uses: ./.github/workflows/upgrade-pets.yaml
     secrets: inherit
     with:
       old_version: ${{ needs.detect-version-change.outputs.old_version }}
       new_version: ${{ needs.detect-version-change.outputs.new_version }}
-      test_mode: false
-      templates_only: true  # Only rebuild templates, skip VM upgrades
+      worker_rollout_mode: standard
