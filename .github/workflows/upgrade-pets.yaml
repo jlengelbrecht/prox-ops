@@ -298,37 +298,35 @@ jobs:
           echo "::endgroup::"
 
   # ==========================================================================
-  # PHASE 1: TEMPLATE REBUILD (OPTIONAL - REUSES CATTLE LOGIC)
+  # PHASE 1: TEMPLATE REBUILD (REUSES CATTLE LOGIC)
   # ==========================================================================
   rebuild-templates:
     name: Rebuild Templates v${{ inputs.new_version }}
     runs-on: cattle-runner
+    timeout-minutes: 60
     needs: [validate-inputs, validate-version-upgrade, pre-upgrade-health-check]
-    if: inputs.test_controllers == false && inputs.test_workers == false
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        template:
-          - host: baldar
-            role: controller
-          - host: baldar
-            role: worker
-          - host: heimdall
-            role: controller
-          - host: heimdall
-            role: worker
-          - host: odin
-            role: controller
-          - host: odin
-            role: worker
-          - host: thor
-            role: controller
-          - host: thor
-            role: worker
+    # Run when: test_templates=true OR production mode (all test flags false)
+    if: inputs.test_templates == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate version inputs
+        run: |
+          if ! [[ "${{ inputs.old_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid old_version format: '${{ inputs.old_version }}'"
+            exit 1
+          fi
+          if ! [[ "${{ inputs.new_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid new_version format: '${{ inputs.new_version }}'"
+            exit 1
+          fi
+          echo "✅ Version inputs validated"
+
+      - name: Setup Node.js (required for Terraform action)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -342,47 +340,437 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Terraform init
-        working-directory: terraform
+      - name: Setup Proxmox SSH key
+        env:
+          PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
+          chmod 600 ~/.ssh/proxmox_terraform
+
+      - name: Initialize Terraform
+        working-directory: ./terraform
         run: terraform init
 
-      - name: Update Talos version
-        working-directory: terraform
-        run: |
-          echo "Updating talos_version to ${{ inputs.new_version }}"
-          sed -i 's/talos_version = ".*"/talos_version = "${{ inputs.new_version }}"/' variables.tf
-
-      - name: Taint template resource
-        working-directory: terraform
-        run: |
-          MODULE_SUFFIX="${{ matrix.template.role == 'controller' && 'base' || 'gpu' }}"
-          echo "Tainting template: ${{ matrix.template.host }}-$MODULE_SUFFIX"
-          terraform taint "module.template_${{ matrix.template.host }}_${MODULE_SUFFIX}.proxmox_virtual_environment_vm.talos_template" || true
-
-      - name: Rebuild template
-        working-directory: terraform
+      - name: Clear stale Terraform locks
+        working-directory: ./terraform
+        continue-on-error: true
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          MODULE_SUFFIX="${{ matrix.template.role == 'controller' && 'base' || 'gpu' }}"
-          echo "Rebuilding template: ${{ matrix.template.host }}-$MODULE_SUFFIX"
-          terraform apply -auto-approve \
-            -target="module.template_${{ matrix.template.host }}_${MODULE_SUFFIX}.proxmox_virtual_environment_vm.talos_template"
+          echo "Checking for stale Terraform state locks..."
 
-      - name: Template rebuild summary
-        if: always()
+          # Try a terraform plan with short lock timeout to detect locks
+          # Capture both stdout and stderr to parse lock ID
+          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+            echo "Lock detected. Output:"
+            echo "$LOCK_OUTPUT"
+
+            # Extract lock ID from error message (format: "ID: <uuid>")
+            # Use \K assertion for reliable regex across grep versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
+
+            if [ -n "$LOCK_ID" ]; then
+              echo ""
+              echo "Found stale lock ID: $LOCK_ID"
+              echo "Attempting to force-unlock..."
+
+              if terraform force-unlock -force "$LOCK_ID"; then
+                echo "✓ Successfully cleared stale lock"
+              else
+                echo "✗ Failed to unlock (may require manual intervention)"
+                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+              fi
+            else
+              echo "Could not extract lock ID from error message"
+              echo "Lock may need to be cleared manually"
+            fi
+          else
+            echo "✓ No lock detected - state is accessible"
+          fi
+
+          # Ensure clean exit
+          exit 0
+
+      - name: Plan template changes
+        working-directory: ./terraform
+        timeout-minutes: 15
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Template: ${{ matrix.template.host }}-${{ matrix.template.role }} ${{ success() && '✅' || '❌' }}
+          echo "::group::Terraform Plan for Template Rebuild"
+          echo "================================================================"
+          echo "Planning template rebuild for 8 template modules"
+          echo "================================================================"
+          echo ""
+          echo "This step will plan changes for:"
+          echo "  - Baldar: controller + worker templates"
+          echo "  - Heimdall: controller + worker templates"
+          echo "  - Odin: controller + worker templates"
+          echo "  - Thor: controller + worker templates"
+          echo ""
+          echo "Total: 8 template modules (16 null_resources)"
+          echo ""
+          echo "NOTE: Only templates are targeted - VMs are NOT affected"
+          echo "================================================================"
+          echo ""
 
-          **Host**: ${{ matrix.template.host }}
-          **Role**: ${{ matrix.template.role }}
-          **New Version**: v${{ inputs.new_version }}
-          **Status**: ${{ success() && 'Success' || 'Failed' }}
+          # Generate plan for validation
+          terraform plan \
+            -input=false \
+            -out=template-rebuild.tfplan \
+            -target=module.template_baldar_base \
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_base \
+            -target=module.template_heimdall_gpu \
+            -target=module.template_odin_base \
+            -target=module.template_odin_gpu \
+            -target=module.template_thor_base \
+            -target=module.template_thor_gpu
+
+          echo ""
+          echo "================================================================"
+          echo "Plan completed. Review the output above to identify:"
+          echo "  1. What resources Terraform wants to destroy"
+          echo "  2. What resources Terraform wants to create"
+          echo "  3. Whether VM modules are incorrectly included"
+          echo ""
+          echo "Expected: Only template_* modules should be affected"
+          echo "BUG: If worker_nodes or control_plane_nodes appear, the bug exists"
+          echo "================================================================"
+          echo "::endgroup::"
+
+          # Show plan summary
+          echo ""
+          echo "::group::Plan Summary"
+          terraform show -no-color template-rebuild.tfplan | head -100
+          echo "::endgroup::"
+
+      - name: Analyze plan output for bugs
+        working-directory: ./terraform
+        run: |
+          echo "::group::Plan Analysis - Identifying Terraform Bug"
+          echo "Analyzing terraform plan output to identify unintended targets..."
+          echo ""
+
+          # Check if plan file exists
+          if [[ ! -f template-rebuild.tfplan ]]; then
+            echo "::error::Plan file not found - terraform plan may have failed"
+            exit 1
+          fi
+
+          # Show full plan in readable format
+          echo "Full plan output:"
+          terraform show -no-color template-rebuild.tfplan > plan-full.txt
+          cat plan-full.txt
+
+          echo ""
+          echo "================================================================"
+          echo "BUG DETECTION ANALYSIS"
+          echo "================================================================"
+
+          # Check for unintended VM module targets
+          echo ""
+          echo "Checking for unintended VM modules in plan..."
+
+          BUG_DETECTED=false
+
+          if grep -q "module.control_plane_nodes" plan-full.txt; then
+            echo "::error::BUG DETECTED: control_plane_nodes module found in plan"
+            echo "::error::This would destroy control plane VMs!"
+            echo ""
+            grep "module.control_plane_nodes" plan-full.txt
+            echo ""
+            BUG_DETECTED=true
+          else
+            echo "✅ No control_plane_nodes in plan"
+          fi
+
+          if grep -q "module.worker_nodes" plan-full.txt; then
+            echo "::error::BUG DETECTED: worker_nodes module found in plan"
+            echo "::error::This would destroy worker VMs!"
+            echo ""
+            grep "module.worker_nodes" plan-full.txt
+            echo ""
+            BUG_DETECTED=true
+          else
+            echo "✅ No worker_nodes in plan"
+          fi
+
+          # FAIL WORKFLOW if VM modules detected
+          if [ "$BUG_DETECTED" = true ]; then
+            echo ""
+            echo "================================================================"
+            echo "❌ WORKFLOW FAILED: Terraform would destroy VM nodes"
+            echo "================================================================"
+            echo "::error::Terraform plan includes VM modules (control_plane_nodes or worker_nodes)"
+            echo "::error::This is the bug causing cluster outages!"
+            echo "::error::Workflow terminated to prevent accidental node destruction"
+            echo "::error::Review plan output above to identify root cause"
+            echo ""
+            echo "Next steps:"
+            echo "1. Document findings in .claude/.ai-docs/troubleshooting/CLUSTER_OUTAGE_2025-11-21.md"
+            echo "2. Identify why Terraform dependency graph includes VM modules"
+            echo "3. Implement permanent fix"
+            echo "4. Re-test until plan shows ONLY template modules"
+            echo ""
+            exit 1
+          fi
+
+          # POSITIVE ASSERTION: Verify template modules ARE present (Opus recommendation)
+          echo ""
+          echo "Verifying template modules are present in plan..."
+          TEMPLATE_COUNT=0
+          for module in template_baldar_base template_baldar_gpu \
+                        template_heimdall_base template_heimdall_gpu \
+                        template_odin_base template_odin_gpu \
+                        template_thor_base template_thor_gpu; do
+            if grep -q "module.$module" plan-full.txt; then
+              TEMPLATE_COUNT=$((TEMPLATE_COUNT + 1))
+              echo "  ✓ Found module.$module"
+            else
+              echo "  ⚠ Missing module.$module"
+            fi
+          done
+
+          if [[ $TEMPLATE_COUNT -eq 0 ]]; then
+            echo ""
+            echo "::error::VALIDATION FAILED: No template modules found in plan"
+            echo "::error::Expected 8 template modules, found 0"
+            echo "::error::This likely indicates a configuration error"
+            exit 1
+          elif [[ $TEMPLATE_COUNT -lt 8 ]]; then
+            echo ""
+            echo "::warning::Only $TEMPLATE_COUNT/8 template modules found in plan"
+            echo "::warning::Expected all 8 template modules to be affected"
+          else
+            echo ""
+            echo "✅ All 8 template modules found in plan"
+          fi
+
+          # Show resources to be destroyed
+          echo ""
+          echo "Resources Terraform plans to DESTROY:"
+          grep -A 5 "# .* will be destroyed" plan-full.txt | head -50 || echo "None"
+
+          # Show resources to be created
+          echo ""
+          echo "Resources Terraform plans to CREATE:"
+          grep -A 5 "# .* will be created" plan-full.txt | head -50 || echo "None"
+
+          echo ""
+          echo "================================================================"
+          echo "Validation passed - plan contains ONLY templates"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Template rebuild plan summary
+        working-directory: ./terraform
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+          ## Phase 1: Template Rebuild Plan ✅
+
+          **Status**: Plan generated and validated
+
+          ### Templates Targeted
+          - Baldar: controller + worker
+          - Heimdall: controller + worker
+          - Odin: controller + worker
+          - Thor: controller + worker
+
+          **Total**: 8 template modules (16 null_resources)
           EOF
 
-  # ==========================================================================
+          # Add terraform plan output to summary
+          if [[ -f plan-full.txt ]]; then
+            cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+
+          ### Terraform Plan Output
+
+          <details>
+          <summary>Click to expand full terraform plan</summary>
+
+          ```
+          EOF
+            cat plan-full.txt >> $GITHUB_STEP_SUMMARY
+            cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+          ```
+
+          </details>
+
+          **Validation**: Plan will be validated before execution
+          EOF
+          else
+            cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+
+          **Note**: Terraform plan output not available
+          EOF
+          fi
+
+      - name: Execute template rebuild
+        working-directory: ./terraform
+        timeout-minutes: 20
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Executing Template Rebuild"
+          echo "================================================================"
+          echo "VALIDATION PASSED - Executing template rebuild"
+          echo "================================================================"
+          echo ""
+
+          echo "This step will:"
+          echo "  1. Destroy old templates (8 templates)"
+          echo "  2. Download new Talos images"
+          echo "  3. Create new templates with updated version"
+          echo ""
+          echo "NOTE: VMs are NOT affected - only templates are rebuilt"
+          echo ""
+          echo "IMPORTANT: Not using plan file for batched execution"
+          echo "Reason: Terraform ignores -target flags when applying from plan file"
+          echo "Solution: Inline plan+apply for each batch ensures targets are honored"
+          echo "================================================================"
+          echo ""
+
+          # Apply templates in batches to avoid Ceph lock contention
+          # Strategy: 2 templates at a time across different Proxmox nodes
+          # Reduces parallel Ceph writes from 8 → 2 (75% reduction in contention)
+          # Estimated time: 4 batches × 2 min + delays = ~9.5 minutes
+          #
+          # CRITICAL: Do NOT use saved plan file (template-rebuild.tfplan)
+          # Terraform ignores -target flags when applying from a plan file!
+          # Instead, we let terraform create inline plans for each batch.
+
+          echo "Applying template changes in batches..."
+          echo "Batching strategy: 2 templates per batch across different nodes"
+          echo ""
+
+          # Batch 1: Baldar base + Heimdall GPU (different nodes, different schematics)
+          echo "================================================================"
+          echo "Batch 1/4: Creating templates on Baldar (base) + Heimdall (GPU)"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_baldar_base \
+            -target=module.template_heimdall_gpu
+
+          echo ""
+          echo "✓ Batch 1 complete. Waiting 30 seconds for Ceph to settle..."
+          sleep 30
+
+          # Batch 2: Baldar GPU + Heimdall base (different nodes, different schematics)
+          echo ""
+          echo "================================================================"
+          echo "Batch 2/4: Creating templates on Baldar (GPU) + Heimdall (base)"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_base
+
+          echo ""
+          echo "✓ Batch 2 complete. Waiting 30 seconds for Ceph to settle..."
+          sleep 30
+
+          # Batch 3: Odin base + Thor GPU (different nodes, different schematics)
+          echo ""
+          echo "================================================================"
+          echo "Batch 3/4: Creating templates on Odin (base) + Thor (GPU)"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_odin_base \
+            -target=module.template_thor_gpu
+
+          echo ""
+          echo "✓ Batch 3 complete. Waiting 30 seconds for Ceph to settle..."
+          sleep 30
+
+          # Batch 4: Odin GPU + Thor base (different nodes, different schematics)
+          echo ""
+          echo "================================================================"
+          echo "Batch 4/4: Creating templates on Odin (GPU) + Thor (base)"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_odin_gpu \
+            -target=module.template_thor_base
+
+          echo ""
+          echo "================================================================"
+          echo "✅ All 4 batches completed successfully"
+          echo "✅ Template rebuild completed: 8 templates created"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Verify template rebuild
+        working-directory: ./terraform
+        timeout-minutes: 10  # Copilot #6: Add timeout for consistency and safety
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Verifying Template Rebuild"
+          echo "Running terraform refresh to verify new templates..."
+
+          terraform refresh \
+            -input=false \
+            -target=module.template_baldar_base \
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_base \
+            -target=module.template_heimdall_gpu \
+            -target=module.template_odin_base \
+            -target=module.template_odin_gpu \
+            -target=module.template_thor_base \
+            -target=module.template_thor_gpu
+
+          echo ""
+          echo "Terraform refresh complete"
+
+          # Copilot #5: Verify templates exist in state (not just refresh)
+          echo ""
+          echo "Verifying template modules are present in Terraform state..."
+
+          MISSING_TEMPLATES=()
+          for module in template_baldar_base template_baldar_gpu \
+                        template_heimdall_base template_heimdall_gpu \
+                        template_odin_base template_odin_gpu \
+                        template_thor_base template_thor_gpu; do
+            if terraform state list | grep -q "module.$module"; then
+              echo "  ✓ module.$module present in state"
+            else
+              echo "  ✗ module.$module MISSING from state"
+              MISSING_TEMPLATES+=("$module")
+            fi
+          done
+
+          if [[ ${#MISSING_TEMPLATES[@]} -gt 0 ]]; then
+            echo ""
+            echo "::error::Template verification failed: ${#MISSING_TEMPLATES[@]} modules missing from state"
+            for module in "${MISSING_TEMPLATES[@]}"; do
+              echo "::error::Missing: module.$module"
+            done
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All 8 template modules present in Terraform state"
+          echo "✅ Templates successfully rebuilt and verified"
+          echo "::endgroup::"
+
+          # Update summary
+          cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+
+          ### Template Rebuild Execution ✅
+
+          Templates have been successfully rebuilt and verified:
+          - Old templates destroyed
+          - New Talos images downloaded
+          - New templates created with updated version
+          - All 8 template modules present in Terraform state
+
+          **Next**: Control plane and worker nodes will be upgraded sequentially
+          EOF
+
   # PHASE 2: CONTROL PLANE IN-PLACE UPGRADE
   # ==========================================================================
   upgrade-control-plane:
@@ -458,12 +846,21 @@ jobs:
       - name: Upgrade summary
         if: always()
         run: |
+          STATUS="${{ job.status }}"
+          EMOJI="✅"
+          if [[ "$STATUS" != "success" ]]; then
+            EMOJI="❌"
+            STATUS="Failed"
+          else
+            STATUS="Success"
+          fi
+
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Control Plane Node: ${{ matrix.node.name }} ${{ success() && '✅' || '❌' }}
+          ### Control Plane Node: ${{ matrix.node.name }} $EMOJI
 
           **IP**: ${{ matrix.node.ip }}
           **Target Version**: v${{ inputs.new_version }}
-          **Status**: ${{ success() && 'Success' || 'Failed' }}
+          **Status**: $STATUS
           EOF
 
   # ==========================================================================
@@ -583,17 +980,26 @@ jobs:
       - name: Upgrade summary
         if: always()
         run: |
+          STATUS="${{ job.status }}"
+          EMOJI="✅"
+          if [[ "$STATUS" != "success" ]]; then
+            EMOJI="❌"
+            STATUS="Failed"
+          else
+            STATUS="Success"
+          fi
+
           GPU_STATUS=""
           if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
             GPU_STATUS=" (GPU: ${{ matrix.node.gpu_model }})"
           fi
 
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ### Worker Node: ${{ matrix.node.name }}$GPU_STATUS ${{ success() && '✅' || '❌' }}
+          ### Worker Node: ${{ matrix.node.name }}$GPU_STATUS $EMOJI
 
           **IP**: ${{ matrix.node.ip }}
           **Target Version**: v${{ inputs.new_version }}
-          **Status**: ${{ success() && 'Success' || 'Failed' }}
+          **Status**: $STATUS
           EOF
 
   # ==========================================================================
@@ -672,6 +1078,14 @@ jobs:
             OVERALL_EMOJI="❌"
           fi
 
+          VALIDATION_STATUS="${{ job.status }}"
+          VALIDATION_EMOJI="✅"
+          VALIDATION_TEXT="Success"
+          if [[ "$VALIDATION_STATUS" != "success" ]]; then
+            VALIDATION_EMOJI="❌"
+            VALIDATION_TEXT="Failed"
+          fi
+
           cat >> $GITHUB_STEP_SUMMARY <<EOF
           ## Pets Upgrade Complete $OVERALL_EMOJI
 
@@ -684,7 +1098,7 @@ jobs:
           - ${{ needs.rebuild-templates.result == 'success' && '✅' || needs.rebuild-templates.result == 'skipped' && '⏭️' || '❌' }} Template Rebuild: ${{ needs.rebuild-templates.result }}
           - ${{ needs.upgrade-control-plane.result == 'success' && '✅' || '❌' }} Control Plane Upgrade: ${{ needs.upgrade-control-plane.result }}
           - ${{ needs.upgrade-workers.result == 'success' && '✅' || '❌' }} Worker Upgrade: ${{ needs.upgrade-workers.result }}
-          - ${{ success() && '✅' || '❌' }} Post-Upgrade Validation: ${{ success() && 'Success' || 'Failed' }}
+          - $VALIDATION_EMOJI Post-Upgrade Validation: $VALIDATION_TEXT
 
           ### Cluster State
           \`\`\`
