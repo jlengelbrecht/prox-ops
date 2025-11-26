@@ -75,6 +75,7 @@ spec:
                 originRequest:
                   http2Origin: true
                   originServerName: grafana.${SECRET_DOMAIN}
+                  noTLSVerify: true
 
               # Echo test application
               - hostname: "echo.${SECRET_DOMAIN}"
@@ -82,6 +83,7 @@ spec:
                 originRequest:
                   http2Origin: true
                   originServerName: echo.${SECRET_DOMAIN}
+                  noTLSVerify: true
 
               # Flux webhook
               - hostname: "flux-webhook.${SECRET_DOMAIN}"
@@ -89,6 +91,7 @@ spec:
                 originRequest:
                   http2Origin: true
                   originServerName: flux-webhook.${SECRET_DOMAIN}
+                  noTLSVerify: true
 
               # NOTE: Apps NOT routed through Cloudflare tunnel:
               # - Plex (DMZ): UDM SE port forward for high bandwidth streaming
