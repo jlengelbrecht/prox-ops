@@ -1,0 +1,686 @@
+---
+name: Pets Upgrade - In-Place Patch Workflow
+
+on:
+  workflow_call:
+    inputs:
+      old_version:
+        description: Previous Talos version (e.g., 1.11.3)
+        type: string
+        required: true
+      new_version:
+        description: New Talos patch version (e.g., 1.11.4)
+        type: string
+        required: true
+      skip_templates:
+        description: Skip template rebuild (use existing templates)
+        type: boolean
+        default: false
+      skip_control_plane:
+        description: Skip control plane upgrade
+        type: boolean
+        default: false
+      skip_workers:
+        description: Skip worker upgrade
+        type: boolean
+        default: false
+      worker_rollout_mode:
+        description: 'Worker rollout strategy (safe: 1 at a time, standard: 3 parallel, aggressive: all parallel)'
+        type: string
+        default: standard
+      dry_run:
+        description: Dry run mode (validation only, no actual upgrades)
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      old_version:
+        description: Previous Talos version (e.g., 1.11.3)
+        type: string
+        required: true
+      new_version:
+        description: New Talos patch version (e.g., 1.11.4)
+        type: string
+        required: true
+      skip_templates:
+        description: Skip template rebuild (use existing templates)
+        type: boolean
+        default: false
+      skip_control_plane:
+        description: Skip control plane upgrade
+        type: boolean
+        default: false
+      skip_workers:
+        description: Skip worker upgrade
+        type: boolean
+        default: false
+      worker_rollout_mode:
+        description: 'Worker rollout strategy'
+        type: choice
+        options:
+          - safe
+          - standard
+          - aggressive
+        default: standard
+      dry_run:
+        description: Dry run mode (validation only, no actual upgrades)
+        type: boolean
+        default: false
+
+# Prevent concurrent pets upgrades
+concurrency:
+  group: pets-upgrade
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-2
+  TERRAFORM_STATE_BUCKET: prox-ops-terraform-state
+  TERRAFORM_VERSION: "1.14.0"  # Managed by Renovate
+
+jobs:
+  # ==========================================================================
+  # PHASE 0: INPUT VALIDATION & VERSION GATING
+  # ==========================================================================
+  validate-inputs:
+    name: Validate Inputs & Version Gating
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      is_patch_upgrade: ${{ steps.version-check.outputs.is_patch }}
+      old_major: ${{ steps.version-check.outputs.old_major }}
+      old_minor: ${{ steps.version-check.outputs.old_minor }}
+      old_patch: ${{ steps.version-check.outputs.old_patch }}
+      new_major: ${{ steps.version-check.outputs.new_major }}
+      new_minor: ${{ steps.version-check.outputs.new_minor }}
+      new_patch: ${{ steps.version-check.outputs.new_patch }}
+    steps:
+      - name: Validate version format
+        run: |
+          if ! [[ "${{ inputs.old_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid old_version format: '${{ inputs.old_version }}'"
+            echo "::error::Expected format: X.Y.Z (e.g., 1.11.3)"
+            exit 1
+          fi
+          if ! [[ "${{ inputs.new_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid new_version format: '${{ inputs.new_version }}'"
+            echo "::error::Expected format: X.Y.Z (e.g., 1.11.4)"
+            exit 1
+          fi
+
+      - name: Version gating - patch upgrades only
+        id: version-check
+        run: |
+          OLD_VERSION="${{ inputs.old_version }}"
+          NEW_VERSION="${{ inputs.new_version }}"
+
+          # Parse versions
+          OLD_MAJOR=$(echo $OLD_VERSION | cut -d. -f1)
+          OLD_MINOR=$(echo $OLD_VERSION | cut -d. -f2)
+          OLD_PATCH=$(echo $OLD_VERSION | cut -d. -f3)
+
+          NEW_MAJOR=$(echo $NEW_VERSION | cut -d. -f1)
+          NEW_MINOR=$(echo $NEW_VERSION | cut -d. -f2)
+          NEW_PATCH=$(echo $NEW_VERSION | cut -d. -f3)
+
+          # Output for other jobs
+          echo "old_major=$OLD_MAJOR" >> $GITHUB_OUTPUT
+          echo "old_minor=$OLD_MINOR" >> $GITHUB_OUTPUT
+          echo "old_patch=$OLD_PATCH" >> $GITHUB_OUTPUT
+          echo "new_major=$NEW_MAJOR" >> $GITHUB_OUTPUT
+          echo "new_minor=$NEW_MINOR" >> $GITHUB_OUTPUT
+          echo "new_patch=$NEW_PATCH" >> $GITHUB_OUTPUT
+
+          # Version gating: only allow patch upgrades
+          if [[ "$OLD_MAJOR" != "$NEW_MAJOR" ]]; then
+            echo "::error::Major version change detected: $OLD_MAJOR → $NEW_MAJOR"
+            echo "::error::Pets workflow is for PATCH upgrades only (e.g., 1.11.3 → 1.11.4)"
+            echo "::error::For major version upgrades, use the cattle workflow"
+            exit 1
+          fi
+
+          if [[ "$OLD_MINOR" != "$NEW_MINOR" ]]; then
+            echo "::error::Minor version change detected: $OLD_MINOR → $NEW_MINOR"
+            echo "::error::Pets workflow is for PATCH upgrades only (e.g., 1.11.3 → 1.11.4)"
+            echo "::error::For minor version upgrades, use the cattle workflow"
+            exit 1
+          fi
+
+          if [[ "$OLD_PATCH" == "$NEW_PATCH" ]]; then
+            echo "::error::No version change: $OLD_VERSION → $NEW_VERSION"
+            echo "::error::Old and new versions are identical"
+            exit 1
+          fi
+
+          if [[ "$NEW_PATCH" -lt "$OLD_PATCH" ]]; then
+            echo "::error::Downgrade detected: $OLD_VERSION → $NEW_VERSION"
+            echo "::error::Downgrades are not supported by pets workflow"
+            exit 1
+          fi
+
+          echo "is_patch=true" >> $GITHUB_OUTPUT
+          echo "✅ Version gating passed: $OLD_VERSION → $NEW_VERSION is a valid patch upgrade"
+
+      - name: Validate rollout mode
+        run: |
+          MODE="${{ inputs.worker_rollout_mode }}"
+          if [[ ! "$MODE" =~ ^(safe|standard|aggressive)$ ]]; then
+            echo "::error::Invalid worker_rollout_mode: '$MODE'"
+            echo "::error::Must be one of: safe, standard, aggressive"
+            exit 1
+          fi
+
+          echo "✅ Worker rollout mode: $MODE"
+
+      - name: Dry run mode check
+        run: |
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "🔍 DRY RUN MODE ENABLED"
+            echo "::warning::This is a dry run - no actual upgrades will be performed"
+            echo "::warning::Validation and planning only"
+          fi
+
+  # ==========================================================================
+  # PHASE 1: PRE-UPGRADE HEALTH CHECK
+  # ==========================================================================
+  pre-upgrade-health-check:
+    name: Pre-Upgrade Health Check
+    runs-on: cattle-runner
+    needs: validate-inputs
+    timeout-minutes: 10
+    steps:
+      - name: Setup cluster tools
+        run: |
+          echo "Verifying kubectl access..."
+          kubectl version --client
+
+          echo "Verifying talosctl access..."
+          talosctl version --client
+
+      - name: Check cluster health
+        run: |
+          echo "::group::Checking node health"
+          kubectl get nodes
+
+          READY_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
+          TOTAL_NODES=$(kubectl get nodes --no-headers 2>/dev/null | wc -l || echo "0")
+
+          echo "Ready nodes: $READY_NODES / $TOTAL_NODES"
+
+          if [[ "$READY_NODES" -ne "$TOTAL_NODES" ]]; then
+            echo "::error::Not all nodes are Ready"
+            kubectl get nodes | grep -v " Ready "
+            exit 1
+          fi
+
+          echo "✅ All nodes are Ready"
+          echo "::endgroup::"
+
+      - name: Check current Talos version
+        run: |
+          echo "::group::Checking current Talos versions"
+
+          # Get all node IPs
+          NODE_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}')
+
+          echo "Querying Talos version from all nodes..."
+          for NODE_IP in $NODE_IPS; do
+            VERSION=$(talosctl version --nodes $NODE_IP --short 2>/dev/null | grep "Tag:" | awk '{print $2}' || echo "unknown")
+            NODE_NAME=$(kubectl get node -o wide | grep $NODE_IP | awk '{print $1}')
+            echo "  $NODE_NAME ($NODE_IP): $VERSION"
+          done
+
+          echo "::endgroup::"
+
+      - name: Check pod health
+        run: |
+          echo "::group::Checking pod health"
+
+          UNHEALTHY_PODS=$(kubectl get pods --all-namespaces --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers 2>/dev/null | wc -l || echo "0")
+
+          if [[ "$UNHEALTHY_PODS" -gt "0" ]]; then
+            echo "::warning::$UNHEALTHY_PODS unhealthy pods detected"
+            kubectl get pods --all-namespaces --field-selector=status.phase!=Running,status.phase!=Succeeded
+          else
+            echo "✅ All pods are healthy"
+          fi
+
+          echo "::endgroup::"
+
+  # ==========================================================================
+  # PHASE 1: TEMPLATE REBUILD (OPTIONAL - REUSES CATTLE LOGIC)
+  # ==========================================================================
+  rebuild-templates:
+    name: Rebuild Templates v${{ inputs.new_version }}
+    runs-on: cattle-runner
+    needs: [validate-inputs, pre-upgrade-health-check]
+    if: inputs.skip_templates == false && inputs.dry_run == false
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        template:
+          - host: baldar
+            role: controller
+          - host: baldar
+            role: worker
+          - host: heimdall
+            role: controller
+          - host: heimdall
+            role: worker
+          - host: thor
+            role: controller
+          - host: thor
+            role: worker
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+        run: |
+          echo "AWS credentials configured for region: $AWS_DEFAULT_REGION"
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Update Talos version
+        working-directory: terraform
+        run: |
+          echo "Updating talos_version to ${{ inputs.new_version }}"
+          sed -i 's/talos_version = ".*"/talos_version = "${{ inputs.new_version }}"/' variables.tf
+
+      - name: Taint template resource
+        working-directory: terraform
+        run: |
+          echo "Tainting template: ${{ matrix.template.host }}-${{ matrix.template.role }}"
+          terraform taint 'module.template_${{ matrix.template.host }}_${{ matrix.template.role }}.proxmox_virtual_environment_vm.talos_template' || true
+
+      - name: Rebuild template
+        working-directory: terraform
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "Rebuilding template: ${{ matrix.template.host }}-${{ matrix.template.role }}"
+          terraform apply -auto-approve \
+            -target='module.template_${{ matrix.template.host }}_${{ matrix.template.role }}.proxmox_virtual_environment_vm.talos_template'
+
+      - name: Template rebuild summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ### Template: ${{ matrix.template.host }}-${{ matrix.template.role }} ${{ job.status == 'success' && '✅' || '❌' }}
+
+          **Host**: ${{ matrix.template.host }}
+          **Role**: ${{ matrix.template.role }}
+          **New Version**: v${{ inputs.new_version }}
+          **Status**: ${{ job.status }}
+          EOF
+
+  # ==========================================================================
+  # PHASE 2: CONTROL PLANE IN-PLACE UPGRADE
+  # ==========================================================================
+  upgrade-control-plane:
+    name: Upgrade Control Plane (In-Place)
+    runs-on: cattle-runner
+    needs: [validate-inputs, pre-upgrade-health-check, rebuild-templates]
+    if: |
+      always() &&
+      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
+      inputs.skip_control_plane == false &&
+      inputs.dry_run == false
+    timeout-minutes: 30
+    strategy:
+      # CRITICAL: Control plane MUST upgrade sequentially to maintain etcd quorum
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        node:
+          - name: k8s-ctrl-1
+            ip: 10.20.67.1
+          - name: k8s-ctrl-2
+            ip: 10.20.67.2
+          - name: k8s-ctrl-3
+            ip: 10.20.67.3
+    steps:
+      - name: Pre-upgrade validation
+        run: |
+          echo "::group::Pre-upgrade validation for ${{ matrix.node.name }}"
+
+          # Check node is Ready
+          if ! kubectl get node ${{ matrix.node.name }} | grep -q " Ready "; then
+            echo "::error::Node ${{ matrix.node.name }} is not Ready"
+            exit 1
+          fi
+
+          # Check current version
+          CURRENT_VERSION=$(talosctl version --nodes ${{ matrix.node.ip }} --short 2>/dev/null | grep "Tag:" | awk '{print $2}' || echo "unknown")
+          echo "Current version: $CURRENT_VERSION"
+
+          echo "✅ Pre-upgrade validation passed"
+          echo "::endgroup::"
+
+      - name: In-place upgrade using talosctl
+        run: |
+          echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
+
+          echo "Starting in-place upgrade..."
+          talosctl upgrade \
+            --nodes ${{ matrix.node.ip }} \
+            --image ghcr.io/siderolabs/installer:v${{ inputs.new_version }} \
+            --preserve \
+            --wait \
+            --timeout 10m
+
+          echo "✅ Upgrade completed"
+          echo "::endgroup::"
+
+      - name: Wait for node to become Ready
+        run: |
+          echo "Waiting for ${{ matrix.node.name }} to become Ready..."
+          kubectl wait --for=condition=Ready node/${{ matrix.node.name }} --timeout=5m
+
+      - name: Verify upgraded version
+        run: |
+          echo "::group::Verifying upgraded version"
+
+          UPGRADED_VERSION=$(talosctl version --nodes ${{ matrix.node.ip }} --short 2>/dev/null | grep "Tag:" | awk '{print $2}' || echo "unknown")
+          echo "Upgraded version: $UPGRADED_VERSION"
+
+          if [[ "$UPGRADED_VERSION" != "v${{ inputs.new_version }}" ]]; then
+            echo "::error::Version mismatch after upgrade"
+            echo "::error::Expected: v${{ inputs.new_version }}, Got: $UPGRADED_VERSION"
+            exit 1
+          fi
+
+          echo "✅ Version verified: $UPGRADED_VERSION"
+          echo "::endgroup::"
+
+      - name: Upgrade summary
+        if: always()
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ### Control Plane Node: ${{ matrix.node.name }} ${{ job.status == 'success' && '✅' || '❌' }}
+
+          **IP**: ${{ matrix.node.ip }}
+          **Target Version**: v${{ inputs.new_version }}
+          **Status**: ${{ job.status }}
+          EOF
+
+  # ==========================================================================
+  # PHASE 3: WORKER IN-PLACE UPGRADE WITH ROLLOUT MODES
+  # ==========================================================================
+  upgrade-workers:
+    name: Upgrade Workers (In-Place)
+    runs-on: cattle-runner
+    needs: [validate-inputs, upgrade-control-plane]
+    if: |
+      always() &&
+      needs.upgrade-control-plane.result == 'success' &&
+      inputs.skip_workers == false &&
+      inputs.dry_run == false
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.worker_rollout_mode == 'safe' && 1 || inputs.worker_rollout_mode == 'standard' && 3 || inputs.worker_rollout_mode == 'aggressive' && 12 || 3 }}
+      matrix:
+        node:
+          - name: k8s-work-1
+            ip: 10.20.67.4
+            is_gpu: false
+          - name: k8s-work-2
+            ip: 10.20.67.5
+            is_gpu: false
+          - name: k8s-work-3
+            ip: 10.20.67.6
+            is_gpu: false
+          - name: k8s-work-4
+            ip: 10.20.67.7
+            is_gpu: true
+            gpu_model: rtx-a5000
+          - name: k8s-work-5
+            ip: 10.20.67.8
+            is_gpu: false
+          - name: k8s-work-6
+            ip: 10.20.67.9
+            is_gpu: false
+          - name: k8s-work-7
+            ip: 10.20.67.10
+            is_gpu: false
+          - name: k8s-work-8
+            ip: 10.20.67.11
+            is_gpu: false
+          - name: k8s-work-9
+            ip: 10.20.67.12
+            is_gpu: false
+          - name: k8s-work-10
+            ip: 10.20.67.13
+            is_gpu: true
+            gpu_model: rtx-a5000
+          - name: k8s-work-11
+            ip: 10.20.67.14
+            is_gpu: false
+          - name: k8s-work-12
+            ip: 10.20.67.15
+            is_gpu: false
+    steps:
+      - name: Pre-upgrade validation
+        run: |
+          echo "::group::Pre-upgrade validation for ${{ matrix.node.name }}"
+
+          # Check node is Ready
+          if ! kubectl get node ${{ matrix.node.name }} | grep -q " Ready "; then
+            echo "::error::Node ${{ matrix.node.name }} is not Ready"
+            exit 1
+          fi
+
+          # Check current version
+          CURRENT_VERSION=$(talosctl version --nodes ${{ matrix.node.ip }} --short 2>/dev/null | grep "Tag:" | awk '{print $2}' || echo "unknown")
+          echo "Current version: $CURRENT_VERSION"
+
+          if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
+            echo "GPU node detected: ${{ matrix.node.gpu_model }}"
+          fi
+
+          echo "✅ Pre-upgrade validation passed"
+          echo "::endgroup::"
+
+      - name: In-place upgrade using talosctl
+        run: |
+          echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
+
+          echo "Starting in-place upgrade..."
+          talosctl upgrade \
+            --nodes ${{ matrix.node.ip }} \
+            --image ghcr.io/siderolabs/installer:v${{ inputs.new_version }} \
+            --preserve \
+            --wait \
+            --timeout 10m
+
+          echo "✅ Upgrade completed"
+          echo "::endgroup::"
+
+      - name: Wait for node to become Ready
+        run: |
+          echo "Waiting for ${{ matrix.node.name }} to become Ready..."
+          kubectl wait --for=condition=Ready node/${{ matrix.node.name }} --timeout=5m
+
+      - name: Verify upgraded version
+        run: |
+          echo "::group::Verifying upgraded version"
+
+          UPGRADED_VERSION=$(talosctl version --nodes ${{ matrix.node.ip }} --short 2>/dev/null | grep "Tag:" | awk '{print $2}' || echo "unknown")
+          echo "Upgraded version: $UPGRADED_VERSION"
+
+          if [[ "$UPGRADED_VERSION" != "v${{ inputs.new_version }}" ]]; then
+            echo "::error::Version mismatch after upgrade"
+            echo "::error::Expected: v${{ inputs.new_version }}, Got: $UPGRADED_VERSION"
+            exit 1
+          fi
+
+          echo "✅ Version verified: $UPGRADED_VERSION"
+          echo "::endgroup::"
+
+      - name: GPU validation (GPU nodes only)
+        if: matrix.node.is_gpu == true
+        timeout-minutes: 3
+        run: |
+          echo "::group::Validating GPU for ${{ matrix.node.name }}"
+
+          # Wait for NVIDIA device plugin to detect GPU
+          echo "Waiting for NVIDIA device plugin..."
+          RETRY_COUNT=0
+          MAX_RETRIES=18
+
+          while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
+            if kubectl get nodes ${{ matrix.node.name }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
+              echo "✅ GPU detected by Kubernetes"
+              break
+            fi
+            echo "Waiting for GPU detection (attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
+            sleep 10
+            RETRY_COUNT=$((RETRY_COUNT+1))
+          done
+
+          if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
+            echo "::error::GPU not detected after $MAX_RETRIES attempts"
+            exit 1
+          fi
+
+          # Verify GPU count
+          GPU_COUNT=$(kubectl get nodes ${{ matrix.node.name }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
+          echo "GPU count: $GPU_COUNT"
+
+          if [[ "$GPU_COUNT" != "1" ]]; then
+            echo "::error::Expected 1 GPU, found $GPU_COUNT"
+            exit 1
+          fi
+
+          echo "✅ GPU validation passed"
+          echo "::endgroup::"
+
+      - name: Upgrade summary
+        if: always()
+        run: |
+          GPU_STATUS=""
+          if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
+            GPU_STATUS=" (GPU: ${{ matrix.node.gpu_model }})"
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ### Worker Node: ${{ matrix.node.name }}$GPU_STATUS ${{ job.status == 'success' && '✅' || '❌' }}
+
+          **IP**: ${{ matrix.node.ip }}
+          **Target Version**: v${{ inputs.new_version }}
+          **Status**: ${{ job.status }}
+          EOF
+
+  # ==========================================================================
+  # PHASE 4: POST-UPGRADE VALIDATION
+  # ==========================================================================
+  post-upgrade-validation:
+    name: Post-Upgrade Validation
+    runs-on: cattle-runner
+    needs: [validate-inputs, upgrade-workers]
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - name: Check all nodes upgraded
+        run: |
+          echo "::group::Verifying all nodes upgraded to v${{ inputs.new_version }}"
+
+          # Get all node IPs
+          NODE_IPS=$(kubectl get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}')
+
+          MISMATCH_COUNT=0
+          for NODE_IP in $NODE_IPS; do
+            VERSION=$(talosctl version --nodes $NODE_IP --short 2>/dev/null | grep "Tag:" | awk '{print $2}' || echo "unknown")
+            NODE_NAME=$(kubectl get node -o wide | grep $NODE_IP | awk '{print $1}')
+
+            if [[ "$VERSION" != "v${{ inputs.new_version }}" ]]; then
+              echo "::error::$NODE_NAME ($NODE_IP): $VERSION (expected v${{ inputs.new_version }})"
+              MISMATCH_COUNT=$((MISMATCH_COUNT+1))
+            else
+              echo "✅ $NODE_NAME ($NODE_IP): $VERSION"
+            fi
+          done
+
+          if [[ $MISMATCH_COUNT -gt 0 ]]; then
+            echo "::error::$MISMATCH_COUNT nodes not upgraded to expected version"
+            exit 1
+          fi
+
+          echo "✅ All nodes upgraded to v${{ inputs.new_version }}"
+          echo "::endgroup::"
+
+      - name: Final cluster health check
+        run: |
+          echo "::group::Final cluster health check"
+
+          # Check nodes
+          kubectl get nodes
+
+          READY_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
+          TOTAL_NODES=$(kubectl get nodes --no-headers 2>/dev/null | wc -l || echo "0")
+
+          echo "Ready nodes: $READY_NODES / $TOTAL_NODES"
+
+          if [[ "$READY_NODES" -ne "$TOTAL_NODES" ]]; then
+            echo "::error::Not all nodes are Ready after upgrade"
+            kubectl get nodes | grep -v " Ready "
+            exit 1
+          fi
+
+          # Check pods
+          UNHEALTHY_PODS=$(kubectl get pods --all-namespaces --field-selector=status.phase!=Running,status.phase!=Succeeded --no-headers 2>/dev/null | wc -l || echo "0")
+
+          if [[ "$UNHEALTHY_PODS" -gt "0" ]]; then
+            echo "::warning::$UNHEALTHY_PODS unhealthy pods detected"
+            kubectl get pods --all-namespaces --field-selector=status.phase!=Running,status.phase!=Succeeded
+          fi
+
+          echo "✅ Cluster health check passed"
+          echo "::endgroup::"
+
+      - name: Final summary
+        if: always()
+        run: |
+          OVERALL_STATUS="${{ needs.upgrade-workers.result }}"
+          OVERALL_EMOJI="✅"
+          if [[ "$OVERALL_STATUS" != "success" ]]; then
+            OVERALL_EMOJI="❌"
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## Pets Upgrade Complete $OVERALL_EMOJI
+
+          **Old Version**: v${{ inputs.old_version }}
+          **New Version**: v${{ inputs.new_version }}
+          **Upgrade Type**: In-place patch upgrade (preserve mode)
+          **Worker Rollout Mode**: ${{ inputs.worker_rollout_mode }}
+
+          ### Phase Results
+          - ${{ needs.rebuild-templates.result == 'success' && '✅' || needs.rebuild-templates.result == 'skipped' && '⏭️' || '❌' }} Template Rebuild: ${{ needs.rebuild-templates.result }}
+          - ${{ needs.upgrade-control-plane.result == 'success' && '✅' || '❌' }} Control Plane Upgrade: ${{ needs.upgrade-control-plane.result }}
+          - ${{ needs.upgrade-workers.result == 'success' && '✅' || '❌' }} Worker Upgrade: ${{ needs.upgrade-workers.result }}
+          - ${{ job.status == 'success' && '✅' || '❌' }} Post-Upgrade Validation: ${{ job.status }}
+
+          ### Cluster State
+          \`\`\`
+          $(kubectl get nodes)
+          \`\`\`
+          EOF
