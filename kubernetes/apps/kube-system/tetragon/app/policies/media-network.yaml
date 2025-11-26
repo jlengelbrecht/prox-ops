@@ -1,0 +1,18 @@
+---
+# Network Connection Monitoring for Media Namespace (Plex)
+# LOGGING ONLY - No enforcement
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: media-network-connections
+  namespace: media
+spec:
+  kprobes:
+    - call: "tcp_connect"
+      syscall: false
+      args:
+        - index: 0
+          type: "sock"
+      selectors:
+        - matchActions:
+            - action: Post  # LOGGING ONLY - NO enforcement
