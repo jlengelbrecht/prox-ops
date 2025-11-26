@@ -2728,6 +2728,39 @@ jobs:
             OVERALL_TITLE="Cattle Upgrade Failed"
           fi
 
+          # Capture validation results for health summary
+          GPU_STATUS="⏭️ Skipped"
+          if [[ "${{ inputs.test_workers }}" == "true" ]] || [[ "${{ inputs.test_templates }}" == "false" && "${{ inputs.test_controllers }}" == "false" && "${{ inputs.test_workers }}" == "false" ]]; then
+            GPU_4=$(kubectl get node k8s-work-4 -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null || echo "")
+            GPU_10=$(kubectl get node k8s-work-10 -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null || echo "")
+            if [[ "$GPU_4" == "true" && "$GPU_10" == "true" ]]; then
+              GPU_STATUS="✅ Both GPUs detected"
+            else
+              GPU_STATUS="❌ GPU detection failed"
+            fi
+          fi
+
+          FLUX_STATUS=$(kubectl get gitrepositories.source.toolkit.fluxcd.io flux-system -n flux-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+          if [[ "$FLUX_STATUS" == "True" ]]; then
+            FLUX_STATUS="✅ GitOps connected"
+          else
+            FLUX_STATUS="❌ GitOps issue"
+          fi
+
+          FAILED_HR_COUNT=$(kubectl get helmreleases --all-namespaces -o json 2>/dev/null | jq '[.items[] | select((.status.conditions // []) | map(select(.type == "Ready" and .status != "True")) | length > 0)] | length' || echo "0")
+          if [[ "$FAILED_HR_COUNT" == "0" ]]; then
+            HR_STATUS="✅ All healthy"
+          else
+            HR_STATUS="⚠️ $FAILED_HR_COUNT unhealthy"
+          fi
+
+          UNHEALTHY_POD_COUNT=$(kubectl get pods --all-namespaces 2>/dev/null | grep -v Running | grep -v Completed | grep -v NAMESPACE | wc -l || echo "0")
+          if [[ "$UNHEALTHY_POD_COUNT" == "0" ]]; then
+            POD_STATUS="✅ All running"
+          else
+            POD_STATUS="⚠️ $UNHEALTHY_POD_COUNT not running"
+          fi
+
           cat >> $GITHUB_STEP_SUMMARY <<EOF
           ## $OVERALL_TITLE $OVERALL_EMOJI
 
@@ -2741,9 +2774,16 @@ jobs:
           - $WORKER_EMOJI Worker Upgrade: ${{ needs.upgrade-workers.result }}
           - ${{ job.status == 'success' && '✅' || '❌' }} Validation: ${{ job.status }}
 
+          ### Health Summary
+          - **GPU Nodes**: $GPU_STATUS
+          - **Flux GitOps**: $FLUX_STATUS
+          - **HelmReleases**: $HR_STATUS
+          - **Pods**: $POD_STATUS
+
           ### Cluster State
           \`\`\`
-          $(kubectl get nodes -o wide)
+          $(kubectl get nodes -o wide | head -1)
+          $(kubectl get nodes -o wide | grep -v NAME | sort -V)
           \`\`\`
 
           $(
