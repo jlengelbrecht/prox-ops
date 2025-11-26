@@ -318,6 +318,10 @@ jobs:
             role: controller
           - host: heimdall
             role: worker
+          - host: odin
+            role: controller
+          - host: odin
+            role: worker
           - host: thor
             role: controller
           - host: thor
@@ -326,23 +330,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Configure AWS credentials
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
-        run: |
-          echo "AWS credentials configured for region: $AWS_DEFAULT_REGION"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform init
         working-directory: terraform
@@ -485,7 +483,7 @@ jobs:
       fail-fast: false
       max-parallel: ${{ inputs.worker_rollout_mode == 'safe' && 1 || inputs.worker_rollout_mode == 'standard' && 4 || inputs.worker_rollout_mode == 'aggressive' && 12 || 4 }}
       matrix:
-        node: ${{ inputs.test_workers == true && fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false}]') || fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false},{"name":"k8s-work-3","ip":"10.20.67.6","is_gpu":false},{"name":"k8s-work-4","ip":"10.20.67.7","is_gpu":true,"gpu_model":"rtx-a5000"},{"name":"k8s-work-5","ip":"10.20.67.8","is_gpu":false},{"name":"k8s-work-6","ip":"10.20.67.9","is_gpu":false},{"name":"k8s-work-7","ip":"10.20.67.10","is_gpu":false},{"name":"k8s-work-8","ip":"10.20.67.11","is_gpu":false},{"name":"k8s-work-9","ip":"10.20.67.12","is_gpu":false},{"name":"k8s-work-10","ip":"10.20.67.13","is_gpu":true,"gpu_model":"rtx-a5000"},{"name":"k8s-work-11","ip":"10.20.67.14","is_gpu":false},{"name":"k8s-work-12","ip":"10.20.67.15","is_gpu":false}]') }}
+        node: ${{ inputs.test_workers == true && fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false}]') || fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false},{"name":"k8s-work-3","ip":"10.20.67.6","is_gpu":false},{"name":"k8s-work-4","ip":"10.20.67.7","is_gpu":true,"gpu_model":"rtx-a2000"},{"name":"k8s-work-5","ip":"10.20.67.8","is_gpu":false},{"name":"k8s-work-6","ip":"10.20.67.9","is_gpu":false},{"name":"k8s-work-7","ip":"10.20.67.10","is_gpu":false},{"name":"k8s-work-8","ip":"10.20.67.11","is_gpu":false},{"name":"k8s-work-9","ip":"10.20.67.12","is_gpu":false},{"name":"k8s-work-10","ip":"10.20.67.13","is_gpu":true,"gpu_model":"rtx-a5000"},{"name":"k8s-work-11","ip":"10.20.67.14","is_gpu":false},{"name":"k8s-work-12","ip":"10.20.67.15","is_gpu":false}]') }}
     steps:
       - name: Pre-upgrade validation
         run: |
@@ -604,7 +602,7 @@ jobs:
   post-upgrade-validation:
     name: Post-Upgrade Validation
     runs-on: cattle-runner
-    needs: [validate-inputs, upgrade-workers]
+    needs: [validate-inputs, rebuild-templates, upgrade-control-plane, upgrade-workers]
     if: always()
     timeout-minutes: 10
     steps:
