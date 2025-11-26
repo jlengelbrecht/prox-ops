@@ -105,12 +105,138 @@ jobs:
           [[ $count -eq 1 ]] && echo "🧪 Test mode enabled" || echo "🚀 Full upgrade mode"
 
   # ==========================================================================
+  # CRITICAL: VERSION VALIDATION - MUST RUN EARLY
+  # ==========================================================================
+  validate-version-upgrade:
+    name: Validate Version Upgrade Path
+    runs-on: ubuntu-latest
+    needs: validate-inputs
+    timeout-minutes: 5
+    steps:
+      - name: Validate this is a patch upgrade
+        run: |
+          set -euo pipefail
+
+          OLD_VERSION="${{ inputs.old_version }}"
+          NEW_VERSION="${{ inputs.new_version }}"
+
+          echo "::group::Version Validation"
+          echo "Old version: $OLD_VERSION"
+          echo "New version: $NEW_VERSION"
+
+          # Validate semantic version format
+          if ! [[ "$OLD_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid old version format: '$OLD_VERSION'"
+            exit 1
+          fi
+
+          if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid new version format: '$NEW_VERSION'"
+            exit 1
+          fi
+
+          # Parse versions
+          OLD_MAJOR=$(echo $OLD_VERSION | cut -d. -f1)
+          OLD_MINOR=$(echo $OLD_VERSION | cut -d. -f2)
+          OLD_PATCH=$(echo $OLD_VERSION | cut -d. -f3)
+
+          NEW_MAJOR=$(echo $NEW_VERSION | cut -d. -f1)
+          NEW_MINOR=$(echo $NEW_VERSION | cut -d. -f2)
+          NEW_PATCH=$(echo $NEW_VERSION | cut -d. -f3)
+
+          # CRITICAL: Pets workflow ONLY supports patch upgrades
+          ERROR_MSG=""
+
+          # Check for downgrades
+          if [[ "$NEW_MAJOR" -lt "$OLD_MAJOR" ]] ||
+             [[ "$NEW_MAJOR" -eq "$OLD_MAJOR" && "$NEW_MINOR" -lt "$OLD_MINOR" ]] ||
+             [[ "$NEW_MAJOR" -eq "$OLD_MAJOR" && "$NEW_MINOR" -eq "$OLD_MINOR" && "$NEW_PATCH" -lt "$OLD_PATCH" ]]; then
+            ERROR_MSG="DOWNGRADE DETECTED"
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## ❌ Downgrade Blocked
+
+          **Attempted**: $OLD_VERSION → $NEW_VERSION
+          **Reason**: Talos does not support downgrades via in-place upgrade
+
+          ### Required Action
+          Use the **cattle workflow** for downgrades (destructive rebuild required)
+
+          ### Why This Failed
+          - Pets workflow uses \`talosctl upgrade\` which cannot downgrade
+          - Downgrades risk data corruption and etcd incompatibility
+          - Destructive rebuild via cattle workflow is the only safe path
+          EOF
+
+          # Check for major/minor upgrades
+          elif [[ "$NEW_MAJOR" -gt "$OLD_MAJOR" ]]; then
+            ERROR_MSG="MAJOR UPGRADE DETECTED"
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## ❌ Major Upgrade Blocked
+
+          **Attempted**: $OLD_VERSION → $NEW_VERSION (major version change)
+          **Reason**: Pets workflow only supports patch upgrades
+
+          ### Required Action
+          Use the **cattle workflow** for major upgrades
+          EOF
+
+          elif [[ "$NEW_MINOR" -gt "$OLD_MINOR" ]]; then
+            ERROR_MSG="MINOR UPGRADE DETECTED"
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## ❌ Minor Upgrade Blocked
+
+          **Attempted**: $OLD_VERSION → $NEW_VERSION (minor version change)
+          **Reason**: Pets workflow only supports patch upgrades
+
+          ### Required Action
+          Use the **cattle workflow** for minor upgrades
+          EOF
+
+          # Check for same version
+          elif [[ "$OLD_VERSION" == "$NEW_VERSION" ]]; then
+            ERROR_MSG="NO VERSION CHANGE"
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## ❌ No Version Change
+
+          **Version**: $OLD_VERSION (unchanged)
+          **Reason**: Cannot upgrade to same version
+          EOF
+
+          # Valid patch upgrade
+          elif [[ "$NEW_MAJOR" -eq "$OLD_MAJOR" && "$NEW_MINOR" -eq "$OLD_MINOR" && "$NEW_PATCH" -gt "$OLD_PATCH" ]]; then
+            echo "✅ Valid patch upgrade detected"
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## ✅ Patch Upgrade Validated
+
+          **Upgrade**: $OLD_VERSION → $NEW_VERSION
+          **Type**: Patch upgrade (safe for in-place)
+
+          ### Version Components
+          - Major: $OLD_MAJOR → $NEW_MAJOR (unchanged)
+          - Minor: $OLD_MINOR → $NEW_MINOR (unchanged)
+          - Patch: $OLD_PATCH → $NEW_PATCH (increment)
+          EOF
+          else
+            ERROR_MSG="UNEXPECTED VERSION COMPARISON"
+          fi
+
+          # Fail if not a valid patch upgrade
+          if [[ -n "$ERROR_MSG" ]]; then
+            echo "::error::$ERROR_MSG: $OLD_VERSION → $NEW_VERSION"
+            echo "::error::Pets workflow only supports patch upgrades (X.Y.Z → X.Y.Z+1)"
+            echo "::error::Use cattle workflow for major/minor upgrades or downgrades"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+  # ==========================================================================
   # PHASE 1: PRE-UPGRADE HEALTH CHECK
   # ==========================================================================
   pre-upgrade-health-check:
     name: Pre-Upgrade Health Check
     runs-on: cattle-runner
-    needs: validate-inputs
+    needs: [validate-inputs, validate-version-upgrade]
     timeout-minutes: 10
     steps:
       - name: Setup cluster tools
@@ -177,7 +303,7 @@ jobs:
   rebuild-templates:
     name: Rebuild Templates v${{ inputs.new_version }}
     runs-on: cattle-runner
-    needs: [validate-inputs, pre-upgrade-health-check]
+    needs: [validate-inputs, validate-version-upgrade, pre-upgrade-health-check]
     if: inputs.test_controllers == false && inputs.test_workers == false
     timeout-minutes: 45
     strategy:
