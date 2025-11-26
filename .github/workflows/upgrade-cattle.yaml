@@ -2231,7 +2231,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Apply GPU patches
-        if: matrix.node == 'k8s-work-4' || matrix.node == 'k8s-work-10'
+        if: matrix.is_gpu == true
         timeout-minutes: 5
         run: |
           echo "::group::Applying GPU patches for ${{ matrix.node }}"
@@ -2405,9 +2405,10 @@ jobs:
           NODE_NAME="${{ matrix.node }}"
           NEW_VERSION="${{ inputs.new_version }}"
           JOB_STATUS="${{ job.status }}"
+          IS_GPU="${{ matrix.is_gpu }}"
 
           GPU_STATUS=""
-          if [[ "$NODE_NAME" == "k8s-work-4" ]] || [[ "$NODE_NAME" == "k8s-work-10" ]]; then
+          if [[ "$IS_GPU" == "true" ]]; then
             GPU_STATUS=" (GPU node)"
           fi
 
