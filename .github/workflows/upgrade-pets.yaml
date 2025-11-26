@@ -9,29 +9,25 @@ on:
         type: string
         required: true
       new_version:
-        description: New Talos patch version (e.g., 1.11.4)
+        description: New Talos version (e.g., 1.11.4)
         type: string
         required: true
-      skip_templates:
-        description: Skip template rebuild (use existing templates)
+      test_templates:
+        description: Test only template rebuild (skip controllers & workers)
         type: boolean
         default: false
-      skip_control_plane:
-        description: Skip control plane upgrade
+      test_controllers:
+        description: Test only controllers (1 controller, skip templates & workers)
         type: boolean
         default: false
-      skip_workers:
-        description: Skip worker upgrade
+      test_workers:
+        description: Test only workers (2 workers, skip templates & controllers)
         type: boolean
         default: false
       worker_rollout_mode:
-        description: 'Worker rollout strategy (safe: 1 at a time, standard: 3 parallel, aggressive: all parallel)'
+        description: 'Worker rollout strategy (safe: 1 at a time, standard: 4 parallel, aggressive: all parallel)'
         type: string
         default: standard
-      dry_run:
-        description: Dry run mode (validation only, no actual upgrades)
-        type: boolean
-        default: false
   workflow_dispatch:
     inputs:
       old_version:
@@ -39,33 +35,29 @@ on:
         type: string
         required: true
       new_version:
-        description: New Talos patch version (e.g., 1.11.4)
+        description: New Talos version (e.g., 1.11.4)
         type: string
         required: true
-      skip_templates:
-        description: Skip template rebuild (use existing templates)
+      test_templates:
+        description: Test only template rebuild (skip controllers & workers)
         type: boolean
         default: false
-      skip_control_plane:
-        description: Skip control plane upgrade
+      test_controllers:
+        description: Test only controllers (1 controller, skip templates & workers)
         type: boolean
         default: false
-      skip_workers:
-        description: Skip worker upgrade
+      test_workers:
+        description: Test only workers (2 workers, skip templates & controllers)
         type: boolean
         default: false
       worker_rollout_mode:
-        description: 'Worker rollout strategy'
+        description: 'Worker rollout strategy (safe: 1 at a time, standard: 4 parallel, aggressive: all parallel)'
         type: choice
         options:
           - safe
           - standard
           - aggressive
         default: standard
-      dry_run:
-        description: Dry run mode (validation only, no actual upgrades)
-        type: boolean
-        default: false
 
 # Prevent concurrent pets upgrades
 concurrency:
@@ -79,89 +71,29 @@ env:
 
 jobs:
   # ==========================================================================
-  # PHASE 0: INPUT VALIDATION & VERSION GATING
+  # INPUT VALIDATION: Ensure test flags are mutually exclusive
   # ==========================================================================
   validate-inputs:
-    name: Validate Inputs & Version Gating
+    name: Validate Input Flags
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    outputs:
-      is_patch_upgrade: ${{ steps.version-check.outputs.is_patch }}
-      old_major: ${{ steps.version-check.outputs.old_major }}
-      old_minor: ${{ steps.version-check.outputs.old_minor }}
-      old_patch: ${{ steps.version-check.outputs.old_patch }}
-      new_major: ${{ steps.version-check.outputs.new_major }}
-      new_minor: ${{ steps.version-check.outputs.new_minor }}
-      new_patch: ${{ steps.version-check.outputs.new_patch }}
     steps:
-      - name: Validate version format
+      - name: Validate test flags are mutually exclusive
         run: |
-          if ! [[ "${{ inputs.old_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid old_version format: '${{ inputs.old_version }}'"
-            echo "::error::Expected format: X.Y.Z (e.g., 1.11.3)"
-            exit 1
-          fi
-          if ! [[ "${{ inputs.new_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Invalid new_version format: '${{ inputs.new_version }}'"
-            echo "::error::Expected format: X.Y.Z (e.g., 1.11.4)"
-            exit 1
-          fi
+          count=0
+          [[ "${{ inputs.test_templates }}" == "true" ]] && count=$((count + 1))
+          [[ "${{ inputs.test_controllers }}" == "true" ]] && count=$((count + 1))
+          [[ "${{ inputs.test_workers }}" == "true" ]] && count=$((count + 1))
 
-      - name: Version gating - patch upgrades only
-        id: version-check
-        run: |
-          OLD_VERSION="${{ inputs.old_version }}"
-          NEW_VERSION="${{ inputs.new_version }}"
-
-          # Parse versions
-          OLD_MAJOR=$(echo $OLD_VERSION | cut -d. -f1)
-          OLD_MINOR=$(echo $OLD_VERSION | cut -d. -f2)
-          OLD_PATCH=$(echo $OLD_VERSION | cut -d. -f3)
-
-          NEW_MAJOR=$(echo $NEW_VERSION | cut -d. -f1)
-          NEW_MINOR=$(echo $NEW_VERSION | cut -d. -f2)
-          NEW_PATCH=$(echo $NEW_VERSION | cut -d. -f3)
-
-          # Output for other jobs
-          echo "old_major=$OLD_MAJOR" >> $GITHUB_OUTPUT
-          echo "old_minor=$OLD_MINOR" >> $GITHUB_OUTPUT
-          echo "old_patch=$OLD_PATCH" >> $GITHUB_OUTPUT
-          echo "new_major=$NEW_MAJOR" >> $GITHUB_OUTPUT
-          echo "new_minor=$NEW_MINOR" >> $GITHUB_OUTPUT
-          echo "new_patch=$NEW_PATCH" >> $GITHUB_OUTPUT
-
-          # Version gating: only allow patch upgrades
-          if [[ "$OLD_MAJOR" != "$NEW_MAJOR" ]]; then
-            echo "::error::Major version change detected: $OLD_MAJOR → $NEW_MAJOR"
-            echo "::error::Pets workflow is for PATCH upgrades only (e.g., 1.11.3 → 1.11.4)"
-            echo "::error::For major version upgrades, use the cattle workflow"
+          if [[ $count -gt 1 ]]; then
+            echo "::error::Multiple test flags set. Only one test flag can be true at a time."
+            echo "::error::test_templates=${{ inputs.test_templates }}"
+            echo "::error::test_controllers=${{ inputs.test_controllers }}"
+            echo "::error::test_workers=${{ inputs.test_workers }}"
             exit 1
           fi
 
-          if [[ "$OLD_MINOR" != "$NEW_MINOR" ]]; then
-            echo "::error::Minor version change detected: $OLD_MINOR → $NEW_MINOR"
-            echo "::error::Pets workflow is for PATCH upgrades only (e.g., 1.11.3 → 1.11.4)"
-            echo "::error::For minor version upgrades, use the cattle workflow"
-            exit 1
-          fi
-
-          if [[ "$OLD_PATCH" == "$NEW_PATCH" ]]; then
-            echo "::error::No version change: $OLD_VERSION → $NEW_VERSION"
-            echo "::error::Old and new versions are identical"
-            exit 1
-          fi
-
-          if [[ "$NEW_PATCH" -lt "$OLD_PATCH" ]]; then
-            echo "::error::Downgrade detected: $OLD_VERSION → $NEW_VERSION"
-            echo "::error::Downgrades are not supported by pets workflow"
-            exit 1
-          fi
-
-          echo "is_patch=true" >> $GITHUB_OUTPUT
-          echo "✅ Version gating passed: $OLD_VERSION → $NEW_VERSION is a valid patch upgrade"
-
-      - name: Validate rollout mode
-        run: |
+          # Validate worker_rollout_mode parameter (security requirement)
           MODE="${{ inputs.worker_rollout_mode }}"
           if [[ ! "$MODE" =~ ^(safe|standard|aggressive)$ ]]; then
             echo "::error::Invalid worker_rollout_mode: '$MODE'"
@@ -169,15 +101,8 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Worker rollout mode: $MODE"
-
-      - name: Dry run mode check
-        run: |
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
-            echo "🔍 DRY RUN MODE ENABLED"
-            echo "::warning::This is a dry run - no actual upgrades will be performed"
-            echo "::warning::Validation and planning only"
-          fi
+          echo "✅ Input validation passed"
+          [[ $count -eq 1 ]] && echo "🧪 Test mode enabled" || echo "🚀 Full upgrade mode"
 
   # ==========================================================================
   # PHASE 1: PRE-UPGRADE HEALTH CHECK
@@ -253,7 +178,7 @@ jobs:
     name: Rebuild Templates v${{ inputs.new_version }}
     runs-on: cattle-runner
     needs: [validate-inputs, pre-upgrade-health-check]
-    if: inputs.skip_templates == false && inputs.dry_run == false
+    if: inputs.test_controllers == false && inputs.test_workers == false
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -341,21 +266,15 @@ jobs:
     if: |
       always() &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
-      inputs.skip_control_plane == false &&
-      inputs.dry_run == false
+      inputs.test_templates == false &&
+      inputs.test_workers == false
     timeout-minutes: 30
     strategy:
       # CRITICAL: Control plane MUST upgrade sequentially to maintain etcd quorum
       max-parallel: 1
       fail-fast: true
       matrix:
-        node:
-          - name: k8s-ctrl-1
-            ip: 10.20.67.1
-          - name: k8s-ctrl-2
-            ip: 10.20.67.2
-          - name: k8s-ctrl-3
-            ip: 10.20.67.3
+        node: ${{ inputs.test_controllers == true && fromJSON('[{"name":"k8s-ctrl-3","ip":"10.20.67.3"}]') || fromJSON('[{"name":"k8s-ctrl-1","ip":"10.20.67.1"},{"name":"k8s-ctrl-2","ip":"10.20.67.2"},{"name":"k8s-ctrl-3","ip":"10.20.67.3"}]') }}
     steps:
       - name: Pre-upgrade validation
         run: |
@@ -430,53 +349,15 @@ jobs:
     needs: [validate-inputs, upgrade-control-plane]
     if: |
       always() &&
-      needs.upgrade-control-plane.result == 'success' &&
-      inputs.skip_workers == false &&
-      inputs.dry_run == false
+      (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped') &&
+      inputs.test_templates == false &&
+      inputs.test_controllers == false
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      max-parallel: ${{ inputs.worker_rollout_mode == 'safe' && 1 || inputs.worker_rollout_mode == 'standard' && 3 || inputs.worker_rollout_mode == 'aggressive' && 12 || 3 }}
+      max-parallel: ${{ inputs.worker_rollout_mode == 'safe' && 1 || inputs.worker_rollout_mode == 'standard' && 4 || inputs.worker_rollout_mode == 'aggressive' && 12 || 4 }}
       matrix:
-        node:
-          - name: k8s-work-1
-            ip: 10.20.67.4
-            is_gpu: false
-          - name: k8s-work-2
-            ip: 10.20.67.5
-            is_gpu: false
-          - name: k8s-work-3
-            ip: 10.20.67.6
-            is_gpu: false
-          - name: k8s-work-4
-            ip: 10.20.67.7
-            is_gpu: true
-            gpu_model: rtx-a5000
-          - name: k8s-work-5
-            ip: 10.20.67.8
-            is_gpu: false
-          - name: k8s-work-6
-            ip: 10.20.67.9
-            is_gpu: false
-          - name: k8s-work-7
-            ip: 10.20.67.10
-            is_gpu: false
-          - name: k8s-work-8
-            ip: 10.20.67.11
-            is_gpu: false
-          - name: k8s-work-9
-            ip: 10.20.67.12
-            is_gpu: false
-          - name: k8s-work-10
-            ip: 10.20.67.13
-            is_gpu: true
-            gpu_model: rtx-a5000
-          - name: k8s-work-11
-            ip: 10.20.67.14
-            is_gpu: false
-          - name: k8s-work-12
-            ip: 10.20.67.15
-            is_gpu: false
+        node: ${{ inputs.test_workers == true && fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false}]') || fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false},{"name":"k8s-work-3","ip":"10.20.67.6","is_gpu":false},{"name":"k8s-work-4","ip":"10.20.67.7","is_gpu":true,"gpu_model":"rtx-a5000"},{"name":"k8s-work-5","ip":"10.20.67.8","is_gpu":false},{"name":"k8s-work-6","ip":"10.20.67.9","is_gpu":false},{"name":"k8s-work-7","ip":"10.20.67.10","is_gpu":false},{"name":"k8s-work-8","ip":"10.20.67.11","is_gpu":false},{"name":"k8s-work-9","ip":"10.20.67.12","is_gpu":false},{"name":"k8s-work-10","ip":"10.20.67.13","is_gpu":true,"gpu_model":"rtx-a5000"},{"name":"k8s-work-11","ip":"10.20.67.14","is_gpu":false},{"name":"k8s-work-12","ip":"10.20.67.15","is_gpu":false}]') }}
     steps:
       - name: Pre-upgrade validation
         run: |
