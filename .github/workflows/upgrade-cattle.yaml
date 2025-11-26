@@ -1378,9 +1378,9 @@ jobs:
         timeout-minutes: 1
         run: |
           echo "Allowing Kubernetes time to rebalance workloads..."
-          echo "Waiting 30 seconds for scheduler to redistribute pods..."
+          echo "Waiting 20 seconds for scheduler to redistribute pods..."
 
-          sleep 30
+          sleep 20
 
           # Show pod distribution after rebalancing
           echo ""
@@ -2289,7 +2289,7 @@ jobs:
           # Wait for NVIDIA operator to detect GPU
           echo "Waiting for NVIDIA device plugin..."
           RETRY_COUNT=0
-          MAX_RETRIES=18
+          MAX_RETRIES=21
 
           while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
             if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
