@@ -14,16 +14,18 @@ spec:
         name: grafana
         namespace: observability
   interval: 1h
-  timeout: 15m
+  timeout: 20m
   install:
+    crds: CreateReplace
     remediation:
       retries: 3
-    crds: CreateReplace
   upgrade:
+    crds: CreateReplace
     cleanupOnFail: true
     remediation:
       retries: 3
-    crds: CreateReplace
+      # Use uninstall strategy when rollback target is missing
+      strategy: uninstall
   values:
     # Deployment mode - single binary for homelab simplicity
     deploymentMode: SingleBinary
