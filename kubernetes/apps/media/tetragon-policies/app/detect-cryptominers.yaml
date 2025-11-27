@@ -1,0 +1,58 @@
+---
+# Detect Known Cryptominer Execution in Media Namespace
+# OBSERVE-ONLY MODE - Will LOG but NOT kill processes
+#
+# Phase 1: Observe for 48 hours to validate no false positives
+# Phase 2: Enable enforcement (change Post to Sigkill) after validation
+#
+# Safe to eventually enforce because:
+# - Plex should NEVER execute cryptominers
+# - These are specific, known-malicious binary names
+# - Container runtime is excluded
+# - Scope limited to media namespace only
+#
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: detect-cryptominers
+  namespace: media
+spec:
+  kprobes:
+    - call: "sys_execve"
+      syscall: true
+      args:
+        - index: 0
+          type: "string"
+      selectors:
+        # Match known cryptominer binaries by name
+        - matchArgs:
+            - index: 0
+              operator: "Postfix"
+              values:
+                # Common cryptominers
+                - "/xmrig"
+                - "/xmr-stak"
+                - "/minerd"
+                - "/cpuminer"
+                - "/cgminer"
+                - "/bfgminer"
+                - "/ethminer"
+                - "/phoenix"
+                - "/t-rex"
+                - "/gminer"
+                - "/nbminer"
+                - "/lolminer"
+          # Exclude container runtime (safety)
+          matchBinaries:
+            - operator: "NotIn"
+              values:
+                - "/usr/bin/containerd"
+                - "/usr/bin/containerd-shim"
+                - "/usr/bin/containerd-shim-runc-v2"
+                - "/usr/bin/runc"
+                - "/pause"
+          matchActions:
+            # PHASE 1: Observe only (current)
+            - action: Post
+            # PHASE 2: Enable enforcement after 48h validation
+            # - action: Sigkill
