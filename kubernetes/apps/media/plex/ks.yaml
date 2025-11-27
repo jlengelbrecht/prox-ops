@@ -5,6 +5,8 @@ metadata:
   name: plex
   namespace: flux-system
 spec:
+  dependsOn:
+    - name: plex-storage  # Wait for storage to be ready
   interval: 1h
   path: ./kubernetes/apps/media/plex/app
   postBuild:
