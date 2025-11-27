@@ -1,0 +1,28 @@
+---
+# Sensitive File Access Monitoring for Media Namespace (Plex)
+# LOGGING ONLY - No enforcement
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: media-sensitive-file-access
+  namespace: media
+spec:
+  kprobes:
+    - call: "fd_install"
+      syscall: false
+      args:
+        - index: 0
+          type: "int"
+        - index: 1
+          type: "file"
+      selectors:
+        - matchArgs:
+            - index: 1
+              operator: "Prefix"
+              values:
+                - "/etc/passwd"
+                - "/etc/shadow"
+                - "/var/run/secrets/kubernetes.io/serviceaccount/"
+                - "/proc/1/"
+          matchActions:
+            - action: Post  # LOGGING ONLY - NO enforcement
