@@ -1,11 +1,12 @@
 ---
-# Sensitive File Access Monitoring for Media Namespace (Plex)
+# Container Escape Detection
+# CRITICAL: Detects attempts to break out of containers
+# Talos has shipped vulnerable runc (CVE-2024-21626) - this is a real threat
 # LOGGING ONLY - No enforcement
 apiVersion: cilium.io/v1alpha1
-kind: TracingPolicyNamespaced
+kind: TracingPolicy
 metadata:
-  name: media-sensitive-file-access
-  namespace: media
+  name: container-escape-detection
 spec:
   kprobes:
     - call: "fd_install"
@@ -20,9 +21,10 @@ spec:
             - index: 1
               operator: "Prefix"
               values:
-                - "/etc/passwd"
-                - "/etc/shadow"
-                - "/var/run/secrets/kubernetes.io/serviceaccount/"
+                # Host init process - container escape indicator
                 - "/proc/1/"
+                # Container runtime sockets - full node compromise if accessed
+                - "/run/containerd/"
+                - "/var/run/containerd/"
           matchActions:
             - action: Post  # LOGGING ONLY - NO enforcement
