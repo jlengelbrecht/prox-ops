@@ -4,6 +4,11 @@ kind: PersistentVolumeClaim
 metadata:
   name: plex-media
   namespace: media
+  labels:
+    app.kubernetes.io/name: plex
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   accessModes:
     - ReadWriteMany
