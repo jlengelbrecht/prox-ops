@@ -1,0 +1,32 @@
+# =============================================================================
+# OCI Terraform Configuration Example
+# =============================================================================
+# Copy this to terraform.tfvars and fill in your values
+
+# OCI Configuration
+oci_config_profile = "DEFAULT"
+oci_region         = "us-ashburn-1"
+compartment_id     = "ocid1.tenancy.oc1..aaaaaaaa..."  # Your tenancy/compartment OCID
+
+# SSH Key (paste your public key)
+ssh_public_key = "ssh-rsa AAAA..."
+
+# Restrict SSH to your home IP for security
+ssh_allowed_cidrs = ["YOUR_HOME_IP/32"]
+
+# Plex Proxy Configuration
+plex_proxy_enabled = true
+plex_proxy_name    = "plex-proxy"
+
+# K8s WireGuard public key (set after deploying K8s WireGuard gateway)
+# Leave empty for initial deployment, then update after K8s side is configured
+k8s_wg_public_key = ""
+
+# Plex LoadBalancer IP in K8s cluster
+plex_loadbalancer_ip = "10.20.81.100"
+
+# Tags
+freeform_tags = {
+  project   = "prox-ops"
+  managedby = "terraform"
+}

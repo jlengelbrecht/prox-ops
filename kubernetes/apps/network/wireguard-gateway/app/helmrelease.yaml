@@ -1,0 +1,131 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: wireguard-gateway
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: wireguard-gateway
+  interval: 1h
+  values:
+    controllers:
+      wireguard-gateway:
+        containers:
+          app:
+            image:
+              repository: lscr.io/linuxserver/wireguard
+              tag: 1.0.20210914
+            env:
+              # Container config
+              - name: PUID
+                value: "0"
+              - name: PGID
+                value: "0"
+              - name: TZ
+                value: "America/New_York"
+              # WireGuard config (generated at runtime)
+              - name: INTERFACE
+                value: "wg0"
+              - name: SERVERURL
+                value: "auto"
+              - name: SERVERPORT
+                value: "51820"
+              - name: PEERS
+                value: ""  # Not a server, just a client
+              - name: PEERDNS
+                value: "auto"
+              - name: INTERNAL_SUBNET
+                value: "10.200.200.0/24"
+              - name: ALLOWEDIPS
+                value: "0.0.0.0/0"
+              - name: PERSISTENTKEEPALIVE_PEERS
+                value: ""
+
+            # Security Context
+            securityContext:
+              capabilities:
+                drop: [ALL]
+                add: [NET_ADMIN, SYS_MODULE]
+              seccompProfile:
+                type: RuntimeDefault
+              readOnlyRootFilesystem: false
+              runAsNonRoot: false
+              runAsUser: 0
+              allowPrivilegeEscalation: true  # Required for NET_ADMIN
+
+            # Resources
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 200m
+                memory: 128Mi
+
+            # Probes
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - /bin/sh
+                      - -c
+                      - wg show wg0 2>/dev/null | grep -q "interface"
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - /bin/sh
+                      - -c
+                      - wg show wg0 2>/dev/null | grep -q "interface"
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+
+    # Service - not needed for client-only mode but useful for debugging
+    service:
+      app:
+        controller: wireguard-gateway
+        ports:
+          wireguard:
+            port: 51820
+            protocol: UDP
+
+    # Persistence
+    persistence:
+      # TUN device for WireGuard
+      dev-tun:
+        enabled: true
+        type: hostPath
+        hostPath: /dev/net/tun
+        hostPathType: CharDevice
+        globalMounts:
+          - path: /dev/net/tun
+      # Config from encrypted secret
+      config:
+        enabled: true
+        type: secret
+        name: wireguard-gateway-config
+        globalMounts:
+          - path: /config/wg_confs/wg0.conf
+            subPath: wg0.conf
+            readOnly: true
+
+    # Enable IP forwarding
+    defaultPodOptions:
+      securityContext:
+        sysctls:
+          - name: net.ipv4.ip_forward
+            value: "1"
+          - name: net.ipv4.conf.all.src_valid_mark
+            value: "1"
