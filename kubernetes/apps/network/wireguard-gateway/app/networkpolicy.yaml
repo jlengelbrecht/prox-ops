@@ -19,10 +19,14 @@ spec:
         - protocol: UDP
           port: 51820
   egress:
-    # Allow traffic to Plex LoadBalancer only
+    # Allow traffic to Plex pod (via namespace+pod selector for reliability)
     - to:
-        - ipBlock:
-            cidr: 10.20.81.100/32  # Plex LoadBalancer IP
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: media
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: plex
       ports:
         - protocol: TCP
           port: 32400
