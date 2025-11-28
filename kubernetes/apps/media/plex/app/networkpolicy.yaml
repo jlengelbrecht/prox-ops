@@ -48,10 +48,7 @@ spec:
             io.kubernetes.pod.namespace: monitoring
             app.kubernetes.io/name: prometheus
   egress:
-    # Allow internet access for Plex.tv metadata and updates
-    - toEntities:
-        - world
-    # Allow DNS queries
+    # Allow DNS queries (required for FQDN resolution)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kube-system
@@ -62,12 +59,29 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow Plex.tv services
+    # Allow Plex.tv services (authentication, metadata, updates)
     - toFQDNs:
         - matchName: "plex.tv"
         - matchPattern: "*.plex.tv"
         - matchPattern: "*.plex.direct"
-    # Allow NFS server access (read-write media library for management)
+        - matchName: "download.plex.tv"
+    # Allow metadata providers (posters, artwork, episode info)
+    - toFQDNs:
+        - matchName: "thetvdb.com"
+        - matchPattern: "*.thetvdb.com"
+        - matchName: "themoviedb.org"
+        - matchPattern: "*.themoviedb.org"
+        - matchName: "fanart.tv"
+        - matchPattern: "*.fanart.tv"
+        - matchName: "musicbrainz.org"
+        - matchPattern: "*.musicbrainz.org"
+        - matchName: "last.fm"
+        - matchPattern: "*.last.fm"
+    # Allow subtitle providers
+    - toFQDNs:
+        - matchName: "opensubtitles.org"
+        - matchPattern: "*.opensubtitles.org"
+    # Allow NFS server access (read-write media library)
     - toCIDR:
         - 10.20.66.11/32
       toPorts:
