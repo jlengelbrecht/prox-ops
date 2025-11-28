@@ -1,0 +1,196 @@
+---
+name: OCI Plex Proxy - Deploy/Recreate
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        type: choice
+        options:
+          - deploy
+          - destroy
+          - plan-only
+        default: plan-only
+      availability_domain:
+        description: 'Availability Domain index (0=AD-1, 1=AD-2, 2=AD-3)'
+        type: choice
+        options:
+          - '0'
+          - '1'
+          - '2'
+        default: '0'
+
+# Prevent concurrent operations (Terraform state lock protection)
+concurrency:
+  group: oci-plex-proxy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  TERRAFORM_VERSION: "1.14.0"
+  WORKING_DIR: ./terraform/oci
+
+jobs:
+  terraform:
+    name: ${{ inputs.action }} OCI Plex Proxy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials (for S3 backend)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install WireGuard tools
+        run: |
+          # Required for terraform module to generate WireGuard keys via local-exec
+          sudo apt-get update
+          sudo apt-get install -y wireguard-tools
+
+      - name: Initialize Terraform
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init
+
+      - name: Clear stale Terraform locks
+        working-directory: ${{ env.WORKING_DIR }}
+        continue-on-error: true
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          # Security: Restrict SSH and WireGuard to home IP
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+        run: |
+          echo "Checking for stale Terraform state locks..."
+          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
+            if [ -n "$LOCK_ID" ]; then
+              echo "Found stale lock: $LOCK_ID"
+              terraform force-unlock -force "$LOCK_ID" || true
+            fi
+          fi
+
+      - name: Terraform Plan
+        if: inputs.action != 'destroy'
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+        run: |
+          echo "::group::Terraform Plan"
+          terraform plan -input=false -out=tfplan
+          echo "::endgroup::"
+
+      - name: Terraform Plan Destroy
+        if: inputs.action == 'destroy'
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+        run: |
+          echo "::group::Terraform Plan Destroy"
+          terraform plan -destroy -input=false -out=tfplan
+          echo "::endgroup::"
+
+      - name: Terraform Apply
+        if: inputs.action == 'deploy' || inputs.action == 'destroy'
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+        run: |
+          echo "::group::Terraform Apply"
+          terraform apply -input=false tfplan
+          echo "::endgroup::"
+
+      - name: Get Outputs
+        if: inputs.action == 'deploy'
+        id: outputs
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+        run: |
+          echo "::group::Deployment Outputs"
+          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          PUBLIC_IP=$(terraform output -raw plex_proxy_public_ip 2>/dev/null || echo "N/A")
+          WG_ENDPOINT=$(terraform output -raw plex_proxy_wireguard_endpoint 2>/dev/null || echo "N/A")
+          VPS_WG_PUB=$(terraform output -raw vps_wireguard_public_key 2>/dev/null || echo "N/A")
+
+          echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Public IP | \`$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| WireGuard Endpoint | \`$WG_ENDPOINT\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| VPS WG Public Key | \`$VPS_WG_PUB\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Update K8s WireGuard gateway secret with VPS WG public key" >> $GITHUB_STEP_SUMMARY
+          echo "2. SSH: \`ssh ubuntu@$PUBLIC_IP\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Plex URL: \`http://$PUBLIC_IP:32400\`" >> $GITHUB_STEP_SUMMARY
+          echo "::endgroup::"
+
+      - name: Destroy Summary
+        if: inputs.action == 'destroy'
+        run: |
+          echo "## OCI Plex Proxy Destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The OCI Plex Proxy VM has been destroyed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To redeploy, run this workflow with action: **deploy**" >> $GITHUB_STEP_SUMMARY
