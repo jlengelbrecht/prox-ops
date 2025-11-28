@@ -38,20 +38,21 @@ write_files:
       PrivateKey = ${wg_private_key}
 
 %{ if wg_forward_port > 0 ~}
-      # NAT rules for port forwarding
-      PostUp = iptables -t nat -A PREROUTING -i eth0 -p tcp --dport ${wg_forward_port} -j DNAT --to-destination ${wg_forward_target_ip}:${wg_forward_port}
-      PostUp = iptables -t nat -A PREROUTING -i eth0 -p udp --dport ${wg_forward_port} -j DNAT --to-destination ${wg_forward_target_ip}:${wg_forward_port}
+      # NAT rules for port forwarding (uses dynamic interface detection for OCI compatibility)
+      # OCI VMs use ens3 instead of eth0, so we detect the default interface at runtime
+      PostUp = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -t nat -A PREROUTING -i $IFACE -p tcp --dport ${wg_forward_port} -j DNAT --to-destination ${wg_forward_target_ip}:${wg_forward_port}
+      PostUp = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -t nat -A PREROUTING -i $IFACE -p udp --dport ${wg_forward_port} -j DNAT --to-destination ${wg_forward_target_ip}:${wg_forward_port}
       PostUp = iptables -t nat -A POSTROUTING -o wg0 -j MASQUERADE
-      PostUp = iptables -A FORWARD -i eth0 -o wg0 -p tcp --dport ${wg_forward_port} -j ACCEPT
-      PostUp = iptables -A FORWARD -i eth0 -o wg0 -p udp --dport ${wg_forward_port} -j ACCEPT
-      PostUp = iptables -A FORWARD -i wg0 -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+      PostUp = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -A FORWARD -i $IFACE -o wg0 -p tcp --dport ${wg_forward_port} -j ACCEPT
+      PostUp = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -A FORWARD -i $IFACE -o wg0 -p udp --dport ${wg_forward_port} -j ACCEPT
+      PostUp = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -A FORWARD -i wg0 -o $IFACE -m state --state RELATED,ESTABLISHED -j ACCEPT
 
-      PostDown = iptables -t nat -D PREROUTING -i eth0 -p tcp --dport ${wg_forward_port} -j DNAT --to-destination ${wg_forward_target_ip}:${wg_forward_port}
-      PostDown = iptables -t nat -D PREROUTING -i eth0 -p udp --dport ${wg_forward_port} -j DNAT --to-destination ${wg_forward_target_ip}:${wg_forward_port}
+      PostDown = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -t nat -D PREROUTING -i $IFACE -p tcp --dport ${wg_forward_port} -j DNAT --to-destination ${wg_forward_target_ip}:${wg_forward_port}
+      PostDown = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -t nat -D PREROUTING -i $IFACE -p udp --dport ${wg_forward_port} -j DNAT --to-destination ${wg_forward_target_ip}:${wg_forward_port}
       PostDown = iptables -t nat -D POSTROUTING -o wg0 -j MASQUERADE
-      PostDown = iptables -D FORWARD -i eth0 -o wg0 -p tcp --dport ${wg_forward_port} -j ACCEPT
-      PostDown = iptables -D FORWARD -i eth0 -o wg0 -p udp --dport ${wg_forward_port} -j ACCEPT
-      PostDown = iptables -D FORWARD -i wg0 -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+      PostDown = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -D FORWARD -i $IFACE -o wg0 -p tcp --dport ${wg_forward_port} -j ACCEPT
+      PostDown = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -D FORWARD -i $IFACE -o wg0 -p udp --dport ${wg_forward_port} -j ACCEPT
+      PostDown = IFACE=$(ip route show default | awk '{print $5}' | head -1); iptables -D FORWARD -i wg0 -o $IFACE -m state --state RELATED,ESTABLISHED -j ACCEPT
 %{ endif ~}
 
 %{ if wg_peer_public_key != "" ~}
