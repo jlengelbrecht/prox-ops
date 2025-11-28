@@ -10,6 +10,7 @@ on:
         options:
           - deploy
           - destroy
+          - recreate
           - plan-only
         default: plan-only
       availability_domain:
@@ -93,6 +94,26 @@ jobs:
             fi
           fi
 
+      # RECREATE: First destroy existing resources
+      - name: Terraform Destroy (recreate step 1)
+        if: inputs.action == 'recreate'
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+        run: |
+          echo "::group::Destroying existing resources"
+          terraform destroy -auto-approve -input=false || echo "Nothing to destroy"
+          echo "::endgroup::"
+
       - name: Terraform Plan
         if: inputs.action != 'destroy'
         working-directory: ${{ env.WORKING_DIR }}
@@ -132,7 +153,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Terraform Apply
-        if: inputs.action == 'deploy' || inputs.action == 'destroy'
+        if: inputs.action == 'deploy' || inputs.action == 'destroy' || inputs.action == 'recreate'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -151,7 +172,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Get Outputs
-        if: inputs.action == 'deploy'
+        if: inputs.action == 'deploy' || inputs.action == 'recreate'
         id: outputs
         working-directory: ${{ env.WORKING_DIR }}
         env:
