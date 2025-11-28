@@ -42,17 +42,12 @@ spec:
               - name: PERSISTENTKEEPALIVE_PEERS
                 value: ""
 
-            # Security Context
+            # Security Context - privileged required for WireGuard on Talos
+            # SYS_MODULE removed per security review - Talos has WireGuard in kernel
             securityContext:
+              privileged: true
               capabilities:
-                drop: [ALL]
-                add: [NET_ADMIN, SYS_MODULE]
-              seccompProfile:
-                type: RuntimeDefault
-              readOnlyRootFilesystem: false
-              runAsNonRoot: false
-              runAsUser: 0
-              allowPrivilegeEscalation: true  # Required for NET_ADMIN
+                add: [NET_ADMIN]
 
             # Resources
             resources:
@@ -121,11 +116,7 @@ spec:
             subPath: wg0.conf
             readOnly: true
 
-    # Enable IP forwarding
+    # Pod options - sysctls (net.ipv4.ip_forward, net.ipv4.conf.all.src_valid_mark) set by
+    # linuxserver/wireguard entrypoint; privileged mode required on Talos to allow runtime sysctl changes
     defaultPodOptions:
-      securityContext:
-        sysctls:
-          - name: net.ipv4.ip_forward
-            value: "1"
-          - name: net.ipv4.conf.all.src_valid_mark
-            value: "1"
+      securityContext: {}
