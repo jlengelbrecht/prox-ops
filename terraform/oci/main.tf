@@ -39,6 +39,11 @@ module "plex_proxy" {
   ssh_public_key    = var.ssh_public_key
   ssh_allowed_cidrs = var.ssh_allowed_cidrs
 
+  # Use reserved public IP - persists across instance recreation
+  # This eliminates the need to update NetworkPolicy and 1Password
+  # every time the VPS is recreated
+  use_reserved_public_ip = true
+
   # WireGuard configuration for Plex proxy
   enable_wireguard       = true
   wg_peer_allowed_cidrs  = var.wg_peer_allowed_cidrs

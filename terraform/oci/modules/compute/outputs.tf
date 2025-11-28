@@ -13,8 +13,13 @@ output "instance_name" {
 }
 
 output "public_ip" {
-  description = "Public IP address of the instance"
-  value       = oci_core_instance.main.public_ip
+  description = "Public IP address of the instance (reserved or ephemeral)"
+  value       = var.use_reserved_public_ip ? oci_core_public_ip.reserved[0].ip_address : oci_core_instance.main.public_ip
+}
+
+output "reserved_public_ip_id" {
+  description = "OCID of the reserved public IP (if using reserved IP)"
+  value       = var.use_reserved_public_ip ? oci_core_public_ip.reserved[0].id : null
 }
 
 output "private_ip" {
