@@ -148,6 +148,8 @@ runcmd:
       ufw allow 22/tcp
 %{ if enable_wireguard ~}
       ufw allow ${wg_listen_port}/udp
+      # Enable routing for forwarded traffic (required for NAT/DNAT to work)
+      ufw default allow routed
 %{ endif ~}
 %{ for port in [for p in try(jsondecode("[{\"port\":${wg_forward_port}}]"), []) : p if p.port > 0] ~}
       ufw allow ${port.port}/tcp
