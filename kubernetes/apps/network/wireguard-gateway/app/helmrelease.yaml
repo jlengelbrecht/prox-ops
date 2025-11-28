@@ -116,6 +116,7 @@ spec:
             subPath: wg0.conf
             readOnly: true
 
-    # Pod options - sysctls handled by privileged container
+    # Pod options - sysctls (net.ipv4.ip_forward, net.ipv4.conf.all.src_valid_mark) set by
+    # linuxserver/wireguard entrypoint; privileged mode required on Talos to allow runtime sysctl changes
     defaultPodOptions:
       securityContext: {}
