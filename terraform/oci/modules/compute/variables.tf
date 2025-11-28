@@ -146,6 +146,16 @@ variable "wg_forward_target_ip" {
 }
 
 # =============================================================================
+# Reserved Public IP
+# =============================================================================
+
+variable "use_reserved_public_ip" {
+  description = "Use a reserved public IP that persists across instance recreation"
+  type        = bool
+  default     = false
+}
+
+# =============================================================================
 # Tags
 # =============================================================================
 

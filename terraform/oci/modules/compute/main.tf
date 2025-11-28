@@ -191,7 +191,8 @@ resource "oci_core_instance" "main" {
 
   create_vnic_details {
     subnet_id        = oci_core_subnet.main.id
-    assign_public_ip = true
+    # Don't auto-assign public IP if using reserved IP
+    assign_public_ip = var.use_reserved_public_ip ? false : true
     display_name     = "${var.instance_name}-vnic"
   }
 
@@ -216,5 +217,47 @@ resource "oci_core_instance" "main" {
     ignore_changes = [
       source_details[0].source_id, # Ignore image updates
     ]
+  }
+}
+
+# =============================================================================
+# Reserved Public IP
+# =============================================================================
+# Creates a persistent public IP that survives instance recreation.
+# This eliminates the need to update NetworkPolicy and 1Password secrets
+# every time the VPS is recreated.
+
+# Get the VNIC attachment for the instance
+data "oci_core_vnic_attachments" "main" {
+  count          = var.use_reserved_public_ip ? 1 : 0
+  compartment_id = var.compartment_id
+  instance_id    = oci_core_instance.main.id
+}
+
+# Get the VNIC details
+data "oci_core_vnic" "main" {
+  count   = var.use_reserved_public_ip ? 1 : 0
+  vnic_id = data.oci_core_vnic_attachments.main[0].vnic_attachments[0].vnic_id
+}
+
+# Get the primary private IP of the VNIC
+data "oci_core_private_ips" "main" {
+  count   = var.use_reserved_public_ip ? 1 : 0
+  vnic_id = data.oci_core_vnic.main[0].id
+}
+
+# Reserved Public IP - persists across instance recreation
+resource "oci_core_public_ip" "reserved" {
+  count          = var.use_reserved_public_ip ? 1 : 0
+  compartment_id = var.compartment_id
+  lifetime       = "RESERVED"
+  display_name   = "${var.instance_name}-reserved-ip"
+  private_ip_id  = data.oci_core_private_ips.main[0].private_ips[0].id
+
+  freeform_tags = var.freeform_tags
+
+  # The reserved IP should not be destroyed when the instance is recreated
+  lifecycle {
+    prevent_destroy = false
   }
 }
