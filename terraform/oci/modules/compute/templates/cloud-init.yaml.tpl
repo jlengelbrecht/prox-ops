@@ -126,7 +126,23 @@ runcmd:
   - echo "*/1 * * * * root /usr/local/bin/healthcheck.sh" > /etc/cron.d/healthcheck
 %{ endif ~}
 
-  # Configure firewall
+  # Configure firewall - Oracle Linux has default iptables rules that conflict with UFW
+  # These rules include a REJECT that blocks traffic before UFW chains are reached
+  - |
+    # Flush Oracle's default iptables rules that conflict with UFW
+    # Save the current rules first for debugging
+    iptables -L -n > /var/log/iptables-before-flush.log 2>&1 || true
+
+    # Flush the filter table (where the problematic REJECT rule lives)
+    iptables -F INPUT || true
+    iptables -F FORWARD || true
+
+    # Set default policies to ACCEPT (UFW will manage security)
+    iptables -P INPUT ACCEPT || true
+    iptables -P FORWARD ACCEPT || true
+    iptables -P OUTPUT ACCEPT || true
+
+    echo "Flushed Oracle default iptables rules" >> /var/log/cloud-init-custom.log
   - |
     if command -v ufw &> /dev/null; then
       ufw allow 22/tcp
