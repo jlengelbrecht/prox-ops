@@ -30,6 +30,13 @@ spec:
         - ports:
             - port: "32400"
               protocol: TCP
+    # Allow ingress from WireGuard tunnel network (forwarded VPS traffic)
+    - fromCIDR:
+        - 10.200.200.0/24
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
     # Allow DNS queries
     - fromEndpoints:
         - matchLabels:
