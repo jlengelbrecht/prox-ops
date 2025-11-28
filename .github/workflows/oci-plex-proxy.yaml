@@ -80,6 +80,9 @@ jobs:
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          # Security: Restrict SSH and WireGuard to home IP
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
         run: |
           echo "Checking for stale Terraform state locks..."
           if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
@@ -102,6 +105,8 @@ jobs:
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
         run: |
           echo "::group::Terraform Plan"
           terraform plan -input=false -out=tfplan
@@ -119,6 +124,8 @@ jobs:
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
         run: |
           echo "::group::Terraform Plan Destroy"
           terraform plan -destroy -input=false -out=tfplan
@@ -136,6 +143,8 @@ jobs:
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
         run: |
           echo "::group::Terraform Apply"
           terraform apply -input=false tfplan
@@ -154,6 +163,8 @@ jobs:
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
         run: |
           echo "::group::Deployment Outputs"
           echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY

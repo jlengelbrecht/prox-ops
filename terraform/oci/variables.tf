@@ -70,7 +70,13 @@ variable "ssh_public_key" {
 }
 
 variable "ssh_allowed_cidrs" {
-  description = "CIDR blocks allowed for SSH access"
+  description = "CIDR blocks allowed for SSH access (recommend restricting to home IP)"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "wg_peer_allowed_cidrs" {
+  description = "CIDR blocks allowed for WireGuard connections (recommend restricting to home IP)"
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }

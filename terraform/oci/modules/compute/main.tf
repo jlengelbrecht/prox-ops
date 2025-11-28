@@ -111,12 +111,12 @@ resource "oci_core_security_list" "main" {
     }
   }
 
-  # Ingress: WireGuard (if enabled)
+  # Ingress: WireGuard (if enabled) - restricted to specific CIDRs
   dynamic "ingress_security_rules" {
-    for_each = var.enable_wireguard ? [1] : []
+    for_each = var.enable_wireguard ? var.wg_peer_allowed_cidrs : []
     content {
       protocol = "17" # UDP
-      source   = "0.0.0.0/0"
+      source   = ingress_security_rules.value
       udp_options {
         min = var.wg_listen_port
         max = var.wg_listen_port

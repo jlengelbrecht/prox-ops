@@ -103,6 +103,12 @@ variable "enable_wireguard" {
   default     = false
 }
 
+variable "wg_peer_allowed_cidrs" {
+  description = "CIDR blocks allowed for WireGuard connections (recommend restricting to home IP)"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
 variable "wg_listen_port" {
   description = "WireGuard listen port"
   type        = number

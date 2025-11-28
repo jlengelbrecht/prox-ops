@@ -40,7 +40,8 @@ module "plex_proxy" {
   ssh_allowed_cidrs = var.ssh_allowed_cidrs
 
   # WireGuard configuration for Plex proxy
-  enable_wireguard      = true
+  enable_wireguard       = true
+  wg_peer_allowed_cidrs  = var.wg_peer_allowed_cidrs
   wg_listen_port        = 51820
   wg_peer_public_key    = var.k8s_wg_public_key
   wg_forward_port       = 32400

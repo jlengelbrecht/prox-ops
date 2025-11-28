@@ -2,6 +2,17 @@
 # OCI Terraform Configuration Example
 # =============================================================================
 # Copy this to terraform.tfvars and fill in your values
+#
+# For CI/CD deployments via GitHub Actions, configure these secrets:
+#   - OCI_TENANCY_OCID
+#   - OCI_USER_OCID
+#   - OCI_FINGERPRINT
+#   - OCI_PRIVATE_KEY (full PEM content)
+#   - OCI_COMPARTMENT_ID
+#   - OCI_SSH_PUBLIC_KEY
+#   - K8S_WG_PUBLIC_KEY
+#   - OCI_SSH_ALLOWED_CIDRS (JSON array, e.g., '["1.2.3.4/32"]')
+#   - OCI_WG_PEER_ALLOWED_CIDRS (JSON array, e.g., '["1.2.3.4/32"]')
 
 # OCI Configuration
 oci_config_profile = "DEFAULT"
@@ -11,8 +22,17 @@ compartment_id     = "ocid1.tenancy.oc1..aaaaaaaa..."  # Your tenancy/compartmen
 # SSH Key (paste your public key)
 ssh_public_key = "ssh-rsa AAAA..."
 
-# Restrict SSH to your home IP for security
+# =============================================================================
+# Security Configuration (IMPORTANT)
+# =============================================================================
+# Restrict SSH and WireGuard to your home IP for security.
+# This blocks 99.9% of brute-force attacks and reduces attack surface.
+
+# SSH access restriction (recommend your home IP)
 ssh_allowed_cidrs = ["YOUR_HOME_IP/32"]
+
+# WireGuard access restriction (recommend your home IP)
+wg_peer_allowed_cidrs = ["YOUR_HOME_IP/32"]
 
 # Plex Proxy Configuration
 plex_proxy_enabled = true
