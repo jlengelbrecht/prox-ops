@@ -124,6 +124,20 @@ resource "oci_core_security_list" "main" {
     }
   }
 
+  # Ingress: HTTPS (443) from Cloudflare IPs only - for nginx reverse proxy
+  # This significantly reduces attack surface by only allowing Cloudflare CDN traffic
+  dynamic "ingress_security_rules" {
+    for_each = var.enable_nginx_proxy ? var.cloudflare_ipv4_ranges : []
+    content {
+      protocol = "6" # TCP
+      source   = ingress_security_rules.value
+      tcp_options {
+        min = 443
+        max = 443
+      }
+    }
+  }
+
   # Ingress: Additional ports
   dynamic "ingress_security_rules" {
     for_each = [for p in var.additional_ingress_ports : p if p.protocol == "tcp"]
@@ -208,6 +222,12 @@ resource "oci_core_instance" "main" {
       wg_peer_allowed_ips  = "${var.wg_peer_allowed_ips},${var.wg_forward_target_ip}/32"
       wg_forward_port      = var.wg_forward_port
       wg_forward_target_ip = var.wg_forward_target_ip
+      # Nginx reverse proxy configuration
+      enable_nginx_proxy   = var.enable_nginx_proxy
+      nginx_server_name    = var.nginx_server_name
+      nginx_origin_cert    = var.nginx_origin_cert
+      nginx_origin_key     = var.nginx_origin_key
+      nginx_backend_url    = var.nginx_backend_url
     }))
   }
 

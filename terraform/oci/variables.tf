@@ -116,6 +116,36 @@ variable "plex_loadbalancer_ip" {
 }
 
 # =============================================================================
+# Nginx Reverse Proxy Configuration (Cloudflare)
+# =============================================================================
+
+variable "enable_nginx_proxy" {
+  description = "Enable nginx reverse proxy with Cloudflare TLS"
+  type        = bool
+  default     = false
+}
+
+variable "nginx_server_name" {
+  description = "Server name for nginx (e.g., streaming.homelab0.org)"
+  type        = string
+  default     = "streaming.homelab0.org"
+}
+
+variable "nginx_origin_cert" {
+  description = "Cloudflare Origin Certificate (PEM format)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "nginx_origin_key" {
+  description = "Cloudflare Origin Certificate private key (PEM format)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+# =============================================================================
 # Tags
 # =============================================================================
 
