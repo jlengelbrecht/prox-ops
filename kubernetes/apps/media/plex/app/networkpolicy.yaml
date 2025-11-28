@@ -21,6 +21,15 @@ spec:
         - ports:
             - port: "32400"
               protocol: TCP
+    # Allow ingress from WireGuard gateway for OCI VPN proxy
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: wireguard-gateway
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
     # Allow DNS queries
     - fromEndpoints:
         - matchLabels:
