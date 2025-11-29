@@ -116,6 +116,12 @@ variable "vps_wg_private_key" {
   sensitive   = true
 }
 
+variable "vps_wg_public_key" {
+  description = "Static WireGuard public key for VPS (must match vps_wg_private_key)"
+  type        = string
+  default     = ""
+}
+
 variable "plex_loadbalancer_ip" {
   description = "Plex LoadBalancer IP in K8s cluster (set via TF_VAR_plex_loadbalancer_ip secret)"
   type        = string

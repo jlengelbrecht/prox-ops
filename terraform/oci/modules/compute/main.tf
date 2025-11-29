@@ -27,18 +27,20 @@ data "oci_core_images" "ubuntu" {
 # WireGuard Key Management
 # =============================================================================
 # Supports two modes:
-# 1. Static key: Pass wg_private_key variable for persistent keys across VPS recreation
+# 1. Static key: Pass wg_private_key AND wg_public_key for persistent keys across VPS recreation
+#    (No wg binary required - public key is pre-computed and passed as variable)
 # 2. Dynamic key: Generate new keys if wg_private_key is not provided (legacy behavior)
 #
 # For one-click deployment, use static keys stored in GitHub Secrets.
 # =============================================================================
 
-# Determine if we're using a static key (preferred for one-click deploy)
+# Determine if we're using static keys (preferred for one-click deploy)
+# Requires BOTH private and public key to avoid needing wg binary
 locals {
-  use_static_wg_key = var.enable_wireguard && var.wg_private_key != ""
+  use_static_wg_key = var.enable_wireguard && var.wg_private_key != "" && var.wg_public_key != ""
 }
 
-# Dynamic key generation (only when static key NOT provided)
+# Dynamic key generation (only when static keys NOT provided)
 resource "terraform_data" "wireguard_keys" {
   count = var.enable_wireguard && !local.use_static_wg_key ? 1 : 0
 
@@ -63,18 +65,8 @@ data "local_file" "wg_public_key" {
   depends_on = [terraform_data.wireguard_keys]
 }
 
-# Derive public key from static private key (when static key provided)
-# Uses query parameter to pass key via stdin instead of shell interpolation (security best practice)
-# Note: Uses full path /usr/bin/wg for GitHub Actions compatibility (PATH may not include it)
-data "external" "wg_public_key_from_static" {
-  count   = local.use_static_wg_key ? 1 : 0
-  program = ["bash", "-c", "jq -r .private_key | /usr/bin/wg pubkey | jq -R '{public_key: .}'"]
-  query = {
-    private_key = var.wg_private_key
-  }
-}
-
 # Unified key references for use elsewhere in the module
+# When using static keys, both private and public are passed as variables (no wg binary needed)
 locals {
   wg_private_key = var.enable_wireguard ? (
     local.use_static_wg_key
@@ -84,7 +76,7 @@ locals {
 
   wg_public_key = var.enable_wireguard ? (
     local.use_static_wg_key
-    ? data.external.wg_public_key_from_static[0].result["public_key"]
+    ? var.wg_public_key  # Use provided public key directly (no wg binary needed)
     : trimspace(data.local_file.wg_public_key[0].content)
   ) : ""
 }

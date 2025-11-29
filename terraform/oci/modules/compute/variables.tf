@@ -133,6 +133,17 @@ variable "wg_private_key" {
   }
 }
 
+variable "wg_public_key" {
+  description = "Static WireGuard public key (must match wg_private_key, avoids need for wg binary)"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.wg_public_key == "" || can(regex("^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$", var.wg_public_key))
+    error_message = "wg_public_key must be a valid WireGuard public key (44 characters base64-encoded)."
+  }
+}
+
 variable "wg_peer_public_key" {
   description = "WireGuard peer public key"
   type        = string
