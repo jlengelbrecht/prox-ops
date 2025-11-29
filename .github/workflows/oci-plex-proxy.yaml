@@ -569,6 +569,46 @@ jobs:
           fi
           echo "::endgroup::"
 
+      # Public Endpoint Test - Validate full user path after DNS update
+      - name: Public Endpoint Test
+        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '')
+        id: public_test
+        run: |
+          echo "::group::Public Endpoint Test"
+
+          # Wait for DNS propagation (Cloudflare is fast, but give it a moment)
+          echo "Waiting 10 seconds for DNS propagation..."
+          sleep 10
+
+          PUBLIC_ENDPOINT_OK="false"
+
+          # Test the full public path: User -> Cloudflare -> VPS (nginx) -> WireGuard -> Plex
+          echo "Testing public endpoint: https://streaming.homelab0.org"
+
+          # Retry up to 3 times (cloud-init might still be finishing nginx setup)
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt/3..."
+            if curl -s --connect-timeout 10 --max-time 30 "https://streaming.homelab0.org/identity" 2>/dev/null | grep -q "MediaContainer"; then
+              PUBLIC_ENDPOINT_OK="true"
+              echo "Public endpoint is accessible via Cloudflare"
+              break
+            else
+              echo "Attempt $attempt failed, waiting 15 seconds..."
+              sleep 15
+            fi
+          done
+
+          if [ "$PUBLIC_ENDPOINT_OK" = "false" ]; then
+            echo "Warning: Public endpoint not responding after 3 attempts"
+            echo "This could indicate:"
+            echo "  - nginx is still starting up"
+            echo "  - WireGuard tunnel not established yet"
+            echo "  - Cloudflare proxy issue"
+          fi
+
+          echo "public_endpoint_ok=$PUBLIC_ENDPOINT_OK" >> $GITHUB_OUTPUT
+          echo "::endgroup::"
+
       # =======================================================================
       # Deployment Summary - Comprehensive status report
       # =======================================================================
@@ -626,6 +666,11 @@ jobs:
             echo "| WireGuard Tunnel | $([ \"$WG_OK\" = \"true\" ] && echo '✅ Established' || echo '⚠️ Not Ready') |" >> $GITHUB_STEP_SUMMARY
             echo "| Cluster Connectivity | $([ \"$CLUSTER_OK\" = \"true\" ] && echo '✅ Reachable' || echo '⚠️ Unreachable') |" >> $GITHUB_STEP_SUMMARY
             echo "| Plex Endpoint | $([ \"$PLEX_OK\" = \"true\" ] && echo '✅ Accessible' || echo '⚠️ Not Tested') |" >> $GITHUB_STEP_SUMMARY
+            # Public endpoint test result (only when nginx proxy enabled)
+            PUBLIC_ENDPOINT_OK="${{ steps.public_test.outputs.public_endpoint_ok }}"
+            if [ -n "$PUBLIC_ENDPOINT_OK" ]; then
+              echo "| Public Endpoint | $([ \"$PUBLIC_ENDPOINT_OK\" = \"true\" ] && echo '✅ streaming.homelab0.org' || echo '⚠️ Not Responding') |" >> $GITHUB_STEP_SUMMARY
+            fi
           else
             echo "> ⚠️ SSH key not configured. Add \`OCI_SSH_PRIVATE_KEY\` secret for health checks." >> $GITHUB_STEP_SUMMARY
             echo ">" >> $GITHUB_STEP_SUMMARY
