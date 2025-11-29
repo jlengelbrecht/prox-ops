@@ -65,9 +65,10 @@ data "local_file" "wg_public_key" {
 
 # Derive public key from static private key (when static key provided)
 # Uses query parameter to pass key via stdin instead of shell interpolation (security best practice)
+# Note: Uses full path /usr/bin/wg for GitHub Actions compatibility (PATH may not include it)
 data "external" "wg_public_key_from_static" {
   count   = local.use_static_wg_key ? 1 : 0
-  program = ["bash", "-c", "jq -r .private_key | wg pubkey | jq -R '{public_key: .}'"]
+  program = ["bash", "-c", "jq -r .private_key | /usr/bin/wg pubkey | jq -R '{public_key: .}'"]
   query = {
     private_key = var.wg_private_key
   }
