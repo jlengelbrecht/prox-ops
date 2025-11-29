@@ -186,7 +186,7 @@ jobs:
           echo "::group::Destroying existing resources"
           # SECURITY: Suppress detailed destroy output (contains user_data with secrets)
           # Use targeted destroy to preserve static IP (which has prevent_destroy=true)
-          terraform destroy -target=module.plex_proxy -auto-approve -input=false > /tmp/tfdestroy.txt 2>&1
+          terraform destroy -target=module.plex_proxy[0] -auto-approve -input=false > /tmp/tfdestroy.txt 2>&1
           DESTROY_EXIT=$?
           # Show only resource status (exclude any lines with sensitive patterns)
           grep -E '^(Destroy complete|Error:|Warning:|module\.[^:]+: (Destroying|Destruction complete))' /tmp/tfdestroy.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -30 || true
