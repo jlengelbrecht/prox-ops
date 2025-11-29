@@ -116,6 +116,17 @@ variable "vps_wg_private_key" {
   sensitive   = true
 }
 
+variable "vps_wg_public_key" {
+  description = "Static WireGuard public key for VPS (must match vps_wg_private_key)"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.vps_wg_public_key == "" || can(regex("^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$", var.vps_wg_public_key))
+    error_message = "vps_wg_public_key must be a valid WireGuard public key (44 characters base64-encoded)."
+  }
+}
+
 variable "plex_loadbalancer_ip" {
   description = "Plex LoadBalancer IP in K8s cluster (set via TF_VAR_plex_loadbalancer_ip secret)"
   type        = string
