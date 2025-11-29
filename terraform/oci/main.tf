@@ -40,9 +40,9 @@ module "plex_proxy" {
   ssh_public_key    = var.ssh_public_key
   ssh_allowed_cidrs = var.ssh_allowed_cidrs
 
-  # Enable private IP lookup for external reserved IP attachment
-  # Set external_reserved_public_ip_id to any non-empty value to prevent
-  # the module from creating its own reserved IP (we manage it at root level)
+  # Enable private IP lookup for external reserved IP attachment.
+  # Signal that IP is managed at root level by setting to any non-empty string
+  # (the actual OCID is not needed since attachment happens via primary_private_ip_id)
   use_reserved_public_ip         = true
   external_reserved_public_ip_id = "managed-at-root-level"
 

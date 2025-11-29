@@ -179,7 +179,7 @@ variable "use_reserved_public_ip" {
 }
 
 variable "external_reserved_public_ip_id" {
-  description = "OCID of an externally-managed reserved public IP to attach. When provided, this IP is attached to the instance instead of creating a new reserved IP. This enables the IP to persist across instance destruction/recreation."
+  description = "Signals that reserved public IP is managed externally at root level. When set to any non-empty value, prevents this module from creating its own reserved IP resource. The actual IP attachment is handled at root level using primary_private_ip_id output."
   type        = string
   default     = ""
 }

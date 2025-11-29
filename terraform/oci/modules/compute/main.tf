@@ -290,8 +290,9 @@ resource "oci_core_instance" "main" {
 # The module exposes private_ip_id for external reserved IP management.
 # Two modes are supported:
 #   1. External management (recommended): Reserved IP created at root level with
-#      prevent_destroy=true. The IP persists across module destruction. Pass
-#      use_reserved_public_ip=true to enable private IP lookup.
+#      prevent_destroy=true. The IP persists across module destruction. Pass both
+#      use_reserved_public_ip=true and external_reserved_public_ip_id="<any-value>"
+#      to enable private IP lookup and prevent module from creating its own reserved IP.
 #   2. Module-managed (legacy): Reserved IP created in module with
 #      use_reserved_public_ip=true. Destroyed when module is destroyed.
 #
