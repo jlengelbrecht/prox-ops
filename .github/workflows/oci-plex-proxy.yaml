@@ -115,7 +115,9 @@ jobs:
 
       - name: Initialize Terraform
         working-directory: ${{ env.WORKING_DIR }}
-        run: terraform init
+        run: |
+          # Use -upgrade to handle new providers when lock file is not committed
+          terraform init -upgrade
 
       - name: Clear stale Terraform locks
         working-directory: ${{ env.WORKING_DIR }}
@@ -364,10 +366,17 @@ jobs:
           echo "Note: SSH port check skipped - GitHub Actions IPs are not in firewall allowlist"
           echo "This is expected behavior for security (ssh_allowed_cidrs restricts access)"
 
-          # Wait a fixed time for cloud-init to complete
-          # Cloud-init typically takes 2-3 minutes for package installation
-          echo "Waiting 180 seconds for cloud-init to complete..."
-          sleep 180
+          # Wait for cloud-init to complete
+          # Timing analysis (from actual VPS boot logs):
+          #   - package_update_upgrade_install: ~390s (apt update + install wireguard, nginx)
+          #   - Custom scripts (WireGuard, nginx config): ~7s
+          #   - Total cloud-init: ~406s (~6.8 min)
+          #   - Boot to services ready: ~450s (~7.5 min)
+          # Using 450s to ensure nginx and WireGuard are fully operational
+          echo "Waiting 450 seconds (7.5 min) for cloud-init to complete..."
+          echo "  - apt update/install: ~390s (~6.5 min)"
+          echo "  - WireGuard/nginx setup: ~10s"
+          sleep 450
           echo "Wait complete - proceeding to public endpoint test"
 
       # =======================================================================
