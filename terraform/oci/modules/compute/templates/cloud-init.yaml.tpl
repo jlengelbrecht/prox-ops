@@ -246,7 +246,10 @@ write_files:
               proxy_set_header Connection $connection_upgrade;
 
               # Standard proxy headers
-              proxy_set_header Host $host;
+              # Use 127.0.0.1 for Host to make Plex accept proxied requests
+              proxy_set_header Host 127.0.0.1;
+              proxy_set_header X-Plex-Client-Identifier $http_x_plex_client_identifier;
+              proxy_set_header X-Plex-Token $http_x_plex_token;
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
@@ -312,7 +315,10 @@ write_files:
               proxy_set_header Connection "upgrade";
 
               # Standard proxy headers
-              proxy_set_header Host $host;
+              # Use 127.0.0.1 for Host to make Plex accept proxied requests
+              proxy_set_header Host 127.0.0.1;
+              proxy_set_header X-Plex-Client-Identifier $http_x_plex_client_identifier;
+              proxy_set_header X-Plex-Token $http_x_plex_token;
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto $scheme;
