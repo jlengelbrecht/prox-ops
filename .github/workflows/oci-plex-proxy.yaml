@@ -2,6 +2,11 @@
 name: OCI Plex Proxy - Deploy/Recreate
 
 on:
+  # Monthly automated recreate for security updates
+  # Runs at 4am UTC on the 1st of each month (~6-10 min downtime)
+  schedule:
+    - cron: '0 4 1 * *'
+
   workflow_dispatch:
     inputs:
       action:
@@ -38,9 +43,15 @@ env:
 
 jobs:
   terraform:
-    name: ${{ inputs.action }} OCI Plex Proxy
+    name: ${{ inputs.action || 'recreate (scheduled)' }} OCI Plex Proxy
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # Resolve inputs with fallbacks for scheduled runs
+    env:
+      ACTION: ${{ inputs.action || 'recreate' }}
+      AD_INDEX: ${{ inputs.availability_domain || '0' }}
+      NGINX_ENABLED: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
 
     steps:
       - name: Checkout repository
@@ -84,12 +95,12 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           # Security: Restrict SSH and WireGuard to home IP
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
           # Nginx reverse proxy with Cloudflare
-          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -103,9 +114,9 @@ jobs:
             fi
           fi
 
-      # RECREATE: First destroy existing resources
+      # RECREATE: First destroy existing resources (also runs on schedule)
       - name: Terraform Destroy (recreate step 1)
-        if: inputs.action == 'recreate'
+        if: (inputs.action || 'recreate') == 'recreate'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -115,10 +126,10 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
-          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -128,7 +139,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Terraform Plan
-        if: inputs.action != 'destroy'
+        if: (inputs.action || 'recreate') != 'destroy'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -138,10 +149,10 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
-          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -151,7 +162,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Terraform Plan Destroy
-        if: inputs.action == 'destroy'
+        if: (inputs.action || 'recreate') == 'destroy'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -161,10 +172,10 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
-          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -174,7 +185,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Terraform Apply
-        if: inputs.action == 'deploy' || inputs.action == 'destroy' || inputs.action == 'recreate'
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'destroy' || (inputs.action || 'recreate') == 'recreate'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -184,10 +195,10 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
-          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -197,7 +208,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Get Outputs
-        if: inputs.action == 'deploy' || inputs.action == 'recreate'
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
         id: outputs
         working-directory: ${{ env.WORKING_DIR }}
         env:
@@ -208,10 +219,10 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
-          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -229,7 +240,7 @@ jobs:
 
       # Cloudflare DNS Management - Update/Create A record for streaming.homelab0.org
       - name: Update Cloudflare DNS
-        if: (inputs.action == 'deploy' || inputs.action == 'recreate') && inputs.enable_nginx_proxy == true
+        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '')
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
@@ -309,9 +320,9 @@ jobs:
           echo "::endgroup::"
 
       - name: Deployment Summary
-        if: inputs.action == 'deploy' || inputs.action == 'recreate'
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
         env:
-          ENABLE_NGINX: ${{ inputs.enable_nginx_proxy }}
+          ENABLE_NGINX: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
         run: |
           PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
 
@@ -348,7 +359,7 @@ jobs:
           fi
 
       - name: Destroy Summary
-        if: inputs.action == 'destroy'
+        if: (inputs.action || 'recreate') == 'destroy'
         run: |
           echo "## OCI Plex Proxy Destroyed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
