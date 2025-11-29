@@ -44,5 +44,8 @@ output "subnet_id" {
 
 output "wireguard_public_key" {
   description = "WireGuard public key for this instance (static if wg_private_key provided)"
-  value       = var.enable_wireguard ? local.wg_public_key : null
+  # Use nonsensitive() because while local.wg_public_key inherits sensitivity from
+  # local.use_static_wg_key (which checks wg_private_key != ""), the public key itself
+  # is NOT sensitive - it's meant to be shared with peers.
+  value = var.enable_wireguard ? nonsensitive(local.wg_public_key) : null
 }
