@@ -156,6 +156,66 @@ variable "use_reserved_public_ip" {
 }
 
 # =============================================================================
+# Nginx Reverse Proxy Configuration
+# =============================================================================
+
+variable "enable_nginx_proxy" {
+  description = "Enable nginx reverse proxy with Cloudflare TLS"
+  type        = bool
+  default     = false
+}
+
+variable "nginx_server_name" {
+  description = "Server name for nginx (e.g., streaming.homelab0.org)"
+  type        = string
+  default     = ""
+}
+
+variable "nginx_origin_cert" {
+  description = "Cloudflare Origin Certificate (PEM format)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "nginx_origin_key" {
+  description = "Cloudflare Origin Certificate private key (PEM format)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "nginx_backend_url" {
+  description = "Backend URL for nginx proxy (e.g., http://10.200.200.2:32400)"
+  type        = string
+  default     = ""
+}
+
+# Cloudflare IPv4 ranges for security list (updated 2025-11)
+# Source: https://www.cloudflare.com/ips-v4
+variable "cloudflare_ipv4_ranges" {
+  description = "Cloudflare IPv4 ranges for firewall rules"
+  type        = list(string)
+  default = [
+    "173.245.48.0/20",
+    "103.21.244.0/22",
+    "103.22.200.0/22",
+    "103.31.4.0/22",
+    "141.101.64.0/18",
+    "108.162.192.0/18",
+    "190.93.240.0/20",
+    "188.114.96.0/20",
+    "197.234.240.0/22",
+    "198.41.128.0/17",
+    "162.158.0.0/15",
+    "104.16.0.0/13",
+    "104.24.0.0/14",
+    "172.64.0.0/13",
+    "131.0.72.0/22"
+  ]
+}
+
+# =============================================================================
 # Tags
 # =============================================================================
 

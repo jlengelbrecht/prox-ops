@@ -2,6 +2,11 @@
 name: OCI Plex Proxy - Deploy/Recreate
 
 on:
+  # Monthly automated recreate for security updates
+  # Runs at 4am UTC on the 1st of each month (~6-10 min downtime)
+  schedule:
+    - cron: '0 4 1 * *'
+
   workflow_dispatch:
     inputs:
       action:
@@ -21,6 +26,10 @@ on:
           - '1'
           - '2'
         default: '0'
+      enable_nginx_proxy:
+        description: 'Enable nginx reverse proxy with Cloudflare (recommended)'
+        type: boolean
+        default: true
 
 # Prevent concurrent operations (Terraform state lock protection)
 concurrency:
@@ -34,9 +43,15 @@ env:
 
 jobs:
   terraform:
-    name: ${{ inputs.action }} OCI Plex Proxy
+    name: ${{ inputs.action || 'recreate (scheduled)' }} OCI Plex Proxy
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # Resolve inputs with fallbacks for scheduled runs
+    env:
+      ACTION: ${{ inputs.action || 'recreate' }}
+      AD_INDEX: ${{ inputs.availability_domain || '0' }}
+      NGINX_ENABLED: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
 
     steps:
       - name: Checkout repository
@@ -80,10 +95,15 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           # Security: Restrict SSH and WireGuard to home IP
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          # Nginx reverse proxy with Cloudflare
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
           echo "Checking for stale Terraform state locks..."
           if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
@@ -94,9 +114,9 @@ jobs:
             fi
           fi
 
-      # RECREATE: First destroy existing resources
+      # RECREATE: First destroy existing resources (also runs on schedule)
       - name: Terraform Destroy (recreate step 1)
-        if: inputs.action == 'recreate'
+        if: (inputs.action || 'recreate') == 'recreate'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -106,16 +126,20 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
           echo "::group::Destroying existing resources"
           terraform destroy -auto-approve -input=false || echo "Nothing to destroy"
           echo "::endgroup::"
 
       - name: Terraform Plan
-        if: inputs.action != 'destroy'
+        if: (inputs.action || 'recreate') != 'destroy'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -125,16 +149,20 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
           echo "::group::Terraform Plan"
           terraform plan -input=false -out=tfplan
           echo "::endgroup::"
 
       - name: Terraform Plan Destroy
-        if: inputs.action == 'destroy'
+        if: (inputs.action || 'recreate') == 'destroy'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -144,16 +172,20 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
           echo "::group::Terraform Plan Destroy"
           terraform plan -destroy -input=false -out=tfplan
           echo "::endgroup::"
 
       - name: Terraform Apply
-        if: inputs.action == 'deploy' || inputs.action == 'destroy' || inputs.action == 'recreate'
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'destroy' || (inputs.action || 'recreate') == 'recreate'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -163,16 +195,20 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
           echo "::group::Terraform Apply"
           terraform apply -input=false tfplan
           echo "::endgroup::"
 
       - name: Get Outputs
-        if: inputs.action == 'deploy' || inputs.action == 'recreate'
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
         id: outputs
         working-directory: ${{ env.WORKING_DIR }}
         env:
@@ -183,32 +219,159 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
           echo "::group::Deployment Outputs"
-          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
 
           PUBLIC_IP=$(terraform output -raw plex_proxy_public_ip 2>/dev/null || echo "N/A")
           WG_ENDPOINT=$(terraform output -raw plex_proxy_wireguard_endpoint 2>/dev/null || echo "N/A")
           VPS_WG_PUB=$(terraform output -raw vps_wireguard_public_key 2>/dev/null || echo "N/A")
 
+          # Export for Cloudflare DNS step
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+
+          echo "::endgroup::"
+
+      # Cloudflare DNS Management - Update/Create A record for streaming.homelab0.org
+      - name: Update Cloudflare DNS
+        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '')
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          DNS_NAME: "streaming.homelab0.org"
+        run: |
+          echo "::group::Cloudflare DNS Update"
+          PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
+
+          if [ "$PUBLIC_IP" = "N/A" ] || [ -z "$PUBLIC_IP" ]; then
+            echo "Error: Could not get public IP from Terraform outputs"
+            exit 1
+          fi
+
+          # Validate IP format with octet range check (defense-in-depth)
+          # Each octet must be 0-255
+          validate_ip() {
+            local ip=$1
+            local IFS='.'
+            read -ra octets <<< "$ip"
+            [ ${#octets[@]} -ne 4 ] && return 1
+            for octet in "${octets[@]}"; do
+              [[ ! "$octet" =~ ^[0-9]+$ ]] && return 1
+              [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ] && return 1
+            done
+            return 0
+          }
+          if ! validate_ip "$PUBLIC_IP"; then
+            echo "Error: Invalid IP format: $PUBLIC_IP"
+            exit 1
+          fi
+
+          echo "Updating Cloudflare DNS: $DNS_NAME -> $PUBLIC_IP (proxied)"
+
+          # Check if record exists
+          EXISTING_RECORD=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?type=A&name=$DNS_NAME" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json")
+
+          RECORD_ID=$(echo "$EXISTING_RECORD" | jq -r '.result[0].id // empty')
+          CURRENT_IP=$(echo "$EXISTING_RECORD" | jq -r '.result[0].content // empty')
+
+          if [ -n "$RECORD_ID" ]; then
+            # Update existing record
+            echo "Found existing record (ID: $RECORD_ID, IP: $CURRENT_IP)"
+            if [ "$CURRENT_IP" = "$PUBLIC_IP" ]; then
+              echo "DNS record already points to $PUBLIC_IP, no update needed"
+            else
+              echo "Updating DNS record to point to $PUBLIC_IP"
+              RESULT=$(curl -s -X PUT \
+                "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$RECORD_ID" \
+                -H "Authorization: Bearer $CF_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":true}")
+
+              if echo "$RESULT" | jq -e '.success' > /dev/null; then
+                echo "DNS record updated successfully"
+              else
+                echo "Failed to update DNS record:"
+                echo "$RESULT" | jq .
+                exit 1
+              fi
+            fi
+          else
+            # Create new record
+            echo "No existing record found, creating new A record"
+            RESULT=$(curl -s -X POST \
+              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":true}")
+
+            if echo "$RESULT" | jq -e '.success' > /dev/null; then
+              echo "DNS record created successfully"
+            else
+              echo "Failed to create DNS record:"
+              echo "$RESULT" | jq .
+              exit 1
+            fi
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Cloudflare DNS" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Domain | \`$DNS_NAME\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Points to | \`$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Proxy | Enabled (orange cloud) |" >> $GITHUB_STEP_SUMMARY
+          echo "::endgroup::"
+
+      - name: Deployment Summary
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
+        env:
+          ENABLE_NGINX: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+        run: |
+          PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
+
+          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Public IP | \`$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| WireGuard Endpoint | \`$WG_ENDPOINT\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| VPS WG Public Key | \`$VPS_WG_PUB\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Nginx Proxy | $ENABLE_NGINX |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$ENABLE_NGINX" = "true" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Access URLs" >> $GITHUB_STEP_SUMMARY
+            echo "- **Plex via Cloudflare**: \`https://streaming.homelab0.org\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **SSH**: \`ssh ubuntu@$PUBLIC_IP\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Security" >> $GITHUB_STEP_SUMMARY
+            echo "- Port 443: Cloudflare IPs only" >> $GITHUB_STEP_SUMMARY
+            echo "- Port 32400: Closed (traffic via nginx)" >> $GITHUB_STEP_SUMMARY
+            echo "- VPS IP hidden behind Cloudflare proxy" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Access URLs" >> $GITHUB_STEP_SUMMARY
+            echo "- **Plex direct**: \`http://$PUBLIC_IP:32400\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **SSH**: \`ssh ubuntu@$PUBLIC_IP\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "1. Update K8s WireGuard gateway secret with VPS WG public key" >> $GITHUB_STEP_SUMMARY
-          echo "2. SSH: \`ssh ubuntu@$PUBLIC_IP\`" >> $GITHUB_STEP_SUMMARY
-          echo "3. Plex URL: \`http://$PUBLIC_IP:32400\`" >> $GITHUB_STEP_SUMMARY
-          echo "::endgroup::"
+          echo "1. Verify WireGuard tunnel is established" >> $GITHUB_STEP_SUMMARY
+          echo "2. Test Plex connectivity" >> $GITHUB_STEP_SUMMARY
+          if [ "$ENABLE_NGINX" = "true" ]; then
+            echo "3. Verify Cloudflare proxy is working" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Destroy Summary
-        if: inputs.action == 'destroy'
+        if: (inputs.action || 'recreate') == 'destroy'
         run: |
           echo "## OCI Plex Proxy Destroyed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
