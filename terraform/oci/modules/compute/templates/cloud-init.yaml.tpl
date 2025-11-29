@@ -250,9 +250,10 @@ write_files:
               proxy_set_header Host 127.0.0.1;
               proxy_set_header X-Plex-Client-Identifier $http_x_plex_client_identifier;
               proxy_set_header X-Plex-Token $http_x_plex_token;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
+              # Don't forward client IP - let Plex see WireGuard IP for allowedNetworks
+              proxy_set_header X-Real-IP "";
+              proxy_set_header X-Forwarded-For "";
+              proxy_set_header X-Forwarded-Proto https;
 
               # Rewrite backend HTTP redirects to HTTPS
               # Required because Plex generates http:// URLs when behind a proxy
@@ -319,9 +320,10 @@ write_files:
               proxy_set_header Host 127.0.0.1;
               proxy_set_header X-Plex-Client-Identifier $http_x_plex_client_identifier;
               proxy_set_header X-Plex-Token $http_x_plex_token;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
+              # Don't forward client IP - let Plex see WireGuard IP for allowedNetworks
+              proxy_set_header X-Real-IP "";
+              proxy_set_header X-Forwarded-For "";
+              proxy_set_header X-Forwarded-Proto https;
 
               # Plex-specific optimizations
               proxy_buffering off;
