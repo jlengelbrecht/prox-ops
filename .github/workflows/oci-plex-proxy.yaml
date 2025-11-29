@@ -357,9 +357,9 @@ jobs:
           echo "outputs_retrieved=true" >> $GITHUB_OUTPUT
 
       # =======================================================================
-      # Wait for VPS Boot - Check SSH port (for timing only, not connectivity)
+      # Wait for VPS Boot - Fixed delay for cloud-init completion
       # NOTE: SSH from GitHub Actions is blocked by firewall (ssh_allowed_cidrs)
-      # This step only verifies the VM is booting, not that we can connect
+      # No SSH check is performed; we wait for cloud-init then test public endpoint
       # =======================================================================
       - name: Wait for VPS Boot
         if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
@@ -427,10 +427,16 @@ jobs:
             -H "Content-Type: application/json")
 
           RECORD_ID=$(echo "$EXISTING_RECORD" | jq -r '.result[0].id // empty')
+          CURRENT_IP=$(echo "$EXISTING_RECORD" | jq -r '.result[0].content // empty')
 
           if [ -n "$RECORD_ID" ]; then
-            # Update existing record
-            echo "Updating existing DNS record..."
+            # Check if update is needed (avoid unnecessary API calls)
+            if [ "$CURRENT_IP" = "$PUBLIC_IP" ]; then
+              echo "DNS record already up to date, no update needed"
+              echo "dns_updated=true" >> $GITHUB_OUTPUT
+            else
+              # Update existing record
+              echo "Updating existing DNS record..."
             RESULT=$(curl -s -X PUT \
               "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$RECORD_ID" \
               -H "Authorization: Bearer $CF_API_TOKEN" \
@@ -445,6 +451,7 @@ jobs:
               echo "$RESULT" | jq '.errors'
               echo "dns_updated=false" >> $GITHUB_OUTPUT
               exit 1
+            fi
             fi
           else
             # Create new record
@@ -471,7 +478,7 @@ jobs:
       # Tests full user path: User -> Cloudflare -> VPS (nginx) -> WireGuard -> Plex
       # =======================================================================
       - name: Public Endpoint Test
-        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '')
+        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '') && steps.dns.outputs.dns_updated == 'true'
         id: public_test
         run: |
           echo "Testing public endpoint: https://streaming.homelab0.org"
@@ -529,6 +536,11 @@ jobs:
             echo "NOTE: After VPS recreate, update 1Password 'WireGuard Gateway K8s' with new VPS public key"
           fi
 
+          # Emit warning if endpoint not operational (visible in Actions UI)
+          if [ "$PUBLIC_ENDPOINT_OK" = "false" ]; then
+            echo "::warning::Public endpoint is not fully operational - check WireGuard tunnel and K8s connectivity"
+          fi
+
           # Export results
           echo "nginx_ok=$NGINX_OK" >> $GITHUB_OUTPUT
           echo "plex_ok=$PLEX_OK" >> $GITHUB_OUTPUT
@@ -572,9 +584,10 @@ jobs:
 
           # Health check results (only when nginx proxy enabled)
           if [ "$ENABLE_NGINX" = "true" ]; then
-            DNS_OK="${{ steps.dns.outputs.dns_updated }}"
-            NGINX_OK="${{ steps.public_test.outputs.nginx_ok }}"
-            PLEX_OK="${{ steps.public_test.outputs.plex_ok }}"
+            # Use defaults for outputs that may be empty if steps were skipped
+            DNS_OK="${{ steps.dns.outputs.dns_updated || 'false' }}"
+            NGINX_OK="${{ steps.public_test.outputs.nginx_ok || 'false' }}"
+            PLEX_OK="${{ steps.public_test.outputs.plex_ok || 'false' }}"
 
             echo "## Service Health" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
