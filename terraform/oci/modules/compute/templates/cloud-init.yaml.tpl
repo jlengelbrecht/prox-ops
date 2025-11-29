@@ -154,6 +154,13 @@ write_files:
       # Plex reverse proxy with Let's Encrypt certificate
       # DNS-only mode: Traffic goes directly to origin (no Cloudflare proxy)
       # Traffic flow: Client -> Nginx (443) -> WireGuard (10.200.200.2:32400)
+
+      # WebSocket connection upgrade mapping
+      map $http_upgrade $connection_upgrade {
+          default upgrade;
+          '' close;
+      }
+
       server {
           listen 443 ssl http2;
           listen [::]:443 ssl http2;
@@ -183,7 +190,7 @@ write_files:
 
               # WebSocket support (required for Plex)
               proxy_set_header Upgrade $http_upgrade;
-              proxy_set_header Connection "upgrade";
+              proxy_set_header Connection $connection_upgrade;
 
               # Standard proxy headers
               proxy_set_header Host $host;
