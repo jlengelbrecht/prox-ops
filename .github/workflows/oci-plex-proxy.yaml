@@ -338,20 +338,28 @@ jobs:
           TF_VAR_nginx_backend_url: ${{ secrets.NGINX_BACKEND_URL }}
           TF_VAR_plex_loadbalancer_ip: ${{ secrets.PLEX_LOADBALANCER_IP }}
         run: |
-          echo "::group::Deployment Outputs"
-
+          # Get outputs (suppress from logs)
           PUBLIC_IP=$(terraform output -raw plex_proxy_public_ip 2>/dev/null || echo "N/A")
-          WG_ENDPOINT=$(terraform output -raw plex_proxy_wireguard_endpoint 2>/dev/null || echo "N/A")
           VPS_WG_PUB=$(terraform output -raw vps_wireguard_public_key 2>/dev/null || echo "N/A")
 
-          # Export for subsequent steps
-          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
-          echo "wg_endpoint=$WG_ENDPOINT" >> $GITHUB_OUTPUT
+          # SECURITY: Mask sensitive values to prevent log exposure
+          # GitHub Actions will replace these values with *** in all subsequent log output
+          if [ "$PUBLIC_IP" != "N/A" ]; then
+            echo "::add-mask::$PUBLIC_IP"
+          fi
+          if [ "$VPS_WG_PUB" != "N/A" ]; then
+            echo "::add-mask::$VPS_WG_PUB"
+          fi
 
-          echo "::endgroup::"
+          # Export for subsequent steps (values are masked in logs)
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "vps_wg_pubkey=$VPS_WG_PUB" >> $GITHUB_OUTPUT
+          echo "outputs_retrieved=true" >> $GITHUB_OUTPUT
 
       # =======================================================================
-      # Health Checks - Verify VPS and connectivity
+      # Wait for VPS Boot - Fixed delay for cloud-init completion
+      # NOTE: SSH from GitHub Actions is blocked by firewall (ssh_allowed_cidrs)
+      # No SSH check is performed; we wait for cloud-init then test public endpoint
       # =======================================================================
       - name: Wait for VPS Boot
         if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
@@ -364,134 +372,27 @@ jobs:
             exit 1
           fi
 
-          echo "Waiting for VPS to boot and SSH to become available..."
-          echo "Public IP: $PUBLIC_IP"
+          echo "Waiting for VPS to boot..."
+          echo "Note: SSH port check skipped - GitHub Actions IPs are not in firewall allowlist"
+          echo "This is expected behavior for security (ssh_allowed_cidrs restricts access)"
 
-          # Wait up to 3 minutes for SSH port to be open
-          MAX_ATTEMPTS=18
-          ATTEMPT=0
-          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-            ATTEMPT=$((ATTEMPT + 1))
-            if timeout 5 bash -c "cat < /dev/tcp/$PUBLIC_IP/22" 2>/dev/null; then
-              echo "SSH port is open after $((ATTEMPT * 10)) seconds"
-              break
-            fi
-            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS: SSH not ready, waiting 10s..."
-            sleep 10
-          done
+          # Wait a fixed time for cloud-init to complete
+          # Cloud-init typically takes 2-3 minutes for package installation
+          echo "Waiting 180 seconds for cloud-init to complete..."
+          sleep 180
+          echo "Wait complete - proceeding to public endpoint test"
 
-          if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
-            echo "Warning: SSH port not responding after 3 minutes"
-          fi
-
-      - name: VPS Health Check
-        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
-        id: health
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
-        run: |
-          PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
-
-          # SECURITY: Ensure SSH key cleanup even on failure
-          cleanup_ssh() { rm -f ~/.ssh/oci_key; }
-          trap cleanup_ssh EXIT
-
-          # Validate PUBLIC_IP before proceeding
-          if [ "$PUBLIC_IP" = "N/A" ] || [ -z "$PUBLIC_IP" ]; then
-            echo "Error: Public IP not available from Terraform outputs"
-            echo "ssh_available=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # Initialize health check results
-          SSH_OK="false"
-          CLOUD_INIT_OK="false"
-          WG_OK="false"
-          CLUSTER_OK="false"
-          PLEX_OK="false"
-
-          # Check if we have SSH key
-          if [ -z "$SSH_PRIVATE_KEY" ]; then
-            echo "Warning: OCI_SSH_PRIVATE_KEY not set, skipping SSH-based health checks"
-            echo "ssh_available=false" >> $GITHUB_OUTPUT
-          else
-            echo "ssh_available=true" >> $GITHUB_OUTPUT
-
-            # Setup SSH key (using printf for proper multiline handling)
-            mkdir -p ~/.ssh
-            printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/oci_key
-            chmod 600 ~/.ssh/oci_key
-
-            # Wait for cloud-init to complete
-            # NOTE: StrictHostKeyChecking=no is acceptable for ephemeral VMs - the VPS is recreated fresh
-            echo "Checking cloud-init status..."
-            if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 \
-               ubuntu@$PUBLIC_IP "sudo cloud-init status --wait" 2>/dev/null; then
-              CLOUD_INIT_OK="true"
-              SSH_OK="true"
-              echo "Cloud-init completed successfully"
-            else
-              echo "Warning: Could not verify cloud-init status"
-            fi
-
-            # Check WireGuard tunnel
-            echo "Checking WireGuard tunnel..."
-            WG_STATUS=$(ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
-               ubuntu@$PUBLIC_IP "sudo wg show wg0 2>/dev/null | grep -c '^peer:'" 2>/dev/null || echo "0")
-            if [ "$WG_STATUS" != "0" ]; then
-              WG_OK="true"
-              echo "WireGuard tunnel is up with $WG_STATUS peer(s)"
-            else
-              echo "Warning: WireGuard tunnel not established yet"
-            fi
-
-            # Test cluster connectivity via WireGuard
-            WG_PEER_IP="${{ secrets.WG_K8S_PEER_IP }}"
-            if [ -n "$WG_PEER_IP" ]; then
-              echo "Testing cluster connectivity via WireGuard..."
-              if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
-                 ubuntu@$PUBLIC_IP "ping -c 1 -W 5 $WG_PEER_IP" 2>/dev/null | grep -q "0% packet loss"; then
-                CLUSTER_OK="true"
-                echo "Cluster reachable via WireGuard tunnel"
-              else
-                echo "Warning: Cannot reach cluster via WireGuard"
-              fi
-            else
-              echo "Note: WG_K8S_PEER_IP not configured, skipping cluster connectivity test"
-            fi
-
-            # Test Plex endpoint (using secret to avoid exposing URL)
-            PLEX_ENDPOINT="${{ secrets.PLEX_INTERNAL_ENDPOINT }}"
-            if [ -n "$PLEX_ENDPOINT" ]; then
-              echo "Testing Plex accessibility..."
-              if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
-                 ubuntu@$PUBLIC_IP "curl -s --connect-timeout 5 \"$PLEX_ENDPOINT/identity\"" 2>/dev/null | grep -q "MediaContainer"; then
-                PLEX_OK="true"
-                echo "Plex endpoint is accessible"
-              else
-                echo "Warning: Cannot reach Plex endpoint"
-              fi
-            else
-              echo "Note: PLEX_INTERNAL_ENDPOINT not configured, skipping Plex test"
-            fi
-          fi
-
-          # Export results
-          echo "ssh_ok=$SSH_OK" >> $GITHUB_OUTPUT
-          echo "cloud_init_ok=$CLOUD_INIT_OK" >> $GITHUB_OUTPUT
-          echo "wg_ok=$WG_OK" >> $GITHUB_OUTPUT
-          echo "cluster_ok=$CLUSTER_OK" >> $GITHUB_OUTPUT
-          echo "plex_ok=$PLEX_OK" >> $GITHUB_OUTPUT
-
-      # Cloudflare DNS Management - Update/Create A record for streaming.homelab0.org
+      # =======================================================================
+      # Cloudflare DNS Management - Update/Create A record
+      # =======================================================================
       - name: Update Cloudflare DNS
         if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '')
+        id: dns
         env:
           CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           DNS_NAME: "streaming.homelab0.org"
         run: |
-          echo "::group::Cloudflare DNS Update"
           PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
 
           if [ "$PUBLIC_IP" = "N/A" ] || [ -z "$PUBLIC_IP" ]; then
@@ -500,7 +401,6 @@ jobs:
           fi
 
           # Validate IP format with octet range check (defense-in-depth)
-          # Each octet must be 0-255
           validate_ip() {
             local ip=$1
             local IFS='.'
@@ -508,17 +408,17 @@ jobs:
             [ ${#octets[@]} -ne 4 ] && return 1
             for octet in "${octets[@]}"; do
               [[ ! "$octet" =~ ^[0-9]+$ ]] && return 1
-              # Only need to check > 255; negative numbers already excluded by regex
               [ "$octet" -gt 255 ] && return 1
             done
             return 0
           }
           if ! validate_ip "$PUBLIC_IP"; then
-            echo "Error: Invalid IP format: $PUBLIC_IP"
+            echo "Error: Invalid IP format"
             exit 1
           fi
 
-          echo "Updating Cloudflare DNS: $DNS_NAME -> $PUBLIC_IP (proxied)"
+          # SECURITY: Don't log the IP (it's masked, but be explicit)
+          echo "Updating Cloudflare DNS: $DNS_NAME (proxied mode)"
 
           # Check if record exists
           EXISTING_RECORD=$(curl -s -X GET \
@@ -530,29 +430,32 @@ jobs:
           CURRENT_IP=$(echo "$EXISTING_RECORD" | jq -r '.result[0].content // empty')
 
           if [ -n "$RECORD_ID" ]; then
-            # Update existing record
-            echo "Found existing record (ID: $RECORD_ID, IP: $CURRENT_IP)"
+            # Check if update is needed (avoid unnecessary API calls)
             if [ "$CURRENT_IP" = "$PUBLIC_IP" ]; then
-              echo "DNS record already points to $PUBLIC_IP, no update needed"
+              echo "DNS record already up to date, no update needed"
+              echo "dns_updated=true" >> $GITHUB_OUTPUT
             else
-              echo "Updating DNS record to point to $PUBLIC_IP"
-              RESULT=$(curl -s -X PUT \
-                "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$RECORD_ID" \
-                -H "Authorization: Bearer $CF_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":true}")
+              # Update existing record
+              echo "Updating existing DNS record..."
+            RESULT=$(curl -s -X PUT \
+              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$RECORD_ID" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":true}")
 
-              if echo "$RESULT" | jq -e '.success' > /dev/null; then
-                echo "DNS record updated successfully"
-              else
-                echo "Failed to update DNS record:"
-                echo "$RESULT" | jq .
-                exit 1
-              fi
+            if echo "$RESULT" | jq -e '.success' > /dev/null; then
+              echo "DNS record updated successfully"
+              echo "dns_updated=true" >> $GITHUB_OUTPUT
+            else
+              echo "Failed to update DNS record"
+              echo "$RESULT" | jq '.errors'
+              echo "dns_updated=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
             fi
           else
             # Create new record
-            echo "No existing record found, creating new A record"
+            echo "Creating new DNS A record..."
             RESULT=$(curl -s -X POST \
               "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
               -H "Authorization: Bearer $CF_API_TOKEN" \
@@ -561,28 +464,101 @@ jobs:
 
             if echo "$RESULT" | jq -e '.success' > /dev/null; then
               echo "DNS record created successfully"
+              echo "dns_updated=true" >> $GITHUB_OUTPUT
             else
-              echo "Failed to create DNS record:"
-              echo "$RESULT" | jq .
+              echo "Failed to create DNS record"
+              echo "$RESULT" | jq '.errors'
+              echo "dns_updated=false" >> $GITHUB_OUTPUT
               exit 1
             fi
           fi
-          echo "::endgroup::"
 
       # =======================================================================
-      # Deployment Summary - Comprehensive status report
+      # Public Endpoint Test - The REAL health check
+      # Tests full user path: User -> Cloudflare -> VPS (nginx) -> WireGuard -> Plex
+      # =======================================================================
+      - name: Public Endpoint Test
+        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '') && steps.dns.outputs.dns_updated == 'true'
+        id: public_test
+        run: |
+          echo "Testing public endpoint: https://streaming.homelab0.org"
+
+          # Wait for DNS propagation (Cloudflare is fast, but give it a moment)
+          echo "Waiting 15 seconds for DNS propagation..."
+          sleep 15
+
+          PUBLIC_ENDPOINT_OK="false"
+          NGINX_OK="false"
+          PLEX_OK="false"
+
+          # Test 1: Check if nginx is responding (any response = nginx is up)
+          echo "Test 1: Checking nginx responsiveness..."
+          for attempt in 1 2 3 4 5; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "https://streaming.homelab0.org/" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" != "000" ] && [ "$HTTP_CODE" != "502" ] && [ "$HTTP_CODE" != "503" ] && [ "$HTTP_CODE" != "504" ] && [ "$HTTP_CODE" != "523" ] && [ "$HTTP_CODE" != "524" ]; then
+              NGINX_OK="true"
+              echo "Nginx responding (HTTP $HTTP_CODE)"
+              break
+            else
+              echo "Attempt $attempt/5: nginx not ready (HTTP $HTTP_CODE), waiting 20s..."
+              sleep 20
+            fi
+          done
+
+          # Test 2: Check if Plex is accessible through the full chain
+          if [ "$NGINX_OK" = "true" ]; then
+            echo "Test 2: Checking Plex accessibility..."
+            for attempt in 1 2 3; do
+              if curl -s --connect-timeout 10 --max-time 30 "https://streaming.homelab0.org/identity" 2>/dev/null | grep -q "MediaContainer"; then
+                PLEX_OK="true"
+                PUBLIC_ENDPOINT_OK="true"
+                echo "Plex is accessible via public endpoint"
+                break
+              else
+                echo "Attempt $attempt/3: Plex not responding, waiting 15s..."
+                sleep 15
+              fi
+            done
+          fi
+
+          if [ "$PUBLIC_ENDPOINT_OK" = "false" ]; then
+            echo ""
+            echo "Public endpoint not fully operational. Possible causes:"
+            if [ "$NGINX_OK" = "false" ]; then
+              echo "  - nginx is still starting (cloud-init not complete)"
+              echo "  - Cloudflare cannot reach origin (error 523)"
+            else
+              echo "  - WireGuard tunnel not established with K8s cluster"
+              echo "  - K8s WireGuard gateway needs updated VPS public key"
+              echo "  - Plex pod not running or not accessible"
+            fi
+            echo ""
+            echo "NOTE: After VPS recreate, update 1Password 'WireGuard Gateway K8s' with new VPS public key"
+          fi
+
+          # Emit warning if endpoint not operational (visible in Actions UI)
+          if [ "$PUBLIC_ENDPOINT_OK" = "false" ]; then
+            echo "::warning::Public endpoint is not fully operational - check WireGuard tunnel and K8s connectivity"
+          fi
+
+          # Export results
+          echo "nginx_ok=$NGINX_OK" >> $GITHUB_OUTPUT
+          echo "plex_ok=$PLEX_OK" >> $GITHUB_OUTPUT
+          echo "public_endpoint_ok=$PUBLIC_ENDPOINT_OK" >> $GITHUB_OUTPUT
+
+      # =======================================================================
+      # Deployment Summary - Security-conscious status report
+      # SECURITY: No IPs, endpoints, or connection details in summary
       # =======================================================================
       - name: Deployment Summary
         if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
         env:
           ENABLE_NGINX: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
         run: |
-          PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
           START_TIME="${{ steps.metadata.outputs.start_time }}"
           END_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           # Calculate duration
-          # NOTE: Uses GNU date -d flag (works on GitHub Actions ubuntu-latest, not BSD/macOS)
           START_SEC=$(date -d "$START_TIME" +%s 2>/dev/null || echo "0")
           END_SEC=$(date -d "$END_TIME" +%s 2>/dev/null || echo "0")
           if [ "$START_SEC" != "0" ] && [ "$END_SEC" != "0" ]; then
@@ -599,62 +575,46 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Deployment Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Public IP | \`$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Nginx Proxy | $ENABLE_NGINX |" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Terraform Apply | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          echo "| Nginx Proxy Mode | $ENABLE_NGINX |" >> $GITHUB_STEP_SUMMARY
           echo "| Duration | $DURATION_STR |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Health check results
-          echo "## Health Checks" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          # Build health check table
-          SSH_AVAILABLE="${{ steps.health.outputs.ssh_available }}"
-          if [ "$SSH_AVAILABLE" = "true" ]; then
-            SSH_OK="${{ steps.health.outputs.ssh_ok }}"
-            CLOUD_INIT_OK="${{ steps.health.outputs.cloud_init_ok }}"
-            WG_OK="${{ steps.health.outputs.wg_ok }}"
-            CLUSTER_OK="${{ steps.health.outputs.cluster_ok }}"
-            PLEX_OK="${{ steps.health.outputs.plex_ok }}"
-
-            echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
-            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-            echo "| SSH Access | $([ \"$SSH_OK\" = \"true\" ] && echo '✅ Pass' || echo '❌ Fail') |" >> $GITHUB_STEP_SUMMARY
-            echo "| Cloud-init | $([ \"$CLOUD_INIT_OK\" = \"true\" ] && echo '✅ Complete' || echo '⚠️ Pending') |" >> $GITHUB_STEP_SUMMARY
-            echo "| WireGuard Tunnel | $([ \"$WG_OK\" = \"true\" ] && echo '✅ Established' || echo '⚠️ Not Ready') |" >> $GITHUB_STEP_SUMMARY
-            echo "| Cluster Connectivity | $([ \"$CLUSTER_OK\" = \"true\" ] && echo '✅ Reachable' || echo '⚠️ Unreachable') |" >> $GITHUB_STEP_SUMMARY
-            echo "| Plex Endpoint | $([ \"$PLEX_OK\" = \"true\" ] && echo '✅ Accessible' || echo '⚠️ Not Tested') |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "> ⚠️ SSH key not configured. Add \`OCI_SSH_PRIVATE_KEY\` secret for health checks." >> $GITHUB_STEP_SUMMARY
-            echo ">" >> $GITHUB_STEP_SUMMARY
-            echo "> Optionally add \`PLEX_INTERNAL_ENDPOINT\` secret for Plex accessibility testing." >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          # Access URLs section
+          # Health check results (only when nginx proxy enabled)
           if [ "$ENABLE_NGINX" = "true" ]; then
-            echo "## Access" >> $GITHUB_STEP_SUMMARY
+            # Use defaults for outputs that may be empty if steps were skipped
+            DNS_OK="${{ steps.dns.outputs.dns_updated || 'false' }}"
+            NGINX_OK="${{ steps.public_test.outputs.nginx_ok || 'false' }}"
+            PLEX_OK="${{ steps.public_test.outputs.plex_ok || 'false' }}"
+
+            echo "## Service Health" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
-            echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
-            echo "| Plex (Cloudflare) | \`https://streaming.homelab0.org\` |" >> $GITHUB_STEP_SUMMARY
-            echo "| SSH | \`ssh ubuntu@$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| Service | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Cloudflare DNS | $([ \"$DNS_OK\" = \"true\" ] && echo '✅ Updated' || echo '❌ Failed') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Nginx (via Cloudflare) | $([ \"$NGINX_OK\" = \"true\" ] && echo '✅ Responding' || echo '⚠️ Not Ready') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Plex (end-to-end) | $([ \"$PLEX_OK\" = \"true\" ] && echo '✅ Accessible' || echo '⚠️ Not Ready') |" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "## Security" >> $GITHUB_STEP_SUMMARY
+
+            # WireGuard key update reminder if Plex not accessible
+            if [ "$PLEX_OK" != "true" ]; then
+              echo "> **Action Required**: Update 1Password item 'WireGuard Gateway K8s' with new VPS public key." >> $GITHUB_STEP_SUMMARY
+              echo ">" >> $GITHUB_STEP_SUMMARY
+              echo "> The VPS WireGuard public key is available in Terraform outputs (run locally with \`terraform output vps_wireguard_public_key\`)." >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "## Security Configuration" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ Port 443: Cloudflare IPs only" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ Port 32400: Closed (traffic via nginx)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Port 32400: Closed (traffic via nginx reverse proxy)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ SSH: Restricted to configured CIDRs" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ WireGuard: Restricted to configured CIDRs" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ VPS IP hidden behind Cloudflare proxy" >> $GITHUB_STEP_SUMMARY
           else
-            echo "## Access" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
-            echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
-            echo "| Plex (Direct) | \`http://$PUBLIC_IP:32400\` |" >> $GITHUB_STEP_SUMMARY
-            echo "| SSH | \`ssh ubuntu@$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
+            echo "> ⚠️ Direct mode enabled - VPS IP is exposed publicly" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Destroy Summary
