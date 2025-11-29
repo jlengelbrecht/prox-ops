@@ -54,6 +54,39 @@ jobs:
       NGINX_ENABLED: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
 
     steps:
+      # =======================================================================
+      # Workflow Metadata - Track trigger type and timing
+      # =======================================================================
+      - name: Workflow Metadata
+        id: metadata
+        run: |
+          # Determine trigger type
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            TRIGGER_TYPE="scheduled"
+            TRIGGER_ICON="🕐"
+            TRIGGER_DESC="Monthly security update (cron)"
+          else
+            TRIGGER_TYPE="manual"
+            TRIGGER_ICON="👤"
+            TRIGGER_DESC="Manual trigger by @${{ github.actor }}"
+          fi
+
+          echo "trigger_type=$TRIGGER_TYPE" >> $GITHUB_OUTPUT
+          echo "trigger_icon=$TRIGGER_ICON" >> $GITHUB_OUTPUT
+          echo "trigger_desc=$TRIGGER_DESC" >> $GITHUB_OUTPUT
+          echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+          # Write header to summary
+          echo "# OCI Plex Proxy Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metadata | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Trigger | $TRIGGER_ICON $TRIGGER_DESC |" >> $GITHUB_STEP_SUMMARY
+          echo "| Action | \`${{ inputs.action || 'recreate' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Started | \`$(date -u '+%Y-%m-%d %H:%M:%S UTC')\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -132,7 +165,9 @@ jobs:
             fi
           fi
 
+      # =======================================================================
       # RECREATE: First destroy existing resources (also runs on schedule)
+      # =======================================================================
       - name: Terraform Destroy (recreate step 1)
         if: (inputs.action || 'recreate') == 'recreate'
         working-directory: ${{ env.WORKING_DIR }}
@@ -152,8 +187,19 @@ jobs:
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
+          # SECURITY: Ensure temp file cleanup even on failure
+          cleanup() { rm -f /tmp/tfdestroy.txt; }
+          trap cleanup EXIT
+
           echo "::group::Destroying existing resources"
-          terraform destroy -auto-approve -input=false || echo "Nothing to destroy"
+          # SECURITY: Suppress detailed destroy output (contains user_data with secrets)
+          terraform destroy -auto-approve -input=false > /tmp/tfdestroy.txt 2>&1
+          DESTROY_EXIT=$?
+          # Show only resource status (exclude any lines with sensitive patterns)
+          grep -E '^(Destroy complete|Error:|Warning:|module\.[^:]+: (Destroying|Destruction complete))' /tmp/tfdestroy.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -30 || true
+          if [ $DESTROY_EXIT -ne 0 ]; then
+            echo "Destroy failed or nothing to destroy"
+          fi
           echo "::endgroup::"
 
       - name: Terraform Plan
@@ -175,6 +221,10 @@ jobs:
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
+          # SECURITY: Ensure temp file cleanup even on failure
+          cleanup() { rm -f /tmp/tfplan.txt; }
+          trap cleanup EXIT
+
           echo "::group::Terraform Plan"
           # SECURITY: Suppress detailed plan output to prevent secret leakage
           # user_data contains base64-encoded cloud-init with WireGuard/TLS private keys
@@ -184,8 +234,6 @@ jobs:
           # Show only high-level summary (exclude any lines with sensitive patterns)
           grep -E '^(Plan:|No changes|Error:|Warning:|Terraform will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
           echo "Plan saved to tfplan file"
-          # Cleanup temp file containing secrets
-          rm -f /tmp/tfplan.txt
           echo "::endgroup::"
           exit $PLAN_EXIT
 
@@ -208,13 +256,15 @@ jobs:
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
+          # SECURITY: Ensure temp file cleanup even on failure
+          cleanup() { rm -f /tmp/tfplan.txt; }
+          trap cleanup EXIT
+
           echo "::group::Terraform Plan Destroy"
           # SECURITY: Suppress detailed plan output (same as plan step)
           terraform plan -destroy -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
           PLAN_EXIT=$?
           grep -E '^(Plan:|No changes|Error:|Warning:|Terraform will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
-          # Cleanup temp file containing secrets
-          rm -f /tmp/tfplan.txt
           echo "::endgroup::"
           exit $PLAN_EXIT
 
@@ -237,14 +287,16 @@ jobs:
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
+          # SECURITY: Ensure temp file cleanup even on failure
+          cleanup() { rm -f /tmp/tfapply.txt; }
+          trap cleanup EXIT
+
           echo "::group::Terraform Apply"
           # SECURITY: Suppress detailed apply output (contains user_data with secrets)
           terraform apply -input=false tfplan > /tmp/tfapply.txt 2>&1
           APPLY_EXIT=$?
           # Show only resource status (exclude any lines with sensitive patterns)
           grep -E '^(Apply complete|Error:|Warning:|module\.[^:]+: (Creating|Creation complete|Destroying|Destruction complete))' /tmp/tfapply.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -30 || true
-          # Cleanup temp file containing secrets
-          rm -f /tmp/tfapply.txt
           echo "::endgroup::"
           exit $APPLY_EXIT
 
@@ -274,10 +326,124 @@ jobs:
           WG_ENDPOINT=$(terraform output -raw plex_proxy_wireguard_endpoint 2>/dev/null || echo "N/A")
           VPS_WG_PUB=$(terraform output -raw vps_wireguard_public_key 2>/dev/null || echo "N/A")
 
-          # Export for Cloudflare DNS step
+          # Export for subsequent steps
           echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "wg_endpoint=$WG_ENDPOINT" >> $GITHUB_OUTPUT
 
           echo "::endgroup::"
+
+      # =======================================================================
+      # Health Checks - Verify VPS and connectivity
+      # =======================================================================
+      - name: Wait for VPS Boot
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
+        run: |
+          PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
+          echo "Waiting for VPS to boot and SSH to become available..."
+          echo "Public IP: $PUBLIC_IP"
+
+          # Wait up to 3 minutes for SSH port to be open
+          MAX_ATTEMPTS=18
+          ATTEMPT=0
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            if timeout 5 bash -c "cat < /dev/tcp/$PUBLIC_IP/22" 2>/dev/null; then
+              echo "SSH port is open after $((ATTEMPT * 10)) seconds"
+              break
+            fi
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS: SSH not ready, waiting 10s..."
+            sleep 10
+          done
+
+          if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+            echo "Warning: SSH port not responding after 3 minutes"
+          fi
+
+      - name: VPS Health Check
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
+        id: health
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.OCI_SSH_PRIVATE_KEY }}
+        run: |
+          PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
+
+          # SECURITY: Ensure SSH key cleanup even on failure
+          cleanup_ssh() { rm -f ~/.ssh/oci_key; }
+          trap cleanup_ssh EXIT
+
+          # Initialize health check results
+          SSH_OK="false"
+          CLOUD_INIT_OK="false"
+          WG_OK="false"
+          CLUSTER_OK="false"
+          PLEX_OK="false"
+
+          # Check if we have SSH key
+          if [ -z "$SSH_PRIVATE_KEY" ]; then
+            echo "Warning: OCI_SSH_PRIVATE_KEY not set, skipping SSH-based health checks"
+            echo "ssh_available=false" >> $GITHUB_OUTPUT
+          else
+            echo "ssh_available=true" >> $GITHUB_OUTPUT
+
+            # Setup SSH key
+            mkdir -p ~/.ssh
+            echo "$SSH_PRIVATE_KEY" > ~/.ssh/oci_key
+            chmod 600 ~/.ssh/oci_key
+
+            # Wait for cloud-init to complete
+            echo "Checking cloud-init status..."
+            if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+               ubuntu@$PUBLIC_IP "sudo cloud-init status --wait" 2>/dev/null; then
+              CLOUD_INIT_OK="true"
+              SSH_OK="true"
+              echo "Cloud-init completed successfully"
+            else
+              echo "Warning: Could not verify cloud-init status"
+            fi
+
+            # Check WireGuard tunnel
+            echo "Checking WireGuard tunnel..."
+            WG_STATUS=$(ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+               ubuntu@$PUBLIC_IP "sudo wg show wg0 2>/dev/null | grep -c 'peer:'" 2>/dev/null || echo "0")
+            if [ "$WG_STATUS" != "0" ]; then
+              WG_OK="true"
+              echo "WireGuard tunnel is up with $WG_STATUS peer(s)"
+            else
+              echo "Warning: WireGuard tunnel not established yet"
+            fi
+
+            # Test cluster connectivity via WireGuard
+            echo "Testing cluster connectivity via WireGuard..."
+            if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+               ubuntu@$PUBLIC_IP "ping -c 1 -W 5 10.200.200.2" 2>/dev/null | grep -q "1 received"; then
+              CLUSTER_OK="true"
+              echo "Cluster reachable via WireGuard tunnel"
+            else
+              echo "Warning: Cannot reach cluster via WireGuard"
+            fi
+
+            # Test Plex endpoint (using secret to avoid exposing URL)
+            PLEX_ENDPOINT="${{ secrets.PLEX_INTERNAL_ENDPOINT }}"
+            if [ -n "$PLEX_ENDPOINT" ]; then
+              echo "Testing Plex accessibility..."
+              if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+                 ubuntu@$PUBLIC_IP "curl -s --connect-timeout 5 '$PLEX_ENDPOINT/identity'" 2>/dev/null | grep -q "MediaContainer"; then
+                PLEX_OK="true"
+                echo "Plex endpoint is accessible"
+              else
+                echo "Warning: Cannot reach Plex endpoint"
+              fi
+            else
+              echo "Note: PLEX_INTERNAL_ENDPOINT not configured, skipping Plex test"
+            fi
+          fi
+
+          # Export results
+          echo "ssh_ok=$SSH_OK" >> $GITHUB_OUTPUT
+          echo "cloud_init_ok=$CLOUD_INIT_OK" >> $GITHUB_OUTPUT
+          echo "wg_ok=$WG_OK" >> $GITHUB_OUTPUT
+          echo "cluster_ok=$CLUSTER_OK" >> $GITHUB_OUTPUT
+          echo "plex_ok=$PLEX_OK" >> $GITHUB_OUTPUT
 
       # Cloudflare DNS Management - Update/Create A record for streaming.homelab0.org
       - name: Update Cloudflare DNS
@@ -363,58 +529,101 @@ jobs:
               exit 1
             fi
           fi
-
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Cloudflare DNS" >> $GITHUB_STEP_SUMMARY
-          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Domain | \`$DNS_NAME\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Points to | \`$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Proxy | Enabled (orange cloud) |" >> $GITHUB_STEP_SUMMARY
           echo "::endgroup::"
 
+      # =======================================================================
+      # Deployment Summary - Comprehensive status report
+      # =======================================================================
       - name: Deployment Summary
         if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
         env:
           ENABLE_NGINX: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
         run: |
           PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
+          START_TIME="${{ steps.metadata.outputs.start_time }}"
+          END_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          # Calculate duration
+          START_SEC=$(date -d "$START_TIME" +%s 2>/dev/null || echo "0")
+          END_SEC=$(date -d "$END_TIME" +%s 2>/dev/null || echo "0")
+          if [ "$START_SEC" != "0" ] && [ "$END_SEC" != "0" ]; then
+            DURATION=$((END_SEC - START_SEC))
+            DURATION_MIN=$((DURATION / 60))
+            DURATION_SEC=$((DURATION % 60))
+            DURATION_STR="${DURATION_MIN}m ${DURATION_SEC}s"
+          else
+            DURATION_STR="N/A"
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Resource | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Public IP | \`$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Nginx Proxy | $ENABLE_NGINX |" >> $GITHUB_STEP_SUMMARY
+          echo "| Duration | $DURATION_STR |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "$ENABLE_NGINX" = "true" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Access URLs" >> $GITHUB_STEP_SUMMARY
-            echo "- **Plex via Cloudflare**: \`https://streaming.homelab0.org\`" >> $GITHUB_STEP_SUMMARY
-            echo "- **SSH**: \`ssh ubuntu@$PUBLIC_IP\`" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Security" >> $GITHUB_STEP_SUMMARY
-            echo "- Port 443: Cloudflare IPs only" >> $GITHUB_STEP_SUMMARY
-            echo "- Port 32400: Closed (traffic via nginx)" >> $GITHUB_STEP_SUMMARY
-            echo "- VPS IP hidden behind Cloudflare proxy" >> $GITHUB_STEP_SUMMARY
+          # Health check results
+          echo "## Health Checks" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Build health check table
+          SSH_AVAILABLE="${{ steps.health.outputs.ssh_available }}"
+          if [ "$SSH_AVAILABLE" = "true" ]; then
+            SSH_OK="${{ steps.health.outputs.ssh_ok }}"
+            CLOUD_INIT_OK="${{ steps.health.outputs.cloud_init_ok }}"
+            WG_OK="${{ steps.health.outputs.wg_ok }}"
+            CLUSTER_OK="${{ steps.health.outputs.cluster_ok }}"
+            PLEX_OK="${{ steps.health.outputs.plex_ok }}"
+
+            echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| SSH Access | $([ \"$SSH_OK\" = \"true\" ] && echo '✅ Pass' || echo '❌ Fail') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Cloud-init | $([ \"$CLOUD_INIT_OK\" = \"true\" ] && echo '✅ Complete' || echo '⚠️ Pending') |" >> $GITHUB_STEP_SUMMARY
+            echo "| WireGuard Tunnel | $([ \"$WG_OK\" = \"true\" ] && echo '✅ Established' || echo '⚠️ Not Ready') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Cluster Connectivity | $([ \"$CLUSTER_OK\" = \"true\" ] && echo '✅ Reachable' || echo '⚠️ Unreachable') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Plex Endpoint | $([ \"$PLEX_OK\" = \"true\" ] && echo '✅ Accessible' || echo '⚠️ Not Tested') |" >> $GITHUB_STEP_SUMMARY
           else
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Access URLs" >> $GITHUB_STEP_SUMMARY
-            echo "- **Plex direct**: \`http://$PUBLIC_IP:32400\`" >> $GITHUB_STEP_SUMMARY
-            echo "- **SSH**: \`ssh ubuntu@$PUBLIC_IP\`" >> $GITHUB_STEP_SUMMARY
+            echo "> ⚠️ SSH key not configured. Add \`OCI_SSH_PRIVATE_KEY\` secret for health checks." >> $GITHUB_STEP_SUMMARY
+            echo ">" >> $GITHUB_STEP_SUMMARY
+            echo "> Optionally add \`PLEX_INTERNAL_ENDPOINT\` secret (e.g., \`http://10.20.81.100:32400\`) for Plex testing." >> $GITHUB_STEP_SUMMARY
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "1. Verify WireGuard tunnel is established" >> $GITHUB_STEP_SUMMARY
-          echo "2. Test Plex connectivity" >> $GITHUB_STEP_SUMMARY
+
+          # Access URLs section
           if [ "$ENABLE_NGINX" = "true" ]; then
-            echo "3. Verify Cloudflare proxy is working" >> $GITHUB_STEP_SUMMARY
+            echo "## Access" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
+            echo "| Plex (Cloudflare) | \`https://streaming.homelab0.org\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| SSH | \`ssh ubuntu@$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## Security" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Port 443: Cloudflare IPs only" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Port 32400: Closed (traffic via nginx)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ VPS IP hidden behind Cloudflare proxy" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Access" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-----|" >> $GITHUB_STEP_SUMMARY
+            echo "| Plex (Direct) | \`http://$PUBLIC_IP:32400\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| SSH | \`ssh ubuntu@$PUBLIC_IP\` |" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Destroy Summary
         if: (inputs.action || 'recreate') == 'destroy'
         run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "## OCI Plex Proxy Destroyed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "The OCI Plex Proxy VM has been destroyed." >> $GITHUB_STEP_SUMMARY
