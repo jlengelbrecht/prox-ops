@@ -20,6 +20,10 @@ packages:
 %{ endif ~}
 %{ if enable_nginx_proxy ~}
   - nginx
+%{ if cloudflare_dns_only ~}
+  - certbot
+  - python3-certbot-dns-cloudflare
+%{ endif ~}
 %{ endif ~}
 
 write_files:
@@ -113,12 +117,112 @@ write_files:
 %{ endif ~}
 
 %{ if enable_nginx_proxy ~}
-  # Nginx configuration for Cloudflare reverse proxy
+%{ if cloudflare_dns_only ~}
+  # Cloudflare API credentials for Let's Encrypt DNS-01 challenge
+  - path: /etc/letsencrypt/cloudflare.ini
+    permissions: '0600'
+    content: |
+      dns_cloudflare_api_token = ${cloudflare_api_token}
+
+  # Initial nginx config (HTTP only, for Let's Encrypt to issue cert)
+  # After certbot runs, this will be replaced with HTTPS config
+  - path: /etc/nginx/sites-available/plex-proxy
+    permissions: '0644'
+    content: |
+      # Temporary HTTP-only config for initial Let's Encrypt cert issuance
+      # Certbot will add HTTPS after obtaining certificate
+      server {
+          listen 80;
+          listen [::]:80;
+          server_name ${nginx_server_name};
+
+          # For certbot webroot (not used with DNS challenge, but harmless)
+          location /.well-known/acme-challenge/ {
+              root /var/www/html;
+          }
+
+          # Redirect everything else to HTTPS (once cert is ready)
+          location / {
+              return 503 "Certificate not yet issued. Please wait.";
+          }
+      }
+
+  # Full HTTPS nginx config (applied after certbot succeeds)
+  - path: /etc/nginx/sites-available/plex-proxy-https
+    permissions: '0644'
+    content: |
+      # Plex reverse proxy with Let's Encrypt certificate
+      # DNS-only mode: Traffic goes directly to origin (no Cloudflare proxy)
+      # Traffic flow: Client -> Nginx (443) -> WireGuard (10.200.200.2:32400)
+
+      # WebSocket connection upgrade mapping
+      map $http_upgrade $connection_upgrade {
+          default upgrade;
+          '' close;
+      }
+
+      server {
+          listen 443 ssl http2;
+          listen [::]:443 ssl http2;
+          server_name ${nginx_server_name};
+
+          # Let's Encrypt certificate (auto-renewed by certbot)
+          ssl_certificate /etc/letsencrypt/live/${nginx_server_name}/fullchain.pem;
+          ssl_certificate_key /etc/letsencrypt/live/${nginx_server_name}/privkey.pem;
+
+          # Modern TLS settings
+          ssl_protocols TLSv1.2 TLSv1.3;
+          ssl_prefer_server_ciphers off;
+          ssl_session_timeout 1d;
+          ssl_session_cache shared:SSL:10m;
+          ssl_session_tickets off;
+
+          # OCSP Stapling
+          ssl_stapling on;
+          ssl_stapling_verify on;
+          resolver 1.1.1.1 1.0.0.1 valid=300s;
+          resolver_timeout 5s;
+
+          # Reverse proxy to Plex via WireGuard tunnel
+          location / {
+              proxy_pass ${nginx_backend_url};
+              proxy_http_version 1.1;
+
+              # WebSocket support (required for Plex)
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection $connection_upgrade;
+
+              # Standard proxy headers
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+
+              # Plex-specific optimizations
+              proxy_buffering off;
+              proxy_request_buffering off;
+              client_max_body_size 100M;
+
+              # Timeouts for long-running streams
+              proxy_read_timeout 86400s;
+              proxy_send_timeout 86400s;
+          }
+      }
+
+      # Redirect HTTP to HTTPS
+      server {
+          listen 80;
+          listen [::]:80;
+          server_name ${nginx_server_name};
+          return 301 https://$host$request_uri;
+      }
+%{ else ~}
+  # Nginx configuration for Cloudflare proxy mode (Origin Certificate)
   - path: /etc/nginx/sites-available/plex-proxy
     permissions: '0644'
     content: |
       # Plex reverse proxy with Cloudflare Origin Certificate
-      # Traffic flow: Cloudflare (443) -> Nginx (443) -> WireGuard (10.200.200.2:32400)
+      # Proxy mode: Traffic flow: Cloudflare (443) -> Nginx (443) -> WireGuard (10.200.200.2:32400)
       server {
           listen 443 ssl http2;
           listen [::]:443 ssl http2;
@@ -180,6 +284,7 @@ write_files:
     content: |
       ${indent(6, nginx_origin_key)}
 %{ endif ~}
+%{ endif ~}
 
 runcmd:
   # Apply sysctl settings
@@ -201,19 +306,73 @@ runcmd:
 %{ endif ~}
 
 %{ if enable_nginx_proxy ~}
-  # Configure Nginx reverse proxy with error handling
+  # Configure Nginx reverse proxy
   - mkdir -p /etc/nginx/ssl
+  - mkdir -p /var/www/html
   - rm -f /etc/nginx/sites-enabled/default
   - ln -sf /etc/nginx/sites-available/plex-proxy /etc/nginx/sites-enabled/plex-proxy
+%{ if cloudflare_dns_only ~}
+  # DNS-only mode: Use Let's Encrypt with Cloudflare DNS challenge
+  - |
+    echo "Starting Let's Encrypt certificate issuance..." >> /var/log/cloud-init-custom.log
+
+    # Start nginx with temporary HTTP-only config first
+    if nginx -t 2>/var/log/nginx-test.log; then
+      systemctl start nginx
+      systemctl enable nginx
+      echo "Nginx started with temporary HTTP config" >> /var/log/cloud-init-custom.log
+    else
+      echo "ERROR: Initial nginx config test failed" >> /var/log/cloud-init-custom.log
+      cat /var/log/nginx-test.log >> /var/log/cloud-init-custom.log
+    fi
+
+    # Issue Let's Encrypt certificate using Cloudflare DNS challenge
+    # This works even before DNS is updated since we're using DNS-01 (not HTTP-01)
+    echo "Requesting Let's Encrypt certificate for ${nginx_server_name}..." >> /var/log/cloud-init-custom.log
+
+    certbot certonly \
+      --dns-cloudflare \
+      --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+      --dns-cloudflare-propagation-seconds 30 \
+      -d ${nginx_server_name} \
+      --email ${letsencrypt_email} \
+      --agree-tos \
+      --non-interactive \
+      2>&1 | tee -a /var/log/certbot.log
+
+    if [ $? -eq 0 ]; then
+      echo "Let's Encrypt certificate issued successfully" >> /var/log/cloud-init-custom.log
+
+      # Switch to HTTPS config
+      rm -f /etc/nginx/sites-enabled/plex-proxy
+      ln -sf /etc/nginx/sites-available/plex-proxy-https /etc/nginx/sites-enabled/plex-proxy
+
+      # Test and reload nginx with HTTPS config
+      if nginx -t 2>/var/log/nginx-test.log; then
+        systemctl reload nginx
+        echo "Nginx reloaded with Let's Encrypt HTTPS config for ${nginx_server_name}" >> /var/log/cloud-init-custom.log
+      else
+        echo "ERROR: HTTPS nginx config test failed" >> /var/log/cloud-init-custom.log
+        cat /var/log/nginx-test.log >> /var/log/cloud-init-custom.log
+      fi
+    else
+      echo "ERROR: Let's Encrypt certificate issuance failed. Check /var/log/certbot.log" >> /var/log/cloud-init-custom.log
+    fi
+
+  # Setup automatic certificate renewal
+  - echo "0 3 * * * root certbot renew --quiet --post-hook 'systemctl reload nginx'" > /etc/cron.d/certbot-renew
+%{ else ~}
+  # Proxy mode: Use Cloudflare Origin Certificate
   - |
     if nginx -t 2>/var/log/nginx-test.log; then
       systemctl restart nginx
       systemctl enable nginx
-      echo "Nginx reverse proxy configured for ${nginx_server_name}" >> /var/log/cloud-init-custom.log
+      echo "Nginx reverse proxy configured with Cloudflare Origin cert for ${nginx_server_name}" >> /var/log/cloud-init-custom.log
     else
       echo "ERROR: Nginx config test failed. Check /var/log/nginx-test.log" >> /var/log/cloud-init-custom.log
       cat /var/log/nginx-test.log >> /var/log/cloud-init-custom.log
     fi
+%{ endif ~}
 %{ endif ~}
 
   # Configure firewall - Oracle Linux has default iptables rules that conflict with UFW

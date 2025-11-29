@@ -130,8 +130,11 @@ jobs:
           # Security: Restrict SSH and WireGuard to home IP
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
-          # Nginx reverse proxy with Cloudflare
+          # Nginx reverse proxy with DNS-only mode (Cloudflare ToS compliance)
           TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -167,6 +170,9 @@ jobs:
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
           TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -211,6 +217,9 @@ jobs:
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
           TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -250,6 +259,9 @@ jobs:
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
           TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -285,6 +297,9 @@ jobs:
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
           TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -322,6 +337,9 @@ jobs:
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
           TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
           TF_VAR_nginx_server_name: "streaming.homelab0.org"
           TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
@@ -415,7 +433,8 @@ jobs:
           fi
 
           # SECURITY: Don't log the IP (it's masked, but be explicit)
-          echo "Updating Cloudflare DNS: $DNS_NAME (proxied mode)"
+          # DNS-only mode (proxied:false) required for Cloudflare ToS compliance with video streaming
+          echo "Updating Cloudflare DNS: $DNS_NAME (DNS-only mode - no proxy)"
 
           # Check if record exists
           EXISTING_RECORD=$(curl -s -X GET \
@@ -425,23 +444,24 @@ jobs:
 
           RECORD_ID=$(echo "$EXISTING_RECORD" | jq -r '.result[0].id // empty')
           CURRENT_IP=$(echo "$EXISTING_RECORD" | jq -r '.result[0].content // empty')
+          CURRENT_PROXIED=$(echo "$EXISTING_RECORD" | jq -r '.result[0].proxied // empty')
 
           if [ -n "$RECORD_ID" ]; then
-            # Check if update is needed (avoid unnecessary API calls)
-            if [ "$CURRENT_IP" = "$PUBLIC_IP" ]; then
-              echo "DNS record already up to date, no update needed"
+            # Check if update is needed (IP and proxied status)
+            if [ "$CURRENT_IP" = "$PUBLIC_IP" ] && [ "$CURRENT_PROXIED" = "false" ]; then
+              echo "DNS record already up to date (DNS-only mode), no update needed"
               echo "dns_updated=true" >> $GITHUB_OUTPUT
             else
-              # Update existing record
-              echo "Updating existing DNS record..."
+              # Update existing record (ensure proxied:false for DNS-only mode)
+              echo "Updating existing DNS record to DNS-only mode..."
             RESULT=$(curl -s -X PUT \
               "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$RECORD_ID" \
               -H "Authorization: Bearer $CF_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":true}")
+              --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":false}")
 
             if echo "$RESULT" | jq -e '.success' > /dev/null; then
-              echo "DNS record updated successfully"
+              echo "DNS record updated successfully (DNS-only mode)"
               echo "dns_updated=true" >> $GITHUB_OUTPUT
             else
               echo "Failed to update DNS record"
@@ -451,16 +471,16 @@ jobs:
             fi
             fi
           else
-            # Create new record
-            echo "Creating new DNS A record..."
+            # Create new record with DNS-only mode (proxied:false)
+            echo "Creating new DNS A record (DNS-only mode)..."
             RESULT=$(curl -s -X POST \
               "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
               -H "Authorization: Bearer $CF_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":true}")
+              --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":false}")
 
             if echo "$RESULT" | jq -e '.success' > /dev/null; then
-              echo "DNS record created successfully"
+              echo "DNS record created successfully (DNS-only mode)"
               echo "dns_updated=true" >> $GITHUB_OUTPUT
             else
               echo "Failed to create DNS record"
@@ -602,11 +622,13 @@ jobs:
 
             echo "## Security Configuration" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ Port 443: Cloudflare IPs only" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ DNS-only mode (Cloudflare ToS compliant for video streaming)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Let's Encrypt TLS certificate (auto-renewed)" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ Port 32400: Closed (traffic via nginx reverse proxy)" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ SSH: Restricted to configured CIDRs" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ WireGuard: Restricted to configured CIDRs" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ VPS IP hidden behind Cloudflare proxy" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> **Note**: DNS-only mode exposes VPS IP but is required for Cloudflare ToS compliance with video streaming." >> $GITHUB_STEP_SUMMARY
           else
             echo "> ⚠️ Direct mode enabled - VPS IP is exposed publicly" >> $GITHUB_STEP_SUMMARY
           fi

@@ -56,17 +56,21 @@ module "plex_proxy" {
   wg_forward_port       = 32400
   wg_forward_target_ip  = var.plex_loadbalancer_ip
 
-  # Nginx reverse proxy with Cloudflare TLS
-  # When enabled: port 443 from Cloudflare IPs only (no 32400)
-  # When disabled: port 32400 open to all (legacy DNAT mode)
-  enable_nginx_proxy   = var.enable_nginx_proxy
-  nginx_server_name    = var.nginx_server_name
-  nginx_origin_cert    = var.nginx_origin_cert
-  nginx_origin_key     = var.nginx_origin_key
-  nginx_backend_url    = var.nginx_backend_url
+  # Nginx reverse proxy configuration
+  # Two modes:
+  #   1. DNS-only (cloudflare_dns_only=true): Port 443 open to all IPs, uses Let's Encrypt
+  #   2. Proxy mode (cloudflare_dns_only=false): Port 443 from Cloudflare IPs only, uses CF Origin cert
+  enable_nginx_proxy     = var.enable_nginx_proxy
+  cloudflare_dns_only    = var.cloudflare_dns_only
+  cloudflare_api_token   = var.cloudflare_api_token
+  letsencrypt_email      = var.letsencrypt_email
+  nginx_server_name      = var.nginx_server_name
+  nginx_origin_cert      = var.nginx_origin_cert
+  nginx_origin_key       = var.nginx_origin_key
+  nginx_backend_url      = var.nginx_backend_url
 
   # Additional ports to open (only when NOT using nginx proxy)
-  # When nginx is enabled, only 443 is opened (from Cloudflare IPs)
+  # When nginx is enabled, 443 is opened (source IPs depend on cloudflare_dns_only)
   additional_ingress_ports = var.enable_nginx_proxy ? [] : [
     { port = 32400, protocol = "tcp" },
     { port = 32400, protocol = "udp" },
