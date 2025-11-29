@@ -138,6 +138,20 @@ resource "oci_core_security_list" "main" {
     }
   }
 
+  # Ingress: HTTP (80) from Cloudflare IPs only - for HTTP to HTTPS redirect
+  # Must also be restricted to prevent bypassing Cloudflare protection
+  dynamic "ingress_security_rules" {
+    for_each = var.enable_nginx_proxy ? var.cloudflare_ipv4_ranges : []
+    content {
+      protocol = "6" # TCP
+      source   = ingress_security_rules.value
+      tcp_options {
+        min = 80
+        max = 80
+      }
+    }
+  }
+
   # Ingress: Additional ports
   dynamic "ingress_security_rules" {
     for_each = [for p in var.additional_ingress_ports : p if p.protocol == "tcp"]

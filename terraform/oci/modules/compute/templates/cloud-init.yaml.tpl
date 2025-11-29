@@ -201,13 +201,19 @@ runcmd:
 %{ endif ~}
 
 %{ if enable_nginx_proxy ~}
-  # Configure Nginx reverse proxy
+  # Configure Nginx reverse proxy with error handling
   - mkdir -p /etc/nginx/ssl
   - rm -f /etc/nginx/sites-enabled/default
   - ln -sf /etc/nginx/sites-available/plex-proxy /etc/nginx/sites-enabled/plex-proxy
-  - nginx -t && systemctl restart nginx
-  - systemctl enable nginx
-  - echo "Nginx reverse proxy configured for ${nginx_server_name}" >> /var/log/cloud-init-custom.log
+  - |
+    if nginx -t 2>/var/log/nginx-test.log; then
+      systemctl restart nginx
+      systemctl enable nginx
+      echo "Nginx reverse proxy configured for ${nginx_server_name}" >> /var/log/cloud-init-custom.log
+    else
+      echo "ERROR: Nginx config test failed. Check /var/log/nginx-test.log" >> /var/log/cloud-init-custom.log
+      cat /var/log/nginx-test.log >> /var/log/cloud-init-custom.log
+    fi
 %{ endif ~}
 
   # Configure firewall - Oracle Linux has default iptables rules that conflict with UFW
