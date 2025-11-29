@@ -126,6 +126,11 @@ variable "wg_private_key" {
   type        = string
   default     = ""
   sensitive   = true
+
+  validation {
+    condition     = var.wg_private_key == "" || can(regex("^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$", var.wg_private_key))
+    error_message = "wg_private_key must be a valid WireGuard private key (44 characters base64-encoded)."
+  }
 }
 
 variable "wg_peer_public_key" {
