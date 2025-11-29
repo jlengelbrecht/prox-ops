@@ -44,6 +44,8 @@ write_files:
       Address = ${wg_address}
       ListenPort = ${wg_listen_port}
       PrivateKey = ${wg_private_key}
+      # MTU must match K8s WireGuard gateway (1420) - OCI defaults to 8920 from jumbo frames
+      MTU = 1420
 
 %{ if wg_forward_port > 0 && !enable_nginx_proxy ~}
       # NAT rules for port forwarding (uses dynamic interface detection for OCI compatibility)
@@ -403,17 +405,20 @@ runcmd:
     # This works even before DNS is updated since we're using DNS-01 (not HTTP-01)
     echo "Requesting Let's Encrypt certificate for ${nginx_server_name}..." >> /var/log/cloud-init-custom.log
 
+    # Run certbot and capture its exit code properly
+    # NOTE: Using a separate command instead of pipeline to avoid $? capturing tee's exit code
     certbot certonly \
       --dns-cloudflare \
       --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-      --dns-cloudflare-propagation-seconds 30 \
+      --dns-cloudflare-propagation-seconds 60 \
       -d ${nginx_server_name} \
       --email ${letsencrypt_email} \
       --agree-tos \
       --non-interactive \
-      2>&1 | tee -a /var/log/certbot.log
+      >> /var/log/certbot.log 2>&1
+    CERTBOT_EXIT=$?
 
-    if [ $? -eq 0 ]; then
+    if [ $CERTBOT_EXIT -eq 0 ]; then
       echo "Let's Encrypt certificate issued successfully" >> /var/log/cloud-init-custom.log
 
       # Switch to HTTPS config
@@ -429,7 +434,9 @@ runcmd:
         cat /var/log/nginx-test.log >> /var/log/cloud-init-custom.log
       fi
     else
-      echo "ERROR: Let's Encrypt certificate issuance failed. Check /var/log/certbot.log" >> /var/log/cloud-init-custom.log
+      echo "ERROR: Let's Encrypt certificate issuance failed (exit code: $CERTBOT_EXIT). Check /var/log/certbot.log" >> /var/log/cloud-init-custom.log
+      # Log last 20 lines of certbot output for quick debugging
+      tail -20 /var/log/certbot.log >> /var/log/cloud-init-custom.log 2>/dev/null || true
     fi
 
   # Setup automatic certificate renewal
