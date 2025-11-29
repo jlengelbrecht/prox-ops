@@ -91,7 +91,8 @@ jobs:
           if [ ! -f "$KEY_DIR/plex-proxy-private.key" ]; then
             echo "Generating WireGuard keys..."
             wg genkey > "$KEY_DIR/plex-proxy-private.key"
-            cat "$KEY_DIR/plex-proxy-private.key" | wg pubkey > "$KEY_DIR/plex-proxy-public.key"
+            # Use shell redirection instead of pipe to avoid exposing key in debug logs
+            wg pubkey < "$KEY_DIR/plex-proxy-private.key" > "$KEY_DIR/plex-proxy-public.key"
             echo "Keys generated successfully"
           else
             echo "WireGuard keys already exist"
@@ -180,13 +181,13 @@ jobs:
           # Save full plan to file, show only summary in logs
           terraform plan -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
           PLAN_EXIT=$?
-          # Show only summary lines (no resource details with secrets)
-          grep -E '^(Plan:|No changes|Error:|Warning:|module\.)' /tmp/tfplan.txt | head -20 || true
-          echo "---"
-          tail -5 /tmp/tfplan.txt || true
+          # Show only high-level summary (exclude any lines with sensitive patterns)
+          grep -E '^(Plan:|No changes|Error:|Warning:|Terraform will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
           echo "Plan saved to tfplan file"
-          exit $PLAN_EXIT
+          # Cleanup temp file containing secrets
+          rm -f /tmp/tfplan.txt
           echo "::endgroup::"
+          exit $PLAN_EXIT
 
       - name: Terraform Plan Destroy
         if: (inputs.action || 'recreate') == 'destroy'
@@ -211,11 +212,11 @@ jobs:
           # SECURITY: Suppress detailed plan output (same as plan step)
           terraform plan -destroy -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
           PLAN_EXIT=$?
-          grep -E '^(Plan:|No changes|Error:|Warning:|module\.)' /tmp/tfplan.txt | head -20 || true
-          echo "---"
-          tail -5 /tmp/tfplan.txt || true
-          exit $PLAN_EXIT
+          grep -E '^(Plan:|No changes|Error:|Warning:|Terraform will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
+          # Cleanup temp file containing secrets
+          rm -f /tmp/tfplan.txt
           echo "::endgroup::"
+          exit $PLAN_EXIT
 
       - name: Terraform Apply
         if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'destroy' || (inputs.action || 'recreate') == 'recreate'
@@ -240,12 +241,12 @@ jobs:
           # SECURITY: Suppress detailed apply output (contains user_data with secrets)
           terraform apply -input=false tfplan > /tmp/tfapply.txt 2>&1
           APPLY_EXIT=$?
-          # Show only summary (resource creation status, no attribute values)
-          grep -E '^(Apply complete|Error:|Warning:|module\.[^:]+: (Creating|Creation complete|Destroying|Destruction complete))' /tmp/tfapply.txt | head -30 || true
-          echo "---"
-          tail -5 /tmp/tfapply.txt || true
-          exit $APPLY_EXIT
+          # Show only resource status (exclude any lines with sensitive patterns)
+          grep -E '^(Apply complete|Error:|Warning:|module\.[^:]+: (Creating|Creation complete|Destroying|Destruction complete))' /tmp/tfapply.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -30 || true
+          # Cleanup temp file containing secrets
+          rm -f /tmp/tfapply.txt
           echo "::endgroup::"
+          exit $APPLY_EXIT
 
       - name: Get Outputs
         if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
@@ -303,8 +304,8 @@ jobs:
             [ ${#octets[@]} -ne 4 ] && return 1
             for octet in "${octets[@]}"; do
               [[ ! "$octet" =~ ^[0-9]+$ ]] && return 1
-              # FIX: Use proper grouping for OR condition (operator precedence fix)
-              [ "$octet" -lt 0 -o "$octet" -gt 255 ] && return 1
+              # Only need to check > 255; negative numbers already excluded by regex
+              [ "$octet" -gt 255 ] && return 1
             done
             return 0
           }
