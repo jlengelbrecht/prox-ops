@@ -201,8 +201,14 @@ jobs:
           DESTROY_EXIT=$?
           # Show only resource status (exclude any lines with sensitive patterns)
           grep -E '^(Destroy complete|Error:|Warning:|module\.[^:]+: (Destroying|Destruction complete))' /tmp/tfdestroy.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -30 || true
+          # Distinguish between "nothing to destroy" (expected on fresh deploy) and actual errors
           if [ $DESTROY_EXIT -ne 0 ]; then
-            echo "Destroy failed or nothing to destroy"
+            if grep -q "No changes\|0 destroyed" /tmp/tfdestroy.txt 2>/dev/null; then
+              echo "No resources to destroy (clean state)"
+            else
+              echo "::error::Terraform destroy failed with exit code $DESTROY_EXIT"
+              exit $DESTROY_EXIT
+            fi
           fi
           echo "::endgroup::"
 
@@ -351,6 +357,13 @@ jobs:
         if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
         run: |
           PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
+
+          # Validate PUBLIC_IP before proceeding
+          if [ "$PUBLIC_IP" = "N/A" ] || [ -z "$PUBLIC_IP" ]; then
+            echo "Error: Public IP not available, cannot wait for VPS boot"
+            exit 1
+          fi
+
           echo "Waiting for VPS to boot and SSH to become available..."
           echo "Public IP: $PUBLIC_IP"
 
@@ -383,6 +396,13 @@ jobs:
           cleanup_ssh() { rm -f ~/.ssh/oci_key; }
           trap cleanup_ssh EXIT
 
+          # Validate PUBLIC_IP before proceeding
+          if [ "$PUBLIC_IP" = "N/A" ] || [ -z "$PUBLIC_IP" ]; then
+            echo "Error: Public IP not available from Terraform outputs"
+            echo "ssh_available=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           # Initialize health check results
           SSH_OK="false"
           CLOUD_INIT_OK="false"
@@ -397,14 +417,15 @@ jobs:
           else
             echo "ssh_available=true" >> $GITHUB_OUTPUT
 
-            # Setup SSH key
+            # Setup SSH key (using printf for proper multiline handling)
             mkdir -p ~/.ssh
-            echo "$SSH_PRIVATE_KEY" > ~/.ssh/oci_key
+            printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/oci_key
             chmod 600 ~/.ssh/oci_key
 
             # Wait for cloud-init to complete
+            # NOTE: StrictHostKeyChecking=no is acceptable for ephemeral VMs - the VPS is recreated fresh
             echo "Checking cloud-init status..."
-            if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+            if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30 \
                ubuntu@$PUBLIC_IP "sudo cloud-init status --wait" 2>/dev/null; then
               CLOUD_INIT_OK="true"
               SSH_OK="true"
@@ -415,8 +436,8 @@ jobs:
 
             # Check WireGuard tunnel
             echo "Checking WireGuard tunnel..."
-            WG_STATUS=$(ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-               ubuntu@$PUBLIC_IP "sudo wg show wg0 2>/dev/null | grep -c 'peer:'" 2>/dev/null || echo "0")
+            WG_STATUS=$(ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+               ubuntu@$PUBLIC_IP "sudo wg show wg0 2>/dev/null | grep -c '^peer:'" 2>/dev/null || echo "0")
             if [ "$WG_STATUS" != "0" ]; then
               WG_OK="true"
               echo "WireGuard tunnel is up with $WG_STATUS peer(s)"
@@ -428,8 +449,8 @@ jobs:
             WG_PEER_IP="${{ secrets.WG_K8S_PEER_IP }}"
             if [ -n "$WG_PEER_IP" ]; then
               echo "Testing cluster connectivity via WireGuard..."
-              if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-                 ubuntu@$PUBLIC_IP "ping -c 1 -W 5 $WG_PEER_IP" 2>/dev/null | grep -q "1 received"; then
+              if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+                 ubuntu@$PUBLIC_IP "ping -c 1 -W 5 $WG_PEER_IP" 2>/dev/null | grep -q "0% packet loss"; then
                 CLUSTER_OK="true"
                 echo "Cluster reachable via WireGuard tunnel"
               else
@@ -443,8 +464,8 @@ jobs:
             PLEX_ENDPOINT="${{ secrets.PLEX_INTERNAL_ENDPOINT }}"
             if [ -n "$PLEX_ENDPOINT" ]; then
               echo "Testing Plex accessibility..."
-              if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-                 ubuntu@$PUBLIC_IP "curl -s --connect-timeout 5 '$PLEX_ENDPOINT/identity'" 2>/dev/null | grep -q "MediaContainer"; then
+              if ssh -i ~/.ssh/oci_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 \
+                 ubuntu@$PUBLIC_IP "curl -s --connect-timeout 5 \"$PLEX_ENDPOINT/identity\"" 2>/dev/null | grep -q "MediaContainer"; then
                 PLEX_OK="true"
                 echo "Plex endpoint is accessible"
               else
@@ -561,6 +582,7 @@ jobs:
           END_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           # Calculate duration
+          # NOTE: Uses GNU date -d flag (works on GitHub Actions ubuntu-latest, not BSD/macOS)
           START_SEC=$(date -d "$START_TIME" +%s 2>/dev/null || echo "0")
           END_SEC=$(date -d "$END_TIME" +%s 2>/dev/null || echo "0")
           if [ "$START_SEC" != "0" ] && [ "$END_SEC" != "0" ]; then
