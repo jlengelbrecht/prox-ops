@@ -109,27 +109,9 @@ jobs:
 
       - name: Install WireGuard tools
         run: |
-          # Required for terraform module to generate WireGuard keys via local-exec
+          # Required for terraform module to derive public key from static private key
           sudo apt-get update
           sudo apt-get install -y wireguard-tools
-
-      - name: Pre-generate WireGuard keys
-        working-directory: ${{ env.WORKING_DIR }}
-        run: |
-          # Terraform terraform_data resource tracks state but local-exec only runs on create
-          # After destroy+recreate, key files don't exist but state says they do
-          # Pre-generate keys to ensure files exist for terraform plan
-          KEY_DIR="modules/compute/.keys"
-          mkdir -p "$KEY_DIR"
-          if [ ! -f "$KEY_DIR/plex-proxy-private.key" ]; then
-            echo "Generating WireGuard keys..."
-            wg genkey > "$KEY_DIR/plex-proxy-private.key"
-            # Use shell redirection instead of pipe to avoid exposing key in debug logs
-            wg pubkey < "$KEY_DIR/plex-proxy-private.key" > "$KEY_DIR/plex-proxy-public.key"
-            echo "Keys generated successfully"
-          else
-            echo "WireGuard keys already exist"
-          fi
 
       - name: Initialize Terraform
         working-directory: ${{ env.WORKING_DIR }}
@@ -146,6 +128,7 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           # Security: Restrict SSH and WireGuard to home IP
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
@@ -181,6 +164,7 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
@@ -223,6 +207,7 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
@@ -260,6 +245,7 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
@@ -293,6 +279,7 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
@@ -328,6 +315,7 @@ jobs:
           TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
           TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
           TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
           TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
           TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
           TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
@@ -529,11 +517,9 @@ jobs:
               echo "  - Cloudflare cannot reach origin (error 523)"
             else
               echo "  - WireGuard tunnel not established with K8s cluster"
-              echo "  - K8s WireGuard gateway needs updated VPS public key"
               echo "  - Plex pod not running or not accessible"
+              echo "  - K8s WireGuard gateway pod may need restart (kubectl rollout restart -n network deploy/wireguard-gateway)"
             fi
-            echo ""
-            echo "NOTE: After VPS recreate, update 1Password 'WireGuard Gateway K8s' with new VPS public key"
           fi
 
           # Emit warning if endpoint not operational (visible in Actions UI)
@@ -598,11 +584,10 @@ jobs:
             echo "| Plex (end-to-end) | $([ \"$PLEX_OK\" = \"true\" ] && echo '✅ Accessible' || echo '⚠️ Not Ready') |" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
 
-            # WireGuard key update reminder if Plex not accessible
+            # Note about static keys (no 1Password update needed)
             if [ "$PLEX_OK" != "true" ]; then
-              echo "> **Action Required**: Update 1Password item 'WireGuard Gateway K8s' with new VPS public key." >> $GITHUB_STEP_SUMMARY
-              echo ">" >> $GITHUB_STEP_SUMMARY
-              echo "> The VPS WireGuard public key is available in Terraform outputs (run locally with \`terraform output vps_wireguard_public_key\`)." >> $GITHUB_STEP_SUMMARY
+              echo "> **Note**: VPS uses static WireGuard keys - no 1Password update required." >> $GITHUB_STEP_SUMMARY
+              echo "> Try restarting the K8s WireGuard gateway: \`kubectl rollout restart -n network deploy/wireguard-gateway\`" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
             fi
 

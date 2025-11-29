@@ -109,6 +109,13 @@ variable "k8s_wg_public_key" {
   default     = ""
 }
 
+variable "vps_wg_private_key" {
+  description = "Static WireGuard private key for VPS (enables one-click deploy without 1Password updates)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "plex_loadbalancer_ip" {
   description = "Plex LoadBalancer IP in K8s cluster (set via TF_VAR_plex_loadbalancer_ip secret)"
   type        = string

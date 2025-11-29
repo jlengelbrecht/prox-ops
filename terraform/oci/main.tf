@@ -46,6 +46,7 @@ module "plex_proxy" {
 
   # WireGuard configuration for Plex proxy
   enable_wireguard       = true
+  wg_private_key         = var.vps_wg_private_key  # Static key for one-click deploy
   wg_peer_allowed_cidrs  = var.wg_peer_allowed_cidrs
   wg_listen_port        = 51820
   wg_peer_public_key    = var.k8s_wg_public_key

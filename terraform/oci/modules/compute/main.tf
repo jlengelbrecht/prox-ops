@@ -24,11 +24,23 @@ data "oci_core_images" "ubuntu" {
 }
 
 # =============================================================================
-# WireGuard Key Generation
+# WireGuard Key Management
+# =============================================================================
+# Supports two modes:
+# 1. Static key: Pass wg_private_key variable for persistent keys across VPS recreation
+# 2. Dynamic key: Generate new keys if wg_private_key is not provided (legacy behavior)
+#
+# For one-click deployment, use static keys stored in GitHub Secrets.
 # =============================================================================
 
+# Determine if we're using a static key (preferred for one-click deploy)
+locals {
+  use_static_wg_key = var.enable_wireguard && var.wg_private_key != ""
+}
+
+# Dynamic key generation (only when static key NOT provided)
 resource "terraform_data" "wireguard_keys" {
-  count = var.enable_wireguard ? 1 : 0
+  count = var.enable_wireguard && !local.use_static_wg_key ? 1 : 0
 
   provisioner "local-exec" {
     command = <<-EOT
@@ -40,15 +52,40 @@ resource "terraform_data" "wireguard_keys" {
 }
 
 data "local_file" "wg_private_key" {
-  count      = var.enable_wireguard ? 1 : 0
+  count      = var.enable_wireguard && !local.use_static_wg_key ? 1 : 0
   filename   = "${path.module}/.keys/${var.instance_name}-private.key"
   depends_on = [terraform_data.wireguard_keys]
 }
 
 data "local_file" "wg_public_key" {
-  count      = var.enable_wireguard ? 1 : 0
+  count      = var.enable_wireguard && !local.use_static_wg_key ? 1 : 0
   filename   = "${path.module}/.keys/${var.instance_name}-public.key"
   depends_on = [terraform_data.wireguard_keys]
+}
+
+# Derive public key from static private key (when static key provided)
+# Uses query parameter to pass key via stdin instead of shell interpolation (security best practice)
+data "external" "wg_public_key_from_static" {
+  count   = local.use_static_wg_key ? 1 : 0
+  program = ["bash", "-c", "jq -r .private_key | wg pubkey | jq -R '{public_key: .}'"]
+  query = {
+    private_key = var.wg_private_key
+  }
+}
+
+# Unified key references for use elsewhere in the module
+locals {
+  wg_private_key = var.enable_wireguard ? (
+    local.use_static_wg_key
+    ? var.wg_private_key
+    : trimspace(data.local_file.wg_private_key[0].content)
+  ) : ""
+
+  wg_public_key = var.enable_wireguard ? (
+    local.use_static_wg_key
+    ? data.external.wg_public_key_from_static[0].result["public_key"]
+    : trimspace(data.local_file.wg_public_key[0].content)
+  ) : ""
 }
 
 # =============================================================================
@@ -229,7 +266,7 @@ resource "oci_core_instance" "main" {
     user_data = base64encode(templatefile("${path.module}/templates/cloud-init.yaml.tpl", {
       hostname             = var.instance_name
       enable_wireguard     = var.enable_wireguard
-      wg_private_key       = var.enable_wireguard ? trimspace(data.local_file.wg_private_key[0].content) : ""
+      wg_private_key       = local.wg_private_key
       wg_address           = var.wg_address
       wg_listen_port       = var.wg_listen_port
       wg_peer_public_key   = var.wg_peer_public_key

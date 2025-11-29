@@ -43,6 +43,6 @@ output "subnet_id" {
 }
 
 output "wireguard_public_key" {
-  description = "WireGuard public key for this instance"
-  value       = var.enable_wireguard ? trimspace(data.local_file.wg_public_key[0].content) : null
+  description = "WireGuard public key for this instance (static if wg_private_key provided)"
+  value       = var.enable_wireguard ? local.wg_public_key : null
 }
