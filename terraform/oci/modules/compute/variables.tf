@@ -121,6 +121,13 @@ variable "wg_address" {
   default     = "10.200.200.1/24"
 }
 
+variable "wg_private_key" {
+  description = "Static WireGuard private key (if provided, skips key generation)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "wg_peer_public_key" {
   description = "WireGuard peer public key"
   type        = string
