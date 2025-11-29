@@ -59,7 +59,7 @@ module "plex_proxy" {
   nginx_server_name    = var.nginx_server_name
   nginx_origin_cert    = var.nginx_origin_cert
   nginx_origin_key     = var.nginx_origin_key
-  nginx_backend_url    = "http://10.200.200.2:32400"  # WireGuard peer running Plex
+  nginx_backend_url    = var.nginx_backend_url
 
   # Additional ports to open (only when NOT using nginx proxy)
   # When nginx is enabled, only 443 is opened (from Cloudflare IPs)

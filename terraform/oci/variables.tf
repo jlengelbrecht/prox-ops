@@ -110,9 +110,9 @@ variable "k8s_wg_public_key" {
 }
 
 variable "plex_loadbalancer_ip" {
-  description = "Plex LoadBalancer IP in K8s cluster"
+  description = "Plex LoadBalancer IP in K8s cluster (set via TF_VAR_plex_loadbalancer_ip secret)"
   type        = string
-  default     = "10.20.81.100"
+  sensitive   = true
 }
 
 # =============================================================================
@@ -142,6 +142,12 @@ variable "nginx_origin_key" {
   description = "Cloudflare Origin Certificate private key (PEM format)"
   type        = string
   default     = ""
+  sensitive   = true
+}
+
+variable "nginx_backend_url" {
+  description = "Backend URL for nginx reverse proxy (set via TF_VAR_nginx_backend_url secret)"
+  type        = string
   sensitive   = true
 }
 
