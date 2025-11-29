@@ -196,6 +196,9 @@ jobs:
               echo "No resources to destroy (clean state)"
             else
               echo "::error::Terraform destroy failed with exit code $DESTROY_EXIT"
+              # Show error lines (filter out sensitive content)
+              echo "Error details:"
+              grep -iE '(error|failed|invalid|cannot)' /tmp/tfdestroy.txt | grep -v -iE '(user_data|base64|private.?key|secret|token|password)' | head -20 || true
               exit $DESTROY_EXIT
             fi
           fi
