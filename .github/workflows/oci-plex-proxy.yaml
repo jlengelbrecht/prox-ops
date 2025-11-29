@@ -80,6 +80,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y wireguard-tools
 
+      - name: Pre-generate WireGuard keys
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          # Terraform terraform_data resource tracks state but local-exec only runs on create
+          # After destroy+recreate, key files don't exist but state says they do
+          # Pre-generate keys to ensure files exist for terraform plan
+          KEY_DIR="modules/compute/.keys"
+          mkdir -p "$KEY_DIR"
+          if [ ! -f "$KEY_DIR/plex-proxy-private.key" ]; then
+            echo "Generating WireGuard keys..."
+            wg genkey > "$KEY_DIR/plex-proxy-private.key"
+            cat "$KEY_DIR/plex-proxy-private.key" | wg pubkey > "$KEY_DIR/plex-proxy-public.key"
+            echo "Keys generated successfully"
+          else
+            echo "WireGuard keys already exist"
+          fi
+
       - name: Initialize Terraform
         working-directory: ${{ env.WORKING_DIR }}
         run: terraform init
@@ -158,7 +175,17 @@ jobs:
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
           echo "::group::Terraform Plan"
-          terraform plan -input=false -out=tfplan
+          # SECURITY: Suppress detailed plan output to prevent secret leakage
+          # user_data contains base64-encoded cloud-init with WireGuard/TLS private keys
+          # Save full plan to file, show only summary in logs
+          terraform plan -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
+          PLAN_EXIT=$?
+          # Show only summary lines (no resource details with secrets)
+          grep -E '^(Plan:|No changes|Error:|Warning:|module\.)' /tmp/tfplan.txt | head -20 || true
+          echo "---"
+          tail -5 /tmp/tfplan.txt || true
+          echo "Plan saved to tfplan file"
+          exit $PLAN_EXIT
           echo "::endgroup::"
 
       - name: Terraform Plan Destroy
@@ -181,7 +208,13 @@ jobs:
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
           echo "::group::Terraform Plan Destroy"
-          terraform plan -destroy -input=false -out=tfplan
+          # SECURITY: Suppress detailed plan output (same as plan step)
+          terraform plan -destroy -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
+          PLAN_EXIT=$?
+          grep -E '^(Plan:|No changes|Error:|Warning:|module\.)' /tmp/tfplan.txt | head -20 || true
+          echo "---"
+          tail -5 /tmp/tfplan.txt || true
+          exit $PLAN_EXIT
           echo "::endgroup::"
 
       - name: Terraform Apply
@@ -204,7 +237,14 @@ jobs:
           TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
         run: |
           echo "::group::Terraform Apply"
-          terraform apply -input=false tfplan
+          # SECURITY: Suppress detailed apply output (contains user_data with secrets)
+          terraform apply -input=false tfplan > /tmp/tfapply.txt 2>&1
+          APPLY_EXIT=$?
+          # Show only summary (resource creation status, no attribute values)
+          grep -E '^(Apply complete|Error:|Warning:|module\.[^:]+: (Creating|Creation complete|Destroying|Destruction complete))' /tmp/tfapply.txt | head -30 || true
+          echo "---"
+          tail -5 /tmp/tfapply.txt || true
+          exit $APPLY_EXIT
           echo "::endgroup::"
 
       - name: Get Outputs
@@ -263,7 +303,8 @@ jobs:
             [ ${#octets[@]} -ne 4 ] && return 1
             for octet in "${octets[@]}"; do
               [[ ! "$octet" =~ ^[0-9]+$ ]] && return 1
-              [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ] && return 1
+              # FIX: Use proper grouping for OR condition (operator precedence fix)
+              [ "$octet" -lt 0 -o "$octet" -gt 255 ] && return 1
             done
             return 0
           }
