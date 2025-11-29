@@ -153,51 +153,18 @@ jobs:
       # =======================================================================
       # RECREATE: First destroy existing resources (also runs on schedule)
       # =======================================================================
-      - name: Terraform Destroy (recreate step 1)
+      - name: Terraform Taint Instance (recreate step 1)
         if: (inputs.action || 'recreate') == 'recreate'
         working-directory: ${{ env.WORKING_DIR }}
-        env:
-          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
-          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
-          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
-          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
-          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
-          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
-          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
-          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
-          TF_VAR_vps_wg_public_key: ${{ secrets.VPS_WG_PUBLIC_KEY }}
-          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
-          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
-          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
-          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
-          TF_VAR_cloudflare_dns_only: "true"
-          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
-          TF_VAR_nginx_server_name: "streaming.homelab0.org"
-          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
-          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
-          TF_VAR_nginx_backend_url: ${{ secrets.NGINX_BACKEND_URL }}
-          TF_VAR_plex_loadbalancer_ip: ${{ secrets.PLEX_LOADBALANCER_IP }}
         run: |
-          # SECURITY: Ensure temp file cleanup even on failure
-          cleanup() { rm -f /tmp/tfdestroy.txt; }
-          trap cleanup EXIT
-
-          echo "::group::Destroying existing resources"
-          # SECURITY: Suppress detailed destroy output (contains user_data with secrets)
-          # Use targeted destroy to preserve static IP (which has prevent_destroy=true)
-          terraform destroy -target='module.plex_proxy[0]' -auto-approve -input=false > /tmp/tfdestroy.txt 2>&1
-          DESTROY_EXIT=$?
-          # Show only resource status (exclude any lines with sensitive patterns)
-          grep -E '^(Destroy complete|Error:|Warning:|module\.[^:]+: (Destroying|Destruction complete))' /tmp/tfdestroy.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -30 || true
-          # Distinguish between "nothing to destroy" (expected on fresh deploy) and actual errors
-          if [ $DESTROY_EXIT -ne 0 ]; then
-            if grep -q "No changes\|0 destroyed" /tmp/tfdestroy.txt 2>/dev/null; then
-              echo "No resources to destroy (clean state)"
-            else
-              echo "::error::Terraform destroy failed with exit code $DESTROY_EXIT"
-              exit $DESTROY_EXIT
-            fi
+          echo "::group::Marking instance for recreation"
+          # Taint the compute instance to force recreation on next apply
+          # This preserves the static IP (which has prevent_destroy=true)
+          # The static IP will be updated in-place to point to the new instance
+          if terraform taint 'module.plex_proxy[0].oci_core_instance.main' 2>/dev/null; then
+            echo "Instance marked for recreation"
+          else
+            echo "No existing instance to taint (fresh deploy)"
           fi
           echo "::endgroup::"
 
