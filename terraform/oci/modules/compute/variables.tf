@@ -178,6 +178,12 @@ variable "use_reserved_public_ip" {
   default     = false
 }
 
+variable "external_reserved_public_ip_id" {
+  description = "Signals that reserved public IP is managed externally at root level. When set to any non-empty value, prevents this module from creating its own reserved IP resource. The actual IP attachment is handled at root level using primary_private_ip_id output."
+  type        = string
+  default     = ""
+}
+
 # =============================================================================
 # Nginx Reverse Proxy Configuration
 # =============================================================================

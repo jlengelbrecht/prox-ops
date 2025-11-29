@@ -166,6 +166,9 @@ variable "nginx_origin_key" {
 variable "nginx_backend_url" {
   description = "Backend URL for nginx reverse proxy (set via TF_VAR_nginx_backend_url secret)"
   type        = string
+  # Default matches WireGuard tunnel IP range (10.200.200.0/24) defined in cloud-init.
+  # The K8s WireGuard gateway is assigned 10.200.200.2 in the tunnel.
+  default     = "http://10.200.200.2:32400"
   sensitive   = true
 }
 

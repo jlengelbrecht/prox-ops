@@ -285,34 +285,47 @@ resource "oci_core_instance" "main" {
 }
 
 # =============================================================================
-# Reserved Public IP
+# Reserved Public IP - Data Sources
 # =============================================================================
-# Creates a persistent public IP that survives instance recreation.
-# This eliminates the need to update NetworkPolicy and 1Password secrets
-# every time the VPS is recreated.
+# The module exposes private_ip_id for external reserved IP management.
+# Two modes are supported:
+#   1. External management (recommended): Reserved IP created at root level with
+#      prevent_destroy=true. The IP persists across module destruction. Pass both
+#      use_reserved_public_ip=true and external_reserved_public_ip_id="<any-value>"
+#      to enable private IP lookup and prevent module from creating its own reserved IP.
+#   2. Module-managed (legacy): Reserved IP created in module with
+#      use_reserved_public_ip=true. Destroyed when module is destroyed.
+#
+# For one-click deployment, use external management at root level.
+
+locals {
+  # Determine if we need to look up private IP info
+  use_any_reserved_ip = var.use_reserved_public_ip || var.external_reserved_public_ip_id != ""
+}
 
 # Get the VNIC attachment for the instance
 data "oci_core_vnic_attachments" "main" {
-  count          = var.use_reserved_public_ip ? 1 : 0
+  count          = local.use_any_reserved_ip ? 1 : 0
   compartment_id = var.compartment_id
   instance_id    = oci_core_instance.main.id
 }
 
 # Get the VNIC details
 data "oci_core_vnic" "main" {
-  count   = var.use_reserved_public_ip ? 1 : 0
+  count   = local.use_any_reserved_ip ? 1 : 0
   vnic_id = data.oci_core_vnic_attachments.main[0].vnic_attachments[0].vnic_id
 }
 
 # Get the primary private IP of the VNIC
 data "oci_core_private_ips" "main" {
-  count   = var.use_reserved_public_ip ? 1 : 0
+  count   = local.use_any_reserved_ip ? 1 : 0
   vnic_id = data.oci_core_vnic.main[0].id
 }
 
-# Reserved Public IP - persists across instance recreation
+# Module-managed Reserved Public IP (legacy mode - destroyed with module)
+# Only used when external_reserved_public_ip_id is NOT provided
 resource "oci_core_public_ip" "reserved" {
-  count          = var.use_reserved_public_ip ? 1 : 0
+  count          = var.use_reserved_public_ip && var.external_reserved_public_ip_id == "" ? 1 : 0
   compartment_id = var.compartment_id
   lifetime       = "RESERVED"
   display_name   = "${var.instance_name}-reserved-ip"
@@ -320,7 +333,6 @@ resource "oci_core_public_ip" "reserved" {
 
   freeform_tags = var.freeform_tags
 
-  # The reserved IP should not be destroyed when the instance is recreated
   lifecycle {
     prevent_destroy = false
   }
