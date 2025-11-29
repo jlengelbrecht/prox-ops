@@ -189,9 +189,28 @@ variable "external_reserved_public_ip_id" {
 # =============================================================================
 
 variable "enable_nginx_proxy" {
-  description = "Enable nginx reverse proxy with Cloudflare TLS"
+  description = "Enable nginx reverse proxy with TLS"
   type        = bool
   default     = false
+}
+
+variable "cloudflare_dns_only" {
+  description = "Use Cloudflare DNS-only mode (no proxy). When true, opens port 443 to all IPs instead of just Cloudflare IPs. Recommended for Plex streaming (Cloudflare ToS prohibits proxying video)."
+  type        = bool
+  default     = true
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token for Let's Encrypt DNS-01 challenge (required when cloudflare_dns_only=true)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "letsencrypt_email" {
+  description = "Email for Let's Encrypt certificate registration and renewal notices"
+  type        = string
+  default     = ""
 }
 
 variable "nginx_server_name" {

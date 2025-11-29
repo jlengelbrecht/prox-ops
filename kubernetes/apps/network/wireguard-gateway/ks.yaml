@@ -19,6 +19,11 @@ spec:
   interval: 30m
   retryInterval: 1m
   timeout: 5m
+  # SOPS decryption for WireGuard config secret
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
   healthChecks:
     - apiVersion: helm.toolkit.fluxcd.io/v2
       kind: HelmRelease

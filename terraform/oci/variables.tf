@@ -134,13 +134,43 @@ variable "plex_loadbalancer_ip" {
 }
 
 # =============================================================================
-# Nginx Reverse Proxy Configuration (Cloudflare)
+# Nginx Reverse Proxy Configuration
 # =============================================================================
 
 variable "enable_nginx_proxy" {
-  description = "Enable nginx reverse proxy with Cloudflare TLS"
+  description = "Enable nginx reverse proxy with TLS"
   type        = bool
   default     = false
+}
+
+variable "cloudflare_dns_only" {
+  description = <<-EOT
+    Use Cloudflare DNS-only mode (no proxy). When true, opens port 443/80 to all IPs.
+
+    RECOMMENDED for Plex streaming - Cloudflare ToS prohibits proxying video content
+    on free/standard plans (requires Enterprise agreement).
+
+    NOTE: DNS-only mode requires a publicly-trusted certificate (e.g., Let's Encrypt).
+    Cloudflare Origin certificates only work when Cloudflare proxy is enabled.
+
+    When false (proxy mode), requires Cloudflare SSL mode set to "Full (strict)"
+    to prevent redirect loops.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token for Let's Encrypt DNS-01 challenge (required when cloudflare_dns_only=true). Token needs Zone:DNS:Edit permission."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "letsencrypt_email" {
+  description = "Email for Let's Encrypt certificate registration and renewal notices"
+  type        = string
+  default     = ""
 }
 
 variable "nginx_server_name" {

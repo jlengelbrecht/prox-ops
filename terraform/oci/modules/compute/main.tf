@@ -154,10 +154,11 @@ resource "oci_core_security_list" "main" {
     }
   }
 
-  # Ingress: HTTPS (443) from Cloudflare IPs only - for nginx reverse proxy
-  # This significantly reduces attack surface by only allowing Cloudflare CDN traffic
+  # Ingress: HTTPS (443) - two modes supported:
+  # 1. DNS-only mode (cloudflare_dns_only=true): Open to all IPs (recommended for Plex - CF ToS prohibits video proxy)
+  # 2. Proxy mode (cloudflare_dns_only=false): Open only to Cloudflare IPs (reduced attack surface)
   dynamic "ingress_security_rules" {
-    for_each = var.enable_nginx_proxy ? var.cloudflare_ipv4_ranges : []
+    for_each = var.enable_nginx_proxy && var.cloudflare_dns_only ? ["0.0.0.0/0"] : []
     content {
       protocol = "6" # TCP
       source   = ingress_security_rules.value
@@ -168,10 +169,34 @@ resource "oci_core_security_list" "main" {
     }
   }
 
-  # Ingress: HTTP (80) from Cloudflare IPs only - for HTTP to HTTPS redirect
-  # Must also be restricted to prevent bypassing Cloudflare protection
   dynamic "ingress_security_rules" {
-    for_each = var.enable_nginx_proxy ? var.cloudflare_ipv4_ranges : []
+    for_each = var.enable_nginx_proxy && !var.cloudflare_dns_only ? var.cloudflare_ipv4_ranges : []
+    content {
+      protocol = "6" # TCP
+      source   = ingress_security_rules.value
+      tcp_options {
+        min = 443
+        max = 443
+      }
+    }
+  }
+
+  # Ingress: HTTP (80) - for HTTP to HTTPS redirect
+  # Same logic as HTTPS above
+  dynamic "ingress_security_rules" {
+    for_each = var.enable_nginx_proxy && var.cloudflare_dns_only ? ["0.0.0.0/0"] : []
+    content {
+      protocol = "6" # TCP
+      source   = ingress_security_rules.value
+      tcp_options {
+        min = 80
+        max = 80
+      }
+    }
+  }
+
+  dynamic "ingress_security_rules" {
+    for_each = var.enable_nginx_proxy && !var.cloudflare_dns_only ? var.cloudflare_ipv4_ranges : []
     content {
       protocol = "6" # TCP
       source   = ingress_security_rules.value
@@ -268,6 +293,9 @@ resource "oci_core_instance" "main" {
       wg_forward_target_ip = var.wg_forward_target_ip
       # Nginx reverse proxy configuration
       enable_nginx_proxy   = var.enable_nginx_proxy
+      cloudflare_dns_only  = var.cloudflare_dns_only
+      cloudflare_api_token = var.cloudflare_api_token
+      letsencrypt_email    = var.letsencrypt_email
       nginx_server_name    = var.nginx_server_name
       nginx_origin_cert    = var.nginx_origin_cert
       nginx_origin_key     = var.nginx_origin_key
