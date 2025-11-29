@@ -166,6 +166,7 @@ variable "nginx_origin_key" {
 variable "nginx_backend_url" {
   description = "Backend URL for nginx reverse proxy (set via TF_VAR_nginx_backend_url secret)"
   type        = string
+  default     = "http://10.200.200.2:32400"  # Default for WireGuard tunnel
   sensitive   = true
 }
 

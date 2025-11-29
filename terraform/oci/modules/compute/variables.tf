@@ -178,6 +178,12 @@ variable "use_reserved_public_ip" {
   default     = false
 }
 
+variable "external_reserved_public_ip_id" {
+  description = "OCID of an externally-managed reserved public IP to attach. When provided, this IP is attached to the instance instead of creating a new reserved IP. This enables the IP to persist across instance destruction/recreation."
+  type        = string
+  default     = ""
+}
+
 # =============================================================================
 # Nginx Reverse Proxy Configuration
 # =============================================================================
