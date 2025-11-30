@@ -44,6 +44,8 @@ write_files:
       Address = ${wg_address}
       ListenPort = ${wg_listen_port}
       PrivateKey = ${wg_private_key}
+      # MTU must match K8s WireGuard gateway (1420) - OCI defaults to 8920 from jumbo frames
+      MTU = 1420
 
 %{ if wg_forward_port > 0 && !enable_nginx_proxy ~}
       # NAT rules for port forwarding (uses dynamic interface detection for OCI compatibility)
@@ -223,10 +225,18 @@ write_files:
           resolver_timeout 5s;
 
           # Security headers
-          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
           add_header X-Content-Type-Options "nosniff" always;
-          add_header X-Frame-Options "SAMEORIGIN" always;
+          add_header X-Frame-Options "DENY" always;
           add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+          # CORS headers - required because we strip Origin header from requests
+          # Browser still expects CORS response headers even though Plex won't send them
+          # (since Plex sees no Origin header and treats it as a non-CORS request)
+          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, HEAD" always;
+          add_header Access-Control-Allow-Headers "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Product, X-Plex-Version, X-Plex-Device, X-Plex-Device-Name, X-Plex-Platform, X-Plex-Platform-Version, Accept, Content-Type, Origin" always;
+          add_header Access-Control-Expose-Headers "X-Plex-Protocol" always;
 
           # Send timeout for long-running streams (matches proxy_send_timeout)
           send_timeout 24h;
@@ -236,6 +246,16 @@ write_files:
 
           # Reverse proxy to Plex via WireGuard tunnel
           location / {
+              # Handle CORS preflight requests
+              # Browser sends OPTIONS first to check if CORS is allowed
+              if ($request_method = OPTIONS) {
+                  add_header Access-Control-Allow-Origin "*";
+                  add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, HEAD";
+                  add_header Access-Control-Allow-Headers "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Product, X-Plex-Version, X-Plex-Device, X-Plex-Device-Name, X-Plex-Platform, X-Plex-Platform-Version, Accept, Content-Type, Origin";
+                  add_header Access-Control-Max-Age 86400;
+                  return 204;
+              }
+
               proxy_pass ${nginx_backend_url};
               proxy_http_version 1.1;
 
@@ -244,10 +264,18 @@ write_files:
               proxy_set_header Connection $connection_upgrade;
 
               # Standard proxy headers
-              proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
+              # Use 127.0.0.1 for Host to make Plex accept proxied requests
+              proxy_set_header Host 127.0.0.1;
+              proxy_set_header X-Plex-Client-Identifier $http_x_plex_client_identifier;
+              proxy_set_header X-Plex-Token $http_x_plex_token;
+              # Don't forward client IP - let Plex see WireGuard IP for allowedNetworks
+              proxy_set_header X-Real-IP "";
+              proxy_set_header X-Forwarded-For "";
+              proxy_set_header X-Forwarded-Proto https;
+              # Strip Origin header to disable CORS checks
+              # This makes Plex treat requests as direct (non-CORS), allowing
+              # allowedNetworks to work for authentication bypass
+              proxy_set_header Origin "";
 
               # Rewrite backend HTTP redirects to HTTPS
               # Required because Plex generates http:// URLs when behind a proxy
@@ -285,6 +313,16 @@ write_files:
     content: |
       # Plex reverse proxy with Cloudflare Origin Certificate
       # Proxy mode: Traffic flow: Cloudflare (443) -> Nginx (443) -> WireGuard (10.200.200.2:32400)
+
+      # Hide NGINX version in all responses
+      server_tokens off;
+
+      # WebSocket connection upgrade mapping
+      map $http_upgrade $connection_upgrade {
+          default upgrade;
+          '' close;
+      }
+
       server {
           listen 443 ssl http2;
           listen [::]:443 ssl http2;
@@ -300,25 +338,63 @@ write_files:
           ssl_session_timeout 1d;
           ssl_session_cache shared:SSL:10m;
 
+          # Security headers
+          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+          add_header X-Content-Type-Options "nosniff" always;
+          add_header X-Frame-Options "DENY" always;
+          add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+          # CORS headers - required because we strip Origin header from requests
+          # Browser still expects CORS response headers even though Plex won't send them
+          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, HEAD" always;
+          add_header Access-Control-Allow-Headers "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Product, X-Plex-Version, X-Plex-Device, X-Plex-Device-Name, X-Plex-Platform, X-Plex-Platform-Version, Accept, Content-Type, Origin" always;
+          add_header Access-Control-Expose-Headers "X-Plex-Protocol" always;
+
+          # Send timeout for long-running streams
+          send_timeout 24h;
+
+          # Plex client body size (for uploads)
+          client_max_body_size 100M;
+
           # Reverse proxy to Plex via WireGuard tunnel
           location / {
+              # Handle CORS preflight requests
+              if ($request_method = OPTIONS) {
+                  add_header Access-Control-Allow-Origin "*";
+                  add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, HEAD";
+                  add_header Access-Control-Allow-Headers "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Product, X-Plex-Version, X-Plex-Device, X-Plex-Device-Name, X-Plex-Platform, X-Plex-Platform-Version, Accept, Content-Type, Origin";
+                  add_header Access-Control-Max-Age 86400;
+                  return 204;
+              }
+
               proxy_pass ${nginx_backend_url};
               proxy_http_version 1.1;
 
               # WebSocket support (required for Plex)
               proxy_set_header Upgrade $http_upgrade;
-              proxy_set_header Connection "upgrade";
+              proxy_set_header Connection $connection_upgrade;
 
               # Standard proxy headers
-              proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
+              # Use 127.0.0.1 for Host to make Plex accept proxied requests
+              proxy_set_header Host 127.0.0.1;
+              proxy_set_header X-Plex-Client-Identifier $http_x_plex_client_identifier;
+              proxy_set_header X-Plex-Token $http_x_plex_token;
+              # Don't forward client IP - let Plex see WireGuard IP for allowedNetworks
+              proxy_set_header X-Real-IP "";
+              proxy_set_header X-Forwarded-For "";
+              proxy_set_header X-Forwarded-Proto https;
+              # Strip Origin header to disable CORS checks
+              # This makes Plex treat requests as direct (non-CORS), allowing
+              # allowedNetworks to work for authentication bypass
+              proxy_set_header Origin "";
+
+              # Rewrite backend HTTP redirects to HTTPS
+              proxy_redirect http:// https://;
 
               # Plex-specific optimizations
               proxy_buffering off;
               proxy_request_buffering off;
-              client_max_body_size 100M;
 
               # Timeouts for long-running streams
               proxy_read_timeout 86400s;
@@ -403,17 +479,20 @@ runcmd:
     # This works even before DNS is updated since we're using DNS-01 (not HTTP-01)
     echo "Requesting Let's Encrypt certificate for ${nginx_server_name}..." >> /var/log/cloud-init-custom.log
 
+    # Run certbot and capture its exit code properly
+    # NOTE: Using a separate command instead of pipeline to avoid $? capturing tee's exit code
     certbot certonly \
       --dns-cloudflare \
       --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-      --dns-cloudflare-propagation-seconds 30 \
+      --dns-cloudflare-propagation-seconds 60 \
       -d ${nginx_server_name} \
       --email ${letsencrypt_email} \
       --agree-tos \
       --non-interactive \
-      2>&1 | tee -a /var/log/certbot.log
+      >> /var/log/certbot.log 2>&1
+    CERTBOT_EXIT=$?
 
-    if [ $? -eq 0 ]; then
+    if [ $CERTBOT_EXIT -eq 0 ]; then
       echo "Let's Encrypt certificate issued successfully" >> /var/log/cloud-init-custom.log
 
       # Switch to HTTPS config
@@ -429,7 +508,9 @@ runcmd:
         cat /var/log/nginx-test.log >> /var/log/cloud-init-custom.log
       fi
     else
-      echo "ERROR: Let's Encrypt certificate issuance failed. Check /var/log/certbot.log" >> /var/log/cloud-init-custom.log
+      echo "ERROR: Let's Encrypt certificate issuance failed (exit code: $CERTBOT_EXIT). Check /var/log/certbot.log" >> /var/log/cloud-init-custom.log
+      # Log last 20 lines of certbot output for quick debugging
+      tail -20 /var/log/certbot.log >> /var/log/cloud-init-custom.log 2>/dev/null || true
     fi
 
   # Setup automatic certificate renewal
@@ -494,12 +575,23 @@ runcmd:
 %{ endif ~}
 
 %{ if enable_nginx_proxy ~}
-  # Enable fail2ban for brute-force protection
+  # Configure fail2ban for nginx brute-force protection
   - |
     if command -v fail2ban-server &> /dev/null; then
+      # Create nginx jail configuration
+      cat > /etc/fail2ban/jail.d/nginx.local <<'JAILEOF'
+[nginx-http-auth]
+enabled = true
+filter = nginx-http-auth
+port = http,https
+logpath = /var/log/nginx/error.log
+maxretry = 5
+bantime = 3600
+findtime = 600
+JAILEOF
       systemctl enable fail2ban
-      systemctl start fail2ban || true
-      echo "Fail2ban started for SSH and nginx protection" >> /var/log/cloud-init-custom.log
+      systemctl restart fail2ban || true
+      echo "Fail2ban configured and started for SSH and nginx protection" >> /var/log/cloud-init-custom.log
     fi
 %{ endif ~}
 

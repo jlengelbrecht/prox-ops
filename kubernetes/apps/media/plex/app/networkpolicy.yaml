@@ -59,28 +59,17 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow Plex.tv services (authentication, metadata, updates)
-    - toFQDNs:
-        - matchName: "plex.tv"
-        - matchPattern: "*.plex.tv"
-        - matchPattern: "*.plex.direct"
-        - matchName: "download.plex.tv"
-    # Allow metadata providers (posters, artwork, episode info)
-    - toFQDNs:
-        - matchName: "thetvdb.com"
-        - matchPattern: "*.thetvdb.com"
-        - matchName: "themoviedb.org"
-        - matchPattern: "*.themoviedb.org"
-        - matchName: "fanart.tv"
-        - matchPattern: "*.fanart.tv"
-        - matchName: "musicbrainz.org"
-        - matchPattern: "*.musicbrainz.org"
-        - matchName: "last.fm"
-        - matchPattern: "*.last.fm"
-    # Allow subtitle providers
-    - toFQDNs:
-        - matchName: "opensubtitles.org"
-        - matchPattern: "*.opensubtitles.org"
+    # Allow internet egress for Plex services (authentication, metadata, updates)
+    # Using toEntities:world instead of toFQDNs because Cilium FQDN policy requires
+    # DNS proxy interception which has complex setup requirements in some configurations
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
     # Allow NFS server access (read-write media library)
     - toCIDR:
         - 10.20.66.11/32
