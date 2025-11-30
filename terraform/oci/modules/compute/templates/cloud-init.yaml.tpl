@@ -250,6 +250,13 @@ write_files:
               return 301 /web/;
           }
 
+          # Block sensitive API endpoints that expose server information
+          # /identity exposes: machine ID, email, Plex version, server capabilities
+          # This is a security risk - unauthenticated users should not see this
+          location = /identity {
+              return 403 "Forbidden";
+          }
+
           # Reverse proxy to Plex via WireGuard tunnel
           location / {
               # Handle CORS preflight requests
@@ -283,8 +290,11 @@ write_files:
               # allowedNetworks to work for authentication bypass
               proxy_set_header Origin "";
 
-              # Rewrite backend HTTP redirects to HTTPS
-              # Required because Plex generates http:// URLs when behind a proxy
+              # Rewrite backend Location headers
+              # Plex sends 127.0.0.1 in redirects because Host header is 127.0.0.1
+              # Must rewrite to actual hostname for browser redirects to work
+              proxy_redirect https://127.0.0.1 https://$host;
+              proxy_redirect http://127.0.0.1 https://$host;
               proxy_redirect http:// https://;
 
               # Plex-specific optimizations
@@ -363,6 +373,17 @@ write_files:
           # Plex client body size (for uploads)
           client_max_body_size 100M;
 
+          # Redirect root URL to Plex web UI (hide API XML from browsers)
+          location = / {
+              return 301 /web/;
+          }
+
+          # Block sensitive API endpoints that expose server information
+          # /identity exposes: machine ID, email, Plex version, server capabilities
+          location = /identity {
+              return 403 "Forbidden";
+          }
+
           # Reverse proxy to Plex via WireGuard tunnel
           location / {
               # Handle CORS preflight requests
@@ -395,7 +416,10 @@ write_files:
               # allowedNetworks to work for authentication bypass
               proxy_set_header Origin "";
 
-              # Rewrite backend HTTP redirects to HTTPS
+              # Rewrite backend Location headers
+              # Plex sends 127.0.0.1 in redirects because Host header is 127.0.0.1
+              proxy_redirect https://127.0.0.1 https://$host;
+              proxy_redirect http://127.0.0.1 https://$host;
               proxy_redirect http:// https://;
 
               # Plex-specific optimizations
