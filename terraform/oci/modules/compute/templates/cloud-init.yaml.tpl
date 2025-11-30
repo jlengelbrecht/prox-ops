@@ -244,6 +244,12 @@ write_files:
           # Plex client body size (for uploads)
           client_max_body_size 100M;
 
+          # Redirect root URL to Plex web UI (hide API XML from browsers)
+          # This improves UX for users navigating directly to streaming.homelab0.org
+          location = / {
+              return 301 /web/;
+          }
+
           # Reverse proxy to Plex via WireGuard tunnel
           location / {
               # Handle CORS preflight requests
