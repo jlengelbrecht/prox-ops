@@ -59,6 +59,9 @@ spec:
                 memory: 128Mi
 
             # Probes
+            # Liveness: Check for recent handshake (tunnel actually connected)
+            # Probe fails if no handshake in 180s. Pod restarts after 6 failures (~6 min total).
+            # Readiness: Check interface exists (allows traffic only when interface is up)
             probes:
               liveness:
                 enabled: true
@@ -68,11 +71,21 @@ spec:
                     command:
                       - /bin/sh
                       - -c
-                      - wg show wg0 2>/dev/null | grep -q "interface"
-                  initialDelaySeconds: 30
+                      - |
+                        # Check if wg0 interface exists and has recent handshake
+                        HANDSHAKE=$(wg show wg0 latest-handshakes 2>/dev/null | awk '{print $2}')
+                        NOW=$(date +%s)
+                        # If no handshake data, fail
+                        [ -z "$HANDSHAKE" ] && exit 1
+                        # If handshake is 0 (never connected), allow for initial connection
+                        [ "$HANDSHAKE" = "0" ] && exit 0
+                        # Check if handshake was within last 180 seconds (3 minutes)
+                        AGE=$((NOW - HANDSHAKE))
+                        [ "$AGE" -lt 180 ]
+                  initialDelaySeconds: 60
                   periodSeconds: 30
-                  timeoutSeconds: 5
-                  failureThreshold: 3
+                  timeoutSeconds: 10
+                  failureThreshold: 6
               readiness:
                 enabled: true
                 custom: true
