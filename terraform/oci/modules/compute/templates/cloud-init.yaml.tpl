@@ -235,6 +235,8 @@ write_files:
           ~^/:/plugins    1;
           # Media provider info (CRITICAL - exposes email, machine ID)
           ~^/media/providers  1;
+          # Server logs (potential sensitive info)
+          ~^/logs         1;
       }
 
       # Combined check - block if endpoint is sensitive AND request is unauthenticated
@@ -451,6 +453,8 @@ write_files:
           ~^/:/plugins    1;
           # Media provider info (CRITICAL - exposes email, machine ID)
           ~^/media/providers  1;
+          # Server logs (potential sensitive info)
+          ~^/logs         1;
       }
 
       # Combined check - block if endpoint is sensitive AND request is unauthenticated
