@@ -230,6 +230,14 @@ write_files:
           add_header X-Frame-Options "SAMEORIGIN" always;
           add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
+          # CORS headers - required because we strip Origin header from requests
+          # Browser still expects CORS response headers even though Plex won't send them
+          # (since Plex sees no Origin header and treats it as a non-CORS request)
+          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, HEAD" always;
+          add_header Access-Control-Allow-Headers "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Product, X-Plex-Version, X-Plex-Device, X-Plex-Device-Name, X-Plex-Platform, X-Plex-Platform-Version, Accept, Content-Type, Origin" always;
+          add_header Access-Control-Expose-Headers "X-Plex-Protocol" always;
+
           # Send timeout for long-running streams (matches proxy_send_timeout)
           send_timeout 24h;
 
@@ -238,6 +246,16 @@ write_files:
 
           # Reverse proxy to Plex via WireGuard tunnel
           location / {
+              # Handle CORS preflight requests
+              # Browser sends OPTIONS first to check if CORS is allowed
+              if ($request_method = OPTIONS) {
+                  add_header Access-Control-Allow-Origin "*";
+                  add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, HEAD";
+                  add_header Access-Control-Allow-Headers "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Product, X-Plex-Version, X-Plex-Device, X-Plex-Device-Name, X-Plex-Platform, X-Plex-Platform-Version, Accept, Content-Type, Origin";
+                  add_header Access-Control-Max-Age 86400;
+                  return 204;
+              }
+
               proxy_pass ${nginx_backend_url};
               proxy_http_version 1.1;
 
@@ -254,6 +272,10 @@ write_files:
               proxy_set_header X-Real-IP "";
               proxy_set_header X-Forwarded-For "";
               proxy_set_header X-Forwarded-Proto https;
+              # Strip Origin header to disable CORS checks
+              # This makes Plex treat requests as direct (non-CORS), allowing
+              # allowedNetworks to work for authentication bypass
+              proxy_set_header Origin "";
 
               # Rewrite backend HTTP redirects to HTTPS
               # Required because Plex generates http:// URLs when behind a proxy
@@ -291,6 +313,16 @@ write_files:
     content: |
       # Plex reverse proxy with Cloudflare Origin Certificate
       # Proxy mode: Traffic flow: Cloudflare (443) -> Nginx (443) -> WireGuard (10.200.200.2:32400)
+
+      # Hide NGINX version in all responses
+      server_tokens off;
+
+      # WebSocket connection upgrade mapping
+      map $http_upgrade $connection_upgrade {
+          default upgrade;
+          '' close;
+      }
+
       server {
           listen 443 ssl http2;
           listen [::]:443 ssl http2;
@@ -306,14 +338,42 @@ write_files:
           ssl_session_timeout 1d;
           ssl_session_cache shared:SSL:10m;
 
+          # Security headers
+          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+          add_header X-Content-Type-Options "nosniff" always;
+          add_header X-Frame-Options "SAMEORIGIN" always;
+          add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+          # CORS headers - required because we strip Origin header from requests
+          # Browser still expects CORS response headers even though Plex won't send them
+          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, HEAD" always;
+          add_header Access-Control-Allow-Headers "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Product, X-Plex-Version, X-Plex-Device, X-Plex-Device-Name, X-Plex-Platform, X-Plex-Platform-Version, Accept, Content-Type, Origin" always;
+          add_header Access-Control-Expose-Headers "X-Plex-Protocol" always;
+
+          # Send timeout for long-running streams
+          send_timeout 24h;
+
+          # Plex client body size (for uploads)
+          client_max_body_size 100M;
+
           # Reverse proxy to Plex via WireGuard tunnel
           location / {
+              # Handle CORS preflight requests
+              if ($request_method = OPTIONS) {
+                  add_header Access-Control-Allow-Origin "*";
+                  add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS, HEAD";
+                  add_header Access-Control-Allow-Headers "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Product, X-Plex-Version, X-Plex-Device, X-Plex-Device-Name, X-Plex-Platform, X-Plex-Platform-Version, Accept, Content-Type, Origin";
+                  add_header Access-Control-Max-Age 86400;
+                  return 204;
+              }
+
               proxy_pass ${nginx_backend_url};
               proxy_http_version 1.1;
 
               # WebSocket support (required for Plex)
               proxy_set_header Upgrade $http_upgrade;
-              proxy_set_header Connection "upgrade";
+              proxy_set_header Connection $connection_upgrade;
 
               # Standard proxy headers
               # Use 127.0.0.1 for Host to make Plex accept proxied requests
@@ -324,11 +384,17 @@ write_files:
               proxy_set_header X-Real-IP "";
               proxy_set_header X-Forwarded-For "";
               proxy_set_header X-Forwarded-Proto https;
+              # Strip Origin header to disable CORS checks
+              # This makes Plex treat requests as direct (non-CORS), allowing
+              # allowedNetworks to work for authentication bypass
+              proxy_set_header Origin "";
+
+              # Rewrite backend HTTP redirects to HTTPS
+              proxy_redirect http:// https://;
 
               # Plex-specific optimizations
               proxy_buffering off;
               proxy_request_buffering off;
-              client_max_body_size 100M;
 
               # Timeouts for long-running streams
               proxy_read_timeout 86400s;
