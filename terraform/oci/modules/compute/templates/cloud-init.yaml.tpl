@@ -185,6 +185,41 @@ write_files:
           '' close;
       }
 
+      # Map to check if request has valid Plex authentication token
+      # Token can be in X-Plex-Token header or query parameter
+      # This allows authenticated Plex clients while blocking unauthenticated access
+      map $http_x_plex_token $has_plex_token_header {
+          ""      0;
+          default 1;
+      }
+      map $arg_x_plex_token $has_plex_token_query {
+          ""      0;
+          default 1;
+      }
+      # Combined check - request is authenticated if either token source is present
+      map "$has_plex_token_header:$has_plex_token_query" $plex_authenticated {
+          "0:0"   0;
+          default 1;
+      }
+
+      # Map to identify sensitive API endpoints that leak server info
+      # These endpoints should only be accessible with authentication
+      map $uri $is_sensitive_endpoint {
+          default 0;
+          ~^/servers      1;
+          ~^/library      1;
+          ~^/accounts     1;
+          ~^/myplex       1;
+          ~^/system       1;
+          ~^/status       1;
+      }
+
+      # Combined check - block if endpoint is sensitive AND request is unauthenticated
+      map "$is_sensitive_endpoint:$plex_authenticated" $block_unauthenticated {
+          "1:0"   1;
+          default 0;
+      }
+
       # Default server - reject direct IP access (HTTPS)
       # Uses self-signed cert just to complete TLS handshake before rejecting
       server {
@@ -269,6 +304,13 @@ write_files:
                   return 204;
               }
 
+              # Block sensitive API endpoints for unauthenticated requests
+              # Prevents leaking: accounts, auth tokens, library contents, server info
+              # Authenticated Plex clients pass X-Plex-Token and are allowed through
+              if ($block_unauthenticated) {
+                  return 403 "Authentication required";
+              }
+
               proxy_pass ${nginx_backend_url};
               proxy_http_version 1.1;
 
@@ -339,6 +381,37 @@ write_files:
           '' close;
       }
 
+      # Map to check if request has valid Plex authentication token
+      map $http_x_plex_token $has_plex_token_header {
+          ""      0;
+          default 1;
+      }
+      map $arg_x_plex_token $has_plex_token_query {
+          ""      0;
+          default 1;
+      }
+      map "$has_plex_token_header:$has_plex_token_query" $plex_authenticated {
+          "0:0"   0;
+          default 1;
+      }
+
+      # Map to identify sensitive API endpoints that leak server info
+      map $uri $is_sensitive_endpoint {
+          default 0;
+          ~^/servers      1;
+          ~^/library      1;
+          ~^/accounts     1;
+          ~^/myplex       1;
+          ~^/system       1;
+          ~^/status       1;
+      }
+
+      # Combined check - block if endpoint is sensitive AND request is unauthenticated
+      map "$is_sensitive_endpoint:$plex_authenticated" $block_unauthenticated {
+          "1:0"   1;
+          default 0;
+      }
+
       server {
           listen 443 ssl http2;
           listen [::]:443 ssl http2;
@@ -393,6 +466,13 @@ write_files:
                   add_header Access-Control-Allow-Headers "X-Plex-Token, X-Plex-Client-Identifier, X-Plex-Product, X-Plex-Version, X-Plex-Device, X-Plex-Device-Name, X-Plex-Platform, X-Plex-Platform-Version, Accept, Content-Type, Origin";
                   add_header Access-Control-Max-Age 86400;
                   return 204;
+              }
+
+              # Block sensitive API endpoints for unauthenticated requests
+              # Prevents leaking: accounts, auth tokens, library contents, server info
+              # Authenticated Plex clients pass X-Plex-Token and are allowed through
+              if ($block_unauthenticated) {
+                  return 403 "Authentication required";
               }
 
               proxy_pass ${nginx_backend_url};
