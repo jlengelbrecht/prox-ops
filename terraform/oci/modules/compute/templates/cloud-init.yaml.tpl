@@ -225,9 +225,9 @@ write_files:
           resolver_timeout 5s;
 
           # Security headers
-          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
           add_header X-Content-Type-Options "nosniff" always;
-          add_header X-Frame-Options "SAMEORIGIN" always;
+          add_header X-Frame-Options "DENY" always;
           add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
           # CORS headers - required because we strip Origin header from requests
@@ -339,9 +339,9 @@ write_files:
           ssl_session_cache shared:SSL:10m;
 
           # Security headers
-          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+          add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
           add_header X-Content-Type-Options "nosniff" always;
-          add_header X-Frame-Options "SAMEORIGIN" always;
+          add_header X-Frame-Options "DENY" always;
           add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
           # CORS headers - required because we strip Origin header from requests
@@ -575,12 +575,23 @@ runcmd:
 %{ endif ~}
 
 %{ if enable_nginx_proxy ~}
-  # Enable fail2ban for brute-force protection
+  # Configure fail2ban for nginx brute-force protection
   - |
     if command -v fail2ban-server &> /dev/null; then
+      # Create nginx jail configuration
+      cat > /etc/fail2ban/jail.d/nginx.local <<'JAILEOF'
+[nginx-http-auth]
+enabled = true
+filter = nginx-http-auth
+port = http,https
+logpath = /var/log/nginx/error.log
+maxretry = 5
+bantime = 3600
+findtime = 600
+JAILEOF
       systemctl enable fail2ban
-      systemctl start fail2ban || true
-      echo "Fail2ban started for SSH and nginx protection" >> /var/log/cloud-init-custom.log
+      systemctl restart fail2ban || true
+      echo "Fail2ban configured and started for SSH and nginx protection" >> /var/log/cloud-init-custom.log
     fi
 %{ endif ~}
 
