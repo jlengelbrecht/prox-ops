@@ -582,19 +582,22 @@ runcmd:
 
 %{ if enable_nginx_proxy ~}
   # Configure fail2ban for nginx brute-force protection
+  # NOTE: Using printf instead of heredoc because cloud-init YAML parser
+  # misinterprets INI-style [section] headers as YAML sequences when at column 1
   - |
     if command -v fail2ban-server &> /dev/null; then
-      # Create nginx jail configuration
-      cat > /etc/fail2ban/jail.d/nginx.local <<'JAILEOF'
-[nginx-http-auth]
-enabled = true
-filter = nginx-http-auth
-port = http,https
-logpath = /var/log/nginx/error.log
-maxretry = 5
-bantime = 3600
-findtime = 600
-JAILEOF
+      # Create nginx jail configuration using printf to avoid YAML parsing issues
+      mkdir -p /etc/fail2ban/jail.d
+      printf '%s\n' \
+        "[nginx-http-auth]" \
+        "enabled = true" \
+        "filter = nginx-http-auth" \
+        "port = http,https" \
+        "logpath = /var/log/nginx/error.log" \
+        "maxretry = 5" \
+        "bantime = 3600" \
+        "findtime = 600" \
+        > /etc/fail2ban/jail.d/nginx.local
       systemctl enable fail2ban
       systemctl restart fail2ban || true
       echo "Fail2ban configured and started for SSH and nginx protection" >> /var/log/cloud-init-custom.log
