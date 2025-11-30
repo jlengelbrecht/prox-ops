@@ -204,14 +204,37 @@ write_files:
 
       # Map to identify sensitive API endpoints that leak server info
       # These endpoints should only be accessible with authentication
+      # Discovered via penetration testing - blocks info disclosure vulnerabilities
       map $uri $is_sensitive_endpoint {
           default 0;
+          # Core identity/account endpoints (CRITICAL - expose auth tokens, emails)
           ~^/servers      1;
-          ~^/library      1;
           ~^/accounts     1;
           ~^/myplex       1;
+          ~^/identity     1;
+          # Library/media endpoints (HIGH - expose file paths, media catalog)
+          ~^/library      1;
+          ~^/hubs         1;
+          ~^/playlists    1;
+          ~^/channels     1;
+          ~^/playQueues   1;
+          # System/status endpoints (MEDIUM - expose server config, capabilities)
           ~^/system       1;
           ~^/status       1;
+          ~^/devices      1;
+          ~^/clients      1;
+          ~^/activities   1;
+          ~^/butler       1;
+          ~^/updater      1;
+          ~^/transcode    1;
+          ~^/photo        1;
+          ~^/sync         1;
+          ~^/resources    1;
+          # Plex internal endpoints (use :/ prefix)
+          ~^/:/prefs      1;
+          ~^/:/plugins    1;
+          # Media provider info (CRITICAL - exposes email, machine ID)
+          ~^/media/providers  1;
       }
 
       # Combined check - block if endpoint is sensitive AND request is unauthenticated
@@ -396,14 +419,38 @@ write_files:
       }
 
       # Map to identify sensitive API endpoints that leak server info
+      # These endpoints should only be accessible with authentication
+      # Discovered via penetration testing - blocks info disclosure vulnerabilities
       map $uri $is_sensitive_endpoint {
           default 0;
+          # Core identity/account endpoints (CRITICAL - expose auth tokens, emails)
           ~^/servers      1;
-          ~^/library      1;
           ~^/accounts     1;
           ~^/myplex       1;
+          ~^/identity     1;
+          # Library/media endpoints (HIGH - expose file paths, media catalog)
+          ~^/library      1;
+          ~^/hubs         1;
+          ~^/playlists    1;
+          ~^/channels     1;
+          ~^/playQueues   1;
+          # System/status endpoints (MEDIUM - expose server config, capabilities)
           ~^/system       1;
           ~^/status       1;
+          ~^/devices      1;
+          ~^/clients      1;
+          ~^/activities   1;
+          ~^/butler       1;
+          ~^/updater      1;
+          ~^/transcode    1;
+          ~^/photo        1;
+          ~^/sync         1;
+          ~^/resources    1;
+          # Plex internal endpoints (use :/ prefix)
+          ~^/:/prefs      1;
+          ~^/:/plugins    1;
+          # Media provider info (CRITICAL - exposes email, machine ID)
+          ~^/media/providers  1;
       }
 
       # Combined check - block if endpoint is sensitive AND request is unauthenticated
