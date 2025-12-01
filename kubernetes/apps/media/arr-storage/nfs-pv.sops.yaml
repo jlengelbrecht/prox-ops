@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+    name: arr-media-nfs
+spec:
+    capacity:
+        storage: 50Ti
+    accessModes:
+        - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: ""
+    mountOptions:
+        - nfsvers=4.2
+        - hard
+        - noatime
+    nfs:
+        server: ENC[AES256_GCM,data:piNcI7nSzgAEB+k=,iv:YYEFdZbt7c/fkStB3cYg9HQuGClo3RWtHcjA95Zf0IM=,tag:tEu/5Gg5IPxuFbKlOSzQ3A==,type:str]
+        path: ENC[AES256_GCM,data:1SeO6/OyU7v1ZIyNfI4YnnrAFQ==,iv:IsUPAjsNa+6fmV2ypFQJQEnfnCCKsSTmp/3Xe2tRKSk=,tag:zfvvPM8usbfHcRS5seamsg==,type:str]
+sops:
+    age:
+        - recipient: age1metxlry78wefrmm5ny2zjavtucsmdvw2r3ctexu6h05ak4x2vc7qa02drd
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBrTE1UYlBlckR3ZEZVcklB
+            ZW84d0NvMjk4UGlnbkR6ODdJZWFQOUx2djBNCmp3UzdEUTBaZFQ0MUJyczJlbEZh
+            WjN2V1RrRnVMcDd2TjBRU01kY1VwUlEKLS0tIDZXR0cxZWNJa2VvK3hIZ3I4TG1x
+            SnZhK0svUVFiSVJzbVArc3h1ZzRRdmMKjdj5SILIJM4IuUT0DpU6cHm0RgDs6lqu
+            57ne7sVchs86RG0XlYzTyMxLgS6F/CAapIbyVsGZZRtmMm4F7xqVkw==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-12-01T05:49:21Z"
+    mac: ENC[AES256_GCM,data:vqQWwNOr1mOYZR404ldqOUacGovr11Xc0ItlVhwq0sfaZU4KCjBCPySRyxghffiXHINraZicYOtw1O4Q+KHPahWsmQhMsNuRjc8PcpYnI9kveIVQCQ5gSwYP7BkMmpTQ+RyxaiClZvjiAuui26bIXshl+RUKNBVr69W6/loGdB4=,iv:Nt6P7eDfJfLmk86CpW7OOgnITj0a5kGATxLcNnvGlC4=,tag:G7DL98fjHx9jtIwgKnWpag==,type:str]
+    encrypted_regex: ^(server|path)$
+    mac_only_encrypted: true
+    version: 3.11.0
