@@ -1,0 +1,191 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: qbittorrent
+  namespace: downloads
+spec:
+  chart:
+    spec:
+      chart: app-template
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: downloads
+  interval: 1h
+  values:
+    controllers:
+      qbittorrent:
+        strategy: Recreate
+        containers:
+          # Main qBittorrent container
+          app:
+            image:
+              repository: ghcr.io/onedr0p/qbittorrent
+              tag: 5.0.2
+            env:
+              TZ: America/New_York
+              QBITTORRENT__PORT: &port 8080
+              QBITTORRENT__BT_PORT: &btport 6881
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/v2/app/version
+                    port: *port
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 5
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/v2/app/version
+                    port: *port
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 5
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 2000m
+                memory: 4Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+          # Gluetun VPN sidecar - ALL traffic routes through this
+          gluetun:
+            image:
+              repository: ghcr.io/qdm12/gluetun
+              tag: v3.40.0
+            env:
+              # VPN Provider Configuration
+              VPN_SERVICE_PROVIDER: surfshark
+              VPN_TYPE: wireguard
+              SERVER_COUNTRIES: "United States"
+              # Firewall Kill Switch
+              FIREWALL: "on"
+              FIREWALL_VPN_INPUT_PORTS: "6881"  # BitTorrent port
+              FIREWALL_INPUT_PORTS: "8080,8000"  # Web UI and control
+              # DNS
+              DOT: "off"
+              DNS_KEEP_NAMESERVER: "on"
+              # Logging
+              LOG_LEVEL: info
+              TZ: America/New_York
+            envFrom:
+              - secretRef:
+                  name: gluetun-vpn
+            securityContext:
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  - NET_ADMIN
+              seccompProfile:
+                type: RuntimeDefault
+              readOnlyRootFilesystem: false
+              runAsNonRoot: false
+              runAsUser: 0
+              allowPrivilegeEscalation: false
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /v1/publicip/ip
+                    port: 8000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /v1/publicip/ip
+                    port: 8000
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 568
+        runAsGroup: 568
+        runAsNonRoot: false  # Gluetun requires root
+        fsGroup: 568
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups:
+          - 1000  # ubuntu group for NFS
+        seccompProfile:
+          type: RuntimeDefault
+      annotations:
+        security.homelab/vpn-required: "true"
+        security.homelab/network: "DMZ VLAN 81 - VPN egress only"
+
+    persistence:
+      config:
+        enabled: true
+        type: persistentVolumeClaim
+        accessMode: ReadWriteOnce
+        size: 5Gi
+        storageClass: ceph-block
+        globalMounts:
+          - path: /config
+      media:
+        enabled: true
+        existingClaim: downloads-media
+        advancedMounts:
+          qbittorrent:
+            app:
+              - path: /data
+      # TUN device for WireGuard
+      dev-tun:
+        enabled: true
+        type: hostPath
+        hostPath: /dev/net/tun
+        hostPathType: CharDevice
+        advancedMounts:
+          qbittorrent:
+            gluetun:
+              - path: /dev/net/tun
+
+    service:
+      app:
+        controller: qbittorrent
+        type: LoadBalancer
+        annotations:
+          io.cilium/lb-ipam-ips: "10.20.81.101"
+        labels:
+          network: dmz
+        ports:
+          http:
+            port: *port
+            protocol: TCP
+          bittorrent:
+            port: *btport
+            protocol: TCP
