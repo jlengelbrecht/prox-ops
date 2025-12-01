@@ -1,0 +1,23 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: qbittorrent
+  namespace: flux-system
+spec:
+  targetNamespace: downloads
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: qbittorrent
+  dependsOn:
+    - name: downloads-storage
+  path: ./kubernetes/apps/downloads/qbittorrent/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
