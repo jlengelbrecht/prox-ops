@@ -192,9 +192,13 @@ write_files:
           ""      0;
           default 1;
       }
-      map $arg_x_plex_token $has_plex_token_query {
-          ""      0;
-          default 1;
+      # Query param check using $query_string regex
+      # NOTE: nginx $arg_ variables don't work with hyphenated param names like X-Plex-Token
+      # The hyphens are NOT converted to underscores for query params (only for headers)
+      # So we must use regex on $query_string instead
+      map $query_string $has_plex_token_query {
+          "~*X-Plex-Token=" 1;
+          default 0;
       }
       # Combined check - request is authenticated if either token source is present
       map "$has_plex_token_header:$has_plex_token_query" $plex_authenticated {
@@ -411,9 +415,13 @@ write_files:
           ""      0;
           default 1;
       }
-      map $arg_x_plex_token $has_plex_token_query {
-          ""      0;
-          default 1;
+      # Query param check using $query_string regex
+      # NOTE: nginx $arg_ variables don't work with hyphenated param names like X-Plex-Token
+      # The hyphens are NOT converted to underscores for query params (only for headers)
+      # So we must use regex on $query_string instead
+      map $query_string $has_plex_token_query {
+          "~*X-Plex-Token=" 1;
+          default 0;
       }
       map "$has_plex_token_header:$has_plex_token_query" $plex_authenticated {
           "0:0"   0;
