@@ -21,8 +21,8 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/tautulli/tautulli
-              tag: v2.14.6
+              repository: lscr.io/linuxserver/tautulli
+              tag: 2.14.6
             env:
               TZ: America/New_York
               PUID: "568"
@@ -63,19 +63,21 @@ spec:
               capabilities:
                 drop:
                   - ALL
+                add:
+                  - CHOWN
+                  - SETUID
+                  - SETGID
 
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: true
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       annotations:
         security.homelab/network: "Internal - Plex monitoring"
+        security.homelab/exception: "LinuxServer.io image requires root for s6-overlay init"
 
     persistence:
       config:
