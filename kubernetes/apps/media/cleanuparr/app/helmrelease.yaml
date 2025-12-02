@@ -65,10 +65,8 @@ spec:
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: true
-        fsGroup: 568
+        # cleanuparr creates users at startup - cannot use runAsNonRoot
+        fsGroup: 1000
         fsGroupChangePolicy: OnRootMismatch
         supplementalGroups:
           - 1000  # ubuntu group for NFS
