@@ -74,6 +74,33 @@ spec:
         - ports:
             - port: "32400"
               protocol: TCP
+    # Allow from Tautulli (Plex monitoring)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: tautulli
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Notifiarr (notifications and TRaSH sync)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: notifiarr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Cleanuparr (library integration)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: cleanuparr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
   egress:
     # Allow DNS queries (required for FQDN resolution)
     - toEndpoints:
