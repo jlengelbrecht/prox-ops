@@ -21,8 +21,8 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/tautulli/tautulli
-              tag: v2.14.6
+              repository: lscr.io/linuxserver/tautulli
+              tag: 2.14.6
             env:
               TZ: America/New_York
               PUID: "568"
@@ -58,18 +58,12 @@ spec:
                 cpu: 500m
                 memory: 512Mi
             securityContext:
-              allowPrivilegeEscalation: false
+              allowPrivilegeEscalation: true
               readOnlyRootFilesystem: false
-              capabilities:
-                drop:
-                  - ALL
 
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: true
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
