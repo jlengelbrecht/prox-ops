@@ -58,8 +58,15 @@ spec:
                 cpu: 500m
                 memory: 512Mi
             securityContext:
-              allowPrivilegeEscalation: true
+              allowPrivilegeEscalation: false
               readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  - CHOWN
+                  - SETUID
+                  - SETGID
 
     defaultPodOptions:
       automountServiceAccountToken: false
@@ -70,6 +77,7 @@ spec:
           type: RuntimeDefault
       annotations:
         security.homelab/network: "Internal - Plex monitoring"
+        security.homelab/exception: "LinuxServer.io image requires root for s6-overlay init"
 
     persistence:
       config:
