@@ -21,8 +21,8 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/flmedicern/cleanuperr
-              tag: latest
+              repository: ghcr.io/cleanuparr/cleanuparr
+              tag: v2.4.7
             env:
               TZ: America/New_York
             probes:
@@ -78,14 +78,14 @@ spec:
         security.homelab/network: "Internal - download cleanup"
 
     persistence:
-      logs:
+      config:
         enabled: true
         type: persistentVolumeClaim
         accessMode: ReadWriteOnce
         size: 1Gi
         storageClass: ceph-block
         globalMounts:
-          - path: /var/logs
+          - path: /config
       downloads:
         enabled: true
         existingClaim: arr-media
