@@ -29,6 +29,42 @@ spec:
         - ports:
             - port: "8989"
               protocol: TCP
+    # Allow from Overseerr (media requests)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: overseerr
+      toPorts:
+        - ports:
+            - port: "8989"
+              protocol: TCP
+    # Allow from Huntarr (automated media hunting)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: huntarr
+      toPorts:
+        - ports:
+            - port: "8989"
+              protocol: TCP
+    # Allow from Maintainerr (library maintenance)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: maintainerr
+      toPorts:
+        - ports:
+            - port: "8989"
+              protocol: TCP
+    # Allow from Cleanuparr (download cleanup verification)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: cleanuparr
+      toPorts:
+        - ports:
+            - port: "8989"
+              protocol: TCP
     # Allow Prometheus metrics scraping
     - fromEndpoints:
         - matchLabels:

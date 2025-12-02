@@ -1,0 +1,84 @@
+---
+# Overseerr NetworkPolicy - Media request management
+# Allows external access via Cloudflare Tunnel and internal access
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: overseerr-isolation
+  namespace: media
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: overseerr
+  ingress:
+    # Allow from envoy-internal Gateway (internal HTTPS access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "5055"
+              protocol: TCP
+    # Allow from envoy-external Gateway (Cloudflare Tunnel access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-external
+      toPorts:
+        - ports:
+            - port: "5055"
+              protocol: TCP
+    # Allow Prometheus metrics scraping
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+            app.kubernetes.io/name: prometheus
+  egress:
+    # Allow DNS queries
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow egress to Sonarr (TV show requests)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: sonarr
+      toPorts:
+        - ports:
+            - port: "8989"
+              protocol: TCP
+    # Allow egress to Radarr (movie requests)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: radarr
+      toPorts:
+        - ports:
+            - port: "7878"
+              protocol: TCP
+    # Allow egress to Plex (user authentication, library sync)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: plex
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow internet egress for Plex.tv auth, TMDB/TVDB metadata
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
