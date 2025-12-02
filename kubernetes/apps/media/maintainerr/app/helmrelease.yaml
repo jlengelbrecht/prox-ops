@@ -21,7 +21,7 @@ spec:
         containers:
           app:
             image:
-              repository: docker.io/jorenn92/maintainerr
+              repository: ghcr.io/jorenn92/maintainerr
               tag: "2.22.1"
             env:
               TZ: America/New_York
@@ -65,10 +65,11 @@ spec:
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
+        # maintainerr community uses UID/GID 1000
+        runAsUser: 1000
+        runAsGroup: 1000
         runAsNonRoot: true
-        fsGroup: 568
+        fsGroup: 1000
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
