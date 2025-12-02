@@ -90,6 +90,20 @@ spec:
                   http2Origin: true
                   originServerName: flux-webhook.${SECRET_DOMAIN}
 
+              # Overseerr (media request management)
+              - hostname: "overseerr.${SECRET_DOMAIN}"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: overseerr.${SECRET_DOMAIN}
+
+              # Wizarr (user invitation system)
+              - hostname: "wizarr.${SECRET_DOMAIN}"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: wizarr.${SECRET_DOMAIN}
+
               # NOTE: Apps NOT routed through Cloudflare tunnel:
               # - Plex (DMZ): UDM SE port forward for high bandwidth streaming
               # - Home Assistant (IoT): Internal-only access via cluster DNS

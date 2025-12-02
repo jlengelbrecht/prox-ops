@@ -11,7 +11,7 @@ spec:
     matchLabels:
       app.kubernetes.io/name: radarr
   ingress:
-    # Allow from envoy-internal Gateway (external HTTPS access)
+    # Allow from envoy-internal Gateway (internal HTTPS access)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
@@ -25,6 +25,42 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: media
             app.kubernetes.io/name: prowlarr
+      toPorts:
+        - ports:
+            - port: "7878"
+              protocol: TCP
+    # Allow from Overseerr (media requests)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: overseerr
+      toPorts:
+        - ports:
+            - port: "7878"
+              protocol: TCP
+    # Allow from Huntarr (automated media hunting)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: huntarr
+      toPorts:
+        - ports:
+            - port: "7878"
+              protocol: TCP
+    # Allow from Maintainerr (library maintenance)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: maintainerr
+      toPorts:
+        - ports:
+            - port: "7878"
+              protocol: TCP
+    # Allow from Cleanuparr (download cleanup verification)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: cleanuparr
       toPorts:
         - ports:
             - port: "7878"

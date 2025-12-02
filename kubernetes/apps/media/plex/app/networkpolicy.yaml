@@ -47,6 +47,33 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: monitoring
             app.kubernetes.io/name: prometheus
+    # Allow from Overseerr (library sync, user auth)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: overseerr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Wizarr (user management)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: wizarr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Maintainerr (library maintenance)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: maintainerr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
   egress:
     # Allow DNS queries (required for FQDN resolution)
     - toEndpoints:
