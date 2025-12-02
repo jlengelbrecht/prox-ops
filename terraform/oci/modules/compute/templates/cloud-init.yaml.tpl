@@ -682,6 +682,22 @@ runcmd:
       echo "ERROR: Let's Encrypt certificate issuance failed (exit code: $CERTBOT_EXIT). Check /var/log/certbot.log" >> /var/log/cloud-init-custom.log
       # Log last 20 lines of certbot output for quick debugging
       tail -20 /var/log/certbot.log >> /var/log/cloud-init-custom.log 2>/dev/null || true
+
+      # Check for rate limit error and provide helpful guidance
+      if grep -q "too many certificates" /var/log/certbot.log 2>/dev/null; then
+        RETRY_AFTER=$(grep -oP 'retry after \K[0-9-]+T[0-9:]+Z|retry after \K[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]+' /var/log/certbot.log 2>/dev/null | tail -1)
+        echo "" >> /var/log/cloud-init-custom.log
+        echo "=== RATE LIMIT DETECTED ===" >> /var/log/cloud-init-custom.log
+        echo "Let's Encrypt rate limit hit (5 certs per domain per 168 hours)." >> /var/log/cloud-init-custom.log
+        echo "Retry after: $RETRY_AFTER" >> /var/log/cloud-init-custom.log
+        echo "" >> /var/log/cloud-init-custom.log
+        echo "MANUAL FIX REQUIRED:" >> /var/log/cloud-init-custom.log
+        echo "1. SSH to this VPS after the rate limit expires" >> /var/log/cloud-init-custom.log
+        echo "2. Run: sudo certbot certonly --dns-cloudflare --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini --dns-cloudflare-propagation-seconds 60 -d ${nginx_server_name} --agree-tos --non-interactive" >> /var/log/cloud-init-custom.log
+        echo "3. Run: sudo rm -f /etc/nginx/sites-enabled/plex-proxy && sudo ln -sf /etc/nginx/sites-available/plex-proxy-https /etc/nginx/sites-enabled/plex-proxy" >> /var/log/cloud-init-custom.log
+        echo "4. Run: sudo nginx -t && sudo systemctl reload nginx" >> /var/log/cloud-init-custom.log
+        echo "===========================" >> /var/log/cloud-init-custom.log
+      fi
     fi
 
   # Setup automatic certificate renewal
