@@ -148,7 +148,7 @@ spec:
           type: RuntimeDefault
       annotations:
         security.homelab/vpn-required: "true"
-        security.homelab/network: "DMZ VLAN 81 - VPN egress only"
+        security.homelab/network: "Internal - VPN egress only"
 
     persistence:
       config:
@@ -180,11 +180,7 @@ spec:
     service:
       app:
         controller: sabnzbd
-        type: LoadBalancer
-        annotations:
-          io.cilium/lb-ipam-ips: "10.20.81.102"
-        labels:
-          network: dmz
+        type: ClusterIP
         ports:
           http:
             port: *port
