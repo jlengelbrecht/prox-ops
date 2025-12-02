@@ -55,3 +55,12 @@ spec:
         - ports:
             - port: "7878"
               protocol: TCP
+    # Allow egress to Prowlarr (indexer searches)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: prowlarr
+      toPorts:
+        - ports:
+            - port: "9696"
+              protocol: TCP
