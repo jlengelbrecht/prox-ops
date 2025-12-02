@@ -1,0 +1,89 @@
+---
+# Prowlarr NetworkPolicy - Strict isolation with VPN sidecar
+# Only allows necessary communication for indexer management
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: prowlarr-isolation
+  namespace: media
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: prowlarr
+  ingress:
+    # Allow from envoy-internal Gateway (external HTTPS access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "9696"
+              protocol: TCP
+    # Allow from Sonarr (indexer sync requests)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: sonarr
+      toPorts:
+        - ports:
+            - port: "9696"
+              protocol: TCP
+    # Allow from Radarr (indexer sync requests)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: radarr
+      toPorts:
+        - ports:
+            - port: "9696"
+              protocol: TCP
+    # Allow Prometheus metrics scraping
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+            app.kubernetes.io/name: prometheus
+  egress:
+    # Allow DNS queries (required for internal K8s service resolution)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow egress to Sonarr (push indexer configs)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: sonarr
+      toPorts:
+        - ports:
+            - port: "8989"
+              protocol: TCP
+    # Allow egress to Radarr (push indexer configs)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: radarr
+      toPorts:
+        - ports:
+            - port: "7878"
+              protocol: TCP
+    # Allow internet egress (indexer queries via VPN sidecar)
+    # Gluetun handles VPN routing - this allows the tunnel traffic
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            # WireGuard VPN traffic
+            - port: "51820"
+              protocol: UDP
+            # HTTPS for indexers (through VPN tunnel)
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
