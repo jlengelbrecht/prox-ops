@@ -65,6 +65,15 @@ spec:
         - ports:
             - port: "7878"
               protocol: TCP
+    # Allow from Notifiarr (TRaSH guide sync)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: notifiarr
+      toPorts:
+        - ports:
+            - port: "7878"
+              protocol: TCP
     # Allow Prometheus metrics scraping
     - fromEndpoints:
         - matchLabels:
