@@ -21,8 +21,8 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/jorenn92/maintainerr
-              tag: "2.22.1"
+              repository: ghcr.io/maintainerr/maintainerr
+              tag: "2.22.1@sha256:54390936bd6e3579f1a32e4d00fee9a61c8b373a37012789580e0778c8d11269"
             env:
               TZ: America/New_York
             probes:
@@ -65,10 +65,10 @@ spec:
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
+        runAsUser: 1000
+        runAsGroup: 1000
         runAsNonRoot: true
-        fsGroup: 568
+        fsGroup: 1000
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
