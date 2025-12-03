@@ -73,6 +73,24 @@ spec:
         - ports:
             - port: "32400"
               protocol: TCP
+    # Allow egress to qBittorrent (download client monitoring)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: downloads
+            app.kubernetes.io/name: qbittorrent
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow egress to SABnzbd (download client monitoring)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: downloads
+            app.kubernetes.io/name: sabnzbd
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     # Allow internet egress for Notifiarr.com API and TRaSH guides
     - toEntities:
         - world
