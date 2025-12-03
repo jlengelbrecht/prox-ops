@@ -72,7 +72,8 @@ data:
                 # Filter users with valid email addresses
                 emails = []
                 for user in users:
-                    email = user.get('email', '').strip()
+                    # Handle None values - email field may be null in API response
+                    email = (user.get('email') or '').strip()
                     if email and EMAIL_REGEX.match(email):
                         emails.append(email)
                         print(f"  Found user: {user.get('friendly_name', 'Unknown')} <{email}>")
