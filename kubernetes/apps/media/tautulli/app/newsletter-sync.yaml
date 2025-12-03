@@ -219,7 +219,7 @@ spec:
                 - /bin/sh
                 - -c
                 - |
-                  set -e
+                  set -eo pipefail
                   echo "Finding Tautulli pod..."
                   POD=$(kubectl get pod -n media -l app.kubernetes.io/name=tautulli -o jsonpath='{.items[0].metadata.name}')
                   echo "Copying sync script to pod..."
