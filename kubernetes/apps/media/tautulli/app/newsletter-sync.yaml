@@ -223,7 +223,9 @@ spec:
                   echo "Finding Tautulli pod..."
                   POD=$(kubectl get pod -n media -l app.kubernetes.io/name=tautulli -o jsonpath='{.items[0].metadata.name}')
                   echo "Copying sync script to pod..."
-                  kubectl cp /scripts/sync-users.py media/"$POD":/tmp/sync-users.py
+                  # Use cat and kubectl exec to copy content (kubectl cp copies symlinks from ConfigMap mounts)
+                  cat /scripts/sync-users.py | kubectl exec -i -n media "$POD" -- tee /tmp/sync-users.py > /dev/null
+                  echo "Script copied successfully"
               volumeMounts:
                 - name: scripts
                   mountPath: /scripts
