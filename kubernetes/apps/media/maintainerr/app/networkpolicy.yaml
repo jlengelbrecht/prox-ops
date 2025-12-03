@@ -73,3 +73,12 @@ spec:
         - ports:
             - port: "5055"
               protocol: TCP
+    # Allow egress to Tautulli (watch history/statistics)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: tautulli
+      toPorts:
+        - ports:
+            - port: "8181"
+              protocol: TCP
