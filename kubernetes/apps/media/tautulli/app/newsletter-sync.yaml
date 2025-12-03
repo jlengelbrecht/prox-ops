@@ -1,0 +1,213 @@
+---
+# ServiceAccount for newsletter sync job
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tautulli-newsletter-sync
+  namespace: media
+---
+# Role to exec into tautulli pod
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tautulli-newsletter-sync
+  namespace: media
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+# RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tautulli-newsletter-sync
+  namespace: media
+subjects:
+  - kind: ServiceAccount
+    name: tautulli-newsletter-sync
+    namespace: media
+roleRef:
+  kind: Role
+  name: tautulli-newsletter-sync
+  apiGroup: rbac.authorization.k8s.io
+---
+# ConfigMap with sync script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tautulli-newsletter-sync-script
+  namespace: media
+data:
+  sync-users.py: |
+    #!/usr/bin/env python3
+    """
+    Sync all Plex users with email addresses to Tautulli newsletter recipients.
+    This script ONLY updates the recipient list - it does NOT send newsletters.
+    The newsletter is sent on its own schedule (default: Sunday midnight).
+    """
+    import sqlite3
+    import json
+    import urllib.request
+    import os
+
+    API_KEY = os.environ.get('TAUTULLI_API_KEY', '')
+    DB_PATH = '/config/tautulli.db'
+    NEWSLETTER_ID = 1
+
+    def get_users_with_emails():
+        """Get all Plex users that have email addresses from Tautulli API."""
+        url = f'http://localhost:8181/api/v2?apikey={API_KEY}&cmd=get_users'
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                users = result.get('response', {}).get('data', [])
+                # Filter users with valid email addresses
+                emails = []
+                for user in users:
+                    email = user.get('email', '').strip()
+                    if email and '@' in email:
+                        emails.append(email)
+                        print(f"  Found user: {user.get('friendly_name', 'Unknown')} <{email}>")
+                return emails
+        except Exception as e:
+            print(f"Error fetching users: {e}")
+            return []
+
+    def update_newsletter_recipients(emails):
+        """Update newsletter recipient list in database."""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+
+            # Get current config
+            cursor.execute('SELECT email_config FROM newsletters WHERE id=?', (NEWSLETTER_ID,))
+            row = cursor.fetchone()
+
+            if not row:
+                print(f"Newsletter {NEWSLETTER_ID} not found!")
+                return False
+
+            config = json.loads(row[0])
+            current_recipients = set(config.get('to', []))
+            new_recipients = set(emails)
+
+            # Check if update needed
+            if current_recipients == new_recipients:
+                print("No changes needed - recipient list already up to date.")
+                return True
+
+            # Show changes
+            added = new_recipients - current_recipients
+            removed = current_recipients - new_recipients
+
+            if added:
+                print(f"Adding {len(added)} new recipient(s): {', '.join(added)}")
+            if removed:
+                print(f"Removing {len(removed)} recipient(s): {', '.join(removed)}")
+
+            # Update config
+            config['to'] = list(new_recipients)
+            cursor.execute(
+                'UPDATE newsletters SET email_config = ? WHERE id = ?',
+                (json.dumps(config), NEWSLETTER_ID)
+            )
+            conn.commit()
+            conn.close()
+
+            print(f"Successfully updated newsletter with {len(new_recipients)} recipients.")
+            return True
+
+        except Exception as e:
+            print(f"Error updating database: {e}")
+            return False
+
+    def main():
+        print("=" * 50)
+        print("Tautulli Newsletter User Sync")
+        print("=" * 50)
+        print("NOTE: This only syncs recipients - does NOT send emails!")
+        print("")
+
+        if not API_KEY:
+            print("ERROR: TAUTULLI_API_KEY not set!")
+            return 1
+
+        print("Fetching Plex users with email addresses...")
+        emails = get_users_with_emails()
+
+        if not emails:
+            print("No users with email addresses found!")
+            return 1
+
+        print(f"\nFound {len(emails)} users with email addresses.")
+        print("\nUpdating newsletter recipient list...")
+
+        if update_newsletter_recipients(emails):
+            print("\nSync completed successfully!")
+            return 0
+        else:
+            print("\nSync failed!")
+            return 1
+
+    if __name__ == '__main__':
+        exit(main())
+---
+# CronJob to sync users daily at 6 AM
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tautulli-newsletter-sync
+  namespace: media
+spec:
+  schedule: "0 6 * * *"  # Daily at 6 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: tautulli-newsletter-sync
+          restartPolicy: OnFailure
+          containers:
+            - name: sync
+              image: bitnami/kubectl:1.33
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "Finding Tautulli pod..."
+                  POD=$(kubectl get pod -n media -l app.kubernetes.io/name=tautulli -o jsonpath='{.items[0].metadata.name}')
+                  echo "Found pod: $POD"
+                  echo "Running sync script..."
+                  kubectl exec -n media "$POD" -- su -s /bin/bash abc -c "TAUTULLI_API_KEY='${TAUTULLI_API_KEY}' python3 /tmp/sync-users.py"
+              env:
+                - name: TAUTULLI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: tautulli-api-secret
+                      key: api-key
+          initContainers:
+            - name: copy-script
+              image: bitnami/kubectl:1.33
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "Finding Tautulli pod..."
+                  POD=$(kubectl get pod -n media -l app.kubernetes.io/name=tautulli -o jsonpath='{.items[0].metadata.name}')
+                  echo "Copying sync script to pod..."
+                  kubectl cp /scripts/sync-users.py media/"$POD":/tmp/sync-users.py
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: scripts
+              configMap:
+                name: tautulli-newsletter-sync-script
