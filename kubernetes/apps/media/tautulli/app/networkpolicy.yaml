@@ -43,6 +43,15 @@ spec:
         - ports:
             - port: "8181"
               protocol: TCP
+    # Allow from Maintainerr (watch history for cleanup rules)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: maintainerr
+      toPorts:
+        - ports:
+            - port: "8181"
+              protocol: TCP
   egress:
     # Allow DNS queries
     - toEndpoints:
