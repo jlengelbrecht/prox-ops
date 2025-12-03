@@ -1,0 +1,65 @@
+---
+# External HTTPRoute for Tautulli Newsletter ONLY
+# Exposes only newsletter paths to Plex users via Cloudflare tunnel
+# Does NOT expose the admin interface
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: tautulli-external
+  namespace: media
+spec:
+  parentRefs:
+    - name: envoy-external
+      namespace: network
+      sectionName: https
+  hostnames:
+    - tautulli.homelab0.org
+  rules:
+    # Newsletter pages
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /newsletter
+      backendRefs:
+        - name: tautulli
+          port: 8181
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "SAMEORIGIN"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+    # Image proxy for newsletter media images
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /image
+      backendRefs:
+        - name: tautulli
+          port: 8181
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: X-Content-Type-Options
+                value: "nosniff"
+    # Plex image proxy for posters/artwork
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /pms_image_proxy
+      backendRefs:
+        - name: tautulli
+          port: 8181
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: X-Content-Type-Options
+                value: "nosniff"

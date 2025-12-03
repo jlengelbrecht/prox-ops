@@ -20,6 +20,15 @@ spec:
         - ports:
             - port: "8181"
               protocol: TCP
+    # Allow from envoy-external Gateway (external newsletter access via Cloudflare)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-external
+      toPorts:
+        - ports:
+            - port: "8181"
+              protocol: TCP
     # Allow Prometheus metrics scraping
     - fromEndpoints:
         - matchLabels:
