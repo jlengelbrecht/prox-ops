@@ -25,6 +25,15 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: monitoring
             app.kubernetes.io/name: prometheus
+    # Allow from Notifiarr (stats integration)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: notifiarr
+      toPorts:
+        - ports:
+            - port: "8181"
+              protocol: TCP
   egress:
     # Allow DNS queries
     - toEndpoints:

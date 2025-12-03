@@ -73,6 +73,15 @@ spec:
         - ports:
             - port: "32400"
               protocol: TCP
+    # Allow egress to Tautulli (Plex stats integration)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: tautulli
+      toPorts:
+        - ports:
+            - port: "8181"
+              protocol: TCP
     # Allow egress to qBittorrent (download client monitoring)
     - toEndpoints:
         - matchLabels:
