@@ -53,10 +53,14 @@ data:
     import json
     import urllib.request
     import os
+    import re
 
     API_KEY = os.environ.get('TAUTULLI_API_KEY', '')
     DB_PATH = '/config/tautulli.db'
     NEWSLETTER_ID = 1
+
+    # Email validation regex
+    EMAIL_REGEX = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
     def get_users_with_emails():
         """Get all Plex users that have email addresses from Tautulli API."""
@@ -69,7 +73,7 @@ data:
                 emails = []
                 for user in users:
                     email = user.get('email', '').strip()
-                    if email and '@' in email:
+                    if email and EMAIL_REGEX.match(email):
                         emails.append(email)
                         print(f"  Found user: {user.get('friendly_name', 'Unknown')} <{email}>")
                 return emails
@@ -79,6 +83,7 @@ data:
 
     def update_newsletter_recipients(emails):
         """Update newsletter recipient list in database."""
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
@@ -116,7 +121,6 @@ data:
                 (json.dumps(config), NEWSLETTER_ID)
             )
             conn.commit()
-            conn.close()
 
             print(f"Successfully updated newsletter with {len(new_recipients)} recipients.")
             return True
@@ -124,6 +128,9 @@ data:
         except Exception as e:
             print(f"Error updating database: {e}")
             return False
+        finally:
+            if conn:
+                conn.close()
 
     def main():
         print("=" * 50)
@@ -192,6 +199,19 @@ spec:
                     secretKeyRef:
                       name: tautulli-api-secret
                       key: api-key
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - "ALL"
+              resources:
+                requests:
+                  cpu: "10m"
+                  memory: "32Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "128Mi"
           initContainers:
             - name: copy-script
               image: bitnami/kubectl:1.33
@@ -207,6 +227,19 @@ spec:
               volumeMounts:
                 - name: scripts
                   mountPath: /scripts
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - "ALL"
+              resources:
+                requests:
+                  cpu: "10m"
+                  memory: "32Mi"
+                limits:
+                  cpu: "50m"
+                  memory: "64Mi"
           volumes:
             - name: scripts
               configMap:
