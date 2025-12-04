@@ -125,6 +125,13 @@ spec:
                   http2Origin: true
                   originServerName: media-status.${SECRET_DOMAIN}
 
+              # BookStack Guides (documentation/wiki)
+              - hostname: "guides.${SECRET_DOMAIN}"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: guides.${SECRET_DOMAIN}
+
               # NOTE: Apps NOT routed through Cloudflare tunnel:
               # - Plex (DMZ): UDM SE port forward for high bandwidth streaming
               # - Home Assistant (IoT): Internal-only access via cluster DNS
