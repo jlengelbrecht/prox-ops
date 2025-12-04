@@ -1,0 +1,54 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-custom-css
+  namespace: security
+data:
+  custom.css: |
+    /* Homelab.0 Authentik Custom Theme */
+
+    /* Override PatternFly primary button colors - blue instead of red */
+    :root {
+      --pf-c-button--m-primary--BackgroundColor: #3b82f6;
+      --pf-c-button--m-primary--hover--BackgroundColor: #2563eb;
+      --pf-c-button--m-primary--active--BackgroundColor: #1d4ed8;
+      --pf-c-button--m-primary--focus--BackgroundColor: #2563eb;
+      --pf-global--primary-color--100: #3b82f6;
+      --pf-global--primary-color--200: #2563eb;
+      --pf-global--link--Color: #3b82f6;
+      --pf-global--link--Color--hover: #2563eb;
+      --ak-accent: #3b82f6;
+    }
+
+    /* Force blue buttons everywhere */
+    .pf-c-button.pf-m-primary {
+      background-color: #3b82f6 !important;
+      border-color: #3b82f6 !important;
+    }
+
+    .pf-c-button.pf-m-primary:hover {
+      background-color: #2563eb !important;
+      border-color: #2563eb !important;
+    }
+
+    /* Login page title - white text, centered */
+    .pf-c-login__main-header h1,
+    .ak-flow-title,
+    h1.pf-c-title {
+      color: #ffffff !important;
+      text-align: center !important;
+      width: 100%;
+    }
+
+    /* Center the logo and branding */
+    .ak-brand {
+      display: flex;
+      justify-content: center;
+      width: 100%;
+    }
+
+    .ak-brand img {
+      display: block;
+      margin: 0 auto;
+    }
