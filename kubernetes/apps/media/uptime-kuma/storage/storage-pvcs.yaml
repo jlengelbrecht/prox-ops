@@ -1,0 +1,26 @@
+---
+# PROTECTED: This PVC is in a separate Kustomization with prune: false
+# to prevent accidental data loss during Flux reconciliation or cattle upgrades
+#
+# Uptime Kuma stores all configuration in SQLite database:
+# - Monitor definitions (URLs, intervals, notification settings)
+# - Status page configuration
+# - Notification channels (Discord, Slack, etc.)
+# - Historical uptime data and incidents
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uptime-kuma-pvc
+  namespace: media
+  labels:
+    app.kubernetes.io/name: uptime-kuma
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 2Gi

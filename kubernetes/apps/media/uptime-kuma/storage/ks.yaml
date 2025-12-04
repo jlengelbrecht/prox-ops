@@ -1,0 +1,21 @@
+---
+# CRITICAL: prune: false prevents Flux from deleting PVCs during reconciliation
+# This protects Uptime Kuma monitor configs, status pages, and history from accidental deletion
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: uptime-kuma-storage
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: rook-ceph-cluster
+      namespace: rook-ceph
+  interval: 1h
+  path: ./kubernetes/apps/media/uptime-kuma/storage
+  prune: false  # NEVER prune storage - prevents data loss during cattle upgrades
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: media
+  wait: true
