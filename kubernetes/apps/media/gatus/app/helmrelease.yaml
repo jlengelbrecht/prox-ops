@@ -173,24 +173,13 @@ spec:
     serviceMonitor:
       enabled: true
 
-    # Give Gatus time to fetch OIDC discovery document before probes start
+    # Disable probes - TwiN chart doesn't support custom probe parameters
+    # OIDC initialization can delay web server startup beyond default probe limits
     livenessProbe:
-      httpGet:
-        path: /health
-        port: 8080
-      initialDelaySeconds: 30
-      periodSeconds: 10
-      timeoutSeconds: 5
-      failureThreshold: 6
+      enabled: false
 
     readinessProbe:
-      httpGet:
-        path: /health
-        port: 8080
-      initialDelaySeconds: 15
-      periodSeconds: 10
-      timeoutSeconds: 5
-      failureThreshold: 3
+      enabled: false
 
     podSecurityContext:
       runAsUser: 65534
