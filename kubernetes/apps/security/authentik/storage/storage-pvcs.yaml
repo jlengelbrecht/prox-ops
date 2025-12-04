@@ -1,0 +1,46 @@
+---
+# PROTECTED: These PVCs are in a separate Kustomization with prune: false
+# to prevent accidental data loss during Flux reconciliation or cattle upgrades
+#
+# PostgreSQL stores ALL Authentik configuration:
+# - Users, groups, roles
+# - OAuth/OIDC providers and applications
+# - Branding and customization
+# - Policies and flows
+#
+# Redis stores session data and cache
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-authentik-postgresql-0
+  namespace: security
+  labels:
+    app.kubernetes.io/name: authentik
+    app.kubernetes.io/component: postgresql
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data-authentik-redis-master-0
+  namespace: security
+  labels:
+    app.kubernetes.io/name: authentik
+    app.kubernetes.io/component: redis
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 1Gi
