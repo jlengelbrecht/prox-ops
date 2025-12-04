@@ -39,16 +39,14 @@ spec:
       storageClassName: ceph-block
       size: 2Gi
 
-    # Pod security
+    # Pod security - let container use default user (node:1000)
+    # fsGroup ensures volume is writable, seccomp provides syscall filtering
     podSecurityContext:
-      runAsUser: 1000
-      runAsGroup: 1000
       fsGroup: 1000
       seccompProfile:
         type: RuntimeDefault
 
     securityContext:
-      runAsNonRoot: true
       allowPrivilegeEscalation: false
       capabilities:
         drop:
