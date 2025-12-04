@@ -53,7 +53,7 @@
       "enabled": false
     },
 
-    // === LinuxServer.io Images (version-v*.* format) ===
+    // === LinuxServer.io Images (version-v*.* and date-based formats) ===
     {
       "description": "Loose versioning for LinuxServer.io images",
       "matchDatasources": ["docker"],
@@ -64,29 +64,31 @@
       ]
     },
 
-    // === onedr0p Images ===
+    // === onedr0p Images (4-segment versioning: major.minor.patch.build) ===
+    // Covers: plex, sonarr, radarr-develop, prowlarr-develop, etc.
+    // Note: qbittorrent and sabnzbd use standard semver but loose is harmless
     {
-      "description": "Loose versioning for Plex (extended version format)",
+      "description": "Loose versioning for onedr0p images (4-segment versions)",
       "matchDatasources": ["docker"],
       "versioning": "loose",
-      "matchPackageNames": ["ghcr.io/onedr0p/plex"]
-    },
-    {
-      "description": "Loose versioning for onedr0p develop images",
-      "matchDatasources": ["docker"],
-      "versioning": "loose",
-      "matchPackagePatterns": ["ghcr.io/onedr0p/.*-develop"]
+      "matchPackagePatterns": ["ghcr.io/onedr0p/.*"]
     },
 
-    // === Home Automation ===
+    // === Calendar Versioning (YYYY.MM.PATCH format) ===
     {
       "description": "Loose versioning for Home Assistant (calendar versioning)",
       "matchDatasources": ["docker"],
       "versioning": "loose",
       "matchPackageNames": ["ghcr.io/home-assistant/home-assistant"]
     },
+    {
+      "description": "Loose versioning for Cloudflared (calendar versioning)",
+      "matchDatasources": ["docker"],
+      "versioning": "loose",
+      "matchPackageNames": ["docker.io/cloudflare/cloudflared", "cloudflare/cloudflared"]
+    },
 
-    // === NVIDIA Images (complex version format) ===
+    // === NVIDIA Images (complex version format: a.b.c-d.e.f-distro) ===
     {
       "description": "Loose versioning for NVIDIA container images",
       "matchDatasources": ["docker"],
@@ -101,19 +103,21 @@
       "versioning": "loose",
       "matchPackageNames": ["ghcr.io/mendhak/http-https-echo"]
     },
-    {
-      "description": "Loose versioning for Notifiarr (calendar versioning)",
-      "matchDatasources": ["docker"],
-      "versioning": "loose",
-      "matchPackageNames": ["golift/notifiarr"]
-    },
 
-    // === gabe565 Helm Charts (OCI) ===
+    // === Helm Charts ===
     {
       "description": "Group gabe565 chart and image updates",
       "matchDatasources": ["docker", "helm"],
       "matchPackagePatterns": ["ghcr.io/gabe565/.*"],
       "groupName": "gabe565"
+    },
+
+    // === Pin :latest tags (flag for manual pinning) ===
+    {
+      "description": "Flag images using :latest for pinning",
+      "matchDatasources": ["docker"],
+      "matchCurrentVersion": "latest",
+      "enabled": false
     }
   ],
   "ignorePaths": [
