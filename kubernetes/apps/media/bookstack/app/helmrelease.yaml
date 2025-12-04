@@ -22,22 +22,8 @@ spec:
     controllers:
       bookstack:
         strategy: Recreate
-        initContainers:
-          # Wait for MariaDB to be ready before starting BookStack
-          wait-for-db:
-            image:
-              repository: busybox
-              tag: "1.37.0"
-            command:
-              - sh
-              - -c
-              - |
-                echo "Waiting for MariaDB to be ready..."
-                until nc -z localhost 3306; do
-                  echo "MariaDB not ready, waiting..."
-                  sleep 2
-                done
-                echo "MariaDB is ready!"
+        # NOTE: No initContainer for DB check - sidecar containers start AFTER
+        # init containers, creating a deadlock. BookStack has built-in DB retry logic.
         containers:
           app:
             image:
