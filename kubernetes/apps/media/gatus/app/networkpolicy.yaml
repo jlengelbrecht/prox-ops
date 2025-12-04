@@ -1,0 +1,178 @@
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: gatus
+  namespace: media
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: gatus
+  ingress:
+    # Allow from Envoy gateways (internal and external)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-external
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow Prometheus metrics scraping (observability namespace)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow to Plex (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: plex
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow to Sonarr (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: sonarr
+      toPorts:
+        - ports:
+            - port: "8989"
+              protocol: TCP
+    # Allow to Radarr (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: radarr
+      toPorts:
+        - ports:
+            - port: "7878"
+              protocol: TCP
+    # Allow to Prowlarr (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: prowlarr
+      toPorts:
+        - ports:
+            - port: "9696"
+              protocol: TCP
+    # Allow to Overseerr (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: overseerr
+      toPorts:
+        - ports:
+            - port: "5055"
+              protocol: TCP
+    # Allow to Wizarr (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: wizarr
+      toPorts:
+        - ports:
+            - port: "5690"
+              protocol: TCP
+    # Allow to Tautulli (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: tautulli
+      toPorts:
+        - ports:
+            - port: "8181"
+              protocol: TCP
+    # Allow to Notifiarr (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: notifiarr
+      toPorts:
+        - ports:
+            - port: "5454"
+              protocol: TCP
+    # Allow to Maintainerr (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: maintainerr
+      toPorts:
+        - ports:
+            - port: "6246"
+              protocol: TCP
+    # Allow to Huntarr (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: huntarr
+      toPorts:
+        - ports:
+            - port: "9705"
+              protocol: TCP
+    # Allow to Cleanuparr (health check)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: cleanuparr
+      toPorts:
+        - ports:
+            - port: "11011"
+              protocol: TCP
+    # Allow to qBittorrent (health check - downloads namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: downloads
+            app.kubernetes.io/name: qbittorrent
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow to SABnzbd (health check - downloads namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: downloads
+            app.kubernetes.io/name: sabnzbd
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow to Authentik server for OIDC (security namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: security
+            app.kubernetes.io/name: authentik
+            app.kubernetes.io/component: server
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+    # Allow external HTTPS for OIDC discovery (authentik.homelab0.org)
+    - toFQDNs:
+        - matchName: "authentik.homelab0.org"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
