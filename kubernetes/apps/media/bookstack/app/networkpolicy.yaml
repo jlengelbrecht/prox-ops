@@ -1,0 +1,81 @@
+---
+# BookStack Network Policy - CiliumNetworkPolicy
+# Allows ingress from Envoy gateways and egress for OIDC, email
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bookstack
+  namespace: media
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: bookstack
+  ingress:
+    # Allow from envoy-internal gateway
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    # Allow from envoy-external gateway
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-external
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    # Allow Prometheus metrics scraping
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Authentik OIDC (in security namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: security
+            app.kubernetes.io/name: authentik
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+            - port: "9443"
+              protocol: TCP
+    # SMTP for email notifications (Migadu)
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "465"
+              protocol: TCP
+            - port: "587"
+              protocol: TCP
+    # HTTPS for external OIDC and updates
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP

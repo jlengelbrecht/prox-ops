@@ -1,0 +1,180 @@
+---
+# BookStack - Documentation/Wiki platform
+# Migrated from VM 101 (docker-sandbox2)
+# Phase 1: Deploy with standard auth to assess existing content
+# Phase 2: Add Authentik OIDC with role-based access
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: bookstack
+  namespace: media
+spec:
+  chart:
+    spec:
+      chart: app-template
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: media
+  interval: 1h
+  values:
+    controllers:
+      bookstack:
+        strategy: Recreate
+        initContainers:
+          # Wait for MariaDB to be ready before starting BookStack
+          wait-for-db:
+            image:
+              repository: busybox
+              tag: "1.37.0"
+            command:
+              - sh
+              - -c
+              - |
+                echo "Waiting for MariaDB to be ready..."
+                until nc -z localhost 3306; do
+                  echo "MariaDB not ready, waiting..."
+                  sleep 2
+                done
+                echo "MariaDB is ready!"
+        containers:
+          app:
+            image:
+              repository: lscr.io/linuxserver/bookstack
+              tag: 24.12.20241202
+            env:
+              # Basic configuration
+              TZ: America/New_York
+              PUID: "1000"
+              PGID: "1000"
+              # Application URL (will be updated after Cloudflare tunnel)
+              APP_URL: https://guides.homelab0.org
+              # Database connection (internal pod)
+              DB_HOST: localhost
+              DB_PORT: "3306"
+              DB_DATABASE: bookstackapp
+              DB_USERNAME: bookstack
+              # Mail configuration
+              MAIL_DRIVER: smtp
+              MAIL_HOST: smtp.migadu.com
+              MAIL_PORT: "465"
+              MAIL_ENCRYPTION: tls
+              MAIL_USERNAME: guides@homelab-services.com
+              MAIL_FROM: guides@homelab-services.com
+              MAIL_FROM_NAME: Homelab0-Guides
+              # Authentication - Standard for initial deployment
+              # Will switch to OIDC after Authentik provider is configured
+              AUTH_METHOD: standard
+            envFrom:
+              - secretRef:
+                  name: bookstack-secret
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /status
+                    port: 80
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 5
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /status
+                    port: 80
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 1000m
+                memory: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  - CHOWN
+                  - SETUID
+                  - SETGID
+                  - DAC_OVERRIDE
+          # MariaDB sidecar container
+          db:
+            image:
+              repository: lscr.io/linuxserver/mariadb
+              tag: 10.11.11
+            env:
+              TZ: America/New_York
+              PUID: "1000"
+              PGID: "1000"
+              MYSQL_DATABASE: bookstackapp
+              MYSQL_USER: bookstack
+            envFrom:
+              - secretRef:
+                  name: bookstack-db-secret
+            resources:
+              requests:
+                cpu: 50m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  - CHOWN
+                  - SETUID
+                  - SETGID
+                  - DAC_OVERRIDE
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: false  # LinuxServer images need root for s6-overlay
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      annotations:
+        security.homelab/network: "Internal - documentation wiki"
+
+    persistence:
+      config:
+        enabled: true
+        existingClaim: bookstack-config-pvc
+        advancedMounts:
+          bookstack:
+            app:
+              - path: /config
+      db-config:
+        enabled: true
+        existingClaim: bookstack-db-pvc
+        advancedMounts:
+          bookstack:
+            db:
+              - path: /config
+
+    service:
+      app:
+        controller: bookstack
+        type: ClusterIP
+        ports:
+          http:
+            port: 80
+            protocol: TCP
