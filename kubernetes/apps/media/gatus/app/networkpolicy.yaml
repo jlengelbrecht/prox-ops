@@ -1,0 +1,96 @@
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: gatus
+  namespace: media
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: gatus
+  ingress:
+    # Allow from Envoy gateways (internal and external)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-external
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow Prometheus metrics scraping
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Allow DNS
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow to media namespace services (health checks)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+            - port: "8989"
+              protocol: TCP
+            - port: "7878"
+              protocol: TCP
+            - port: "9696"
+              protocol: TCP
+            - port: "5055"
+              protocol: TCP
+            - port: "5690"
+              protocol: TCP
+            - port: "8181"
+              protocol: TCP
+            - port: "5454"
+              protocol: TCP
+            - port: "6246"
+              protocol: TCP
+            - port: "9705"
+              protocol: TCP
+            - port: "11011"
+              protocol: TCP
+    # Allow to downloads namespace services (health checks)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: downloads
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow to Authentik for OIDC (security namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: security
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+    # Allow external HTTPS for OIDC discovery (authentik.homelab0.org)
+    - toFQDNs:
+        - matchName: "authentik.homelab0.org"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

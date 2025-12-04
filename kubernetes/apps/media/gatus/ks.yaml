@@ -1,0 +1,26 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: gatus
+  namespace: flux-system
+spec:
+  targetNamespace: media
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: gatus
+  dependsOn:
+    - name: external-secrets-operator
+      namespace: flux-system
+    - name: authentik
+      namespace: flux-system
+  path: ./kubernetes/apps/media/gatus/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 30m
+  retryInterval: 1m
+  timeout: 10m
