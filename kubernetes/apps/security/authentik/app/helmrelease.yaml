@@ -77,8 +77,7 @@ spec:
       primary:
         persistence:
           enabled: true
-          storageClass: ceph-block
-          size: 5Gi
+          existingClaim: data-authentik-postgresql-0  # Use protected PVC
 
     redis:
       enabled: true
@@ -88,5 +87,4 @@ spec:
       master:
         persistence:
           enabled: true
-          storageClass: ceph-block
-          size: 1Gi
+          existingClaim: redis-data-authentik-redis-master-0  # Use protected PVC
