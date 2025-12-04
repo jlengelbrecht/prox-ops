@@ -40,6 +40,7 @@
     }
   ],
   "packageRules": [
+    // === Disabled Updates ===
     {
       "description": "Disable kubernetes-api",
       "matchDatasources": ["kubernetes-api"],
@@ -51,12 +52,29 @@
       "matchPackagePatterns": ["ghcr.io/siderolabs/talos", "ghcr.io/siderolabs/installer"],
       "enabled": false
     },
+
+    // === LinuxServer.io Images (version-v*.* and date-based formats) ===
     {
-      "description": "Loose versioning for Plex (extended version format)",
+      "description": "Loose versioning for LinuxServer.io images",
       "matchDatasources": ["docker"],
       "versioning": "loose",
-      "matchPackageNames": ["ghcr.io/onedr0p/plex"]
+      "matchPackagePatterns": [
+        "lscr.io/linuxserver/.*",
+        "ghcr.io/linuxserver/.*"
+      ]
     },
+
+    // === onedr0p Images (4-segment versioning: major.minor.patch.build) ===
+    // Covers: plex, sonarr, radarr-develop, prowlarr-develop, etc.
+    // Note: qbittorrent and sabnzbd use standard semver but loose is harmless
+    {
+      "description": "Loose versioning for onedr0p images (4-segment versions)",
+      "matchDatasources": ["docker"],
+      "versioning": "loose",
+      "matchPackagePatterns": ["ghcr.io/onedr0p/.*"]
+    },
+
+    // === Calendar Versioning (YYYY.MM.PATCH format) ===
     {
       "description": "Loose versioning for Home Assistant (calendar versioning)",
       "matchDatasources": ["docker"],
@@ -64,10 +82,43 @@
       "matchPackageNames": ["ghcr.io/home-assistant/home-assistant"]
     },
     {
+      "description": "Loose versioning for Cloudflared (calendar versioning)",
+      "matchDatasources": ["docker"],
+      "versioning": "loose",
+      "matchPackageNames": ["docker.io/cloudflare/cloudflared", "cloudflare/cloudflared"]
+    },
+
+    // === NVIDIA Images (complex version format: a.b.c-d.e.f-distro) ===
+    {
+      "description": "Loose versioning for NVIDIA container images",
+      "matchDatasources": ["docker"],
+      "versioning": "loose",
+      "matchPackagePatterns": ["nvcr.io/nvidia/.*"]
+    },
+
+    // === Miscellaneous with non-standard versioning ===
+    {
       "description": "Loose versioning for http-https-echo (single number tags)",
       "matchDatasources": ["docker"],
       "versioning": "loose",
       "matchPackageNames": ["ghcr.io/mendhak/http-https-echo"]
+    },
+
+    // === Helm Charts ===
+    // Note: This groups gabe565 CHART updates only (BookStack image is linuxserver, not gabe565)
+    {
+      "description": "Group gabe565 Helm chart updates",
+      "matchDatasources": ["helm"],
+      "matchPackagePatterns": ["ghcr.io/gabe565/.*"],
+      "groupName": "gabe565-charts"
+    },
+
+    // === Pin :latest tags (flag for manual pinning) ===
+    {
+      "description": "Flag images using :latest for pinning",
+      "matchDatasources": ["docker"],
+      "matchCurrentVersion": "latest",
+      "enabled": false
     }
   ],
   "ignorePaths": [
