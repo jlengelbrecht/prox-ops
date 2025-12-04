@@ -160,6 +160,7 @@ spec:
             - port: "8080"
               protocol: TCP
     # Allow to Authentik server for OIDC (security namespace)
+    # Note: Service port is 80 but container listens on 9000 (targetPort)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: security
@@ -167,7 +168,7 @@ spec:
             app.kubernetes.io/component: server
       toPorts:
         - ports:
-            - port: "80"
+            - port: "9000"
               protocol: TCP
     # Allow external HTTPS for VPS monitoring and external health checks
     - toEntities:
