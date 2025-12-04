@@ -81,6 +81,10 @@ spec:
         persistence:
           enabled: true
           existingClaim: bookstack-db-pvc
+      # Disable Bitnami's restrictive NetworkPolicy - it blocks BookStack from connecting
+      # We manage network policies separately via Cilium
+      networkPolicy:
+        enabled: false
 
     # Security context - LinuxServer images require root for s6-overlay
     podSecurityContext:

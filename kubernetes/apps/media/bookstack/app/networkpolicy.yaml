@@ -39,6 +39,16 @@ spec:
             - port: "80"
               protocol: TCP
   egress:
+    # MariaDB database connection (same namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: mariadb
+            app.kubernetes.io/instance: bookstack
+      toPorts:
+        - ports:
+            - port: "3306"
+              protocol: TCP
     # DNS resolution
     - toEndpoints:
         - matchLabels:
