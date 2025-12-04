@@ -1,20 +1,20 @@
 ---
+# Uptime Kuma - Public status page for media stack
+# No authentication - public health dashboard for Plex users
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: gatus
+  name: uptime-kuma
   namespace: flux-system
 spec:
   targetNamespace: media
   commonMetadata:
     labels:
-      app.kubernetes.io/name: gatus
+      app.kubernetes.io/name: uptime-kuma
   dependsOn:
-    - name: external-secrets-operator
+    - name: rook-ceph-cluster
       namespace: flux-system
-    - name: authentik
-      namespace: flux-system
-  path: ./kubernetes/apps/media/gatus/app
+  path: ./kubernetes/apps/media/uptime-kuma/app
   prune: true
   sourceRef:
     kind: GitRepository

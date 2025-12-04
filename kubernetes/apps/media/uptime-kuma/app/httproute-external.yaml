@@ -2,7 +2,7 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: gatus-external
+  name: uptime-kuma-external
   namespace: media
 spec:
   parentRefs:
@@ -17,8 +17,8 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: gatus
-          port: 80
+        - name: uptime-kuma
+          port: 3001
       filters:
         - type: ResponseHeaderModifier
           responseHeaderModifier:
