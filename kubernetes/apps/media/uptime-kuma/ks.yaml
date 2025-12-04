@@ -12,6 +12,7 @@ spec:
     labels:
       app.kubernetes.io/name: uptime-kuma
   dependsOn:
+    - name: uptime-kuma-storage  # Wait for protected storage PVC to be ready
     - name: rook-ceph-cluster
       namespace: rook-ceph
   path: ./kubernetes/apps/media/uptime-kuma/app
