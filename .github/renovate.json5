@@ -40,6 +40,7 @@
     }
   ],
   "packageRules": [
+    // === Disabled Updates ===
     {
       "description": "Disable kubernetes-api",
       "matchDatasources": ["kubernetes-api"],
@@ -51,6 +52,19 @@
       "matchPackagePatterns": ["ghcr.io/siderolabs/talos", "ghcr.io/siderolabs/installer"],
       "enabled": false
     },
+
+    // === LinuxServer.io Images (version-v*.* format) ===
+    {
+      "description": "Loose versioning for LinuxServer.io images",
+      "matchDatasources": ["docker"],
+      "versioning": "loose",
+      "matchPackagePatterns": [
+        "lscr.io/linuxserver/.*",
+        "ghcr.io/linuxserver/.*"
+      ]
+    },
+
+    // === onedr0p Images ===
     {
       "description": "Loose versioning for Plex (extended version format)",
       "matchDatasources": ["docker"],
@@ -58,16 +72,48 @@
       "matchPackageNames": ["ghcr.io/onedr0p/plex"]
     },
     {
+      "description": "Loose versioning for onedr0p develop images",
+      "matchDatasources": ["docker"],
+      "versioning": "loose",
+      "matchPackagePatterns": ["ghcr.io/onedr0p/.*-develop"]
+    },
+
+    // === Home Automation ===
+    {
       "description": "Loose versioning for Home Assistant (calendar versioning)",
       "matchDatasources": ["docker"],
       "versioning": "loose",
       "matchPackageNames": ["ghcr.io/home-assistant/home-assistant"]
     },
+
+    // === NVIDIA Images (complex version format) ===
+    {
+      "description": "Loose versioning for NVIDIA container images",
+      "matchDatasources": ["docker"],
+      "versioning": "loose",
+      "matchPackagePatterns": ["nvcr.io/nvidia/.*"]
+    },
+
+    // === Miscellaneous with non-standard versioning ===
     {
       "description": "Loose versioning for http-https-echo (single number tags)",
       "matchDatasources": ["docker"],
       "versioning": "loose",
       "matchPackageNames": ["ghcr.io/mendhak/http-https-echo"]
+    },
+    {
+      "description": "Loose versioning for Notifiarr (calendar versioning)",
+      "matchDatasources": ["docker"],
+      "versioning": "loose",
+      "matchPackageNames": ["golift/notifiarr"]
+    },
+
+    // === gabe565 Helm Charts (OCI) ===
+    {
+      "description": "Group gabe565 chart and image updates",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["ghcr.io/gabe565/.*"],
+      "groupName": "gabe565"
     }
   ],
   "ignorePaths": [
