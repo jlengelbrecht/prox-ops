@@ -79,6 +79,15 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: monitoring
             app.kubernetes.io/name: prometheus
+    # Allow from Gatus (health monitoring)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: gatus
+      toPorts:
+        - ports:
+            - port: "8989"
+              protocol: TCP
   egress:
     # Allow DNS queries
     - toEndpoints:

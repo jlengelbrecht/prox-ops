@@ -101,6 +101,15 @@ spec:
         - ports:
             - port: "32400"
               protocol: TCP
+    # Allow from Gatus (health monitoring)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: gatus
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
   egress:
     # Allow DNS queries (required for FQDN resolution)
     - toEndpoints:
