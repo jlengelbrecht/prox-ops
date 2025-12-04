@@ -8,18 +8,16 @@ spec:
   chart:
     spec:
       chart: gatus
-      version: 3.4.1
+      version: 1.4.4
       sourceRef:
         kind: HelmRepository
-        name: gatus
+        name: twin
         namespace: media
   interval: 1h
   values:
     image:
       repository: twinproduction/gatus
-      tag: v5.12.1
-
-    replicas: 1
+      tag: v5.27.2
 
     resources:
       requests:
@@ -29,21 +27,23 @@ spec:
         memory: 256Mi
 
     env:
-      - name: GATUS_CONFIG_PATH
-        value: /config/config.yaml
-      - name: OIDC_CLIENT_ID
+      GATUS_CONFIG_PATH: /config/config.yaml
+      OIDC_CLIENT_ID:
         valueFrom:
           secretKeyRef:
             name: gatus-oidc-secret
             key: OIDC_CLIENT_ID
-      - name: OIDC_CLIENT_SECRET
+      OIDC_CLIENT_SECRET:
         valueFrom:
           secretKeyRef:
             name: gatus-oidc-secret
             key: OIDC_CLIENT_SECRET
 
-    config:
-      existingConfigMap: gatus-config
+    extraVolumeMounts:
+      - name: gatus-config
+        mountPath: /config
+        readOnly: true
+        existingConfigMap: gatus-config
 
     persistence:
       enabled: true
@@ -56,11 +56,12 @@ spec:
       enabled: true
 
     podSecurityContext:
-      runAsUser: 1000
-      runAsGroup: 1000
-      fsGroup: 1000
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
 
     securityContext:
+      runAsNonRoot: true
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: true
       capabilities:
