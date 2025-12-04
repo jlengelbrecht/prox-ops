@@ -1,13 +1,15 @@
 ---
+# Uptime Kuma Network Policy
+# Public status page - no authentication required
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: gatus
+  name: uptime-kuma
   namespace: media
 spec:
   endpointSelector:
     matchLabels:
-      app.kubernetes.io/name: gatus
+      app.kubernetes.io/name: uptime-kuma
   ingress:
     # Allow from Envoy gateways (internal and external)
     - fromEndpoints:
@@ -19,7 +21,7 @@ spec:
             gateway.envoyproxy.io/owning-gateway-name: envoy-internal
       toPorts:
         - ports:
-            - port: "8080"
+            - port: "3001"
               protocol: TCP
     # Allow Prometheus metrics scraping (observability namespace)
     - fromEndpoints:
@@ -28,7 +30,7 @@ spec:
             app.kubernetes.io/name: prometheus
       toPorts:
         - ports:
-            - port: "8080"
+            - port: "3001"
               protocol: TCP
   egress:
     # Allow DNS
@@ -158,17 +160,6 @@ spec:
       toPorts:
         - ports:
             - port: "8080"
-              protocol: TCP
-    # Allow to Authentik server for OIDC (security namespace)
-    # Note: Service port is 80 but container listens on 9000 (targetPort)
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: security
-            app.kubernetes.io/name: authentik
-            app.kubernetes.io/component: server
-      toPorts:
-        - ports:
-            - port: "9000"
               protocol: TCP
     # Allow external HTTPS for VPS monitoring and external health checks
     - toEntities:
