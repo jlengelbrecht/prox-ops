@@ -1,4 +1,6 @@
 ---
+# External HTTPRoute - Only expose public status page paths
+# Dashboard and admin API are NOT exposed externally (internal-only)
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -12,10 +14,11 @@ spec:
   hostnames:
     - media-status.homelab0.org
   rules:
+    # Public status page
     - matches:
         - path:
             type: PathPrefix
-            value: /
+            value: /status
       backendRefs:
         - name: uptime-kuma
           port: 3001
@@ -31,3 +34,55 @@ spec:
                 value: "nosniff"
               - name: Referrer-Policy
                 value: "strict-origin-when-cross-origin"
+    # Status badge API (for embedding)
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/badge
+      backendRefs:
+        - name: uptime-kuma
+          port: 3001
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+    # Status page public API
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/status-page
+      backendRefs:
+        - name: uptime-kuma
+          port: 3001
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+    # Static assets for status page
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /assets
+      backendRefs:
+        - name: uptime-kuma
+          port: 3001
+    # Favicon
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /icon.svg
+      backendRefs:
+        - name: uptime-kuma
+          port: 3001
+    # Upload directory (for custom logos on status page)
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /upload
+      backendRefs:
+        - name: uptime-kuma
+          port: 3001
