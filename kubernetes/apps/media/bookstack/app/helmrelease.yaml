@@ -40,8 +40,9 @@ spec:
       PGID: "1000"
       # Application URL
       APP_URL: https://guides.homelab0.org
-      # Database connection - uses mariadb subchart
-      DB_HOST: bookstack-mariadb
+      # Database connection - standalone MariaDB 11.4.8
+      # Service name: bookstack-mariadb-standalone-app (app-template naming)
+      DB_HOST: bookstack-mariadb-standalone-app
       DB_PORT: "3306"
       DB_DATABASE: bookstackapp
       DB_USERNAME: bookstack
@@ -72,25 +73,12 @@ spec:
         enabled: true
         existingClaim: bookstack-config-pvc
 
-    # MariaDB subchart configuration (Bitnami)
-    # Override image tag - gabe565 chart 0.20.0 pins an outdated tag that no longer exists
+    # MariaDB subchart DISABLED
+    # Using standalone MariaDB 11.4.8 (mariadb-helmrelease.yaml) for version compatibility
+    # Source database from VM 101 is MariaDB 11.4.8 - exact version match required
+    # Bitnami latest (12.1.2) has breaking changes that prevent data access after import
     mariadb:
-      enabled: true
-      image:
-        # renovate: datasource=docker depName=docker.io/bitnami/mariadb
-        tag: 12.1.2-debian-12-r4
-      auth:
-        database: bookstackapp
-        username: bookstack
-        existingSecret: bookstack-mariadb
-      primary:
-        persistence:
-          enabled: true
-          existingClaim: bookstack-db-pvc
-      # Disable Bitnami's restrictive NetworkPolicy - it blocks BookStack from connecting
-      # We manage network policies separately via Cilium
-      networkPolicy:
-        enabled: false
+      enabled: false
 
     # Security context - LinuxServer images require root for s6-overlay
     podSecurityContext:

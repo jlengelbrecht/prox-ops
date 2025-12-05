@@ -39,12 +39,11 @@ spec:
             - port: "80"
               protocol: TCP
   egress:
-    # MariaDB database connection (same namespace)
+    # MariaDB database connection (standalone MariaDB 11.4.8)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: media
-            app.kubernetes.io/name: mariadb
-            app.kubernetes.io/instance: bookstack
+            app.kubernetes.io/name: bookstack-mariadb-standalone
       toPorts:
         - ports:
             - port: "3306"
@@ -88,4 +87,37 @@ spec:
             - port: "443"
               protocol: TCP
             - port: "80"
+              protocol: TCP
+---
+# Standalone MariaDB Network Policy
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bookstack-mariadb-standalone
+  namespace: media
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: bookstack-mariadb-standalone
+  ingress:
+    # Allow from BookStack application
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: bookstack
+      toPorts:
+        - ports:
+            - port: "3306"
+              protocol: TCP
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
               protocol: TCP
