@@ -1,164 +1,282 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "packageRules": [
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🎬 MEDIA APPS - Entertainment and media management applications
+    // ═══════════════════════════════════════════════════════════════════════════
     {
-      "description": "Flux Components",
-      "groupName": "Flux",
+      "description": "Media Apps - Plex and streaming",
+      "groupName": "🎬 Media: Plex",
+      "matchDatasources": ["docker"],
+      "matchPackagePatterns": ["plex", "tautulli"]
+    },
+    {
+      "description": "Media Apps - Arr Suite (Sonarr, Radarr, Prowlarr)",
+      "groupName": "🎬 Media: Arr Suite",
+      "matchDatasources": ["docker"],
+      "matchPackagePatterns": ["sonarr", "radarr", "prowlarr", "lidarr", "readarr"]
+    },
+    {
+      "description": "Media Apps - Request Management",
+      "groupName": "🎬 Media: Requests",
       "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": [
-        "^ghcr\\.io\\/controlplaneio-fluxcd\\/.*",
-        "flux-operator",
-        "flux-instance"
-      ],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} components"
-      },
+      "matchPackagePatterns": ["overseerr", "wizarr", "maintainerr"]
+    },
+    {
+      "description": "Media Apps - Download Clients",
+      "groupName": "🎬 Media: Downloads",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["qbittorrent", "sabnzbd", "nzbget"]
+    },
+    {
+      "description": "Media Apps - Utilities",
+      "groupName": "🎬 Media: Utilities",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["notifiarr", "huntarr", "cleanuparr"]
+    },
+    {
+      "description": "Media Apps - Documentation (BookStack)",
+      "groupName": "🎬 Media: Docs",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["bookstack"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🌐 NETWORK - Networking, ingress, VPN, and DNS components
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Network - Envoy Gateway",
+      "groupName": "🌐 Network: Envoy Gateway",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["envoy-gateway", "envoyproxy"],
       "separateMinorPatch": true
     },
     {
-      "description": "Cilium CNI",
-      "groupName": "Cilium",
+      "description": "Network - Cloudflare (Tunnel & DNS)",
+      "groupName": "🌐 Network: Cloudflare",
+      "matchDatasources": ["docker"],
+      "matchPackagePatterns": ["cloudflare"]
+    },
+    {
+      "description": "Network - VPN (Gluetun & WireGuard)",
+      "groupName": "🌐 Network: VPN",
       "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": ["cilium"],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} CNI"
-      },
+      "matchPackagePatterns": ["gluetun", "wireguard"]
+    },
+    {
+      "description": "Network - DNS",
+      "groupName": "🌐 Network: DNS",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["external-dns", "k8s-gateway", "coredns", "unifi-dns"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 CORE INFRASTRUCTURE - Essential Kubernetes components
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Core - Flux GitOps",
+      "groupName": "🔧 Core: Flux",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["flux-operator", "flux-instance", "controlplaneio-fluxcd"],
       "separateMinorPatch": true
     },
     {
-      "description": "Rook-Ceph Storage",
-      "groupName": "Rook-Ceph",
+      "description": "Core - Cilium CNI",
+      "groupName": "🔧 Core: Cilium",
       "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": ["rook", "ceph"],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} storage"
-      },
+      "matchPackagePatterns": ["cilium", "tetragon"],
       "separateMinorPatch": true
     },
     {
-      "description": "Prometheus Stack (Prometheus + Grafana + AlertManager)",
-      "groupName": "kube-prometheus-stack",
-      "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": [
-        "kube-prometheus-stack",
-        "prometheus",
-        "grafana",
-        "alertmanager"
-      ],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} monitoring"
-      },
-      "separateMinorPatch": true
-    },
-    {
-      "description": "Loki Stack (Loki + Promtail)",
-      "groupName": "Loki",
-      "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": ["loki", "promtail"],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} logging"
-      },
-      "separateMinorPatch": true
-    },
-    {
-      "description": "External Secrets Management",
-      "groupName": "External Secrets",
-      "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": [
-        "external-secrets",
-        "1password-connect",
-        "onepassword"
-      ],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} management"
-      },
-      "separateMinorPatch": true
-    },
-    {
-      "description": "Envoy Gateway",
-      "groupName": "Envoy Gateway",
-      "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": [
-        "envoy-gateway",
-        "envoyproxy"
-      ],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} API"
-      },
-      "separateMinorPatch": true
-    },
-    {
-      "description": "External DNS Components",
-      "groupName": "External DNS",
-      "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": [
-        "external-dns",
-        "cloudflare-dns",
-        "unifi-dns"
-      ],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} components"
-      },
-      "separateMinorPatch": true
-    },
-    {
-      "description": "NVIDIA GPU Support",
-      "groupName": "NVIDIA",
-      "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": [
-        "nvidia-device-plugin",
-        "nvidia",
-        "gpu-operator"
-      ],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} GPU support"
-      },
-      "separateMinorPatch": true
-    },
-    {
-      "description": "System Utilities",
-      "groupName": "System Utilities",
-      "matchDatasources": ["docker", "helm"],
-      "matchPackageNames": [
-        "metrics-server",
-        "reloader",
-        "spegel"
-      ],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}}"
-      },
-      "separateMinorPatch": false
-    },
-    {
-      "description": "Certificate Management",
-      "groupName": "cert-manager",
-      "matchDatasources": ["docker", "helm"],
-      "matchPackagePatterns": ["cert-manager"],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} certificates"
-      },
-      "separateMinorPatch": true
-    },
-    {
-      "description": "Multi-CNI Support",
-      "groupName": "Multus",
+      "description": "Core - Multus CNI",
+      "groupName": "🔧 Core: Multus",
       "matchDatasources": ["docker", "helm"],
       "matchPackagePatterns": ["multus", "cni-plugins"],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} CNI"
-      },
       "separateMinorPatch": true
     },
     {
-      "description": "bjw-s App Template",
-      "groupName": "bjw-s-app-template",
-      "matchDatasources": ["helm"],
-      "matchPackageNames": ["app-template"],
-      "matchRepositories": ["ghcr.io/bjw-s-labs/helm"],
-      "group": {
-        "commitMessageTopic": "{{{groupName}}} charts"
-      },
-      "separateMinorPatch": false
+      "description": "Core - System Utilities",
+      "groupName": "🔧 Core: Utilities",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackageNames": ["metrics-server", "reloader", "spegel"]
+    },
+    {
+      "description": "Core - bjw-s App Template",
+      "groupName": "🔧 Core: App Template",
+      "matchDatasources": ["helm", "docker"],
+      "matchPackagePatterns": ["app-template", "bjw-s"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 📊 OBSERVABILITY - Monitoring, logging, and alerting
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Observability - Prometheus Stack",
+      "groupName": "📊 Observability: Prometheus",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["kube-prometheus-stack", "prometheus", "grafana", "alertmanager"],
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Observability - Loki Logging",
+      "groupName": "📊 Observability: Loki",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["loki", "promtail"],
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Observability - Uptime Monitoring",
+      "groupName": "📊 Observability: Uptime",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["uptime-kuma"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 💾 STORAGE - Persistent storage and backup solutions
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Storage - Rook-Ceph",
+      "groupName": "💾 Storage: Rook-Ceph",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["rook", "ceph"],
+      "separateMinorPatch": true
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔐 SECURITY - Authentication, secrets, and certificates
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Security - Authentik SSO",
+      "groupName": "🔐 Security: Authentik",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["authentik"]
+    },
+    {
+      "description": "Security - External Secrets",
+      "groupName": "🔐 Security: Secrets",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["external-secrets", "1password", "onepassword", "connect"]
+    },
+    {
+      "description": "Security - cert-manager",
+      "groupName": "🔐 Security: Certificates",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["cert-manager", "jetstack"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🖥️ GITHUB ACTIONS - CI/CD workflow components
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "GitHub Actions - Core Actions",
+      "groupName": "🖥️ CI/CD: GitHub Actions",
+      "matchManagers": ["github-actions"],
+      "matchPackagePatterns": ["actions/.*"]
+    },
+    {
+      "description": "GitHub Actions - Renovate Bot",
+      "groupName": "🖥️ CI/CD: Renovate",
+      "matchManagers": ["github-actions"],
+      "matchPackagePatterns": ["renovatebot/.*"]
+    },
+    {
+      "description": "GitHub Actions - Flux Local",
+      "groupName": "🖥️ CI/CD: Flux Local",
+      "matchDatasources": ["docker"],
+      "matchPackagePatterns": ["flux-local", "allenporter"]
+    },
+    {
+      "description": "GitHub Actions - AWS",
+      "groupName": "🖥️ CI/CD: AWS Actions",
+      "matchManagers": ["github-actions"],
+      "matchPackagePatterns": ["aws-actions/.*"]
+    },
+    {
+      "description": "GitHub Actions - Hashicorp",
+      "groupName": "🖥️ CI/CD: Hashicorp Actions",
+      "matchManagers": ["github-actions"],
+      "matchPackagePatterns": ["hashicorp/.*"]
+    },
+    {
+      "description": "GitHub Actions - ARC Controllers",
+      "groupName": "🖥️ CI/CD: ARC",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["gha-runner", "actions-runner-controller"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🏠 IOT - Home automation and IoT devices
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "IoT - Home Assistant",
+      "groupName": "🏠 IoT: Home Assistant",
+      "matchDatasources": ["docker"],
+      "matchPackagePatterns": ["home-assistant"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🖥️ GPU - NVIDIA GPU support
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "GPU - NVIDIA Support",
+      "groupName": "🖥️ GPU: NVIDIA",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackagePatterns": ["nvidia", "gpu-operator", "dcgm"],
+      "separateMinorPatch": true
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🛠️ CLI TOOLS - Development and operations tools (aqua)
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "CLI Tools - Kubernetes Tools",
+      "groupName": "🛠️ Tools: Kubernetes",
+      "matchDatasources": ["github-releases"],
+      "matchPackagePatterns": ["helm/helm", "helmfile", "siderolabs/talos", "fluxcd/flux2"]
+    },
+    {
+      "description": "CLI Tools - Infrastructure Tools",
+      "groupName": "🛠️ Tools: Infrastructure",
+      "matchDatasources": ["github-releases"],
+      "matchPackagePatterns": ["talhelper", "cilium-cli", "mikefarah/yq", "go-task/task"]
+    },
+    {
+      "description": "CLI Tools - Cloud CLI",
+      "groupName": "🛠️ Tools: Cloud CLI",
+      "matchDatasources": ["github-releases"],
+      "matchPackagePatterns": ["cli/cli", "cloudflare/cloudflared", "cue-lang/cue"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🏗️ TERRAFORM - Infrastructure as Code
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Terraform - Core",
+      "groupName": "🏗️ Terraform: Core",
+      "matchDatasources": ["github-releases"],
+      "matchPackagePatterns": ["hashicorp/terraform"]
+    },
+    {
+      "description": "Terraform - Providers",
+      "groupName": "🏗️ Terraform: Providers",
+      "matchDatasources": ["terraform-provider"],
+      "matchPackagePatterns": [".*"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 📦 RUNTIME - Node, Python, and other runtimes
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Runtime - Node.js",
+      "groupName": "📦 Runtime: Node.js",
+      "matchDatasources": ["github-releases", "node-version"],
+      "matchPackagePatterns": ["node", "nodejs"]
+    },
+    {
+      "description": "Runtime - Python",
+      "groupName": "📦 Runtime: Python",
+      "matchDatasources": ["github-releases"],
+      "matchPackagePatterns": ["python"]
     }
   ]
 }
