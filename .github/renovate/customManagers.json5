@@ -9,7 +9,10 @@
         "(^|/).+\\.ya?ml(\\.j2)?$"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n.+?\"?(?<currentValue>[^\\s\"]+)\"?"
+        // Matches both "key: value" format and bare value format
+        // Example 1: # renovate: datasource=docker depName=foo/bar\n  tag: v1.2.3
+        // Example 2: # renovate: datasource=docker depName=foo/bar\n  v1.2.3
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n(?:\\s*\\w+:\\s*|\\s*)\"?(?<currentValue>[^\\s\"]+)\"?"
       ],
       "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
