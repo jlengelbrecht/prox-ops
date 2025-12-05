@@ -37,24 +37,42 @@
   "packageRules": [
     // ═══════════════════════════════════════════════════════════════════════════
     // PR Labels - Talos Upgrade Strategy (cattle vs pets)
-    // These labels ONLY apply to Talos version updates in terraform/variables.tf
+    // These labels ONLY apply to Talos cluster version updates in:
+    //   - terraform/variables.tf (Terraform-managed infrastructure)
+    //   - talos/talenv.yaml (talhelper configuration)
     // They trigger the talos-version-router.yaml workflow which routes to:
     //   - cattle: destructive rebuild (major/minor versions)
     //   - pets: in-place talosctl upgrade (patch versions)
     // ═══════════════════════════════════════════════════════════════════════════
     {
-      "description": "Label Talos major/minor updates as cattle (destructive rebuild)",
+      "description": "Label Talos major/minor updates as cattle - Terraform",
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["siderolabs/talos"],
-      "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
+      "matchFileNames": ["terraform/variables.tf"],
       "matchUpdateTypes": ["major", "minor"],
       "addLabels": ["talos-update/cattle"]
     },
     {
-      "description": "Label Talos patch updates as pets (in-place talosctl upgrade)",
+      "description": "Label Talos patch updates as pets - Terraform",
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["siderolabs/talos"],
-      "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
+      "matchFileNames": ["terraform/variables.tf"],
+      "matchUpdateTypes": ["patch"],
+      "addLabels": ["talos-update/pets"]
+    },
+    {
+      "description": "Label Talos major/minor updates as cattle - talenv",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/siderolabs/installer"],
+      "matchFileNames": ["talos/talenv.yaml"],
+      "matchUpdateTypes": ["major", "minor"],
+      "addLabels": ["talos-update/cattle"]
+    },
+    {
+      "description": "Label Talos patch updates as pets - talenv",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/siderolabs/installer"],
+      "matchFileNames": ["talos/talenv.yaml"],
       "matchUpdateTypes": ["patch"],
       "addLabels": ["talos-update/pets"]
     },
