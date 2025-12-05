@@ -1,8 +1,8 @@
 ---
 # BookStack - Documentation/Wiki platform
 # Using gabe565 community Helm chart (actively maintained)
-# Phase 1: Deploy with standard auth to assess existing content
-# Phase 2: Add Authentik OIDC with role-based access
+# Phase 2: Authentik OIDC with role-based access groups
+# Groups: bookstack-plex-media-users, bookstack-uid-full-access, bookstack-extended-users
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -54,8 +54,19 @@ spec:
       MAIL_USERNAME: guides@homelab-services.com
       MAIL_FROM: guides@homelab-services.com
       MAIL_FROM_NAME: Homelab0-Guides
-      # Authentication - Standard for initial deployment
-      AUTH_METHOD: standard
+      # Authentication - Authentik OIDC with role-based access
+      AUTH_METHOD: oidc
+      AUTH_AUTO_INITIATE: "false"
+      OIDC_NAME: Authentik
+      OIDC_DISPLAY_NAME_CLAIMS: name
+      OIDC_ISSUER: https://authentik.homelab0.org/application/o/book-stack/
+      OIDC_ISSUER_DISCOVER: "true"
+      OIDC_END_SESSION_ENDPOINT: "true"
+      # Group sync from Authentik
+      OIDC_ADDITIONAL_SCOPES: groups
+      OIDC_GROUPS_CLAIM: groups
+      OIDC_USER_TO_GROUPS: "true"
+      OIDC_REMOVE_FROM_GROUPS: "true"
 
     # Secrets from 1Password via ExternalSecret
     envFrom:
