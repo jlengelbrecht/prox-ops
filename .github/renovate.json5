@@ -36,16 +36,20 @@
   // The deprecated regexManagers property was removed - use customManagers instead
   "packageRules": [
     // ═══════════════════════════════════════════════════════════════════════════
-    // PR Labels - Update Strategy (cattle vs pets)
+    // PR Labels - Talos Upgrade Strategy (cattle vs pets)
+    // These labels ONLY apply to Talos Linux updates - they trigger specific
+    // upgrade workflows: cattle = destructive rebuild, pets = in-place talosctl upgrade
     // ═══════════════════════════════════════════════════════════════════════════
     {
-      "description": "Label major/minor updates as cattle (rebuild approach)",
+      "description": "Label Talos major/minor updates as cattle (destructive rebuild)",
+      "matchPackageNames": ["siderolabs/talos"],
       "matchUpdateTypes": ["major", "minor"],
       "addLabels": ["talos-update/cattle"]
     },
     {
-      "description": "Label patch/digest updates as pets (in-place upgrade)",
-      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
+      "description": "Label Talos patch updates as pets (in-place talosctl upgrade)",
+      "matchPackageNames": ["siderolabs/talos"],
+      "matchUpdateTypes": ["patch"],
       "addLabels": ["talos-update/pets"]
     },
 
