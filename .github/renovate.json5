@@ -43,15 +43,24 @@
       "enabled": false
     },
 
-    // === LinuxServer.io Images (version-v*.* and date-based formats) ===
+    // === LinuxServer.io Images ===
+    // BookStack uses version-v* format (e.g., version-v24.12.1) which requires regex versioning
     {
-      "description": "Loose versioning for LinuxServer.io images",
+      "description": "Regex versioning for BookStack image (version-v prefix)",
+      "matchDatasources": ["docker"],
+      "versioning": "regex:^version-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$",
+      "matchPackageNames": ["ghcr.io/linuxserver/bookstack"]
+    },
+    // Other LinuxServer images may use different formats (date-based, etc.)
+    {
+      "description": "Loose versioning for other LinuxServer.io images",
       "matchDatasources": ["docker"],
       "versioning": "loose",
       "matchPackagePatterns": [
         "lscr.io/linuxserver/.*",
         "ghcr.io/linuxserver/.*"
-      ]
+      ],
+      "excludePackageNames": ["ghcr.io/linuxserver/bookstack"]
     },
 
     // === onedr0p Images (4-segment versioning: major.minor.patch.build) ===
