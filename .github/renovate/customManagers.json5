@@ -32,11 +32,38 @@
       "description": "Monitor Terraform version in GitHub Actions workflows",
       "fileMatch": ["^\\.github/workflows/.+\\.ya?ml$"],
       "matchStrings": [
-        "TERRAFORM_VERSION:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+        // YAML env format: TERRAFORM_VERSION: "1.11.3"
+        "TERRAFORM_VERSION:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        // Bash assignment format: TERRAFORM_VERSION="1.11.3"
+        "TERRAFORM_VERSION=\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
       ],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "hashicorp/terraform",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Track Docker container images in GitHub Actions (docker:// syntax)",
+      "fileMatch": ["^\\.github/workflows/.+\\.ya?ml$"],
+      "matchStrings": [
+        "uses:\\s*docker://(?<depName>[^:]+):(?<currentValue>[^\\s\"]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Track OCI artifact versions in Flux HelmReleases",
+      "fileMatch": [
+        "(^|/)kubernetes/.+\\.ya?ml$"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=docker depName=ghcr.io/foo/bar
+        //          artifact: oci://ghcr.io/foo/bar:v1.2.3
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*artifact:\\s*oci://[^:]+:(?<currentValue>[^\\s\"]+)"
+      ],
+      "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}docker{{/if}}",
+      "versioningTemplate": "docker"
     }
   ]
 }
