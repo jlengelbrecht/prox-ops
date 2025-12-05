@@ -40,10 +40,11 @@ spec:
               protocol: TCP
   egress:
     # MariaDB database connection (standalone MariaDB 11.4.8)
+    # Use app.kubernetes.io/instance because commonMetadata in ks.yaml overrides app.kubernetes.io/name
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: media
-            app.kubernetes.io/name: bookstack-mariadb-standalone
+            app.kubernetes.io/instance: bookstack-mariadb-standalone
       toPorts:
         - ports:
             - port: "3306"
@@ -90,6 +91,7 @@ spec:
               protocol: TCP
 ---
 # Standalone MariaDB Network Policy
+# Use app.kubernetes.io/instance because commonMetadata in ks.yaml overrides app.kubernetes.io/name
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -98,7 +100,7 @@ metadata:
 spec:
   endpointSelector:
     matchLabels:
-      app.kubernetes.io/name: bookstack-mariadb-standalone
+      app.kubernetes.io/instance: bookstack-mariadb-standalone
   ingress:
     # Allow from BookStack application
     - fromEndpoints:
