@@ -65,15 +65,10 @@ spec:
         existingClaim: bookstack-config-pvc
 
     # MariaDB subchart configuration (Bitnami)
-    # NOTE: Bitnami images only publish 'latest' tag, not semver tags
-    # Renovate tracks chart version updates; digest updates come with chart bumps
+    # Image version is managed by the Bitnami MariaDB chart dependency (v20.1.1)
+    # Renovate tracks the parent gabe565/bookstack chart which pins subchart versions
     mariadb:
       enabled: true
-      image:
-        registry: docker.io
-        repository: bitnami/mariadb
-        # Bitnami uses 'latest' only - version pinning comes from chart version
-        tag: latest
       auth:
         database: bookstackapp
         username: bookstack
