@@ -32,8 +32,8 @@
       "description": "Process custom dependencies in YAML files",
       "fileMatch": ["kubernetes/.+\\.ya?ml$"],
       "matchStrings": [
-        // Match patterns like: tag: 1.2.3 with renovate comment
-        "datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\n.*?\"?(?<currentValue>[^\\s\"]+)\"?"
+        // Match patterns like: # datasource=docker depName=foo\n  tag: 1.2.3
+        "#?\\s*datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n.*?\"?(?<currentValue>[^\\s\"]+)\"?"
       ],
       "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
