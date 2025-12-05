@@ -50,6 +50,20 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Track OCI artifact versions in Flux HelmReleases",
+      "fileMatch": [
+        "(^|/)kubernetes/.+\\.ya?ml$"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=docker depName=ghcr.io/foo/bar
+        //          artifact: oci://ghcr.io/foo/bar:v1.2.3
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*artifact:\\s*oci://[^:]+:(?<currentValue>[^\\s\"]+)"
+      ],
+      "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}docker{{/if}}",
+      "versioningTemplate": "docker"
     }
   ]
 }
