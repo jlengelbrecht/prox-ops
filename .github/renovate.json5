@@ -29,9 +29,104 @@
   "kubernetes": {
     "fileMatch": ["kubernetes/.+\\.ya?ml$"]
   },
+  // Base label for all Renovate PRs
+  "labels": ["renovate"],
+
   // Note: customManagers are defined in .github/renovate/customManagers.json5
   // The deprecated regexManagers property was removed - use customManagers instead
   "packageRules": [
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PR Labels - Update Strategy (cattle vs pets)
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Label major/minor updates as cattle (rebuild approach)",
+      "matchUpdateTypes": ["major", "minor"],
+      "addLabels": ["talos-update/cattle"]
+    },
+    {
+      "description": "Label patch/digest updates as pets (in-place upgrade)",
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
+      "addLabels": ["talos-update/pets"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PR Labels - Update Type
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Label major version updates",
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["update/major"]
+    },
+    {
+      "description": "Label minor version updates",
+      "matchUpdateTypes": ["minor"],
+      "addLabels": ["update/minor"]
+    },
+    {
+      "description": "Label patch version updates",
+      "matchUpdateTypes": ["patch"],
+      "addLabels": ["update/patch"]
+    },
+    {
+      "description": "Label digest updates",
+      "matchUpdateTypes": ["digest", "pinDigest"],
+      "addLabels": ["update/digest"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PR Labels - Category (matching dashboard emoji groups)
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Label media app updates",
+      "matchPackagePatterns": ["plex", "tautulli", "sonarr", "radarr", "prowlarr", "lidarr", "readarr", "overseerr", "wizarr", "maintainerr", "qbittorrent", "sabnzbd", "notifiarr", "huntarr", "cleanuparr"],
+      "addLabels": ["deps/media"]
+    },
+    {
+      "description": "Label network component updates",
+      "matchPackagePatterns": ["envoy", "cloudflare", "gluetun", "wireguard", "external-dns", "k8s-gateway", "coredns"],
+      "addLabels": ["deps/network"]
+    },
+    {
+      "description": "Label core infrastructure updates",
+      "matchPackagePatterns": ["flux", "cilium", "tetragon", "multus", "cni-plugins", "metrics-server", "reloader", "spegel", "app-template", "bjw-s"],
+      "addLabels": ["deps/core"]
+    },
+    {
+      "description": "Label observability updates",
+      "matchPackagePatterns": ["prometheus", "grafana", "loki", "promtail", "alertmanager", "uptime-kuma", "gatus"],
+      "addLabels": ["deps/observability"]
+    },
+    {
+      "description": "Label storage updates",
+      "matchPackagePatterns": ["rook", "ceph"],
+      "addLabels": ["deps/storage"]
+    },
+    {
+      "description": "Label security updates",
+      "matchPackagePatterns": ["authentik", "external-secrets", "1password", "cert-manager", "jetstack"],
+      "addLabels": ["deps/security"]
+    },
+    {
+      "description": "Label CI/CD updates",
+      "matchPackagePatterns": ["actions-runner", "gha-runner", "flux-local", "allenporter"],
+      "addLabels": ["deps/cicd"]
+    },
+    {
+      "description": "Label IoT updates",
+      "matchPackagePatterns": ["home-assistant"],
+      "addLabels": ["deps/iot"]
+    },
+    {
+      "description": "Label GPU updates",
+      "matchPackagePatterns": ["nvidia", "gpu-operator", "dcgm"],
+      "addLabels": ["deps/gpu"]
+    },
+    {
+      "description": "Label Terraform updates",
+      "matchDatasources": ["terraform-provider"],
+      "addLabels": ["deps/terraform"]
+    },
+
     // === Disabled Updates ===
     {
       "description": "Disable kubernetes-api",
