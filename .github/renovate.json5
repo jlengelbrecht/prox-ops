@@ -37,18 +37,24 @@
   "packageRules": [
     // ═══════════════════════════════════════════════════════════════════════════
     // PR Labels - Talos Upgrade Strategy (cattle vs pets)
-    // These labels ONLY apply to Talos Linux updates - they trigger specific
-    // upgrade workflows: cattle = destructive rebuild, pets = in-place talosctl upgrade
+    // These labels ONLY apply to Talos version updates in terraform/variables.tf
+    // They trigger the talos-version-router.yaml workflow which routes to:
+    //   - cattle: destructive rebuild (major/minor versions)
+    //   - pets: in-place talosctl upgrade (patch versions)
     // ═══════════════════════════════════════════════════════════════════════════
     {
       "description": "Label Talos major/minor updates as cattle (destructive rebuild)",
+      "matchDatasources": ["github-releases"],
       "matchPackageNames": ["siderolabs/talos"],
+      "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
       "matchUpdateTypes": ["major", "minor"],
       "addLabels": ["talos-update/cattle"]
     },
     {
       "description": "Label Talos patch updates as pets (in-place talosctl upgrade)",
+      "matchDatasources": ["github-releases"],
       "matchPackageNames": ["siderolabs/talos"],
+      "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
       "matchUpdateTypes": ["patch"],
       "addLabels": ["talos-update/pets"]
     },
