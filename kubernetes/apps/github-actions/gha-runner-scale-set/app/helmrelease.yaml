@@ -58,10 +58,9 @@ spec:
         # Container spec
         containers:
           - name: runner
-            # Using onedr0p's custom image to fix ARC 0.13.0 label propagation bug
-            # Pinned by digest for reproducibility and supply chain security
-            # Official image (ghcr.io/actions/actions-runner:2.329.0) has empty label bug
-            image: ghcr.io/home-operations/actions-runner@sha256:1d26dc36431014527e0d920e7b84878dcf8fd69fb9639598de1af5ccf9210131
+            # Official GitHub Actions runner image
+            # renovate: datasource=docker depName=ghcr.io/actions/actions-runner
+            image: ghcr.io/actions/actions-runner:2.330.0
             imagePullPolicy: IfNotPresent
 
             # Explicit command override (following onedr0p's pattern)

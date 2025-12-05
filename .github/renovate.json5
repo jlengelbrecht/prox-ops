@@ -11,7 +11,9 @@
     "github>jlengelbrecht/prox-ops//.github/renovate/semanticCommits.json5",
   ],
   "dependencyDashboard": true,
-  "dependencyDashboardTitle": "Renovate Dashboard",
+  "dependencyDashboardTitle": "🤖 Renovate Dashboard 🤖",
+  "dependencyDashboardHeader": "## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates run every weekend. Check a box to run immediately.\n\n---\n",
+  "dependencyDashboardFooter": "\n---\n\n📚 **Documentation:** [Renovate Docs](https://docs.renovatebot.com/) | ⚙️ **Config:** `.github/renovate.json5`",
   "suppressNotifications": ["prEditedNotification", "prIgnoreNotification"],
   "rebaseWhen": "conflicted",
   "schedule": ["every weekend"],
@@ -27,9 +29,137 @@
   "kubernetes": {
     "fileMatch": ["kubernetes/.+\\.ya?ml$"]
   },
+  // Base label for all Renovate PRs
+  "labels": ["renovate"],
+
   // Note: customManagers are defined in .github/renovate/customManagers.json5
   // The deprecated regexManagers property was removed - use customManagers instead
   "packageRules": [
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PR Labels - Talos Upgrade Strategy (cattle vs pets)
+    // These labels ONLY apply to Talos cluster version updates in:
+    //   - terraform/variables.tf (Terraform-managed infrastructure)
+    //   - talos/talenv.yaml (talhelper configuration)
+    // They trigger the talos-version-router.yaml workflow which routes to:
+    //   - cattle: destructive rebuild (major/minor versions)
+    //   - pets: in-place talosctl upgrade (patch versions)
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Label Talos major/minor updates as cattle - Terraform",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["siderolabs/talos"],
+      "matchFileNames": ["terraform/variables.tf"],
+      "matchUpdateTypes": ["major", "minor"],
+      "addLabels": ["talos-update/cattle"]
+    },
+    {
+      "description": "Label Talos patch updates as pets - Terraform",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["siderolabs/talos"],
+      "matchFileNames": ["terraform/variables.tf"],
+      "matchUpdateTypes": ["patch"],
+      "addLabels": ["talos-update/pets"]
+    },
+    {
+      "description": "Label Talos major/minor updates as cattle - talenv",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/siderolabs/installer"],
+      "matchFileNames": ["talos/talenv.yaml"],
+      "matchUpdateTypes": ["major", "minor"],
+      "addLabels": ["talos-update/cattle"]
+    },
+    {
+      "description": "Label Talos patch updates as pets - talenv",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/siderolabs/installer"],
+      "matchFileNames": ["talos/talenv.yaml"],
+      "matchUpdateTypes": ["patch"],
+      "addLabels": ["talos-update/pets"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PR Labels - Update Type
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Label major version updates",
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["update/major"]
+    },
+    {
+      "description": "Label minor version updates",
+      "matchUpdateTypes": ["minor"],
+      "addLabels": ["update/minor"]
+    },
+    {
+      "description": "Label patch version updates",
+      "matchUpdateTypes": ["patch"],
+      "addLabels": ["update/patch"]
+    },
+    {
+      "description": "Label digest updates",
+      "matchUpdateTypes": ["digest", "pinDigest"],
+      "addLabels": ["update/digest"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PR Labels - Category (matching dashboard emoji groups)
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Label media app updates",
+      "matchPackagePatterns": ["plex", "tautulli", "sonarr", "radarr", "prowlarr", "lidarr", "readarr", "overseerr", "wizarr", "maintainerr", "qbittorrent", "sabnzbd", "notifiarr", "huntarr", "cleanuparr"],
+      "addLabels": ["deps/media"]
+    },
+    {
+      "description": "Label homelab documentation updates",
+      "matchPackagePatterns": ["bookstack"],
+      "addLabels": ["deps/homelab"]
+    },
+    {
+      "description": "Label network component updates",
+      "matchPackagePatterns": ["envoy", "cloudflare", "gluetun", "wireguard", "external-dns", "k8s-gateway", "coredns"],
+      "addLabels": ["deps/network"]
+    },
+    {
+      "description": "Label core infrastructure updates",
+      "matchPackagePatterns": ["flux", "cilium", "tetragon", "multus", "cni-plugins", "metrics-server", "reloader", "spegel", "app-template", "bjw-s"],
+      "addLabels": ["deps/core"]
+    },
+    {
+      "description": "Label observability updates",
+      "matchPackagePatterns": ["prometheus", "grafana", "loki", "promtail", "alertmanager", "uptime-kuma", "gatus"],
+      "addLabels": ["deps/observability"]
+    },
+    {
+      "description": "Label storage updates",
+      "matchPackagePatterns": ["rook", "ceph"],
+      "addLabels": ["deps/storage"]
+    },
+    {
+      "description": "Label security updates",
+      "matchPackagePatterns": ["authentik", "external-secrets", "1password", "cert-manager", "jetstack"],
+      "addLabels": ["deps/security"]
+    },
+    {
+      "description": "Label CI/CD updates",
+      "matchPackagePatterns": ["actions-runner", "gha-runner", "flux-local", "allenporter"],
+      "addLabels": ["deps/cicd"]
+    },
+    {
+      "description": "Label IoT updates",
+      "matchPackagePatterns": ["home-assistant"],
+      "addLabels": ["deps/iot"]
+    },
+    {
+      "description": "Label GPU updates",
+      "matchPackagePatterns": ["nvidia", "gpu-operator", "dcgm"],
+      "addLabels": ["deps/gpu"]
+    },
+    {
+      "description": "Label Terraform updates",
+      "matchDatasources": ["terraform-provider"],
+      "addLabels": ["deps/terraform"]
+    },
+
     // === Disabled Updates ===
     {
       "description": "Disable kubernetes-api",
