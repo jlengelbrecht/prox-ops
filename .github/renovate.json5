@@ -27,18 +27,8 @@
   "kubernetes": {
     "fileMatch": ["kubernetes/.+\\.ya?ml$"]
   },
-  "regexManagers": [
-    {
-      "description": "Process custom dependencies in YAML files",
-      "fileMatch": ["kubernetes/.+\\.ya?ml$"],
-      "matchStrings": [
-        // Match patterns like: # datasource=docker depName=foo\n  tag: 1.2.3
-        "#?\\s*datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n.*?\"?(?<currentValue>[^\\s\"]+)\"?"
-      ],
-      "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
-      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
-    }
-  ],
+  // Note: customManagers are defined in .github/renovate/customManagers.json5
+  // The deprecated regexManagers property was removed - use customManagers instead
   "packageRules": [
     // === Disabled Updates ===
     {
