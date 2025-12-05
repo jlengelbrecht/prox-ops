@@ -73,10 +73,12 @@ spec:
         existingClaim: bookstack-config-pvc
 
     # MariaDB subchart configuration (Bitnami)
-    # Image version is managed by the Bitnami MariaDB chart dependency (v20.1.1)
-    # Renovate tracks the parent gabe565/bookstack chart which pins subchart versions
+    # Override image tag - gabe565 chart 0.20.0 pins an outdated tag that no longer exists
     mariadb:
       enabled: true
+      image:
+        # renovate: datasource=docker depName=docker.io/bitnami/mariadb
+        tag: 12.1.2-debian-12-r4
       auth:
         database: bookstackapp
         username: bookstack
