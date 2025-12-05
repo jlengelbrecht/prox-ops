@@ -3,15 +3,13 @@
   "customManagers": [
     {
       "customType": "regex",
+      // Matches both "key: value" format (e.g., tag: v1.2.3) and bare value format (e.g., v1.2.3)
       "description": "Process annotated dependencies in YAML files",
       "fileMatch": [
         "(^|/)kubernetes/.+\\.ya?ml(\\.j2)?$",
         "(^|/).+\\.ya?ml(\\.j2)?$"
       ],
       "matchStrings": [
-        // Matches both "key: value" format and bare value format
-        // Example 1: # renovate: datasource=docker depName=foo/bar\n  tag: v1.2.3
-        // Example 2: # renovate: datasource=docker depName=foo/bar\n  v1.2.3
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n(?:\\s*\\w+:\\s*|\\s*)\"?(?<currentValue>[^\\s\"]+)\"?"
       ],
       "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
