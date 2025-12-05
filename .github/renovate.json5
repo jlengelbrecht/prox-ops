@@ -194,6 +194,38 @@
       "matchPackagePatterns": ["siderolabs/talos", "siderolabs/installer"],
       "prBodyNotes": ["⚠️ **Talos Linux**: Major/minor versions trigger cattle rebuild workflow. Patch versions use in-place upgrade."]
     },
+    {
+      "description": "Wait 2 days for observability stack updates",
+      "matchPackagePatterns": ["prometheus", "grafana", "loki", "promtail", "alertmanager", "kube-prometheus-stack"],
+      "minimumReleaseAge": "2 days",
+      "prBodyNotes": ["📊 **Observability**: Check for dashboard compatibility and alert rule changes."]
+    },
+    {
+      "description": "Wait 2 days for NVIDIA/GPU updates",
+      "matchPackagePatterns": ["nvidia", "dcgm", "gpu-operator"],
+      "minimumReleaseAge": "2 days",
+      "prBodyNotes": ["🎮 **GPU/NVIDIA**: Verify driver compatibility with Talos kernel modules."]
+    },
+    {
+      "description": "Add context for VPN/network updates",
+      "matchPackagePatterns": ["gluetun", "wireguard"],
+      "prBodyNotes": ["🌐 **VPN**: Test VPN connectivity and media app routing after update."]
+    },
+    {
+      "description": "Add context for storage updates",
+      "matchPackagePatterns": ["rook", "ceph"],
+      "prBodyNotes": ["💾 **Storage**: Monitor OSD health and PG states after update. Consider maintenance window."]
+    },
+    {
+      "description": "Add context for Home Assistant updates",
+      "matchPackagePatterns": ["home-assistant"],
+      "prBodyNotes": ["🏠 **Home Assistant**: Uses calendar versioning (YYYY.MM.x). Check breaking changes and integration updates."]
+    },
+    {
+      "description": "Add context for CNI updates",
+      "matchPackagePatterns": ["cilium", "multus", "cni-plugins", "tetragon"],
+      "prBodyNotes": ["🔧 **CNI/Networking**: Critical cluster networking. Test pod-to-pod and multi-VLAN connectivity."]
+    },
 
     // === Disabled Updates ===
     {
