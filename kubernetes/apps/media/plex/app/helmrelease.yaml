@@ -21,11 +21,15 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/onedr0p/plex
-              # renovate: datasource=docker depName=ghcr.io/onedr0p/plex
-              tag: 1.41.5.9522
+              repository: lscr.io/linuxserver/plex
+              # renovate: datasource=docker depName=lscr.io/linuxserver/plex
+              tag: 1.42.2.10156-f737b826c-ls286
             env:
               TZ: America/New_York
+              # LinuxServer.io image uses PUID/PGID for file permissions
+              # Must match fsGroup/supplementalGroups for NFS access
+              PUID: "568"
+              PGID: "568"
               PLEX_CLAIM: ""
             probes:
               liveness:
@@ -83,9 +87,11 @@ spec:
         security.homelab/gpu-required: "NVIDIA GPU for hardware transcoding"
         security.homelab/network: "DMZ VLAN 81 - direct internet access"
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: true
+        # LinuxServer.io images use s6-overlay which requires root initially
+        # The container drops to PUID/PGID (568) after init
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
         supplementalGroups:
