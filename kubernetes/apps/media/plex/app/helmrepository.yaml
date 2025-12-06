@@ -1,4 +1,6 @@
 ---
+# bjw-s Helm Charts - app-template for media apps
+# Used by: plex (legacy apps), bookstack-mariadb-standalone, overseerr, etc.
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: HelmRepository
 metadata:
@@ -7,3 +9,14 @@ metadata:
 spec:
   interval: 12h
   url: https://bjw-s-labs.github.io/helm-charts
+---
+# Official Plex Media Server Helm Chart Repository
+# Maintained by Plex Inc.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: plex
+  namespace: media
+spec:
+  interval: 12h
+  url: https://raw.githubusercontent.com/plexinc/pms-docker/gh-pages

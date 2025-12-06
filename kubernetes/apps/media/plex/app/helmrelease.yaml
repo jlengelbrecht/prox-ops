@@ -1,4 +1,7 @@
 ---
+# Plex Media Server - Official Helm Chart
+# Repository: https://github.com/plexinc/pms-docker
+# Version: 1.42.2+ (includes fix for Plex Home user switching bug)
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -7,114 +10,116 @@ metadata:
 spec:
   chart:
     spec:
-      chart: app-template
-      version: 4.4.0
+      chart: plex-media-server
+      # renovate: datasource=helm registryUrl=https://raw.githubusercontent.com/plexinc/pms-docker/gh-pages
+      version: 1.4.0
       sourceRef:
         kind: HelmRepository
-        name: bjw-s
+        name: plex
         namespace: media
   interval: 1h
+  timeout: 10m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
   values:
-    controllers:
-      plex:
-        strategy: Recreate
-        containers:
-          app:
-            image:
-              repository: ghcr.io/onedr0p/plex
-              # renovate: datasource=docker depName=ghcr.io/onedr0p/plex
-              tag: 1.41.5.9522
-            env:
-              TZ: America/New_York
-              PLEX_CLAIM: ""
-            probes:
-              liveness:
-                enabled: true
-                custom: true
-                spec:
-                  httpGet:
-                    path: /identity
-                    port: 32400
-                  initialDelaySeconds: 30
-                  periodSeconds: 30
-                  timeoutSeconds: 10
-                  failureThreshold: 3
-              readiness:
-                enabled: true
-                custom: true
-                spec:
-                  httpGet:
-                    path: /identity
-                    port: 32400
-                  initialDelaySeconds: 30
-                  periodSeconds: 30
-                  timeoutSeconds: 10
-                  failureThreshold: 3
-            resources:
-              requests:
-                cpu: 1000m
-                memory: 2Gi
-                nvidia.com/gpu: 1
-              limits:
-                cpu: 6000m
-                memory: 8Gi
-                nvidia.com/gpu: 1
-            securityContext:
-              allowPrivilegeEscalation: false
-              readOnlyRootFilesystem: false
-              capabilities:
-                drop:
-                  - ALL
-    defaultPodOptions:
-      automountServiceAccountToken: false  # Security: Disable K8s API access
-      runtimeClassName: nvidia
-      nodeSelector:
-        nvidia.com/gpu.present: "true"
-      affinity:
-        nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-              - matchExpressions:
-                  - key: gpu.nvidia.com/model
-                    operator: In
-                    values:
-                      - rtx-a2000
+    # Image configuration (chart manages version via appVersion)
+    image:
+      registry: index.docker.io
+      repository: plexinc/pms-docker
+      pullPolicy: IfNotPresent
+
+    # Plex Media Server configuration
+    pms:
+      # Use existing PVC for config (preserves database)
+      configExistingClaim: plex-config
+
+      # NVIDIA GPU for hardware transcoding
+      gpu:
+        nvidia:
+          enabled: true
+          devices: "all"
+          capabilities: "compute,video,utility"
+
+      # Resource limits
+      resources:
+        requests:
+          cpu: 1000m
+          memory: 2Gi
+        limits:
+          cpu: 6000m
+          memory: 8Gi
+
+      # Liveness and readiness probes
+      livenessProbe:
+        httpGet:
+          path: /identity
+          port: 32400
+        initialDelaySeconds: 30
+        periodSeconds: 30
+        timeoutSeconds: 10
+        failureThreshold: 3
+
+      readinessProbe:
+        httpGet:
+          path: /identity
+          port: 32400
+        initialDelaySeconds: 30
+        periodSeconds: 30
+        timeoutSeconds: 10
+        failureThreshold: 3
+
+    # Service configuration
+    service:
+      type: LoadBalancer
+      port: 32400
       annotations:
+        network: dmz
+
+    # Environment variables
+    extraEnv:
+      TZ: "America/New_York"
+
+    # Node scheduling - GPU node selection
+    nodeSelector:
+      nvidia.com/gpu.present: "true"
+
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: gpu.nvidia.com/model
+                  operator: In
+                  values:
+                    - rtx-a2000
+
+    # Service account configuration
+    serviceAccount:
+      create: true
+      automountServiceAccountToken: false
+
+    # Pod annotations
+    statefulSet:
+      podAnnotations:
         security.homelab/gpu-required: "NVIDIA GPU for hardware transcoding"
         security.homelab/network: "DMZ VLAN 81 - direct internet access"
-      securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: true
-        fsGroup: 568
-        fsGroupChangePolicy: OnRootMismatch
-        supplementalGroups:
-          - 1000  # ubuntu group for NFS media access
-        seccompProfile:
-          type: RuntimeDefault
-    persistence:
-      config:
-        enabled: true
-        existingClaim: plex-config
-        globalMounts:
-          - path: /config
-      transcode:
-        enabled: true
-        existingClaim: plex-transcode
-        globalMounts:
-          - path: /transcode
-      media:
-        enabled: true
-        existingClaim: plex-media
-        globalMounts:
-          - path: /data
-    service:
-      app:
-        controller: plex
-        type: LoadBalancer
-        labels:
-          network: dmz
-        ports:
-          http:
-            port: 32400
-            protocol: TCP
+
+    # Additional volumes for transcode and media
+    extraVolumes:
+      - name: transcode
+        persistentVolumeClaim:
+          claimName: plex-transcode
+      - name: media
+        persistentVolumeClaim:
+          claimName: plex-media
+
+    extraVolumeMounts:
+      - name: transcode
+        mountPath: /transcode
+      - name: media
+        mountPath: /data
