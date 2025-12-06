@@ -78,7 +78,7 @@ spec:
         security.homelab/network: "External - user invitations"
 
     persistence:
-      database:
+      data:
         enabled: true
         type: persistentVolumeClaim
         accessMode: ReadWriteOnce
@@ -86,6 +86,10 @@ spec:
         storageClass: ceph-block
         globalMounts:
           - path: /data/database
+            subPath: database
+          # v2025.x+ wizard steps config (persists across cattle upgrades)
+          - path: /etc/wizarr
+            subPath: etc-wizarr
       # Nginx temp directories (required for non-root user)
       nginx-lib:
         enabled: true
@@ -107,12 +111,12 @@ spec:
         type: emptyDir
         globalMounts:
           - path: /tmp
-      # Required for v2025.x+ wizard steps
-      etc-wizarr:
+      # Required for v2025.x+ uv package cache (ephemeral, rebuilt each start)
+      cache:
         enabled: true
         type: emptyDir
         globalMounts:
-          - path: /etc/wizarr
+          - path: /.cache
 
     service:
       app:
