@@ -9,9 +9,8 @@ spec:
     matchLabels:
       app.kubernetes.io/name: plex
   ingress:
-    # Allow from internet (DMZ VLAN) for external Plex clients
-    - fromEntities:
-        - world
+    # Legacy 'fromEntities: world' removed - external access is solely via WireGuard tunnel
+    # See fromCIDR: 10.200.200.0/24 rule below for VPS traffic
     # Allow ingress from envoy-internal Gateway for internal access (plex.homelab0.org)
     - fromEndpoints:
         - matchLabels:
