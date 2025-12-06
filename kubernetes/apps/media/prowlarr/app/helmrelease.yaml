@@ -1,0 +1,178 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: prowlarr
+  namespace: media
+spec:
+  chart:
+    spec:
+      chart: app-template
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: media
+  interval: 1h
+  values:
+    controllers:
+      prowlarr:
+        strategy: Recreate
+        containers:
+          # Main Prowlarr container
+          app:
+            image:
+              repository: ghcr.io/onedr0p/prowlarr-develop
+              # renovate: datasource=docker depName=ghcr.io/onedr0p/prowlarr-develop
+              tag: 1.28.2.4885
+            env:
+              TZ: America/New_York
+              PROWLARR__PORT: &port 9696
+              PROWLARR__AUTH__METHOD: External
+              PROWLARR__AUTH__REQUIRED: DisabledForLocalAddresses
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /ping
+                    port: *port
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 5
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /ping
+                    port: *port
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 5
+            resources:
+              requests:
+                cpu: 50m
+                memory: 256Mi
+              limits:
+                cpu: 1000m
+                memory: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+          # Gluetun VPN sidecar - All indexer traffic routes through this
+          gluetun:
+            image:
+              repository: ghcr.io/qdm12/gluetun
+              # renovate: datasource=docker depName=ghcr.io/qdm12/gluetun
+              tag: v3.40.0
+            env:
+              # VPN Provider Configuration
+              VPN_SERVICE_PROVIDER: surfshark
+              VPN_TYPE: wireguard
+              SERVER_COUNTRIES: "United States"
+              # Firewall Kill Switch
+              FIREWALL: "on"
+              FIREWALL_INPUT_PORTS: "9696,8000"  # Prowlarr Web UI and control
+              FIREWALL_OUTBOUND_SUBNETS: "10.43.0.0/16"  # Allow internal K8s service traffic
+              # DNS - use VPN provider DNS (Surfshark)
+              DOT: "off"
+              DNS_KEEP_NAMESERVER: "on"  # Preserve K8s DNS for internal resolution
+              # Logging
+              LOG_LEVEL: info
+              TZ: America/New_York
+            envFrom:
+              - secretRef:
+                  name: gluetun-vpn
+            securityContext:
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  - NET_ADMIN
+              seccompProfile:
+                type: RuntimeDefault
+              readOnlyRootFilesystem: false
+              runAsNonRoot: false
+              runAsUser: 0
+              allowPrivilegeEscalation: false
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /v1/publicip/ip
+                    port: 8000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /v1/publicip/ip
+                    port: 8000
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 568
+        runAsGroup: 568
+        runAsNonRoot: false  # Gluetun requires root
+        fsGroup: 568
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      annotations:
+        security.homelab/vpn-required: "true"
+        security.homelab/network: "Internal - VPN egress for indexers"
+
+    persistence:
+      config:
+        enabled: true
+        type: persistentVolumeClaim
+        accessMode: ReadWriteOnce
+        size: 5Gi
+        storageClass: ceph-block
+        globalMounts:
+          - path: /config
+      # TUN device for WireGuard
+      dev-tun:
+        enabled: true
+        type: hostPath
+        hostPath: /dev/net/tun
+        hostPathType: CharDevice
+        advancedMounts:
+          prowlarr:
+            gluetun:
+              - path: /dev/net/tun
+
+    service:
+      app:
+        controller: prowlarr
+        type: ClusterIP
+        ports:
+          http:
+            port: *port
+            protocol: TCP

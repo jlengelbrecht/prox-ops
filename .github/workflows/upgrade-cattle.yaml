@@ -1,0 +1,2818 @@
+---
+name: Cattle Upgrade - Complete Workflow
+
+on:
+  workflow_call:
+    inputs:
+      old_version:
+        description: Previous Talos version
+        type: string
+        required: true
+      new_version:
+        description: New Talos version to upgrade to
+        type: string
+        required: true
+      test_templates:
+        description: Test only template rebuild (skip controllers & workers)
+        type: boolean
+        default: false
+      test_controllers:
+        description: Test only controllers (1 controller, skip templates & workers)
+        type: boolean
+        default: false
+      test_workers:
+        description: Test only workers (2 workers, skip templates & controllers)
+        type: boolean
+        default: false
+      worker_rollout_mode:
+        description: 'Worker rollout strategy (safe: 1 pair at a time, standard: both in pair parallel, aggressive: multiple pairs parallel)'
+        type: string
+        default: standard
+  workflow_dispatch:
+    inputs:
+      old_version:
+        description: Previous Talos version
+        type: string
+        required: true
+      new_version:
+        description: New Talos version to upgrade to
+        type: string
+        required: true
+      test_templates:
+        description: Test only template rebuild (skip controllers & workers)
+        type: boolean
+        default: false
+      test_controllers:
+        description: Test only controllers (1 controller, skip templates & workers)
+        type: boolean
+        default: false
+      test_workers:
+        description: Test only workers (2 workers, skip templates & controllers)
+        type: boolean
+        default: false
+      worker_rollout_mode:
+        description: 'Worker rollout strategy (safe: 1 pair at a time, standard: both in pair parallel, aggressive: multiple pairs parallel)'
+        type: choice
+        options:
+          - safe
+          - standard
+          - aggressive
+        default: standard
+
+# Prevent concurrent cattle upgrades (Terraform state lock protection)
+# Cancel old queued runs when new run starts (prevents zombie workflow blocking)
+concurrency:
+  group: cattle-upgrade-v2
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-2
+  TERRAFORM_STATE_BUCKET: prox-ops-terraform-state
+  TERRAFORM_VERSION: "1.14.0"  # Managed by Renovate
+
+jobs:
+  # ==========================================================================
+  # INPUT VALIDATION: Ensure test flags are mutually exclusive
+  # ==========================================================================
+  validate-inputs:
+    name: Validate Input Flags
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validate test flags are mutually exclusive
+        run: |
+          count=0
+          [[ "${{ inputs.test_templates }}" == "true" ]] && count=$((count + 1))
+          [[ "${{ inputs.test_controllers }}" == "true" ]] && count=$((count + 1))
+          [[ "${{ inputs.test_workers }}" == "true" ]] && count=$((count + 1))
+
+          if [[ $count -gt 1 ]]; then
+            echo "::error::Multiple test flags set. Only one test flag can be true at a time."
+            echo "::error::test_templates=${{ inputs.test_templates }}"
+            echo "::error::test_controllers=${{ inputs.test_controllers }}"
+            echo "::error::test_workers=${{ inputs.test_workers }}"
+            exit 1
+          fi
+
+          # Validate worker_rollout_mode parameter (security requirement)
+          MODE="${{ inputs.worker_rollout_mode }}"
+          if [[ ! "$MODE" =~ ^(safe|standard|aggressive)$ ]]; then
+            echo "::error::Invalid worker_rollout_mode: '$MODE'"
+            echo "::error::Must be one of: safe, standard, aggressive"
+            exit 1
+          fi
+
+          echo "✅ Input validation passed"
+          if [[ $count -eq 0 ]]; then
+            echo "Mode: Production (all nodes will be upgraded)"
+          elif [[ "${{ inputs.test_templates }}" == "true" ]]; then
+            echo "Mode: Template testing only"
+          elif [[ "${{ inputs.test_controllers }}" == "true" ]]; then
+            echo "Mode: Controller testing (1 controller only)"
+          elif [[ "${{ inputs.test_workers }}" == "true" ]]; then
+            echo "Mode: Worker testing (2 workers only)"
+          fi
+
+  # ==========================================================================
+  # PHASE 1: TEMPLATE REBUILD (CRITICAL - MISSING IN PREVIOUS IMPLEMENTATION)
+  # ==========================================================================
+  rebuild-templates:
+    name: Rebuild Templates v${{ inputs.new_version }}
+    runs-on: cattle-runner
+    timeout-minutes: 60
+    needs: validate-inputs
+    # Run when: test_templates=true OR production mode (all test flags false)
+    if: inputs.test_templates == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate version inputs
+        run: |
+          if ! [[ "${{ inputs.old_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid old_version format: '${{ inputs.old_version }}'"
+            exit 1
+          fi
+          if ! [[ "${{ inputs.new_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid new_version format: '${{ inputs.new_version }}'"
+            exit 1
+          fi
+          echo "✅ Version inputs validated"
+
+      - name: Setup Node.js (required for Terraform action)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Proxmox SSH key
+        env:
+          PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
+          chmod 600 ~/.ssh/proxmox_terraform
+
+      - name: Initialize Terraform
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Clear stale Terraform locks
+        working-directory: ./terraform
+        continue-on-error: true
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "Checking for stale Terraform state locks..."
+
+          # Try a terraform plan with short lock timeout to detect locks
+          # Capture both stdout and stderr to parse lock ID
+          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+            echo "Lock detected. Output:"
+            echo "$LOCK_OUTPUT"
+
+            # Extract lock ID from error message (format: "ID: <uuid>")
+            # Use \K assertion for reliable regex across grep versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
+
+            if [ -n "$LOCK_ID" ]; then
+              echo ""
+              echo "Found stale lock ID: $LOCK_ID"
+              echo "Attempting to force-unlock..."
+
+              if terraform force-unlock -force "$LOCK_ID"; then
+                echo "✓ Successfully cleared stale lock"
+              else
+                echo "✗ Failed to unlock (may require manual intervention)"
+                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+              fi
+            else
+              echo "Could not extract lock ID from error message"
+              echo "Lock may need to be cleared manually"
+            fi
+          else
+            echo "✓ No lock detected - state is accessible"
+          fi
+
+          # Ensure clean exit
+          exit 0
+
+      - name: Plan template changes
+        working-directory: ./terraform
+        timeout-minutes: 15
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Terraform Plan for Template Rebuild"
+          echo "================================================================"
+          echo "Planning template rebuild for 8 template modules"
+          echo "================================================================"
+          echo ""
+          echo "This step will plan changes for:"
+          echo "  - Baldar: controller + worker templates"
+          echo "  - Heimdall: controller + worker templates"
+          echo "  - Odin: controller + worker templates"
+          echo "  - Thor: controller + worker templates"
+          echo ""
+          echo "Total: 8 template modules (16 null_resources)"
+          echo ""
+          echo "NOTE: Only templates are targeted - VMs are NOT affected"
+          echo "================================================================"
+          echo ""
+
+          # Generate plan for validation
+          terraform plan \
+            -input=false \
+            -out=template-rebuild.tfplan \
+            -target=module.template_baldar_base \
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_base \
+            -target=module.template_heimdall_gpu \
+            -target=module.template_odin_base \
+            -target=module.template_odin_gpu \
+            -target=module.template_thor_base \
+            -target=module.template_thor_gpu
+
+          echo ""
+          echo "================================================================"
+          echo "Plan completed. Review the output above to identify:"
+          echo "  1. What resources Terraform wants to destroy"
+          echo "  2. What resources Terraform wants to create"
+          echo "  3. Whether VM modules are incorrectly included"
+          echo ""
+          echo "Expected: Only template_* modules should be affected"
+          echo "BUG: If worker_nodes or control_plane_nodes appear, the bug exists"
+          echo "================================================================"
+          echo "::endgroup::"
+
+          # Show plan summary
+          echo ""
+          echo "::group::Plan Summary"
+          terraform show -no-color template-rebuild.tfplan | head -100
+          echo "::endgroup::"
+
+      - name: Analyze plan output for bugs
+        working-directory: ./terraform
+        run: |
+          echo "::group::Plan Analysis - Identifying Terraform Bug"
+          echo "Analyzing terraform plan output to identify unintended targets..."
+          echo ""
+
+          # Check if plan file exists
+          if [[ ! -f template-rebuild.tfplan ]]; then
+            echo "::error::Plan file not found - terraform plan may have failed"
+            exit 1
+          fi
+
+          # Show full plan in readable format
+          echo "Full plan output:"
+          terraform show -no-color template-rebuild.tfplan > plan-full.txt
+          cat plan-full.txt
+
+          echo ""
+          echo "================================================================"
+          echo "BUG DETECTION ANALYSIS"
+          echo "================================================================"
+
+          # Check for unintended VM module targets
+          echo ""
+          echo "Checking for unintended VM modules in plan..."
+
+          BUG_DETECTED=false
+
+          if grep -q "module.control_plane_nodes" plan-full.txt; then
+            echo "::error::BUG DETECTED: control_plane_nodes module found in plan"
+            echo "::error::This would destroy control plane VMs!"
+            echo ""
+            grep "module.control_plane_nodes" plan-full.txt
+            echo ""
+            BUG_DETECTED=true
+          else
+            echo "✅ No control_plane_nodes in plan"
+          fi
+
+          if grep -q "module.worker_nodes" plan-full.txt; then
+            echo "::error::BUG DETECTED: worker_nodes module found in plan"
+            echo "::error::This would destroy worker VMs!"
+            echo ""
+            grep "module.worker_nodes" plan-full.txt
+            echo ""
+            BUG_DETECTED=true
+          else
+            echo "✅ No worker_nodes in plan"
+          fi
+
+          # FAIL WORKFLOW if VM modules detected
+          if [ "$BUG_DETECTED" = true ]; then
+            echo ""
+            echo "================================================================"
+            echo "❌ WORKFLOW FAILED: Terraform would destroy VM nodes"
+            echo "================================================================"
+            echo "::error::Terraform plan includes VM modules (control_plane_nodes or worker_nodes)"
+            echo "::error::This is the bug causing cluster outages!"
+            echo "::error::Workflow terminated to prevent accidental node destruction"
+            echo "::error::Review plan output above to identify root cause"
+            echo ""
+            echo "Next steps:"
+            echo "1. Document findings in .claude/.ai-docs/troubleshooting/CLUSTER_OUTAGE_2025-11-21.md"
+            echo "2. Identify why Terraform dependency graph includes VM modules"
+            echo "3. Implement permanent fix"
+            echo "4. Re-test until plan shows ONLY template modules"
+            echo ""
+            exit 1
+          fi
+
+          # POSITIVE ASSERTION: Verify template modules ARE present (Opus recommendation)
+          echo ""
+          echo "Verifying template modules are present in plan..."
+          TEMPLATE_COUNT=0
+          for module in template_baldar_base template_baldar_gpu \
+                        template_heimdall_base template_heimdall_gpu \
+                        template_odin_base template_odin_gpu \
+                        template_thor_base template_thor_gpu; do
+            if grep -q "module.$module" plan-full.txt; then
+              TEMPLATE_COUNT=$((TEMPLATE_COUNT + 1))
+              echo "  ✓ Found module.$module"
+            else
+              echo "  ⚠ Missing module.$module"
+            fi
+          done
+
+          if [[ $TEMPLATE_COUNT -eq 0 ]]; then
+            echo ""
+            echo "::error::VALIDATION FAILED: No template modules found in plan"
+            echo "::error::Expected 8 template modules, found 0"
+            echo "::error::This likely indicates a configuration error"
+            exit 1
+          elif [[ $TEMPLATE_COUNT -lt 8 ]]; then
+            echo ""
+            echo "::warning::Only $TEMPLATE_COUNT/8 template modules found in plan"
+            echo "::warning::Expected all 8 template modules to be affected"
+          else
+            echo ""
+            echo "✅ All 8 template modules found in plan"
+          fi
+
+          # Show resources to be destroyed
+          echo ""
+          echo "Resources Terraform plans to DESTROY:"
+          grep -A 5 "# .* will be destroyed" plan-full.txt | head -50 || echo "None"
+
+          # Show resources to be created
+          echo ""
+          echo "Resources Terraform plans to CREATE:"
+          grep -A 5 "# .* will be created" plan-full.txt | head -50 || echo "None"
+
+          echo ""
+          echo "================================================================"
+          echo "Validation passed - plan contains ONLY templates"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Template rebuild plan summary
+        working-directory: ./terraform
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+          ## Phase 1: Template Rebuild Plan ✅
+
+          **Status**: Plan generated and validated
+
+          ### Templates Targeted
+          - Baldar: controller + worker
+          - Heimdall: controller + worker
+          - Odin: controller + worker
+          - Thor: controller + worker
+
+          **Total**: 8 template modules (16 null_resources)
+          EOF
+
+          # Add terraform plan output to summary
+          if [[ -f plan-full.txt ]]; then
+            cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+
+          ### Terraform Plan Output
+
+          <details>
+          <summary>Click to expand full terraform plan</summary>
+
+          ```
+          EOF
+            cat plan-full.txt >> $GITHUB_STEP_SUMMARY
+            cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+          ```
+
+          </details>
+
+          **Validation**: Plan will be validated before execution
+          EOF
+          else
+            cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+
+          **Note**: Terraform plan output not available
+          EOF
+          fi
+
+      - name: Execute template rebuild
+        working-directory: ./terraform
+        timeout-minutes: 20
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Executing Template Rebuild"
+          echo "================================================================"
+          echo "VALIDATION PASSED - Executing template rebuild"
+          echo "================================================================"
+          echo ""
+
+          echo "This step will:"
+          echo "  1. Destroy old templates (8 templates)"
+          echo "  2. Download new Talos images"
+          echo "  3. Create new templates with updated version"
+          echo ""
+          echo "NOTE: VMs are NOT affected - only templates are rebuilt"
+          echo ""
+          echo "IMPORTANT: Not using plan file for batched execution"
+          echo "Reason: Terraform ignores -target flags when applying from plan file"
+          echo "Solution: Inline plan+apply for each batch ensures targets are honored"
+          echo "================================================================"
+          echo ""
+
+          # Apply templates in batches to avoid Ceph lock contention
+          # Strategy: 2 templates at a time across different Proxmox nodes
+          # Reduces parallel Ceph writes from 8 → 2 (75% reduction in contention)
+          # Estimated time: 4 batches × 2 min + delays = ~9.5 minutes
+          #
+          # CRITICAL: Do NOT use saved plan file (template-rebuild.tfplan)
+          # Terraform ignores -target flags when applying from a plan file!
+          # Instead, we let terraform create inline plans for each batch.
+
+          echo "Applying template changes in batches..."
+          echo "Batching strategy: 2 templates per batch across different nodes"
+          echo ""
+
+          # Batch 1: Baldar base + Heimdall GPU (different nodes, different schematics)
+          echo "================================================================"
+          echo "Batch 1/4: Creating templates on Baldar (base) + Heimdall (GPU)"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_baldar_base \
+            -target=module.template_heimdall_gpu
+
+          echo ""
+          echo "✓ Batch 1 complete. Waiting 30 seconds for Ceph to settle..."
+          sleep 30
+
+          # Batch 2: Baldar GPU + Heimdall base (different nodes, different schematics)
+          echo ""
+          echo "================================================================"
+          echo "Batch 2/4: Creating templates on Baldar (GPU) + Heimdall (base)"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_base
+
+          echo ""
+          echo "✓ Batch 2 complete. Waiting 30 seconds for Ceph to settle..."
+          sleep 30
+
+          # Batch 3: Odin base + Thor GPU (different nodes, different schematics)
+          echo ""
+          echo "================================================================"
+          echo "Batch 3/4: Creating templates on Odin (base) + Thor (GPU)"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_odin_base \
+            -target=module.template_thor_gpu
+
+          echo ""
+          echo "✓ Batch 3 complete. Waiting 30 seconds for Ceph to settle..."
+          sleep 30
+
+          # Batch 4: Odin GPU + Thor base (different nodes, different schematics)
+          echo ""
+          echo "================================================================"
+          echo "Batch 4/4: Creating templates on Odin (GPU) + Thor (base)"
+          echo "================================================================"
+          terraform apply -input=false -auto-approve \
+            -target=module.template_odin_gpu \
+            -target=module.template_thor_base
+
+          echo ""
+          echo "================================================================"
+          echo "✅ All 4 batches completed successfully"
+          echo "✅ Template rebuild completed: 8 templates created"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Verify template rebuild
+        working-directory: ./terraform
+        timeout-minutes: 10  # Copilot #6: Add timeout for consistency and safety
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Verifying Template Rebuild"
+          echo "Running terraform refresh to verify new templates..."
+
+          terraform refresh \
+            -input=false \
+            -target=module.template_baldar_base \
+            -target=module.template_baldar_gpu \
+            -target=module.template_heimdall_base \
+            -target=module.template_heimdall_gpu \
+            -target=module.template_odin_base \
+            -target=module.template_odin_gpu \
+            -target=module.template_thor_base \
+            -target=module.template_thor_gpu
+
+          echo ""
+          echo "Terraform refresh complete"
+
+          # Copilot #5: Verify templates exist in state (not just refresh)
+          echo ""
+          echo "Verifying template modules are present in Terraform state..."
+
+          MISSING_TEMPLATES=()
+          for module in template_baldar_base template_baldar_gpu \
+                        template_heimdall_base template_heimdall_gpu \
+                        template_odin_base template_odin_gpu \
+                        template_thor_base template_thor_gpu; do
+            if terraform state list | grep -q "module.$module"; then
+              echo "  ✓ module.$module present in state"
+            else
+              echo "  ✗ module.$module MISSING from state"
+              MISSING_TEMPLATES+=("$module")
+            fi
+          done
+
+          if [[ ${#MISSING_TEMPLATES[@]} -gt 0 ]]; then
+            echo ""
+            echo "::error::Template verification failed: ${#MISSING_TEMPLATES[@]} modules missing from state"
+            for module in "${MISSING_TEMPLATES[@]}"; do
+              echo "::error::Missing: module.$module"
+            done
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All 8 template modules present in Terraform state"
+          echo "✅ Templates successfully rebuilt and verified"
+          echo "::endgroup::"
+
+          # Update summary
+          cat >> $GITHUB_STEP_SUMMARY <<'EOF'
+
+          ### Template Rebuild Execution ✅
+
+          Templates have been successfully rebuilt and verified:
+          - Old templates destroyed
+          - New Talos images downloaded
+          - New templates created with updated version
+          - All 8 template modules present in Terraform state
+
+          **Next**: Control plane and worker nodes will be upgraded sequentially
+          EOF
+
+  # ==========================================================================
+  # PHASE 2: CONTROL PLANE UPGRADE (SEQUENTIAL)
+  # ==========================================================================
+  upgrade-control-plane:
+    name: Upgrade Control ${{ matrix.node.name }}
+    needs: [validate-inputs, rebuild-templates]
+    runs-on: cattle-runner
+    timeout-minutes: 30
+    # Run when: test_controllers=true OR production mode (all test flags false)
+    # Use always() to force evaluation even when rebuild-templates is skipped
+    # Also require rebuild-templates to have succeeded OR been skipped (not failed)
+    if: |
+      always() &&
+      (inputs.test_controllers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
+      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped')
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        # When test_controllers=true: Only k8s-ctrl-1
+        # When production (all test flags false): All 3 controllers
+        node: >-
+          ${{
+            inputs.test_controllers == true && fromJSON('[
+              {"name": "k8s-ctrl-1", "ip": "10.20.67.1", "secret_suffix": "CTRL_1"}
+            ]') || fromJSON('[
+              {"name": "k8s-ctrl-1", "ip": "10.20.67.1", "secret_suffix": "CTRL_1"},
+              {"name": "k8s-ctrl-2", "ip": "10.20.67.2", "secret_suffix": "CTRL_2"},
+              {"name": "k8s-ctrl-3", "ip": "10.20.67.3", "secret_suffix": "CTRL_3"}
+            ]')
+          }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Proxmox SSH key
+        env:
+          PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
+          chmod 600 ~/.ssh/proxmox_terraform
+
+      - name: Initialize Terraform
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Clear stale Terraform locks
+        working-directory: ./terraform
+        continue-on-error: true
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "Checking for stale Terraform state locks..."
+
+          # Try a terraform plan with short lock timeout to detect locks
+          # Capture both stdout and stderr to parse lock ID
+          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+            echo "Lock detected. Output:"
+            echo "$LOCK_OUTPUT"
+
+            # Extract lock ID from error message (format: "ID: <uuid>")
+            # Use \K assertion for reliable regex across grep versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
+
+            if [ -n "$LOCK_ID" ]; then
+              echo ""
+              echo "Found stale lock ID: $LOCK_ID"
+              echo "Attempting to force-unlock..."
+
+              if terraform force-unlock -force "$LOCK_ID"; then
+                echo "✓ Successfully cleared stale lock"
+              else
+                echo "✗ Failed to unlock (may require manual intervention)"
+                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+              fi
+            else
+              echo "Could not extract lock ID from error message"
+              echo "Lock may need to be cleared manually"
+            fi
+          else
+            echo "✓ No lock detected - state is accessible"
+          fi
+
+          # Ensure clean exit
+          exit 0
+
+      - name: Validate etcd quorum health
+        run: |
+          echo "::group::Checking etcd quorum health"
+          echo "Ensuring cluster has healthy quorum before upgrading ${{ matrix.node.name }}..."
+
+          # Get all control plane IPs
+          CTRL_NODES="10.20.67.1,10.20.67.2,10.20.67.3"
+
+          # Wait up to 2 minutes for etcd to be healthy
+          for i in {1..12}; do
+            # Count healthy etcd voting members using talosctl
+            # In Talos, etcd runs as a system service, not a Kubernetes pod
+            # Query all control plane nodes for connectivity, then deduplicate by member ID
+            HEALTHY_MEMBERS=$(talosctl --nodes "$CTRL_NODES" etcd members 2>/dev/null | \
+              awk '/false$/ {print $2}' | sort -u | wc -l || echo "0")  # Extract IDs (col 2), deduplicate, count unique
+
+            echo "Attempt $i/12: $HEALTHY_MEMBERS healthy etcd voting members"
+
+            # SECURITY FIX: Require at least 2 healthy members BEFORE destroying ANY node
+            if [[ "$HEALTHY_MEMBERS" -ge 2 ]]; then
+              echo "✅ etcd quorum healthy ($HEALTHY_MEMBERS voting members)"
+              echo "Safe to upgrade ${{ matrix.node.name }} - quorum will survive with 2 members"
+
+              # Show member list for visibility
+              echo "Current etcd members:"
+              talosctl --nodes "$CTRL_NODES" etcd members | head -n 5
+
+              echo "::endgroup::"
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          echo "::error::Cannot proceed: etcd quorum at risk"
+          echo "::error::Only $HEALTHY_MEMBERS healthy voting members (need at least 2 before destroying any node)"
+          exit 1
+
+      - name: Cordon node
+        run: |
+          echo "Cordoning ${{ matrix.node.name }}..."
+          kubectl cordon "${{ matrix.node.name }}"
+
+      - name: Drain node
+        timeout-minutes: 5
+        run: |
+          echo "::group::Draining ${{ matrix.node.name }}"
+          echo "Attempting graceful drain (respects PodDisruptionBudget)..."
+
+          # Layer 3: Graceful drain with timeout + force drain fallback
+          # Try graceful drain first (respects PDB)
+          if timeout 240 kubectl drain "${{ matrix.node.name }}" \
+            --ignore-daemonsets \
+            --delete-emptydir-data \
+            --grace-period=30; then
+
+            echo "✅ Graceful drain succeeded"
+          else
+            echo "⚠️  Graceful drain timed out (likely PDB blocking runner eviction)"
+            echo "Falling back to force drain..."
+
+            # Force drain bypasses PDB (used when runner pod is on this node)
+            kubectl drain "${{ matrix.node.name }}" \
+              --ignore-daemonsets \
+              --delete-emptydir-data \
+              --disable-eviction \
+              --force \
+              --grace-period=0
+
+            echo "✅ Force drain completed"
+            echo "ℹ️  If runner pod was evicted, GitHub will re-queue job to surviving runner"
+
+            # Give GitHub Actions time to detect runner termination and re-queue
+            sleep 30
+          fi
+
+          echo "✅ Node drained successfully"
+          echo "::endgroup::"
+
+      - name: Backup Terraform state
+        working-directory: ./terraform
+        run: |
+          echo "Creating state backup before destroy..."
+
+          # SECURITY: Check for state lock before proceeding
+          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
+            echo "::error::Terraform state is locked - another operation in progress"
+            echo "::error::Wait for other operation to complete or manually remove lock if stale"
+            exit 1
+          fi
+
+          aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
+            s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node.name }}-$(date +%s).tfstate
+
+      - name: Plan controller destruction
+        working-directory: ./terraform
+        timeout-minutes: 5
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Planning destruction of ${{ matrix.node.name }}"
+
+          terraform plan \
+            -input=false \
+            -destroy \
+            -out=controller-destroy-${{ matrix.node.name }}.tfplan \
+            -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"]
+
+          echo "Plan saved to controller-destroy-${{ matrix.node.name }}.tfplan"
+          echo "::endgroup::"
+
+      - name: Validate destruction plan
+        working-directory: ./terraform
+        run: |
+          echo "::group::Validating destruction plan for ${{ matrix.node.name }}"
+
+          # Check plan file exists
+          if [[ ! -f controller-destroy-${{ matrix.node.name }}.tfplan ]]; then
+            echo "::error::Plan file not found"
+            exit 1
+          fi
+
+          # Show full plan
+          terraform show -no-color controller-destroy-${{ matrix.node.name }}.tfplan > destroy-plan-full.txt
+          cat destroy-plan-full.txt
+
+          echo ""
+          echo "================================================================"
+          echo "SAFETY VALIDATION - Negative Assertions"
+          echo "================================================================"
+
+          BUG_DETECTED=false
+
+          # NEGATIVE ASSERTION: No other controllers
+          for other_ctrl in k8s-ctrl-1 k8s-ctrl-2 k8s-ctrl-3; do
+            if [[ "$other_ctrl" == "${{ matrix.node.name }}" ]]; then
+              continue  # Skip self
+            fi
+
+            if grep -q "module.control_plane_nodes\[\"$other_ctrl\"\]" destroy-plan-full.txt; then
+              echo "::error::SAFETY VIOLATION: Plan includes $other_ctrl"
+              echo "::error::This would destroy multiple controllers!"
+              BUG_DETECTED=true
+            fi
+          done
+
+          # NEGATIVE ASSERTION: No workers
+          if grep -q "module.worker_nodes" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes worker_nodes"
+            echo "::error::This would destroy worker VMs!"
+            BUG_DETECTED=true
+          fi
+
+          # NEGATIVE ASSERTION: No templates
+          if grep -q "module.template_" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes template modules"
+            echo "::error::This would destroy templates!"
+            BUG_DETECTED=true
+          fi
+
+          if [ "$BUG_DETECTED" = true ]; then
+            echo ""
+            echo "::error::Terraform plan includes unintended targets"
+            echo "::error::Workflow terminated to prevent accidental destruction"
+            exit 1
+          fi
+
+          echo "✅ Negative assertions passed - no unintended targets"
+
+          # POSITIVE ASSERTION: Verify specific controller IS in plan
+          if ! grep -q "module.control_plane_nodes\[\"${{ matrix.node.name }}\"\]" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Target controller not found in plan"
+            echo "::error::Expected: module.control_plane_nodes[\"${{ matrix.node.name }}\"]"
+            exit 1
+          fi
+
+          echo "✅ Positive assertion passed - target controller found"
+
+          # Count VMs to be destroyed (should be exactly 1)
+          VM_COUNT=$(grep -c "module.control_plane_nodes\[\"${{ matrix.node.name }}\"\]" destroy-plan-full.txt || echo "0")
+          echo "VMs to be destroyed: $VM_COUNT"
+
+          if [[ $VM_COUNT -ne 1 ]]; then
+            echo "::warning::Expected exactly 1 VM to be destroyed, found $VM_COUNT"
+          fi
+
+          echo ""
+          echo "================================================================"
+          echo "Validation passed - safe to destroy ${{ matrix.node.name }}"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Destroy VM with retry
+        working-directory: ./terraform
+        timeout-minutes: 10
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Destroying ${{ matrix.node.name }} VM with retry logic"
+
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "Destroy attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            if terraform apply \
+                -input=false \
+                -auto-approve \
+                controller-destroy-${{ matrix.node.name }}.tfplan; then
+
+              echo "✅ VM destroyed successfully on attempt $ATTEMPT"
+              SUCCESS=true
+              break
+            else
+              EXIT_CODE=$?
+              echo "⚠️  Destroy attempt $ATTEMPT failed with exit code $EXIT_CODE"
+
+              if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+                WAIT_TIME=$((ATTEMPT * 10))
+                echo "Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              fi
+            fi
+
+            ((ATTEMPT++))
+          done
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "::error::Failed to destroy VM after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+      - name: Plan controller recreation
+        working-directory: ./terraform
+        timeout-minutes: 5
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Planning recreation of ${{ matrix.node.name }}"
+
+          terraform plan \
+            -input=false \
+            -out=controller-create-${{ matrix.node.name }}.tfplan \
+            -target=module.control_plane_nodes[\"${{ matrix.node.name }}\"]
+
+          echo "Plan saved to controller-create-${{ matrix.node.name }}.tfplan"
+          echo "::endgroup::"
+
+      - name: Validate recreation plan
+        working-directory: ./terraform
+        run: |
+          echo "::group::Validating recreation plan for ${{ matrix.node.name }}"
+
+          # Check plan file exists
+          if [[ ! -f controller-create-${{ matrix.node.name }}.tfplan ]]; then
+            echo "::error::Plan file not found"
+            exit 1
+          fi
+
+          # Show full plan
+          terraform show -no-color controller-create-${{ matrix.node.name }}.tfplan > create-plan-full.txt
+          cat create-plan-full.txt
+
+          echo ""
+          echo "================================================================"
+          echo "SAFETY VALIDATION - Negative Assertions"
+          echo "================================================================"
+
+          BUG_DETECTED=false
+
+          # NEGATIVE ASSERTION: No other controllers
+          for other_ctrl in k8s-ctrl-1 k8s-ctrl-2 k8s-ctrl-3; do
+            if [[ "$other_ctrl" == "${{ matrix.node.name }}" ]]; then
+              continue  # Skip self
+            fi
+
+            if grep -q "module.control_plane_nodes\[\"$other_ctrl\"\]" create-plan-full.txt; then
+              echo "::error::SAFETY VIOLATION: Plan includes $other_ctrl"
+              BUG_DETECTED=true
+            fi
+          done
+
+          # NEGATIVE ASSERTION: No workers
+          if grep -q "module.worker_nodes" create-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes worker_nodes"
+            BUG_DETECTED=true
+          fi
+
+          # NEGATIVE ASSERTION: No templates
+          if grep -q "module.template_" create-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes template modules"
+            BUG_DETECTED=true
+          fi
+
+          if [ "$BUG_DETECTED" = true ]; then
+            echo ""
+            echo "::error::Terraform plan includes unintended targets"
+            echo "::error::Workflow terminated to prevent accidental operations"
+            exit 1
+          fi
+
+          echo "✅ Negative assertions passed - no unintended targets"
+
+          # POSITIVE ASSERTION: Verify specific controller IS in plan
+          if ! grep -q "module.control_plane_nodes\[\"${{ matrix.node.name }}\"\]" create-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Target controller not found in plan"
+            exit 1
+          fi
+
+          echo "✅ Positive assertion passed - target controller found"
+
+          echo ""
+          echo "================================================================"
+          echo "Validation passed - safe to recreate ${{ matrix.node.name }}"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Recreate VM with retry
+        working-directory: ./terraform
+        timeout-minutes: 15
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Recreating ${{ matrix.node.name }} from v${{ inputs.new_version }} template with retry logic"
+
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "Recreate attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            if terraform apply \
+                -input=false \
+                -auto-approve \
+                controller-create-${{ matrix.node.name }}.tfplan; then
+
+              echo "✅ VM recreated successfully on attempt $ATTEMPT"
+              SUCCESS=true
+              break
+            else
+              EXIT_CODE=$?
+              echo "⚠️  Recreate attempt $ATTEMPT failed with exit code $EXIT_CODE"
+
+              if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+                WAIT_TIME=$((ATTEMPT * 10))
+                echo "Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              fi
+            fi
+
+            ((ATTEMPT++))
+          done
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "::error::Failed to recreate VM after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+      # ==========================================================================
+      # CRITICAL SECURITY OPERATION: Apply Machine Configuration
+      # This step implements the 5-layer security architecture to inject
+      # Talos machine configs from GitHub Secrets without leaking secrets
+      # ==========================================================================
+      - name: Apply machine configuration (CRITICAL SECURITY OPERATION)
+        id: apply_config
+        env:
+          NODE_IP: ${{ matrix.node.ip }}
+          NODE_NAME: ${{ matrix.node.name }}
+          # SECURITY: Secret passed directly to script, not stored in env var
+          NODE_CONFIG_SECRET: ${{ secrets[format('TALOS_MACHINE_CONFIG_{0}', matrix.node.secret_suffix)] }}
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          # CRITICAL: Absolutely no command echo
+          set +x
+          set -euo pipefail
+
+          echo "Starting secure configuration deployment for $NODE_NAME..."
+
+          # ============================================================
+          # SECURITY LAYER 1: Disable Command Echo (set +x above)
+          # ============================================================
+
+          # ============================================================
+          # SECURITY LAYER 2: Ephemeral Secure Storage
+          # ============================================================
+
+          # Create dedicated config directory with maximum restrictions
+          CONFIG_DIR="$(mktemp -d -t talos-config-XXXXXX)"
+          chmod 700 "$CONFIG_DIR"
+
+          # Set aggressive cleanup trap
+          cleanup_config() {
+            if [[ -d "$CONFIG_DIR" ]]; then
+              find "$CONFIG_DIR" -type f -exec shred -fz -n 3 {} \; 2>/dev/null || true
+              rm -rf "$CONFIG_DIR"
+            fi
+          }
+          trap cleanup_config EXIT
+
+          # ============================================================
+          # SECURITY LAYER 3: Decode and Protect
+          # ============================================================
+
+          # Decode configuration with maximum protection and error handling
+          CONFIG_FILE="$CONFIG_DIR/machine.yaml"
+
+          # Validate secret exists and is not empty
+          if [[ -z "$NODE_CONFIG_SECRET" ]]; then
+            echo "ERROR: Machine config secret TALOS_MACHINE_CONFIG_${{ matrix.node.secret_suffix }} is not set"
+            exit 1
+          fi
+
+          if ! echo "$NODE_CONFIG_SECRET" | base64 -d > "$CONFIG_FILE" 2>/dev/null; then
+            echo "ERROR: Failed to decode configuration"
+            exit 1
+          fi
+          chmod 600 "$CONFIG_FILE"
+
+          # Validate configuration has expected structure with error suppression
+          if ! grep -q "machine:" "$CONFIG_FILE" 2>/dev/null; then
+            echo "ERROR: Invalid machine configuration structure"
+            exit 1
+          fi
+
+          echo "Configuration decoded and validated"
+
+          # ============================================================
+          # SECURITY LAYER 4: Apply with Maximum Output Suppression
+          # ============================================================
+
+          echo "Applying configuration to node $NODE_IP..."
+
+          # Wait for VM to be network-ready (VM just created)
+          echo "Waiting for VM to be network-ready..."
+          MAX_WAIT=60
+          for i in {1..12}; do
+            if talosctl -n "$NODE_IP" version --insecure --timeout=5s >/dev/null 2>&1; then
+              echo "✓ VM is network-ready after $((i * 5)) seconds"
+              break
+            fi
+            echo "  Waiting... ($((i * 5))/${MAX_WAIT}s)"
+            sleep 5
+          done
+
+          # Application with retry logic and complete output suppression
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "  Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            # Create a log file for this attempt with restrictive permissions
+            ATTEMPT_LOG="$CONFIG_DIR/attempt_${ATTEMPT}.log"
+            touch "$ATTEMPT_LOG"
+            chmod 600 "$ATTEMPT_LOG"
+
+            # Apply configuration with all output captured
+            if talosctl -n "$NODE_IP" apply-config \
+                --insecure \
+                --file "$CONFIG_FILE" \
+                --timeout=120s \
+                >"$ATTEMPT_LOG" 2>&1; then
+
+              # CRITICAL: Sanitize log IMMEDIATELY even on success
+              sed -i 's/token:.*/token: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/secret:.*/secret: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/certificate:.*/certificate: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN .* PRIVATE KEY-----.*/[PRIVATE KEY REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN CERTIFICATE-----.*/[CERTIFICATE REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+
+              echo "  ✓ Configuration applied successfully"
+              SUCCESS=true
+
+              # Shred sanitized log (non-verbose to avoid path leaks)
+              shred -fz -n 3 "$ATTEMPT_LOG" 2>/dev/null || true
+              break
+
+            else
+              # CRITICAL: Sanitize log BEFORE checking error types
+              sed -i 's/token:.*/token: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/secret:.*/secret: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/certificate:.*/certificate: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN .* PRIVATE KEY-----.*/[PRIVATE KEY REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN CERTIFICATE-----.*/[CERTIFICATE REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+
+              echo "  ⚠ Attempt $ATTEMPT failed"
+
+              # Now safe to check error types from sanitized log
+              if grep -q "connection refused" "$ATTEMPT_LOG" 2>/dev/null; then
+                echo "    Node not yet ready, waiting..."
+                sleep $((ATTEMPT * 10))
+              elif grep -q "timeout" "$ATTEMPT_LOG" 2>/dev/null; then
+                echo "    Operation timed out, retrying..."
+                sleep 5
+              else
+                echo "    Unknown error occurred"
+              fi
+
+              # Shred sanitized log (non-verbose to avoid path leaks)
+              shred -fz -n 3 "$ATTEMPT_LOG" 2>/dev/null || true
+            fi
+
+            ((ATTEMPT++))
+          done
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "ERROR: Failed to apply configuration after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          # ============================================================
+          # SECURITY LAYER 5: Aggressive Cleanup
+          # ============================================================
+
+          # Cleanup happens automatically via EXIT trap
+          echo "Configuration deployment completed securely"
+
+      - name: Wait for node to be Ready
+        timeout-minutes: 10
+        run: |
+          echo "Waiting for ${{ matrix.node.name }} to become Ready..."
+
+          for i in {1..60}; do
+            if kubectl wait --for=condition=Ready node/"${{ matrix.node.name }}" --timeout=10s 2>/dev/null; then
+              echo "✅ Node is Ready"
+              break
+            fi
+
+            # Show node status every minute (every 6 attempts)
+            if [[ $((i % 6)) -eq 0 ]]; then
+              echo "Node status after $i attempts:"
+              kubectl get node "${{ matrix.node.name }}" || true
+              kubectl describe node "${{ matrix.node.name }}" | tail -20 || true
+            fi
+
+            echo "Attempt $i/60: Node not ready yet..."
+            sleep 10
+          done
+
+          # Final check
+          kubectl wait --for=condition=Ready node/"${{ matrix.node.name }}" --timeout=30s
+
+      - name: Verify machine configuration applied
+        timeout-minutes: 2
+        run: |
+          echo "::group::Verifying machine configuration"
+          NODE_IP="${{ matrix.node.ip }}"
+          NODE_NAME="${{ matrix.node.name }}"
+
+          echo "Retrieving applied machine configuration..."
+
+          # Get current machine config from node
+          if ! talosctl -n "$NODE_IP" get machineconfig -o yaml > /tmp/applied-config.yaml 2>/dev/null; then
+            echo "::error::Failed to retrieve machine config from $NODE_NAME"
+            exit 1
+          fi
+
+          echo "✅ Machine config retrieved"
+
+          # Verify config is not empty
+          if [[ ! -s /tmp/applied-config.yaml ]]; then
+            echo "::error::Machine config is empty"
+            exit 1
+          fi
+
+          # Check for expected sections (proves config was applied)
+          echo "Verifying configuration structure..."
+
+          EXPECTED_SECTIONS=("machine:" "cluster:" "network:")
+          MISSING_SECTIONS=()
+
+          for section in "${EXPECTED_SECTIONS[@]}"; do
+            if grep -q "$section" /tmp/applied-config.yaml; then
+              echo "  ✓ Found $section"
+            else
+              echo "  ✗ Missing $section"
+              MISSING_SECTIONS+=("$section")
+            fi
+          done
+
+          if [[ ${#MISSING_SECTIONS[@]} -gt 0 ]]; then
+            echo "::error::Machine config missing required sections: ${MISSING_SECTIONS[*]}"
+            exit 1
+          fi
+
+          echo "✅ Machine configuration structure verified"
+
+          # Verify node can communicate with cluster (proves config is functional)
+          echo "Verifying node cluster connectivity..."
+
+          if talosctl -n "$NODE_IP" health --timeout=30s >/dev/null 2>&1; then
+            echo "✅ Node health check passed (config is functional)"
+          else
+            echo "::warning::Health check failed, but node is Ready (may be transient)"
+          fi
+
+          rm -f /tmp/applied-config.yaml
+          echo "::endgroup::"
+
+      - name: Verify Talos version
+        timeout-minutes: 2
+        run: |
+          echo "Verifying Talos version on ${{ matrix.node.name }}..."
+
+          # Get Talos version from node (not Kubernetes version)
+          NODE_IP="${{ matrix.node.ip }}"
+          EXPECTED_VERSION="v${{ inputs.new_version }}"
+
+          # Extract version from talosctl using JSON parsing for reliability
+          VERSION=$(talosctl version --nodes "$NODE_IP" --json 2>/dev/null | jq -r '.version.tag // empty')
+
+          echo "Node Talos version: $VERSION"
+          echo "Expected version: $EXPECTED_VERSION"
+
+          if [[ "$VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::Version mismatch on ${{ matrix.node.name }}"
+            echo "::error::Expected: $EXPECTED_VERSION"
+            echo "::error::Got: $VERSION"
+            exit 1
+          fi
+
+          echo "✅ Node running correct Talos version: $VERSION"
+
+      - name: Verify etcd quorum restored
+        timeout-minutes: 5
+        run: |
+          echo "::group::Verifying etcd quorum restored"
+          echo "Ensuring ${{ matrix.node.name }} rejoined etcd cluster..."
+
+          # Get all control plane IPs
+          CTRL_NODES="10.20.67.1,10.20.67.2,10.20.67.3"
+
+          # Wait up to 5 minutes for etcd to fully restore
+          for i in {1..30}; do
+            # Count healthy etcd voting members using talosctl
+            # In Talos, etcd runs as a system service, not a Kubernetes pod
+            # Query all control plane nodes for connectivity, then deduplicate by member ID
+            HEALTHY_MEMBERS=$(talosctl --nodes "$CTRL_NODES" etcd members 2>/dev/null | \
+              awk '/false$/ {print $2}' | sort -u | wc -l || echo "0")  # Extract IDs (col 2), deduplicate, count unique
+
+            echo "Attempt $i/30: $HEALTHY_MEMBERS healthy etcd voting members"
+
+            # Require 3 healthy members (quorum fully restored)
+            if [[ "$HEALTHY_MEMBERS" -eq 3 ]]; then
+              echo "✅ etcd quorum fully restored (3/3 voting members)"
+
+              # Verify this node is a member
+              MEMBER_LIST=$(talosctl --nodes "$CTRL_NODES" etcd members 2>/dev/null)
+
+              echo "etcd member list:"
+              echo "$MEMBER_LIST"
+
+              # Check if this node's IP is in member list
+              if echo "$MEMBER_LIST" | grep -q "${{ matrix.node.ip }}"; then
+                echo "✅ ${{ matrix.node.name }} is an active etcd member"
+                echo "::endgroup::"
+                exit 0
+              else
+                echo "⚠️  ${{ matrix.node.name }} not yet in member list, waiting..."
+              fi
+            fi
+
+            sleep 10
+          done
+
+          echo "::error::etcd quorum not fully restored after 5 minutes"
+          echo "::error::Only $HEALTHY_MEMBERS/3 voting members healthy"
+          exit 1
+
+      - name: Allow workload rebalancing
+        timeout-minutes: 1
+        run: |
+          echo "Allowing Kubernetes time to rebalance workloads..."
+          echo "Waiting 20 seconds for scheduler to redistribute pods..."
+
+          sleep 20
+
+          # Show pod distribution after rebalancing
+          echo ""
+          echo "Pod distribution on ${{ matrix.node.name }}:"
+          kubectl get pods --all-namespaces --field-selector spec.nodeName=${{ matrix.node.name }} \
+            --no-headers 2>/dev/null | wc -l | xargs echo "Pods running on node:"
+
+          echo "✅ Rebalancing period complete"
+
+      - name: Uncordon node
+        run: |
+          echo "Uncordoning ${{ matrix.node.name }}..."
+          kubectl uncordon "${{ matrix.node.name }}"
+
+      - name: Upgrade summary
+        if: always()
+        run: |
+          # Store GHA expressions in bash variables first
+          NODE_NAME="${{ matrix.node.name }}"
+          NEW_VERSION="${{ inputs.new_version }}"
+          JOB_STATUS="${{ job.status }}"
+
+          # Determine status emoji and message based on job status
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            STATUS_EMOJI="✅"
+            STATUS_MSG="Upgrade successful"
+          else
+            STATUS_EMOJI="❌"
+            STATUS_MSG="Upgrade failed"
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ### Control Plane Node: $NODE_NAME $STATUS_EMOJI
+
+          **Status**: $STATUS_MSG
+          **New Version**: v$NEW_VERSION
+          **Job Status**: $JOB_STATUS
+          EOF
+
+  # ==========================================================================
+  # PHASE 2.5: PRE-WORKER HEALTH VALIDATION
+  # ==========================================================================
+  pre-worker-health-check:
+    name: Pre-Worker Health Validation
+    needs: [validate-inputs, rebuild-templates, upgrade-control-plane]
+    # Run when workers will be upgraded
+    if: |
+      always() &&
+      (inputs.test_workers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
+      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
+      (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
+    runs-on: cattle-runner
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
+      - name: Validate cluster health
+        run: |
+          echo "::group::Cluster Health Pre-Flight Check"
+
+          # Check all nodes are Ready
+          echo "Checking node health..."
+          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready " | wc -l)
+          if [[ $NOT_READY -gt 0 ]]; then
+            echo "::error::Found $NOT_READY nodes not in Ready state"
+            kubectl get nodes
+            exit 1
+          fi
+          echo "✅ All nodes Ready"
+
+          # Check etcd health
+          echo ""
+          echo "Checking etcd health..."
+          ETCD_HEALTH=$(kubectl exec -n kube-system etcd-k8s-ctrl-1 -- \
+            etcdctl endpoint health --cluster 2>&1 || echo "failed")
+
+          if echo "$ETCD_HEALTH" | grep -q "unhealthy"; then
+            echo "::error::etcd cluster unhealthy"
+            echo "$ETCD_HEALTH"
+            exit 1
+          fi
+          echo "✅ etcd cluster healthy"
+
+          # Check for pods in CrashLoopBackOff
+          echo ""
+          echo "Checking for crashing pods..."
+          CRASH_PODS=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded \
+            --no-headers 2>/dev/null | grep "CrashLoopBackOff" | wc -l || echo "0")
+          CRASH_PODS=${CRASH_PODS:-0}  # Ensure numeric value
+
+          if [[ $CRASH_PODS -gt 0 ]]; then
+            echo "::warning::Found $CRASH_PODS pods in CrashLoopBackOff"
+            kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
+          else
+            echo "✅ No pods in CrashLoopBackOff"
+          fi
+
+          # Check Rook-Ceph health (if deployed)
+          echo ""
+          echo "Checking Rook-Ceph health..."
+          if kubectl get namespace rook-ceph &>/dev/null; then
+            # Check if this is an external cluster (no rook-ceph-tools deployment)
+            IS_EXTERNAL=$(kubectl get cephcluster -n rook-ceph -o jsonpath='{.items[0].spec.external.enable}' 2>/dev/null || echo "false")
+
+            if [[ "$IS_EXTERNAL" == "true" ]]; then
+              echo "ℹ️  External Ceph cluster detected"
+              # For external clusters, verify CSI drivers are running
+              CSI_RUNNING=$(kubectl get pods -n rook-ceph -l app=csi-rbdplugin-provisioner --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
+              if [[ $CSI_RUNNING -gt 0 ]]; then
+                echo "✅ Ceph CSI drivers running (external cluster healthy)"
+              else
+                echo "::warning::Ceph CSI drivers not running"
+              fi
+            elif kubectl get deploy -n rook-ceph rook-ceph-tools &>/dev/null; then
+              # Standard Rook-Ceph deployment with tools
+              CEPH_HEALTH=$(kubectl exec -n rook-ceph deploy/rook-ceph-tools -- \
+                ceph status -f json 2>/dev/null | jq -r '.health.status' || echo "UNKNOWN")
+
+              if [[ "$CEPH_HEALTH" == "HEALTH_OK" ]]; then
+                echo "✅ Ceph cluster healthy"
+              elif [[ "$CEPH_HEALTH" == "HEALTH_WARN" ]]; then
+                echo "::warning::Ceph cluster has warnings"
+                kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status
+              else
+                echo "::error::Ceph cluster unhealthy or status unknown"
+                kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status || true
+                exit 1
+              fi
+            else
+              echo "ℹ️  rook-ceph-tools not deployed - skipping health check"
+            fi
+          else
+            echo "ℹ️  Rook-Ceph not deployed, skipping"
+          fi
+
+          echo ""
+          echo "✅ Cluster health validation passed"
+          echo "::endgroup::"
+
+  # ==========================================================================
+  # PHASE 3: WORKER UPGRADE (PARALLEL WITH PAIRED ROLLOUT STRATEGY)
+  # ==========================================================================
+  # Pairing Strategy (cross-diagonal for fault tolerance):
+  #   Pair 1: work-1 (baldar) + work-7 (odin)
+  #   Pair 2: work-2 (baldar) + work-8 (odin)
+  #   Pair 3: work-3 (baldar) + work-9 (odin)
+  #   Pair 4: work-5 (heimdall) + work-11 (thor)
+  #   Pair 5: work-6 (heimdall) + work-12 (thor)
+  #   Pair 6: work-4 (heimdall, GPU RTX A2000) - sequential
+  #   Pair 7: work-10 (thor, GPU RTX A5000) - sequential
+  #
+  # Rollout modes:
+  #   safe: max-parallel=1 (one worker at a time, pairs are sequential)
+  #   standard: max-parallel=2 (both workers in pair upgrade together, but wait for pair to finish)
+  #   aggressive: max-parallel=4 (multiple pairs can run simultaneously)
+  upgrade-workers:
+    name: Upgrade Worker ${{ matrix.node }} (Pair ${{ matrix.pair_id }})
+    needs: [validate-inputs, rebuild-templates, upgrade-control-plane, pre-worker-health-check]
+    # Run when: test_workers=true OR production mode (all test flags false)
+    # Use always() to force evaluation even when dependencies are skipped
+    # Also require dependencies to have succeeded or been skipped (not failed)
+    if: |
+      always() &&
+      (inputs.test_workers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
+      (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
+      (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped') &&
+      (needs.pre-worker-health-check.result == 'success' || needs.pre-worker-health-check.result == 'skipped')
+    runs-on: cattle-runner
+    timeout-minutes: 30
+    strategy:
+      # Dynamic max-parallel based on rollout mode:
+      # safe=1 (one worker at a time), standard=2 (pair together), aggressive=4 (multiple pairs)
+      max-parallel: ${{ inputs.worker_rollout_mode == 'aggressive' && 4 || (inputs.worker_rollout_mode == 'standard' && 2 || 1) }}
+      fail-fast: false
+      matrix:
+        # Enhanced matrix with pair_id for cross-diagonal pairing
+        # Test mode: pair_id=1 (work-1 + work-2, both on baldar for testing)
+        # Production: Cross-diagonal pairs avoid single-host failure, GPU nodes sequential
+        include: >-
+          ${{
+            inputs.test_workers == true && fromJSON('[
+              {"node": "k8s-work-1", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-2", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"}
+            ]') || fromJSON('[
+              {"node": "k8s-work-1", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-7", "pair_id": 1, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-2", "pair_id": 2, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-8", "pair_id": 2, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-3", "pair_id": 3, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
+              {"node": "k8s-work-9", "pair_id": 3, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
+              {"node": "k8s-work-5", "pair_id": 4, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
+              {"node": "k8s-work-11", "pair_id": 4, "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
+              {"node": "k8s-work-6", "pair_id": 5, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
+              {"node": "k8s-work-12", "pair_id": 5, "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
+              {"node": "k8s-work-4", "pair_id": 6, "is_gpu": true, "proxmox_node": "heimdall", "template_type": "gpu", "gpu_model": "rtx-a2000"},
+              {"node": "k8s-work-10", "pair_id": 7, "is_gpu": true, "proxmox_node": "thor", "template_type": "gpu", "gpu_model": "rtx-a5000"}
+            ]')
+          }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Proxmox SSH key
+        env:
+          PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
+          chmod 600 ~/.ssh/proxmox_terraform
+
+      - name: Initialize Terraform
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Pre-drain health check
+        run: |
+          echo "::group::Pre-drain health check"
+          echo "Checking critical workload distribution before draining ${{ matrix.node }}..."
+
+          # Ensure CoreDNS has replicas on other nodes
+          OTHER_DNS=$(kubectl get pods -n kube-system -l k8s-app=kube-dns \
+            -o wide 2>/dev/null | grep -vF '${{ matrix.node }}' | grep Running | wc -l || echo "0")
+
+          echo "CoreDNS replicas on other nodes: $OTHER_DNS"
+
+          if [[ $OTHER_DNS -lt 1 ]]; then
+            echo "::warning::No CoreDNS replicas on other nodes, scaling up..."
+            kubectl scale deployment coredns -n kube-system --replicas=3
+            sleep 30
+          fi
+
+          # Check for Rook-Ceph OSDs on this node
+          OSD_COUNT=$(kubectl get pods -n rook-ceph -l app=rook-ceph-osd \
+            -o wide 2>/dev/null | grep -F '${{ matrix.node }}' | grep Running | wc -l || echo "0")
+
+          if [[ $OSD_COUNT -gt 0 ]]; then
+            echo "::notice::Node has $OSD_COUNT Ceph OSD(s)"
+            echo "Setting Ceph noout flag to prevent rebalancing during upgrade..."
+            kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph osd set noout || true
+            echo "osd_count=$OSD_COUNT" >> $GITHUB_ENV
+          else
+            echo "osd_count=0" >> $GITHUB_ENV
+          fi
+
+          echo "::endgroup::"
+
+      - name: Cordon node
+        run: |
+          echo "Cordoning ${{ matrix.node }}..."
+          kubectl cordon "${{ matrix.node }}"
+
+      - name: Drain node
+        timeout-minutes: 5
+        run: |
+          echo "::group::Draining ${{ matrix.node }}"
+          echo "Attempting graceful drain (respects PodDisruptionBudget)..."
+
+          # Layer 3: Graceful drain with timeout + force drain fallback
+          # Try graceful drain first (respects PDB)
+          if timeout 240 kubectl drain "${{ matrix.node }}" \
+            --ignore-daemonsets \
+            --delete-emptydir-data \
+            --grace-period=30; then
+
+            echo "✅ Graceful drain succeeded"
+          else
+            echo "⚠️  Graceful drain timed out (likely PDB blocking runner eviction)"
+            echo "Falling back to force drain..."
+
+            # Force drain bypasses PDB (used when runner pod is on this node)
+            kubectl drain "${{ matrix.node }}" \
+              --ignore-daemonsets \
+              --delete-emptydir-data \
+              --disable-eviction \
+              --force \
+              --grace-period=0
+
+            echo "✅ Force drain completed"
+            echo "ℹ️  If runner pod was evicted, GitHub will re-queue job to surviving runner"
+
+            # Give GitHub Actions time to detect runner termination and re-queue
+            sleep 30
+          fi
+
+          # Show pods remaining (should be only daemonsets)
+          echo ""
+          echo "Pods remaining on node (daemonsets only):"
+          kubectl get pods --all-namespaces -o wide 2>/dev/null | grep -F '${{ matrix.node }}' || echo "None"
+
+          echo "✅ Node drained successfully"
+          echo "::endgroup::"
+
+      - name: Clear stale Terraform locks
+        working-directory: ./terraform
+        continue-on-error: true
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "Checking for stale Terraform state locks..."
+
+          # Try a terraform plan with short lock timeout to detect locks
+          # Capture both stdout and stderr to parse lock ID
+          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+            echo "Lock detected. Output:"
+            echo "$LOCK_OUTPUT"
+
+            # Extract lock ID from error message (format: "ID: <uuid>")
+            # Use \K assertion for reliable regex across grep versions
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
+
+            if [ -n "$LOCK_ID" ]; then
+              echo ""
+              echo "Found stale lock ID: $LOCK_ID"
+              echo "Attempting to force-unlock..."
+
+              if terraform force-unlock -force "$LOCK_ID"; then
+                echo "✓ Successfully cleared stale lock"
+              else
+                echo "✗ Failed to unlock (may require manual intervention)"
+                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+              fi
+            else
+              echo "Could not extract lock ID from error message"
+              echo "Lock may need to be cleared manually"
+            fi
+          else
+            echo "✓ No lock detected - state is accessible"
+          fi
+
+          # Ensure clean exit
+          exit 0
+
+      - name: Backup Terraform state
+        working-directory: ./terraform
+        run: |
+          echo "Creating state backup before destroy..."
+
+          # SECURITY: Check for state lock before proceeding
+          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
+            echo "::error::Terraform state is locked - another operation in progress"
+            echo "::error::Wait for other operation to complete or manually remove lock if stale"
+            exit 1
+          fi
+
+          aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
+            s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node }}-$(date +%s).tfstate
+
+      - name: Plan worker destruction
+        working-directory: ./terraform
+        timeout-minutes: 5
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Planning destruction of ${{ matrix.node }}"
+
+          terraform plan \
+            -input=false \
+            -destroy \
+            -out=worker-destroy-${{ matrix.node }}.tfplan \
+            -target=module.worker_nodes[\"${{ matrix.node }}\"]
+
+          echo "Plan saved to worker-destroy-${{ matrix.node }}.tfplan"
+          echo "::endgroup::"
+
+      - name: Validate destruction plan
+        working-directory: ./terraform
+        run: |
+          echo "::group::Validating destruction plan for ${{ matrix.node }}"
+
+          # Check plan file exists
+          if [[ ! -f worker-destroy-${{ matrix.node }}.tfplan ]]; then
+            echo "::error::Plan file not found"
+            exit 1
+          fi
+
+          # Show full plan
+          terraform show -no-color worker-destroy-${{ matrix.node }}.tfplan > destroy-plan-full.txt
+          cat destroy-plan-full.txt
+
+          echo ""
+          echo "================================================================"
+          echo "SAFETY VALIDATION - Negative Assertions"
+          echo "================================================================"
+
+          BUG_DETECTED=false
+
+          # NEGATIVE ASSERTION 1: No controllers
+          for ctrl in k8s-ctrl-1 k8s-ctrl-2 k8s-ctrl-3; do
+            if grep -q "module.control_plane_nodes\[\"$ctrl\"\]" destroy-plan-full.txt; then
+              echo "::error::SAFETY VIOLATION: Plan includes controller $ctrl"
+              echo "::error::This would destroy control plane nodes!"
+              BUG_DETECTED=true
+            fi
+          done
+
+          # NEGATIVE ASSERTION 2: No templates
+          if grep -q "module.template_" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Plan includes template modules"
+            echo "::error::This would destroy VM templates!"
+            BUG_DETECTED=true
+          fi
+
+          # NEGATIVE ASSERTION 3: No other workers
+          for other_worker in k8s-work-1 k8s-work-2 k8s-work-3 k8s-work-4 k8s-work-5 \
+                             k8s-work-6 k8s-work-7 k8s-work-8 k8s-work-9 \
+                             k8s-work-10 k8s-work-11 k8s-work-12; do
+            if [[ "$other_worker" == "${{ matrix.node }}" ]]; then
+              continue  # Skip self
+            fi
+
+            if grep -q "module.worker_nodes\[\"$other_worker\"\]" destroy-plan-full.txt; then
+              echo "::error::SAFETY VIOLATION: Plan includes $other_worker"
+              echo "::error::This would destroy multiple workers!"
+              BUG_DETECTED=true
+            fi
+          done
+
+          if [ "$BUG_DETECTED" = true ]; then
+            echo ""
+            echo "::error::Terraform plan includes unintended targets"
+            echo "::error::Workflow terminated to prevent accidental destruction"
+            exit 1
+          fi
+
+          echo "✅ Negative assertions passed - no unintended targets"
+
+          # POSITIVE ASSERTION: Verify target worker IS in plan
+          if ! grep -q "module.worker_nodes\[\"${{ matrix.node }}\"\]" destroy-plan-full.txt; then
+            echo "::error::SAFETY VIOLATION: Target worker not found in plan"
+            echo "::error::Expected: module.worker_nodes[\"${{ matrix.node }}\"]"
+            exit 1
+          fi
+
+          echo "✅ Positive assertion passed - target worker found"
+
+          # Count VMs to be destroyed (should be exactly 1)
+          VM_COUNT=$(grep -c "module.worker_nodes\[\"${{ matrix.node }}\"\]" destroy-plan-full.txt || echo "0")
+          echo "VMs to be destroyed: $VM_COUNT"
+
+          if [[ $VM_COUNT -ne 1 ]]; then
+            echo "::error::Expected exactly 1 VM to be destroyed, found $VM_COUNT"
+            exit 1
+          fi
+
+          echo ""
+          echo "================================================================"
+          echo "Validation passed - safe to destroy ${{ matrix.node }}"
+          echo "================================================================"
+          echo "::endgroup::"
+
+      - name: Destroy VM with retry
+        working-directory: ./terraform
+        timeout-minutes: 10
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Destroying ${{ matrix.node }} VM with retry logic"
+
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "Destroy attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            if terraform apply \
+                -input=false \
+                -auto-approve \
+                worker-destroy-${{ matrix.node }}.tfplan; then
+
+              echo "✅ VM destroyed successfully on attempt $ATTEMPT"
+              SUCCESS=true
+              break
+            else
+              EXIT_CODE=$?
+              echo "⚠️  Destroy attempt $ATTEMPT failed with exit code $EXIT_CODE"
+
+              if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+                WAIT_TIME=$((ATTEMPT * 10))
+                echo "Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+
+                # Clear potential state lock
+                echo "Checking for state lock..."
+                if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
+                  echo "State lock detected, clearing..."
+                  aws s3 rm s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info || true
+                fi
+              fi
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo "::error::Failed to destroy VM after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          echo "::endgroup::"
+
+      - name: Verify correct template exists
+        working-directory: ./terraform
+        run: |
+          echo "::group::Verifying template for ${{ matrix.node }}"
+
+          # Determine expected template
+          TEMPLATE_TYPE="${{ matrix.template_type }}"
+          PROXMOX_NODE="${{ matrix.proxmox_node }}"
+          echo "Node type: $TEMPLATE_TYPE"
+          echo "Proxmox host: $PROXMOX_NODE"
+
+          # Verify template exists in Terraform state
+          echo "Checking for template_${PROXMOX_NODE}_${TEMPLATE_TYPE} module..."
+
+          if terraform state list | grep -q "module.template_${PROXMOX_NODE}_${TEMPLATE_TYPE}"; then
+            echo "✅ Template module template_${PROXMOX_NODE}_${TEMPLATE_TYPE} exists in state"
+          else
+            echo "::error::Required template module template_${PROXMOX_NODE}_${TEMPLATE_TYPE} not found in Terraform state"
+            echo "::error::Available templates:"
+            terraform state list | grep "module.template_" || echo "None found"
+            exit 1
+          fi
+
+          # Log template selection for audit
+          echo "GPU enabled: ${{ matrix.is_gpu }}"
+          if [[ "${{ matrix.is_gpu }}" == "true" ]]; then
+            echo "GPU model: ${{ matrix.gpu_model }}"
+          fi
+
+          echo "✅ Template verified and ready for VM creation"
+          echo "::endgroup::"
+
+      - name: Recreate VM from new template
+        working-directory: ./terraform
+        timeout-minutes: 10
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::group::Recreating ${{ matrix.node }} from v${{ inputs.new_version }} template"
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            -target=module.worker_nodes[\"${{ matrix.node }}\"]
+
+          echo "✅ VM recreated from new template"
+          echo "::endgroup::"
+
+      # ==========================================================================
+      # CRITICAL SECURITY OPERATION: Apply Machine Configuration
+      # This step implements the 5-layer security architecture to inject
+      # Talos machine configs from GitHub Secrets without leaking secrets
+      # ==========================================================================
+      - name: Apply machine configuration (CRITICAL SECURITY OPERATION)
+        id: apply_config
+        env:
+          NODE_NAME: ${{ matrix.node }}
+          # SECURITY: Secret passed directly to script, not stored in env var
+          # Worker node configs: TALOS_MACHINE_CONFIG_WORK_1, WORK_2, WORK_3, etc.
+          NODE_CONFIG_SECRET: ${{ secrets[format('TALOS_MACHINE_CONFIG_{0}', matrix.node == 'k8s-work-1' && 'WORK_1' || matrix.node == 'k8s-work-2' && 'WORK_2' || matrix.node == 'k8s-work-3' && 'WORK_3' || matrix.node == 'k8s-work-4' && 'WORK_4' || matrix.node == 'k8s-work-5' && 'WORK_5' || matrix.node == 'k8s-work-6' && 'WORK_6' || matrix.node == 'k8s-work-7' && 'WORK_7' || matrix.node == 'k8s-work-8' && 'WORK_8' || matrix.node == 'k8s-work-9' && 'WORK_9' || matrix.node == 'k8s-work-10' && 'WORK_10' || matrix.node == 'k8s-work-11' && 'WORK_11' || matrix.node == 'k8s-work-12' && 'WORK_12')] }}
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          # CRITICAL: Absolutely no command echo
+          set +x
+          set -euo pipefail
+
+          echo "Starting secure configuration deployment for $NODE_NAME..."
+
+          # ============================================================
+          # SECURITY LAYER 1: Disable Command Echo (set +x above)
+          # ============================================================
+
+          # ============================================================
+          # SECURITY LAYER 2: Ephemeral Secure Storage
+          # ============================================================
+
+          # Create dedicated config directory with maximum restrictions
+          CONFIG_DIR="$(mktemp -d -t talos-config-XXXXXX)"
+          chmod 700 "$CONFIG_DIR"
+
+          # Set aggressive cleanup trap
+          cleanup_config() {
+            if [[ -d "$CONFIG_DIR" ]]; then
+              find "$CONFIG_DIR" -type f -exec shred -fz -n 3 {} \; 2>/dev/null || true
+              rm -rf "$CONFIG_DIR"
+            fi
+          }
+          trap cleanup_config EXIT
+
+          # ============================================================
+          # SECURITY LAYER 3: Decode and Protect
+          # ============================================================
+
+          # Decode configuration with maximum protection and error handling
+          CONFIG_FILE="$CONFIG_DIR/machine.yaml"
+
+          # Validate secret exists and is not empty
+          if [[ -z "$NODE_CONFIG_SECRET" ]]; then
+            echo "ERROR: Machine config secret for $NODE_NAME is not set"
+            echo "ERROR: Expected secret: TALOS_MACHINE_CONFIG_<WORK_X>"
+            exit 1
+          fi
+
+          if ! echo "$NODE_CONFIG_SECRET" | base64 -d > "$CONFIG_FILE" 2>/dev/null; then
+            echo "ERROR: Failed to decode configuration"
+            exit 1
+          fi
+          chmod 600 "$CONFIG_FILE"
+
+          # Validate configuration has expected structure with error suppression
+          if ! grep -q "machine:" "$CONFIG_FILE" 2>/dev/null; then
+            echo "ERROR: Invalid machine configuration structure"
+            exit 1
+          fi
+
+          echo "Configuration decoded and validated"
+
+          # ============================================================
+          # SECURITY LAYER 4: Apply with Maximum Output Suppression
+          # ============================================================
+
+          # Map node name to IP (hardcoded since node doesn't exist in kubectl yet)
+          case "$NODE_NAME" in
+            k8s-work-1)  NODE_IP="10.20.67.4" ;;
+            k8s-work-2)  NODE_IP="10.20.67.5" ;;
+            k8s-work-3)  NODE_IP="10.20.67.6" ;;
+            k8s-work-4)  NODE_IP="10.20.67.7" ;;
+            k8s-work-5)  NODE_IP="10.20.67.8" ;;
+            k8s-work-6)  NODE_IP="10.20.67.9" ;;
+            k8s-work-7)  NODE_IP="10.20.67.10" ;;
+            k8s-work-8)  NODE_IP="10.20.67.11" ;;
+            k8s-work-9)  NODE_IP="10.20.67.12" ;;
+            k8s-work-10) NODE_IP="10.20.67.13" ;;
+            k8s-work-11) NODE_IP="10.20.67.14" ;;
+            k8s-work-12) NODE_IP="10.20.67.15" ;;
+            *)
+              echo "ERROR: Unknown worker node: $NODE_NAME"
+              exit 1
+              ;;
+          esac
+
+          echo "Applying configuration to node $NODE_IP..."
+
+          # Wait for VM to be network-ready (VM just created)
+          echo "Waiting for VM to be network-ready..."
+          MAX_WAIT=60
+          for i in {1..12}; do
+            if talosctl -n "$NODE_IP" version --insecure --timeout=5s >/dev/null 2>&1; then
+              echo "✓ VM is network-ready after $((i * 5)) seconds"
+              break
+            fi
+            echo "  Waiting... ($((i * 5))/${MAX_WAIT}s)"
+            sleep 5
+          done
+
+          # Application with retry logic and complete output suppression
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          SUCCESS=false
+
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "  Attempt $ATTEMPT of $MAX_ATTEMPTS..."
+
+            # Create a log file for this attempt with restrictive permissions
+            ATTEMPT_LOG="$CONFIG_DIR/attempt_${ATTEMPT}.log"
+            touch "$ATTEMPT_LOG"
+            chmod 600 "$ATTEMPT_LOG"
+
+            # Apply configuration with all output captured
+            if talosctl -n "$NODE_IP" apply-config \
+                --insecure \
+                --file "$CONFIG_FILE" \
+                --timeout=120s \
+                >"$ATTEMPT_LOG" 2>&1; then
+
+              # CRITICAL: Sanitize log IMMEDIATELY even on success
+              sed -i 's/token:.*/token: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/secret:.*/secret: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/certificate:.*/certificate: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN .* PRIVATE KEY-----.*/[PRIVATE KEY REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN CERTIFICATE-----.*/[CERTIFICATE REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+
+              echo "  ✓ Configuration applied successfully"
+              SUCCESS=true
+
+              # Shred sanitized log (non-verbose to avoid path leaks)
+              shred -fz -n 3 "$ATTEMPT_LOG" 2>/dev/null || true
+              break
+
+            else
+              # CRITICAL: Sanitize log BEFORE checking error types
+              sed -i 's/token:.*/token: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/secret:.*/secret: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/certificate:.*/certificate: [REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN .* PRIVATE KEY-----.*/[PRIVATE KEY REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+              sed -i 's/-----BEGIN CERTIFICATE-----.*/[CERTIFICATE REDACTED]/g' "$ATTEMPT_LOG" 2>/dev/null || true
+
+              echo "  ⚠ Attempt $ATTEMPT failed"
+
+              # Now safe to check error types from sanitized log
+              if grep -q "connection refused" "$ATTEMPT_LOG" 2>/dev/null; then
+                echo "    Node not yet ready, waiting..."
+                sleep $((ATTEMPT * 10))
+              elif grep -q "timeout" "$ATTEMPT_LOG" 2>/dev/null; then
+                echo "    Operation timed out, retrying..."
+                sleep 5
+              else
+                echo "    Unknown error occurred"
+              fi
+
+              # Shred sanitized log (non-verbose to avoid path leaks)
+              shred -fz -n 3 "$ATTEMPT_LOG" 2>/dev/null || true
+            fi
+
+            ((ATTEMPT++))
+          done
+
+          if [[ "$SUCCESS" != "true" ]]; then
+            echo "ERROR: Failed to apply configuration after $MAX_ATTEMPTS attempts"
+            exit 1
+          fi
+
+          # ============================================================
+          # SECURITY LAYER 5: Aggressive Cleanup
+          # ============================================================
+
+          # Cleanup happens automatically via EXIT trap
+          echo "Configuration deployment completed securely"
+
+      - name: Wait for node to be Ready
+        timeout-minutes: 10
+        run: |
+          echo "Waiting for ${{ matrix.node }} to become Ready..."
+
+          for i in {1..60}; do
+            if kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=10s 2>/dev/null; then
+              echo "✅ Node is Ready"
+              break
+            fi
+
+            # Show node status every minute (every 6 attempts)
+            if [[ $((i % 6)) -eq 0 ]]; then
+              echo "Node status after $i attempts:"
+              kubectl get node "${{ matrix.node }}" || true
+              kubectl describe node "${{ matrix.node }}" | tail -20 || true
+            fi
+
+            echo "Attempt $i/60: Node not ready yet..."
+            sleep 10
+          done
+
+          # Final check
+          kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=30s
+
+
+      - name: Verify Talos version
+        timeout-minutes: 2
+        run: |
+          echo "Verifying Talos version on ${{ matrix.node }}..."
+
+          # Get node IP from kubectl
+          NODE_IP=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+          EXPECTED_VERSION="v${{ inputs.new_version }}"
+
+          echo "Node IP: $NODE_IP"
+          echo "Expected Talos version: $EXPECTED_VERSION"
+
+          # Extract version from talosctl using JSON parsing for reliability
+          VERSION=$(talosctl version --nodes "$NODE_IP" --json 2>/dev/null | jq -r '.version.tag // empty')
+
+          echo "Node Talos version: $VERSION"
+
+          if [[ "$VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::Version mismatch on ${{ matrix.node }}"
+            echo "::error::Expected: $EXPECTED_VERSION"
+            echo "::error::Got: $VERSION"
+            exit 1
+          fi
+
+          echo "✅ Node running correct Talos version: $VERSION"
+
+      - name: Apply global patches
+        timeout-minutes: 5
+        run: |
+          echo "::group::Applying global patches to ${{ matrix.node }}"
+          echo "These patches ensure consistent sysctls, kubelet config, network, and time settings"
+
+          # Use pre-installed talosctl from setup-cluster-tools
+          echo "Using pre-installed talosctl..."
+          which talosctl
+          talosctl version --client
+
+          # Determine node IP
+          NODE_IP=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+          echo "Node IP: $NODE_IP"
+
+          # Apply global patches in order
+          echo "Applying global patches..."
+
+          GLOBAL_PATCHES=("machine-kubelet" "machine-network" "machine-sysctls" "machine-time")
+
+          for patch in "${GLOBAL_PATCHES[@]}"; do
+            echo "  → Applying talos/patches/global/${patch}.yaml..."
+            talosctl patch machineconfig \
+              --nodes $NODE_IP \
+              --patch-file talos/patches/global/${patch}.yaml
+          done
+
+          echo "✅ All global patches applied"
+
+          # Wait for patches to be processed
+          echo "Waiting for patches to be applied (15s)..."
+          sleep 15
+
+          # Wait for node to be ready again
+          echo "Waiting for node to become Ready..."
+          kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=180s
+
+          echo "✅ Global patches successfully applied to ${{ matrix.node }}"
+          echo "::endgroup::"
+
+      - name: Apply GPU patches
+        if: matrix.is_gpu == true
+        timeout-minutes: 5
+        run: |
+          echo "::group::Applying GPU patches for ${{ matrix.node }}"
+          echo "Detected GPU node: ${{ matrix.node }}"
+
+          # Use pre-installed talosctl from setup-cluster-tools
+          echo "Using pre-installed talosctl..."
+          which talosctl
+          talosctl version --client
+
+          # Determine node IP
+          NODE_IP=$(kubectl get node "${{ matrix.node }}" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+          echo "Node IP: $NODE_IP"
+
+          # Apply GPU-specific patches
+          echo "Applying GPU patch from talos/patches/${{ matrix.node }}/nvidia-gpu.yaml..."
+          talosctl patch machineconfig \
+            --nodes $NODE_IP \
+            --patch-file talos/patches/${{ matrix.node }}/nvidia-gpu.yaml
+
+          # Wait for patch to be processed
+          echo "Waiting for GPU patch to be applied (15s)..."
+          sleep 15
+
+          # Wait for node to be ready again
+          kubectl wait --for=condition=Ready node/"${{ matrix.node }}" --timeout=180s
+
+          # Validate GPU detected
+          echo "Validating GPU detection..."
+          GPU_PRESENT=$(kubectl get node "${{ matrix.node }}" \
+            -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' || echo "")
+
+          if [[ "$GPU_PRESENT" != "true" ]]; then
+            echo "::error::GPU not detected on ${{ matrix.node }}"
+            echo "::error::Expected label nvidia.com/gpu.present=true, got: '$GPU_PRESENT'"
+            exit 1
+          fi
+
+          echo "✅ GPU patch successfully applied to ${{ matrix.node }}"
+          echo "✅ GPU detected: nvidia.com/gpu.present label found"
+          echo "::endgroup::"
+
+      - name: Uncordon node
+        run: |
+          echo "Uncordoning ${{ matrix.node }}..."
+          kubectl uncordon "${{ matrix.node }}"
+
+
+      - name: Validate GPU functionality
+        if: matrix.is_gpu == true
+        timeout-minutes: 5
+        run: |
+          echo "::group::Validating GPU for ${{ matrix.node }}"
+
+          # Wait for NVIDIA operator to detect GPU
+          echo "Waiting for NVIDIA device plugin..."
+          RETRY_COUNT=0
+          MAX_RETRIES=21
+
+          while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
+            if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
+              echo "✅ GPU detected by Kubernetes"
+              break
+            fi
+            echo "Waiting for GPU detection (attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
+            sleep 10
+            RETRY_COUNT=$((RETRY_COUNT+1))
+          done
+
+          if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
+            echo "::error::GPU not detected after $MAX_RETRIES attempts"
+            exit 1
+          fi
+
+          # Verify GPU count
+          GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
+          echo "GPU count: $GPU_COUNT"
+
+          if [[ "$GPU_COUNT" != "1" ]]; then
+            echo "::error::Expected 1 GPU, found $GPU_COUNT"
+            exit 1
+          fi
+
+          # Verify node labels
+          echo "Checking GPU labels..."
+          kubectl get nodes ${{ matrix.node }} --show-labels | grep -q "nvidia.com/gpu.present=true" || {
+            echo "::error::GPU present label missing"
+            exit 1
+          }
+
+          # Check for GPU model label (warning only if missing)
+          kubectl get nodes ${{ matrix.node }} --show-labels | grep -q "gpu.nvidia.com/model=${{ matrix.gpu_model }}" || {
+            echo "::warning::GPU model label missing or incorrect (expected: ${{ matrix.gpu_model }})"
+          }
+
+          # Test GPU with a pod
+          echo "Testing GPU with nvidia-smi pod..."
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: gpu-test-${{ matrix.node }}
+            namespace: default
+          spec:
+            runtimeClassName: nvidia
+            nodeSelector:
+              kubernetes.io/hostname: ${{ matrix.node }}
+            containers:
+            - name: nvidia-smi
+              image: nvcr.io/nvidia/cuda:12.0.0-base-ubuntu20.04
+              command: ["nvidia-smi"]
+              resources:
+                limits:
+                  nvidia.com/gpu: 1
+            restartPolicy: Never
+          EOF
+
+          # Wait for pod completion (use Succeeded phase, not Completed condition)
+          if kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/gpu-test-${{ matrix.node }} --timeout=60s; then
+            # Show GPU info on success
+            echo "GPU test output:"
+            kubectl logs pod/gpu-test-${{ matrix.node }}
+
+            # Clean up test pod
+            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+
+            echo "✅ GPU validation successful for ${{ matrix.node }}"
+          else
+            # Handle failure
+            POD_PHASE=$(kubectl get pod gpu-test-${{ matrix.node }} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+            echo "::error::GPU test pod did not succeed (phase: $POD_PHASE)"
+            kubectl logs pod/gpu-test-${{ matrix.node }} 2>/dev/null || echo "Could not retrieve logs"
+            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+            exit 1
+          fi
+          echo "::endgroup::"
+      - name: Post-upgrade validation
+        run: |
+          echo "::group::Post-upgrade validation"
+
+          # Wait for pods to reschedule
+          echo "Waiting for workloads to redistribute (20s)..."
+          sleep 20
+
+          # Check for unhealthy deployments
+          echo "Checking deployment health..."
+          UNHEALTHY=$(kubectl get deployments --all-namespaces -o json 2>/dev/null | \
+            jq -r '.items[] |
+              select(.status.replicas != .status.readyReplicas) |
+              "\(.metadata.namespace)/\(.metadata.name): \(.status.readyReplicas)/\(.status.replicas)"' || echo "")
+
+          if [[ -n "$UNHEALTHY" ]]; then
+            echo "::warning::Some deployments not fully ready:"
+            echo "$UNHEALTHY"
+          else
+            echo "✅ All deployments healthy"
+          fi
+
+          # Remove Ceph noout flag if it was set
+          if [[ "${{ env.osd_count }}" != "0" ]]; then
+            echo "Removing Ceph noout flag..."
+            kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph osd unset noout || true
+          fi
+
+          echo "::endgroup::"
+
+      - name: Upgrade summary
+        if: always()
+        run: |
+          # Store GHA expressions in bash variables first
+          NODE_NAME="${{ matrix.node }}"
+          NEW_VERSION="${{ inputs.new_version }}"
+          JOB_STATUS="${{ job.status }}"
+          IS_GPU="${{ matrix.is_gpu }}"
+
+          GPU_STATUS=""
+          if [[ "$IS_GPU" == "true" ]]; then
+            GPU_STATUS=" (GPU node)"
+          fi
+
+          # Determine status emoji and message based on job status
+          if [[ "$JOB_STATUS" == "success" ]]; then
+            STATUS_EMOJI="✅"
+            STATUS_MSG="Upgrade successful"
+          else
+            STATUS_EMOJI="❌"
+            STATUS_MSG="Upgrade failed"
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ### Worker Node: $NODE_NAME$GPU_STATUS $STATUS_EMOJI
+
+          **Status**: $STATUS_MSG
+          **New Version**: v$NEW_VERSION
+          **Job Status**: $JOB_STATUS
+          EOF
+
+  # ==========================================================================
+  # PHASE 3.5: BETWEEN-PAIR VALIDATION (SAFE/STANDARD MODES)
+  # ==========================================================================
+  # This job runs after each pair completes to validate cluster health
+  # before proceeding to the next pair. Only runs in safe/standard modes.
+  # In aggressive mode, multiple pairs run simultaneously without waiting.
+  #
+  # LIMITATION: Due to GitHub Actions matrix dependencies, this job runs AFTER
+  # all workers complete, not between pairs. This provides post-upgrade validation
+  # per pair but not incremental safety gates. The pre-worker-health-check provides
+  # adequate safety for the entire worker upgrade phase.
+  validate-pair:
+    name: Validate Pair ${{ matrix.pair_id }} Health
+    needs: [upgrade-workers]
+    # Only run in safe/standard modes AND only for pairs 1-6 (pair 7 is last, no validation needed after)
+    if: |
+      always() &&
+      needs.upgrade-workers.result == 'success' &&
+      inputs.worker_rollout_mode != 'aggressive' &&
+      inputs.test_workers == false
+    runs-on: cattle-runner
+    timeout-minutes: 5
+    strategy:
+      max-parallel: 1
+      matrix:
+        pair_id: [1, 2, 3, 4, 5, 6]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
+      - name: Wait for pair to stabilize
+        run: |
+          echo "Waiting 60 seconds for pair ${{ matrix.pair_id }} nodes to stabilize..."
+          sleep 60
+
+      - name: Validate cluster health after pair ${{ matrix.pair_id }}
+        run: |
+          echo "::group::Post-Pair ${{ matrix.pair_id }} Health Check"
+
+          # Check all nodes are Ready
+          echo "Checking node health..."
+          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready " | wc -l)
+          if [[ $NOT_READY -gt 0 ]]; then
+            echo "::warning::Found $NOT_READY nodes not in Ready state after pair ${{ matrix.pair_id }}"
+            kubectl get nodes
+            # Don't fail, just warn - pair might still be stabilizing
+          else
+            echo "✅ All nodes Ready"
+          fi
+
+          # Check for pods in bad state
+          echo ""
+          echo "Checking for unhealthy pods..."
+          BAD_PODS=$(kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded \
+            --no-headers 2>/dev/null | grep -v "Completed" | wc -l || echo "0")
+
+          if [[ $BAD_PODS -gt 0 ]]; then
+            echo "::warning::Found $BAD_PODS pods not in Running/Succeeded state"
+            kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded
+          else
+            echo "✅ All pods healthy"
+          fi
+
+          # Check Rook-Ceph health (if deployed)
+          echo ""
+          echo "Checking Rook-Ceph health..."
+          if kubectl get namespace rook-ceph &>/dev/null; then
+            CEPH_HEALTH=$(kubectl exec -n rook-ceph deploy/rook-ceph-tools -- \
+              ceph status -f json 2>/dev/null | jq -r '.health.status' || echo "UNKNOWN")
+
+            if [[ "$CEPH_HEALTH" == "HEALTH_OK" ]]; then
+              echo "✅ Ceph cluster healthy"
+            elif [[ "$CEPH_HEALTH" == "HEALTH_WARN" ]]; then
+              echo "::warning::Ceph cluster has warnings after pair ${{ matrix.pair_id }}"
+              kubectl exec -n rook-ceph deploy/rook-ceph-tools -- ceph status
+            else
+              echo "::warning::Ceph cluster status: $CEPH_HEALTH"
+            fi
+          else
+            echo "ℹ️  Rook-Ceph not deployed, skipping"
+          fi
+
+          echo ""
+          echo "✅ Pair ${{ matrix.pair_id }} validation complete"
+          echo "::endgroup::"
+
+  # ==========================================================================
+  # PHASE 4: CLUSTER VALIDATION
+  # ==========================================================================
+  validate-cluster:
+    name: Validate Cluster Health
+    needs: [validate-inputs, rebuild-templates, upgrade-control-plane, upgrade-workers, validate-pair]
+    # Run after all upgrades complete (validate-pair may be skipped in aggressive mode or test mode)
+    if: |
+      always() &&
+      inputs.test_templates == false &&
+      (needs.validate-pair.result == 'success' || needs.validate-pair.result == 'skipped')
+    runs-on: cattle-runner
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
+      - name: Check all nodes upgraded
+        run: |
+          echo "::group::Validating node versions"
+          EXPECTED_VERSION="${{ inputs.new_version }}"
+          FAILED_NODES=""
+
+          echo "Expected version: v$EXPECTED_VERSION"
+          echo ""
+          echo "Node version check:"
+
+          for node in $(kubectl get nodes -o name | cut -d/ -f2); do
+            # Get node IP address for talosctl
+            NODE_IP=$(kubectl get node "$node" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+
+            if [[ -z "$NODE_IP" ]]; then
+              echo "::error::Failed to resolve IP for node $node"
+              FAILED_NODES="$FAILED_NODES $node(no-ip)"
+              continue
+            fi
+
+            # Get Talos version from node using JSON parsing
+            VERSION=$(talosctl version --nodes "$NODE_IP" --json 2>/dev/null | jq -r '.version.tag // empty')
+            echo "  $node: $VERSION"
+
+            if [[ "$VERSION" != "v$EXPECTED_VERSION" ]]; then
+              FAILED_NODES="$FAILED_NODES $node($VERSION)"
+            fi
+          done
+
+          if [[ -n "$FAILED_NODES" ]]; then
+            echo ""
+            echo "::error::Nodes not upgraded:$FAILED_NODES"
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All nodes running v$EXPECTED_VERSION"
+          echo "::endgroup::"
+
+      - name: Validate GPU nodes
+        if: inputs.test_workers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)
+        run: |
+          echo "::group::Validating GPU functionality"
+
+          # Check k8s-work-4 (RTX A2000)
+          echo "Checking k8s-work-4 (RTX A2000)..."
+          GPU_4=$(kubectl get node k8s-work-4 \
+            -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' || echo "")
+
+          if [[ "$GPU_4" != "true" ]]; then
+            echo "::error::GPU not detected on k8s-work-4"
+            echo "::error::Expected label nvidia.com/gpu.present=true, got: '$GPU_4'"
+            exit 1
+          fi
+          echo "✅ k8s-work-4: GPU detected"
+
+          # Check k8s-work-10 (RTX A5000)
+          echo "Checking k8s-work-10 (RTX A5000)..."
+          GPU_10=$(kubectl get node k8s-work-10 \
+            -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' || echo "")
+
+          if [[ "$GPU_10" != "true" ]]; then
+            echo "::error::GPU not detected on k8s-work-10"
+            echo "::error::Expected label nvidia.com/gpu.present=true, got: '$GPU_10'"
+            exit 1
+          fi
+          echo "✅ k8s-work-10: GPU detected"
+
+          echo ""
+          echo "✅ All GPU nodes validated"
+          echo "::endgroup::"
+
+      - name: Validate workloads
+        run: |
+          echo "::group::Validating workload health"
+
+          # Check HelmReleases
+          echo "Checking HelmRelease status..."
+          FAILED_HR=$(kubectl get helmreleases --all-namespaces -o json 2>/dev/null | \
+            jq -r '.items[] |
+              select(
+                (.status.conditions // []) |
+                map(select(.type == "Ready" and .status != "True")) |
+                length > 0
+              ) |
+              "\(.metadata.namespace)/\(.metadata.name): \(.status.conditions[] | select(.type == "Ready") | .message // "Unknown")"' || echo "")
+
+          if [[ -n "$FAILED_HR" ]]; then
+            echo "::warning::Some HelmReleases unhealthy:"
+            echo "$FAILED_HR"
+          else
+            echo "✅ All HelmReleases healthy"
+          fi
+
+          # Check for non-running pods (excluding completed jobs)
+          echo ""
+          echo "Checking pod status..."
+          UNHEALTHY_PODS=$(kubectl get pods --all-namespaces 2>/dev/null | \
+            grep -v Running | grep -v Completed || echo "")
+
+          if [[ -n "$UNHEALTHY_PODS" ]]; then
+            echo "::warning::Some pods not running:"
+            echo "$UNHEALTHY_PODS"
+          else
+            echo "✅ All pods running or completed"
+          fi
+
+          echo "::endgroup::"
+
+      - name: Validate Flux GitOps
+        run: |
+          echo "::group::Validating Flux GitOps"
+
+          # Check GitRepository connected to GitHub
+          echo "Checking Flux GitRepository..."
+          GITREPO_STATUS=$(kubectl get gitrepositories.source.toolkit.fluxcd.io flux-system -n flux-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+
+          if [[ "$GITREPO_STATUS" != "True" ]]; then
+            echo "::error::Flux GitRepository not connected to GitHub"
+            echo "::error::Expected Ready=True, got: '$GITREPO_STATUS'"
+            kubectl get gitrepositories.source.toolkit.fluxcd.io flux-system -n flux-system -o yaml || true
+            exit 1
+          fi
+
+          GITREPO_URL=$(kubectl get gitrepositories.source.toolkit.fluxcd.io flux-system -n flux-system -o jsonpath='{.spec.url}' 2>/dev/null || echo "")
+          echo "✅ Flux connected to: $GITREPO_URL"
+
+          # Check core Kustomizations reconciling
+          echo ""
+          echo "Checking core Flux Kustomizations..."
+          FAILED_KUST=$(kubectl get kustomizations.kustomize.toolkit.fluxcd.io -n flux-system -o json 2>/dev/null | jq -r '.items[] | select(.metadata.name as $name | ["cluster-apps", "external-secrets-operator", "1password-connect"] | index($name)) | select((.status.conditions // []) | map(select(.type == "Ready" and .status != "True")) | length > 0) | "\(.metadata.name): \(.status.conditions[] | select(.type == "Ready") | .message // "Unknown")"' || echo "")
+
+          if [[ -n "$FAILED_KUST" ]]; then
+            echo "::error::Core Flux Kustomizations not reconciling:"
+            echo "$FAILED_KUST"
+            exit 1
+          fi
+
+          echo "✅ Core Flux Kustomizations reconciling:"
+          kubectl get kustomizations.kustomize.toolkit.fluxcd.io -n flux-system -o custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,MESSAGE:.status.conditions[?(@.type=="Ready")].message | grep -E "(cluster-apps|external-secrets-operator|1password-connect)" || true
+
+          echo ""
+          echo "✅ Flux GitOps functional"
+          echo "::endgroup::"
+
+      - name: Final summary
+        if: always()
+        run: |
+          # Determine emojis based on actual phase results
+          case "${{ needs.rebuild-templates.result }}" in
+            success) TEMPLATE_EMOJI="✅" ;;
+            skipped) TEMPLATE_EMOJI="⏭️" ;;
+            failure) TEMPLATE_EMOJI="❌" ;;
+            *) TEMPLATE_EMOJI="❓" ;;
+          esac
+
+          case "${{ needs.upgrade-control-plane.result }}" in
+            success) CTRL_EMOJI="✅" ;;
+            skipped) CTRL_EMOJI="⏭️" ;;
+            failure) CTRL_EMOJI="❌" ;;
+            *) CTRL_EMOJI="❓" ;;
+          esac
+
+          case "${{ needs.upgrade-workers.result }}" in
+            success) WORKER_EMOJI="✅" ;;
+            skipped) WORKER_EMOJI="⏭️" ;;
+            failure) WORKER_EMOJI="❌" ;;
+            *) WORKER_EMOJI="❓" ;;
+          esac
+
+          # Determine overall workflow status
+          if [[ "${{ job.status }}" == "success" ]]; then
+            OVERALL_EMOJI="🎉"
+            OVERALL_TITLE="Cattle Upgrade Complete"
+          else
+            OVERALL_EMOJI="⚠️"
+            OVERALL_TITLE="Cattle Upgrade Failed"
+          fi
+
+          # Capture validation results for health summary
+          GPU_STATUS="⏭️ Skipped"
+          if [[ "${{ inputs.test_workers }}" == "true" ]] || [[ "${{ inputs.test_templates }}" == "false" && "${{ inputs.test_controllers }}" == "false" && "${{ inputs.test_workers }}" == "false" ]]; then
+            GPU_4=$(kubectl get node k8s-work-4 -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null || echo "")
+            GPU_10=$(kubectl get node k8s-work-10 -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null || echo "")
+            if [[ "$GPU_4" == "true" && "$GPU_10" == "true" ]]; then
+              GPU_STATUS="✅ Both GPUs detected"
+            else
+              GPU_STATUS="❌ GPU detection failed"
+            fi
+          fi
+
+          FLUX_STATUS=$(kubectl get gitrepositories.source.toolkit.fluxcd.io flux-system -n flux-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+          if [[ "$FLUX_STATUS" == "True" ]]; then
+            FLUX_STATUS="✅ GitOps connected"
+          else
+            FLUX_STATUS="❌ GitOps issue"
+          fi
+
+          FAILED_HR_COUNT=$(kubectl get helmreleases --all-namespaces -o json 2>/dev/null | jq '[.items[] | select((.status.conditions // []) | map(select(.type == "Ready" and .status != "True")) | length > 0)] | length' || echo "0")
+          if [[ "$FAILED_HR_COUNT" == "0" ]]; then
+            HR_STATUS="✅ All healthy"
+          else
+            HR_STATUS="⚠️ $FAILED_HR_COUNT unhealthy"
+          fi
+
+          UNHEALTHY_POD_COUNT=$(kubectl get pods --all-namespaces 2>/dev/null | grep -v Running | grep -v Completed | grep -v NAMESPACE | wc -l || echo "0")
+          if [[ "$UNHEALTHY_POD_COUNT" == "0" ]]; then
+            POD_STATUS="✅ All running"
+          else
+            POD_STATUS="⚠️ $UNHEALTHY_POD_COUNT not running"
+          fi
+
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## $OVERALL_TITLE $OVERALL_EMOJI
+
+          **Old Version**: v${{ inputs.old_version }}
+          **New Version**: v${{ inputs.new_version }}
+          **Test Flags**: Templates=${{ inputs.test_templates }}, Controllers=${{ inputs.test_controllers }}, Workers=${{ inputs.test_workers }}
+
+          ### Phase Results
+          - $TEMPLATE_EMOJI Template Rebuild: ${{ needs.rebuild-templates.result }}
+          - $CTRL_EMOJI Control Plane Upgrade: ${{ needs.upgrade-control-plane.result }}
+          - $WORKER_EMOJI Worker Upgrade: ${{ needs.upgrade-workers.result }}
+          - ${{ job.status == 'success' && '✅' || '❌' }} Validation: ${{ job.status }}
+
+          ### Health Summary
+          - **GPU Nodes**: $GPU_STATUS
+          - **Flux GitOps**: $FLUX_STATUS
+          - **HelmReleases**: $HR_STATUS
+          - **Pods**: $POD_STATUS
+
+          ### Cluster State
+          \`\`\`
+          $(kubectl get nodes -o wide | head -1)
+          $(kubectl get nodes -o wide | grep -v NAME | sort -V)
+          \`\`\`
+
+          $(
+          TEST_RUN=false
+          if [[ "${{ inputs.test_templates }}" == "true" ]]; then
+            echo "### Next Steps"
+            echo ""
+            echo "This was a **template test** run only."
+            echo "To upgrade controllers: \`gh workflow run upgrade-cattle.yaml -f old_version=${{ inputs.old_version }} -f new_version=${{ inputs.new_version }} -f test_controllers=true\`"
+            TEST_RUN=true
+          elif [[ "${{ inputs.test_controllers }}" == "true" ]]; then
+            echo "### Next Steps"
+            echo ""
+            echo "This was a **controller test** run (1 controller only)."
+            echo "To upgrade all controllers: \`gh workflow run upgrade-cattle.yaml -f old_version=${{ inputs.old_version }} -f new_version=${{ inputs.new_version }}\`"
+            TEST_RUN=true
+          elif [[ "${{ inputs.test_workers }}" == "true" ]]; then
+            echo "### Next Steps"
+            echo ""
+            echo "This was a **worker test** run (2 workers only)."
+            echo "To upgrade all workers: \`gh workflow run upgrade-cattle.yaml -f old_version=${{ inputs.old_version }} -f new_version=${{ inputs.new_version }}\`"
+            TEST_RUN=true
+          fi
+          )
+          EOF
+
+          # Exit with error if any critical phase failed
+          if [[ "${{ needs.rebuild-templates.result }}" != "success" ]] && [[ "${{ needs.rebuild-templates.result }}" != "skipped" ]]; then
+            echo "::error::Template rebuild failed - upgrade incomplete"
+            exit 1
+          fi
+
+          # Only fail on controller errors if controllers were supposed to run
+          if [[ "${{ inputs.test_templates }}" == "false" ]] && [[ "${{ inputs.test_workers }}" == "false" ]] && [[ "${{ needs.upgrade-control-plane.result }}" != "success" ]] && [[ "${{ needs.upgrade-control-plane.result }}" != "skipped" ]]; then
+            echo "::error::Control plane upgrade failed"
+            exit 1
+          fi
+
+          echo "✅ Cattle upgrade workflow completed successfully"

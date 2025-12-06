@@ -1,0 +1,110 @@
+---
+# BookStack - Documentation/Wiki platform
+# Using gabe565 community Helm chart (actively maintained)
+# Phase 2: Authentik OIDC with role-based access groups
+# Groups: bookstack-plex-media-users, bookstack-uid-full-access, bookstack-extended-users
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: bookstack
+  namespace: media
+spec:
+  chart:
+    spec:
+      chart: bookstack
+      version: 0.20.0
+      sourceRef:
+        kind: HelmRepository
+        name: gabe565
+        namespace: media
+  interval: 1h
+  timeout: 10m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    image:
+      repository: ghcr.io/linuxserver/bookstack
+      # renovate: datasource=docker depName=ghcr.io/linuxserver/bookstack
+      tag: version-v25.11.4
+      pullPolicy: IfNotPresent
+
+    # BookStack environment variables (non-secret)
+    env:
+      TZ: America/New_York
+      PUID: "1000"
+      PGID: "1000"
+      # Application URL
+      APP_URL: https://guides.homelab0.org
+      # Database connection - standalone MariaDB 11.4.8
+      # Service name from app-template: bookstack-mariadb-standalone
+      DB_HOST: bookstack-mariadb-standalone
+      DB_PORT: "3306"
+      DB_DATABASE: bookstackapp
+      DB_USERNAME: bookstack
+      # Mail configuration
+      MAIL_DRIVER: smtp
+      MAIL_HOST: smtp.migadu.com
+      MAIL_PORT: "465"
+      MAIL_ENCRYPTION: tls
+      MAIL_USERNAME: guides@homelab-services.com
+      MAIL_FROM: guides@homelab-services.com
+      MAIL_FROM_NAME: Homelab0-Guides
+      # Authentication - OIDC via Authentik
+      # User matching by email (External Auth ID will be set on first login)
+      AUTH_METHOD: oidc
+      AUTH_AUTO_INITIATE: "false"
+      # Set to "true" to debug OIDC claims (stops login flow)
+      OIDC_DUMP_USER_DETAILS: "false"
+      OIDC_NAME: Homelab.0
+      OIDC_DISPLAY_NAME_CLAIMS: name
+      OIDC_ISSUER: https://authentik.homelab0.org/application/o/book-stack/
+      OIDC_ISSUER_DISCOVER: "true"
+      OIDC_END_SESSION_ENDPOINT: "true"
+      # Group sync from Authentik
+      OIDC_ADDITIONAL_SCOPES: groups
+      OIDC_GROUPS_CLAIM: groups
+      OIDC_USER_TO_GROUPS: "true"
+      OIDC_REMOVE_FROM_GROUPS: "true"
+
+    # Secrets from 1Password via ExternalSecret
+    envFrom:
+      - secretRef:
+          name: bookstack-secret
+
+    service:
+      main:
+        ports:
+          http:
+            port: 80
+
+    persistence:
+      config:
+        enabled: true
+        existingClaim: bookstack-config-pvc
+
+    # MariaDB subchart DISABLED
+    # Using standalone MariaDB 11.4.8 (mariadb-helmrelease.yaml) for version compatibility
+    # Source database from VM 101 is MariaDB 11.4.8 - exact version match required
+    # Bitnami latest (12.1.2) has breaking changes that prevent data access after import
+    mariadb:
+      enabled: false
+
+    # Security context - LinuxServer images require root for s6-overlay
+    podSecurityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+      runAsGroup: 0
+      fsGroup: 1000
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        type: RuntimeDefault
+
+    # Pod-level options
+    automountServiceAccountToken: false
+    podAnnotations:
+      security.homelab/network: "Internal - documentation wiki"

@@ -1,0 +1,107 @@
+---
+# Standalone MariaDB 11.4.8 for BookStack
+# Uses official MariaDB image for exact version match with source data
+# Source DB: MariaDB 11.4.8 (from VM 101 docker-sandbox2)
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: bookstack-mariadb-standalone
+  namespace: media
+spec:
+  chart:
+    spec:
+      chart: app-template
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: media
+  interval: 1h
+  timeout: 10m
+  values:
+    controllers:
+      mariadb:
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: docker.io/mariadb
+              # renovate: datasource=docker depName=docker.io/mariadb versioning=semver
+              tag: 11.4.8
+            env:
+              TZ: America/New_York
+              MARIADB_DATABASE: bookstackapp
+              MARIADB_USER: bookstack
+            envFrom:
+              - secretRef:
+                  name: bookstack-mariadb-standalone
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - healthcheck.sh
+                      - --connect
+                      - --innodb_initialized
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - healthcheck.sh
+                      - --connect
+                      - --innodb_initialized
+                  initialDelaySeconds: 10
+                  periodSeconds: 5
+                  timeoutSeconds: 3
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 1000m
+                memory: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        runAsNonRoot: true
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      annotations:
+        security.homelab/network: "Internal - BookStack database"
+
+    persistence:
+      data:
+        enabled: true
+        type: persistentVolumeClaim
+        existingClaim: bookstack-db-pvc
+        globalMounts:
+          - path: /var/lib/mysql
+
+    service:
+      app:
+        controller: mariadb
+        type: ClusterIP
+        ports:
+          mysql:
+            port: 3306
+            protocol: TCP

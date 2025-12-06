@@ -5,6 +5,9 @@ metadata:
   name: loki
   namespace: flux-system
 spec:
+  dependsOn:
+    - name: prometheus-operator-crds
+      namespace: kube-system
   interval: 10m
   path: ./kubernetes/apps/observability/loki/app
   prune: true

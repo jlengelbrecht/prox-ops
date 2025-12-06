@@ -1,0 +1,25 @@
+---
+# PodDisruptionBudget for GitHub Actions Runners
+# Layer 2 of resilient cattle upgrade architecture
+# Ensures at least 2 runners survive any single node drain
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: github-runners-pdb
+  namespace: github-actions
+  labels:
+    app.kubernetes.io/name: gha-runner-scale-set
+    app.kubernetes.io/component: pdb
+spec:
+  # With 3 total runners (minRunners: 3), require 2 to remain available
+  # This allows disrupting 1 runner during node drain while keeping 2 alive
+  # When runner dies, GitHub auto-re-queues job to surviving runners
+  minAvailable: 2
+
+  # Select runner pods
+  selector:
+    matchLabels:
+      actions.github.com/scale-set-name: gha-runner-scale-set
+
+  # Track disruptions for unhealthy pods
+  unhealthyPodEvictionPolicy: IfHealthyBudget

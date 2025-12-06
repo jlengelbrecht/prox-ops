@@ -1,0 +1,614 @@
+---
+name: OCI Plex Proxy - Deploy/Recreate
+
+on:
+  # Monthly automated recreate for security updates
+  # Runs at 4am UTC on the 1st of each month (~6-10 min downtime)
+  schedule:
+    - cron: '0 4 1 * *'
+
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        type: choice
+        options:
+          - deploy
+          - destroy
+          - recreate
+          - plan-only
+        default: plan-only
+      availability_domain:
+        description: 'Availability Domain index (0=AD-1, 1=AD-2, 2=AD-3)'
+        type: choice
+        options:
+          - '0'
+          - '1'
+          - '2'
+        default: '0'
+      enable_nginx_proxy:
+        description: 'Enable nginx reverse proxy with Cloudflare (recommended)'
+        type: boolean
+        default: true
+
+# Prevent concurrent operations (Terraform state lock protection)
+concurrency:
+  group: oci-plex-proxy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  TERRAFORM_VERSION: "1.14.0"
+  WORKING_DIR: ./terraform/oci
+
+jobs:
+  terraform:
+    name: ${{ inputs.action || 'recreate (scheduled)' }} OCI Plex Proxy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Resolve inputs with fallbacks for scheduled runs
+    env:
+      ACTION: ${{ inputs.action || 'recreate' }}
+      AD_INDEX: ${{ inputs.availability_domain || '0' }}
+      NGINX_ENABLED: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+
+    steps:
+      # =======================================================================
+      # Workflow Metadata - Track trigger type and timing
+      # =======================================================================
+      - name: Workflow Metadata
+        id: metadata
+        run: |
+          # Determine trigger type
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            TRIGGER_TYPE="scheduled"
+            TRIGGER_ICON="🕐"
+            TRIGGER_DESC="Monthly security update (cron)"
+          else
+            TRIGGER_TYPE="manual"
+            TRIGGER_ICON="👤"
+            TRIGGER_DESC="Manual trigger by @${{ github.actor }}"
+          fi
+
+          echo "trigger_type=$TRIGGER_TYPE" >> $GITHUB_OUTPUT
+          echo "trigger_icon=$TRIGGER_ICON" >> $GITHUB_OUTPUT
+          echo "trigger_desc=$TRIGGER_DESC" >> $GITHUB_OUTPUT
+          echo "start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+          # Write header to summary
+          echo "# OCI Plex Proxy Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metadata | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Trigger | $TRIGGER_ICON $TRIGGER_DESC |" >> $GITHUB_STEP_SUMMARY
+          echo "| Action | \`${{ inputs.action || 'recreate' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Started | \`$(date -u '+%Y-%m-%d %H:%M:%S UTC')\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | [\`${{ github.run_id }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Configure AWS credentials (for S3 backend)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Initialize Terraform
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          # Use -upgrade to handle new providers when lock file is not committed
+          terraform init -upgrade
+
+      - name: Clear stale Terraform locks
+        working-directory: ${{ env.WORKING_DIR }}
+        continue-on-error: true
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
+          TF_VAR_vps_wg_public_key: ${{ secrets.VPS_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
+          # Security: Restrict SSH and WireGuard to home IP
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          # Nginx reverse proxy with DNS-only mode (Cloudflare ToS compliance)
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
+          TF_VAR_nginx_backend_url: ${{ secrets.NGINX_BACKEND_URL }}
+          TF_VAR_plex_loadbalancer_ip: ${{ secrets.PLEX_LOADBALANCER_IP }}
+        run: |
+          echo "Checking for stale Terraform state locks..."
+          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
+            if [ -n "$LOCK_ID" ]; then
+              echo "Found stale lock: $LOCK_ID"
+              terraform force-unlock -force "$LOCK_ID" || true
+            fi
+          fi
+
+      # =======================================================================
+      # RECREATE: First destroy existing resources (also runs on schedule)
+      # =======================================================================
+      - name: Terraform Taint Instance (recreate step 1)
+        if: (inputs.action || 'recreate') == 'recreate'
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          echo "::group::Marking instance for recreation"
+          # Taint the compute instance to force recreation on next apply
+          # This preserves the static IP (which has prevent_destroy=true)
+          # The static IP will be updated in-place to point to the new instance
+          if terraform taint 'module.plex_proxy[0].oci_core_instance.main' 2>/dev/null; then
+            echo "Instance marked for recreation"
+          else
+            echo "No existing instance to taint (fresh deploy)"
+          fi
+          echo "::endgroup::"
+
+      - name: Terraform Plan
+        if: (inputs.action || 'recreate') != 'destroy'
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
+          TF_VAR_vps_wg_public_key: ${{ secrets.VPS_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
+          TF_VAR_nginx_backend_url: ${{ secrets.NGINX_BACKEND_URL }}
+          TF_VAR_plex_loadbalancer_ip: ${{ secrets.PLEX_LOADBALANCER_IP }}
+        run: |
+          # SECURITY: Ensure temp file cleanup even on failure
+          cleanup() { rm -f /tmp/tfplan.txt; }
+          trap cleanup EXIT
+
+          echo "::group::Terraform Plan"
+          # SECURITY: Suppress detailed plan output to prevent secret leakage
+          # user_data contains base64-encoded cloud-init with WireGuard/TLS private keys
+          # Save full plan to file, show only summary in logs
+          terraform plan -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
+          PLAN_EXIT=$?
+          # Show only high-level summary (exclude any lines with sensitive patterns)
+          grep -E '^(Plan:|No changes|Error:|Warning:|Terraform will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
+          echo "Plan saved to tfplan file"
+          echo "::endgroup::"
+          exit $PLAN_EXIT
+
+      - name: Terraform Plan Destroy
+        if: (inputs.action || 'recreate') == 'destroy'
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
+          TF_VAR_vps_wg_public_key: ${{ secrets.VPS_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
+          TF_VAR_nginx_backend_url: ${{ secrets.NGINX_BACKEND_URL }}
+          TF_VAR_plex_loadbalancer_ip: ${{ secrets.PLEX_LOADBALANCER_IP }}
+        run: |
+          # SECURITY: Ensure temp file cleanup even on failure
+          cleanup() { rm -f /tmp/tfplan.txt; }
+          trap cleanup EXIT
+
+          echo "::group::Terraform Plan Destroy"
+          # SECURITY: Suppress detailed plan output (same as plan step)
+          terraform plan -destroy -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
+          PLAN_EXIT=$?
+          grep -E '^(Plan:|No changes|Error:|Warning:|Terraform will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
+          echo "::endgroup::"
+          exit $PLAN_EXIT
+
+      - name: Terraform Apply
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'destroy' || (inputs.action || 'recreate') == 'recreate'
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
+          TF_VAR_vps_wg_public_key: ${{ secrets.VPS_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
+          TF_VAR_nginx_backend_url: ${{ secrets.NGINX_BACKEND_URL }}
+          TF_VAR_plex_loadbalancer_ip: ${{ secrets.PLEX_LOADBALANCER_IP }}
+        run: |
+          # SECURITY: Ensure temp file cleanup even on failure
+          cleanup() { rm -f /tmp/tfapply.txt; }
+          trap cleanup EXIT
+
+          echo "::group::Terraform Apply"
+          # SECURITY: Suppress detailed apply output (contains user_data with secrets)
+          terraform apply -input=false tfplan > /tmp/tfapply.txt 2>&1
+          APPLY_EXIT=$?
+          # Show only resource status (exclude any lines with sensitive patterns)
+          grep -E '^(Apply complete|Error:|Warning:|module\.[^:]+: (Creating|Creation complete|Destroying|Destruction complete))' /tmp/tfapply.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -30 || true
+          echo "::endgroup::"
+          exit $APPLY_EXIT
+
+      - name: Get Outputs
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
+        id: outputs
+        working-directory: ${{ env.WORKING_DIR }}
+        env:
+          TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
+          TF_VAR_oci_user_ocid: ${{ secrets.OCI_USER_OCID }}
+          TF_VAR_oci_fingerprint: ${{ secrets.OCI_FINGERPRINT }}
+          TF_VAR_oci_private_key: ${{ secrets.OCI_PRIVATE_KEY }}
+          TF_VAR_compartment_id: ${{ secrets.OCI_COMPARTMENT_ID }}
+          TF_VAR_ssh_public_key: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+          TF_VAR_k8s_wg_public_key: ${{ secrets.K8S_WG_PUBLIC_KEY }}
+          TF_VAR_vps_wg_private_key: ${{ secrets.VPS_WG_PRIVATE_KEY }}
+          TF_VAR_vps_wg_public_key: ${{ secrets.VPS_WG_PUBLIC_KEY }}
+          TF_VAR_availability_domain_index: ${{ inputs.availability_domain || '0' }}
+          TF_VAR_ssh_allowed_cidrs: ${{ secrets.OCI_SSH_ALLOWED_CIDRS }}
+          TF_VAR_wg_peer_allowed_cidrs: ${{ secrets.OCI_WG_PEER_ALLOWED_CIDRS }}
+          TF_VAR_enable_nginx_proxy: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+          TF_VAR_cloudflare_dns_only: "true"
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_letsencrypt_email: ${{ secrets.LETSENCRYPT_EMAIL }}
+          TF_VAR_nginx_server_name: "streaming.homelab0.org"
+          TF_VAR_nginx_origin_cert: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TF_VAR_nginx_origin_key: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
+          TF_VAR_nginx_backend_url: ${{ secrets.NGINX_BACKEND_URL }}
+          TF_VAR_plex_loadbalancer_ip: ${{ secrets.PLEX_LOADBALANCER_IP }}
+        run: |
+          # Get outputs (suppress from logs)
+          PUBLIC_IP=$(terraform output -raw plex_proxy_public_ip 2>/dev/null || echo "N/A")
+          VPS_WG_PUB=$(terraform output -raw plex_proxy_wireguard_public_key 2>/dev/null || echo "N/A")
+
+          # SECURITY: Mask sensitive values to prevent log exposure
+          # GitHub Actions will replace these values with *** in all subsequent log output
+          if [ "$PUBLIC_IP" != "N/A" ]; then
+            echo "::add-mask::$PUBLIC_IP"
+          fi
+          if [ "$VPS_WG_PUB" != "N/A" ]; then
+            echo "::add-mask::$VPS_WG_PUB"
+          fi
+
+          # Export for subsequent steps (values are masked in logs)
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
+          echo "vps_wg_pubkey=$VPS_WG_PUB" >> $GITHUB_OUTPUT
+          echo "outputs_retrieved=true" >> $GITHUB_OUTPUT
+
+      # =======================================================================
+      # Wait for VPS Boot - Fixed delay for cloud-init completion
+      # NOTE: SSH from GitHub Actions is blocked by firewall (ssh_allowed_cidrs)
+      # No SSH check is performed; we wait for cloud-init then test public endpoint
+      # =======================================================================
+      - name: Wait for VPS Boot
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
+        run: |
+          PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
+
+          # Validate PUBLIC_IP before proceeding
+          if [ "$PUBLIC_IP" = "N/A" ] || [ -z "$PUBLIC_IP" ]; then
+            echo "Error: Public IP not available, cannot wait for VPS boot"
+            exit 1
+          fi
+
+          echo "Waiting for VPS to boot..."
+          echo "Note: SSH port check skipped - GitHub Actions IPs are not in firewall allowlist"
+          echo "This is expected behavior for security (ssh_allowed_cidrs restricts access)"
+
+          # Wait for cloud-init to complete
+          # Timing analysis (from actual VPS boot logs):
+          #   - package_update_upgrade_install: ~390s (apt update + install wireguard, nginx)
+          #   - Custom scripts (WireGuard, nginx config): ~7s
+          #   - Total cloud-init: ~406s (~6.8 min)
+          #   - Boot to services ready: ~450s (~7.5 min)
+          # Using 450s to ensure nginx and WireGuard are fully operational
+          echo "Waiting 450 seconds (7.5 min) for cloud-init to complete..."
+          echo "  - apt update/install: ~390s (~6.5 min)"
+          echo "  - WireGuard/nginx setup: ~10s"
+          sleep 450
+          echo "Wait complete - proceeding to public endpoint test"
+
+      # =======================================================================
+      # Cloudflare DNS Management - Update/Create A record
+      # =======================================================================
+      - name: Update Cloudflare DNS
+        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '')
+        id: dns
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          DNS_NAME: "streaming.homelab0.org"
+        run: |
+          PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
+
+          if [ "$PUBLIC_IP" = "N/A" ] || [ -z "$PUBLIC_IP" ]; then
+            echo "Error: Could not get public IP from Terraform outputs"
+            exit 1
+          fi
+
+          # Validate IP format with octet range check (defense-in-depth)
+          validate_ip() {
+            local ip=$1
+            local IFS='.'
+            read -ra octets <<< "$ip"
+            [ ${#octets[@]} -ne 4 ] && return 1
+            for octet in "${octets[@]}"; do
+              [[ ! "$octet" =~ ^[0-9]+$ ]] && return 1
+              [ "$octet" -gt 255 ] && return 1
+            done
+            return 0
+          }
+          if ! validate_ip "$PUBLIC_IP"; then
+            echo "Error: Invalid IP format"
+            exit 1
+          fi
+
+          # SECURITY: Don't log the IP (it's masked, but be explicit)
+          # DNS-only mode (proxied:false) required for Cloudflare ToS compliance with video streaming
+          echo "Updating Cloudflare DNS: $DNS_NAME (DNS-only mode - no proxy)"
+
+          # Check if record exists
+          EXISTING_RECORD=$(curl -s -X GET \
+            "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?type=A&name=$DNS_NAME" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json")
+
+          RECORD_ID=$(echo "$EXISTING_RECORD" | jq -r '.result[0].id // empty')
+          CURRENT_IP=$(echo "$EXISTING_RECORD" | jq -r '.result[0].content // empty')
+          CURRENT_PROXIED=$(echo "$EXISTING_RECORD" | jq -r '.result[0].proxied // empty')
+
+          if [ -n "$RECORD_ID" ]; then
+            # Check if update is needed (IP and proxied status)
+            if [ "$CURRENT_IP" = "$PUBLIC_IP" ] && [ "$CURRENT_PROXIED" = "false" ]; then
+              echo "DNS record already up to date (DNS-only mode), no update needed"
+              echo "dns_updated=true" >> $GITHUB_OUTPUT
+            else
+              # Update existing record (ensure proxied:false for DNS-only mode)
+              echo "Updating existing DNS record to DNS-only mode..."
+            RESULT=$(curl -s -X PUT \
+              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$RECORD_ID" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":false}")
+
+            if echo "$RESULT" | jq -e '.success' > /dev/null; then
+              echo "DNS record updated successfully (DNS-only mode)"
+              echo "dns_updated=true" >> $GITHUB_OUTPUT
+            else
+              echo "Failed to update DNS record"
+              echo "$RESULT" | jq '.errors'
+              echo "dns_updated=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+            fi
+          else
+            # Create new record with DNS-only mode (proxied:false)
+            echo "Creating new DNS A record (DNS-only mode)..."
+            RESULT=$(curl -s -X POST \
+              "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "{\"type\":\"A\",\"name\":\"$DNS_NAME\",\"content\":\"$PUBLIC_IP\",\"ttl\":1,\"proxied\":false}")
+
+            if echo "$RESULT" | jq -e '.success' > /dev/null; then
+              echo "DNS record created successfully (DNS-only mode)"
+              echo "dns_updated=true" >> $GITHUB_OUTPUT
+            else
+              echo "Failed to create DNS record"
+              echo "$RESULT" | jq '.errors'
+              echo "dns_updated=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          fi
+
+      # =======================================================================
+      # Public Endpoint Test - The REAL health check
+      # Tests full user path: User -> Cloudflare -> VPS (nginx) -> WireGuard -> Plex
+      # =======================================================================
+      - name: Public Endpoint Test
+        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '') && steps.dns.outputs.dns_updated == 'true'
+        id: public_test
+        run: |
+          echo "Testing public endpoint: https://streaming.homelab0.org"
+
+          # Wait for DNS propagation (Cloudflare is fast, but give it a moment)
+          echo "Waiting 15 seconds for DNS propagation..."
+          sleep 15
+
+          PUBLIC_ENDPOINT_OK="false"
+          NGINX_OK="false"
+          PLEX_OK="false"
+
+          # Test 1: Check if nginx is responding (any response = nginx is up)
+          echo "Test 1: Checking nginx responsiveness..."
+          for attempt in 1 2 3 4 5; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "https://streaming.homelab0.org/" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" != "000" ] && [ "$HTTP_CODE" != "502" ] && [ "$HTTP_CODE" != "503" ] && [ "$HTTP_CODE" != "504" ] && [ "$HTTP_CODE" != "523" ] && [ "$HTTP_CODE" != "524" ]; then
+              NGINX_OK="true"
+              echo "Nginx responding (HTTP $HTTP_CODE)"
+              break
+            else
+              echo "Attempt $attempt/5: nginx not ready (HTTP $HTTP_CODE), waiting 20s..."
+              sleep 20
+            fi
+          done
+
+          # Test 2: Check if Plex is accessible through the full chain
+          if [ "$NGINX_OK" = "true" ]; then
+            echo "Test 2: Checking Plex accessibility..."
+            for attempt in 1 2 3; do
+              if curl -s --connect-timeout 10 --max-time 30 "https://streaming.homelab0.org/identity" 2>/dev/null | grep -q "MediaContainer"; then
+                PLEX_OK="true"
+                PUBLIC_ENDPOINT_OK="true"
+                echo "Plex is accessible via public endpoint"
+                break
+              else
+                echo "Attempt $attempt/3: Plex not responding, waiting 15s..."
+                sleep 15
+              fi
+            done
+          fi
+
+          if [ "$PUBLIC_ENDPOINT_OK" = "false" ]; then
+            echo ""
+            echo "Public endpoint not fully operational. Possible causes:"
+            if [ "$NGINX_OK" = "false" ]; then
+              echo "  - nginx is still starting (cloud-init not complete)"
+              echo "  - Cloudflare cannot reach origin (error 523)"
+            else
+              echo "  - WireGuard tunnel not established with K8s cluster"
+              echo "  - Plex pod not running or not accessible"
+              echo "  - K8s WireGuard gateway pod may need restart (kubectl rollout restart -n network deploy/wireguard-gateway)"
+            fi
+          fi
+
+          # Emit warning if endpoint not operational (visible in Actions UI)
+          if [ "$PUBLIC_ENDPOINT_OK" = "false" ]; then
+            echo "::warning::Public endpoint is not fully operational - check WireGuard tunnel and K8s connectivity"
+          fi
+
+          # Export results
+          echo "nginx_ok=$NGINX_OK" >> $GITHUB_OUTPUT
+          echo "plex_ok=$PLEX_OK" >> $GITHUB_OUTPUT
+          echo "public_endpoint_ok=$PUBLIC_ENDPOINT_OK" >> $GITHUB_OUTPUT
+
+      # =======================================================================
+      # Deployment Summary - Security-conscious status report
+      # SECURITY: No IPs, endpoints, or connection details in summary
+      # =======================================================================
+      - name: Deployment Summary
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
+        env:
+          ENABLE_NGINX: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+        run: |
+          START_TIME="${{ steps.metadata.outputs.start_time }}"
+          END_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Calculate duration
+          START_SEC=$(date -d "$START_TIME" +%s 2>/dev/null || echo "0")
+          END_SEC=$(date -d "$END_TIME" +%s 2>/dev/null || echo "0")
+          if [ "$START_SEC" != "0" ] && [ "$END_SEC" != "0" ]; then
+            DURATION=$((END_SEC - START_SEC))
+            DURATION_MIN=$((DURATION / 60))
+            DURATION_SEC=$((DURATION % 60))
+            DURATION_STR="${DURATION_MIN}m ${DURATION_SEC}s"
+          else
+            DURATION_STR="N/A"
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Terraform Apply | ✅ Success |" >> $GITHUB_STEP_SUMMARY
+          echo "| Nginx Proxy Mode | $ENABLE_NGINX |" >> $GITHUB_STEP_SUMMARY
+          echo "| Duration | $DURATION_STR |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Health check results (only when nginx proxy enabled)
+          if [ "$ENABLE_NGINX" = "true" ]; then
+            # Use defaults for outputs that may be empty if steps were skipped
+            DNS_OK="${{ steps.dns.outputs.dns_updated || 'false' }}"
+            NGINX_OK="${{ steps.public_test.outputs.nginx_ok || 'false' }}"
+            PLEX_OK="${{ steps.public_test.outputs.plex_ok || 'false' }}"
+
+            echo "## Service Health" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Service | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Cloudflare DNS | $([ \"$DNS_OK\" = \"true\" ] && echo '✅ Updated' || echo '❌ Failed') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Nginx (via Cloudflare) | $([ \"$NGINX_OK\" = \"true\" ] && echo '✅ Responding' || echo '⚠️ Not Ready') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Plex (end-to-end) | $([ \"$PLEX_OK\" = \"true\" ] && echo '✅ Accessible' || echo '⚠️ Not Ready') |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Note about static keys (no 1Password update needed)
+            if [ "$PLEX_OK" != "true" ]; then
+              echo "> **Note**: VPS uses static WireGuard keys - no 1Password update required." >> $GITHUB_STEP_SUMMARY
+              echo "> Try restarting the K8s WireGuard gateway: \`kubectl rollout restart -n network deploy/wireguard-gateway\`" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "## Security Configuration" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ DNS-only mode (Cloudflare ToS compliant for video streaming)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Let's Encrypt TLS certificate (auto-renewed)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ Port 32400: Closed (traffic via nginx reverse proxy)" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ SSH: Restricted to configured CIDRs" >> $GITHUB_STEP_SUMMARY
+            echo "- ✅ WireGuard: Restricted to configured CIDRs" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> **Note**: DNS-only mode exposes VPS IP but is required for Cloudflare ToS compliance with video streaming." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "> ⚠️ Direct mode enabled - VPS IP is exposed publicly" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Destroy Summary
+        if: (inputs.action || 'recreate') == 'destroy'
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## OCI Plex Proxy Destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The OCI Plex Proxy VM has been destroyed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To redeploy, run this workflow with action: **deploy**" >> $GITHUB_STEP_SUMMARY

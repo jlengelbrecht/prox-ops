@@ -1,0 +1,189 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: sabnzbd
+  namespace: downloads
+spec:
+  chart:
+    spec:
+      chart: app-template
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: downloads
+  interval: 1h
+  values:
+    controllers:
+      sabnzbd:
+        strategy: Recreate
+        containers:
+          # Main SABnzbd container
+          app:
+            image:
+              repository: ghcr.io/onedr0p/sabnzbd
+              # renovate: datasource=docker depName=ghcr.io/onedr0p/sabnzbd
+              tag: 4.4.1
+            env:
+              TZ: America/New_York
+              SABNZBD__PORT: &port 8080
+              SABNZBD__HOST_WHITELIST_ENTRIES: >-
+                sabnzbd,
+                sabnzbd.downloads,
+                sabnzbd.downloads.svc,
+                sabnzbd.downloads.svc.cluster,
+                sabnzbd.downloads.svc.cluster.local
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api?mode=version
+                    port: *port
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 5
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api?mode=version
+                    port: *port
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 5
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 4000m
+                memory: 8Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+          # Gluetun VPN sidecar - ALL traffic routes through this
+          gluetun:
+            image:
+              repository: ghcr.io/qdm12/gluetun
+              # renovate: datasource=docker depName=ghcr.io/qdm12/gluetun
+              tag: v3.40.0
+            env:
+              # VPN Provider Configuration
+              VPN_SERVICE_PROVIDER: surfshark
+              VPN_TYPE: wireguard
+              SERVER_COUNTRIES: "United States"
+              # Firewall Kill Switch
+              FIREWALL: "on"
+              FIREWALL_INPUT_PORTS: "8080,8000"  # Web UI and control
+              # DNS - use VPN provider DNS (Surfshark)
+              DOT: "off"
+              # Logging
+              LOG_LEVEL: info
+              TZ: America/New_York
+            envFrom:
+              - secretRef:
+                  name: gluetun-vpn
+            securityContext:
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  - NET_ADMIN
+              seccompProfile:
+                type: RuntimeDefault
+              readOnlyRootFilesystem: false
+              runAsNonRoot: false
+              runAsUser: 0
+              allowPrivilegeEscalation: false
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /v1/publicip/ip
+                    port: 8000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /v1/publicip/ip
+                    port: 8000
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 568
+        runAsGroup: 568
+        runAsNonRoot: false  # Gluetun requires root
+        fsGroup: 568
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups:
+          - 1000  # ubuntu group for NFS
+        seccompProfile:
+          type: RuntimeDefault
+      annotations:
+        security.homelab/vpn-required: "true"
+        security.homelab/network: "Internal - VPN egress only"
+
+    persistence:
+      config:
+        enabled: true
+        type: persistentVolumeClaim
+        accessMode: ReadWriteOnce
+        size: 5Gi
+        storageClass: ceph-block
+        globalMounts:
+          - path: /config
+      media:
+        enabled: true
+        existingClaim: downloads-media
+        advancedMounts:
+          sabnzbd:
+            app:
+              - path: /data
+      # TUN device for WireGuard
+      dev-tun:
+        enabled: true
+        type: hostPath
+        hostPath: /dev/net/tun
+        hostPathType: CharDevice
+        advancedMounts:
+          sabnzbd:
+            gluetun:
+              - path: /dev/net/tun
+
+    service:
+      app:
+        controller: sabnzbd
+        type: ClusterIP
+        ports:
+          http:
+            port: *port
+            protocol: TCP

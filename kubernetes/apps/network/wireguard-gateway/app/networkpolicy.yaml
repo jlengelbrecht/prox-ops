@@ -1,0 +1,52 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wireguard-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: wireguard-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow WireGuard traffic from Oracle VPS only
+    - from:
+        - ipBlock:
+            cidr: 150.136.194.98/32  # Oracle VPS reserved public IP (static, persists across recreation)
+      ports:
+        - protocol: UDP
+          port: 51820
+  egress:
+    # Allow traffic to Plex pod (via namespace+pod selector for reliability)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: media
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: plex
+      ports:
+        - protocol: TCP
+          port: 32400
+    # Allow DNS for container startup (required)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow WireGuard handshake responses to Oracle VPS
+    - to:
+        - ipBlock:
+            cidr: 150.136.194.98/32  # Oracle VPS reserved public IP (static, persists across recreation)
+      ports:
+        - protocol: UDP
+          port: 51820

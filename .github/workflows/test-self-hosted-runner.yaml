@@ -1,0 +1,140 @@
+---
+name: Test Self-Hosted Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: "Type of test to run"
+        required: true
+        default: "basic"
+        type: choice
+        options:
+          - basic
+          - kubectl
+          - terraform
+
+jobs:
+  test-runner-basic:
+    name: Test Basic Runner Functionality
+    runs-on: gha-runner-scale-set
+    if: inputs.test_type == 'basic' || inputs.test_type == ''
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Print runner information
+        run: |
+          echo "Runner name: $RUNNER_NAME"
+          echo "Runner OS: $RUNNER_OS"
+          echo "Runner arch: $RUNNER_ARCH"
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Event: $GITHUB_EVENT_NAME"
+
+      - name: Check system information
+        run: |
+          echo "=== System Information ==="
+          uname -a
+          echo ""
+          echo "=== CPU Information ==="
+          nproc
+          echo ""
+          echo "=== Memory Information ==="
+          free -h
+          echo ""
+          echo "=== Disk Space ==="
+          df -h
+          echo ""
+          echo "=== Environment (sanitized) ==="
+          env | sort | grep -v -E '(TOKEN|SECRET|KEY|PASSWORD|KUBECONFIG|AWS_|GITHUB_TOKEN)'
+
+      - name: Verify network connectivity
+        run: |
+          echo "=== Network Connectivity ==="
+          ping -c 3 github.com || echo "Ping failed (expected in some environments)"
+          echo ""
+          echo "=== DNS Resolution ==="
+          nslookup github.com || echo "nslookup not available"
+
+  test-runner-kubectl:
+    name: Test kubectl Access
+    runs-on: gha-runner-scale-set
+    if: inputs.test_type == 'kubectl'
+    steps:
+      - name: Install kubectl
+        run: |
+          # Check if kubectl is available
+          if ! command -v kubectl &> /dev/null; then
+            echo "kubectl not found, installing..."
+            KUBECTL_VERSION=$(curl -L -s https://dl.k8s.io/release/stable.txt)
+            curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+            curl -LO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256"
+            echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+            chmod +x kubectl
+            mkdir -p ~/.local/bin
+            mv kubectl ~/.local/bin/
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+          fi
+          kubectl version --client
+
+      - name: Test cluster access
+        run: |
+          echo "=== Cluster Information ==="
+          kubectl cluster-info
+          echo ""
+          echo "=== Node List ==="
+          kubectl get nodes -o wide
+          echo ""
+          echo "=== Namespace List ==="
+          kubectl get namespaces
+          echo ""
+          echo "=== GitHub Actions Pods ==="
+          kubectl get pods -n github-actions
+
+      - name: Test node operations
+        run: |
+          echo "=== Node Details ==="
+          kubectl get nodes -o json | jq '.items[0] | {name: .metadata.name, status: .status.conditions}'
+
+  test-runner-terraform:
+    name: Test Terraform Access
+    runs-on: gha-runner-scale-set
+    if: inputs.test_type == 'terraform'
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Terraform
+        run: |
+          if ! command -v terraform &> /dev/null; then
+            echo "Terraform not found, installing..."
+            TERRAFORM_VERSION="1.11.3"
+            curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+            curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+            sha256sum --check --ignore-missing terraform_${TERRAFORM_VERSION}_SHA256SUMS
+            unzip terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+            mkdir -p ~/.local/bin
+            mv terraform ~/.local/bin/
+            echo "$HOME/.local/bin" >> $GITHUB_PATH
+            rm terraform_${TERRAFORM_VERSION}_linux_amd64.zip terraform_${TERRAFORM_VERSION}_SHA256SUMS
+          fi
+          terraform version
+
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: |
+          terraform init
+
+      - name: Terraform Validate
+        working-directory: ./terraform
+        run: |
+          terraform validate
+
+      - name: Terraform Plan (Dry Run)
+        working-directory: ./terraform
+        run: |
+          terraform plan -no-color

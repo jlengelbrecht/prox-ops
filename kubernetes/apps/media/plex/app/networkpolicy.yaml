@@ -21,6 +21,22 @@ spec:
         - ports:
             - port: "32400"
               protocol: TCP
+    # Allow ingress from WireGuard gateway for OCI VPN proxy
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: wireguard-gateway
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow ingress from WireGuard tunnel network (forwarded VPS traffic)
+    - fromCIDR:
+        - 10.200.200.0/24
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
     # Allow DNS queries
     - fromEndpoints:
         - matchLabels:
@@ -31,11 +47,71 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: monitoring
             app.kubernetes.io/name: prometheus
+    # Allow from Overseerr (library sync, user auth)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: overseerr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Wizarr (user management)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: wizarr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Maintainerr (library maintenance)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: maintainerr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Tautulli (Plex monitoring)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: tautulli
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Notifiarr (notifications and TRaSH sync)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: notifiarr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Cleanuparr (library integration)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: cleanuparr
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
+    # Allow from Uptime Kuma (health monitoring)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: uptime-kuma
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
   egress:
-    # Allow internet access for Plex.tv metadata and updates
-    - toEntities:
-        - world
-    # Allow DNS queries
+    # Allow DNS queries (required for FQDN resolution)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kube-system
@@ -46,12 +122,18 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow Plex.tv services
-    - toFQDNs:
-        - matchName: "plex.tv"
-        - matchPattern: "*.plex.tv"
-        - matchPattern: "*.plex.direct"
-    # Allow NFS server access (read-write media library for management)
+    # Allow internet egress for Plex services (authentication, metadata, updates)
+    # Using toEntities:world instead of toFQDNs because Cilium FQDN policy requires
+    # DNS proxy interception which has complex setup requirements in some configurations
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+    # Allow NFS server access (read-write media library)
     - toCIDR:
         - 10.20.66.11/32
       toPorts:

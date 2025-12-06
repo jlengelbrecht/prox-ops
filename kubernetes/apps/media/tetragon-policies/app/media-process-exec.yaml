@@ -1,0 +1,29 @@
+---
+# Process Execution Monitoring for Media Namespace (Plex)
+# LOGGING ONLY - No enforcement
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: media-process-execution
+  namespace: media
+spec:
+  kprobes:
+    - call: "sys_execve"
+      syscall: true
+      args:
+        - index: 0
+          type: "string"
+      selectors:
+        - matchBinaries:
+            - operator: "NotIn"
+              values:
+                # Exclude container runtime (CRITICAL - prevents cluster outage)
+                - "/usr/bin/containerd"
+                - "/usr/bin/containerd-shim"
+                - "/usr/bin/containerd-shim-runc-v2"
+                - "/usr/bin/runc"
+                - "/pause"
+                - "/usr/local/bin/cilium-agent"
+                - "/usr/bin/cilium-agent"
+          matchActions:
+            - action: Post  # LOGGING ONLY - NO Sigkill

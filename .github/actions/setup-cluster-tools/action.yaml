@@ -1,0 +1,90 @@
+name: Setup Cluster Tools
+description: Install Node.js, kubectl, and configure kubeconfig for cluster access
+inputs:
+  talosconfig:
+    description: Base64-encoded Talos/Kubernetes config
+    required: true
+  node-version:
+    description: Node.js version to install
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js (required for Terraform action)
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Install kubectl
+      shell: bash
+      run: |
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
+        echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+        chmod +x kubectl
+        mkdir -p "$HOME/.local/bin"
+        mv kubectl "$HOME/.local/bin/"
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+        # Use full path since $GITHUB_PATH updates don't take effect until next step
+        "$HOME/.local/bin/kubectl" version --client
+
+    - name: Install talosctl
+      shell: bash
+      run: |
+        # Get latest Talos release version dynamically
+        TALOS_VERSION=$(curl -sL https://api.github.com/repos/siderolabs/talos/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        echo "Installing talosctl ${TALOS_VERSION}..."
+        curl -LO "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
+        curl -LO "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/sha512sum.txt"
+        grep talosctl-linux-amd64 sha512sum.txt | sha512sum --check
+        chmod +x talosctl-linux-amd64
+        mv talosctl-linux-amd64 "$HOME/.local/bin/talosctl"
+        # Use full path since $GITHUB_PATH updates don't take effect until next step
+        "$HOME/.local/bin/talosctl" version --client
+
+    - name: Setup kubeconfig
+      shell: bash
+      run: |
+        # Save talosconfig
+        mkdir -p "$HOME/.talos"
+        echo "${{ inputs.talosconfig }}" | base64 -d > "$HOME/.talos/config"
+        chmod 600 "$HOME/.talos/config"
+
+        # Generate kubeconfig from talosconfig with resilient control plane fallback
+        # Try each control plane node until one succeeds (handles node maintenance/upgrades)
+        mkdir -p "$HOME/.kube"
+
+        CONTROL_PLANE_IPS=("10.20.67.1" "10.20.67.2" "10.20.67.3")
+        KUBECONFIG_GENERATED=false
+
+        for NODE_IP in "${CONTROL_PLANE_IPS[@]}"; do
+          echo "Attempting kubeconfig generation from control plane node: $NODE_IP"
+
+          if "$HOME/.local/bin/talosctl" kubeconfig \
+            --talosconfig="$HOME/.talos/config" \
+            --nodes="$NODE_IP" \
+            --merge=false \
+            --force \
+            "$HOME/.kube/config" 2>&1; then
+
+            echo "✅ Successfully generated kubeconfig from $NODE_IP"
+            chmod 600 "$HOME/.kube/config"
+            KUBECONFIG_GENERATED=true
+            break
+          else
+            echo "⚠️  Failed to reach $NODE_IP, trying next control plane node..."
+          fi
+        done
+
+        # Verify kubeconfig was generated from at least one control plane
+        if [[ "$KUBECONFIG_GENERATED" != "true" ]]; then
+          echo "❌ ERROR: Failed to generate kubeconfig from any control plane node"
+          echo "Tried nodes: ${CONTROL_PLANE_IPS[*]}"
+          exit 1
+        fi
+
+        # Verify kubeconfig is valid
+        echo "Verifying kubeconfig..."
+        "$HOME/.local/bin/kubectl" config view --minify

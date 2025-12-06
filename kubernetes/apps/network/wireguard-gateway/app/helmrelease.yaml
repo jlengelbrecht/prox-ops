@@ -1,0 +1,135 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: wireguard-gateway
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: wireguard-gateway
+  interval: 1h
+  values:
+    controllers:
+      wireguard-gateway:
+        containers:
+          app:
+            image:
+              repository: lscr.io/linuxserver/wireguard
+              # renovate: datasource=docker depName=lscr.io/linuxserver/wireguard
+              tag: 1.0.20210914
+            env:
+              # Container config
+              - name: PUID
+                value: "0"
+              - name: PGID
+                value: "0"
+              - name: TZ
+                value: "America/New_York"
+              # WireGuard config (generated at runtime)
+              - name: INTERFACE
+                value: "wg0"
+              - name: SERVERURL
+                value: "auto"
+              - name: SERVERPORT
+                value: "51820"
+              - name: PEERS
+                value: ""  # Not a server, just a client
+              - name: PEERDNS
+                value: "auto"
+              - name: INTERNAL_SUBNET
+                value: "10.200.200.0/24"
+              - name: ALLOWEDIPS
+                value: "0.0.0.0/0"
+              - name: PERSISTENTKEEPALIVE_PEERS
+                value: ""
+
+            # Security Context - privileged required for WireGuard on Talos
+            # SYS_MODULE removed per security review - Talos has WireGuard in kernel
+            securityContext:
+              privileged: true
+              capabilities:
+                add: [NET_ADMIN]
+
+            # Resources
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 200m
+                memory: 128Mi
+
+            # Probes
+            # Liveness: Check for recent handshake (tunnel actually connected)
+            # Probe fails if no handshake in 180s. Pod restarts after 6 failures (~6 min total).
+            # Readiness: Check interface exists (allows traffic only when interface is up)
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - /bin/sh
+                      - -c
+                      - |
+                        # Check if wg0 interface exists and has recent handshake
+                        HANDSHAKE=$(wg show wg0 latest-handshakes 2>/dev/null | awk '{print $2}')
+                        NOW=$(date +%s)
+                        # If no handshake data, fail
+                        [ -z "$HANDSHAKE" ] && exit 1
+                        # If handshake is 0 (never connected), allow for initial connection
+                        [ "$HANDSHAKE" = "0" ] && exit 0
+                        # Check if handshake was within last 180 seconds (3 minutes)
+                        AGE=$((NOW - HANDSHAKE))
+                        [ "$AGE" -lt 180 ]
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 6
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - /bin/sh
+                      - -c
+                      - wg show wg0 2>/dev/null | grep -q "interface"
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+
+    # Service - not needed for client-only mode but useful for debugging
+    service:
+      app:
+        controller: wireguard-gateway
+        ports:
+          wireguard:
+            port: 51820
+            protocol: UDP
+
+    # Persistence
+    persistence:
+      # TUN device for WireGuard
+      dev-tun:
+        enabled: true
+        type: hostPath
+        hostPath: /dev/net/tun
+        hostPathType: CharDevice
+        globalMounts:
+          - path: /dev/net/tun
+      # Config from encrypted secret
+      config:
+        enabled: true
+        type: secret
+        name: wireguard-gateway-config
+        globalMounts:
+          - path: /config/wg_confs/wg0.conf
+            subPath: wg0.conf
+            readOnly: true
+
+    # Pod options - sysctls (net.ipv4.ip_forward, net.ipv4.conf.all.src_valid_mark) set by
+    # linuxserver/wireguard entrypoint; privileged mode required on Talos to allow runtime sysctl changes
+    defaultPodOptions: {}

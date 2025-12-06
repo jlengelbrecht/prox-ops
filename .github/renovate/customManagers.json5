@@ -3,25 +3,67 @@
   "customManagers": [
     {
       "customType": "regex",
+      // Matches both "key: value" format (e.g., tag: v1.2.3) and bare value format (e.g., v1.2.3)
       "description": "Process annotated dependencies in YAML files",
       "fileMatch": [
         "(^|/)kubernetes/.+\\.ya?ml(\\.j2)?$",
         "(^|/).+\\.ya?ml(\\.j2)?$"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n.+?\"?(?<currentValue>[^\\s\"]+)\"?"
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n(?:\\s*\\w+:\\s*|\\s*)\"?(?<currentValue>[^\\s\"]+)\"?"
       ],
       "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
     },
     {
       "customType": "regex",
-      "description": "Process OCI dependencies in YAML files",
-      "fileMatch": ["(^|/)kubernetes/.+\\.ya?ml(\\.j2)?$"],
+      "description": "Monitor Talos version in Terraform variables and tfvars",
+      "fileMatch": ["^terraform/variables\\.tf$", "^terraform/terraform\\.tfvars$"],
       "matchStrings": [
-        "registryUrl=(?<registryUrl>\\S+)\\n.*?oci:\\/\\/(?<depName>[^:]+):(?<currentValue>.*)"
+        "variable\\s+\"talos_version\"\\s*\\{[\\s\\S]*?default\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        "talos_version\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
       ],
-      "datasourceTemplate": "docker"
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "siderolabs/talos",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Monitor Terraform version in GitHub Actions workflows",
+      "fileMatch": ["^\\.github/workflows/.+\\.ya?ml$"],
+      "matchStrings": [
+        // YAML env format: TERRAFORM_VERSION: "1.11.3"
+        "TERRAFORM_VERSION:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
+        // Bash assignment format: TERRAFORM_VERSION="1.11.3"
+        "TERRAFORM_VERSION=\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "hashicorp/terraform",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Track Docker container images in GitHub Actions (docker:// syntax)",
+      "fileMatch": ["^\\.github/workflows/.+\\.ya?ml$"],
+      "matchStrings": [
+        "uses:\\s*docker://(?<depName>[^:]+):(?<currentValue>[^\\s\"]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Track OCI artifact versions in Flux HelmReleases",
+      "fileMatch": [
+        "(^|/)kubernetes/.+\\.ya?ml$"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=docker depName=ghcr.io/foo/bar
+        //          artifact: oci://ghcr.io/foo/bar:v1.2.3
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*artifact:\\s*oci://[^:]+:(?<currentValue>[^\\s\"]+)"
+      ],
+      "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}docker{{/if}}",
+      "versioningTemplate": "docker"
     }
   ]
 }

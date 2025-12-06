@@ -22,6 +22,7 @@ spec:
           app:
             image:
               repository: ghcr.io/onedr0p/plex
+              # renovate: datasource=docker depName=ghcr.io/onedr0p/plex
               tag: 1.41.5.9522
             env:
               TZ: America/New_York
@@ -65,6 +66,7 @@ spec:
                 drop:
                   - ALL
     defaultPodOptions:
+      automountServiceAccountToken: false  # Security: Disable K8s API access
       runtimeClassName: nvidia
       nodeSelector:
         nvidia.com/gpu.present: "true"

@@ -1,0 +1,151 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: gha-runner-scale-set
+  namespace: github-actions
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: gha-runner-scale-set
+  interval: 1h
+  dependsOn:
+    - name: gha-runner-scale-set-controller
+      namespace: github-actions
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    # Runner scale set name defaults to HelmRelease name: gha-runner-scale-set
+    # Following onedr0p's working pattern - do NOT set runnerScaleSetName explicitly
+
+    # GitHub configuration
+    githubConfigUrl: "https://github.com/jlengelbrecht/prox-ops"
+
+    # GitHub App authentication (secret created by ExternalSecret)
+    githubConfigSecret: github-runner-registration
+
+    # Scaling configuration
+    # minRunners: 3 ensures redundancy for cattle upgrades (Layer 1 of resilient architecture)
+    # 3 runners across 12 workers with REQUIRED anti-affinity = 2 runners survive any single node drain
+    # When runner's node drains, GitHub auto-re-queues job to surviving runners
+    minRunners: 3   # Three runners for cattle upgrade resilience
+    maxRunners: 6   # Allow scaling for parallel jobs while maintaining distribution
+
+    # Container mode configuration (following onedr0p's pattern)
+    # Required for runners to properly register with labels
+    containerMode:
+      type: "kubernetes"
+
+    # Runner template
+    template:
+      spec:
+        # Service account with kubectl/cluster access
+        serviceAccountName: github-actions-runner
+
+        # Pod-level security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          fsGroup: 1001
+          seccompProfile:
+            type: RuntimeDefault
+
+        # Container spec
+        containers:
+          - name: runner
+            # Official GitHub Actions runner image
+            # renovate: datasource=docker depName=ghcr.io/actions/actions-runner
+            image: ghcr.io/actions/actions-runner:2.330.0
+            imagePullPolicy: IfNotPresent
+
+            # Explicit command override (following onedr0p's pattern)
+            command: ["/home/runner/run.sh"]
+
+            # Environment variables (following onedr0p's pattern)
+            env:
+              - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
+                value: "false"
+
+            # Resource allocation
+            # Increased from 500m/1Gi to 1000m/2Gi (requests) and 2000m/4Gi to 4000m/8Gi (limits)
+            # to support long-running Terraform operations (destroy/create templates across 4 Proxmox hosts)
+            resources:
+              requests:
+                cpu: 1000m
+                memory: 2Gi
+              limits:
+                cpu: 4000m
+                memory: 8Gi
+
+            # Following onedr0p pattern: do NOT set explicit RUNNER_LABELS env vars
+            # Let ARC default to HelmRelease name (gha-runner-scale-set) for label propagation
+
+            # Security context (container-level)
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                  - ALL
+
+            # Add pre-stop hook for graceful shutdown during node drain
+            lifecycle:
+              preStop:
+                exec:
+                  command:
+                    - /bin/sh
+                    - -c
+                    - |
+                      # Give running job time to checkpoint/save state
+                      echo "PreStop hook: Graceful shutdown initiated"
+                      sleep 25
+
+            # Volume mounts for tools
+            volumeMounts:
+              - name: work
+                mountPath: /home/runner/_work
+
+        # Volumes
+        volumes:
+          - name: work
+            emptyDir: {}
+
+        # Graceful termination period for runner cleanup during node drain
+        # Reduced to 30s to work with workflow drain timeout (Layer 3)
+        terminationGracePeriodSeconds: 30
+
+        # Affinity rules for spreading runners across nodes
+        affinity:
+          # Node affinity: prefer worker nodes, avoid control plane
+          nodeAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                    - key: node-role.kubernetes.io/control-plane
+                      operator: DoesNotExist
+
+          # Pod anti-affinity: REQUIRED to force runners onto DIFFERENT nodes
+          # CRITICAL for cattle upgrade resilience - ensures 2 runners survive any single node drain
+          # This is Layer 1 of the resilient architecture
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchExpressions:
+                    - key: actions.github.com/scale-set-name
+                      operator: In
+                      values:
+                        - gha-runner-scale-set
+                topologyKey: kubernetes.io/hostname
+
+        # Tolerations (avoid GPU nodes unless necessary)
+        tolerations: []
+
+    # Controller service account
+    controllerServiceAccount:
+      name: gha-runner-scale-set-controller
+      namespace: github-actions

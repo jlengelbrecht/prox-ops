@@ -1,0 +1,188 @@
+---
+name: Talos Version Router
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - terraform/variables.tf
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: Test mode (only 2 workers, skip control plane)
+        type: boolean
+        default: true
+      force_cattle:
+        description: Force cattle upgrade (skip version detection)
+        type: boolean
+        default: false
+
+jobs:
+  detect-version-change:
+    name: Detect Version Change
+    runs-on: ubuntu-latest
+    outputs:
+      version_changed: ${{ steps.detect.outputs.version_changed }}
+      old_version: ${{ steps.detect.outputs.old_version }}
+      new_version: ${{ steps.detect.outputs.new_version }}
+      upgrade_type: ${{ steps.detect.outputs.upgrade_type }}
+      is_downgrade: ${{ steps.detect.outputs.is_downgrade }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Need 2 commits to compare
+
+      - name: Detect version change
+        id: detect
+        run: |
+          set -euo pipefail
+
+          # Extract old version from previous commit
+          OLD_VERSION=$(git show HEAD^:terraform/variables.tf | grep -A3 'variable "talos_version"' | grep 'default' | cut -d'"' -f2)
+
+          # Extract new version from current commit
+          NEW_VERSION=$(git show HEAD:terraform/variables.tf | grep -A3 'variable "talos_version"' | grep 'default' | cut -d'"' -f2)
+
+          # SECURITY: Validate version format (semver only: digits.digits.digits)
+          if ! [[ "$OLD_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid old version format: '$OLD_VERSION' (expected semver X.Y.Z)"
+            exit 1
+          fi
+
+          if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid new version format: '$NEW_VERSION' (expected semver X.Y.Z)"
+            exit 1
+          fi
+
+          echo "Old version: $OLD_VERSION"
+          echo "New version: $NEW_VERSION"
+
+          # Check if version changed
+          if [[ "$OLD_VERSION" == "$NEW_VERSION" ]]; then
+            echo "version_changed=false" >> $GITHUB_OUTPUT
+            echo "No version change detected"
+            exit 0
+          fi
+
+          echo "version_changed=true" >> $GITHUB_OUTPUT
+          echo "old_version=$OLD_VERSION" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+          # Parse semantic version components
+          OLD_MAJOR=$(echo $OLD_VERSION | cut -d. -f1)
+          OLD_MINOR=$(echo $OLD_VERSION | cut -d. -f2)
+          OLD_PATCH=$(echo $OLD_VERSION | cut -d. -f3)
+
+          NEW_MAJOR=$(echo $NEW_VERSION | cut -d. -f1)
+          NEW_MINOR=$(echo $NEW_VERSION | cut -d. -f2)
+          NEW_PATCH=$(echo $NEW_VERSION | cut -d. -f3)
+
+          # Comprehensive version comparison with downgrade detection
+          IS_DOWNGRADE="false"
+          UPGRADE_TYPE=""
+          CHANGE_TYPE=""
+
+          if [[ "$NEW_MAJOR" -gt "$OLD_MAJOR" ]]; then
+            # Major upgrade: 1.x.x → 2.x.x
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="MAJOR UPGRADE"
+          elif [[ "$NEW_MAJOR" -lt "$OLD_MAJOR" ]]; then
+            # Major downgrade: 2.x.x → 1.x.x
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="MAJOR DOWNGRADE"
+            IS_DOWNGRADE="true"
+          elif [[ "$NEW_MINOR" -gt "$OLD_MINOR" ]]; then
+            # Minor upgrade: 1.11.x → 1.12.x
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="MINOR UPGRADE"
+          elif [[ "$NEW_MINOR" -lt "$OLD_MINOR" ]]; then
+            # Minor downgrade: 1.12.x → 1.11.x
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="MINOR DOWNGRADE"
+            IS_DOWNGRADE="true"
+          elif [[ "$NEW_PATCH" -gt "$OLD_PATCH" ]]; then
+            # Patch upgrade: 1.11.3 → 1.11.4
+            UPGRADE_TYPE="pets"
+            CHANGE_TYPE="PATCH UPGRADE"
+          elif [[ "$NEW_PATCH" -lt "$OLD_PATCH" ]]; then
+            # Patch downgrade: 1.11.4 → 1.11.3
+            UPGRADE_TYPE="cattle"
+            CHANGE_TYPE="PATCH DOWNGRADE"
+            IS_DOWNGRADE="true"
+          else
+            # This shouldn't happen (caught by version equality check above)
+            echo "::error::Unexpected version comparison result"
+            exit 1
+          fi
+
+          echo "upgrade_type=$UPGRADE_TYPE" >> $GITHUB_OUTPUT
+          echo "is_downgrade=$IS_DOWNGRADE" >> $GITHUB_OUTPUT
+
+          echo "Detected $CHANGE_TYPE: $OLD_VERSION → $NEW_VERSION"
+          echo "Routing to: $UPGRADE_TYPE workflow"
+
+          # Output summary
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## Talos Version Change Detected
+
+          **Change Type**: $CHANGE_TYPE
+          **Old Version**: \`$OLD_VERSION\`
+          **New Version**: \`$NEW_VERSION\`
+          **Routing Decision**: \`$UPGRADE_TYPE\` workflow
+
+          ### Version Analysis
+          - Old: MAJOR=$OLD_MAJOR, MINOR=$OLD_MINOR, PATCH=$OLD_PATCH
+          - New: MAJOR=$NEW_MAJOR, MINOR=$NEW_MINOR, PATCH=$NEW_PATCH
+
+          ### Workflow Selection
+          EOF
+
+          if [[ "$IS_DOWNGRADE" == "true" ]]; then
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ⚠️ **DOWNGRADE DETECTED**
+          - Downgrades require destructive rebuild via cattle workflow
+          - All nodes will be destroyed and recreated
+          - Ensure you have backups before proceeding
+          EOF
+          elif [[ "$UPGRADE_TYPE" == "cattle" ]]; then
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          **Cattle Workflow** (Destructive Rebuild)
+          - Used for major/minor upgrades
+          - Rebuilds templates and recreates all VMs
+          - Safer for significant version changes
+          EOF
+          else
+            cat >> $GITHUB_STEP_SUMMARY <<EOF
+          **Pets Workflow** (In-Place Upgrade)
+          - Used for patch upgrades only
+          - Preserves existing VMs
+          - Faster with minimal disruption
+          EOF
+          fi
+
+  route-to-cattle:
+    name: Route to Cattle Workflow
+    needs: detect-version-change
+    if: needs.detect-version-change.outputs.version_changed == 'true' && needs.detect-version-change.outputs.upgrade_type == 'cattle'
+    uses: ./.github/workflows/upgrade-cattle.yaml
+    secrets: inherit
+    with:
+      old_version: ${{ needs.detect-version-change.outputs.old_version }}
+      new_version: ${{ needs.detect-version-change.outputs.new_version }}
+      test_mode: ${{ inputs.test_mode || true }}
+
+  route-to-pets:
+    name: Route to Pets Workflow
+    needs: detect-version-change
+    if: |
+      needs.detect-version-change.outputs.version_changed == 'true' &&
+      needs.detect-version-change.outputs.upgrade_type == 'pets' &&
+      needs.detect-version-change.outputs.is_downgrade == 'false'
+    uses: ./.github/workflows/upgrade-pets.yaml
+    secrets: inherit
+    with:
+      old_version: ${{ needs.detect-version-change.outputs.old_version }}
+      new_version: ${{ needs.detect-version-change.outputs.new_version }}
+      worker_rollout_mode: standard

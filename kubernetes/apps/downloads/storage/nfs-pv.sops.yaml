@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+    name: downloads-media-nfs
+spec:
+    capacity:
+        storage: 50Ti
+    accessModes:
+        - ReadWriteMany
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: ""
+    mountOptions:
+        - nfsvers=4.2
+        - hard
+        - noatime
+    nfs:
+        server: ENC[AES256_GCM,data:/LM4Psb3JPECeW0=,iv:25sDoGywKN397wHKs5tYQjHDy7A6JLePWwOTvyeYY+8=,tag:rtd8VtqXuxtnURMfNqbzlg==,type:str]
+        path: ENC[AES256_GCM,data:pnjU5tJ+evII/NhrSCG60rAlaA==,iv:n9fgvXWGfrMwaVACetqfm53xuOIA9ThgNirvQFBPt2g=,tag:LbU9UdbHvzrvvC7XAUaNNA==,type:str]
+sops:
+    age:
+        - recipient: age1metxlry78wefrmm5ny2zjavtucsmdvw2r3ctexu6h05ak4x2vc7qa02drd
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBzblhOTDQ5ZlhKa0FQOThY
+            YzBhT2xGa21SM2pRQVY4UmtBTzhRekJrQ0d3ClI0QnVobElPdW5uQTlIREtaNlY4
+            UTZ3UXJaNDZRRVFTZEZHRTJTSGcxY0kKLS0tIFYrZ1pMVmdjY3UwNjRDSnVDQ0RQ
+            RnNnQlJhWVBhTUYzOHRyMVRiUmFyYmMKq+wrnNBRwfc0fbDt/xjNOsungNKlymL2
+            wfDLllB8NpWDNuymD8oD7hMMk3VG3q+SxLnCR3cU41BsuCLvgAXbxQ==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2025-12-01T08:14:55Z"
+    mac: ENC[AES256_GCM,data:qDDnzM0V286lTvkWrm/dObhfHq4ZYV/pyxEuVA2YOGCC6dgkQ4I+rIW+h3GJDpRhSs7Wj5M7YWsDZZ/Qxg6k+ftORzOykQQe0n4eib0XJmMP7O3J5AxRvLYgEnjG3gHIWeknM6g4ikg9fA1m6F9UfOHXTAoK7Pjj5Pu02oSvzis=,iv:MA5JyC2HyZn5eKO2OUON1aACBbxHTcDoSMYT7/wHK0c=,tag:sFJRDeeXTwXMYKRlA2qduw==,type:str]
+    encrypted_regex: ^(server|path)$
+    mac_only_encrypted: true
+    version: 3.11.0
