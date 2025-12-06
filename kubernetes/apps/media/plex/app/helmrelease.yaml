@@ -64,11 +64,16 @@ spec:
                 memory: 8Gi
                 nvidia.com/gpu: 1
             securityContext:
-              allowPrivilegeEscalation: false
+              # s6-overlay uses setuid binaries for user switching
+              allowPrivilegeEscalation: true
               readOnlyRootFilesystem: false
               capabilities:
                 drop:
                   - ALL
+                add:
+                  - SETUID
+                  - SETGID
+                  - CHOWN
     defaultPodOptions:
       automountServiceAccountToken: false  # Security: Disable K8s API access
       runtimeClassName: nvidia
