@@ -1,0 +1,25 @@
+---
+# ServiceMonitor for external Ceph MGR Prometheus metrics
+# Enables Prometheus to discover and scrape the manually-managed MGR endpoint
+# Works with the Service + EndpointSlice that point to Proxmox Ceph MGR nodes
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rook-ceph-mgr-external
+  namespace: rook-ceph
+  labels:
+    app: rook-ceph-mgr
+    rook_cluster: rook-ceph-external
+spec:
+  selector:
+    matchLabels:
+      app: rook-ceph-mgr
+  namespaceSelector:
+    matchNames:
+      - rook-ceph
+  endpoints:
+    - port: http-metrics
+      interval: 30s
+      path: /metrics
+      # Preserve Ceph-specific labels from the scraped metrics
+      honorLabels: true

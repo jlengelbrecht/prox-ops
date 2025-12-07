@@ -1,0 +1,50 @@
+---
+# Manually-managed EndpointSlice for external Ceph MGR Prometheus metrics
+# Points to all Proxmox Ceph MGR nodes - only the active MGR returns metrics
+# Standby MGRs return empty responses (Content-Length: 0) which is expected
+#
+# Note: Ceph MGR runs in active/standby mode. Only the active MGR serves
+# Prometheus metrics. When active MGR fails, another becomes active.
+# Listing all MGR IPs ensures Prometheus can always reach the active one.
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: rook-ceph-mgr-external
+  namespace: rook-ceph
+  labels:
+    kubernetes.io/service-name: rook-ceph-mgr-external
+    endpointslice.kubernetes.io/managed-by: flux
+addressType: IPv4
+ports:
+  - name: http-metrics
+    port: 9283
+    protocol: TCP
+endpoints:
+  # Odin - Proxmox Ceph node
+  - addresses:
+      - "10.20.66.6"
+    conditions:
+      ready: true
+      serving: true
+      terminating: false
+  # Baldar - Proxmox Ceph node (currently active MGR)
+  - addresses:
+      - "10.20.66.4"
+    conditions:
+      ready: true
+      serving: true
+      terminating: false
+  # Thor - Proxmox Ceph node
+  - addresses:
+      - "10.20.66.7"
+    conditions:
+      ready: true
+      serving: true
+      terminating: false
+  # Heimdall - Proxmox Ceph node
+  - addresses:
+      - "10.20.66.8"
+    conditions:
+      ready: true
+      serving: true
+      terminating: false
