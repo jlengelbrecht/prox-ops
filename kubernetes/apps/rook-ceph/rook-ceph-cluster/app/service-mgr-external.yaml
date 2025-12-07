@@ -1,0 +1,20 @@
+---
+# Manually-managed Service for external Ceph MGR Prometheus metrics
+# Required because the rook-ceph operator cannot create this without mgr permissions
+# The operator needs 'ceph mgr dump' access which requires 'mgr allow r' caps
+apiVersion: v1
+kind: Service
+metadata:
+  name: rook-ceph-mgr-external
+  namespace: rook-ceph
+  labels:
+    app: rook-ceph-mgr
+    rook_cluster: rook-ceph-external
+spec:
+  type: ClusterIP
+  ports:
+    - name: http-metrics
+      port: 9283
+      protocol: TCP
+      targetPort: 9283
+  # No selector - endpoints managed by EndpointSlice
