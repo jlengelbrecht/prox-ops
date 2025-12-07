@@ -36,6 +36,14 @@ spec:
         - ports:
             - port: "32400"
               protocol: TCP
+    # Allow ingress from LAN for local device access (TVs, etc.)
+    # TODO: Investigate why TV isn't using envoy-internal path
+    - fromCIDR:
+        - 10.20.65.0/24
+      toPorts:
+        - ports:
+            - port: "32400"
+              protocol: TCP
     # Allow DNS queries
     - fromEndpoints:
         - matchLabels:

@@ -121,11 +121,25 @@ spec:
         globalMounts:
           - path: /data
     service:
+      # DMZ service for external access (via WireGuard VPN proxy)
       app:
         controller: plex
         type: LoadBalancer
         labels:
           network: dmz
+        annotations:
+          # Pin to specific IP - OCI VPS forwards to this address
+          io.cilium/lb-ipam-ips: "10.20.81.100"
+        ports:
+          http:
+            port: 32400
+            protocol: TCP
+      # Internal service for LAN access (TVs, local devices)
+      internal:
+        controller: plex
+        type: LoadBalancer
+        annotations:
+          io.cilium/lb-ipam-ips: "10.20.67.25"
         ports:
           http:
             port: 32400
