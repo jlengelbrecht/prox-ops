@@ -182,11 +182,13 @@ spec:
                   failureThreshold: 3
 
           # Gluetun exporter for VPN metrics
+          # TODO: Migrate to native gluetun Prometheus metrics when available (~March 2026)
+          # Tracking: https://github.com/qdm12/gluetun/issues/279
           vpn-exporter:
             image:
-              repository: thecfu/gluetun-exporter
-              # renovate: datasource=docker depName=thecfu/gluetun-exporter
-              tag: v0.1.1
+              repository: ghcr.io/thecfu/gluetun-exporter
+              # renovate: datasource=docker depName=ghcr.io/thecfu/gluetun-exporter
+              tag: 0.1.1-standalone
             env:
               GLUETUN_URL: "http://localhost:8000"
               PORT: "9999"
