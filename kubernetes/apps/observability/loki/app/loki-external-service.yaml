@@ -1,0 +1,25 @@
+---
+# LoadBalancer service for external log ingestion (VPS Promtail)
+# This exposes Loki on the internal VLAN for VPS access via WireGuard
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-external
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/instance: loki
+    app.kubernetes.io/component: external-ingestion
+  annotations:
+    # Pin to specific IP on internal VLAN
+    io.cilium/lb-ipam-ips: "10.20.67.26"
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: single-binary
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+      protocol: TCP
