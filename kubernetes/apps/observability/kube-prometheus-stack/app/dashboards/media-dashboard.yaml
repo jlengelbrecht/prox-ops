@@ -26,7 +26,7 @@ data:
           }
         ]
       },
-      "description": "Comprehensive media stack monitoring - Plex, *arr apps, downloaders",
+      "description": "Comprehensive media stack monitoring - Plex, *arr apps, downloaders, VPN status",
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,
@@ -451,6 +451,95 @@ data:
         {
           "collapsed": false,
           "gridPos": {"h": 1, "w": 24, "x": 0, "y": 29},
+          "id": 108,
+          "panels": [],
+          "title": "VPN Status",
+          "type": "row"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Prowlarr VPN public IP - confirms traffic is routed through VPN",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "unit": "string"
+            }
+          },
+          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 30},
+          "id": 80,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^ip$/", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "gluetun_public_ip_info{job=~\".*prowlarr.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
+          "title": "Prowlarr VPN IP",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "qBittorrent VPN public IP - confirms traffic is routed through VPN",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "unit": "string"
+            }
+          },
+          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 30},
+          "id": 81,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^ip$/", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "gluetun_public_ip_info{job=~\".*qbittorrent.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
+          "title": "qBittorrent VPN IP",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "SABnzbd VPN public IP - confirms traffic is routed through VPN",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "unit": "string"
+            }
+          },
+          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 30},
+          "id": 82,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^ip$/", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "gluetun_public_ip_info{job=~\".*sabnzbd.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
+          "title": "SABnzbd VPN IP",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "VPN connection status and location details for all apps",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "custom": {"align": "auto", "cellOptions": {"type": "auto"}, "inspect": false},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+            },
+            "overrides": [
+              {"matcher": {"id": "byName", "options": "Job"}, "properties": [{"id": "custom.width", "value": 120}]},
+              {"matcher": {"id": "byName", "options": "IP"}, "properties": [{"id": "custom.width", "value": 140}]},
+              {"matcher": {"id": "byName", "options": "Country"}, "properties": [{"id": "custom.width", "value": 150}]},
+              {"matcher": {"id": "byName", "options": "Region"}, "properties": [{"id": "custom.width", "value": 150}]}
+            ]
+          },
+          "gridPos": {"h": 4, "w": 24, "x": 0, "y": 34},
+          "id": 83,
+          "options": {"cellHeight": "sm", "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
+          "targets": [{"expr": "gluetun_public_ip_info", "format": "table", "instant": true, "legendFormat": "", "refId": "A"}],
+          "title": "VPN Details",
+          "transformations": [
+            {"id": "organize", "options": {"excludeByName": {"Time": true, "Value": true, "__name__": true, "instance": true}, "indexByName": {}, "renameByName": {"country": "Country", "ip": "IP", "job": "Job", "region": "Region"}}}
+          ],
+          "type": "table"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 38},
           "id": 106,
           "panels": [],
           "title": "Plex - Media Server",
@@ -468,7 +557,7 @@ data:
               "unit": "short"
             }
           },
-          "gridPos": {"h": 7, "w": 12, "x": 0, "y": 30},
+          "gridPos": {"h": 7, "w": 12, "x": 0, "y": 39},
           "id": 60,
           "options": {"legend": {"calcs": ["mean", "max", "current"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"media\",pod=~\"plex.*\",container!=\"\",container!=\"POD\"}[5m]))", "legendFormat": "Plex CPU Cores", "refId": "A"}],
@@ -487,7 +576,7 @@ data:
               "unit": "bytes"
             }
           },
-          "gridPos": {"h": 7, "w": 12, "x": 12, "y": 30},
+          "gridPos": {"h": 7, "w": 12, "x": 12, "y": 39},
           "id": 61,
           "options": {"legend": {"calcs": ["mean", "max", "current"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [{"expr": "sum(container_memory_working_set_bytes{namespace=\"media\",pod=~\"plex.*\",container!=\"\",container!=\"POD\"})", "legendFormat": "Plex Memory", "refId": "A"}],
@@ -506,7 +595,7 @@ data:
               "unit": "Bps"
             }
           },
-          "gridPos": {"h": 7, "w": 24, "x": 0, "y": 37},
+          "gridPos": {"h": 7, "w": 24, "x": 0, "y": 46},
           "id": 62,
           "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
@@ -518,7 +607,7 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 44},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 53},
           "id": 107,
           "panels": [],
           "title": "Download Speeds Over Time",
@@ -536,7 +625,7 @@ data:
               "unit": "Bps"
             }
           },
-          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 45},
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 54},
           "id": 70,
           "options": {"legend": {"calcs": ["mean", "max", "current"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
@@ -550,7 +639,7 @@ data:
       ],
       "refresh": "1m",
       "schemaVersion": 38,
-      "tags": ["media", "plex", "sonarr", "radarr", "prowlarr", "qbittorrent", "sabnzbd"],
+      "tags": ["media", "plex", "sonarr", "radarr", "prowlarr", "qbittorrent", "sabnzbd", "vpn"],
       "templating": {"list": []},
       "time": {"from": "now-6h", "to": "now"},
       "timepicker": {},

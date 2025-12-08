@@ -78,7 +78,7 @@ spec:
               # Firewall Kill Switch
               FIREWALL: "on"
               FIREWALL_VPN_INPUT_PORTS: "6881"  # BitTorrent port
-              FIREWALL_INPUT_PORTS: "8080,8000,8090"  # Web UI, control, and metrics
+              FIREWALL_INPUT_PORTS: "8080,8000,8090,9999"  # Web UI, control, metrics, and VPN metrics
               # DNS - use VPN provider DNS (Surfshark)
               DOT: "off"
               # Logging
@@ -175,6 +175,48 @@ spec:
                   periodSeconds: 10
                   failureThreshold: 3
 
+          # Gluetun exporter for VPN metrics
+          vpn-exporter:
+            image:
+              repository: thecfu/gluetun-exporter
+              # renovate: datasource=docker depName=thecfu/gluetun-exporter
+              tag: v0.1.1
+            env:
+              GLUETUN_URL: "http://localhost:8000"
+              PORT: "9999"
+            resources:
+              requests:
+                cpu: 5m
+                memory: 16Mi
+              limits:
+                cpu: 50m
+                memory: 32Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /metrics
+                    port: 9999
+                  periodSeconds: 30
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /metrics
+                    port: 9999
+                  periodSeconds: 10
+                  failureThreshold: 3
+
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
@@ -231,4 +273,7 @@ spec:
             protocol: TCP
           metrics:
             port: 8090
+            protocol: TCP
+          vpn-metrics:
+            port: 9999
             protocol: TCP
