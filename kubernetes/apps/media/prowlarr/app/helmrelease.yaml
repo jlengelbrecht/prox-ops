@@ -80,7 +80,7 @@ spec:
               SERVER_COUNTRIES: "United States"
               # Firewall Kill Switch
               FIREWALL: "on"
-              FIREWALL_INPUT_PORTS: "9696,8000,9707,9999"  # Prowlarr Web UI, control, metrics, and VPN metrics
+              FIREWALL_INPUT_PORTS: "9696,8000,9707,8001"  # Prowlarr Web UI, control, metrics, and VPN metrics
               FIREWALL_OUTBOUND_SUBNETS: "10.43.0.0/16"  # Allow internal K8s service traffic
               # DNS - use VPN provider DNS (Surfshark)
               DOT: "off"
@@ -191,7 +191,7 @@ spec:
               tag: 0.1.1-standalone
             env:
               GLUETUN_URL: "http://localhost:8000"
-              EXPORTER_PORT: "9999"
+              # Use default EXPORTER_PORT=8001 (image default binds to 0.0.0.0)
             resources:
               requests:
                 cpu: 5m
@@ -212,7 +212,7 @@ spec:
                 spec:
                   httpGet:
                     path: /metrics
-                    port: 9999
+                    port: 8001
                   periodSeconds: 30
                   failureThreshold: 3
               readiness:
@@ -221,7 +221,7 @@ spec:
                 spec:
                   httpGet:
                     path: /metrics
-                    port: 9999
+                    port: 8001
                   periodSeconds: 10
                   failureThreshold: 3
 
@@ -271,5 +271,5 @@ spec:
             port: 9707
             protocol: TCP
           vpn-metrics:
-            port: 9999
+            port: 8001
             protocol: TCP
