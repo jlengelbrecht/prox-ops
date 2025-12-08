@@ -539,13 +539,7 @@ data:
                 "steps": [{"color": "green", "value": null}]
               },
               "unit": "bytes"
-            },
-            "overrides": [
-              {
-                "matcher": {"id": "byName", "options": "Status"},
-                "properties": [{"id": "unit", "value": "string"}]
-              }
-            ]
+            }
           },
           "gridPos": {"h": 8, "w": 20, "x": 0, "y": 34},
           "id": 11,
@@ -561,21 +555,10 @@ data:
               "instant": true,
               "legendFormat": "",
               "refId": "A"
-            },
-            {
-              "expr": "kube_persistentvolumeclaim_status_phase == 1",
-              "format": "table",
-              "instant": true,
-              "legendFormat": "",
-              "refId": "B"
             }
           ],
           "title": "PVC Capacity",
           "transformations": [
-            {
-              "id": "merge",
-              "options": {}
-            },
             {
               "id": "organize",
               "options": {
@@ -589,20 +572,17 @@ data:
                   "node": true,
                   "pod": true,
                   "service": true,
-                  "uid": true,
-                  "Value #B": true
+                  "uid": true
                 },
                 "indexByName": {
                   "namespace": 0,
                   "persistentvolumeclaim": 1,
-                  "Value #A": 2,
-                  "phase": 3
+                  "Value": 2
                 },
                 "renameByName": {
-                  "Value #A": "Requested",
+                  "Value": "Requested",
                   "namespace": "Namespace",
-                  "persistentvolumeclaim": "PVC Name",
-                  "phase": "Status"
+                  "persistentvolumeclaim": "PVC Name"
                 }
               }
             }
