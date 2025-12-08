@@ -22,8 +22,8 @@ spec:
           app:
             image:
               repository: ghcr.io/wizarrrr/wizarr
-              # renovate: datasource=docker depName=ghcr.io/wizarrrr/wizarr
-              tag: 4.1.1
+              # renovate: datasource=docker depName=ghcr.io/wizarrrr/wizarr versioning=regex:^v(?<major>\d{4})\.(?<minor>\d+)\.(?<patch>\d+)$
+              tag: v2025.11.3
             env:
               TZ: America/New_York
               APP_URL: https://wizarr.homelab0.org
@@ -33,7 +33,7 @@ spec:
                 custom: true
                 spec:
                   httpGet:
-                    path: /api/health
+                    path: /health
                     port: &port 5690
                   initialDelaySeconds: 30
                   periodSeconds: 30
@@ -44,12 +44,23 @@ spec:
                 custom: true
                 spec:
                   httpGet:
-                    path: /api/health
+                    path: /health
                     port: *port
                   initialDelaySeconds: 30
                   periodSeconds: 30
                   timeoutSeconds: 10
                   failureThreshold: 5
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *port
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                  failureThreshold: 30
             resources:
               requests:
                 cpu: 50m
@@ -78,7 +89,7 @@ spec:
         security.homelab/network: "External - user invitations"
 
     persistence:
-      database:
+      data:
         enabled: true
         type: persistentVolumeClaim
         accessMode: ReadWriteOnce
@@ -86,6 +97,10 @@ spec:
         storageClass: ceph-block
         globalMounts:
           - path: /data/database
+            subPath: database
+          # v2025.x+ wizard steps config (persists across cattle upgrades)
+          - path: /etc/wizarr
+            subPath: etc-wizarr
       # Nginx temp directories (required for non-root user)
       nginx-lib:
         enabled: true
@@ -107,6 +122,12 @@ spec:
         type: emptyDir
         globalMounts:
           - path: /tmp
+      # Required for v2025.x+ uv package cache (ephemeral, rebuilt each start)
+      cache:
+        enabled: true
+        type: emptyDir
+        globalMounts:
+          - path: /.cache
 
     service:
       app:

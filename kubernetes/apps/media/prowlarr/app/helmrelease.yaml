@@ -24,7 +24,7 @@ spec:
             image:
               repository: ghcr.io/onedr0p/prowlarr-develop
               # renovate: datasource=docker depName=ghcr.io/onedr0p/prowlarr-develop
-              tag: 1.28.2.4885
+              tag: 1.32.2.4987
             env:
               TZ: America/New_York
               PROWLARR__PORT: &port 9696
@@ -80,7 +80,7 @@ spec:
               SERVER_COUNTRIES: "United States"
               # Firewall Kill Switch
               FIREWALL: "on"
-              FIREWALL_INPUT_PORTS: "9696,8000"  # Prowlarr Web UI and control
+              FIREWALL_INPUT_PORTS: "9696,8000,9707,9999"  # Prowlarr Web UI, control, metrics, and VPN metrics
               FIREWALL_OUTBOUND_SUBNETS: "10.43.0.0/16"  # Allow internal K8s service traffic
               # DNS - use VPN provider DNS (Surfshark)
               DOT: "off"
@@ -134,6 +134,97 @@ spec:
                   timeoutSeconds: 5
                   failureThreshold: 3
 
+          # Exportarr sidecar for Prometheus metrics
+          exportarr:
+            image:
+              repository: ghcr.io/onedr0p/exportarr
+              # renovate: datasource=docker depName=ghcr.io/onedr0p/exportarr
+              tag: v2.3.0
+            args:
+              - prowlarr
+            env:
+              PORT: "9707"
+              URL: "http://localhost:9696"
+            envFrom:
+              - secretRef:
+                  name: prowlarr-exporter
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: 9707
+                  periodSeconds: 30
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: 9707
+                  periodSeconds: 10
+                  failureThreshold: 3
+
+          # Gluetun exporter for VPN metrics
+          # TODO: Migrate to native gluetun Prometheus metrics when available (~March 2026)
+          # Tracking: https://github.com/qdm12/gluetun/issues/279
+          vpn-exporter:
+            image:
+              repository: ghcr.io/thecfu/gluetun-exporter
+              # renovate: datasource=docker depName=ghcr.io/thecfu/gluetun-exporter
+              tag: 0.1.1-standalone
+            env:
+              GLUETUN_URL: "http://localhost:8000"
+              EXPORTER_PORT: "9999"
+            resources:
+              requests:
+                cpu: 5m
+                memory: 16Mi
+              limits:
+                cpu: 50m
+                memory: 32Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /metrics
+                    port: 9999
+                  periodSeconds: 30
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /metrics
+                    port: 9999
+                  periodSeconds: 10
+                  failureThreshold: 3
+
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
@@ -175,4 +266,10 @@ spec:
         ports:
           http:
             port: *port
+            protocol: TCP
+          metrics:
+            port: 9707
+            protocol: TCP
+          vpn-metrics:
+            port: 9999
             protocol: TCP

@@ -1,0 +1,21 @@
+---
+# ServiceMonitor for Sonarr exportarr metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sonarr
+  namespace: media
+  labels:
+    app.kubernetes.io/name: sonarr
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sonarr
+  namespaceSelector:
+    matchNames:
+      - media
+  endpoints:
+    - port: metrics
+      interval: 4m
+      scrapeTimeout: 90s
+      path: /metrics

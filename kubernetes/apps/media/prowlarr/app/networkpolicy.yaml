@@ -56,11 +56,24 @@ spec:
         - ports:
             - port: "9696"
               protocol: TCP
-    # Allow Prometheus metrics scraping
+    # Allow Prometheus metrics scraping (exportarr sidecar)
     - fromEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: monitoring
+            io.kubernetes.pod.namespace: observability
             app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9707"
+              protocol: TCP
+    # Allow Prometheus metrics scraping (vpn-exporter sidecar)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9999"
+              protocol: TCP
     # Allow from Uptime Kuma (health monitoring)
     - fromEndpoints:
         - matchLabels:

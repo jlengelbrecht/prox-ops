@@ -1,0 +1,274 @@
+---
+# Home Assistant Dashboard
+# Monitors Home Assistant IoT hub metrics
+# Requires prometheus: integration enabled in Home Assistant configuration.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-home-assistant
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+    grafana_folder: "Applications"
+data:
+  home-assistant.json: |-
+    {
+      "annotations": {
+        "list": [
+          {
+            "datasource": "Prometheus",
+            "enable": true,
+            "expr": "ALERTS{namespace=\"iot\",alertstate=\"firing\"}",
+            "iconColor": "red",
+            "name": "Home Assistant Alerts",
+            "tagKeys": "alertname,severity",
+            "textFormat": "{{ alertname }}: {{ annotations.description }}",
+            "titleFormat": "HASS Alert"
+          }
+        ]
+      },
+      "description": "Home Assistant IoT hub monitoring - entities, automations, and system health",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+          "id": 100,
+          "panels": [],
+          "title": "System Overview",
+          "type": "row"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Home Assistant pod status",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [
+                {"options": {"0": {"color": "red", "index": 1, "text": "Down"}}, "type": "value"},
+                {"options": {"1": {"color": "green", "index": 0, "text": "Running"}}, "type": "value"}
+              ],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+            }
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+          "id": 1,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "kube_pod_status_phase{namespace=\"iot\",pod=~\"home-assistant.*\",phase=\"Running\"}", "legendFormat": "HASS", "refId": "A"}],
+          "title": "Home Assistant Status",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Pod restarts in last 24h",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 3}]},
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+          "id": 2,
+          "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=\"iot\",pod=~\"home-assistant.*\"}[24h]))", "legendFormat": "Restarts", "refId": "A"}],
+          "title": "Restarts (24h)",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Total entities registered in Home Assistant",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+          "id": 3,
+          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "count(homeassistant_entity_available)", "legendFormat": "Entities", "refId": "A"}],
+          "title": "Total Entities",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Entities currently unavailable",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+          "id": 4,
+          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "count(homeassistant_entity_available == 0)", "legendFormat": "Unavailable", "refId": "A"}],
+          "title": "Unavailable Entities",
+          "type": "stat"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+          "id": 101,
+          "panels": [],
+          "title": "Entity Counts by Domain",
+          "type": "row"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Sensor entities",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 6},
+          "id": 10,
+          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "count(homeassistant_entity_available{domain=\"sensor\"})", "legendFormat": "Sensors", "refId": "A"}],
+          "title": "Sensors",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Binary sensor entities",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "purple", "value": null}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 6},
+          "id": 11,
+          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "count(homeassistant_entity_available{domain=\"binary_sensor\"})", "legendFormat": "Binary", "refId": "A"}],
+          "title": "Binary Sensors",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Light entities",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "yellow", "value": null}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 6},
+          "id": 12,
+          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "count(homeassistant_entity_available{domain=\"light\"})", "legendFormat": "Lights", "refId": "A"}],
+          "title": "Lights",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Switch entities",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 6},
+          "id": 13,
+          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "count(homeassistant_entity_available{domain=\"switch\"})", "legendFormat": "Switches", "refId": "A"}],
+          "title": "Switches",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Automation entities",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 6},
+          "id": 14,
+          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "count(homeassistant_entity_available{domain=\"automation\"})", "legendFormat": "Automations", "refId": "A"}],
+          "title": "Automations",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Climate entities",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 6},
+          "id": 15,
+          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "count(homeassistant_entity_available{domain=\"climate\"})", "legendFormat": "Climate", "refId": "A"}],
+          "title": "Climate",
+          "type": "stat"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 10},
+          "id": 102,
+          "panels": [],
+          "title": "System Resources",
+          "type": "row"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Home Assistant CPU usage over time",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 11},
+          "id": 20,
+          "options": {"legend": {"calcs": ["mean", "max", "current"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"iot\",pod=~\"home-assistant.*\",container!=\"\",container!=\"POD\"}[5m]))", "legendFormat": "CPU Cores", "refId": "A"}],
+          "title": "CPU Usage",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Home Assistant memory usage over time",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "unit": "bytes"
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 11},
+          "id": 21,
+          "options": {"legend": {"calcs": ["mean", "max", "current"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "targets": [{"expr": "sum(container_memory_working_set_bytes{namespace=\"iot\",pod=~\"home-assistant.*\",container!=\"\",container!=\"POD\"})", "legendFormat": "Memory", "refId": "A"}],
+          "title": "Memory Usage",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Home Assistant network I/O",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "palette-classic"},
+              "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "unit": "Bps"
+            }
+          },
+          "gridPos": {"h": 7, "w": 24, "x": 0, "y": 19},
+          "id": 22,
+          "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+          "targets": [
+            {"expr": "sum(rate(container_network_receive_bytes_total{namespace=\"iot\",pod=~\"home-assistant.*\"}[5m]))", "legendFormat": "Receive", "refId": "A"},
+            {"expr": "sum(rate(container_network_transmit_bytes_total{namespace=\"iot\",pod=~\"home-assistant.*\"}[5m]))", "legendFormat": "Transmit", "refId": "B"}
+          ],
+          "title": "Network I/O",
+          "type": "timeseries"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 26},
+          "id": 103,
+          "panels": [],
+          "title": "Logs",
+          "type": "row"
+        },
+        {
+          "datasource": "Loki",
+          "description": "Recent Home Assistant logs",
+          "gridPos": {"h": 10, "w": 24, "x": 0, "y": 27},
+          "id": 30,
+          "options": {"dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": false, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": false},
+          "targets": [{"expr": "{namespace=\"iot\", app_kubernetes_io_name=\"home-assistant\"}", "refId": "A"}],
+          "title": "Home Assistant Logs",
+          "type": "logs"
+        }
+      ],
+      "refresh": "1m",
+      "schemaVersion": 38,
+      "tags": ["home-assistant", "iot", "automation"],
+      "templating": {"list": []},
+      "time": {"from": "now-6h", "to": "now"},
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Home Assistant",
+      "uid": "home-assistant-monitoring",
+      "version": 1
+    }
