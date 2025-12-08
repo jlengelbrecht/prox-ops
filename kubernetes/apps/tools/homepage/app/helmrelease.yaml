@@ -34,9 +34,11 @@ spec:
               TZ: America/New_York
               PUID: "568"
               PGID: "568"
-              # Homepage needs to access K8s API for service discovery
-              # Environment secrets use HOMEPAGE_VAR_* prefix
-              # Example: HOMEPAGE_VAR_PLEX_KEY will replace {{HOMEPAGE_VAR_PLEX_KEY}} in config
+            # Inject all HOMEPAGE_VAR_* secrets from ExternalSecret
+            # These replace {{HOMEPAGE_VAR_*}} placeholders in services.yaml
+            envFrom:
+              - secretRef:
+                  name: homepage-secrets
             probes:
               liveness:
                 enabled: true
