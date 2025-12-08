@@ -78,7 +78,7 @@ spec:
               # Firewall Kill Switch
               FIREWALL: "on"
               FIREWALL_VPN_INPUT_PORTS: "6881"  # BitTorrent port
-              FIREWALL_INPUT_PORTS: "8080,8000,8090,9999"  # Web UI, control, metrics, and VPN metrics
+              FIREWALL_INPUT_PORTS: "8080,8000,8090,8001"  # Web UI, control, metrics, and VPN metrics
               # DNS - use VPN provider DNS (Surfshark)
               DOT: "off"
               # Logging
@@ -185,7 +185,7 @@ spec:
               tag: 0.1.1-standalone
             env:
               GLUETUN_URL: "http://localhost:8000"
-              EXPORTER_PORT: "9999"
+              # Use default EXPORTER_PORT=8001 (image default binds to 0.0.0.0)
             resources:
               requests:
                 cpu: 5m
@@ -206,7 +206,7 @@ spec:
                 spec:
                   httpGet:
                     path: /metrics
-                    port: 9999
+                    port: 8001
                   periodSeconds: 30
                   failureThreshold: 3
               readiness:
@@ -215,7 +215,7 @@ spec:
                 spec:
                   httpGet:
                     path: /metrics
-                    port: 9999
+                    port: 8001
                   periodSeconds: 10
                   failureThreshold: 3
 
@@ -277,5 +277,5 @@ spec:
             port: 8090
             protocol: TCP
           vpn-metrics:
-            port: 9999
+            port: 8001
             protocol: TCP
