@@ -78,7 +78,7 @@ spec:
               # Firewall Kill Switch
               FIREWALL: "on"
               FIREWALL_VPN_INPUT_PORTS: "6881"  # BitTorrent port
-              FIREWALL_INPUT_PORTS: "8080,8000"  # Web UI and control
+              FIREWALL_INPUT_PORTS: "8080,8000,8090"  # Web UI, control, and metrics
               # DNS - use VPN provider DNS (Surfshark)
               DOT: "off"
               # Logging
@@ -128,6 +128,51 @@ spec:
                   initialDelaySeconds: 15
                   periodSeconds: 10
                   timeoutSeconds: 5
+                  failureThreshold: 3
+
+          # qBittorrent exporter for Prometheus metrics
+          exporter:
+            image:
+              repository: ghcr.io/martabal/qbittorrent-exporter
+              # renovate: datasource=docker depName=ghcr.io/martabal/qbittorrent-exporter
+              tag: v1.13.0
+            env:
+              QBITTORRENT_BASE_URL: "http://localhost:8080"
+              EXPORTER_PORT: "8090"
+            envFrom:
+              - secretRef:
+                  name: qbittorrent-exporter
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                cpu: 100m
+                memory: 64Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /metrics
+                    port: 8090
+                  periodSeconds: 30
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /metrics
+                    port: 8090
+                  periodSeconds: 10
                   failureThreshold: 3
 
     defaultPodOptions:
@@ -183,4 +228,7 @@ spec:
             protocol: TCP
           bittorrent:
             port: *btport
+            protocol: TCP
+          metrics:
+            port: 8090
             protocol: TCP

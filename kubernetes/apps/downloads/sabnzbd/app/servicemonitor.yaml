@@ -1,0 +1,21 @@
+---
+# ServiceMonitor for SABnzbd exportarr metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: sabnzbd
+  namespace: downloads
+  labels:
+    app.kubernetes.io/name: sabnzbd
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sabnzbd
+  namespaceSelector:
+    matchNames:
+      - downloads
+  endpoints:
+    - port: metrics
+      interval: 4m
+      scrapeTimeout: 90s
+      path: /metrics
