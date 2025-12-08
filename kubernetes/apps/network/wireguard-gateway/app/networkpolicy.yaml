@@ -50,14 +50,3 @@ spec:
       ports:
         - protocol: UDP
           port: 51820
-    # Allow traffic to Loki (for VPS Promtail log shipping)
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: observability
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: loki
-      ports:
-        - protocol: TCP
-          port: 3100
