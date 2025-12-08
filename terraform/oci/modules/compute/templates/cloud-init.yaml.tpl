@@ -353,9 +353,9 @@ write_files:
               proxy_set_header Host 127.0.0.1;
               proxy_set_header X-Plex-Client-Identifier $http_x_plex_client_identifier;
               proxy_set_header X-Plex-Token $http_x_plex_token;
-              # Don't forward client IP - let Plex see WireGuard IP for allowedNetworks
-              proxy_set_header X-Real-IP "";
-              proxy_set_header X-Forwarded-For "";
+              # Pass through client IP for Tautulli tracking (telemetry to Plex Inc disabled)
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto https;
               # Strip Origin header to disable CORS checks
               # This makes Plex treat requests as direct (non-CORS), allowing
@@ -548,9 +548,9 @@ write_files:
               proxy_set_header Host 127.0.0.1;
               proxy_set_header X-Plex-Client-Identifier $http_x_plex_client_identifier;
               proxy_set_header X-Plex-Token $http_x_plex_token;
-              # Don't forward client IP - let Plex see WireGuard IP for allowedNetworks
-              proxy_set_header X-Real-IP "";
-              proxy_set_header X-Forwarded-For "";
+              # Pass through client IP for Tautulli tracking (telemetry to Plex Inc disabled)
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               proxy_set_header X-Forwarded-Proto https;
               # Strip Origin header to disable CORS checks
               # This makes Plex treat requests as direct (non-CORS), allowing
