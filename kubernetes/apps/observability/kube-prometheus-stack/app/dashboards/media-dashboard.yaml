@@ -458,56 +458,65 @@ data:
         },
         {
           "datasource": "Prometheus",
-          "description": "Prowlarr VPN public IP - confirms traffic is routed through VPN",
+          "description": "Prowlarr VPN status - confirms traffic is routed through VPN",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
-              "mappings": [],
-              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-              "unit": "string"
+              "mappings": [
+                {"options": {"0": {"color": "red", "index": 1, "text": "Down"}}, "type": "value"},
+                {"options": {"1": {"color": "green", "index": 0, "text": "Running"}}, "type": "value"}
+              ],
+              "noValue": "Down",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
             }
           },
           "gridPos": {"h": 4, "w": 8, "x": 0, "y": 30},
           "id": 80,
-          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^ip$/", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "gluetun_vpn_infos{job=~\".*prowlarr.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
-          "title": "Prowlarr VPN IP",
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "max(gluetun_vpn_infos{job=~\".*prowlarr.*\"}) or vector(0)", "legendFormat": "Prowlarr VPN", "refId": "A"}],
+          "title": "Prowlarr VPN",
           "type": "stat"
         },
         {
           "datasource": "Prometheus",
-          "description": "qBittorrent VPN public IP - confirms traffic is routed through VPN",
+          "description": "qBittorrent VPN status - confirms traffic is routed through VPN",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
-              "mappings": [],
-              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-              "unit": "string"
+              "mappings": [
+                {"options": {"0": {"color": "red", "index": 1, "text": "Down"}}, "type": "value"},
+                {"options": {"1": {"color": "green", "index": 0, "text": "Running"}}, "type": "value"}
+              ],
+              "noValue": "Down",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
             }
           },
           "gridPos": {"h": 4, "w": 8, "x": 8, "y": 30},
           "id": 81,
-          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^ip$/", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "gluetun_vpn_infos{job=~\".*qbittorrent.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
-          "title": "qBittorrent VPN IP",
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "max(gluetun_vpn_infos{job=~\".*qbittorrent.*\"}) or vector(0)", "legendFormat": "qBittorrent VPN", "refId": "A"}],
+          "title": "qBittorrent VPN",
           "type": "stat"
         },
         {
           "datasource": "Prometheus",
-          "description": "SABnzbd VPN public IP - confirms traffic is routed through VPN",
+          "description": "SABnzbd VPN status - confirms traffic is routed through VPN",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
-              "mappings": [],
-              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-              "unit": "string"
+              "mappings": [
+                {"options": {"0": {"color": "red", "index": 1, "text": "Down"}}, "type": "value"},
+                {"options": {"1": {"color": "green", "index": 0, "text": "Running"}}, "type": "value"}
+              ],
+              "noValue": "Down",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
             }
           },
           "gridPos": {"h": 4, "w": 8, "x": 16, "y": 30},
           "id": 82,
-          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^ip$/", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "gluetun_vpn_infos{job=~\".*sabnzbd.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
-          "title": "SABnzbd VPN IP",
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "max(gluetun_vpn_infos{job=~\".*sabnzbd.*\"}) or vector(0)", "legendFormat": "SABnzbd VPN", "refId": "A"}],
+          "title": "SABnzbd VPN",
           "type": "stat"
         },
         {
