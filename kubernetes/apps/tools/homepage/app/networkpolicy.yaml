@@ -118,6 +118,21 @@ spec:
               protocol: TCP
             - port: "443"
               protocol: TCP
+    # Allow egress to network namespace (envoy-internal for *.homelab0.org proxying)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+            - port: "8443"
+              protocol: TCP
     # Allow internet access for external service checks
     # (Proxmox, TrueNAS, UniFi, iDRAC, etc.)
     - toEntities:
