@@ -470,7 +470,7 @@ data:
           "gridPos": {"h": 4, "w": 8, "x": 0, "y": 30},
           "id": 80,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^ip$/", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "gluetun_public_ip_info{job=~\".*prowlarr.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
+          "targets": [{"expr": "gluetun_vpn_infos{job=~\".*prowlarr.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
           "title": "Prowlarr VPN IP",
           "type": "stat"
         },
@@ -488,7 +488,7 @@ data:
           "gridPos": {"h": 4, "w": 8, "x": 8, "y": 30},
           "id": 81,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^ip$/", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "gluetun_public_ip_info{job=~\".*qbittorrent.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
+          "targets": [{"expr": "gluetun_vpn_infos{job=~\".*qbittorrent.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
           "title": "qBittorrent VPN IP",
           "type": "stat"
         },
@@ -506,7 +506,7 @@ data:
           "gridPos": {"h": 4, "w": 8, "x": 16, "y": 30},
           "id": 82,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/^ip$/", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "gluetun_public_ip_info{job=~\".*sabnzbd.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
+          "targets": [{"expr": "gluetun_vpn_infos{job=~\".*sabnzbd.*\"}", "legendFormat": "{{ip}}", "refId": "A"}],
           "title": "SABnzbd VPN IP",
           "type": "stat"
         },
@@ -521,19 +521,19 @@ data:
               "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
             },
             "overrides": [
-              {"matcher": {"id": "byName", "options": "Job"}, "properties": [{"id": "custom.width", "value": 120}]},
+              {"matcher": {"id": "byName", "options": "App"}, "properties": [{"id": "custom.width", "value": 120}]},
               {"matcher": {"id": "byName", "options": "IP"}, "properties": [{"id": "custom.width", "value": 140}]},
               {"matcher": {"id": "byName", "options": "Country"}, "properties": [{"id": "custom.width", "value": 150}]},
-              {"matcher": {"id": "byName", "options": "Region"}, "properties": [{"id": "custom.width", "value": 150}]}
+              {"matcher": {"id": "byName", "options": "City"}, "properties": [{"id": "custom.width", "value": 150}]}
             ]
           },
           "gridPos": {"h": 4, "w": 24, "x": 0, "y": 34},
           "id": 83,
           "options": {"cellHeight": "sm", "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
-          "targets": [{"expr": "gluetun_public_ip_info", "format": "table", "instant": true, "legendFormat": "", "refId": "A"}],
+          "targets": [{"expr": "gluetun_vpn_infos", "format": "table", "instant": true, "legendFormat": "", "refId": "A"}],
           "title": "VPN Details",
           "transformations": [
-            {"id": "organize", "options": {"excludeByName": {"Time": true, "Value": true, "__name__": true, "instance": true}, "indexByName": {}, "renameByName": {"country": "Country", "ip": "IP", "job": "Job", "region": "Region"}}}
+            {"id": "organize", "options": {"excludeByName": {"Time": true, "Value": true, "__name__": true, "instance": true, "endpoint": true, "namespace": true, "pod": true, "service": true}, "indexByName": {}, "renameByName": {"country": "Country", "ip": "IP", "job": "App", "city": "City"}}}
           ],
           "type": "table"
         },
