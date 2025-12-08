@@ -522,7 +522,7 @@ data:
         },
         {
           "datasource": "Prometheus",
-          "description": "PVC usage across namespaces",
+          "description": "PVC capacity and status (Note: kubelet volume stats not available in Talos, showing requested capacity only)",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
@@ -545,52 +545,42 @@ data:
           "id": 11,
           "options": {
             "showHeader": true,
-            "sortBy": [{"desc": true, "displayName": "Capacity"}]
+            "sortBy": [{"desc": true, "displayName": "Requested"}]
           },
           "pluginVersion": "10.0.0",
           "targets": [
             {
-              "expr": "kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~\".*\"}",
+              "expr": "kube_persistentvolumeclaim_resource_requests_storage_bytes",
               "format": "table",
               "instant": true,
               "legendFormat": "",
               "refId": "A"
-            },
-            {
-              "expr": "kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\".*\"}",
-              "format": "table",
-              "instant": true,
-              "legendFormat": "",
-              "refId": "B"
             }
           ],
-          "title": "PVC Usage",
+          "title": "PVC Capacity",
           "transformations": [
-            {
-              "id": "merge",
-              "options": {}
-            },
             {
               "id": "organize",
               "options": {
                 "excludeByName": {
                   "Time": true,
                   "__name__": true,
+                  "container": true,
                   "endpoint": true,
                   "instance": true,
                   "job": true,
                   "node": true,
-                  "service": true
+                  "pod": true,
+                  "service": true,
+                  "uid": true
                 },
                 "indexByName": {
                   "namespace": 0,
                   "persistentvolumeclaim": 1,
-                  "Value #A": 2,
-                  "Value #B": 3
+                  "Value": 2
                 },
                 "renameByName": {
-                  "Value #A": "Capacity",
-                  "Value #B": "Used",
+                  "Value": "Requested",
                   "namespace": "Namespace",
                   "persistentvolumeclaim": "PVC Name"
                 }
