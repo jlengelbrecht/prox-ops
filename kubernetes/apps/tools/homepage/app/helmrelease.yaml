@@ -71,12 +71,9 @@ spec:
                 drop:
                   - ALL
 
-    # Homepage needs service account for K8s service discovery
-    serviceAccount:
-      create: true
-      name: homepage
-
     defaultPodOptions:
+      # Use the ServiceAccount created in rbac.yaml for K8s service discovery
+      serviceAccountName: homepage
       automountServiceAccountToken: true
       securityContext:
         runAsUser: 568
