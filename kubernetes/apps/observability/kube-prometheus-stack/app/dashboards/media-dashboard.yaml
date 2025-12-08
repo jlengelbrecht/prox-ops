@@ -62,7 +62,7 @@ data:
           "gridPos": {"h": 3, "w": 4, "x": 0, "y": 1},
           "id": 1,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "kube_pod_status_phase{namespace=\"media\",pod=~\"plex.*\",phase=\"Running\"}", "legendFormat": "Plex", "refId": "A"}],
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"plex.*\",phase=\"Running\"})", "legendFormat": "Plex", "refId": "A"}],
           "title": "Plex",
           "type": "stat"
         },
@@ -82,7 +82,7 @@ data:
           "gridPos": {"h": 3, "w": 4, "x": 4, "y": 1},
           "id": 2,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "kube_pod_status_phase{namespace=\"media\",pod=~\"sonarr.*\",phase=\"Running\"}", "legendFormat": "Sonarr", "refId": "A"}],
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"sonarr.*\",phase=\"Running\"})", "legendFormat": "Sonarr", "refId": "A"}],
           "title": "Sonarr",
           "type": "stat"
         },
@@ -102,7 +102,7 @@ data:
           "gridPos": {"h": 3, "w": 4, "x": 8, "y": 1},
           "id": 3,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "kube_pod_status_phase{namespace=\"media\",pod=~\"radarr.*\",phase=\"Running\"}", "legendFormat": "Radarr", "refId": "A"}],
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"radarr.*\",phase=\"Running\"})", "legendFormat": "Radarr", "refId": "A"}],
           "title": "Radarr",
           "type": "stat"
         },
@@ -122,7 +122,7 @@ data:
           "gridPos": {"h": 3, "w": 4, "x": 12, "y": 1},
           "id": 4,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "kube_pod_status_phase{namespace=\"media\",pod=~\"prowlarr.*\",phase=\"Running\"}", "legendFormat": "Prowlarr", "refId": "A"}],
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"prowlarr.*\",phase=\"Running\"})", "legendFormat": "Prowlarr", "refId": "A"}],
           "title": "Prowlarr",
           "type": "stat"
         },
@@ -142,7 +142,7 @@ data:
           "gridPos": {"h": 3, "w": 4, "x": 16, "y": 1},
           "id": 5,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "kube_pod_status_phase{namespace=\"downloads\",pod=~\"qbittorrent.*\",phase=\"Running\"}", "legendFormat": "qBittorrent", "refId": "A"}],
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"downloads\",pod=~\"qbittorrent.*\",phase=\"Running\"})", "legendFormat": "qBittorrent", "refId": "A"}],
           "title": "qBittorrent",
           "type": "stat"
         },
@@ -162,7 +162,7 @@ data:
           "gridPos": {"h": 3, "w": 4, "x": 20, "y": 1},
           "id": 6,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "kube_pod_status_phase{namespace=\"downloads\",pod=~\"sabnzbd.*\",phase=\"Running\"}", "legendFormat": "SABnzbd", "refId": "A"}],
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"downloads\",pod=~\"sabnzbd.*\",phase=\"Running\"})", "legendFormat": "SABnzbd", "refId": "A"}],
           "title": "SABnzbd",
           "type": "stat"
         },
@@ -181,7 +181,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 0, "y": 5},
           "id": 10,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sonarr_series_total", "legendFormat": "Series", "refId": "A"}],
+          "targets": [{"expr": "max(sonarr_series_total)", "legendFormat": "Series", "refId": "A"}],
           "title": "Total Series",
           "type": "stat"
         },
@@ -192,7 +192,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 4, "y": 5},
           "id": 11,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sonarr_episode_total", "legendFormat": "Episodes", "refId": "A"}],
+          "targets": [{"expr": "max(sonarr_episode_total)", "legendFormat": "Episodes", "refId": "A"}],
           "title": "Total Episodes",
           "type": "stat"
         },
@@ -203,7 +203,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 8, "y": 5},
           "id": 12,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sonarr_episode_downloaded_total", "legendFormat": "Downloaded", "refId": "A"}],
+          "targets": [{"expr": "max(sonarr_episode_downloaded_total)", "legendFormat": "Downloaded", "refId": "A"}],
           "title": "Downloaded",
           "type": "stat"
         },
@@ -214,7 +214,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 12, "y": 5},
           "id": 13,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sonarr_episode_missing_total", "legendFormat": "Missing", "refId": "A"}],
+          "targets": [{"expr": "max(sonarr_episode_missing_total)", "legendFormat": "Missing", "refId": "A"}],
           "title": "Missing",
           "type": "stat"
         },
@@ -225,7 +225,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 16, "y": 5},
           "id": 14,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sonarr_queue_total", "legendFormat": "Queue", "refId": "A"}],
+          "targets": [{"expr": "max(sonarr_queue_total)", "legendFormat": "Queue", "refId": "A"}],
           "title": "Queue",
           "type": "stat"
         },
@@ -236,7 +236,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 20, "y": 5},
           "id": 15,
           "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showThresholdLabels": false, "showThresholdMarkers": true},
-          "targets": [{"expr": "(sonarr_episode_downloaded_total / (sonarr_episode_total > 0 or vector(1))) * 100", "legendFormat": "Completion", "refId": "A"}],
+          "targets": [{"expr": "(max(sonarr_episode_downloaded_total) / (max(sonarr_episode_total) > 0 or vector(1))) * 100", "legendFormat": "Completion", "refId": "A"}],
           "title": "Completion %",
           "type": "gauge"
         },
@@ -255,7 +255,7 @@ data:
           "gridPos": {"h": 4, "w": 6, "x": 0, "y": 10},
           "id": 20,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "radarr_movie_total", "legendFormat": "Movies", "refId": "A"}],
+          "targets": [{"expr": "max(radarr_movie_total)", "legendFormat": "Movies", "refId": "A"}],
           "title": "Total Movies",
           "type": "stat"
         },
@@ -266,7 +266,7 @@ data:
           "gridPos": {"h": 4, "w": 6, "x": 6, "y": 10},
           "id": 21,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "radarr_movie_downloaded_total", "legendFormat": "Downloaded", "refId": "A"}],
+          "targets": [{"expr": "max(radarr_movie_downloaded_total)", "legendFormat": "Downloaded", "refId": "A"}],
           "title": "Downloaded",
           "type": "stat"
         },
@@ -277,7 +277,7 @@ data:
           "gridPos": {"h": 4, "w": 6, "x": 12, "y": 10},
           "id": 22,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "radarr_movie_missing_total", "legendFormat": "Missing", "refId": "A"}],
+          "targets": [{"expr": "max(radarr_movie_missing_total)", "legendFormat": "Missing", "refId": "A"}],
           "title": "Missing",
           "type": "stat"
         },
@@ -288,7 +288,7 @@ data:
           "gridPos": {"h": 4, "w": 6, "x": 18, "y": 10},
           "id": 23,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "radarr_queue_total", "legendFormat": "Queue", "refId": "A"}],
+          "targets": [{"expr": "max(radarr_queue_total)", "legendFormat": "Queue", "refId": "A"}],
           "title": "Queue",
           "type": "stat"
         },
@@ -307,7 +307,7 @@ data:
           "gridPos": {"h": 4, "w": 8, "x": 0, "y": 15},
           "id": 30,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "prowlarr_indexer_total", "legendFormat": "Indexers", "refId": "A"}],
+          "targets": [{"expr": "max(prowlarr_indexer_total)", "legendFormat": "Indexers", "refId": "A"}],
           "title": "Total Indexers",
           "type": "stat"
         },
@@ -348,7 +348,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 0, "y": 20},
           "id": 40,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "qbittorrent_global_torrents", "legendFormat": "Torrents", "refId": "A"}],
+          "targets": [{"expr": "max(qbittorrent_global_torrents)", "legendFormat": "Torrents", "refId": "A"}],
           "title": "Active Torrents",
           "type": "stat"
         },
@@ -359,7 +359,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 4, "y": 20},
           "id": 41,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "qbittorrent_global_download_speed_bytes", "legendFormat": "Download", "refId": "A"}],
+          "targets": [{"expr": "max(qbittorrent_global_download_speed_bytes)", "legendFormat": "Download", "refId": "A"}],
           "title": "Download Speed",
           "type": "stat"
         },
@@ -370,7 +370,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 8, "y": 20},
           "id": 42,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "qbittorrent_global_upload_speed_bytes", "legendFormat": "Upload", "refId": "A"}],
+          "targets": [{"expr": "max(qbittorrent_global_upload_speed_bytes)", "legendFormat": "Upload", "refId": "A"}],
           "title": "Upload Speed",
           "type": "stat"
         },
@@ -381,7 +381,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 12, "y": 20},
           "id": 43,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "qbittorrent_global_alltime_downloaded_bytes", "legendFormat": "Downloaded", "refId": "A"}],
+          "targets": [{"expr": "max(qbittorrent_global_alltime_downloaded_bytes)", "legendFormat": "Downloaded", "refId": "A"}],
           "title": "Total Downloaded",
           "type": "stat"
         },
@@ -392,7 +392,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 16, "y": 20},
           "id": 44,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "qbittorrent_global_alltime_uploaded_bytes", "legendFormat": "Uploaded", "refId": "A"}],
+          "targets": [{"expr": "max(qbittorrent_global_alltime_uploaded_bytes)", "legendFormat": "Uploaded", "refId": "A"}],
           "title": "Total Uploaded",
           "type": "stat"
         },
@@ -403,7 +403,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 20, "y": 20},
           "id": 45,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "qbittorrent_global_alltime_uploaded_bytes / (qbittorrent_global_alltime_downloaded_bytes > 0 or vector(1))", "legendFormat": "Ratio", "refId": "A"}],
+          "targets": [{"expr": "max(qbittorrent_global_alltime_uploaded_bytes) / (max(qbittorrent_global_alltime_downloaded_bytes) > 0 or vector(1))", "legendFormat": "Ratio", "refId": "A"}],
           "title": "Ratio",
           "type": "stat"
         },
@@ -422,7 +422,7 @@ data:
           "gridPos": {"h": 4, "w": 8, "x": 0, "y": 25},
           "id": 50,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sabnzbd_queue_total", "legendFormat": "Queue", "refId": "A"}],
+          "targets": [{"expr": "max(sabnzbd_queue_total)", "legendFormat": "Queue", "refId": "A"}],
           "title": "Queue Size",
           "type": "stat"
         },
@@ -433,7 +433,7 @@ data:
           "gridPos": {"h": 4, "w": 8, "x": 8, "y": 25},
           "id": 51,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sabnzbd_download_speed_bytes", "legendFormat": "Speed", "refId": "A"}],
+          "targets": [{"expr": "max(sabnzbd_download_speed_bytes)", "legendFormat": "Speed", "refId": "A"}],
           "title": "Download Speed",
           "type": "stat"
         },
@@ -444,7 +444,7 @@ data:
           "gridPos": {"h": 4, "w": 8, "x": 16, "y": 25},
           "id": 52,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sabnzbd_queue_size_bytes", "legendFormat": "Remaining", "refId": "A"}],
+          "targets": [{"expr": "max(sabnzbd_queue_size_bytes)", "legendFormat": "Remaining", "refId": "A"}],
           "title": "Queue Data",
           "type": "stat"
         },
@@ -629,9 +629,9 @@ data:
           "id": 70,
           "options": {"legend": {"calcs": ["mean", "max", "current"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
-            {"expr": "qbittorrent_global_download_speed_bytes", "legendFormat": "qBittorrent Download", "refId": "A"},
-            {"expr": "qbittorrent_global_upload_speed_bytes", "legendFormat": "qBittorrent Upload", "refId": "B"},
-            {"expr": "sabnzbd_download_speed_bytes", "legendFormat": "SABnzbd Download", "refId": "C"}
+            {"expr": "max(qbittorrent_global_download_speed_bytes)", "legendFormat": "qBittorrent Download", "refId": "A"},
+            {"expr": "max(qbittorrent_global_upload_speed_bytes)", "legendFormat": "qBittorrent Upload", "refId": "B"},
+            {"expr": "max(sabnzbd_download_speed_bytes)", "legendFormat": "SABnzbd Download", "refId": "C"}
           ],
           "title": "Download/Upload Speeds",
           "type": "timeseries"
