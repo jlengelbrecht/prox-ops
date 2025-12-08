@@ -33,8 +33,8 @@ spec:
             - port: "53"
               protocol: TCP
     # Allow egress to envoy-internal Gateway backend ports
-    # When accessing LoadBalancer IP (10.20.67.22), kube-proxy DNAT's traffic
-    # to envoy pod backend ports (10080/10443) before Cilium evaluates it
+    # When accessing LoadBalancer IP (10.20.67.22), Cilium DNAT's traffic
+    # to envoy pod backend ports (10080/10443) before policy evaluation
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
