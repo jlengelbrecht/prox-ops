@@ -21,6 +21,9 @@ spec:
     controllers:
       homepage:
         strategy: Recreate
+        # Reference the ServiceAccount created in rbac.yaml for K8s service discovery
+        serviceAccount:
+          name: homepage
         containers:
           app:
             image:
@@ -72,8 +75,6 @@ spec:
                   - ALL
 
     defaultPodOptions:
-      # Use the ServiceAccount created in rbac.yaml for K8s service discovery
-      serviceAccountName: homepage
       automountServiceAccountToken: true
       securityContext:
         runAsUser: 568
