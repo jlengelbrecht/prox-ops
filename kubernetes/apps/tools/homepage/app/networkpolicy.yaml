@@ -1,0 +1,132 @@
+---
+# Homepage NetworkPolicy
+# Homepage is a dashboard that needs broad egress access to monitor services
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: homepage
+  namespace: tools
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: homepage
+  ingress:
+    # Allow from envoy-internal Gateway
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+  egress:
+    # Allow DNS queries
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow Kubernetes API (for service discovery)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+    # Allow egress to media namespace services
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+            - port: "5055"   # Overseerr
+              protocol: TCP
+            - port: "8989"   # Sonarr
+              protocol: TCP
+            - port: "7878"   # Radarr
+              protocol: TCP
+            - port: "9696"   # Prowlarr
+              protocol: TCP
+            - port: "32400"  # Plex
+              protocol: TCP
+            - port: "8181"   # Tautulli
+              protocol: TCP
+            - port: "6246"   # Maintainerr
+              protocol: TCP
+            - port: "9705"   # Huntarr
+              protocol: TCP
+            - port: "5690"   # Wizarr
+              protocol: TCP
+            - port: "3001"   # Uptime Kuma
+              protocol: TCP
+            - port: "11011"  # Cleanuparr
+              protocol: TCP
+    # Allow egress to downloads namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: downloads
+      toPorts:
+        - ports:
+            - port: "8080"   # qBittorrent/SABnzbd
+              protocol: TCP
+    # Allow egress to observability namespace (Grafana, Prometheus)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+      toPorts:
+        - ports:
+            - port: "80"     # Grafana
+              protocol: TCP
+            - port: "9090"   # Prometheus
+              protocol: TCP
+            - port: "9093"   # AlertManager
+              protocol: TCP
+    # Allow egress to kube-system (Hubble UI)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: hubble-ui
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+    # Allow egress to iot namespace (Home Assistant)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: iot
+      toPorts:
+        - ports:
+            - port: "8123"   # Home Assistant
+              protocol: TCP
+    # Allow egress to security namespace (Authentik)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: security
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+    # Allow internet access for external service checks
+    # (Proxmox, TrueNAS, UniFi, iDRAC, etc.)
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+            - port: "8006"   # Proxmox
+              protocol: TCP
