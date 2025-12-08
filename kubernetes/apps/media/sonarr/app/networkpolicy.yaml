@@ -92,6 +92,15 @@ spec:
         - ports:
             - port: "8989"
               protocol: TCP
+    # Allow from Homepage dashboard (widget API access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+            app.kubernetes.io/name: homepage
+      toPorts:
+        - ports:
+            - port: "8989"
+              protocol: TCP
   egress:
     # Allow DNS queries
     - toEndpoints:
