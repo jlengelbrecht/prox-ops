@@ -236,7 +236,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 20, "y": 5},
           "id": 15,
           "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showThresholdLabels": false, "showThresholdMarkers": true},
-          "targets": [{"expr": "(sonarr_episode_downloaded_total / sonarr_episode_total) * 100", "legendFormat": "Completion", "refId": "A"}],
+          "targets": [{"expr": "(sonarr_episode_downloaded_total / (sonarr_episode_total > 0 or vector(1))) * 100", "legendFormat": "Completion", "refId": "A"}],
           "title": "Completion %",
           "type": "gauge"
         },
