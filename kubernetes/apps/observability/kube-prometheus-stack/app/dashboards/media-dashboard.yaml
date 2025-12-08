@@ -318,7 +318,7 @@ data:
           "gridPos": {"h": 4, "w": 8, "x": 8, "y": 15},
           "id": 31,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sum(prowlarr_indexer_grab_total)", "legendFormat": "Total Grabs", "refId": "A"}],
+          "targets": [{"expr": "sum(prowlarr_indexer_grabs_total)", "legendFormat": "Total Grabs", "refId": "A"}],
           "title": "Total Grabs",
           "type": "stat"
         },
@@ -329,7 +329,7 @@ data:
           "gridPos": {"h": 4, "w": 8, "x": 16, "y": 15},
           "id": 32,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sum(prowlarr_indexer_query_total)", "legendFormat": "Total Queries", "refId": "A"}],
+          "targets": [{"expr": "sum(prowlarr_indexer_queries_total)", "legendFormat": "Total Queries", "refId": "A"}],
           "title": "Total Queries",
           "type": "stat"
         },
@@ -348,7 +348,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 0, "y": 20},
           "id": 40,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "qbittorrent_torrents_count", "legendFormat": "Torrents", "refId": "A"}],
+          "targets": [{"expr": "qbittorrent_global_torrents", "legendFormat": "Torrents", "refId": "A"}],
           "title": "Active Torrents",
           "type": "stat"
         },
@@ -403,7 +403,7 @@ data:
           "gridPos": {"h": 4, "w": 4, "x": 20, "y": 20},
           "id": 45,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "qbittorrent_global_ratio", "legendFormat": "Ratio", "refId": "A"}],
+          "targets": [{"expr": "qbittorrent_global_alltime_uploaded_bytes / (qbittorrent_global_alltime_downloaded_bytes > 0 or vector(1))", "legendFormat": "Ratio", "refId": "A"}],
           "title": "Ratio",
           "type": "stat"
         },
