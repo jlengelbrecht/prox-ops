@@ -118,23 +118,20 @@ spec:
               protocol: TCP
             - port: "443"
               protocol: TCP
-    # Allow egress to network namespace (envoy-internal for *.homelab0.org proxying)
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: network
-            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+    # Allow egress to homelab infrastructure (10.20.66.0/23 includes LB and infra)
+    - toCIDR:
+        - 10.20.66.0/23   # Main homelab subnet (includes MetalLB LB IPs and infrastructure)
+        - 10.20.65.0/24   # LAN subnet (UniFi, client devices)
+        - 10.30.66.0/24   # Remote site (Cosmos)
       toPorts:
         - ports:
             - port: "80"
               protocol: TCP
             - port: "443"
               protocol: TCP
-            - port: "8080"
+            - port: "8006"   # Proxmox
               protocol: TCP
-            - port: "8443"
-              protocol: TCP
-    # Allow internet access for external service checks
-    # (Proxmox, TrueNAS, UniFi, iDRAC, etc.)
+    # Allow internet access for truly external service checks
     - toEntities:
         - world
       toPorts:
@@ -142,6 +139,4 @@ spec:
             - port: "443"
               protocol: TCP
             - port: "80"
-              protocol: TCP
-            - port: "8006"   # Proxmox
               protocol: TCP
