@@ -1,0 +1,96 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: localai
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: local-ai
+      version: 3.4.2
+      sourceRef:
+        kind: HelmRepository
+        name: go-skynet
+        namespace: ai
+  interval: 1h
+  values:
+    replicaCount: 1
+
+    deployment:
+      image:
+        # GPU-enabled AIO image with CUDA 12 for RTX A5000 compatibility
+        repository: localai/localai
+        # renovate: datasource=docker depName=localai/localai
+        tag: v3.8.0-aio-gpu-nvidia-cuda-12
+      env:
+        # Performance tuning for A5000 (24GB VRAM, 16 vCPU on host)
+        threads: 8
+        context_size: 4096
+        # Model storage path
+        modelsPath: "/models"
+        # Disable debug in production
+        debug: "false"
+        # Enable parallel requests
+        parallel_requests: "true"
+        # CORS disabled - internal ClusterIP service only
+        cors: "false"
+
+    resources:
+      requests:
+        cpu: 2
+        memory: 8Gi
+        nvidia.com/gpu: 1
+      limits:
+        cpu: 14
+        memory: 48Gi
+        # GPU resources must have equal request/limit per K8s extended resource spec
+        nvidia.com/gpu: 1
+
+    # Use NVIDIA runtime for GPU access
+    runtimeClassName: nvidia
+
+    # Target k8s-work-10 which has the RTX A5000
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      nvidia.com/gpu.present: "true"
+
+    # Tolerate GPU nodes (if taints are applied)
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+    # Model storage - 200Gi Ceph RBD PVC
+    persistence:
+      models:
+        enabled: true
+        existingClaim: localai-models
+
+    # ClusterIP service for internal access only
+    service:
+      type: ClusterIP
+      port: 8080
+
+    # Health probes
+    livenessProbe:
+      httpGet:
+        path: /readyz
+        port: 8080
+      initialDelaySeconds: 60
+      periodSeconds: 30
+      timeoutSeconds: 10
+      failureThreshold: 3
+
+    readinessProbe:
+      httpGet:
+        path: /readyz
+        port: 8080
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+
+    # Disable ingress - internal access only via ClusterIP
+    ingress:
+      enabled: false
