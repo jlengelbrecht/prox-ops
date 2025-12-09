@@ -31,6 +31,9 @@ spec:
         context_size: 4096
         # Model storage path
         modelsPath: "/models"
+        # Backend storage path - persist to PVC to avoid 8GB download on each restart
+        # Backends are stored in /models/backends subdirectory of the models PVC
+        LOCALAI_BACKENDS_PATH: "/models/backends"
         # Disable debug in production
         debug: "false"
         # Enable parallel requests
@@ -95,23 +98,25 @@ spec:
       port: 8080
 
     # Health probes
+    # NOTE: First boot downloads ~8GB of backends, subsequent restarts use cached backends
+    # from /models/backends PVC. Initial delay accounts for worst-case first boot.
     livenessProbe:
       httpGet:
         path: /readyz
         port: 8080
-      initialDelaySeconds: 60
+      initialDelaySeconds: 300  # 5 min: backend downloads on first boot
       periodSeconds: 30
       timeoutSeconds: 10
-      failureThreshold: 3
+      failureThreshold: 6
 
     readinessProbe:
       httpGet:
         path: /readyz
         port: 8080
-      initialDelaySeconds: 30
-      periodSeconds: 10
-      timeoutSeconds: 5
-      failureThreshold: 3
+      initialDelaySeconds: 60
+      periodSeconds: 15
+      timeoutSeconds: 10
+      failureThreshold: 20  # Allow 5 min for backend downloads
 
     # Disable ingress - internal access only via ClusterIP
     ingress:
