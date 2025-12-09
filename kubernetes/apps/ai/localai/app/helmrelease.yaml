@@ -61,11 +61,20 @@ spec:
         operator: Exists
         effect: NoSchedule
 
-    # Model storage - 200Gi Ceph RBD PVC
+    # Model storage - Ceph RBD PVCs (chart creates its own)
     persistence:
       models:
         enabled: true
-        existingClaim: localai-models
+        storageClass: ceph-block
+        accessModes:
+          - ReadWriteOnce
+        size: 200Gi
+      output:
+        enabled: true
+        storageClass: ceph-block
+        accessModes:
+          - ReadWriteOnce
+        size: 10Gi
 
     # ClusterIP service for internal access only
     service:
