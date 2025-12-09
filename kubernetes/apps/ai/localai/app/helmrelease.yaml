@@ -98,16 +98,17 @@ spec:
       port: 8080
 
     # Health probes
-    # NOTE: First boot downloads ~8GB of backends, subsequent restarts use cached backends
-    # from /models/backends PVC. Initial delay accounts for worst-case first boot.
+    # Liveness: Detect crashed pods quickly (60s delay + 6 failures = 3min tolerance)
+    # Readiness: Handle slow startup (60s delay + 20 failures × 15s = 5min tolerance)
+    # First boot downloads ~8GB backends; subsequent restarts use cached /models/backends
     livenessProbe:
       httpGet:
         path: /readyz
         port: 8080
-      initialDelaySeconds: 300  # 5 min: backend downloads on first boot
+      initialDelaySeconds: 60   # 1 min: restart crashed/stuck pods quickly
       periodSeconds: 30
       timeoutSeconds: 10
-      failureThreshold: 6
+      failureThreshold: 6       # Detect truly stuck pods
 
     readinessProbe:
       httpGet:
