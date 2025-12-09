@@ -22,13 +22,15 @@ spec:
           # Main qBittorrent container
           app:
             image:
-              repository: ghcr.io/onedr0p/qbittorrent
-              # renovate: datasource=docker depName=ghcr.io/onedr0p/qbittorrent
-              tag: 5.0.2
+              repository: lscr.io/linuxserver/qbittorrent
+              # renovate: datasource=docker depName=lscr.io/linuxserver/qbittorrent
+              tag: 5.0.2-r0-ls381
             env:
               TZ: America/New_York
-              QBITTORRENT__PORT: &port 8080
-              QBITTORRENT__BT_PORT: &btport 6881
+              PUID: "568"
+              PGID: "568"
+              WEBUI_PORT: &port 8080
+              TORRENTING_PORT: &btport 6881
             probes:
               liveness:
                 enabled: true
@@ -58,11 +60,16 @@ spec:
                 cpu: 2000m
                 memory: 4Gi
             securityContext:
-              allowPrivilegeEscalation: false
+              # s6-overlay uses setuid binaries for user switching
+              allowPrivilegeEscalation: true
               readOnlyRootFilesystem: false
               capabilities:
                 drop:
                   - ALL
+                add:
+                  - SETUID
+                  - SETGID
+                  - CHOWN
 
           # Gluetun VPN sidecar - ALL traffic routes through this
           gluetun:
@@ -222,9 +229,12 @@ spec:
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: false  # Gluetun requires root
+        # LinuxServer.io images use s6-overlay which requires root initially
+        # The container drops to PUID/PGID (568) after init
+        # Gluetun also requires root for VPN setup
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
         supplementalGroups:
@@ -234,6 +244,7 @@ spec:
       annotations:
         security.homelab/vpn-required: "true"
         security.homelab/network: "Internal - VPN egress only"
+        security.homelab/exception: "LinuxServer.io + Gluetun require root"
 
     persistence:
       config:

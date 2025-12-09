@@ -22,18 +22,13 @@ spec:
           # Main SABnzbd container
           app:
             image:
-              repository: ghcr.io/onedr0p/sabnzbd
-              # renovate: datasource=docker depName=ghcr.io/onedr0p/sabnzbd
-              tag: 4.4.1
+              repository: lscr.io/linuxserver/sabnzbd
+              # renovate: datasource=docker depName=lscr.io/linuxserver/sabnzbd
+              tag: 4.4.1-ls207
             env:
               TZ: America/New_York
-              SABNZBD__PORT: &port 8080
-              SABNZBD__HOST_WHITELIST_ENTRIES: >-
-                sabnzbd,
-                sabnzbd.downloads,
-                sabnzbd.downloads.svc,
-                sabnzbd.downloads.svc.cluster,
-                sabnzbd.downloads.svc.cluster.local
+              PUID: "568"
+              PGID: "568"
             probes:
               liveness:
                 enabled: true
@@ -65,11 +60,16 @@ spec:
                 cpu: 4000m
                 memory: 8Gi
             securityContext:
-              allowPrivilegeEscalation: false
+              # s6-overlay uses setuid binaries for user switching
+              allowPrivilegeEscalation: true
               readOnlyRootFilesystem: false
               capabilities:
                 drop:
                   - ALL
+                add:
+                  - SETUID
+                  - SETGID
+                  - CHOWN
 
           # Gluetun VPN sidecar - ALL traffic routes through this
           gluetun:
@@ -230,9 +230,12 @@ spec:
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: false  # Gluetun requires root
+        # LinuxServer.io images use s6-overlay which requires root initially
+        # The container drops to PUID/PGID (568) after init
+        # Gluetun also requires root for VPN setup
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
         supplementalGroups:
@@ -242,6 +245,7 @@ spec:
       annotations:
         security.homelab/vpn-required: "true"
         security.homelab/network: "Internal - VPN egress only"
+        security.homelab/exception: "LinuxServer.io + Gluetun require root"
 
     persistence:
       config:

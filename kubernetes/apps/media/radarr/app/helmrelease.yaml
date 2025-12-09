@@ -21,14 +21,13 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/onedr0p/radarr-develop
-              # renovate: datasource=docker depName=ghcr.io/onedr0p/radarr-develop
-              tag: 5.20.1.9773
+              repository: lscr.io/linuxserver/radarr
+              # renovate: datasource=docker depName=lscr.io/linuxserver/radarr
+              tag: 5.20.1.9773-ls288
             env:
               TZ: America/New_York
-              RADARR__PORT: &port 7878
-              RADARR__AUTH__METHOD: External
-              RADARR__AUTH__REQUIRED: DisabledForLocalAddresses
+              PUID: "568"
+              PGID: "568"
             probes:
               liveness:
                 enabled: true
@@ -60,11 +59,16 @@ spec:
                 cpu: 2000m
                 memory: 2Gi
             securityContext:
-              allowPrivilegeEscalation: false
+              # s6-overlay uses setuid binaries for user switching
+              allowPrivilegeEscalation: true
               readOnlyRootFilesystem: false
               capabilities:
                 drop:
                   - ALL
+                add:
+                  - SETUID
+                  - SETGID
+                  - CHOWN
 
           # Exportarr sidecar for Prometheus metrics
           exportarr:
@@ -116,9 +120,11 @@ spec:
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: true
+        # LinuxServer.io images use s6-overlay which requires root initially
+        # The container drops to PUID/PGID (568) after init
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
         supplementalGroups:
@@ -127,6 +133,7 @@ spec:
           type: RuntimeDefault
       annotations:
         security.homelab/network: "Internal - arr stack"
+        security.homelab/exception: "LinuxServer.io image requires root for s6-overlay init"
 
     persistence:
       config:
