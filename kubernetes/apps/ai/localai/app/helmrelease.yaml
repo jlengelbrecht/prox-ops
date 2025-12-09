@@ -44,11 +44,12 @@ spec:
               name: localai-secret
               key: api-key
         # VRAM Management: Idle watchdog auto-unloads models after inactivity
+        # Models reload in ~7 seconds from Ceph RBD SSD storage
         LOCALAI_WATCHDOG_IDLE: "true"
         LOCALAI_WATCHDOG_IDLE_TIMEOUT: "15m"
-        # Busy watchdog kills stuck processes
-        LOCALAI_WATCHDOG_BUSY: "true"
-        LOCALAI_WATCHDOG_BUSY_TIMEOUT: "5m"
+        # NOTE: BUSY watchdog intentionally disabled - it cannot distinguish
+        # between stuck processes and legitimately slow complex inference,
+        # and will kill active reasoning tasks (see GitHub issue #5221)
 
     resources:
       requests:
