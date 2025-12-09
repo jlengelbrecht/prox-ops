@@ -66,6 +66,53 @@ spec:
                 drop:
                   - ALL
 
+          # Exportarr sidecar for Prometheus metrics
+          exportarr:
+            image:
+              repository: ghcr.io/onedr0p/exportarr
+              # renovate: datasource=docker depName=ghcr.io/onedr0p/exportarr
+              tag: v2.3.0
+            args:
+              - radarr
+            env:
+              PORT: "9707"
+              URL: "http://localhost:7878"
+            envFrom:
+              - secretRef:
+                  name: radarr-exporter
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: 9707
+                  periodSeconds: 30
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: 9707
+                  periodSeconds: 10
+                  failureThreshold: 3
+
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
@@ -103,4 +150,7 @@ spec:
         ports:
           http:
             port: *port
+            protocol: TCP
+          metrics:
+            port: 9707
             protocol: TCP

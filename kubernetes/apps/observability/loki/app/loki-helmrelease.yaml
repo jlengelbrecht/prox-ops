@@ -150,6 +150,12 @@ spec:
           kvstore:
             store: inmemory
 
+      # Ingester configuration - must explicitly set replication_factor for SingleBinary
+      ingester:
+        lifecycler:
+          ring:
+            replication_factor: 1
+
       # Analytics disabled
       analytics:
         reporting_enabled: false

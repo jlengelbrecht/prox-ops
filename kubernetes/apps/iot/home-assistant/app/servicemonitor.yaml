@@ -1,0 +1,22 @@
+---
+# ServiceMonitor for Home Assistant built-in Prometheus integration
+# Requires prometheus: integration to be configured in configuration.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: home-assistant
+  namespace: iot
+  labels:
+    app.kubernetes.io/name: home-assistant
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: home-assistant
+  namespaceSelector:
+    matchNames:
+      - iot
+  endpoints:
+    - port: http
+      interval: 1m
+      scrapeTimeout: 30s
+      path: /api/prometheus

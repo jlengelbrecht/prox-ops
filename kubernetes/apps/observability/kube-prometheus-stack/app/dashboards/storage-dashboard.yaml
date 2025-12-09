@@ -38,16 +38,16 @@ data:
             "defaults": {
               "color": {"mode": "thresholds"},
               "mappings": [
-                {"type": "value", "value": "0", "text": "HEALTH_ERR", "color": "red"},
-                {"type": "value", "value": "1", "text": "HEALTH_WARN", "color": "yellow"},
-                {"type": "value", "value": "2", "text": "HEALTH_OK", "color": "green"}
+                {"options": {"0": {"color": "green", "index": 0, "text": "HEALTH_OK"}}, "type": "value"},
+                {"options": {"1": {"color": "yellow", "index": 1, "text": "HEALTH_WARN"}}, "type": "value"},
+                {"options": {"2": {"color": "red", "index": 2, "text": "HEALTH_ERR"}}, "type": "value"}
               ],
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
-                  {"color": "red", "value": null},
+                  {"color": "green", "value": null},
                   {"color": "yellow", "value": 1},
-                  {"color": "green", "value": 2}
+                  {"color": "red", "value": 2}
                 ]
               },
               "unit": "short"
@@ -316,130 +316,77 @@ data:
         },
         {
           "datasource": "Prometheus",
-          "description": "OSD status breakdown",
+          "description": "OSD up/down and in/out status",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
-              "custom": {
-                "align": "auto",
-                "cellOptions": {
-                  "type": "color-background"
-                },
-                "inspect": false
-              },
               "mappings": [],
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
-                  {"color": "green", "value": null},
-                  {"color": "yellow", "value": 1},
-                  {"color": "red", "value": 3}
+                  {"color": "green", "value": null}
                 ]
               },
               "unit": "short"
-            }
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byName", "options": "Down"},
+                "properties": [{"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}]
+              },
+              {
+                "matcher": {"id": "byName", "options": "Out"},
+                "properties": [{"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}]}}]
+              }
+            ]
           },
           "gridPos": {"h": 7, "w": 10, "x": 0, "y": 12},
           "id": 7,
           "options": {
-            "showHeader": true,
-            "sortBy": []
+            "colorMode": "value",
+            "graphMode": "none",
+            "justifyMode": "center",
+            "orientation": "horizontal",
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": "",
+              "values": false
+            },
+            "textMode": "value_and_name"
           },
           "pluginVersion": "10.0.0",
           "targets": [
             {
-              "expr": "count by (status) (ceph_osd_up)",
-              "format": "table",
+              "expr": "count(ceph_osd_up == 1)",
               "instant": true,
-              "legendFormat": "",
+              "legendFormat": "Up",
               "refId": "A"
+            },
+            {
+              "expr": "count(ceph_osd_up == 0) or vector(0)",
+              "instant": true,
+              "legendFormat": "Down",
+              "refId": "B"
+            },
+            {
+              "expr": "count(ceph_osd_in == 1)",
+              "instant": true,
+              "legendFormat": "In",
+              "refId": "C"
+            },
+            {
+              "expr": "count(ceph_osd_in == 0) or vector(0)",
+              "instant": true,
+              "legendFormat": "Out",
+              "refId": "D"
             }
           ],
           "title": "OSD Status",
-          "transformations": [
-            {
-              "id": "organize",
-              "options": {
-                "excludeByName": {
-                  "Time": true,
-                  "__name__": true
-                },
-                "indexByName": {
-                  "status": 0,
-                  "Value": 1
-                },
-                "renameByName": {
-                  "Value": "Count",
-                  "status": "Status"
-                }
-              }
-            }
-          ],
-          "type": "table"
+          "type": "stat"
         },
         {
           "datasource": "Prometheus",
-          "description": "IOPS (read and write operations per second)",
-          "fieldConfig": {
-            "defaults": {
-              "color": {"mode": "palette-classic"},
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 20,
-                "gradientMode": "none",
-                "hideFrom": {"tooltip": false, "viz": false, "legend": false},
-                "lineInterpolation": "smooth",
-                "lineWidth": 2,
-                "pointSize": 5,
-                "scaleDistribution": {"type": "linear"},
-                "showPoints": "never",
-                "spanNulls": false,
-                "stacking": {"group": "A", "mode": "none"},
-                "thresholdsStyle": {"mode": "off"}
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [{"color": "green", "value": null}]
-              },
-              "unit": "iops"
-            }
-          },
-          "gridPos": {"h": 7, "w": 10, "x": 10, "y": 12},
-          "id": 8,
-          "options": {
-            "legend": {
-              "calcs": ["mean", "max"],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true
-            },
-            "tooltip": {"mode": "multi", "sort": "desc"}
-          },
-          "pluginVersion": "10.0.0",
-          "targets": [
-            {
-              "expr": "rate(ceph_osd_op_r[5m])",
-              "legendFormat": "Read IOPS",
-              "refId": "A"
-            },
-            {
-              "expr": "rate(ceph_osd_op_w[5m])",
-              "legendFormat": "Write IOPS",
-              "refId": "B"
-            }
-          ],
-          "title": "Cluster IOPS",
-          "type": "timeseries"
-        },
-        {
-          "datasource": "Prometheus",
-          "description": "Cluster throughput (read and write)",
+          "description": "Pool-level read/write throughput (Note: OSD-level IOPS not available for external Ceph clusters)",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "palette-classic"},
@@ -470,8 +417,8 @@ data:
               "unit": "Bps"
             }
           },
-          "gridPos": {"h": 7, "w": 20, "x": 0, "y": 19},
-          "id": 9,
+          "gridPos": {"h": 7, "w": 10, "x": 10, "y": 12},
+          "id": 8,
           "options": {
             "legend": {
               "calcs": ["mean", "max", "current"],
@@ -484,17 +431,17 @@ data:
           "pluginVersion": "10.0.0",
           "targets": [
             {
-              "expr": "rate(ceph_osd_op_r_out_bytes[5m])",
+              "expr": "sum(rate(ceph_pool_rd_bytes[5m]))",
               "legendFormat": "Read Throughput",
               "refId": "A"
             },
             {
-              "expr": "rate(ceph_osd_op_w_in_bytes[5m])",
+              "expr": "sum(rate(ceph_pool_wr_bytes[5m]))",
               "legendFormat": "Write Throughput",
               "refId": "B"
             }
           ],
-          "title": "Cluster Throughput",
+          "title": "Pool Throughput",
           "type": "timeseries"
         },
         {
@@ -575,7 +522,7 @@ data:
         },
         {
           "datasource": "Prometheus",
-          "description": "PVC usage across namespaces",
+          "description": "PVC capacity and status (Note: kubelet volume stats not available in Talos, showing requested capacity only)",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
@@ -598,52 +545,42 @@ data:
           "id": 11,
           "options": {
             "showHeader": true,
-            "sortBy": [{"desc": true, "displayName": "Capacity"}]
+            "sortBy": [{"desc": true, "displayName": "Requested"}]
           },
           "pluginVersion": "10.0.0",
           "targets": [
             {
-              "expr": "kubelet_volume_stats_capacity_bytes{persistentvolumeclaim=~\".*\"}",
+              "expr": "kube_persistentvolumeclaim_resource_requests_storage_bytes",
               "format": "table",
               "instant": true,
               "legendFormat": "",
               "refId": "A"
-            },
-            {
-              "expr": "kubelet_volume_stats_used_bytes{persistentvolumeclaim=~\".*\"}",
-              "format": "table",
-              "instant": true,
-              "legendFormat": "",
-              "refId": "B"
             }
           ],
-          "title": "PVC Usage",
+          "title": "PVC Capacity",
           "transformations": [
-            {
-              "id": "merge",
-              "options": {}
-            },
             {
               "id": "organize",
               "options": {
                 "excludeByName": {
                   "Time": true,
                   "__name__": true,
+                  "container": true,
                   "endpoint": true,
                   "instance": true,
                   "job": true,
                   "node": true,
-                  "service": true
+                  "pod": true,
+                  "service": true,
+                  "uid": true
                 },
                 "indexByName": {
                   "namespace": 0,
                   "persistentvolumeclaim": 1,
-                  "Value #A": 2,
-                  "Value #B": 3
+                  "Value": 2
                 },
                 "renameByName": {
-                  "Value #A": "Capacity",
-                  "Value #B": "Used",
+                  "Value": "Requested",
                   "namespace": "Namespace",
                   "persistentvolumeclaim": "PVC Name"
                 }

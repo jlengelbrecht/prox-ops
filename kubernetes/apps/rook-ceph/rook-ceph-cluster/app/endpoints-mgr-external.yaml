@@ -1,0 +1,26 @@
+---
+# Manually-managed Endpoints for external Ceph MGR Prometheus metrics
+# Points to all Proxmox Ceph MGR nodes - only the active MGR returns metrics
+# Standby MGRs return empty responses (Content-Length: 0) which is expected
+#
+# Note: Using Endpoints instead of EndpointSlice for Cilium compatibility.
+# Cilium requires Endpoints objects for Services without selectors.
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: rook-ceph-mgr-external
+  namespace: rook-ceph
+subsets:
+  - addresses:
+      # Odin - Proxmox Ceph node
+      - ip: "10.20.66.6"
+      # Baldar - Proxmox Ceph node
+      - ip: "10.20.66.4"
+      # Thor - Proxmox Ceph node
+      - ip: "10.20.66.7"
+      # Heimdall - Proxmox Ceph node
+      - ip: "10.20.66.8"
+    ports:
+      - name: http-metrics
+        port: 9283
+        protocol: TCP

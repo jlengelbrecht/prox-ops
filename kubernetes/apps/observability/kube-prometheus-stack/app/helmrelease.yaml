@@ -300,7 +300,7 @@ spec:
       create: true
       rules:
         alertmanager: true
-        etcd: true
+        etcd: false  # Disabled - Talos runs etcd on host, metrics not exposed
         configReloaders: true
         general: true
         k8s: true
@@ -330,3 +330,7 @@ spec:
       rbac:
         create: true
         createAggregateClusterRoles: true
+
+    # Disable etcd monitoring - Talos runs etcd on host, metrics not exposed to Kubernetes
+    kubeEtcd:
+      enabled: false
