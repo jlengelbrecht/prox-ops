@@ -9,6 +9,15 @@ spec:
     matchLabels:
       app.kubernetes.io/name: localai
   ingress:
+    # Allow from envoy-internal Gateway (internal HTTPS access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     # Allow ingress from tools namespace (Homepage dashboard)
     - fromEndpoints:
         - matchLabels:
