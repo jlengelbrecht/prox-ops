@@ -18,6 +18,10 @@ spec:
     replicaCount: 1
 
     deployment:
+      # GPU workloads require Recreate strategy - RollingUpdate causes deadlock
+      # because new pod can't schedule until old pod releases exclusive GPU
+      strategy:
+        type: Recreate
       # NVIDIA runtime for GPU access (must be under deployment: per chart template)
       runtimeClassName: nvidia
       image:
