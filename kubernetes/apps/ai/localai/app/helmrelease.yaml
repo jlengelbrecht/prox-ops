@@ -18,6 +18,8 @@ spec:
     replicaCount: 1
 
     deployment:
+      # NVIDIA runtime for GPU access (must be under deployment: per chart template)
+      runtimeClassName: nvidia
       image:
         # GPU-enabled AIO image with CUDA 12 for RTX A5000 compatibility
         repository: localai/localai
@@ -46,9 +48,6 @@ spec:
         memory: 48Gi
         # GPU resources must have equal request/limit per K8s extended resource spec
         nvidia.com/gpu: 1
-
-    # Use NVIDIA runtime for GPU access
-    runtimeClassName: nvidia
 
     # Target k8s-work-10 which has the RTX A5000
     nodeSelector:
