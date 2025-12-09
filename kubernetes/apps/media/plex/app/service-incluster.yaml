@@ -1,0 +1,28 @@
+---
+# Standalone ClusterIP service for in-cluster DNS resolution
+# Creates "plex.media.svc.cluster.local" for Tautulli, Overseerr, etc.
+#
+# Required because bjw-s app-template names services as:
+# - 1 service: <release-name>
+# - 2+ services: <release-name>-<key>
+#
+# With dual LoadBalancer services (app, internal), the chart creates
+# plex-app and plex-internal, breaking apps expecting "plex" DNS name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: plex
+  namespace: media
+  labels:
+    app.kubernetes.io/name: plex
+    app.kubernetes.io/instance: plex
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: plex
+    app.kubernetes.io/instance: plex
+  ports:
+    - name: http
+      port: 32400
+      targetPort: 32400
+      protocol: TCP
