@@ -40,10 +40,11 @@ spec:
       requests:
         cpu: 2
         memory: 8Gi
+        nvidia.com/gpu: 1
       limits:
         cpu: 14
         memory: 48Gi
-        # Request full GPU - RTX A5000 24GB VRAM
+        # GPU resources must have equal request/limit per K8s extended resource spec
         nvidia.com/gpu: 1
 
     # Use NVIDIA runtime for GPU access
@@ -52,6 +53,7 @@ spec:
     # Target k8s-work-10 which has the RTX A5000
     nodeSelector:
       kubernetes.io/hostname: k8s-work-10
+      nvidia.com/gpu.present: "true"
 
     # Tolerate GPU nodes (if taints are applied)
     tolerations:
