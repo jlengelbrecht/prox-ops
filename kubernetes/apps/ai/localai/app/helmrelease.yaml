@@ -37,6 +37,18 @@ spec:
         parallel_requests: "true"
         # CORS disabled - internal ClusterIP service only
         cors: "false"
+        # API Key authentication (injected from 1Password via ExternalSecret)
+        API_KEY:
+          valueFrom:
+            secretKeyRef:
+              name: localai-secret
+              key: api-key
+        # VRAM Management: Idle watchdog auto-unloads models after inactivity
+        LOCALAI_WATCHDOG_IDLE: "true"
+        LOCALAI_WATCHDOG_IDLE_TIMEOUT: "15m"
+        # Busy watchdog kills stuck processes
+        LOCALAI_WATCHDOG_BUSY: "true"
+        LOCALAI_WATCHDOG_BUSY_TIMEOUT: "5m"
 
     resources:
       requests:
