@@ -44,15 +44,13 @@ spec:
         # NOTE: BUSY watchdog intentionally disabled - it cannot distinguish
         # between stuck processes and legitimately slow complex inference,
         # and will kill active reasoning tasks (see GitHub issue #5221)
-
-    # API Key authentication (injected from 1Password via ExternalSecret)
-    # Must use secretEnv (not deployment.env) for proper secretKeyRef resolution
-    secretEnv:
-      - name: API_KEY
-        valueFrom:
-          secretKeyRef:
-            name: localai-secret
-            key: api-key
+      # API Key authentication (injected from 1Password via ExternalSecret)
+      secretEnv:
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: localai-secret
+              key: api-key
 
     resources:
       requests:
