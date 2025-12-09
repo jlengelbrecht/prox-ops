@@ -37,12 +37,13 @@ spec:
               - secretRef:
                   name: localrecall-secret
             probes:
+              # Using tcpSocket probes because LocalRecall has no unauthenticated health endpoint
+              # and API_KEYS auth would cause httpGet probes to fail with 401
               liveness:
                 enabled: true
                 custom: true
                 spec:
-                  httpGet:
-                    path: /api/collections
+                  tcpSocket:
                     port: &port 8080
                   initialDelaySeconds: 10
                   periodSeconds: 30
@@ -52,8 +53,7 @@ spec:
                 enabled: true
                 custom: true
                 spec:
-                  httpGet:
-                    path: /api/collections
+                  tcpSocket:
                     port: *port
                   initialDelaySeconds: 5
                   periodSeconds: 10
