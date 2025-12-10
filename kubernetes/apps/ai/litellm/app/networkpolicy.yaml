@@ -35,6 +35,14 @@ spec:
         - ports:
             - port: "11434"
               protocol: TCP
+    # Allow egress to PostgreSQL for virtual keys and usage tracking
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: litellm-postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
     # Allow DNS resolution
     - toEndpoints:
         - matchLabels:
@@ -45,4 +53,11 @@ spec:
             - port: "53"
               protocol: UDP
             - port: "53"
+              protocol: TCP
+    # Allow HTTPS egress for Prisma CLI download (first startup only)
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
               protocol: TCP
