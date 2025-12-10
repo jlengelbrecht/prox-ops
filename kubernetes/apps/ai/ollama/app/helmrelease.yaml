@@ -27,6 +27,9 @@ spec:
               # renovate: datasource=docker depName=ollama/ollama
               tag: 0.5.12
             env:
+              # Home directory for Ollama config (SSH keys, etc.) - must be writable
+              # This redirects /.ollama to /models/.ollama on the PVC
+              HOME: "/models"
               # Auto-unload models after 15 minutes idle to free GPU VRAM
               OLLAMA_KEEP_ALIVE: "15m"
               # Model storage location (PVC mount)
