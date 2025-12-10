@@ -5,11 +5,15 @@ namespace: ai
 
 resources:
   - ./namespace.yaml
-  # EPIC-022 AI Platform - BLOCKED pending PM architectural review
-  # Critical flaws identified: llama-swap not K8s-native, no hot-swap path
+  # EPIC-022: Local AI Platform (Ollama-centric architecture)
+  # Architecture validated: 2025-12-10
   # See: .claude/.ai-docs/epics/EPIC-022-local-ai-platform.md
   #
-  # vLLM removed - awaiting PM decision on Ollama vs vLLM architecture
-  # Open WebUI - STORY-073 (blocked)
-  # Qdrant - STORY-074 (blocked)
-  # LiteLLM - STORY-075 (blocked)
+  # Phase 1: Core Platform
+  - ./ollama/storage/ks.yaml  # Storage with prune: false - MUST come before ollama
+  - ./ollama/ks.yaml          # STORY-080: Ollama LLM backend
+  # - ./open-webui/ks.yaml    # STORY-081: Chat UI (pending)
+  # - ./qdrant/ks.yaml        # STORY-074: Vector DB for RAG (pending)
+  #
+  # Phase 2: API Layer
+  # - ./litellm/ks.yaml       # STORY-075: OpenAI-compatible API (pending)
