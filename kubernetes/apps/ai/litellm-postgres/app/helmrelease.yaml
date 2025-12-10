@@ -1,0 +1,113 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: litellm-postgres
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      postgres:
+        # CRITICAL: Recreate strategy prevents multiple pods from accessing
+        # the same RWO PVC simultaneously during updates (prevents data corruption)
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: postgres
+              # renovate: datasource=docker depName=postgres
+              tag: "16.6-alpine"
+            env:
+              POSTGRES_DB: litellm
+              POSTGRES_USER: litellm
+              # Password from ExternalSecret
+              POSTGRES_PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: litellm-postgres-secret
+                    key: POSTGRES_PASSWORD
+              # Performance tuning for small homelab workload
+              PGDATA: /var/lib/postgresql/data/pgdata
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - pg_isready
+                      - -U
+                      - litellm
+                      - -d
+                      - litellm
+                  initialDelaySeconds: 15
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - pg_isready
+                      - -U
+                      - litellm
+                      - -d
+                      - litellm
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      annotations:
+        security.homelab/network: "Internal only - ClusterIP for LiteLLM"
+        security.homelab/purpose: "PostgreSQL database for LiteLLM virtual keys and usage tracking"
+      securityContext:
+        runAsUser: 70
+        runAsGroup: 70
+        runAsNonRoot: true
+        fsGroup: 70
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+    persistence:
+      data:
+        enabled: true
+        existingClaim: litellm-postgres-data
+        globalMounts:
+          - path: /var/lib/postgresql/data
+
+    service:
+      app:
+        controller: postgres
+        type: ClusterIP
+        ports:
+          postgres:
+            port: 5432
+            protocol: TCP

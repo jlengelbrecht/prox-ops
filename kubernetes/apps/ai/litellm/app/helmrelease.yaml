@@ -40,9 +40,13 @@ spec:
               LITELLM_TELEMETRY: "false"
               # Log level for audit trail
               LITELLM_LOG: "INFO"
-              # SQLite database for UI, virtual keys, and usage tracking
-              # Persisted to PVC for cattle upgrade survival
-              DATABASE_URL: "sqlite:///data/litellm.db"
+              # PostgreSQL database for virtual keys, usage tracking, and budget management
+              # Connection string from 1Password via ExternalSecret
+              DATABASE_URL:
+                valueFrom:
+                  secretKeyRef:
+                    name: litellm-secret
+                    key: DATABASE_URL
             probes:
               # Startup probe for slow-starting container (Prisma CLI installation)
               # Allows up to 5 minutes (30 * 10s) for initial startup
