@@ -1,0 +1,119 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vllm
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: vllm-stack
+      # renovate: registryUrl=https://vllm-project.github.io/production-stack
+      version: 0.1.8
+      sourceRef:
+        kind: HelmRepository
+        name: vllm
+        namespace: ai
+  interval: 1h
+  # PostRenderers to patch deployment strategy to Recreate for GPU workloads
+  # This prevents GPU locking during rolling updates (old pod holds GPU while new tries to acquire)
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+            patch: |
+              - op: replace
+                path: /spec/strategy
+                value:
+                  type: Recreate
+  values:
+    # =============================================================================
+    # SERVING ENGINE CONFIGURATION
+    # Currently: 1x RTX A5000 (24GB VRAM)
+    # Future: 4x RTX A5000 (96GB combined) - will update replicaCount and tensorParallelSize
+    # =============================================================================
+    servingEngineSpec:
+      # Runtime class for GPU nodes
+      runtimeClassName: nvidia
+
+      # Model specifications - array supports multiple models for future scaling
+      modelSpec:
+        - name: qwen-coder
+          # Container Image
+          repository: vllm/vllm-openai
+          # renovate: datasource=docker depName=vllm/vllm-openai
+          tag: v0.6.6.post1
+
+          # Model to serve
+          modelURL: "Qwen/Qwen2.5-Coder-7B-Instruct"
+          replicaCount: 1
+
+          # GPU Configuration - k8s-work-10 has RTX A5000 (24GB)
+          requestGPU: 1
+
+          # Resource Allocation
+          requestCPU: 4
+          requestMemory: "16Gi"
+          limitCPU: 14
+          limitMemory: "48Gi"
+
+          # Shared memory for GPU operations (required for tensor parallelism)
+          shmSize: "8Gi"
+
+          # Persistence - models cached here survive cattle upgrades
+          pvcStorage: "200Gi"
+          pvcAccessMode:
+            - ReadWriteOnce
+          storageClass: "ceph-block"
+
+          # vLLM Engine Configuration
+          vllmConfig:
+            enableChunkedPrefill: true
+            enablePrefixCaching: true
+            maxModelLen: 8192
+            dtype: "bfloat16"
+            extraArgs:
+              - "--gpu-memory-utilization=0.9"
+              - "--disable-log-requests"
+
+          # API Key Authentication - references secret created by ExternalSecret
+          vllmAPIKey:
+            secretName: vllm-secret
+            secretKey: VLLM_API_KEY
+
+          # Node Selection - target A5000 GPU node
+          nodeSelector:
+            kubernetes.io/hostname: k8s-work-10
+            nvidia.com/gpu.present: "true"
+
+          # Tolerations for GPU nodes
+          tolerations:
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+
+    # =============================================================================
+    # ROUTER CONFIGURATION
+    # Request router for intelligent load balancing and KV cache reuse
+    # With 1 replica this is passthrough, but ready for multi-replica scaling
+    # =============================================================================
+    routerSpec:
+      replicaCount: 1
+      requestCPU: 1
+      requestMemory: "1Gi"
+      limitCPU: 2
+      limitMemory: "2Gi"
+
+    # =============================================================================
+    # SERVICE CONFIGURATION
+    # =============================================================================
+    serviceType: ClusterIP
+    servicePort: 80
+    containerPort: 8000
+
+    # =============================================================================
+    # OBSERVABILITY
+    # vLLM exposes Prometheus metrics at /metrics endpoint
+    # ServiceMonitor will be created by the chart or we add one manually
+    # =============================================================================
