@@ -44,14 +44,26 @@ spec:
               # Persisted to PVC for cattle upgrade survival
               DATABASE_URL: "sqlite:///data/litellm.db"
             probes:
-              liveness:
+              # Startup probe for slow-starting container (Prisma CLI installation)
+              # Allows up to 5 minutes (30 * 10s) for initial startup
+              startup:
                 enabled: true
                 custom: true
                 spec:
                   httpGet:
                     path: /health/liveliness
                     port: &port 4000
-                  initialDelaySeconds: 30
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 30
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health/liveliness
+                    port: *port
                   periodSeconds: 30
                   timeoutSeconds: 10
                   failureThreshold: 3
@@ -62,7 +74,6 @@ spec:
                   httpGet:
                     path: /health/readiness
                     port: *port
-                  initialDelaySeconds: 15
                   periodSeconds: 10
                   timeoutSeconds: 5
                   failureThreshold: 3
