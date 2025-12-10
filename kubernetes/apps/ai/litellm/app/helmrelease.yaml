@@ -20,9 +20,10 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/berriai/litellm
-              # renovate: datasource=docker depName=ghcr.io/berriai/litellm
-              tag: main-v1.56.3
+              # Use database-specific image with Prisma pre-installed
+              repository: ghcr.io/berriai/litellm-database
+              # renovate: datasource=docker depName=ghcr.io/berriai/litellm-database versioning=regex:^main-v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)-stable\.(?<build>\d+)$
+              tag: main-v1.80.5-stable.1
             args:
               - "--config"
               - "/app/config.yaml"
@@ -48,8 +49,7 @@ spec:
                     name: litellm-secret
                     key: DATABASE_URL
             probes:
-              # Startup probe for slow-starting container (Prisma CLI installation)
-              # Allows up to 5 minutes (30 * 10s) for initial startup
+              # Startup probe for database migration and initial health check
               startup:
                 enabled: true
                 custom: true
@@ -124,7 +124,7 @@ spec:
         existingClaim: litellm-data
         globalMounts:
           - path: /data
-      # LiteLLM/Prisma needs writable cache directory for engine binaries
+      # LiteLLM needs writable cache directory
       cache:
         enabled: true
         type: emptyDir
