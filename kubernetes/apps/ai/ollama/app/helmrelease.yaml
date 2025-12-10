@@ -1,0 +1,119 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: ollama
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      ollama:
+        # CRITICAL: Recreate strategy ensures GPU is released before new pod starts
+        # This prevents GPU resource lock issues during upgrades
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: ollama/ollama
+              # renovate: datasource=docker depName=ollama/ollama
+              tag: 0.5.12
+            env:
+              # Auto-unload models after 15 minutes idle to free GPU VRAM
+              OLLAMA_KEEP_ALIVE: "15m"
+              # Model storage location (PVC mount)
+              OLLAMA_MODELS: "/models"
+              # Host binding for API
+              OLLAMA_HOST: "0.0.0.0:11434"
+              # Enable NVIDIA GPU
+              NVIDIA_VISIBLE_DEVICES: "all"
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: 11434
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: 11434
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 4
+                memory: 16Gi
+                nvidia.com/gpu: 1
+              limits:
+                cpu: 14
+                memory: 48Gi
+                nvidia.com/gpu: 1
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      # NVIDIA container runtime for GPU access
+      runtimeClassName: nvidia
+      nodeSelector:
+        # Target the A5000 GPU node specifically
+        nvidia.com/gpu.present: "true"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: gpu.nvidia.com/model
+                    operator: In
+                    values:
+                      - rtx-a5000
+      annotations:
+        security.homelab/gpu-required: "NVIDIA RTX A5000 for LLM inference"
+        security.homelab/network: "Internal only - ClusterIP service"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+    persistence:
+      models:
+        enabled: true
+        existingClaim: ollama-models
+        globalMounts:
+          - path: /models
+
+    service:
+      app:
+        controller: ollama
+        type: ClusterIP
+        ports:
+          http:
+            port: 11434
+            protocol: TCP
