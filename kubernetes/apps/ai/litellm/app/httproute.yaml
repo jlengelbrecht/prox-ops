@@ -5,7 +5,7 @@ metadata:
   name: litellm
   namespace: ai
   annotations:
-    external-dns.alpha.kubernetes.io/target: internal.homelab0.org
+    external-dns.alpha.kubernetes.io/hostname: api.homelab0.org
 spec:
   parentRefs:
     - name: envoy-internal
@@ -31,3 +31,5 @@ spec:
                 value: "DENY"
               - name: X-Content-Type-Options
                 value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
