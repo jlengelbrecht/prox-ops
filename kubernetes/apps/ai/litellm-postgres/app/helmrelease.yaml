@@ -17,6 +17,9 @@ spec:
   values:
     controllers:
       postgres:
+        # CRITICAL: Recreate strategy prevents multiple pods from accessing
+        # the same RWO PVC simultaneously during updates (prevents data corruption)
+        strategy: Recreate
         containers:
           app:
             image:
