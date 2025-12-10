@@ -20,9 +20,11 @@ spec:
         containers:
           app:
             image:
-              # Use database-specific image with Prisma pre-installed
-              repository: ghcr.io/berriai/litellm-database
-              # renovate: datasource=docker depName=ghcr.io/berriai/litellm-database versioning=regex:^main-v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)-stable\.(?<build>\d+)$
+              # Use non-root image with pre-built Prisma binaries
+              # This image is designed for Kubernetes non-root security contexts
+              # Ref: https://docs.litellm.ai/docs/proxy/deploy
+              repository: ghcr.io/berriai/litellm-non_root
+              # renovate: datasource=docker depName=ghcr.io/berriai/litellm-non_root versioning=regex:^main-v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)-stable\.(?<build>\d+)$
               tag: main-v1.80.5-stable.1
             args:
               - "--config"
@@ -48,8 +50,11 @@ spec:
                   secretKeyRef:
                     name: litellm-secret
                     key: DATABASE_URL
+              # Writable directory for database migrations (required for non-root)
+              # Ref: https://github.com/BerriAI/litellm/issues/13746
+              LITELLM_MIGRATION_DIR: "/data/migrations"
             probes:
-              # Startup probe for database migration and initial health check
+              # Extended startup probe for database migration and Prisma setup
               startup:
                 enabled: true
                 custom: true
@@ -57,9 +62,9 @@ spec:
                   httpGet:
                     path: /health/liveliness
                     port: &port 4000
-                  initialDelaySeconds: 10
+                  initialDelaySeconds: 30
                   periodSeconds: 10
-                  timeoutSeconds: 5
+                  timeoutSeconds: 10
                   failureThreshold: 30
               liveness:
                 enabled: true
@@ -101,10 +106,11 @@ spec:
         security.homelab/network: "Internal + external API via envoy-internal"
         security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
       securityContext:
-        runAsUser: 1000
-        runAsGroup: 1000
+        # litellm-non_root image runs as 'nobody' user (UID 65534)
+        runAsUser: 65534
+        runAsGroup: 65534
         runAsNonRoot: true
-        fsGroup: 1000
+        fsGroup: 65534
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
@@ -118,19 +124,41 @@ spec:
           - path: /app/config.yaml
             subPath: config.yaml
             readOnly: true
+      # Persistent storage for migrations and data
       data:
         enabled: true
         type: persistentVolumeClaim
         existingClaim: litellm-data
         globalMounts:
           - path: /data
-      # LiteLLM needs writable cache directory
+      # Python/pip cache directory
       cache:
+        enabled: true
+        type: emptyDir
+        sizeLimit: 500Mi
+        globalMounts:
+          - path: /.cache
+      # npm cache directory (used by Prisma CLI)
+      npm-cache:
+        enabled: true
+        type: emptyDir
+        sizeLimit: 500Mi
+        globalMounts:
+          - path: /.npm
+      # Temp directory for UI assets
+      tmp:
         enabled: true
         type: emptyDir
         sizeLimit: 100Mi
         globalMounts:
-          - path: /.cache
+          - path: /tmp
+      # Prisma cache directory (per Dockerfile.non_root)
+      prisma-cache:
+        enabled: true
+        type: emptyDir
+        sizeLimit: 500Mi
+        globalMounts:
+          - path: /nonexistent
 
     service:
       app:
