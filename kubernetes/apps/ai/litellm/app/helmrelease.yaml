@@ -1,0 +1,120 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: litellm
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      litellm:
+        containers:
+          app:
+            image:
+              repository: ghcr.io/berriai/litellm
+              # renovate: datasource=docker depName=ghcr.io/berriai/litellm
+              tag: main-v1.56.3
+            args:
+              - "--config"
+              - "/app/config.yaml"
+              - "--port"
+              - "4000"
+            env:
+              # AUTHENTICATION: Master key required for all API requests
+              # Requests must include: Authorization: Bearer <key>
+              LITELLM_MASTER_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: litellm-secret
+                    key: LITELLM_MASTER_KEY
+              # Disable telemetry
+              LITELLM_TELEMETRY: "false"
+              # Log level for audit trail
+              LITELLM_LOG: "INFO"
+              # SQLite database for UI, virtual keys, and usage tracking
+              # Persisted to PVC for cattle upgrade survival
+              DATABASE_URL: "sqlite:///data/litellm.db"
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health/liveliness
+                    port: &port 4000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health/readiness
+                    port: *port
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 200m
+                memory: 256Mi
+              limits:
+                cpu: 1
+                memory: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      annotations:
+        security.homelab/network: "Internal + external API via envoy-internal"
+        security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+    persistence:
+      config:
+        enabled: true
+        type: configMap
+        name: litellm-config
+        globalMounts:
+          - path: /app/config.yaml
+            subPath: config.yaml
+            readOnly: true
+      data:
+        enabled: true
+        type: persistentVolumeClaim
+        existingClaim: litellm-data
+        globalMounts:
+          - path: /data
+
+    service:
+      app:
+        controller: litellm
+        type: ClusterIP
+        ports:
+          http:
+            port: 4000
+            protocol: TCP

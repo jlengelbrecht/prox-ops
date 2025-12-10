@@ -1,0 +1,48 @@
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: litellm
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  ingress:
+    # Allow ingress from Envoy gateway (external API access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
+    # Allow ingress from other AI services (Open WebUI, etc.)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
+  egress:
+    # Allow egress to Ollama for LLM inference
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: ollama
+      toPorts:
+        - ports:
+            - port: "11434"
+              protocol: TCP
+    # Allow DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
