@@ -27,6 +27,14 @@ spec:
         - ports:
             - port: "11434"
               protocol: TCP
+    # Allow egress to Qdrant for vector database (RAG)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: qdrant
+      toPorts:
+        - ports:
+            - port: "6333"
+              protocol: TCP
     # Allow DNS resolution
     - toEndpoints:
         - matchLabels:

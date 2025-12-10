@@ -46,6 +46,16 @@ spec:
               SCARF_NO_ANALYTICS: "true"
               DO_NOT_TRACK: "true"
               ANONYMIZED_TELEMETRY: "false"
+              # Qdrant Vector Database for RAG
+              VECTOR_DB: "qdrant"
+              QDRANT_URI: "http://qdrant.ai.svc.cluster.local:6333"
+              ENABLE_QDRANT_MULTITENANCY_MODE: "true"
+              # Qdrant API key from existing secret
+              QDRANT_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: qdrant-secret
+                    key: api-key
             envFrom:
               - secretRef:
                   name: open-webui-secrets
