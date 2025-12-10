@@ -40,6 +40,9 @@ spec:
               LITELLM_TELEMETRY: "false"
               # Log level for audit trail
               LITELLM_LOG: "INFO"
+              # SQLite database for UI, virtual keys, and usage tracking
+              # Persisted to PVC for cattle upgrade survival
+              DATABASE_URL: "sqlite:///data/litellm.db"
             probes:
               liveness:
                 enabled: true
@@ -100,6 +103,12 @@ spec:
           - path: /app/config.yaml
             subPath: config.yaml
             readOnly: true
+      data:
+        enabled: true
+        type: persistentVolumeClaim
+        existingClaim: litellm-data
+        globalMounts:
+          - path: /data
 
     service:
       app:
