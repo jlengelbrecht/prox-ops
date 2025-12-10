@@ -1,0 +1,61 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: ai
+data:
+  config.yaml: |
+    # LiteLLM Proxy Configuration
+    # Provides OpenAI-compatible API gateway for Ollama models
+    #
+    # AUTHENTICATION: Required via LITELLM_MASTER_KEY environment variable
+    # All API requests must include: Authorization: Bearer <master-key>
+    # Master key stored in 1Password and injected via ExternalSecret
+
+    model_list:
+      # GPT-4 compatible model (coding, general purpose)
+      - model_name: "gpt-4"
+        litellm_params:
+          model: "ollama_chat/qwen2.5-coder:14b"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+
+      # GPT-3.5 compatible model (faster, lighter tasks)
+      - model_name: "gpt-3.5-turbo"
+        litellm_params:
+          model: "ollama_chat/llama3.2:3b"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+
+      # Embeddings model (OpenAI compatible)
+      - model_name: "text-embedding-ada-002"
+        litellm_params:
+          model: "ollama/nomic-embed-text:latest"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+
+      # Also expose native model names
+      - model_name: "qwen2.5-coder:14b"
+        litellm_params:
+          model: "ollama_chat/qwen2.5-coder:14b"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+
+      - model_name: "llama3.2:3b"
+        litellm_params:
+          model: "ollama_chat/llama3.2:3b"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+
+      - model_name: "nomic-embed-text"
+        litellm_params:
+          model: "ollama/nomic-embed-text:latest"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+
+    general_settings:
+      # Rate limiting
+      max_parallel_requests: 50
+      # Request limits per minute (per API key when using virtual keys)
+      request_timeout: 120
+
+    litellm_settings:
+      # Drop unsupported params instead of erroring
+      drop_params: true
+      # Enable logging for audit
+      set_verbose: false
