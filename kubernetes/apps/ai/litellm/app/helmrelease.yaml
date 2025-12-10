@@ -109,6 +109,13 @@ spec:
         existingClaim: litellm-data
         globalMounts:
           - path: /data
+      # LiteLLM/Prisma needs writable cache directory for engine binaries
+      cache:
+        enabled: true
+        type: emptyDir
+        sizeLimit: 100Mi
+        globalMounts:
+          - path: /.cache
 
     service:
       app:
