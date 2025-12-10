@@ -26,10 +26,18 @@ spec:
             env:
               # Ollama backend connection
               OLLAMA_BASE_URL: "http://ollama.ai.svc.cluster.local:11434"
-              # Enable local authentication (OIDC configured later in STORY-082)
+              # Authentication settings
               WEBUI_AUTH: "true"
-              # Allow new user signups for initial setup, disable after
-              ENABLE_SIGNUP: "true"
+              # Disable local signup - use OIDC instead
+              ENABLE_SIGNUP: "false"
+              # OIDC Configuration (Authentik)
+              ENABLE_OAUTH_SIGNUP: "true"
+              ENABLE_LOGIN_FORM: "false"
+              OAUTH_PROVIDER_NAME: "Authentik"
+              OPENID_PROVIDER_URL: "https://authentik.homelab0.org/application/o/open-webui/.well-known/openid-configuration"
+              OAUTH_SCOPES: "openid email profile"
+              # Default role for new users (avoid "pending" status)
+              DEFAULT_USER_ROLE: "user"
               # Data directory
               DATA_DIR: "/app/backend/data"
               # Disable telemetry
