@@ -56,20 +56,17 @@ spec:
       security.homelab/network: "Internal + external API via envoy-internal"
       security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
 
-    # Pod security context - defense in depth
+    # Pod security context
+    # Note: litellm-database uses supervisord which requires write access to /app/
+    # Cannot override runAsUser as container files are owned by internal user
     podSecurityContext:
-      runAsUser: 65534
-      runAsGroup: 65534
-      runAsNonRoot: true
-      fsGroup: 65534
-      fsGroupChangePolicy: OnRootMismatch
       seccompProfile:
         type: RuntimeDefault
 
     # Container security context
+    # Note: readOnlyRootFilesystem=false required for Prisma + supervisord
     securityContext:
       allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: false  # Prisma requires write access
       capabilities:
         drop:
           - ALL
