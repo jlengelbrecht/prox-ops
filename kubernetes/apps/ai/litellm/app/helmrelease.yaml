@@ -146,8 +146,13 @@ spec:
         value: "https://authentik.homelab0.org/application/o/userinfo/"
       - name: PROXY_BASE_URL
         value: "https://ai-api.homelab0.org"
-      # Default role for SSO users (internal_user = viewer permissions)
-      # Admin role set via PROXY_ADMIN_ID after first login
+      # Admin user - gets proxy_admin role on SSO login (stored in 1Password)
+      - name: PROXY_ADMIN_ID
+        valueFrom:
+          secretKeyRef:
+            name: litellm-oidc
+            key: PROXY_ADMIN_ID
+      # Disable basic auth login (SSO only)
       - name: UI_USERNAME
         value: ""
       - name: UI_PASSWORD
