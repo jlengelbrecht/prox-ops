@@ -127,3 +127,28 @@ spec:
           secretKeyRef:
             name: litellm-masterkey
             key: masterkey
+      # SSO/OIDC Configuration - Authentik Generic Provider
+      - name: GENERIC_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: litellm-oidc
+            key: GENERIC_CLIENT_ID
+      - name: GENERIC_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: litellm-oidc
+            key: GENERIC_CLIENT_SECRET
+      - name: GENERIC_AUTHORIZATION_ENDPOINT
+        value: "https://authentik.homelab0.org/application/o/authorize/"
+      - name: GENERIC_TOKEN_ENDPOINT
+        value: "https://authentik.homelab0.org/application/o/token/"
+      - name: GENERIC_USERINFO_ENDPOINT
+        value: "https://authentik.homelab0.org/application/o/userinfo/"
+      - name: PROXY_BASE_URL
+        value: "https://ai-api.homelab0.org"
+      # Default role for SSO users (internal_user = viewer permissions)
+      # Admin role set via PROXY_ADMIN_ID after first login
+      - name: UI_USERNAME
+        value: ""
+      - name: UI_PASSWORD
+        value: ""
