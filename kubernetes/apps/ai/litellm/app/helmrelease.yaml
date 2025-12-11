@@ -118,3 +118,12 @@ spec:
     envVars:
       LITELLM_TELEMETRY: "false"
       LITELLM_LOG: "INFO"
+
+    # Extra environment variables from secrets
+    # LiteLLM UI requires LITELLM_MASTER_KEY (chart only sets PROXY_MASTER_KEY)
+    extraEnvVars:
+      - name: LITELLM_MASTER_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-masterkey
+            key: masterkey
