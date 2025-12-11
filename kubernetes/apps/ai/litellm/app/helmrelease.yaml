@@ -7,164 +7,114 @@ metadata:
 spec:
   chart:
     spec:
-      chart: app-template
-      version: 4.4.0
+      chart: litellm-helm
+      # renovate: datasource=helm registryUrl=oci://ghcr.io/berriai
+      version: 0.1.830
       sourceRef:
         kind: HelmRepository
-        name: bjw-s
+        name: litellm
         namespace: ai
   interval: 1h
+  # Depend on PostgreSQL to be ready before LiteLLM
+  dependsOn:
+    - name: litellm-postgres
+      namespace: ai
   values:
-    controllers:
-      litellm:
-        containers:
-          app:
-            image:
-              # Use non-root image with pre-built Prisma binaries
-              # This image is designed for Kubernetes non-root security contexts
-              # Ref: https://docs.litellm.ai/docs/proxy/deploy
-              repository: ghcr.io/berriai/litellm-non_root
-              # renovate: datasource=docker depName=ghcr.io/berriai/litellm-non_root versioning=regex:^main-v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)-stable\.(?<build>\d+)$
-              tag: main-v1.80.5-stable.1
-            args:
-              - "--config"
-              - "/app/config.yaml"
-              - "--port"
-              - "4000"
-            env:
-              # AUTHENTICATION: Master key required for all API requests
-              # Requests must include: Authorization: Bearer <key>
-              LITELLM_MASTER_KEY:
-                valueFrom:
-                  secretKeyRef:
-                    name: litellm-secret
-                    key: LITELLM_MASTER_KEY
-              # Disable telemetry
-              LITELLM_TELEMETRY: "false"
-              # Log level for audit trail
-              LITELLM_LOG: "INFO"
-              # PostgreSQL database for virtual keys, usage tracking, and budget management
-              # Connection string from 1Password via ExternalSecret
-              DATABASE_URL:
-                valueFrom:
-                  secretKeyRef:
-                    name: litellm-secret
-                    key: DATABASE_URL
-              # Writable directory for database migrations (required for non-root)
-              # Ref: https://github.com/BerriAI/litellm/issues/13746
-              LITELLM_MIGRATION_DIR: "/data/migrations"
-            probes:
-              # Extended startup probe for database migration and Prisma setup
-              startup:
-                enabled: true
-                custom: true
-                spec:
-                  httpGet:
-                    path: /health/liveliness
-                    port: &port 4000
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
-                  timeoutSeconds: 10
-                  failureThreshold: 30
-              liveness:
-                enabled: true
-                custom: true
-                spec:
-                  httpGet:
-                    path: /health/liveliness
-                    port: *port
-                  periodSeconds: 30
-                  timeoutSeconds: 10
-                  failureThreshold: 3
-              readiness:
-                enabled: true
-                custom: true
-                spec:
-                  httpGet:
-                    path: /health/readiness
-                    port: *port
-                  periodSeconds: 10
-                  timeoutSeconds: 5
-                  failureThreshold: 3
-            resources:
-              requests:
-                cpu: 200m
-                memory: 256Mi
-              limits:
-                cpu: 1
-                memory: 1Gi
-            securityContext:
-              allowPrivilegeEscalation: false
-              readOnlyRootFilesystem: false
-              capabilities:
-                drop:
-                  - ALL
+    # Image configuration - uses litellm-database (debian-based) for Prisma compatibility
+    image:
+      repository: ghcr.io/berriai/litellm-database
+      pullPolicy: Always
+      # renovate: datasource=docker depName=ghcr.io/berriai/litellm-database
+      tag: main-v1.80.9-nightly
 
-    defaultPodOptions:
-      automountServiceAccountToken: false
-      annotations:
-        security.homelab/network: "Internal + external API via envoy-internal"
-        security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
-      securityContext:
-        # litellm-non_root image runs as 'nobody' user (UID 65534)
-        runAsUser: 65534
-        runAsGroup: 65534
-        runAsNonRoot: true
-        fsGroup: 65534
-        fsGroupChangePolicy: OnRootMismatch
-        seccompProfile:
-          type: RuntimeDefault
+    # Replica count
+    replicaCount: 1
 
-    persistence:
-      config:
-        enabled: true
-        type: configMap
-        name: litellm-config
-        globalMounts:
-          - path: /app/config.yaml
-            subPath: config.yaml
-            readOnly: true
-      # Persistent storage for migrations and data
-      data:
-        enabled: true
-        type: persistentVolumeClaim
-        existingClaim: litellm-data
-        globalMounts:
-          - path: /data
-      # Python/pip cache directory
-      cache:
-        enabled: true
-        type: emptyDir
-        sizeLimit: 500Mi
-        globalMounts:
-          - path: /.cache
-      # npm cache directory (used by Prisma CLI)
-      npm-cache:
-        enabled: true
-        type: emptyDir
-        sizeLimit: 500Mi
-        globalMounts:
-          - path: /.npm
-      # Temp directory for UI assets
-      tmp:
-        enabled: true
-        type: emptyDir
-        sizeLimit: 100Mi
-        globalMounts:
-          - path: /tmp
-      # Prisma cache directory (per Dockerfile.non_root)
-      prisma-cache:
-        enabled: true
-        type: emptyDir
-        sizeLimit: 500Mi
-        globalMounts:
-          - path: /nonexistent
+    # Master key from ExternalSecret
+    masterkeySecretName: litellm-masterkey
+    masterkeySecretKey: masterkey
 
+    # Database configuration - use existing PostgreSQL
+    db:
+      useExisting: true
+      deployStandalone: false
+      endpoint: litellm-postgres.ai.svc.cluster.local
+      database: litellm
+      secret:
+        name: litellm-db-credentials
+        usernameKey: username
+        passwordKey: password
+
+    # Use existing ConfigMap for proxy configuration
+    proxyConfigMap:
+      create: false
+      name: litellm-config
+      key: config.yaml
+
+    # Pod annotations
+    podAnnotations:
+      security.homelab/network: "Internal + external API via envoy-internal"
+      security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
+
+    # Pod security context - defense in depth
+    podSecurityContext:
+      runAsUser: 65534
+      runAsGroup: 65534
+      runAsNonRoot: true
+      fsGroup: 65534
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        type: RuntimeDefault
+
+    # Container security context
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false  # Prisma requires write access
+      capabilities:
+        drop:
+          - ALL
+
+    # Resource limits
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1
+        memory: 1Gi
+
+    # Service configuration
     service:
-      app:
-        controller: litellm
-        type: ClusterIP
-        ports:
-          http:
-            port: 4000
-            protocol: TCP
+      type: ClusterIP
+      port: 4000
+
+    # Separate health app for more reliable probes
+    separateHealthApp: true
+    separateHealthPort: 8081
+
+    # Migration job settings
+    migrationJob:
+      enabled: true
+      retries: 3
+      backoffLimit: 4
+      disableSchemaUpdate: false
+      ttlSecondsAfterFinished: 120
+      hooks:
+        # Enable Helm hooks for migration job orchestration during install/upgrade
+        argocd:
+          enabled: false
+        helm:
+          enabled: true
+
+    # Disable internal PostgreSQL (we use our own)
+    postgresql:
+      enabled: false
+
+    # Disable Redis (not needed for single-node)
+    redis:
+      enabled: false
+
+    # Environment variables
+    envVars:
+      LITELLM_TELEMETRY: "false"
+      LITELLM_LOG: "INFO"
