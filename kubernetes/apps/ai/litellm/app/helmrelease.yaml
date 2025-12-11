@@ -1,5 +1,4 @@
 ---
-# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/app-template-3.4.0/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -9,7 +8,7 @@ spec:
   chart:
     spec:
       chart: litellm-helm
-      # renovate: datasource=docker depName=ghcr.io/berriai/litellm-helm
+      # renovate: datasource=helm registryUrl=oci://ghcr.io/berriai
       version: 0.1.830
       sourceRef:
         kind: HelmRepository
@@ -101,7 +100,7 @@ spec:
       disableSchemaUpdate: false
       ttlSecondsAfterFinished: 120
       hooks:
-        # Using Flux, not ArgoCD
+        # Enable Helm hooks for migration job orchestration during install/upgrade
         argocd:
           enabled: false
         helm:
