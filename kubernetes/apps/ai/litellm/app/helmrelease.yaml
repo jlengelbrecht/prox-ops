@@ -59,7 +59,9 @@ spec:
     # Pod security context
     # Note: litellm-database uses supervisord which requires write access to /app/
     # Cannot override runAsUser as container files are owned by internal user
+    # See: https://github.com/BerriAI/litellm/blob/main/docker/litellm-database/Dockerfile
     podSecurityContext:
+      runAsNonRoot: true
       seccompProfile:
         type: RuntimeDefault
 
@@ -67,6 +69,7 @@ spec:
     # Note: readOnlyRootFilesystem=false required for Prisma + supervisord
     securityContext:
       allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false
       capabilities:
         drop:
           - ALL
