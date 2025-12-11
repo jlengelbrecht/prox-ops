@@ -54,6 +54,18 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
+    # Allow egress to envoy-internal gateway for Authentik OIDC flow
+    # LiteLLM needs to reach authentik.homelab0.org for token exchange
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP
     # Allow HTTPS egress for Prisma CLI download (first startup only)
     - toEntities:
         - world
