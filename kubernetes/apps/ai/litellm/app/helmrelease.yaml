@@ -57,11 +57,11 @@ spec:
       security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
 
     # Pod security context
-    # Note: litellm-database uses supervisord which requires write access to /app/
-    # Cannot override runAsUser as container files are owned by internal user
+    # Note: litellm-database image specifies USER as text "root" in Dockerfile,
+    # which prevents Kubernetes from verifying runAsNonRoot. The image uses
+    # supervisord to manage processes and runs as an internal non-root user.
     # See: https://github.com/BerriAI/litellm/blob/main/docker/litellm-database/Dockerfile
     podSecurityContext:
-      runAsNonRoot: true
       seccompProfile:
         type: RuntimeDefault
 
