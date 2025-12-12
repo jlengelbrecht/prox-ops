@@ -1,8 +1,9 @@
 ---
-# SecurityPolicy for Authentik forward auth
-# Requires:
-# 1. Authentik Proxy Provider configuration (manual - see story STORY-096)
-# 2. ReferenceGrant in security namespace (added to authentik app)
+# SecurityPolicy for Authentik forward auth via Envoy ext_authz
+# References:
+# - https://docs.goauthentik.io/add-secure-apps/providers/proxy/server_envoy
+# - Authentik Proxy Provider configured via Playwright (STORY-096)
+# - ReferenceGrant in security namespace allows cross-namespace backendRef
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
@@ -15,16 +16,24 @@ spec:
       name: lightrag
   extAuth:
     headersToExtAuth:
+      # Standard headers for auth
       - accept
       - cookie
       - authorization
+      # X-Forwarded headers required by Authentik (set by ClientTrafficPolicy)
+      - x-forwarded-proto
+      - x-forwarded-host
+      - x-forwarded-for
+      - x-forwarded-uri
+      - x-forwarded-method
     failOpen: false
     http:
       backendRefs:
         - name: authentik-server
           namespace: security
           port: 80
-      path: /outpost.goauthentik.io/auth/nginx
+      # Envoy-specific auth path (NOT /auth/nginx or /auth/traefik)
+      path: /outpost.goauthentik.io/auth/envoy
       headersToBackend:
         - X-authentik-username
         - X-authentik-groups
