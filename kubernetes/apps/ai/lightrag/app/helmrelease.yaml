@@ -33,6 +33,8 @@ spec:
               WORKERS: "2"
               TIMEOUT: "150"
               LOG_LEVEL: "INFO"
+              # Log directory - use emptyDir for ephemeral logs (cloud-native pattern)
+              LOG_DIR: "/app/logs"
 
               # Working directories (PVC mounts)
               WORKING_DIR: "/app/data/rag_storage"
@@ -135,6 +137,12 @@ spec:
         existingClaim: lightrag-input
         globalMounts:
           - path: /app/data/inputs
+      # Ephemeral logs - follows cloud-native pattern (logs to emptyDir, not PVC)
+      logs:
+        enabled: true
+        type: emptyDir
+        globalMounts:
+          - path: /app/logs
 
     service:
       app:
