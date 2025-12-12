@@ -28,8 +28,8 @@ spec:
               tag: v1.4.9.8
             # Patch upstream pydantic bug: file_path must be Optional for API-submitted text documents
             # Bug: DocStatusResponse.file_path is defined as `str` but is `None` for text submissions
-            # Fix: Copy module to /tmp (writable) with package structure, patch there, use PYTHONPATH
-            # The venv site-packages is root-owned; UID 1000 cannot write to it directly
+            # Fix: Copy module to /tmp (writable), patch there, use wrapper script with sys.path injection
+            # Note: PYTHONPATH doesn't work because Python's '' entry finds /app/lightrag first
             command:
               - /bin/sh
               - -c
@@ -59,9 +59,27 @@ spec:
                 fi
                 echo "Pydantic patch applied successfully to /tmp module"
 
-                # PYTHONPATH prepends /tmp so Python imports our patched module first
-                export PYTHONPATH=/tmp:$PYTHONPATH
-                exec python -m lightrag.api.lightrag_server
+                # Create Python wrapper that injects /tmp into sys.path BEFORE any imports
+                # This is required because PYTHONPATH doesn't override Python's '' (cwd) entry
+                # which causes /app/lightrag to be found before our patched /tmp/lightrag
+                cat > /tmp/run_lightrag.py << 'PYEOF'
+                import sys
+                # Insert /tmp at position 0 to ensure our patched module is found first
+                sys.path.insert(0, '/tmp')
+                # Remove empty string entry (current directory) which causes /app/lightrag to be found
+                sys.path = [p for p in sys.path if p != '']
+                print(f"sys.path after patch injection: {sys.path[:5]}...")
+
+                # Verify patched module is loadable from /tmp
+                from lightrag.api.routers import document_routes
+                print(f"Loaded document_routes from: {document_routes.__file__}")
+
+                # Run the actual server
+                from lightrag.api.lightrag_server import main
+                main()
+                PYEOF
+
+                exec python /tmp/run_lightrag.py
             env:
               # Server Configuration
               HOST: "0.0.0.0"
