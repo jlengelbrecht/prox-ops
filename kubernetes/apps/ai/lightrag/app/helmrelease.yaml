@@ -68,7 +68,7 @@ spec:
                 sys.path = ['/tmp'] + [p for p in sys.path if p not in ('', '/app')]
                 print(f"sys.path configured: {sys.path[:5]}...")
 
-                # Verify patched module is being loaded from /tmp
+                # Import patched module (startup aborts if wrong module loaded)
                 from lightrag.api.routers import document_routes
                 print(f"Loaded document_routes from: {document_routes.__file__}")
 
