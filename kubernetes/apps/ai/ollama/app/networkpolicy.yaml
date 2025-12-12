@@ -9,7 +9,7 @@ spec:
     matchLabels:
       app.kubernetes.io/name: ollama
   ingress:
-    # Allow from Open WebUI (future - STORY-081)
+    # Allow from Open WebUI (STORY-081)
     - fromEndpoints:
         - matchLabels:
             app.kubernetes.io/name: open-webui
@@ -17,10 +17,18 @@ spec:
         - ports:
             - port: "11434"
               protocol: TCP
-    # Allow from LiteLLM (future - STORY-075)
+    # Allow from LiteLLM (STORY-075)
     - fromEndpoints:
         - matchLabels:
             app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "11434"
+              protocol: TCP
+    # Allow from LightRAG (STORY-096)
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: lightrag
       toPorts:
         - ports:
             - port: "11434"
