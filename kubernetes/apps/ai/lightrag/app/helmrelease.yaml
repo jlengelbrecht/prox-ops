@@ -28,22 +28,38 @@ spec:
               tag: v1.4.9.8
             # Patch upstream pydantic bug: file_path must be Optional for API-submitted text documents
             # Bug: DocStatusResponse.file_path is defined as `str` but is `None` for text submissions
-            # Fix: Copy module to /tmp, patch there, use PYTHONPATH to prioritize patched version
-            # Note: Container image /app is read-only, so we copy to writable /tmp first
+            # Fix: Copy module to /tmp (writable) with package structure, patch there, use PYTHONPATH
+            # The venv site-packages is root-owned; UID 1000 cannot write to it directly
             command:
               - /bin/sh
               - -c
               - |
-                # Copy lightrag package to writable location
-                cp -r /app/lightrag /tmp/lightrag || { echo "ERROR: Failed to copy /app/lightrag to /tmp"; exit 1; }
-                # Apply patch in writable location
+                # Find the source file dynamically (resilient to Python version changes)
+                VENV_FILE=$(find /app/.venv/lib -name "document_routes.py" -path "*/lightrag/api/routers/*" 2>/dev/null | head -n 1)
+                if [ -z "$VENV_FILE" ]; then
+                  echo "ERROR: Could not find document_routes.py in venv"
+                  exit 1
+                fi
+                echo "Found source file: $VENV_FILE"
+
+                # Create package structure in writable /tmp directory
+                mkdir -p /tmp/lightrag/api/routers
+                touch /tmp/lightrag/__init__.py
+                touch /tmp/lightrag/api/__init__.py
+                touch /tmp/lightrag/api/routers/__init__.py
+
+                # Copy and patch in /tmp (writable by UID 1000)
+                cp "$VENV_FILE" /tmp/lightrag/api/routers/document_routes.py
                 sed -i 's/file_path: str = Field(description="Path to the document file")/file_path: Optional[str] = Field(default=None, description="Path to the document file")/' /tmp/lightrag/api/routers/document_routes.py
+
                 # Verify patch applied
                 if ! grep -q 'file_path: Optional\[str\] = Field(default=None' /tmp/lightrag/api/routers/document_routes.py; then
                   echo "ERROR: Runtime patch failed - upstream code may have changed"
                   exit 1
                 fi
-                # Run server with patched module taking priority
+                echo "Pydantic patch applied successfully to /tmp module"
+
+                # PYTHONPATH prepends /tmp so Python imports our patched module first
                 export PYTHONPATH=/tmp:$PYTHONPATH
                 exec python -m lightrag.api.lightrag_server
             env:
