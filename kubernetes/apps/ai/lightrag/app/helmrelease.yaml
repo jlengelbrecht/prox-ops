@@ -1,0 +1,158 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: lightrag
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      lightrag:
+        # Recreate strategy for RWO PVC compatibility
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/hkuds/lightrag
+              # renovate: datasource=docker depName=ghcr.io/hkuds/lightrag
+              tag: v1.4.9.8
+            env:
+              # Server Configuration
+              HOST: "0.0.0.0"
+              PORT: "9621"
+              WORKERS: "2"
+              TIMEOUT: "150"
+              LOG_LEVEL: "INFO"
+
+              # Working directories (PVC mounts)
+              WORKING_DIR: "/app/data/rag_storage"
+              INPUT_DIR: "/app/data/inputs"
+              WORKSPACE: "homelab"
+
+              # LLM Configuration (Ollama)
+              LLM_BINDING: "ollama"
+              LLM_MODEL: "llama3.1:8b-instruct-q8_0"
+              LLM_BINDING_HOST: "http://ollama.ai.svc.cluster.local:11434"
+              OLLAMA_LLM_NUM_CTX: "8192"
+
+              # Embedding Configuration (Ollama)
+              EMBEDDING_BINDING: "ollama"
+              EMBEDDING_MODEL: "nomic-embed-text"
+              EMBEDDING_BINDING_HOST: "http://ollama.ai.svc.cluster.local:11434"
+              EMBEDDING_DIM: "768"
+
+              # Storage Configuration
+              LIGHTRAG_KV_STORAGE: "JsonKVStorage"
+              LIGHTRAG_VECTOR_STORAGE: "QdrantVectorDBStorage"
+              LIGHTRAG_GRAPH_STORAGE: "NetworkXStorage"
+              LIGHTRAG_DOC_STATUS_STORAGE: "JsonDocStatusStorage"
+
+              # Qdrant Configuration
+              QDRANT_URL: "http://qdrant.ai.svc.cluster.local:6333"
+              QDRANT_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: qdrant-secret
+                    key: api-key
+
+              # Disable authentication for internal cluster access
+              # External auth handled by Authentik forward auth
+              LIGHTRAG_API_KEY: ""
+
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: &port 9621
+                  initialDelaySeconds: 60
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *port
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *port
+                  initialDelaySeconds: 10
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                  failureThreshold: 30
+
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+              limits:
+                cpu: 2
+                memory: 4Gi
+
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      nodeSelector:
+        # Target AI workloads node
+        kubernetes.io/hostname: k8s-work-10
+      annotations:
+        security.homelab/network: "Internal only - ClusterIP service with Authentik forward auth"
+        security.homelab/storage: "Ceph RBD for RAG data persistence"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+    persistence:
+      rag:
+        enabled: true
+        existingClaim: lightrag-rag
+        globalMounts:
+          - path: /app/data/rag_storage
+      input:
+        enabled: true
+        existingClaim: lightrag-input
+        globalMounts:
+          - path: /app/data/inputs
+
+    service:
+      app:
+        controller: lightrag
+        type: ClusterIP
+        ports:
+          http:
+            port: 9621
+            protocol: TCP
