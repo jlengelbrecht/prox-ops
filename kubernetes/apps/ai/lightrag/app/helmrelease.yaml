@@ -110,11 +110,13 @@ spec:
               LLM_BINDING: "openai"
               LLM_MODEL: "qwen2.5:32b-instruct-q4_K_M"
               OPENAI_API_BASE: "http://litellm.ai.svc.cluster.local:4000/v1"
+              # Security: Uses scoped virtual key with model restrictions (NOT admin master key)
+              # Key scope: ["qwen2.5:32b-instruct-q4_K_M"] only, 60 RPM, 100k TPM
               OPENAI_API_KEY:
                 valueFrom:
                   secretKeyRef:
-                    name: litellm-masterkey
-                    key: masterkey
+                    name: lightrag-litellm-key
+                    key: api-key
 
               # Embedding Configuration (Ollama)
               EMBEDDING_BINDING: "ollama"
@@ -185,8 +187,7 @@ spec:
         kubernetes.io/hostname: k8s-work-10
       annotations:
         # Stakater Reloader: restart pod when secrets change (credential rotation)
-        # Note: Model routing changes are handled by LiteLLM's own ConfigMap reloader
-        secret.reloader.stakater.com/reload: "litellm-masterkey,qdrant-secret"
+        secret.reloader.stakater.com/reload: "lightrag-litellm-key,qdrant-secret"
         security.homelab/network: "Internal only - ClusterIP service with Authentik forward auth"
         security.homelab/storage: "Ceph RBD for RAG data persistence"
       securityContext:
