@@ -48,13 +48,22 @@ spec:
             - port: "6333"
               protocol: TCP
 
-    # To Ollama (LLM + embeddings)
+    # To Ollama (LLM + embeddings) - direct access
     - toEndpoints:
         - matchLabels:
             app.kubernetes.io/name: ollama
       toPorts:
         - ports:
             - port: "11434"
+              protocol: TCP
+
+    # To LiteLLM (unified AI API gateway for model routing)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
               protocol: TCP
 
     # DNS resolution
