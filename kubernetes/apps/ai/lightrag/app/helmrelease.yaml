@@ -26,6 +26,21 @@ spec:
               repository: ghcr.io/hkuds/lightrag
               # renovate: datasource=docker depName=ghcr.io/hkuds/lightrag
               tag: v1.4.9.8
+            # Patch upstream pydantic bug: file_path must be Optional for API-submitted text documents
+            # Bug: DocStatusResponse.file_path is defined as `str` but is `None` for text submissions
+            # Fix: Change to `Optional[str] = Field(default=None, ...)` at runtime before server starts
+            # Note: Optional is already imported in document_routes.py (line 13)
+            command:
+              - /bin/sh
+              - -c
+              - |
+                sed -i 's/file_path: str = Field(description="Path to the document file")/file_path: Optional[str] = Field(default=None, description="Path to the document file")/' /app/lightrag/api/routers/document_routes.py
+                # Verify patch applied (sed returns 0 even if no match)
+                if ! grep -q 'file_path: Optional\[str\] = Field(default=None' /app/lightrag/api/routers/document_routes.py; then
+                  echo "ERROR: Runtime patch failed - upstream code may have changed"
+                  exit 1
+                fi
+                exec python -m lightrag.api.lightrag_server
             env:
               # Server Configuration
               HOST: "0.0.0.0"
