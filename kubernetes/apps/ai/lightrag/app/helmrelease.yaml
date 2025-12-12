@@ -35,10 +35,11 @@ spec:
               LOG_LEVEL: "INFO"
 
               # Timeout Configuration
-              # 0 = no timeout for Ollama (required for 32B model entity extraction)
+              # High timeout (1 hour) for 32B model entity extraction
               # Entity extraction with large models can take several minutes per chunk
-              EMBEDDING_TIMEOUT: "0"
-              LLM_TIMEOUT: "0"
+              # Note: LightRAG interprets 0 as 0 seconds, not "no timeout"
+              EMBEDDING_TIMEOUT: "3600"
+              LLM_TIMEOUT: "3600"
               # Log directory - use emptyDir for ephemeral logs (cloud-native pattern)
               LOG_DIR: "/app/logs"
 
