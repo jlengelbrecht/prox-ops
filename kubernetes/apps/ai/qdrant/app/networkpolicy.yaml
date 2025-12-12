@@ -17,6 +17,14 @@ spec:
         - ports:
             - port: "6333"
               protocol: TCP
+    # Allow from LightRAG (graph-based RAG with vector storage)
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: lightrag
+      toPorts:
+        - ports:
+            - port: "6333"
+              protocol: TCP
     # Allow from LiteLLM (future - STORY-075)
     - fromEndpoints:
         - matchLabels:
