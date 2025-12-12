@@ -104,12 +104,17 @@ spec:
               INPUT_DIR: "/app/data/inputs"
               WORKSPACE: "homelab"
 
-              # LLM Configuration (Ollama)
-              # Using 32B model per LightRAG recommendation for entity-relationship extraction
-              LLM_BINDING: "ollama"
+              # LLM Configuration (LiteLLM Gateway)
+              # Route LLM calls through LiteLLM for unified API gateway and model abstraction
+              # LiteLLM proxies to Ollama backends, enabling hot-swappable model routing
+              LLM_BINDING: "openai"
               LLM_MODEL: "qwen2.5:32b-instruct-q4_K_M"
-              LLM_BINDING_HOST: "http://ollama.ai.svc.cluster.local:11434"
-              OLLAMA_LLM_NUM_CTX: "32768"
+              OPENAI_API_BASE: "http://litellm.ai.svc.cluster.local:4000/v1"
+              OPENAI_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: litellm-masterkey
+                    key: masterkey
 
               # Embedding Configuration (Ollama)
               EMBEDDING_BINDING: "ollama"
@@ -179,6 +184,9 @@ spec:
         # Target AI workloads node
         kubernetes.io/hostname: k8s-work-10
       annotations:
+        # Stakater Reloader: restart pod when secrets change (credential rotation)
+        # Note: Model routing changes are handled by LiteLLM's own ConfigMap reloader
+        secret.reloader.stakater.com/reload: "litellm-masterkey,qdrant-secret"
         security.homelab/network: "Internal only - ClusterIP service with Authentik forward auth"
         security.homelab/storage: "Ceph RBD for RAG data persistence"
       securityContext:
