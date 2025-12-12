@@ -28,40 +28,60 @@ spec:
               tag: v1.4.9.8
             # Patch upstream pydantic bug: file_path must be Optional for API-submitted text documents
             # Bug: DocStatusResponse.file_path is defined as `str` but is `None` for text submissions
-            # Fix: Copy module to /tmp (writable) with package structure, patch there, use PYTHONPATH
-            # The venv site-packages is root-owned; UID 1000 cannot write to it directly
+            # Fix: Copy ENTIRE /app/lightrag to /tmp (writable), patch there, use wrapper with sys.path
+            # Critical: /app/lightrag is imported BEFORE venv because '' (cwd) is first in sys.path
             command:
               - /bin/sh
               - -c
               - |
-                # Find the source file dynamically (resilient to Python version changes)
-                VENV_FILE=$(find /app/.venv/lib -name "document_routes.py" -path "*/lightrag/api/routers/*" 2>/dev/null | head -n 1)
-                if [ -z "$VENV_FILE" ]; then
-                  echo "ERROR: Could not find document_routes.py in venv"
+                # Copy ENTIRE /app/lightrag package to /tmp (required because Python imports /app/lightrag, NOT venv)
+                echo "Copying /app/lightrag to /tmp for patching..."
+                cp -r /app/lightrag /tmp/lightrag
+
+                # Patch the pydantic model in /tmp/lightrag
+                TARGET_FILE="/tmp/lightrag/api/routers/document_routes.py"
+                if [ ! -f "$TARGET_FILE" ]; then
+                  echo "ERROR: Could not find $TARGET_FILE"
                   exit 1
                 fi
-                echo "Found source file: $VENV_FILE"
 
-                # Create package structure in writable /tmp directory
-                mkdir -p /tmp/lightrag/api/routers
-                touch /tmp/lightrag/__init__.py
-                touch /tmp/lightrag/api/__init__.py
-                touch /tmp/lightrag/api/routers/__init__.py
-
-                # Copy and patch in /tmp (writable by UID 1000)
-                cp "$VENV_FILE" /tmp/lightrag/api/routers/document_routes.py
-                sed -i 's/file_path: str = Field(description="Path to the document file")/file_path: Optional[str] = Field(default=None, description="Path to the document file")/' /tmp/lightrag/api/routers/document_routes.py
+                # Apply patch: file_path: str -> file_path: Optional[str] = Field(default=None, ...)
+                sed -i 's/file_path: str = Field(description="Path to the document file")/file_path: Optional[str] = Field(default=None, description="Path to the document file")/' "$TARGET_FILE"
 
                 # Verify patch applied
-                if ! grep -q 'file_path: Optional\[str\] = Field(default=None' /tmp/lightrag/api/routers/document_routes.py; then
+                if grep -q 'file_path: Optional\[str\] = Field(default=None' "$TARGET_FILE"; then
+                  echo "SUCCESS: Pydantic patch applied to $TARGET_FILE"
+                else
                   echo "ERROR: Runtime patch failed - upstream code may have changed"
+                  echo "Searching for file_path definition:"
+                  grep -n "file_path.*Field" "$TARGET_FILE" || echo "No file_path Field found"
                   exit 1
                 fi
-                echo "Pydantic patch applied successfully to /tmp module"
 
-                # PYTHONPATH prepends /tmp so Python imports our patched module first
-                export PYTHONPATH=/tmp:$PYTHONPATH
-                exec python -m lightrag.api.lightrag_server
+                # Create Python wrapper that manipulates sys.path BEFORE any imports
+                # This ensures our patched /tmp/lightrag is found before /app/lightrag
+                cat > /tmp/run_lightrag.py << 'PYEOF'
+                import sys
+
+                # CRITICAL: Remove '' (current working directory /app) and /app from sys.path
+                # Otherwise Python finds /app/lightrag before our patched /tmp/lightrag
+                sys.path = ['/tmp'] + [p for p in sys.path if p not in ('', '/app')]
+                print(f"sys.path configured: {sys.path[:5]}...")
+
+                # Import patched module (startup aborts if wrong module loaded)
+                from lightrag.api.routers import document_routes
+                print(f"Loaded document_routes from: {document_routes.__file__}")
+
+                if '/tmp/' not in document_routes.__file__:
+                    print("ERROR: Loaded wrong module! Expected /tmp/lightrag")
+                    sys.exit(1)
+
+                # Run the actual server
+                from lightrag.api.lightrag_server import main
+                main()
+                PYEOF
+
+                exec python /tmp/run_lightrag.py
             env:
               # Server Configuration
               HOST: "0.0.0.0"
