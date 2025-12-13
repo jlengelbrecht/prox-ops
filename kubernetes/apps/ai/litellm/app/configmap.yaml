@@ -80,13 +80,32 @@ data:
           description: "Ollama Llama3.2 3B - local fallback for GPT-3.5"
 
       # =====================================================
-      # Embeddings - OpenAI compatible (local only)
-      # Embeddings don't benefit much from external API
+      # Embeddings with Explicit Fallback (1024 dimensions)
+      # Primary: OpenAI text-embedding-3-small (with dimensions=1024)
+      # Fallback: Ollama mxbai-embed-large (native 1024 dimensions)
+      # Both output identical 1024d vectors for Qdrant compatibility
       # =====================================================
+      - model_name: "rag-embedding"
+        litellm_params:
+          model: "text-embedding-3-small"
+          api_key: "os.environ/OPENAI_API_KEY"
+          dimensions: 1024
+        model_info:
+          description: "OpenAI text-embedding-3-small (1024d) - primary for RAG embeddings"
+
+      - model_name: "rag-embedding-ollama"
+        litellm_params:
+          model: "ollama/mxbai-embed-large"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+        model_info:
+          description: "Ollama mxbai-embed-large (1024d) - local fallback for embeddings"
+
+      # OpenAI ada-002 compatibility alias (routes to same 1024d embedding)
       - model_name: "text-embedding-ada-002"
         litellm_params:
-          model: "ollama/nomic-embed-text:latest"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
+          model: "text-embedding-3-small"
+          api_key: "os.environ/OPENAI_API_KEY"
+          dimensions: 1024
 
       # =====================================================
       # Native Ollama Model Names (local-only, no fallback)
@@ -121,6 +140,7 @@ data:
         - rag-model: ["rag-model-ollama"]
         - gpt-4: ["gpt-4-ollama"]
         - gpt-3.5-turbo: ["gpt-3.5-turbo-ollama"]
+        - rag-embedding: ["rag-embedding-ollama"]
       # Retry failed requests before falling back
       num_retries: 2
       # Timeout before considering a request failed (seconds)
