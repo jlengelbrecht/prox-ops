@@ -110,10 +110,10 @@ spec:
               # See: kubernetes/apps/ai/litellm/app/configmap.yaml (router_settings.fallbacks)
               LLM_BINDING: "openai"
               LLM_MODEL: "rag-model"
-              OPENAI_API_BASE: "http://litellm.ai.svc.cluster.local:4000/v1"
+              LLM_BINDING_HOST: "http://litellm.ai.svc.cluster.local:4000/v1"
               # Security: Uses scoped virtual key with model restrictions (NOT admin master key)
               # Key scope: ["rag-model"] - routes to OpenAI (primary) or Ollama (fallback)
-              OPENAI_API_KEY:
+              LLM_BINDING_API_KEY:
                 valueFrom:
                   secretKeyRef:
                     name: lightrag-litellm-key
