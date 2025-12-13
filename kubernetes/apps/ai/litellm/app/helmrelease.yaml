@@ -160,3 +160,10 @@ spec:
         value: ""
       - name: UI_PASSWORD
         value: ""
+      # OpenAI API key for external LLM fallback
+      # Used when local Ollama is overloaded or for faster inference
+      - name: OPENAI_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-openai
+            key: api-key
