@@ -105,13 +105,13 @@ spec:
               WORKSPACE: "homelab"
 
               # LLM Configuration (LiteLLM Gateway)
-              # Route LLM calls through LiteLLM for unified API gateway and model abstraction
-              # LiteLLM proxies to Ollama backends, enabling hot-swappable model routing
+              # Route LLM calls through LiteLLM for unified API gateway and failover routing
+              # LiteLLM handles: OpenAI gpt-4o-mini (primary) → Ollama qwen2.5:32b (fallback)
               LLM_BINDING: "openai"
-              LLM_MODEL: "qwen2.5:32b-instruct-q4_K_M"
+              LLM_MODEL: "rag-model"
               OPENAI_API_BASE: "http://litellm.ai.svc.cluster.local:4000/v1"
               # Security: Uses scoped virtual key with model restrictions (NOT admin master key)
-              # Key scope: ["qwen2.5:32b-instruct-q4_K_M"] only, 60 RPM, 100k TPM
+              # Key scope: ["rag-model"] - routes to OpenAI (primary) or Ollama (fallback)
               OPENAI_API_KEY:
                 valueFrom:
                   secretKeyRef:
