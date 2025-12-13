@@ -132,6 +132,19 @@ data:
           model: "ollama_chat/qwen2.5:32b-instruct-q4_K_M"
           api_base: "http://ollama.ai.svc.cluster.local:11434"
 
+      # =====================================================
+      # LightRAG Knowledge Graph RAG
+      # Ollama-compatible API that provides RAG-enhanced responses
+      # Uses knowledge graph + vector retrieval for context
+      # LightRAG internally calls LiteLLM (rag-model) for LLM completion
+      # =====================================================
+      - model_name: "lightrag"
+        litellm_params:
+          model: "ollama_chat/lightrag:latest"
+          api_base: "http://lightrag.ai.svc.cluster.local:9621"
+        model_info:
+          description: "LightRAG - Knowledge graph RAG with automatic context injection"
+
     # Explicit fallback routing configuration
     # When primary model fails (timeout, rate limit, error), try fallback model
     # Reference: https://docs.litellm.ai/docs/routing#fallbacks
