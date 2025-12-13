@@ -7,32 +7,84 @@ metadata:
 data:
   config.yaml: |
     # LiteLLM Proxy Configuration
-    # Provides OpenAI-compatible API gateway for Ollama models
+    # Provides OpenAI-compatible API gateway with fallback routing
     #
     # AUTHENTICATION: Required via LITELLM_MASTER_KEY environment variable
     # All API requests must include: Authorization: Bearer <master-key>
     # Master key stored in 1Password and injected via ExternalSecret
+    #
+    # FALLBACK ROUTING: Models with same name are tried in order
+    # OpenAI (fast, external) -> Ollama (local GPU fallback)
 
     model_list:
-      # GPT-4 compatible model (coding, general purpose)
+      # =====================================================
+      # RAG Model - Primary use case for OpenAI integration
+      # Used by LightRAG for entity extraction and queries
+      # OpenAI gpt-4o-mini (fast, cheap) -> Ollama 32B (local)
+      # =====================================================
+      - model_name: "rag-model"
+        litellm_params:
+          model: "gpt-4o-mini"
+          api_key: "os.environ/OPENAI_API_KEY"
+        model_info:
+          description: "OpenAI GPT-4o-mini - fast, cost-effective for RAG"
+
+      - model_name: "rag-model"
+        litellm_params:
+          model: "ollama_chat/qwen2.5:32b-instruct-q4_K_M"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+        model_info:
+          description: "Ollama Qwen2.5 32B - local GPU fallback"
+
+      # =====================================================
+      # GPT-4 Compatible - For general purpose + coding
+      # OpenAI gpt-4o-mini -> Ollama qwen2.5-coder:14b
+      # =====================================================
+      - model_name: "gpt-4"
+        litellm_params:
+          model: "gpt-4o-mini"
+          api_key: "os.environ/OPENAI_API_KEY"
+        model_info:
+          description: "OpenAI GPT-4o-mini primary"
+
       - model_name: "gpt-4"
         litellm_params:
           model: "ollama_chat/qwen2.5-coder:14b"
           api_base: "http://ollama.ai.svc.cluster.local:11434"
+        model_info:
+          description: "Ollama Qwen2.5-coder fallback"
 
-      # GPT-3.5 compatible model (faster, lighter tasks)
+      # =====================================================
+      # GPT-3.5 Compatible - For faster, lighter tasks
+      # OpenAI gpt-4o-mini -> Ollama llama3.2:3b
+      # =====================================================
+      - model_name: "gpt-3.5-turbo"
+        litellm_params:
+          model: "gpt-4o-mini"
+          api_key: "os.environ/OPENAI_API_KEY"
+        model_info:
+          description: "OpenAI GPT-4o-mini primary"
+
       - model_name: "gpt-3.5-turbo"
         litellm_params:
           model: "ollama_chat/llama3.2:3b"
           api_base: "http://ollama.ai.svc.cluster.local:11434"
+        model_info:
+          description: "Ollama Llama3.2 3B fallback"
 
-      # Embeddings model (OpenAI compatible)
+      # =====================================================
+      # Embeddings - OpenAI compatible (local only)
+      # Embeddings don't benefit much from external API
+      # =====================================================
       - model_name: "text-embedding-ada-002"
         litellm_params:
           model: "ollama/nomic-embed-text:latest"
           api_base: "http://ollama.ai.svc.cluster.local:11434"
 
-      # Also expose native model names
+      # =====================================================
+      # Native Ollama Model Names (local-only, no fallback)
+      # For direct access to specific local models
+      # =====================================================
       - model_name: "qwen2.5-coder:14b"
         litellm_params:
           model: "ollama_chat/qwen2.5-coder:14b"
@@ -48,8 +100,7 @@ data:
           model: "ollama/nomic-embed-text:latest"
           api_base: "http://ollama.ai.svc.cluster.local:11434"
 
-      # LightRAG 32B model for entity-relationship extraction
-      # Used by LightRAG for knowledge graph construction
+      # LightRAG 32B model - direct access to local model
       - model_name: "qwen2.5:32b-instruct-q4_K_M"
         litellm_params:
           model: "ollama_chat/qwen2.5:32b-instruct-q4_K_M"
@@ -58,7 +109,7 @@ data:
     general_settings:
       # Rate limiting
       max_parallel_requests: 50
-      # Request limits per minute (per API key when using virtual keys)
+      # Request timeout (seconds)
       request_timeout: 120
 
     litellm_settings:
@@ -66,3 +117,7 @@ data:
       drop_params: true
       # Enable logging for audit
       set_verbose: false
+      # Fallback settings - retry on failure
+      num_retries: 3
+      # Timeout for fallback attempts
+      fallback_timeout: 60

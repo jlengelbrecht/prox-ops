@@ -118,6 +118,8 @@ spec:
     envVars:
       LITELLM_TELEMETRY: "false"
       LITELLM_LOG: "INFO"
+      # Enable database storage for UI settings (logo, themes, etc.)
+      STORE_MODEL_IN_DB: "True"
 
     # Extra environment variables from secrets
     # LiteLLM UI requires LITELLM_MASTER_KEY (chart only sets PROXY_MASTER_KEY)
@@ -160,3 +162,10 @@ spec:
         value: ""
       - name: UI_PASSWORD
         value: ""
+      # OpenAI API key for external LLM fallback
+      # Used when local Ollama is overloaded or for faster inference
+      - name: OPENAI_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-openai
+            key: api-key
