@@ -119,10 +119,18 @@ spec:
                     name: lightrag-litellm-key
                     key: api-key
 
-              # Embedding Configuration (Ollama)
-              EMBEDDING_BINDING: "ollama"
-              EMBEDDING_MODEL: "nomic-embed-text"
-              EMBEDDING_BINDING_HOST: "http://ollama.ai.svc.cluster.local:11434"
+              # Embedding Configuration (LiteLLM Gateway)
+              # Routes embedding calls through LiteLLM for centralized management
+              # Uses same API key as LLM calls (requires rag-embedding model access)
+              # LiteLLM routes to: ollama/nomic-embed-text (768 dimensions)
+              EMBEDDING_BINDING: "openai"
+              EMBEDDING_MODEL: "rag-embedding"
+              EMBEDDING_BINDING_HOST: "http://litellm.ai.svc.cluster.local:4000/v1"
+              EMBEDDING_BINDING_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: lightrag-litellm-key
+                    key: api-key
               EMBEDDING_DIM: "768"
 
               # Storage Configuration

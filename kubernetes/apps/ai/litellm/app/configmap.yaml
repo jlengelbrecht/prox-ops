@@ -80,9 +80,20 @@ data:
           description: "Ollama Llama3.2 3B - local fallback for GPT-3.5"
 
       # =====================================================
-      # Embeddings - OpenAI compatible (local only)
-      # Embeddings don't benefit much from external API
+      # Embeddings - Routed through LiteLLM (local only)
+      # NOTE: No external fallback because embedding dimensions must match:
+      # - nomic-embed-text: 768 dimensions
+      # - OpenAI text-embedding-3-small: 1536 dimensions
+      # Dimension mismatch would break vector search in Qdrant
       # =====================================================
+      - model_name: "rag-embedding"
+        litellm_params:
+          model: "ollama/nomic-embed-text:latest"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+        model_info:
+          description: "Ollama nomic-embed-text (768d) - local embedding for RAG"
+
+      # OpenAI ada-002 compatibility alias (for legacy clients)
       - model_name: "text-embedding-ada-002"
         litellm_params:
           model: "ollama/nomic-embed-text:latest"
