@@ -7,32 +7,110 @@ metadata:
 data:
   config.yaml: |
     # LiteLLM Proxy Configuration
-    # Provides OpenAI-compatible API gateway for Ollama models
+    # Provides OpenAI-compatible API gateway with explicit fallback routing
     #
     # AUTHENTICATION: Required via LITELLM_MASTER_KEY environment variable
     # All API requests must include: Authorization: Bearer <master-key>
     # Master key stored in 1Password and injected via ExternalSecret
+    #
+    # FALLBACK ROUTING (EXPLICIT):
+    # Fallbacks are configured via router_settings.fallbacks, NOT duplicate model_names.
+    # Duplicate model_names = load balancing (random distribution)
+    # router_settings.fallbacks = explicit fallback chain (primary -> fallback on failure)
+    #
+    # Reference: https://docs.litellm.ai/docs/routing#fallbacks
 
     model_list:
-      # GPT-4 compatible model (coding, general purpose)
+      # =====================================================
+      # RAG Model with Explicit Fallback
+      # Used by LightRAG for entity extraction and queries
+      # Primary: OpenAI gpt-4o-mini (fast, cheap)
+      # Fallback: Ollama qwen2.5:32b (local GPU)
+      # =====================================================
+      - model_name: "rag-model"
+        litellm_params:
+          model: "gpt-4o-mini"
+          api_key: "os.environ/OPENAI_API_KEY"
+        model_info:
+          description: "OpenAI GPT-4o-mini - primary for RAG (fallback: rag-model-ollama)"
+
+      - model_name: "rag-model-ollama"
+        litellm_params:
+          model: "ollama_chat/qwen2.5:32b-instruct-q4_K_M"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+        model_info:
+          description: "Ollama Qwen2.5 32B - local GPU fallback for RAG"
+
+      # =====================================================
+      # GPT-4 Compatible with Explicit Fallback
+      # Primary: OpenAI gpt-4o-mini
+      # Fallback: Ollama qwen2.5-coder:14b
+      # =====================================================
       - model_name: "gpt-4"
+        litellm_params:
+          model: "gpt-4o-mini"
+          api_key: "os.environ/OPENAI_API_KEY"
+        model_info:
+          description: "OpenAI GPT-4o-mini - primary (fallback: gpt-4-ollama)"
+
+      - model_name: "gpt-4-ollama"
         litellm_params:
           model: "ollama_chat/qwen2.5-coder:14b"
           api_base: "http://ollama.ai.svc.cluster.local:11434"
+        model_info:
+          description: "Ollama Qwen2.5-coder 14B - local fallback for GPT-4"
 
-      # GPT-3.5 compatible model (faster, lighter tasks)
+      # =====================================================
+      # GPT-3.5 Compatible with Explicit Fallback
+      # Primary: OpenAI gpt-4o-mini
+      # Fallback: Ollama llama3.2:3b
+      # =====================================================
       - model_name: "gpt-3.5-turbo"
+        litellm_params:
+          model: "gpt-4o-mini"
+          api_key: "os.environ/OPENAI_API_KEY"
+        model_info:
+          description: "OpenAI GPT-4o-mini - primary (fallback: gpt-3.5-turbo-ollama)"
+
+      - model_name: "gpt-3.5-turbo-ollama"
         litellm_params:
           model: "ollama_chat/llama3.2:3b"
           api_base: "http://ollama.ai.svc.cluster.local:11434"
+        model_info:
+          description: "Ollama Llama3.2 3B - local fallback for GPT-3.5"
 
-      # Embeddings model (OpenAI compatible)
+      # =====================================================
+      # Embeddings with Explicit Fallback (1024 dimensions)
+      # Primary: OpenAI text-embedding-3-small (with dimensions=1024)
+      # Fallback: Ollama mxbai-embed-large (native 1024 dimensions)
+      # Both output identical 1024d vectors for Qdrant compatibility
+      # =====================================================
+      - model_name: "rag-embedding"
+        litellm_params:
+          model: "text-embedding-3-small"
+          api_key: "os.environ/OPENAI_API_KEY"
+          dimensions: 1024
+        model_info:
+          description: "OpenAI text-embedding-3-small (1024d) - primary for RAG embeddings"
+
+      - model_name: "rag-embedding-ollama"
+        litellm_params:
+          model: "ollama/mxbai-embed-large"
+          api_base: "http://ollama.ai.svc.cluster.local:11434"
+        model_info:
+          description: "Ollama mxbai-embed-large (1024d) - local fallback for embeddings"
+
+      # OpenAI ada-002 compatibility alias (routes to same 1024d embedding)
       - model_name: "text-embedding-ada-002"
         litellm_params:
-          model: "ollama/nomic-embed-text:latest"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
+          model: "text-embedding-3-small"
+          api_key: "os.environ/OPENAI_API_KEY"
+          dimensions: 1024
 
-      # Also expose native model names
+      # =====================================================
+      # Native Ollama Model Names (local-only, no fallback)
+      # For direct access to specific local models
+      # =====================================================
       - model_name: "qwen2.5-coder:14b"
         litellm_params:
           model: "ollama_chat/qwen2.5-coder:14b"
@@ -48,17 +126,43 @@ data:
           model: "ollama/nomic-embed-text:latest"
           api_base: "http://ollama.ai.svc.cluster.local:11434"
 
-      # LightRAG 32B model for entity-relationship extraction
-      # Used by LightRAG for knowledge graph construction
+      # Direct access to local 32B model (no external fallback)
       - model_name: "qwen2.5:32b-instruct-q4_K_M"
         litellm_params:
           model: "ollama_chat/qwen2.5:32b-instruct-q4_K_M"
           api_base: "http://ollama.ai.svc.cluster.local:11434"
 
+      # =====================================================
+      # LightRAG Knowledge Graph RAG
+      # Ollama-compatible API that provides RAG-enhanced responses
+      # Uses knowledge graph + vector retrieval for context
+      # LightRAG internally calls LiteLLM (rag-model) for LLM completion
+      # =====================================================
+      - model_name: "lightrag"
+        litellm_params:
+          model: "ollama_chat/lightrag:latest"
+          api_base: "http://lightrag.ai.svc.cluster.local:9621"
+        model_info:
+          description: "LightRAG - Knowledge graph RAG with automatic context injection"
+
+    # Explicit fallback routing configuration
+    # When primary model fails (timeout, rate limit, error), try fallback model
+    # Reference: https://docs.litellm.ai/docs/routing#fallbacks
+    router_settings:
+      fallbacks:
+        - rag-model: ["rag-model-ollama"]
+        - gpt-4: ["gpt-4-ollama"]
+        - gpt-3.5-turbo: ["gpt-3.5-turbo-ollama"]
+        - rag-embedding: ["rag-embedding-ollama"]
+      # Retry failed requests before falling back
+      num_retries: 2
+      # Timeout before considering a request failed (seconds)
+      timeout: 120
+
     general_settings:
       # Rate limiting
       max_parallel_requests: 50
-      # Request limits per minute (per API key when using virtual keys)
+      # Request timeout (seconds)
       request_timeout: 120
 
     litellm_settings:
