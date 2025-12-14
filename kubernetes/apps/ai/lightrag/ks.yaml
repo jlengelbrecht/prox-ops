@@ -1,0 +1,20 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: lightrag
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: lightrag-storage  # Wait for PVCs to be ready
+    - name: ollama            # Requires Ollama for LLM/embeddings
+    - name: qdrant            # Requires Qdrant for vector storage
+  interval: 1h
+  path: ./kubernetes/apps/ai/lightrag/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: ai
+  wait: false

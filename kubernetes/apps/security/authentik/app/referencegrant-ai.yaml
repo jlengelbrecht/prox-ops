@@ -1,0 +1,22 @@
+---
+# ReferenceGrant allows ai namespace resources to reference Authentik service:
+# - SecurityPolicy: for forward auth (extAuth) validation
+# - HTTPRoute: for /outpost.goauthentik.io/* paths (login/callback flow)
+# Required by: LightRAG, and future ai namespace apps needing Authentik auth
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-ai-namespace-extauth
+  namespace: security
+spec:
+  from:
+    - group: gateway.envoyproxy.io
+      kind: SecurityPolicy
+      namespace: ai
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: ai
+  to:
+    - group: ""
+      kind: Service
+      name: authentik-server

@@ -1,0 +1,125 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: open-webui
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      open-webui:
+        containers:
+          app:
+            image:
+              repository: ghcr.io/open-webui/open-webui
+              # renovate: datasource=docker depName=ghcr.io/open-webui/open-webui
+              tag: v0.6.41
+            env:
+              # Ollama backend connection
+              OLLAMA_BASE_URL: "http://ollama.ai.svc.cluster.local:11434"
+              # Authentication settings
+              WEBUI_AUTH: "true"
+              # Disable local signup - use OIDC instead
+              ENABLE_SIGNUP: "false"
+              # OIDC Configuration (Authentik)
+              ENABLE_OAUTH_SIGNUP: "true"
+              ENABLE_LOGIN_FORM: "false"
+              OAUTH_PROVIDER_NAME: "Authentik"
+              OPENID_PROVIDER_URL: "https://authentik.homelab0.org/application/o/open-webui/.well-known/openid-configuration"
+              OAUTH_SCOPES: "openid email profile"
+              # Merge OAuth accounts with existing accounts by email
+              OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "true"
+              # Default role for new users (avoid "pending" status)
+              DEFAULT_USER_ROLE: "user"
+              # Data directory
+              DATA_DIR: "/app/backend/data"
+              # Disable telemetry
+              SCARF_NO_ANALYTICS: "true"
+              DO_NOT_TRACK: "true"
+              ANONYMIZED_TELEMETRY: "false"
+              # Qdrant Vector Database for RAG
+              VECTOR_DB: "qdrant"
+              QDRANT_URI: "http://qdrant.ai.svc.cluster.local:6333"
+              ENABLE_QDRANT_MULTITENANCY_MODE: "true"
+              # Qdrant API key from existing secret
+              QDRANT_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: qdrant-secret
+                    key: api-key
+            envFrom:
+              - secretRef:
+                  name: open-webui-secrets
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: &port 8080
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *port
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 500m
+                memory: 512Mi
+              limits:
+                cpu: 2
+                memory: 4Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+    persistence:
+      data:
+        enabled: true
+        existingClaim: open-webui-data
+        globalMounts:
+          - path: /app/backend/data
+
+    service:
+      app:
+        controller: open-webui
+        type: ClusterIP
+        ports:
+          http:
+            port: 8080
+            protocol: TCP

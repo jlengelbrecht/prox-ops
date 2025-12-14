@@ -1,0 +1,171 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: litellm
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: litellm-helm
+      # renovate: datasource=helm registryUrl=oci://ghcr.io/berriai
+      version: 0.1.830
+      sourceRef:
+        kind: HelmRepository
+        name: litellm
+        namespace: ai
+  interval: 1h
+  # Depend on PostgreSQL to be ready before LiteLLM
+  dependsOn:
+    - name: litellm-postgres
+      namespace: ai
+  values:
+    # Image configuration - uses litellm-database (debian-based) for Prisma compatibility
+    image:
+      repository: ghcr.io/berriai/litellm-database
+      pullPolicy: Always
+      # renovate: datasource=docker depName=ghcr.io/berriai/litellm-database
+      tag: main-v1.80.9-nightly
+
+    # Replica count
+    replicaCount: 1
+
+    # Master key from ExternalSecret
+    masterkeySecretName: litellm-masterkey
+    masterkeySecretKey: masterkey
+
+    # Database configuration - use existing PostgreSQL
+    db:
+      useExisting: true
+      deployStandalone: false
+      endpoint: litellm-postgres.ai.svc.cluster.local
+      database: litellm
+      secret:
+        name: litellm-db-credentials
+        usernameKey: username
+        passwordKey: password
+
+    # Use existing ConfigMap for proxy configuration
+    proxyConfigMap:
+      create: false
+      name: litellm-config
+      key: config.yaml
+
+    # Pod annotations
+    podAnnotations:
+      security.homelab/network: "Internal + external API via envoy-internal"
+      security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
+
+    # Pod security context
+    # Note: litellm-database image specifies USER as text "root" in Dockerfile,
+    # which prevents Kubernetes from verifying runAsNonRoot. The image uses
+    # supervisord to manage processes and runs as an internal non-root user.
+    # See: https://github.com/BerriAI/litellm/blob/main/docker/litellm-database/Dockerfile
+    podSecurityContext:
+      seccompProfile:
+        type: RuntimeDefault
+
+    # Container security context
+    # Note: readOnlyRootFilesystem=false required for Prisma + supervisord
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false
+      capabilities:
+        drop:
+          - ALL
+
+    # Resource limits
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1
+        memory: 1Gi
+
+    # Service configuration
+    service:
+      type: ClusterIP
+      port: 4000
+
+    # Separate health app for more reliable probes
+    separateHealthApp: true
+    separateHealthPort: 8081
+
+    # Migration job settings
+    migrationJob:
+      enabled: true
+      retries: 3
+      backoffLimit: 4
+      disableSchemaUpdate: false
+      ttlSecondsAfterFinished: 120
+      hooks:
+        # Enable Helm hooks for migration job orchestration during install/upgrade
+        argocd:
+          enabled: false
+        helm:
+          enabled: true
+
+    # Disable internal PostgreSQL (we use our own)
+    postgresql:
+      enabled: false
+
+    # Disable Redis (not needed for single-node)
+    redis:
+      enabled: false
+
+    # Environment variables
+    envVars:
+      LITELLM_TELEMETRY: "false"
+      LITELLM_LOG: "INFO"
+      # Enable database storage for UI settings (logo, themes, etc.)
+      STORE_MODEL_IN_DB: "True"
+
+    # Extra environment variables from secrets
+    # LiteLLM UI requires LITELLM_MASTER_KEY (chart only sets PROXY_MASTER_KEY)
+    extraEnvVars:
+      - name: LITELLM_MASTER_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-masterkey
+            key: masterkey
+      # SSO/OIDC Configuration - Authentik Generic Provider
+      # Use email as user_id (Authentik returns 'preferred_username' by default)
+      - name: GENERIC_USER_ID_ATTRIBUTE
+        value: "email"
+      - name: GENERIC_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: litellm-oidc
+            key: GENERIC_CLIENT_ID
+      - name: GENERIC_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: litellm-oidc
+            key: GENERIC_CLIENT_SECRET
+      - name: GENERIC_AUTHORIZATION_ENDPOINT
+        value: "https://authentik.homelab0.org/application/o/authorize/"
+      - name: GENERIC_TOKEN_ENDPOINT
+        value: "https://authentik.homelab0.org/application/o/token/"
+      - name: GENERIC_USERINFO_ENDPOINT
+        value: "https://authentik.homelab0.org/application/o/userinfo/"
+      - name: PROXY_BASE_URL
+        value: "https://ai-api.homelab0.org"
+      # Admin user - gets proxy_admin role on SSO login (stored in 1Password)
+      - name: PROXY_ADMIN_ID
+        valueFrom:
+          secretKeyRef:
+            name: litellm-oidc
+            key: PROXY_ADMIN_ID
+      # Disable basic auth login (SSO only)
+      - name: UI_USERNAME
+        value: ""
+      - name: UI_PASSWORD
+        value: ""
+      # OpenAI API key for external LLM fallback
+      # Used when local Ollama is overloaded or for faster inference
+      - name: OPENAI_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-openai
+            key: api-key
