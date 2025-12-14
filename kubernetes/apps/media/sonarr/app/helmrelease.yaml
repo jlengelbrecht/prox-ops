@@ -8,6 +8,7 @@ spec:
   chart:
     spec:
       chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
       version: 4.4.0
       sourceRef:
         kind: HelmRepository
@@ -21,14 +22,13 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/onedr0p/sonarr
-              # renovate: datasource=docker depName=ghcr.io/onedr0p/sonarr
-              tag: 4.0.14.2938
+              repository: lscr.io/linuxserver/sonarr
+              # renovate: datasource=docker depName=lscr.io/linuxserver/sonarr
+              tag: 4.0.16.2944-ls299
             env:
               TZ: America/New_York
-              SONARR__PORT: &port 8989
-              SONARR__AUTH__METHOD: External
-              SONARR__AUTH__REQUIRED: DisabledForLocalAddresses
+              PUID: "568"
+              PGID: "568"
             probes:
               liveness:
                 enabled: true
@@ -36,7 +36,7 @@ spec:
                 spec:
                   httpGet:
                     path: /ping
-                    port: *port
+                    port: &port 8989
                   initialDelaySeconds: 30
                   periodSeconds: 30
                   timeoutSeconds: 10
@@ -60,11 +60,16 @@ spec:
                 cpu: 2000m
                 memory: 2Gi
             securityContext:
-              allowPrivilegeEscalation: false
+              # s6-overlay uses setuid binaries for user switching
+              allowPrivilegeEscalation: true
               readOnlyRootFilesystem: false
               capabilities:
                 drop:
                   - ALL
+                add:
+                  - SETUID
+                  - SETGID
+                  - CHOWN
 
           # Exportarr sidecar for Prometheus metrics
           exportarr:
@@ -116,9 +121,11 @@ spec:
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: true
+        # LinuxServer.io images use s6-overlay which requires root initially
+        # The container drops to PUID/PGID (568) after init
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
         supplementalGroups:
@@ -127,6 +134,7 @@ spec:
           type: RuntimeDefault
       annotations:
         security.homelab/network: "Internal - arr stack"
+        security.homelab/exception: "LinuxServer.io image requires root for s6-overlay init"
 
     persistence:
       config:

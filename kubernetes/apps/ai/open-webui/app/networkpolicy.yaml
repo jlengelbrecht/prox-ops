@@ -1,0 +1,72 @@
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: open-webui
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: open-webui
+  ingress:
+    # Allow ingress from Envoy gateway
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Allow egress to LiteLLM API gateway (preferred path for LLM inference)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
+    # Allow egress to Ollama for LLM inference (legacy/direct)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: ollama
+      toPorts:
+        - ports:
+            - port: "11434"
+              protocol: TCP
+    # Allow egress to LightRAG for RAG context queries (Filter Function)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: lightrag
+      toPorts:
+        - ports:
+            - port: "9621"
+              protocol: TCP
+    # Allow egress to Qdrant for vector database (RAG)
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: qdrant
+      toPorts:
+        - ports:
+            - port: "6333"
+              protocol: TCP
+    # Allow DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow HTTPS egress for model downloads via Ollama (if pulling from UI)
+    # and for future OIDC authentication
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

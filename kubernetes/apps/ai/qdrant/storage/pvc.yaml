@@ -1,0 +1,39 @@
+---
+# PROTECTED: This PVC is in a separate Kustomization with prune: false
+# to prevent accidental data loss during Flux reconciliation or cattle upgrades
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qdrant-data
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 50Gi
+---
+# Snapshots PVC for backup retention across pod restarts
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qdrant-snapshots
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/component: snapshots
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 20Gi

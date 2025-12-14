@@ -8,6 +8,7 @@ spec:
   chart:
     spec:
       chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
       version: 4.4.0
       sourceRef:
         kind: HelmRepository
@@ -22,13 +23,15 @@ spec:
           # Main qBittorrent container
           app:
             image:
-              repository: ghcr.io/onedr0p/qbittorrent
-              # renovate: datasource=docker depName=ghcr.io/onedr0p/qbittorrent
-              tag: 5.0.2
+              repository: lscr.io/linuxserver/qbittorrent
+              # renovate: datasource=docker depName=lscr.io/linuxserver/qbittorrent
+              tag: 5.1.4-r1-ls431
             env:
               TZ: America/New_York
-              QBITTORRENT__PORT: &port 8080
-              QBITTORRENT__BT_PORT: &btport 6881
+              PUID: "568"
+              PGID: "568"
+              WEBUI_PORT: &port 8080
+              TORRENTING_PORT: &btport 6881
             probes:
               liveness:
                 enabled: true
@@ -58,11 +61,16 @@ spec:
                 cpu: 2000m
                 memory: 4Gi
             securityContext:
-              allowPrivilegeEscalation: false
+              # s6-overlay uses setuid binaries for user switching
+              allowPrivilegeEscalation: true
               readOnlyRootFilesystem: false
               capabilities:
                 drop:
                   - ALL
+                add:
+                  - SETUID
+                  - SETGID
+                  - CHOWN
 
           # Gluetun VPN sidecar - ALL traffic routes through this
           gluetun:
@@ -78,7 +86,7 @@ spec:
               # Firewall Kill Switch
               FIREWALL: "on"
               FIREWALL_VPN_INPUT_PORTS: "6881"  # BitTorrent port
-              FIREWALL_INPUT_PORTS: "8080,8000,8090,9999"  # Web UI, control, metrics, and VPN metrics
+              FIREWALL_INPUT_PORTS: "8080,8000,8090,8001"  # Web UI, control, metrics, and VPN metrics
               # DNS - use VPN provider DNS (Surfshark)
               DOT: "off"
               # Logging
@@ -185,7 +193,7 @@ spec:
               tag: 0.1.1-standalone
             env:
               GLUETUN_URL: "http://localhost:8000"
-              EXPORTER_PORT: "9999"
+              # Use default EXPORTER_PORT=8001 (image default binds to 0.0.0.0)
             resources:
               requests:
                 cpu: 5m
@@ -206,7 +214,7 @@ spec:
                 spec:
                   httpGet:
                     path: /metrics
-                    port: 9999
+                    port: 8001
                   periodSeconds: 30
                   failureThreshold: 3
               readiness:
@@ -215,16 +223,19 @@ spec:
                 spec:
                   httpGet:
                     path: /metrics
-                    port: 9999
+                    port: 8001
                   periodSeconds: 10
                   failureThreshold: 3
 
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: false  # Gluetun requires root
+        # LinuxServer.io images use s6-overlay which requires root initially
+        # The container drops to PUID/PGID (568) after init
+        # Gluetun also requires root for VPN setup
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
         supplementalGroups:
@@ -234,6 +245,7 @@ spec:
       annotations:
         security.homelab/vpn-required: "true"
         security.homelab/network: "Internal - VPN egress only"
+        security.homelab/exception: "LinuxServer.io + Gluetun require root"
 
     persistence:
       config:
@@ -277,5 +289,5 @@ spec:
             port: 8090
             protocol: TCP
           vpn-metrics:
-            port: 9999
+            port: 8001
             protocol: TCP

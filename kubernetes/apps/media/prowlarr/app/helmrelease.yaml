@@ -8,6 +8,7 @@ spec:
   chart:
     spec:
       chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
       version: 4.4.0
       sourceRef:
         kind: HelmRepository
@@ -22,14 +23,13 @@ spec:
           # Main Prowlarr container
           app:
             image:
-              repository: ghcr.io/onedr0p/prowlarr-develop
-              # renovate: datasource=docker depName=ghcr.io/onedr0p/prowlarr-develop
-              tag: 1.32.2.4987
+              repository: lscr.io/linuxserver/prowlarr
+              # renovate: datasource=docker depName=lscr.io/linuxserver/prowlarr
+              tag: 2.3.1-nightly
             env:
               TZ: America/New_York
-              PROWLARR__PORT: &port 9696
-              PROWLARR__AUTH__METHOD: External
-              PROWLARR__AUTH__REQUIRED: DisabledForLocalAddresses
+              PUID: "568"
+              PGID: "568"
             probes:
               liveness:
                 enabled: true
@@ -37,7 +37,7 @@ spec:
                 spec:
                   httpGet:
                     path: /ping
-                    port: *port
+                    port: &port 9696
                   initialDelaySeconds: 30
                   periodSeconds: 30
                   timeoutSeconds: 10
@@ -61,11 +61,16 @@ spec:
                 cpu: 1000m
                 memory: 1Gi
             securityContext:
-              allowPrivilegeEscalation: false
+              # s6-overlay uses setuid binaries for user switching
+              allowPrivilegeEscalation: true
               readOnlyRootFilesystem: false
               capabilities:
                 drop:
                   - ALL
+                add:
+                  - SETUID
+                  - SETGID
+                  - CHOWN
 
           # Gluetun VPN sidecar - All indexer traffic routes through this
           gluetun:
@@ -80,7 +85,7 @@ spec:
               SERVER_COUNTRIES: "United States"
               # Firewall Kill Switch
               FIREWALL: "on"
-              FIREWALL_INPUT_PORTS: "9696,8000,9707,9999"  # Prowlarr Web UI, control, metrics, and VPN metrics
+              FIREWALL_INPUT_PORTS: "9696,8000,9707,8001"  # Prowlarr Web UI, control, metrics, and VPN metrics
               FIREWALL_OUTBOUND_SUBNETS: "10.43.0.0/16"  # Allow internal K8s service traffic
               # DNS - use VPN provider DNS (Surfshark)
               DOT: "off"
@@ -191,7 +196,7 @@ spec:
               tag: 0.1.1-standalone
             env:
               GLUETUN_URL: "http://localhost:8000"
-              EXPORTER_PORT: "9999"
+              # Use default EXPORTER_PORT=8001 (image default binds to 0.0.0.0)
             resources:
               requests:
                 cpu: 5m
@@ -212,7 +217,7 @@ spec:
                 spec:
                   httpGet:
                     path: /metrics
-                    port: 9999
+                    port: 8001
                   periodSeconds: 30
                   failureThreshold: 3
               readiness:
@@ -221,16 +226,19 @@ spec:
                 spec:
                   httpGet:
                     path: /metrics
-                    port: 9999
+                    port: 8001
                   periodSeconds: 10
                   failureThreshold: 3
 
     defaultPodOptions:
       automountServiceAccountToken: false
       securityContext:
-        runAsUser: 568
-        runAsGroup: 568
-        runAsNonRoot: false  # Gluetun requires root
+        # LinuxServer.io images use s6-overlay which requires root initially
+        # The container drops to PUID/PGID (568) after init
+        # Gluetun also requires root for VPN setup
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
         fsGroup: 568
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
@@ -238,6 +246,7 @@ spec:
       annotations:
         security.homelab/vpn-required: "true"
         security.homelab/network: "Internal - VPN egress for indexers"
+        security.homelab/exception: "LinuxServer.io + Gluetun require root"
 
     persistence:
       config:
@@ -271,5 +280,5 @@ spec:
             port: 9707
             protocol: TCP
           vpn-metrics:
-            port: 9999
+            port: 8001
             protocol: TCP
