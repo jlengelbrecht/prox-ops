@@ -11,7 +11,7 @@
   ],
   "dependencyDashboard": true,
   "dependencyDashboardTitle": "🤖 Renovate Dashboard 🤖",
-  "dependencyDashboardHeader": "## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates run every weekend. Check a box to run immediately.\n\n---\n",
+  "dependencyDashboardHeader": "## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates run every weekend. Check a box to run immediately.\n\n---\n",
   "dependencyDashboardFooter": "\n---\n\n📚 **Documentation:** [Renovate Docs](https://docs.renovatebot.com/) | ⚙️ **Config:** `.github/renovate.json5`",
   // Suppress noisy notifications
   "suppressNotifications": ["prEditedNotification", "prIgnoreNotification", "configErrorIssue"],
@@ -158,6 +158,11 @@
       "addLabels": ["deps/gpu"]
     },
     {
+      "description": "Label AI/ML updates",
+      "matchPackagePatterns": ["ollama", "open-webui", "litellm", "lightrag", "qdrant"],
+      "addLabels": ["deps/ai"]
+    },
+    {
       "description": "Label Terraform updates",
       "matchDatasources": ["terraform-provider"],
       "addLabels": ["deps/terraform"]
@@ -224,6 +229,12 @@
       "description": "Add context for CNI updates",
       "matchPackagePatterns": ["cilium", "multus", "cni-plugins", "tetragon"],
       "prBodyNotes": ["🔧 **CNI/Networking**: Critical cluster networking. Test pod-to-pod and multi-VLAN connectivity."]
+    },
+    {
+      "description": "Wait 2 days for AI/ML stack updates",
+      "matchPackagePatterns": ["ollama", "open-webui", "litellm", "lightrag", "qdrant"],
+      "minimumReleaseAge": "2 days",
+      "prBodyNotes": ["🤖 **AI/ML**: Rapidly evolving stack. Check for breaking API changes, model compatibility, and integration updates."]
     },
 
     // === Disabled Updates ===
