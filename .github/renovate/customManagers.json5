@@ -6,8 +6,8 @@
       // Matches both "key: value" format (e.g., tag: v1.2.3) and bare value format (e.g., v1.2.3)
       "description": "Process annotated dependencies in YAML files",
       "managerFilePatterns": [
-        "(^|/)kubernetes/.+\\.ya?ml(\\.j2)?$",
-        "(^|/).+\\.ya?ml(\\.j2)?$"
+        "/(^|/)kubernetes/.+\\.ya?ml(\\.j2)?$/",
+        "/(^|/).+\\.ya?ml(\\.j2)?$/"
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n(?:\\s*\\w+:\\s*|\\s*)\"?(?<currentValue>[^\\s\"]+)\"?"
@@ -18,7 +18,7 @@
     {
       "customType": "regex",
       "description": "Monitor Talos version in Terraform variables and tfvars",
-      "managerFilePatterns": ["^terraform/variables\\.tf$", "^terraform/terraform\\.tfvars$"],
+      "managerFilePatterns": ["/^terraform/variables\\.tf$/", "/^terraform/terraform\\.tfvars$/"],
       "matchStrings": [
         "variable\\s+\"talos_version\"\\s*\\{[\\s\\S]*?default\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
         "talos_version\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
@@ -30,7 +30,7 @@
     {
       "customType": "regex",
       "description": "Monitor Terraform version in GitHub Actions workflows",
-      "managerFilePatterns": ["^\\.github/workflows/.+\\.ya?ml$"],
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
         // YAML env format: TERRAFORM_VERSION: "1.11.3"
         "TERRAFORM_VERSION:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\"",
@@ -44,7 +44,7 @@
     {
       "customType": "regex",
       "description": "Track Docker container images in GitHub Actions (docker:// syntax)",
-      "managerFilePatterns": ["^\\.github/workflows/.+\\.ya?ml$"],
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
         "uses:\\s*docker://(?<depName>[^:]+):(?<currentValue>[^\\s\"]+)"
       ],
@@ -55,7 +55,7 @@
       "customType": "regex",
       "description": "Track OCI artifact versions in Flux HelmReleases",
       "managerFilePatterns": [
-        "(^|/)kubernetes/.+\\.ya?ml$"
+        "/(^|/)kubernetes/.+\\.ya?ml$/"
       ],
       "matchStrings": [
         // Matches: # renovate: datasource=docker depName=ghcr.io/foo/bar
