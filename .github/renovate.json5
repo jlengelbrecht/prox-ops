@@ -47,6 +47,18 @@
   ],
   packageRules: [
     {
+      description: 'Set explicit registryUrl for app-template to avoid duplicate HelmRepository warnings',
+      matchDatasources: [
+        'helm',
+      ],
+      matchPackageNames: [
+        'app-template',
+      ],
+      registryUrls: [
+        'https://bjw-s-labs.github.io/helm-charts',
+      ],
+    },
+    {
       description: 'Label Talos major/minor updates as cattle - Terraform',
       matchDatasources: [
         'github-releases',
