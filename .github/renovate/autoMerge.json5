@@ -1,14 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "packageRules": [
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 1: DIGEST AUTOMERGE - Safe container rebuilds (no version change)
+    // ═══════════════════════════════════════════════════════════════════════════
     {
       "description": "Auto-merge container digests for vetted official images",
       "matchDatasources": ["docker"],
       "automerge": true,
-      "automergeType": "branch",
+      "automergeType": "pr",
       "ignoreTests": true,
       "matchUpdateTypes": ["digest"],
       "matchPackageNames": [
+        // Core infrastructure
         "ghcr.io/home-assistant/home-assistant",
         "ghcr.io/controlplaneio-fluxcd/flux-operator",
         "ghcr.io/controlplaneio-fluxcd/flux-instance",
@@ -21,23 +25,78 @@
       "description": "Auto-merge container digests for trusted maintainers",
       "matchDatasources": ["docker"],
       "automerge": true,
-      "automergeType": "branch",
+      "automergeType": "pr",
       "ignoreTests": true,
       "matchUpdateTypes": ["digest"],
       "matchPackageNames": [
-        "ghcr.io/onedr0p/plex",
+        // VPN/Network
         "ghcr.io/qdm12/gluetun",
+        // System utilities
         "ghcr.io/spegel-org/spegel",
         "ghcr.io/stakater/reloader",
         "ghcr.io/k8snetworkplumbingwg/multus-cni",
-        "ghcr.io/kashalls/external-dns-unifi-webhook"
+        "ghcr.io/kashalls/external-dns-unifi-webhook",
+        // Media sidecars
+        "ghcr.io/onedr0p/exportarr"
+      ]
+    },
+    {
+      "description": "Auto-merge GitHub Actions digest updates",
+      "matchDatasources": ["github-actions"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["digest"],
+      "ignoreTests": true
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 2: PATCH AUTOMERGE - Stable apps with release age wait
+    // Bug fixes only, community-tested before automerge
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Auto-merge LinuxServer.io media app patches (3 day wait)",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "3 days",
+      "matchPackagePatterns": [
+        "lscr.io/linuxserver/.*",
+        "ghcr.io/linuxserver/.*"
+      ]
+    },
+    {
+      "description": "Auto-merge Gluetun patches (5 day wait for VPN caution)",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "5 days",
+      "matchPackageNames": ["ghcr.io/qdm12/gluetun"]
+    },
+    {
+      "description": "Auto-merge media utility patches (3 day wait)",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "3 days",
+      "matchPackageNames": [
+        "ghcr.io/cleanuparr/cleanuparr",
+        "ghcr.io/maintainerr/maintainerr",
+        "ghcr.io/wizarrrr/wizarr",
+        "golift/notifiarr",
+        "docker.io/huntarr/huntarr",
+        "sctx/overseerr",
+        "ghcr.io/onedr0p/exportarr",
+        "ghcr.io/gethomepage/homepage"
       ]
     },
     {
       "description": "Auto-merge patch updates for stable system charts",
       "matchDatasources": ["helm"],
       "automerge": true,
-      "automergeType": "branch",
+      "automergeType": "pr",
       "matchUpdateTypes": ["patch"],
       "matchPackageNames": [
         "cert-manager",
@@ -47,16 +106,13 @@
         "spegel"
       ]
     },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 3: REQUIRE MANUAL REVIEW - Critical infrastructure
+    // These rules MUST come after automerge rules to override them
+    // ═══════════════════════════════════════════════════════════════════════════
     {
-      "description": "Auto-merge GitHub Actions digest updates",
-      "matchDatasources": ["github-actions"],
-      "automerge": true,
-      "automergeType": "branch",
-      "matchUpdateTypes": ["digest"],
-      "ignoreTests": true
-    },
-    {
-      "description": "Require manual review for critical infrastructure",
+      "description": "Require manual review for critical CNI/storage infrastructure",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
       "matchPackagePatterns": [
@@ -68,6 +124,45 @@
         "nvidia"
       ]
     },
+    {
+      "description": "Require manual review for security components",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchPackagePatterns": [
+        "authentik",
+        "goauthentik"
+      ]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 4: SPECIAL HANDLING - AI apps, Talos
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Require manual review for AI apps (rapidly evolving)",
+      "matchDatasources": ["docker"],
+      "automerge": false,
+      "matchPackagePatterns": [
+        "lightrag",
+        "litellm",
+        "open-webui",
+        "ollama",
+        "qdrant"
+      ]
+    },
+    {
+      "description": "NEVER automerge Talos updates (cattle/pets strategy)",
+      "matchDatasources": ["docker", "github-releases"],
+      "automerge": false,
+      "matchPackagePatterns": [
+        "siderolabs/talos",
+        "siderolabs/installer"
+      ]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GLOBAL SAFETY NET - Must be LAST rule
+    // Ensures minor/major updates always require review
+    // ═══════════════════════════════════════════════════════════════════════════
     {
       "description": "Require manual review for major and minor updates",
       "matchUpdateTypes": ["major", "minor"],
