@@ -1,0 +1,49 @@
+---
+# Public webhook route - NO authentication required
+# Separate route so SecurityPolicy (attached to 'n8n' route) doesn't apply
+# More specific path prefix takes precedence over the main '/' route
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: n8n-webhook
+  namespace: tools
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - "n8n.homelab0.org"
+  rules:
+    # Production webhooks
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /webhook/
+      backendRefs:
+        - name: n8n
+          port: 80
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+    # Test webhooks (for n8n development/testing)
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /webhook-test/
+      backendRefs:
+        - name: n8n
+          port: 80
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Content-Type-Options
+                value: "nosniff"
