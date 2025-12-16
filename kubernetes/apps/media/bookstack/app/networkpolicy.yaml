@@ -71,6 +71,15 @@ spec:
               protocol: TCP
             - port: "9443"
               protocol: TCP
+    # n8n webhooks (for BookStack sync to LightRAG)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+            app.kubernetes.io/name: n8n
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
     # SMTP for email notifications (Migadu)
     - toEntities:
         - world
