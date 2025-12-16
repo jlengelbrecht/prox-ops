@@ -19,6 +19,15 @@ spec:
         - ports:
             - port: "5678"
               protocol: TCP
+    # From BookStack (webhook callbacks for sync)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: bookstack
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
 
   egress:
     # To BookStack API (sync source)
