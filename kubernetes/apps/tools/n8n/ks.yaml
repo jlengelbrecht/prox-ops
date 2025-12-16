@@ -1,0 +1,19 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: n8n
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: n8n-storage  # Wait for PVC to be ready
+    - name: external-secrets  # Requires 1Password for encryption key
+  interval: 1h
+  path: ./kubernetes/apps/tools/n8n/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: tools
+  wait: false
