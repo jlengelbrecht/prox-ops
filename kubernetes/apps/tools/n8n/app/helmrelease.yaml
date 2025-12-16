@@ -18,6 +18,12 @@ spec:
   values:
     # Main n8n configuration
     main:
+      # Container image - explicit for Renovate tracking
+      image:
+        repository: n8nio/n8n
+        # renovate: datasource=docker depName=n8nio/n8n
+        tag: 1.122.4
+
       # Environment config (becomes ENV vars)
       config:
         n8n:
@@ -41,47 +47,47 @@ spec:
               name: n8n-secrets
               key: N8N_ENCRYPTION_KEY
 
-    # Persistence configuration - cattle-proof
-    persistence:
-      enabled: true
-      type: existing
-      existingClaim: n8n-data
+      # Persistence configuration - cattle-proof
+      persistence:
+        enabled: true
+        type: existing
+        existingClaim: n8n-data
 
-    # Service configuration
+      # Resource limits
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 1
+          memory: 1Gi
+
+      # Pod security context (PSA restricted compliant)
+      podSecurityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Container security context
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: false
+        capabilities:
+          drop:
+            - ALL
+
+      # Pod annotations
+      podAnnotations:
+        # Stakater Reloader: restart pod when 1Password secret changes
+        secret.reloader.stakater.com/reload: "n8n-secrets"
+        security.homelab/network: "Internal only - workflow automation"
+        security.homelab/storage: "Ceph RBD for workflow persistence"
+
+    # Service configuration - using chart defaults (port 80 -> targetPort 5678)
     service:
       enabled: true
       type: ClusterIP
-      port: 5678
-      annotations: {}
-
-    # Resource limits
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        cpu: 1
-        memory: 1Gi
-
-    # Pod security context (PSA restricted compliant)
-    podSecurityContext:
-      runAsUser: 1000
-      runAsGroup: 1000
-      runAsNonRoot: true
-      fsGroup: 1000
-      fsGroupChangePolicy: OnRootMismatch
-      seccompProfile:
-        type: RuntimeDefault
-
-    # Container security context
-    securityContext:
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: false
-      capabilities:
-        drop:
-          - ALL
-
-    # Pod annotations
-    podAnnotations:
-      security.homelab/network: "Internal only - workflow automation"
-      security.homelab/storage: "Ceph RBD for workflow persistence"
