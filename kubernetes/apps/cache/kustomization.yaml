@@ -1,0 +1,11 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cache
+
+resources:
+  - ./namespace.yaml
+  # Valkey - Shared cache/queue service (Redis-compatible)
+  # STORY-110: Cluster-wide caching service
+  - ./valkey/storage/ks.yaml  # Storage with prune: false - MUST come before valkey
+  - ./valkey/ks.yaml
