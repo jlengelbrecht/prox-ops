@@ -59,17 +59,39 @@ spec:
       # Superuser credentials from ExternalSecret
       superuserSecret: postgres-superuser
 
-    # Disable backups for now (no S3 configured)
+      # Declarative role management - each app gets a dedicated user
+      # Passwords managed via ExternalSecrets from 1Password
+      # See: https://cloudnative-pg.io/documentation/current/declarative_role_management/
+      roles:
+        - name: firecrawl
+          ensure: present
+          login: true
+          createdb: false
+          passwordSecret:
+            name: firecrawl-db-credentials
+
+    # Backups - disabled until S3 storage is available
+    # When MinIO/S3 is ready, enable and configure:
     backups:
       enabled: false
-
-    # Database provisioning - apps request databases here
-    # Each app gets its own database and user
-    databases:
-      # Firecrawl database
-      - name: firecrawl
-        owner: firecrawl
-        ensure: present
+      # Uncomment when S3 is available:
+      # provider: s3
+      # s3:
+      #   bucket: postgres-backups
+      #   path: /
+      #   region: us-east-1  # or your MinIO region
+      #   accessKey: ""      # Use ExternalSecret
+      #   secretKey: ""      # Use ExternalSecret
+      # endpointURL: https://minio.storage.svc.cluster.local:9000
+      # retentionPolicy: "7d"
+      # scheduledBackups:
+      #   - name: daily-backup
+      #     schedule: "0 2 * * *"  # 2 AM daily
+      #     backupOwnerReference: self
 
     # Connection pooling with PgBouncer (optional, enable if needed)
     poolers: []
+
+    # Bootstrap creates a default "app" database - this is unused
+    # All application databases are managed via Database CRDs (see database-*.yaml)
+    # The default can be used for admin/maintenance tasks if needed
