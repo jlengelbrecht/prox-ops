@@ -31,11 +31,29 @@ spec:
             args:
               - --requirepass
               - $(VALKEY_PASSWORD)
+              # Persistence: AOF + RDB for durability
               - --appendonly
               - "yes"
+              - --appendfsync
+              - everysec
+              - --auto-aof-rewrite-percentage
+              - "100"
+              - --auto-aof-rewrite-min-size
+              - "64mb"
+              - --save
+              - "900"
+              - "1"
+              - --save
+              - "300"
+              - "10"
               - --save
               - "60"
-              - "1"
+              - "10000"
+              # Memory management: prevent OOM, auto-evict when full
+              - --maxmemory
+              - "1900mb"
+              - --maxmemory-policy
+              - allkeys-lru
             env:
               VALKEY_PASSWORD:
                 valueFrom:
@@ -72,10 +90,10 @@ spec:
             resources:
               requests:
                 cpu: 100m
-                memory: 256Mi
+                memory: 512Mi
               limits:
                 cpu: 500m
-                memory: 1Gi
+                memory: 2Gi
             securityContext:
               allowPrivilegeEscalation: false
               readOnlyRootFilesystem: true
