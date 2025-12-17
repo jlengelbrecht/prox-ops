@@ -69,3 +69,11 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
+
+    # Kubernetes API server (required for CNPG operator coordination)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
