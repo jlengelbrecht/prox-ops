@@ -83,18 +83,24 @@ jobs:
       - name: Generate Diff
         id: diff
         run: |
-          cat diff.patch;
-          {
-              echo 'diff<<EOF'
-              cat diff.patch
-              echo EOF
-          } >> "$GITHUB_OUTPUT";
-          {
-              echo "### Diff"
-              echo '```diff'
-              cat diff.patch
-              echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f diff.patch ]; then
+            cat diff.patch;
+            {
+                echo 'diff<<EOF'
+                cat diff.patch
+                echo EOF
+            } >> "$GITHUB_OUTPUT";
+            {
+                echo "### Diff"
+                echo '```diff'
+                cat diff.patch
+                echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No diff.patch generated (flux-local may have encountered an error)"
+            echo "### Diff" >> "$GITHUB_STEP_SUMMARY"
+            echo "No diff generated - see workflow logs for details" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Generate GitHub App Token
         if: ${{ steps.diff.outputs.diff != '' }}
