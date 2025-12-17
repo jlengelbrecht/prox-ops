@@ -1,0 +1,99 @@
+---
+# Firecrawl NetworkPolicy - Web crawler API for AI platform
+# Allows API access from Open WebUI/LiteLLM and egress to SearXNG, databases, and internet
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: firecrawl
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: firecrawl
+
+  ingress:
+    # Allow from Open WebUI (search requests)
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: open-webui
+      toPorts:
+        - ports:
+            - port: "3002"
+              protocol: TCP
+
+    # Allow from LiteLLM (if configured for tool use)
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "3002"
+              protocol: TCP
+
+    # Allow from within AI namespace for testing/debugging
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+      toPorts:
+        - ports:
+            - port: "3002"
+              protocol: TCP
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # SearXNG for search queries
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: searxng
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # PostgreSQL (database namespace) for persistence
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # Valkey (cache namespace) for job queue and rate limiting
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cache
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # LiteLLM for optional LLM extraction features
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
+
+    # External web crawling (HTTP/HTTPS)
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
