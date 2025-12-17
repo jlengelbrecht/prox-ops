@@ -7,162 +7,177 @@ metadata:
 spec:
   chart:
     spec:
-      chart: searxng
-      # renovate: datasource=helm registryUrl=https://charts.searxng.org
-      version: 1.0.0
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
+      version: 4.4.0
       sourceRef:
         kind: HelmRepository
-        name: searxng
+        name: bjw-s
         namespace: ai
   interval: 1h
   values:
-    # Image configuration
-    image:
-      repository: searxng/searxng
-      pullPolicy: IfNotPresent
+    controllers:
+      searxng:
+        strategy: RollingUpdate
+        containers:
+          app:
+            image:
+              repository: searxng/searxng
+              # renovate: datasource=docker depName=searxng/searxng
+              tag: latest
+            env:
+              # Instance configuration
+              SEARXNG_BASE_URL: "http://searxng.ai.svc.cluster.local:8080/"
+              # Secret key from ExternalSecret
+              SEARXNG_SECRET:
+                valueFrom:
+                  secretKeyRef:
+                    name: searxng-secrets
+                    key: secret-key
+              # Redis for rate limiting (Valkey)
+              SEARXNG_REDIS_URL: "redis://valkey.cache.svc.cluster.local:6379/2"
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: 8080
+                  initialDelaySeconds: 15
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: 8080
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
 
-    # Environment variables
-    env:
-      INSTANCE_NAME: "homelab-search"
-      BASE_URL: "http://searxng.ai.svc.cluster.local:8080/"
-      AUTOCOMPLETE: "false"
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
 
-    # Service configuration
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      annotations:
+        security.homelab/purpose: "Privacy-respecting meta-search engine for AI platform"
+        security.homelab/network: "Internal only - accessed by Firecrawl"
+      securityContext:
+        runAsUser: 977
+        runAsGroup: 977
+        runAsNonRoot: true
+        fsGroup: 977
+        seccompProfile:
+          type: RuntimeDefault
+
+    # SearXNG settings.yaml mounted as ConfigMap
+    configMaps:
+      config:
+        enabled: true
+        data:
+          settings.yml: |
+            use_default_settings: true
+
+            general:
+              instance_name: "Homelab Search"
+              privacypolicy_url: false
+              donation_url: false
+              contact_url: false
+              enable_metrics: false
+
+            search:
+              safe_search: 0
+              autocomplete: ""
+              default_lang: "en"
+              formats:
+                - html
+                - json
+
+            server:
+              limiter: true
+              image_proxy: false
+              public_instance: false
+
+            ui:
+              static_use_hash: true
+              default_theme: simple
+              results_on_new_tab: false
+
+            engines:
+              - name: google
+                engine: google
+                shortcut: g
+                disabled: false
+
+              - name: bing
+                engine: bing
+                shortcut: b
+                disabled: false
+
+              - name: duckduckgo
+                engine: duckduckgo
+                shortcut: ddg
+                disabled: false
+
+              - name: brave
+                engine: brave
+                shortcut: br
+                disabled: false
+
+              - name: github
+                engine: github
+                shortcut: gh
+                disabled: false
+
+              - name: stackoverflow
+                engine: stackoverflow
+                shortcut: so
+                disabled: false
+
+              - name: arxiv
+                engine: arxiv
+                shortcut: arx
+                disabled: false
+
+              - name: wikipedia
+                engine: wikipedia
+                shortcut: w
+                disabled: false
+
+    persistence:
+      config:
+        enabled: true
+        type: configMap
+        name: searxng-config
+        globalMounts:
+          - path: /etc/searxng/settings.yml
+            subPath: settings.yml
+            readOnly: true
+
     service:
-      main:
+      app:
+        controller: searxng
+        type: ClusterIP
         ports:
           http:
             port: 8080
-
-    # Probes
-    probes:
-      liveness:
-        enabled: true
-      readiness:
-        enabled: true
-      startup:
-        enabled: true
-
-    # Ingress - disabled, internal access only
-    ingress:
-      main:
-        enabled: false
-
-    # Persistence - disabled, stateless search
-    persistence:
-      config:
-        enabled: false
-
-    # Resources
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        cpu: 500m
-        memory: 512Mi
-
-    # SearXNG configuration
-    searxng:
-      # Use secret from ExternalSecret
-      existingSecret: searxng-secrets
-      secretKey: secret-key
-
-      # SearXNG settings.yaml configuration
-      config:
-        use_default_settings: true
-
-        # General settings
-        general:
-          instance_name: "Homelab Search"
-          privacypolicy_url: false
-          donation_url: false
-          contact_url: false
-          enable_metrics: false
-
-        # Search settings
-        search:
-          safe_search: 0
-          autocomplete: ""
-          default_lang: "en"
-          formats:
-            - html
-            - json  # Required for Firecrawl integration
-
-        # Server settings
-        server:
-          limiter: true
-          image_proxy: false
-          # Public instance mode disabled - internal only
-          public_instance: false
-
-        # Redis for rate limiting (using Valkey)
-        redis:
-          url: "redis://valkey.cache.svc.cluster.local:6379/1"
-
-        # UI settings - minimal for API use
-        ui:
-          static_use_hash: true
-          default_theme: simple
-          results_on_new_tab: false
-
-        # Enabled search engines
-        engines:
-          # General search engines
-          - name: google
-            engine: google
-            shortcut: g
-            disabled: false
-
-          - name: bing
-            engine: bing
-            shortcut: b
-            disabled: false
-
-          - name: duckduckgo
-            engine: duckduckgo
-            shortcut: ddg
-            disabled: false
-
-          - name: brave
-            engine: brave
-            shortcut: br
-            disabled: false
-
-          # Tech/Documentation
-          - name: github
-            engine: github
-            shortcut: gh
-            disabled: false
-
-          - name: stackoverflow
-            engine: stackoverflow
-            shortcut: so
-            disabled: false
-
-          - name: arxiv
-            engine: arxiv
-            shortcut: arx
-            disabled: false
-
-          # Wikipedia
-          - name: wikipedia
-            engine: wikipedia
-            shortcut: w
-            disabled: false
-
-    # Pod security context
-    podSecurityContext:
-      runAsUser: 977
-      runAsGroup: 977
-      fsGroup: 977
-      seccompProfile:
-        type: RuntimeDefault
-
-    # Container security context
-    securityContext:
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: false
-      capabilities:
-        drop:
-          - ALL
+            targetPort: 8080
+            protocol: TCP
