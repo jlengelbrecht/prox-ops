@@ -1,0 +1,71 @@
+---
+# PostgreSQL Cluster NetworkPolicy - Cluster-wide database service
+# Allows cross-namespace access from authorized namespaces
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: postgres-cluster
+  namespace: database
+spec:
+  endpointSelector:
+    matchLabels:
+      cnpg.io/cluster: postgres
+
+  ingress:
+    # From AI namespace (LiteLLM, Firecrawl, etc.)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # From tools namespace (n8n, etc.)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # From security namespace (Authentik, etc.)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: security
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # From media namespace (future use)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # Internal database namespace traffic (operator, pooler, etc.)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
