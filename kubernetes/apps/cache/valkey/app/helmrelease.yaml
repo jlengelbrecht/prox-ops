@@ -8,7 +8,7 @@ spec:
   chart:
     spec:
       chart: app-template
-      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
       version: 4.4.0
       sourceRef:
         kind: HelmRepository
@@ -60,6 +60,12 @@ spec:
                   secretKeyRef:
                     name: valkey-secret
                     key: password
+              # REDISCLI_AUTH prevents password exposure in process listings
+              REDISCLI_AUTH:
+                valueFrom:
+                  secretKeyRef:
+                    name: valkey-secret
+                    key: password
             probes:
               liveness:
                 enabled: true
@@ -69,7 +75,8 @@ spec:
                     command:
                       - sh
                       - -c
-                      - valkey-cli -a "$VALKEY_PASSWORD" ping | grep -q PONG
+                      # Uses REDISCLI_AUTH env var for auth (avoids password in process listing)
+                      - valkey-cli ping | grep -q PONG
                   initialDelaySeconds: 10
                   periodSeconds: 30
                   timeoutSeconds: 5
@@ -82,7 +89,8 @@ spec:
                     command:
                       - sh
                       - -c
-                      - valkey-cli -a "$VALKEY_PASSWORD" ping | grep -q PONG
+                      # Uses REDISCLI_AUTH env var for auth (avoids password in process listing)
+                      - valkey-cli ping | grep -q PONG
                   initialDelaySeconds: 5
                   periodSeconds: 10
                   timeoutSeconds: 5
