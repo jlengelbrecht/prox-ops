@@ -49,12 +49,17 @@ spec:
               protocol: TCP
 
     # Internal database namespace traffic (operator, pooler, etc.)
+    # Ports: 5432=PostgreSQL, 8000=status (operator health checks), 9187=metrics
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: database
       toPorts:
         - ports:
             - port: "5432"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
+            - port: "9187"
               protocol: TCP
 
   egress:
