@@ -1,0 +1,97 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: postgres-cluster
+  namespace: database
+spec:
+  chart:
+    spec:
+      chart: cluster
+      # renovate: datasource=helm registryUrl=https://cloudnative-pg.github.io/charts
+      version: 0.5.0
+      sourceRef:
+        kind: HelmRepository
+        name: cloudnative-pg
+        namespace: database
+  interval: 1h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      strategy: rollback
+      retries: 3
+  values:
+    # Cluster name
+    fullnameOverride: postgres
+
+    # PostgreSQL version - pin major version for stability
+    # Renovate will propose minor/patch updates within 16.x
+    version:
+      postgresql: "16"
+
+    # Single instance for homelab (can scale to 3 for HA later)
+    cluster:
+      instances: 1
+
+      # Storage configuration
+      storage:
+        size: 20Gi
+        storageClass: ceph-block
+
+      # Resource limits
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+
+      # Enable monitoring if Prometheus is available
+      monitoring:
+        enabled: false
+        podMonitor:
+          enabled: false
+
+      # Superuser credentials from ExternalSecret
+      superuserSecret: postgres-superuser
+
+      # Declarative role management - each app gets a dedicated user
+      # Passwords managed via ExternalSecrets from 1Password
+      # See: https://cloudnative-pg.io/documentation/current/declarative_role_management/
+      roles:
+        - name: firecrawl
+          ensure: present
+          login: true
+          createdb: false
+          passwordSecret:
+            name: firecrawl-db-credentials
+
+    # Backups - disabled until S3 storage is available
+    # When MinIO/S3 is ready, enable and configure:
+    backups:
+      enabled: false
+      # Uncomment when S3 is available:
+      # provider: s3
+      # s3:
+      #   bucket: postgres-backups
+      #   path: /
+      #   region: us-east-1  # or your MinIO region
+      #   accessKey: ""      # Use ExternalSecret
+      #   secretKey: ""      # Use ExternalSecret
+      # endpointURL: https://minio.storage.svc.cluster.local:9000
+      # retentionPolicy: "7d"
+      # scheduledBackups:
+      #   - name: daily-backup
+      #     schedule: "0 2 * * *"  # 2 AM daily
+      #     backupOwnerReference: self
+
+    # Connection pooling with PgBouncer (optional, enable if needed)
+    poolers: []
+
+    # Bootstrap creates a default "app" database - this is unused
+    # All application databases are managed via Database CRDs (see database-*.yaml)
+    # The default can be used for admin/maintenance tasks if needed

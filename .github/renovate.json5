@@ -11,7 +11,7 @@
   ],
   dependencyDashboard: true,
   dependencyDashboardTitle: '🤖 Renovate Dashboard 🤖',
-  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates run every weekend. Check a box to run immediately.\n\n---\n',
+  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates run every weekend. Check a box to run immediately.\n\n---\n',
   dependencyDashboardFooter: '\n---\n\n📚 **Documentation:** [Renovate Docs](https://docs.renovatebot.com/) | ⚙️ **Config:** `.github/renovate.json5`',
   suppressNotifications: [
     'prEditedNotification',
@@ -318,6 +318,40 @@
       ],
     },
     {
+      description: 'Label cache service updates',
+      addLabels: [
+        'deps/cache',
+      ],
+      matchPackageNames: [
+        '/valkey/',
+      ],
+    },
+    {
+      description: 'Label database service updates',
+      addLabels: [
+        'deps/database',
+      ],
+      matchPackageNames: [
+        '/cloudnative-pg/',
+        '/postgresql/',
+        '/postgres/',
+      ],
+    },
+    {
+      description: 'Block PostgreSQL major version updates (require manual migration)',
+      matchDatasources: [
+        'docker',
+      ],
+      matchPackageNames: [
+        '/ghcr.io/cloudnative-pg/postgresql/',
+        '/postgres/',
+      ],
+      matchUpdateTypes: [
+        'major',
+      ],
+      enabled: false,
+    },
+    {
       description: 'Label Terraform updates',
       matchDatasources: [
         'terraform-provider',
@@ -464,6 +498,28 @@
         '/litellm/',
         '/lightrag/',
         '/qdrant/',
+      ],
+    },
+    {
+      description: 'Wait 3 days for database updates',
+      minimumReleaseAge: '3 days',
+      prBodyNotes: [
+        '🐘 **Database**: Critical data infrastructure. PostgreSQL minor/patch updates are safe. Major versions are blocked and require manual pg_upgrade migration.',
+      ],
+      matchPackageNames: [
+        '/cloudnative-pg/',
+        '/postgresql/',
+        '/postgres/',
+      ],
+    },
+    {
+      description: 'Wait 3 days for flux-local CI validation tool updates',
+      minimumReleaseAge: '3 days',
+      prBodyNotes: [
+        '🖥️ **CI Validation**: flux-local is a required validation step for all PRs. Test locally with `flux-local test` before merging. Known issue: [#986](https://github.com/allenporter/flux-local/issues/986) affects CloudNative-PG charts.',
+      ],
+      matchPackageNames: [
+        'ghcr.io/allenporter/flux-local',
       ],
     },
     {
