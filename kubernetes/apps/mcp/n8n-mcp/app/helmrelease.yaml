@@ -8,7 +8,7 @@ spec:
   chart:
     spec:
       chart: app-template
-      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
       version: 4.4.0
       sourceRef:
         kind: HelmRepository
@@ -89,6 +89,8 @@ spec:
     defaultPodOptions:
       automountServiceAccountToken: false
       annotations:
+        # Stakater Reloader: restart pod when secrets change (credential rotation)
+        secret.reloader.stakater.com/reload: "n8n-mcp-secrets"
         security.homelab/purpose: "MCP server for n8n workflow automation integration"
         security.homelab/network: "Restricted - only LiteLLM gateway can access"
         security.homelab/gateway: "LiteLLM in ai namespace"
