@@ -1,6 +1,6 @@
 ---
 # Firecrawl NetworkPolicy - Web crawler API for AI platform
-# Allows API access from Open WebUI/LiteLLM and egress to SearXNG, databases, and internet
+# Using firecrawl-simple (trieve/firecrawl) which doesn't require PostgreSQL
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -30,13 +30,15 @@ spec:
             - port: "3002"
               protocol: TCP
 
-    # Allow from within AI namespace for testing/debugging
+    # Allow internal communication (API/Worker -> Puppeteer)
     - fromEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: firecrawl
       toPorts:
         - ports:
             - port: "3002"
+              protocol: TCP
+            - port: "3000"
               protocol: TCP
 
   egress:
@@ -61,13 +63,15 @@ spec:
             - port: "8080"
               protocol: TCP
 
-    # PostgreSQL (database namespace) for persistence
+    # Internal communication (API/Worker -> Puppeteer)
     - toEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: database
+            app.kubernetes.io/name: firecrawl
       toPorts:
         - ports:
-            - port: "5432"
+            - port: "3000"
+              protocol: TCP
+            - port: "3002"
               protocol: TCP
 
     # Valkey (cache namespace) for job queue and rate limiting

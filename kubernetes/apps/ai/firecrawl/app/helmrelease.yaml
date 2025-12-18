@@ -17,38 +17,21 @@ spec:
   interval: 1h
   values:
     controllers:
-      firecrawl:
+      # API server - handles HTTP requests
+      api:
         strategy: RollingUpdate
         containers:
-          # Main API container
-          api:
+          app:
             image:
-              repository: ericwong/firecrawl
-              # renovate: datasource=docker depName=ericwong/firecrawl
-              tag: 2.7.0
+              # firecrawl-simple: stripped-down version without Supabase/billing
+              repository: trieve/firecrawl
+              # renovate: datasource=docker depName=trieve/firecrawl
+              tag: v0.0.55
+            command: ["pnpm", "run", "start:production"]
             env:
               # Core settings
               PORT: "3002"
               HOST: "0.0.0.0"
-              # Supabase auth not supported for self-hosted - use false
-              # PostgreSQL is still used for job data persistence
-              USE_DB_AUTHENTICATION: "false"
-              LOGGING_LEVEL: "INFO"
-
-              # PostgreSQL (CloudNative-PG shared cluster)
-              POSTGRES_HOST: "postgres-rw.database.svc.cluster.local"
-              POSTGRES_PORT: "5432"
-              POSTGRES_DB: "firecrawl"
-              POSTGRES_USER:
-                valueFrom:
-                  secretKeyRef:
-                    name: firecrawl-secrets
-                    key: postgres-user
-              POSTGRES_PASSWORD:
-                valueFrom:
-                  secretKeyRef:
-                    name: firecrawl-secrets
-                    key: postgres-password
 
               # Redis/Valkey (shared cache cluster with authentication)
               REDIS_URL:
@@ -65,8 +48,9 @@ spec:
               # SearXNG integration for /search endpoint
               SEARXNG_ENDPOINT: "http://searxng.ai.svc.cluster.local:8080"
 
-              # Playwright service (sidecar container)
-              PLAYWRIGHT_MICROSERVICE_URL: "http://localhost:3000"
+              # Browser rendering service (trieve/puppeteer-service-ts)
+              # Note: Env var name is from upstream firecrawl; actual service is Puppeteer
+              PLAYWRIGHT_MICROSERVICE_URL: "http://firecrawl-puppeteer.ai.svc.cluster.local:3000"
 
               # API Authentication
               TEST_API_KEY:
@@ -75,20 +59,10 @@ spec:
                     name: firecrawl-secrets
                     key: api-key
 
-              # Crawl settings
+              # Performance tuning
               NUM_WORKERS_PER_QUEUE: "2"
-              CRAWL_CONCURRENT_REQUESTS: "5"
-              MAX_CONCURRENT_JOBS: "5"
-              MAX_CRAWL_DEPTH: "3"
-              MAX_PAGES_PER_CRAWL: "50"
-
-              # Optional: LLM extraction via LiteLLM (OpenAI-compatible)
-              # Uncomment to enable structured data extraction features
-              # OPENAI_BASE_URL: "http://litellm.ai.svc.cluster.local:4000/v1"
-              # MODEL_NAME: "ollama/llama3.2"
-
-              # Block media downloads (images, video, CSS, fonts) to reduce bandwidth
-              BLOCK_MEDIA: "true"
+              # Bull admin panel: To enable, add BULL_AUTH_KEY secret to firecrawl-secrets
+              # and reference it here. Panel available at /admin/@/queues
 
             probes:
               liveness:
@@ -116,11 +90,11 @@ spec:
 
             resources:
               requests:
-                cpu: 500m
-                memory: 1Gi
+                cpu: 200m
+                memory: 512Mi
               limits:
-                cpu: 2
-                memory: 4Gi
+                cpu: 1
+                memory: 1Gi
 
             securityContext:
               allowPrivilegeEscalation: false
@@ -129,15 +103,63 @@ spec:
                 drop:
                   - ALL
 
-          # Playwright sidecar for JS-rendered pages
-          playwright:
+      # Worker - processes crawl jobs from Redis queue
+      worker:
+        strategy: RollingUpdate
+        containers:
+          app:
             image:
-              repository: ericwong/firecrawl-playwright
-              # renovate: datasource=docker depName=ericwong/firecrawl-playwright
-              tag: 2.7.0
+              repository: trieve/firecrawl
+              # renovate: datasource=docker depName=trieve/firecrawl
+              tag: v0.0.55
+            command: ["pnpm", "run", "worker:production"]
             env:
+              # Redis/Valkey (shared cache cluster with authentication)
+              REDIS_URL:
+                valueFrom:
+                  secretKeyRef:
+                    name: firecrawl-secrets
+                    key: redis-url
+              REDIS_RATE_LIMIT_URL:
+                valueFrom:
+                  secretKeyRef:
+                    name: firecrawl-secrets
+                    key: redis-rate-limit-url
+
+              # Browser rendering service (trieve/puppeteer-service-ts)
+              # Note: Env var name is from upstream firecrawl; actual service is Puppeteer
+              PLAYWRIGHT_MICROSERVICE_URL: "http://firecrawl-puppeteer.ai.svc.cluster.local:3000"
+
+              # Performance tuning
+              NUM_WORKERS_PER_QUEUE: "2"
+
+            resources:
+              requests:
+                cpu: 200m
+                memory: 512Mi
+              limits:
+                cpu: 1
+                memory: 1Gi
+
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+      # Puppeteer service for JS-rendered pages
+      puppeteer:
+        strategy: RollingUpdate
+        containers:
+          app:
+            image:
+              repository: trieve/puppeteer-service-ts
+              # renovate: datasource=docker depName=trieve/puppeteer-service-ts
+              tag: v0.0.6
+            env:
+              PORT: "3000"
               MAX_CONCURRENT_PAGES: "5"
-              BLOCK_MEDIA: "true"
 
             probes:
               liveness:
@@ -165,11 +187,11 @@ spec:
 
             resources:
               requests:
-                cpu: 500m
-                memory: 1Gi
+                cpu: 200m
+                memory: 512Mi
               limits:
-                cpu: 2
-                memory: 2Gi
+                cpu: 1
+                memory: 1Gi
 
             securityContext:
               allowPrivilegeEscalation: false
@@ -182,7 +204,7 @@ spec:
       automountServiceAccountToken: false
       annotations:
         security.homelab/purpose: "Web crawler and search API for AI platform"
-        security.homelab/network: "Internal only - connects to SearXNG, PostgreSQL, Valkey"
+        security.homelab/network: "Internal only - connects to SearXNG, Valkey"
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
@@ -192,11 +214,21 @@ spec:
           type: RuntimeDefault
 
     service:
-      app:
-        controller: firecrawl
+      # Main API service
+      api:
+        controller: api
         type: ClusterIP
         ports:
           http:
             port: 3002
             targetPort: 3002
+            protocol: TCP
+      # Puppeteer browser service (internal)
+      puppeteer:
+        controller: puppeteer
+        type: ClusterIP
+        ports:
+          http:
+            port: 3000
+            targetPort: 3000
             protocol: TCP
