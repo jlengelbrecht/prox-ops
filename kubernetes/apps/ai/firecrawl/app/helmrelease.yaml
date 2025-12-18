@@ -48,7 +48,8 @@ spec:
               # SearXNG integration for /search endpoint
               SEARXNG_ENDPOINT: "http://searxng.ai.svc.cluster.local:8080"
 
-              # Puppeteer service for browser rendering
+              # Browser rendering service (trieve/puppeteer-service-ts)
+              # Note: Env var name is from upstream firecrawl; actual service is Puppeteer
               PLAYWRIGHT_MICROSERVICE_URL: "http://firecrawl-puppeteer.ai.svc.cluster.local:3000"
 
               # API Authentication
@@ -60,7 +61,8 @@ spec:
 
               # Performance tuning
               NUM_WORKERS_PER_QUEUE: "2"
-              # Bull admin panel disabled for now (BULL_AUTH_KEY not set)
+              # Bull admin panel: To enable, add BULL_AUTH_KEY secret to firecrawl-secrets
+              # and reference it here. Panel available at /admin/@/queues
 
             probes:
               liveness:
@@ -124,7 +126,8 @@ spec:
                     name: firecrawl-secrets
                     key: redis-rate-limit-url
 
-              # Puppeteer service for browser rendering
+              # Browser rendering service (trieve/puppeteer-service-ts)
+              # Note: Env var name is from upstream firecrawl; actual service is Puppeteer
               PLAYWRIGHT_MICROSERVICE_URL: "http://firecrawl-puppeteer.ai.svc.cluster.local:3000"
 
               # Performance tuning
