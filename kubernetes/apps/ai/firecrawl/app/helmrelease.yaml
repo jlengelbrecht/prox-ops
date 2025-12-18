@@ -48,9 +48,17 @@ spec:
                     name: firecrawl-secrets
                     key: postgres-password
 
-              # Redis/Valkey (shared cache cluster)
-              REDIS_URL: "redis://valkey.cache.svc.cluster.local:6379/0"
-              REDIS_RATE_LIMIT_URL: "redis://valkey.cache.svc.cluster.local:6379/1"
+              # Redis/Valkey (shared cache cluster with authentication)
+              REDIS_URL:
+                valueFrom:
+                  secretKeyRef:
+                    name: firecrawl-secrets
+                    key: redis-url
+              REDIS_RATE_LIMIT_URL:
+                valueFrom:
+                  secretKeyRef:
+                    name: firecrawl-secrets
+                    key: redis-rate-limit-url
 
               # SearXNG integration for /search endpoint
               SEARXNG_ENDPOINT: "http://searxng.ai.svc.cluster.local:8080"
@@ -77,7 +85,7 @@ spec:
               # OPENAI_BASE_URL: "http://litellm.ai.svc.cluster.local:4000/v1"
               # MODEL_NAME: "ollama/llama3.2"
 
-              # Security: Block internal network crawling
+              # Block media downloads (images, video, CSS, fonts) to reduce bandwidth
               BLOCK_MEDIA: "true"
 
             probes:
