@@ -30,23 +30,9 @@ spec:
               # Core settings
               PORT: "3002"
               HOST: "0.0.0.0"
-              USE_DB_AUTHENTICATION: "true"
+              # Disable Supabase auth - not available for self-hosted
+              USE_DB_AUTHENTICATION: "false"
               LOGGING_LEVEL: "INFO"
-
-              # PostgreSQL (CloudNative-PG shared cluster)
-              POSTGRES_HOST: "postgres-rw.database.svc.cluster.local"
-              POSTGRES_PORT: "5432"
-              POSTGRES_DB: "firecrawl"
-              POSTGRES_USER:
-                valueFrom:
-                  secretKeyRef:
-                    name: firecrawl-secrets
-                    key: postgres-user
-              POSTGRES_PASSWORD:
-                valueFrom:
-                  secretKeyRef:
-                    name: firecrawl-secrets
-                    key: postgres-password
 
               # Redis/Valkey (shared cache cluster with authentication)
               REDIS_URL:
