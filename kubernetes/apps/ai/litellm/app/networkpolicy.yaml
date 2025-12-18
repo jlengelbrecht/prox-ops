@@ -74,6 +74,15 @@ spec:
               protocol: TCP
             - port: "10443"
               protocol: TCP
+    # Allow egress to MCP servers (mcp namespace)
+    # LiteLLM acts as the MCP gateway - sole entry point to MCP servers
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
     # Allow HTTPS egress for Prisma CLI download (first startup only)
     - toEntities:
         - world

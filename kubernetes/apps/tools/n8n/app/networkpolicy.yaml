@@ -28,6 +28,15 @@ spec:
         - ports:
             - port: "5678"
               protocol: TCP
+    # From n8n-mcp server (MCP API access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: n8n-mcp
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
 
   egress:
     # To BookStack API (sync source)
