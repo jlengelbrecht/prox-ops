@@ -27,7 +27,8 @@ spec:
               repository: trieve/firecrawl
               # renovate: datasource=docker depName=trieve/firecrawl
               tag: v0.0.55
-            command: ["pnpm", "run", "start:production"]
+            # Run pre-compiled JS directly (pnpm start:production runs tsc which fails non-root)
+            command: ["node", "dist/src/index.js"]
             env:
               # Core settings
               PORT: "3002"
