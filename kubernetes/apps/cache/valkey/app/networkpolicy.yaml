@@ -1,0 +1,62 @@
+---
+# Valkey NetworkPolicy - Cluster-wide cache service
+# Allows cross-namespace access from authorized namespaces
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: valkey
+  namespace: cache
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+
+  ingress:
+    # From AI namespace (Firecrawl, LiteLLM, etc.)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # From tools namespace (n8n, etc.)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # From security namespace (Authentik, etc.)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: security
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # From media namespace (future use)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

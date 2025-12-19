@@ -1,0 +1,91 @@
+---
+# Public routes for n8n - NO Authentik authentication required
+# Separate route so SecurityPolicy (attached to 'n8n' route) doesn't apply
+# More specific path prefixes take precedence over the main '/' route
+#
+# Paths that need public access (per n8n SSO/reverse proxy docs):
+# - /webhook/* - External webhook triggers (Stripe, GitHub, BookStack, etc.)
+# - /webhook-test/* - Development/test webhooks
+# - /healthz - Health checks for load balancers and k8s probes
+# - /rest/oauth2-credential/* - OAuth2 callback for credential connections
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: n8n-public
+  namespace: tools
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - "n8n.homelab0.org"
+  rules:
+    # Production webhooks - external services trigger workflows
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /webhook/
+      backendRefs:
+        - name: n8n
+          port: 80
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: Referrer-Policy
+                value: "no-referrer"
+    # Test webhooks - n8n development/testing
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /webhook-test/
+      backendRefs:
+        - name: n8n
+          port: 80
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: Referrer-Policy
+                value: "no-referrer"
+    # Health check - load balancers, k8s probes
+    - matches:
+        - path:
+            type: Exact
+            value: /healthz
+      backendRefs:
+        - name: n8n
+          port: 80
+    # OAuth2 credential callback - Google, GitHub, Slack credential setup
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /rest/oauth2-credential/
+      backendRefs:
+        - name: n8n
+          port: 80
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: Referrer-Policy
+                value: "no-referrer"

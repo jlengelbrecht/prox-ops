@@ -24,10 +24,12 @@ spec:
             image:
               repository: ghcr.io/wizarrrr/wizarr
               # renovate: datasource=docker depName=ghcr.io/wizarrrr/wizarr versioning=regex:^v(?<major>\d{4})\.(?<minor>\d+)\.(?<patch>\d+)$
-              tag: v2025.11.3
+              tag: v2025.12.0
             env:
               TZ: America/New_York
               APP_URL: https://wizarr.homelab0.org
+              # SSO via Authentik forward auth - disable built-in auth
+              DISABLE_BUILTIN_AUTH: "True"
             probes:
               liveness:
                 enabled: true

@@ -139,8 +139,6 @@ tasks:
       - rm -rf {{.ROOT_DIR}}/.github/workflows/e2e.yaml
       - rm -rf {{.ROOT_DIR}}/.github/workflows/mise.yaml
       - rm -rf {{.ROOT_DIR}}/.github/workflows/release.yaml
-      - |
-        {{.SED}} -i 's/(..\.j2)\?//g' {{.ROOT_DIR}}/.renovaterc.json5
       - mv {{.TEMPLATE_DIR}} {{.TIDY_FOLDER}}/templates
       - mv {{.MAKEJINJA_CONFIG_FILE}} {{.TIDY_FOLDER}}/makejinja.toml
       - mv {{.TEMPLATE_CONFIG_FILE}} {{.TIDY_FOLDER}}/cluster.yaml
@@ -158,7 +156,6 @@ tasks:
       - test -d {{.ROOT_DIR}}/.taskfiles/template
       - test -d {{.TEMPLATE_DIR}}
       - test -f {{.MAKEJINJA_CONFIG_FILE}}
-      - test -f {{.ROOT_DIR}}/.renovaterc.json5
 
   reset:
     desc: Remove templated files and directories
