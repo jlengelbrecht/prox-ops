@@ -27,6 +27,10 @@ spec:
       retries: 3
       remediateLastFailure: true
   values:
+    # Use Recreate strategy for RWO PVC compatibility
+    strategy:
+      type: Recreate
+
     image:
       repository: louislam/uptime-kuma
       # renovate: datasource=docker depName=louislam/uptime-kuma
