@@ -36,9 +36,14 @@ spec:
               ENABLE_LOGIN_FORM: "false"
               OAUTH_PROVIDER_NAME: "Authentik"
               OPENID_PROVIDER_URL: "https://authentik.homelab0.org/application/o/open-webui/.well-known/openid-configuration"
-              OAUTH_SCOPES: "openid email profile"
+              OAUTH_SCOPES: "openid email profile groups"
               # Merge OAuth accounts with existing accounts by email
               OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "true"
+              # OIDC Group Management - sync groups from Authentik
+              ENABLE_OAUTH_GROUP_MANAGEMENT: "true"
+              OAUTH_GROUP_CLAIM: "groups"
+              # Admin role mapping - users in openwebui-admins group get admin
+              OAUTH_ADMIN_ROLES: "openwebui-admins"
               # Default role for new users (avoid "pending" status)
               DEFAULT_USER_ROLE: "user"
               # Data directory

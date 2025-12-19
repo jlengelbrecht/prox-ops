@@ -1,0 +1,18 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp
+  labels:
+    # Pod Security Standards - enforce restricted
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+  annotations:
+    # Namespace purpose documentation
+    security.homelab/purpose: "MCP (Model Context Protocol) servers for AI tool integration"
+    security.homelab/network: "Restricted - only LiteLLM gateway can access MCP servers"
+    security.homelab/gateway: "LiteLLM in ai namespace is the sole ingress point"

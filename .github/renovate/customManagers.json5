@@ -3,11 +3,13 @@
   "customManagers": [
     {
       "customType": "regex",
-      // Matches both "key: value" format (e.g., tag: v1.2.3) and bare value format (e.g., v1.2.3)
-      "description": "Process annotated dependencies in YAML files",
+      // Process annotated dependencies in non-Kubernetes YAML files
+      // NOTE: kubernetes/ files are handled by built-in managers (flux, helm-values, kubernetes)
+      // This custom manager only targets files that built-in managers don't process
+      "description": "Process annotated dependencies in Talos and template files",
       "managerFilePatterns": [
-        "/(^|/)kubernetes/.+\\.ya?ml(\\.j2)?$/",
-        "/(^|/).+\\.ya?ml(\\.j2)?$/"
+        "/^talos/talenv\\.yaml$/",
+        "/^templates/.+\\.ya?ml(\\.j2)?$/"
       ],
       "matchStrings": [
         "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)( versioning=(?<versioning>\\S+))?\\n(?:\\s*\\w+:\\s*|\\s*)\"?(?<currentValue>[^\\s\"]+)\"?"
