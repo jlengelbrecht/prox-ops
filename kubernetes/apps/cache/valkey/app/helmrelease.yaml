@@ -1,0 +1,142 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: valkey
+  namespace: cache
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: cache
+  interval: 1h
+  values:
+    controllers:
+      valkey:
+        # Recreate strategy for RWO PVC compatibility
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: valkey/valkey
+              # renovate: datasource=docker depName=valkey/valkey
+              tag: 8.1.1-alpine
+            command:
+              - valkey-server
+            args:
+              - --requirepass
+              - $(VALKEY_PASSWORD)
+              # Persistence: AOF + RDB for durability
+              - --appendonly
+              - "yes"
+              - --appendfsync
+              - everysec
+              - --auto-aof-rewrite-percentage
+              - "100"
+              - --auto-aof-rewrite-min-size
+              - "64mb"
+              - --save
+              - "900"
+              - "1"
+              - --save
+              - "300"
+              - "10"
+              - --save
+              - "60"
+              - "10000"
+              # Memory management: prevent OOM, auto-evict when full
+              - --maxmemory
+              - "1900mb"
+              - --maxmemory-policy
+              - allkeys-lru
+            env:
+              VALKEY_PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: valkey-secret
+                    key: password
+              # REDISCLI_AUTH prevents password exposure in process listings
+              REDISCLI_AUTH:
+                valueFrom:
+                  secretKeyRef:
+                    name: valkey-secret
+                    key: password
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - sh
+                      - -c
+                      # Uses REDISCLI_AUTH env var for auth (avoids password in process listing)
+                      - valkey-cli ping | grep -q PONG
+                  initialDelaySeconds: 10
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - sh
+                      - -c
+                      # Uses REDISCLI_AUTH env var for auth (avoids password in process listing)
+                      - valkey-cli ping | grep -q PONG
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 100m
+                memory: 512Mi
+              limits:
+                cpu: 500m
+                memory: 2Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      annotations:
+        # Stakater Reloader: restart pod when secrets change
+        secret.reloader.stakater.com/reload: "valkey-secret"
+        security.homelab/network: "Cluster-wide cache service - cross-namespace access"
+        security.homelab/purpose: "Shared Redis-compatible cache and job queue"
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        runAsNonRoot: true
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+    persistence:
+      data:
+        enabled: true
+        existingClaim: valkey-data
+        globalMounts:
+          - path: /data
+
+    service:
+      app:
+        controller: valkey
+        type: ClusterIP
+        ports:
+          redis:
+            port: 6379
+            protocol: TCP

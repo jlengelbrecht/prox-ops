@@ -1,0 +1,22 @@
+---
+# ReferenceGrant allows tools namespace resources to reference Authentik service:
+# - SecurityPolicy: for forward auth (extAuth) validation
+# - HTTPRoute: for /outpost.goauthentik.io/* paths (login/callback flow)
+# Required by: n8n, and future tools namespace apps needing Authentik auth
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-tools-namespace-extauth
+  namespace: security
+spec:
+  from:
+    - group: gateway.envoyproxy.io
+      kind: SecurityPolicy
+      namespace: tools
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: tools
+  to:
+    - group: ""
+      kind: Service
+      name: authentik-server

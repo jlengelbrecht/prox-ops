@@ -38,6 +38,15 @@ spec:
         - ports:
             - port: "80"
               protocol: TCP
+    # Allow n8n to fetch page content via API (for LightRAG sync)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+            app.kubernetes.io/name: n8n
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
   egress:
     # MariaDB database connection (standalone MariaDB 11.4.8)
     # Use app.kubernetes.io/instance because commonMetadata in ks.yaml overrides app.kubernetes.io/name
@@ -70,6 +79,16 @@ spec:
             - port: "9000"
               protocol: TCP
             - port: "9443"
+              protocol: TCP
+    # n8n webhooks (for BookStack sync to LightRAG)
+    # Pod port 5678 - kube-proxy handles service port 80 -> pod port translation
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+            app.kubernetes.io/name: n8n
+      toPorts:
+        - ports:
+            - port: "5678"
               protocol: TCP
     # SMTP for email notifications (Migadu)
     - toEntities:

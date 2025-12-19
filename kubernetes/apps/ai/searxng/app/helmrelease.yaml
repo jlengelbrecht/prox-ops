@@ -1,0 +1,187 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: searxng
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      searxng:
+        strategy: RollingUpdate
+        containers:
+          app:
+            image:
+              repository: searxng/searxng
+              # renovate: datasource=docker depName=searxng/searxng
+              tag: 2025.12.17-896863802
+            env:
+              # Instance configuration
+              SEARXNG_BASE_URL: "http://searxng.ai.svc.cluster.local:8080/"
+              # Secret key from ExternalSecret
+              SEARXNG_SECRET:
+                valueFrom:
+                  secretKeyRef:
+                    name: searxng-secrets
+                    key: secret-key
+              # Redis for rate limiting (Valkey with authentication)
+              SEARXNG_REDIS_URL:
+                valueFrom:
+                  secretKeyRef:
+                    name: searxng-secrets
+                    key: redis-url
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: 8080
+                  initialDelaySeconds: 15
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: 8080
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      annotations:
+        security.homelab/purpose: "Privacy-respecting meta-search engine for AI platform"
+        security.homelab/network: "Internal only - accessed by Firecrawl"
+      securityContext:
+        runAsUser: 977
+        runAsGroup: 977
+        runAsNonRoot: true
+        fsGroup: 977
+        seccompProfile:
+          type: RuntimeDefault
+
+    # SearXNG settings.yaml mounted as ConfigMap
+    configMaps:
+      config:
+        enabled: true
+        data:
+          settings.yml: |
+            use_default_settings: true
+
+            general:
+              instance_name: "Homelab Search"
+              privacypolicy_url: false
+              donation_url: false
+              contact_url: false
+              enable_metrics: false
+
+            search:
+              safe_search: 0
+              autocomplete: ""
+              default_lang: "en"
+              formats:
+                - html
+                - json
+
+            server:
+              limiter: true
+              image_proxy: false
+              public_instance: false
+
+            ui:
+              static_use_hash: true
+              default_theme: simple
+              results_on_new_tab: false
+
+            engines:
+              - name: google
+                engine: google
+                shortcut: g
+                disabled: false
+
+              - name: bing
+                engine: bing
+                shortcut: b
+                disabled: false
+
+              - name: duckduckgo
+                engine: duckduckgo
+                shortcut: ddg
+                disabled: false
+
+              - name: brave
+                engine: brave
+                shortcut: br
+                disabled: false
+
+              - name: github
+                engine: github
+                shortcut: gh
+                disabled: false
+
+              - name: stackoverflow
+                engine: stackoverflow
+                shortcut: so
+                disabled: false
+
+              - name: arxiv
+                engine: arxiv
+                shortcut: arx
+                disabled: false
+
+              - name: wikipedia
+                engine: wikipedia
+                shortcut: w
+                disabled: false
+
+    persistence:
+      config:
+        enabled: true
+        type: configMap
+        name: searxng
+        globalMounts:
+          - path: /etc/searxng/settings.yml
+            subPath: settings.yml
+            readOnly: true
+
+    service:
+      app:
+        controller: searxng
+        type: ClusterIP
+        ports:
+          http:
+            port: 8080
+            targetPort: 8080
+            protocol: TCP
