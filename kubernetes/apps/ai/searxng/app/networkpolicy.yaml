@@ -1,0 +1,63 @@
+---
+# SearXNG NetworkPolicy - Meta-search engine for Firecrawl
+# Allows search queries from Firecrawl and egress to search engines
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: searxng
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: searxng
+
+  ingress:
+    # Allow from Firecrawl (search queries)
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: firecrawl
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow from within AI namespace for testing/debugging
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Valkey for rate limiting
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cache
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # External search engines (Google, Bing, DuckDuckGo, etc.)
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP

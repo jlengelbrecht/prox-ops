@@ -1,0 +1,11 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # Core cluster resources
+  - externalsecret.yaml
+  - helmrelease.yaml
+  - networkpolicy.yaml
+  # Application databases (declaratively managed via Database CRD)
+  - database-firecrawl.yaml
+  - externalsecret-firecrawl.yaml

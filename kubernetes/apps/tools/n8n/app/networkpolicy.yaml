@@ -1,0 +1,90 @@
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: n8n
+  namespace: tools
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: n8n
+
+  ingress:
+    # From envoy-internal gateway (internal access via HTTPRoute)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
+    # From BookStack (webhook callbacks for sync)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: bookstack
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
+    # From n8n-mcp server (MCP API access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: n8n-mcp
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
+
+  egress:
+    # To BookStack API (sync source)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: bookstack
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+
+    # To LightRAG API (sync destination via LiteLLM)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: lightrag
+      toPorts:
+        - ports:
+            - port: "9621"
+              protocol: TCP
+
+    # To LiteLLM (AI API gateway)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
+
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow external HTTPS (for webhook callbacks, external APIs)
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
