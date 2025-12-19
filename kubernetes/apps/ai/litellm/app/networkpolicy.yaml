@@ -84,6 +84,16 @@ spec:
         - ports:
             - port: "3000"
               protocol: TCP
+    # Allow egress to n8n (tools namespace) for MCP stdio transport
+    # n8n-mcp subprocess runs in LiteLLM pod and needs to reach n8n API
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+            app.kubernetes.io/name: n8n
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
     # Allow HTTPS egress for Prisma CLI download (first startup only)
     - toEntities:
         - world

@@ -37,6 +37,15 @@ spec:
         - ports:
             - port: "5678"
               protocol: TCP
+    # From LiteLLM (MCP stdio transport - n8n-mcp subprocess runs in LiteLLM pod)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
 
   egress:
     # To BookStack API (sync source)

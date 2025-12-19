@@ -169,3 +169,12 @@ spec:
           secretKeyRef:
             name: litellm-openai
             key: api-key
+      # n8n-mcp integration (stdio transport)
+      # n8n-mcp runs as subprocess and needs these credentials
+      - name: N8N_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-n8n-mcp
+            key: n8n-api-key
+      - name: N8N_API_URL
+        value: "http://n8n.tools.svc.cluster.local"
