@@ -15,10 +15,20 @@ spec:
         name: bjw-s
         namespace: iot
   interval: 1h
+  timeout: 10m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+      remediateLastFailure: true
   values:
     controllers:
       home-assistant:
-        strategy: RollingUpdate
+        # Use Recreate strategy for RWO PVC compatibility
+        strategy: Recreate
         containers:
           app:
             image:
