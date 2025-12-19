@@ -51,6 +51,22 @@ spec:
         - ports:
             - port: "6333"
               protocol: TCP
+    # Allow egress to SearXNG for web search
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: searxng
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow egress to Firecrawl for web scraping/loading
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: firecrawl
+      toPorts:
+        - ports:
+            - port: "3002"
+              protocol: TCP
     # Allow DNS resolution
     - toEndpoints:
         - matchLabels:
