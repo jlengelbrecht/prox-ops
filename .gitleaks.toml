@@ -1,0 +1,482 @@
+# Gitleaks Configuration for prox-ops
+# Comprehensive secret detection for Kubernetes GitOps infrastructure
+#
+# This configuration is custom-built based on:
+# - Historical secret leak incidents (2025-11-07 Proxmox API token leak)
+# - Analysis of all secret types in the repository
+# - Infrastructure patterns (Talos, Proxmox, SOPS, 1Password, Flux)
+#
+# Last updated: 2025-12-19
+
+title = "prox-ops Gitleaks Configuration"
+
+[extend]
+# Extend the default gitleaks rules
+useDefault = true
+
+# ==============================================================================
+# CUSTOM RULES - Infrastructure-Specific Secrets
+# ==============================================================================
+
+[[rules]]
+id = "age-private-key"
+description = "Age private key (AGE-SECRET-KEY-*)"
+regex = '''AGE-SECRET-KEY-1[A-Z0-9]{58}'''
+keywords = ["age-secret-key", "AGE-SECRET-KEY"]
+tags = ["critical", "encryption", "sops"]
+
+[[rules]]
+id = "age-public-key"
+description = "Age public key (age1*) - Monitor for accidental inclusion"
+regex = '''age1[a-z0-9]{58}'''
+keywords = ["age1"]
+tags = ["high", "encryption", "sops"]
+# Note: Public keys in .sops.yaml are expected - allowlist handles this
+
+[[rules]]
+id = "proxmox-api-token"
+description = "Proxmox VE API Token (UUID format in Proxmox context)"
+regex = '''(?i)(proxmox|pve|TF_VAR_proxmox)[^\n]*[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'''
+keywords = ["proxmox", "pve", "TF_VAR_proxmox"]
+tags = ["critical", "proxmox", "terraform"]
+
+[[rules]]
+id = "proxmox-api-token-standalone"
+description = "Proxmox API Token Secret (UUID in password/secret context)"
+regex = '''(?i)(password|secret|token|api.?key)[^\n]{0,30}[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'''
+keywords = ["password", "secret", "token", "api_key", "apikey"]
+tags = ["critical", "proxmox"]
+
+[[rules]]
+id = "talos-machine-secret"
+description = "Talos machine secret (base64 encoded)"
+regex = '''(?i)(machine|talos|cluster)[^\n]*(secret|token)[^\n]*[A-Za-z0-9+/]{40,}={0,2}'''
+keywords = ["machine", "talos", "cluster", "secret"]
+tags = ["critical", "talos", "kubernetes"]
+
+[[rules]]
+id = "talos-bootstrap-token"
+description = "Talos bootstrap token"
+regex = '''(?i)bootstrap[^\n]*(token|secret)[^\n]*[A-Za-z0-9+/]{20,}={0,2}'''
+keywords = ["bootstrap", "token"]
+tags = ["critical", "talos"]
+
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API Key (sk-*)"
+regex = '''sk-[A-Za-z0-9]{20,}'''
+keywords = ["sk-", "openai", "api_key", "OPENAI_API_KEY"]
+tags = ["critical", "ai", "api"]
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API Key"
+regex = '''(?i)(anthropic|claude)[^\n]*(api.?key|token)[^\n]*[A-Za-z0-9_-]{40,}'''
+keywords = ["anthropic", "claude", "api_key"]
+tags = ["critical", "ai", "api"]
+
+[[rules]]
+id = "cloudflare-api-token"
+description = "Cloudflare API Token"
+regex = '''(?i)(cloudflare|CF_)[^\n]*(token|key)[^\n]*[a-zA-Z0-9_-]{40}'''
+keywords = ["cloudflare", "CF_API", "CF_TOKEN"]
+tags = ["high", "cloudflare", "dns"]
+
+[[rules]]
+id = "cloudflare-global-api-key"
+description = "Cloudflare Global API Key"
+regex = '''[a-f0-9]{37}'''
+keywords = ["cloudflare", "global", "api"]
+tags = ["high", "cloudflare"]
+
+[[rules]]
+id = "onepassword-credentials"
+description = "1Password Connect Credentials"
+regex = '''(?i)(1password|onepassword)[^\n]*(credential|token|secret)[^\n]*[A-Za-z0-9+/=]{20,}'''
+keywords = ["1password", "onepassword", "connect"]
+tags = ["critical", "secrets-management"]
+
+[[rules]]
+id = "onepassword-json-credentials"
+description = "1Password Credentials JSON content"
+regex = '''"credentialType"\s*:\s*"[A-Z0-9]{26}"'''
+keywords = ["credentialType", "1password"]
+tags = ["critical", "secrets-management"]
+
+[[rules]]
+id = "github-token"
+description = "GitHub Personal Access Token or App Token"
+regex = '''gh[pousr]_[A-Za-z0-9_]{36,255}'''
+keywords = ["github", "gh_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_"]
+tags = ["high", "github", "vcs"]
+
+[[rules]]
+id = "github-fine-grained-pat"
+description = "GitHub Fine-grained Personal Access Token"
+regex = '''github_pat_[A-Za-z0-9_]{22,255}'''
+keywords = ["github_pat"]
+tags = ["high", "github", "vcs"]
+
+[[rules]]
+id = "flux-webhook-token"
+description = "Flux Webhook Token"
+regex = '''(?i)flux[^\n]*(webhook|token)[^\n]*[A-Za-z0-9_-]{32,}'''
+keywords = ["flux", "webhook"]
+tags = ["high", "gitops", "flux"]
+
+[[rules]]
+id = "kubernetes-service-account-token"
+description = "Kubernetes Service Account Token"
+regex = '''eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'''
+keywords = ["kubernetes", "serviceaccount", "bearer"]
+tags = ["critical", "kubernetes"]
+
+[[rules]]
+id = "etcd-credentials"
+description = "etcd credentials or certificates"
+regex = '''(?i)etcd[^\n]*(password|secret|key|cert)[^\n]*[A-Za-z0-9+/]{20,}={0,2}'''
+keywords = ["etcd"]
+tags = ["critical", "kubernetes", "database"]
+
+[[rules]]
+id = "postgres-password"
+description = "PostgreSQL Password"
+regex = '''(?i)(postgres|psql|pg_)[^\n]*(password|passwd|pwd)[^\n]*[:=]\s*["']?[^"'\s]{8,}["']?'''
+keywords = ["postgres", "postgresql", "POSTGRES_PASSWORD", "PGPASSWORD"]
+tags = ["high", "database"]
+
+[[rules]]
+id = "mariadb-password"
+description = "MariaDB/MySQL Password"
+regex = '''(?i)(mariadb|mysql)[^\n]*(password|passwd|pwd)[^\n]*[:=]\s*["']?[^"'\s]{8,}["']?'''
+keywords = ["mariadb", "mysql", "MARIADB_PASSWORD", "MYSQL_PASSWORD"]
+tags = ["high", "database"]
+
+[[rules]]
+id = "redis-password"
+description = "Redis Password"
+regex = '''(?i)redis[^\n]*(password|auth|requirepass)[^\n]*[:=]\s*["']?[^"'\s]{8,}["']?'''
+keywords = ["redis", "REDIS_PASSWORD", "requirepass"]
+tags = ["medium", "database"]
+
+[[rules]]
+id = "oci-private-key"
+description = "Oracle Cloud Infrastructure Private Key"
+regex = '''-----BEGIN (RSA )?PRIVATE KEY-----'''
+keywords = ["oci", "oracle", "private key"]
+tags = ["critical", "cloud", "oci"]
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS Access Key ID"
+regex = '''(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}'''
+keywords = ["aws", "AKIA", "access_key"]
+tags = ["critical", "aws", "cloud"]
+
+[[rules]]
+id = "aws-secret-access-key"
+description = "AWS Secret Access Key"
+regex = '''(?i)aws[^\n]*(secret|access)[^\n]*[A-Za-z0-9/+=]{40}'''
+keywords = ["aws", "secret_access_key", "AWS_SECRET"]
+tags = ["critical", "aws", "cloud"]
+
+[[rules]]
+id = "ssh-private-key"
+description = "SSH Private Key"
+regex = '''-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----'''
+keywords = ["ssh", "private key", "id_rsa", "id_ed25519"]
+tags = ["critical", "ssh", "authentication"]
+
+[[rules]]
+id = "wireguard-private-key"
+description = "WireGuard Private Key"
+regex = '''(?i)(wireguard|wg)[^\n]*(private|key)[^\n]*[A-Za-z0-9+/]{43}='''
+keywords = ["wireguard", "wg", "privatekey"]
+tags = ["high", "vpn", "network"]
+
+[[rules]]
+id = "oidc-client-secret"
+description = "OIDC Client Secret"
+regex = '''(?i)oidc[^\n]*(client[_-]?secret|secret)[^\n]*[:=]\s*["']?[A-Za-z0-9_-]{20,}["']?'''
+keywords = ["oidc", "client_secret", "oauth"]
+tags = ["high", "authentication"]
+
+[[rules]]
+id = "authentik-token"
+description = "Authentik API Token or Secret"
+regex = '''(?i)authentik[^\n]*(token|secret|key)[^\n]*[A-Za-z0-9_-]{32,}'''
+keywords = ["authentik", "ak_"]
+tags = ["high", "authentication", "identity"]
+
+[[rules]]
+id = "basic-auth-header"
+description = "Basic Authentication Header"
+regex = '''(?i)authorization[^\n]*basic\s+[A-Za-z0-9+/]{16,}={0,2}'''
+keywords = ["authorization", "basic"]
+tags = ["medium", "authentication"]
+
+[[rules]]
+id = "bearer-token"
+description = "Bearer Token"
+regex = '''(?i)(bearer|authorization)[^\n]+[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+'''
+keywords = ["bearer", "authorization"]
+tags = ["medium", "authentication"]
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API Key pattern"
+regex = '''(?i)(api[_-]?key|apikey)[^\n]*[:=]\s*["']?[A-Za-z0-9_-]{20,}["']?'''
+keywords = ["api_key", "apikey", "api-key"]
+tags = ["medium", "api"]
+
+[[rules]]
+id = "generic-password"
+description = "Generic Password Assignment"
+regex = '''(?i)(password|passwd|pwd|secret)[^\n]*[:=]\s*["']([^"'\s]{12,})["']'''
+keywords = ["password", "passwd", "pwd", "secret"]
+tags = ["medium", "credentials"]
+
+[[rules]]
+id = "high-entropy-base64"
+description = "High entropy base64 string (potential secret)"
+regex = '''[A-Za-z0-9+/]{64,}={0,2}'''
+entropy = 4.5
+keywords = ["secret", "token", "key", "password", "credential"]
+tags = ["low", "entropy"]
+
+[[rules]]
+id = "unifi-credentials"
+description = "UniFi Network Controller Credentials"
+regex = '''(?i)unifi[^\n]*(password|credential|token)[^\n]*[:=]\s*["']?[^"'\s]{8,}["']?'''
+keywords = ["unifi", "ubiquiti"]
+tags = ["medium", "network"]
+
+[[rules]]
+id = "rook-ceph-key"
+description = "Rook-Ceph Admin Key or CSI Credentials"
+regex = '''(?i)(ceph|rook)[^\n]*(key|secret|admin)[^\n]*[A-Za-z0-9+/]{20,}={0,2}'''
+keywords = ["ceph", "rook", "cephx"]
+tags = ["high", "storage"]
+
+[[rules]]
+id = "nfs-password"
+description = "NFS/SMB/CIFS Password"
+regex = '''(?i)(nfs|smb|cifs)[^\n]*(password|passwd|credential)[^\n]*[:=]\s*["']?[^"'\s]{8,}["']?'''
+keywords = ["nfs", "smb", "cifs", "mount"]
+tags = ["medium", "storage"]
+
+# ==============================================================================
+# FILE DETECTION RULES - Files That Should NEVER Be Committed
+# ==============================================================================
+
+[[rules]]
+id = "private-key-file"
+description = "Private key file detected"
+path = '''(^|/)[\w.-]*\.key$'''
+tags = ["critical", "file", "key"]
+
+[[rules]]
+id = "pem-private-key-file"
+description = "PEM private key file detected"
+path = '''(^|/)[\w.-]*private[\w.-]*\.pem$'''
+tags = ["critical", "file", "key"]
+
+[[rules]]
+id = "age-key-file"
+description = "Age encryption key file"
+path = '''(^|/)age\.key$'''
+tags = ["critical", "file", "encryption"]
+
+[[rules]]
+id = "env-file"
+description = "Environment file with potential secrets"
+path = '''(^|/)\.env(\.[a-z]+)?$'''
+tags = ["high", "file", "config"]
+
+[[rules]]
+id = "kubeconfig-file"
+description = "Kubernetes kubeconfig file"
+path = '''(^|/)kubeconfig$'''
+tags = ["critical", "file", "kubernetes"]
+
+[[rules]]
+id = "talosconfig-file"
+description = "Talos configuration file"
+path = '''(^|/)talosconfig$'''
+tags = ["critical", "file", "talos"]
+
+[[rules]]
+id = "terraform-state"
+description = "Terraform state file (contains secrets)"
+path = '''(^|/)[\w.-]*\.tfstate(\.backup)?$'''
+tags = ["critical", "file", "terraform"]
+
+[[rules]]
+id = "terraform-vars-secrets"
+description = "Terraform variables file with potential secrets"
+path = '''(^|/)[\w.-]*\.auto\.tfvars$'''
+tags = ["high", "file", "terraform"]
+
+[[rules]]
+id = "credentials-json"
+description = "Credentials JSON file"
+path = '''(^|/)[\w.-]*(credentials?|secrets?)[\w.-]*\.json$'''
+tags = ["critical", "file", "credentials"]
+
+[[rules]]
+id = "onepassword-credentials-file"
+description = "1Password credentials file"
+path = '''(^|/)1password-credentials\.json$'''
+tags = ["critical", "file", "1password"]
+
+[[rules]]
+id = "cloudflare-tunnel-json"
+description = "Cloudflare tunnel credentials"
+path = '''(^|/)cloudflare-tunnel\.json$'''
+tags = ["critical", "file", "cloudflare"]
+
+[[rules]]
+id = "github-deploy-key"
+description = "GitHub deploy key file"
+path = '''(^|/)github-deploy\.key$'''
+tags = ["critical", "file", "github"]
+
+[[rules]]
+id = "decrypted-sops-file"
+description = "Decrypted SOPS file (temp file from editing)"
+path = '''\.decrypted~.*\.yaml$'''
+tags = ["critical", "file", "sops"]
+
+[[rules]]
+id = "claude-ai-docs"
+description = "Claude AI documentation directory (may contain secrets)"
+path = '''(^|/)\.claude/'''
+regex = '''.*'''
+tags = ["blocker", "file", "ai-docs"]
+
+[[rules]]
+id = "ai-docs-directory"
+description = "AI documentation with potential secrets"
+path = '''(^|/)\.ai-docs/'''
+regex = '''.*'''
+tags = ["blocker", "file", "ai-docs"]
+
+[[rules]]
+id = "bmad-files"
+description = "BMad workflow files (internal)"
+path = '''(^|/)bmad'''
+regex = '''.*'''
+tags = ["high", "file", "internal"]
+
+[[rules]]
+id = "work-item-status"
+description = "Work item tracking files"
+path = '''WI-.*-STATUS\.md$'''
+tags = ["medium", "file", "tracking"]
+
+[[rules]]
+id = "plan-output"
+description = "Terraform/kubectl plan output"
+path = '''[\w.-]*-plan\.txt$'''
+tags = ["medium", "file", "output"]
+
+[[rules]]
+id = "backup-files"
+description = "Backup configuration files"
+path = '''\.backup\.[0-9]+$'''
+tags = ["medium", "file", "backup"]
+
+[[rules]]
+id = "talos-backup-archive"
+description = "Talos configuration backup archive"
+path = '''talos-configs-backup.*\.tar\.gz$'''
+tags = ["critical", "file", "talos"]
+
+# ==============================================================================
+# ALLOWLIST - Known Safe Patterns and Files
+# ==============================================================================
+
+[allowlist]
+description = "Global allowlist for known safe patterns"
+
+# Files that are expected to contain encrypted secrets or safe references
+paths = [
+    # SOPS configuration (contains public age key recipient, not secret)
+    '''\.sops\.yaml$''',
+    # Kustomization files (references only, not actual secrets)
+    '''kustomization\.yaml$''',
+    # ExternalSecret manifests (references 1Password items by name only)
+    '''externalsecret\.yaml$''',
+    # HelmRelease files (references secrets by name, not values)
+    '''helmrelease\.yaml$''',
+    # This config file
+    '''\.gitleaks\.toml$''',
+    # GitHub workflow files (use ${{ secrets.* }} references)
+    '''\.github/workflows/.*\.ya?ml$''',
+    # Renovate config
+    '''renovate\.json5?$''',
+    # CodeRabbit config
+    '''\.coderabbit\.ya?ml$''',
+    # Test fixtures
+    '''(^|/)test(s)?/.*''',
+    # Documentation (but NOT CLAUDE.md)
+    '''docs/.*\.md$''',
+    # Lock files
+    '''package-lock\.json$''',
+    '''yarn\.lock$''',
+    '''pnpm-lock\.yaml$''',
+    # Go sum
+    '''go\.sum$''',
+]
+
+# Specific strings that are known safe (e.g., placeholder values, examples)
+regexes = [
+    # SOPS encrypted values are safe (they're encrypted!)
+    '''ENC\[AES256_GCM,data:[A-Za-z0-9+/=]+,iv:[A-Za-z0-9+/=]+,tag:[A-Za-z0-9+/=]+,type:str\]''',
+    # SOPS metadata block
+    '''sops:\s*\n\s*age:''',
+    # Age recipient in SOPS config (public key, not secret)
+    '''recipient:\s*age1[a-z0-9]{58}''',
+    # Placeholder/example values
+    '''<YOUR[_-].*>''',
+    '''CHANGE[_-]?ME''',
+    '''REPLACE[_-]?ME''',
+    '''example\.com''',
+    '''your[_-]?password''',
+    '''your[_-]?secret''',
+    '''your[_-]?token''',
+    '''placeholder''',
+    # Environment variable references (not actual values)
+    '''\$\{[A-Z_]+\}''',
+    '''\$[A-Z_]+''',
+    '''env\.[A-Z_]+''',
+    '''os\.environ''',
+    # Kubernetes secret references
+    '''secretKeyRef:''',
+    '''existingSecret:''',
+    '''valueFrom:''',
+    # GitHub Actions secret references
+    '''\$\{\{\s*secrets\.[A-Z_]+\s*\}\}''',
+    # Renovate datasource comments
+    '''# renovate: datasource=''',
+    # Known test/example UUIDs
+    '''00000000-0000-0000-0000-000000000000''',
+    '''ffffffff-ffff-ffff-ffff-ffffffffffff''',
+    # Helm template syntax
+    '''\{\{\s*\.Values\.''',
+    '''\{\{-?\s*(if|else|end|range|define|template|include)''',
+]
+
+# Specific commits to skip (if any historical commits need to be excluded)
+commits = []
+
+# Stopwords - common words that cause false positives
+stopwords = [
+    "example",
+    "sample",
+    "test",
+    "dummy",
+    "fake",
+    "mock",
+    "placeholder",
+]
