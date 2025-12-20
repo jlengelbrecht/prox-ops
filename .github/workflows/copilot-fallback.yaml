@@ -1,0 +1,152 @@
+---
+# Copilot Fallback Reviewer
+#
+# Triggers Copilot code review when CodeRabbit is rate limited.
+# Works by detecting CodeRabbit rate limit failures and toggling
+# the PR's draft status to trigger Copilot's automatic review.
+#
+# Prerequisites:
+# 1. Copilot automatic review must be enabled in repo rulesets
+# 2. Copilot must be configured to review on "Draft -> Ready" transitions
+#
+name: Copilot Fallback Review
+
+on:
+  check_run:
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  trigger-copilot-fallback:
+    name: Trigger Copilot on CodeRabbit Rate Limit
+    runs-on: ubuntu-latest
+    # Only run when:
+    # 1. Check is from CodeRabbit app
+    # 2. Check completed with neutral/failure (rate limited)
+    # 3. Check is associated with a PR
+    if: |
+      github.event.check_run.app.slug == 'coderabbitai' &&
+      github.event.check_run.conclusion == 'neutral' &&
+      github.event.check_run.pull_requests[0] != null
+
+    steps:
+      - name: Check if rate limited
+        id: check-rate-limit
+        env:
+          CHECK_OUTPUT: ${{ github.event.check_run.output.title }}
+          CHECK_SUMMARY: ${{ github.event.check_run.output.summary }}
+        run: |
+          echo "Check output title: $CHECK_OUTPUT"
+          echo "Check output summary: $CHECK_SUMMARY"
+
+          # Check for rate limit indicators in the check output
+          if echo "$CHECK_OUTPUT" | grep -qi "rate limit"; then
+            echo "rate_limited=true" >> $GITHUB_OUTPUT
+            echo "::notice::CodeRabbit rate limit detected"
+          elif echo "$CHECK_SUMMARY" | grep -qi "rate limit"; then
+            echo "rate_limited=true" >> $GITHUB_OUTPUT
+            echo "::notice::CodeRabbit rate limit detected in summary"
+          else
+            echo "rate_limited=false" >> $GITHUB_OUTPUT
+            echo "::notice::Not a rate limit issue, skipping"
+          fi
+
+      - name: Get PR number
+        if: steps.check-rate-limit.outputs.rate_limited == 'true'
+        id: pr
+        run: |
+          PR_NUMBER="${{ github.event.check_run.pull_requests[0].number }}"
+          echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "::notice::Processing PR #$PR_NUMBER"
+
+      - name: Check if PR is from a user (not bot)
+        if: steps.check-rate-limit.outputs.rate_limited == 'true'
+        id: check-author
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_AUTHOR=$(gh pr view ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} --json author --jq '.author.login')
+          PR_AUTHOR_TYPE=$(gh api /users/$PR_AUTHOR --jq '.type')
+
+          echo "PR Author: $PR_AUTHOR (Type: $PR_AUTHOR_TYPE)"
+
+          # Skip bot PRs (Renovate, Dependabot, etc.) - Copilot won't review them anyway
+          if [ "$PR_AUTHOR_TYPE" = "Bot" ]; then
+            echo "is_user=false" >> $GITHUB_OUTPUT
+            echo "::notice::Skipping bot PR - Copilot requires user subscription"
+          else
+            echo "is_user=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if already reviewed by Copilot
+        if: |
+          steps.check-rate-limit.outputs.rate_limited == 'true' &&
+          steps.check-author.outputs.is_user == 'true'
+        id: check-copilot
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if Copilot has already been requested or has reviewed
+          COPILOT_REVIEW=$(gh api /repos/${{ github.repository }}/pulls/${{ steps.pr.outputs.number }}/reviews \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" or .user.login == "copilot")] | length')
+
+          REQUESTED=$(gh pr view ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} \
+            --json reviewRequests --jq '.reviewRequests | length')
+
+          echo "Copilot reviews found: $COPILOT_REVIEW"
+          echo "Review requests pending: $REQUESTED"
+
+          # For now, always try to trigger - Copilot handles deduplication
+          echo "should_trigger=true" >> $GITHUB_OUTPUT
+
+      - name: Toggle PR draft status to trigger Copilot
+        if: |
+          steps.check-rate-limit.outputs.rate_limited == 'true' &&
+          steps.check-author.outputs.is_user == 'true' &&
+          steps.check-copilot.outputs.should_trigger == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM=${{ steps.pr.outputs.number }}
+          echo "::group::Triggering Copilot review for PR #$PR_NUM"
+
+          # Check current draft status
+          IS_DRAFT=$(gh pr view $PR_NUM --repo ${{ github.repository }} --json isDraft --jq '.isDraft')
+          echo "Current draft status: $IS_DRAFT"
+
+          if [ "$IS_DRAFT" = "true" ]; then
+            echo "PR is already a draft, converting to ready..."
+            gh pr ready $PR_NUM --repo ${{ github.repository }}
+          else
+            echo "Converting PR to draft..."
+            gh pr ready $PR_NUM --repo ${{ github.repository }} --undo
+
+            echo "Waiting 3 seconds..."
+            sleep 3
+
+            echo "Converting PR back to ready for review..."
+            gh pr ready $PR_NUM --repo ${{ github.repository }}
+          fi
+
+          echo "::endgroup::"
+          echo "::notice::Copilot review triggered for PR #$PR_NUM"
+
+      - name: Post notification comment
+        if: |
+          steps.check-rate-limit.outputs.rate_limited == 'true' &&
+          steps.check-author.outputs.is_user == 'true' &&
+          steps.check-copilot.outputs.should_trigger == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ steps.pr.outputs.number }} --repo ${{ github.repository }} --body "## Copilot Fallback Review Triggered
+
+          CodeRabbit is currently rate limited. Copilot code review has been automatically requested as a fallback.
+
+          > **Note**: If Copilot doesn't appear in reviewers within 30 seconds, you may need to manually request it from the Reviewers menu.
+
+          ---
+          *This is an automated message from the Copilot Fallback workflow.*"
