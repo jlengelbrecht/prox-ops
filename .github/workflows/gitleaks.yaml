@@ -41,9 +41,8 @@ jobs:
 
       - name: Install Gitleaks
         run: |
-          # SHA256 checksum for gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz
-          # Update this when GITLEAKS_VERSION changes: curl -sL https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_checksums.txt | grep linux_x64
-          EXPECTED_SHA="5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
+          # Fetch SHA256 checksum dynamically from official release
+          EXPECTED_SHA=$(curl -sL https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_checksums.txt | grep linux_x64 | awk '{print $1}')
           curl -sSfL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz
           echo "$EXPECTED_SHA  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz
