@@ -71,6 +71,8 @@ spec:
     defaultPodOptions:
       automountServiceAccountToken: false
       annotations:
+        # Stakater Reloader: restart pod when secrets change
+        secret.reloader.stakater.com/reload: "qdrant-secret"
         security.homelab/network: "Internal only - ClusterIP service"
         security.homelab/storage: "Ceph RBD for vector data persistence"
       securityContext:
