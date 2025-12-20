@@ -162,14 +162,21 @@ jobs:
             echo ''
             echo 'Potential secrets were detected in this pull request.'
             echo ''
-            echo '| Rule | File | Line | Description |'
-            echo '|------|------|------|-------------|'
-            jq -r '.runs[0].results[0:10][] | "| \(.ruleId) | `\(.locations[0].physicalLocation.artifactLocation.uri)` | \(.locations[0].physicalLocation.region.startLine) | \(.message.text | gsub("\n"; " ") | .[0:60]) |"' gitleaks-report.sarif 2>/dev/null || true
-            COUNT=$(jq '.runs[0].results | length' gitleaks-report.sarif 2>/dev/null || echo "0")
-            if [ "$COUNT" -gt 10 ]; then
-              echo ""
-              echo "*...and $((COUNT - 10)) more findings*"
+
+            # Validate SARIF structure before parsing
+            if jq -e '.runs[0].results' gitleaks-report.sarif >/dev/null 2>&1; then
+              echo '| Rule | File | Line | Description |'
+              echo '|------|------|------|-------------|'
+              jq -r '.runs[0].results[0:10][] | "| \(.ruleId) | `\(.locations[0].physicalLocation.artifactLocation.uri)` | \(.locations[0].physicalLocation.region.startLine) | \(.message.text | gsub("\n"; " ") | .[0:60]) |"' gitleaks-report.sarif 2>/dev/null || true
+              COUNT=$(jq '.runs[0].results | length' gitleaks-report.sarif 2>/dev/null || echo "0")
+              if [ "$COUNT" -gt 10 ]; then
+                echo ""
+                echo "*...and $((COUNT - 10)) more findings*"
+              fi
+            else
+              echo '*Unable to parse SARIF report. Check workflow logs for details.*'
             fi
+
             echo ''
             echo '### Required Actions'
             echo ''
