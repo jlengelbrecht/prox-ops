@@ -85,7 +85,7 @@ tags = ["high", "cloudflare", "dns"]
 [[rules]]
 id = "cloudflare-global-api-key"
 description = "Cloudflare Global API Key"
-regex = '''[a-f0-9]{37}'''
+regex = '''(?i)(cloudflare|CF_)[^\n]*(global|api)[^\n]*[a-f0-9]{37}'''
 keywords = ["cloudflare", "global", "api"]
 tags = ["high", "cloudflare"]
 
@@ -411,8 +411,6 @@ paths = [
     '''helmrelease\.yaml$''',
     # This config file
     '''\.gitleaks\.toml$''',
-    # GitHub workflow files (use ${{ secrets.* }} references)
-    '''\.github/workflows/.*\.ya?ml$''',
     # Renovate config
     '''renovate\.json5?$''',
     # CodeRabbit config
