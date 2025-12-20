@@ -131,7 +131,7 @@ jobs:
       - name: Generate GitHub App Token
         if: github.event_name == 'pull_request'
         id: generate-token
-        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
@@ -313,7 +313,7 @@ jobs:
       - name: Generate GitHub App Token
         if: github.event_name == 'pull_request'
         id: generate-token
-        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
@@ -429,13 +429,35 @@ jobs:
           echo "Gitleaks result: ${{ needs.gitleaks.result }}"
           echo "SOPS validation result: ${{ needs.sops-validation.result }}"
 
-          if [ "${{ needs.gitleaks.result }}" != "success" ]; then
-            echo "::error::Gitleaks check did not succeed (result: ${{ needs.gitleaks.result }})"
+          # Require explicit success - cancelled/skipped/failure all block the gate
+          GITLEAKS_RESULT="${{ needs.gitleaks.result }}"
+          SOPS_RESULT="${{ needs.sops-validation.result }}"
+
+          if [ "$GITLEAKS_RESULT" = "cancelled" ]; then
+            echo "::error::Gitleaks check was cancelled - security scan incomplete"
+            exit 1
+          elif [ "$GITLEAKS_RESULT" = "skipped" ]; then
+            echo "::error::Gitleaks check was skipped - security scan incomplete"
+            exit 1
+          elif [ "$GITLEAKS_RESULT" = "failure" ]; then
+            echo "::error::Gitleaks check failed - secrets may have been detected"
+            exit 1
+          elif [ "$GITLEAKS_RESULT" != "success" ]; then
+            echo "::error::Gitleaks check did not succeed (result: $GITLEAKS_RESULT)"
             exit 1
           fi
 
-          if [ "${{ needs.sops-validation.result }}" != "success" ]; then
-            echo "::error::SOPS validation did not succeed (result: ${{ needs.sops-validation.result }})"
+          if [ "$SOPS_RESULT" = "cancelled" ]; then
+            echo "::error::SOPS validation was cancelled - encryption check incomplete"
+            exit 1
+          elif [ "$SOPS_RESULT" = "skipped" ]; then
+            echo "::error::SOPS validation was skipped - encryption check incomplete"
+            exit 1
+          elif [ "$SOPS_RESULT" = "failure" ]; then
+            echo "::error::SOPS validation failed - unencrypted secrets may exist"
+            exit 1
+          elif [ "$SOPS_RESULT" != "success" ]; then
+            echo "::error::SOPS validation did not succeed (result: $SOPS_RESULT)"
             exit 1
           fi
 
