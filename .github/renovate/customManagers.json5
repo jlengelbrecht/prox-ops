@@ -45,6 +45,19 @@
     },
     {
       "customType": "regex",
+      "description": "Monitor Gitleaks version in GitHub Actions workflows",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        // Matches: # renovate: datasource=github-releases depName=gitleaks/gitleaks
+        //          GITLEAKS_VERSION: "8.21.2"
+        "# renovate: datasource=github-releases depName=gitleaks/gitleaks\\n\\s*GITLEAKS_VERSION:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "gitleaks/gitleaks",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
       "description": "Track Docker container images in GitHub Actions (docker:// syntax)",
       "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
