@@ -169,52 +169,42 @@ jobs:
             | Sensitive files | :white_check_mark: None detected |
             | SOPS encryption | :white_check_mark: Validated |
 
+      - name: Generate failure comment body
+        if: github.event_name == 'pull_request' && steps.gitleaks-pr.outputs.LEAKS_FOUND == 'true'
+        id: failure-body
+        run: |
+          {
+            echo 'COMMENT_BODY<<EOF'
+            echo '## :x: Gitleaks Secret Scan Failed'
+            echo ''
+            echo 'Potential secrets were detected in this pull request.'
+            echo ''
+            echo '| Rule | File | Line | Description |'
+            echo '|------|------|------|-------------|'
+            jq -r '.runs[0].results[0:10][] | "| \(.ruleId) | `\(.locations[0].physicalLocation.artifactLocation.uri)` | \(.locations[0].physicalLocation.region.startLine) | \(.message.text | gsub("\n"; " ") | .[0:60]) |"' gitleaks-report.sarif 2>/dev/null || true
+            COUNT=$(jq '.runs[0].results | length' gitleaks-report.sarif 2>/dev/null || echo "0")
+            if [ "$COUNT" -gt 10 ]; then
+              echo ""
+              echo "*...and $((COUNT - 10)) more findings*"
+            fi
+            echo ''
+            echo '### Required Actions'
+            echo ''
+            echo '1. Remove any real secrets from the code'
+            echo '2. If this is a false positive, add to allowlist in `.gitleaks.toml`'
+            echo '3. If secrets were committed, rotate them immediately'
+            echo ''
+            echo '**This PR cannot be merged until all secrets are removed.**'
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Comment on PR (secrets found)
         if: github.event_name == 'pull_request' && steps.gitleaks-pr.outputs.LEAKS_FOUND == 'true'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
         with:
-          github-token: ${{ steps.generate-token.outputs.token }}
-          script: |
-            const fs = require('fs');
-            let sarif;
-            try {
-              sarif = JSON.parse(fs.readFileSync('gitleaks-report.sarif', 'utf8'));
-            } catch (e) {
-              console.log('No SARIF report found');
-              return;
-            }
-
-            const results = sarif.runs[0].results || [];
-            if (results.length === 0) return;
-
-            let body = '## :x: Gitleaks Secret Scan Failed\n\n';
-            body += 'Potential secrets were detected in this pull request.\n\n';
-            body += '| Rule | File | Line | Description |\n';
-            body += '|------|------|------|-------------|\n';
-
-            for (const result of results.slice(0, 10)) {
-              const file = result.locations[0]?.physicalLocation?.artifactLocation?.uri || 'unknown';
-              const line = result.locations[0]?.physicalLocation?.region?.startLine || '?';
-              const msg = (result.message?.text || '').replace(/\n/g, ' ').substring(0, 60);
-              body += `| ${result.ruleId} | \`${file}\` | ${line} | ${msg} |\n`;
-            }
-
-            if (results.length > 10) {
-              body += `\n*...and ${results.length - 10} more findings*\n`;
-            }
-
-            body += '\n### Required Actions\n\n';
-            body += '1. Remove any real secrets from the code\n';
-            body += '2. If this is a false positive, add to allowlist in `.gitleaks.toml`\n';
-            body += '3. If secrets were committed, rotate them immediately\n';
-            body += '\n**This PR cannot be merged until all secrets are removed.**';
-
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: body
-            });
+          repo-token: ${{ steps.generate-token.outputs.token }}
+          message-id: "gitleaks-scan"
+          message: ${{ steps.failure-body.outputs.COMMENT_BODY }}
 
       - name: Fail if secrets found
         if: |
