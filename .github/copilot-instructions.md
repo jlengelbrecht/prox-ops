@@ -8,7 +8,7 @@
 
 **Summary Format**: Every review MUST begin with a structured summary:
 
-```
+```markdown
 ## Summary
 1. **Services/Namespaces Affected**: [list affected services and namespaces]
 2. **Breaking Changes**: [any breaking changes or "None"]
