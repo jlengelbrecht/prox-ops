@@ -1,5 +1,28 @@
 # GitHub Copilot Instructions for prox-ops
 
+## Review Behavior (IMPORTANT)
+
+**Tone**: Direct, technical, assertive. No fluff or unnecessary praise.
+
+**Action**: When issues are found, **REQUEST CHANGES** - do not just leave comments. This ensures PRs cannot be merged until issues are addressed.
+
+**Summary Format**: Every review MUST begin with a structured summary:
+
+```
+## Summary
+1. **Services/Namespaces Affected**: [list affected services and namespaces]
+2. **Breaking Changes**: [any breaking changes or "None"]
+3. **Security Implications**: [security concerns or "No issues found"]
+4. **Flux Dependency Impacts**: [HelmRelease/Kustomization dependencies affected]
+5. **Resource Changes**: [CPU/memory/storage changes]
+
+**Key Items**: [Flag Talos constraints, SOPS encryption, ExternalSecrets prominently]
+```
+
+**Review Profile**: Be assertive. Flag all issues clearly. Prioritize security, reliability, and GitOps compliance. Do not approve PRs with unresolved critical or high-severity issues.
+
+---
+
 ## Repository Context
 
 This is a **GitOps-managed Kubernetes homelab** running on Talos Linux v1.11.3 with Flux CD. All infrastructure is declarative and version-controlled.
@@ -201,14 +224,29 @@ Rate issues by severity:
 
 ## Example Good Review
 
-```
+```markdown
+## Summary
+1. **Services/Namespaces Affected**: media/plex, media/tautulli
+2. **Breaking Changes**: None
+3. **Security Implications**: SOPS encryption verified for DB credentials ✅
+4. **Flux Dependency Impacts**: HelmRelease depends on rook-ceph StorageClass
+5. **Resource Changes**: +500m CPU request, +1Gi memory limit
+
+**Key Items**:
+- ✅ ExternalSecret references valid 1Password item
+- ✅ Talos compatible (no host filesystem writes)
+- ✅ SOPS encrypted secrets only
+
+---
+
+## Detailed Review
+
 **Security**: ✅ SOPS encryption verified for DB credentials
 **Kubernetes**: ✅ PodSecurityStandard set to 'restricted'
 **GitOps**: ✅ HelmRelease properly references cilium-charts repo
 **Talos**: ✅ Uses modern_ebpf driver (compatible with Talos 1.11.3)
-**Testing**: ✅ Clear validation steps provided
 
-Minor suggestions:
+### Suggestions (Medium Priority)
 - Consider adding resource limits to prevent resource exhaustion
 - Testing plan could include Prometheus metrics verification
 ```
@@ -216,6 +254,27 @@ Minor suggestions:
 ---
 
 ## Repository-Specific Knowledge
+
+### Secrets Management (FLAG PROMINENTLY)
+
+**This repo uses a dual-layer secrets approach:**
+
+1. **ExternalSecrets Operator** (v1 API - `external-secrets.io/v1`)
+   - Syncs secrets from 1Password to Kubernetes
+   - All ExternalSecret resources MUST use `apiVersion: external-secrets.io/v1` (NOT v1beta1)
+   - SecretStore references 1Password Connect in `external-secrets` namespace
+
+2. **SOPS Encryption**
+   - For secrets that must be in Git (bootstrap, etc.)
+   - Files end in `.sops.yaml`
+   - Encrypted with age key
+
+**Review Checklist for Secrets:**
+- [ ] No plaintext secrets in HelmRelease values
+- [ ] ExternalSecret uses v1 API (not v1beta1)
+- [ ] SOPS files have `ENC[AES256_GCM,...]` encrypted values
+- [ ] Stakater Reloader annotation present for secret rotation
+- [ ] `existingSecret` pattern used (not inline credentials)
 
 ### Security Policies
 - **Media namespace (DMZ)**: Plex runs with GPU access, enforced shell blocking
