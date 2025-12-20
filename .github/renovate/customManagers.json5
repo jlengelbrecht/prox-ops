@@ -58,6 +58,19 @@
     },
     {
       "customType": "regex",
+      "description": "Monitor ensure-sops version in GitHub Actions workflows",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        // Matches: # renovate: datasource=pypi depName=ensure-sops
+        //          ENSURE_SOPS_VERSION: "0.1.2"
+        "# renovate: datasource=pypi depName=ensure-sops\\n\\s*ENSURE_SOPS_VERSION:\\s*\"(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "ensure-sops",
+      "versioningTemplate": "pep440"
+    },
+    {
+      "customType": "regex",
       "description": "Track Docker container images in GitHub Actions (docker:// syntax)",
       "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [
