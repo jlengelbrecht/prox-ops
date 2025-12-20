@@ -1,0 +1,215 @@
+---
+name: "Gitleaks Secret Scanning"
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: "Type of scan to run"
+        required: true
+        default: "protect"
+        type: choice
+        options:
+          - protect
+          - detect
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITLEAKS_VERSION: "8.21.2"
+
+jobs:
+  gitleaks:
+    name: Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        run: |
+          EXPECTED_SHA="5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
+          curl -sSfL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz
+          echo "$EXPECTED_SHA  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+          rm gitleaks.tar.gz
+          gitleaks version
+
+      - name: Run Gitleaks (PR - Scan commits in PR)
+        if: github.event_name == 'pull_request'
+        id: gitleaks-pr
+        run: |
+          # Scan only the commits in the PR
+          gitleaks detect \
+            --config .gitleaks.toml \
+            --log-opts "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}" \
+            --report-format sarif \
+            --report-path gitleaks-report.sarif \
+            --verbose \
+            --exit-code 1 || echo "LEAKS_FOUND=true" >> $GITHUB_OUTPUT
+
+      - name: Run Gitleaks (Push - Scan new commits)
+        if: github.event_name == 'push'
+        id: gitleaks-push
+        run: |
+          BEFORE="${{ github.event.before }}"
+          # Handle force-push or new branch (before is all zeros)
+          if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            echo "Force push or new branch detected, scanning full repository"
+            gitleaks detect \
+              --config .gitleaks.toml \
+              --report-format sarif \
+              --report-path gitleaks-report.sarif \
+              --verbose \
+              --exit-code 1 || echo "LEAKS_FOUND=true" >> $GITHUB_OUTPUT
+          else
+            # Scan the pushed commits
+            gitleaks detect \
+              --config .gitleaks.toml \
+              --log-opts "$BEFORE..${{ github.sha }}" \
+              --report-format sarif \
+              --report-path gitleaks-report.sarif \
+              --verbose \
+              --exit-code 1 || echo "LEAKS_FOUND=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Gitleaks (Manual - Full repo scan)
+        if: github.event_name == 'workflow_dispatch'
+        id: gitleaks-manual
+        run: |
+          if [ "${{ github.event.inputs.scan_type }}" = "detect" ]; then
+            # Full historical scan
+            gitleaks detect \
+              --config .gitleaks.toml \
+              --report-format sarif \
+              --report-path gitleaks-report.sarif \
+              --verbose \
+              --exit-code 1 || echo "LEAKS_FOUND=true" >> $GITHUB_OUTPUT
+          else
+            # Protect mode - scan only uncommitted changes
+            gitleaks protect \
+              --config .gitleaks.toml \
+              --report-format sarif \
+              --report-path gitleaks-report.sarif \
+              --verbose \
+              --exit-code 1 || echo "LEAKS_FOUND=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload SARIF Report
+        if: always()
+        uses: github/codeql-action/upload-sarif@f35333b910470a5408cb081b68f0701254a7d27b # v3.28.18
+        with:
+          sarif_file: gitleaks-report.sarif
+        continue-on-error: true
+
+      - name: Generate Summary
+        if: always()
+        run: |
+          echo "## Gitleaks Secret Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f gitleaks-report.sarif ]; then
+            # Count findings from SARIF
+            FINDINGS=$(jq '.runs[0].results | length' gitleaks-report.sarif 2>/dev/null || echo "0")
+            if [ "$FINDINGS" = "0" ] || [ "$FINDINGS" = "null" ]; then
+              echo "### No secrets detected" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### Found $FINDINGS potential secret(s)" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "| Rule ID | File | Line | Message |" >> $GITHUB_STEP_SUMMARY
+              echo "|---------|------|------|---------|" >> $GITHUB_STEP_SUMMARY
+              jq -r '.runs[0].results[] | "| \(.ruleId) | \(.locations[0].physicalLocation.artifactLocation.uri) | \(.locations[0].physicalLocation.region.startLine) | \(.message.text | gsub("\n"; " ") | .[0:80]) |"' gitleaks-report.sarif >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+            fi
+          else
+            echo "### No SARIF report generated" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Scan completed at $(date -u '+%Y-%m-%d %H:%M:%S UTC')*" >> $GITHUB_STEP_SUMMARY
+
+      - name: Comment on PR (if secrets found)
+        if: github.event_name == 'pull_request' && steps.gitleaks-pr.outputs.LEAKS_FOUND == 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const fs = require('fs');
+            let sarif;
+            try {
+              sarif = JSON.parse(fs.readFileSync('gitleaks-report.sarif', 'utf8'));
+            } catch (e) {
+              console.log('No SARIF report found');
+              return;
+            }
+
+            const results = sarif.runs[0].results || [];
+            if (results.length === 0) return;
+
+            let body = '## Gitleaks Secret Scan Failed\n\n';
+            body += 'Potential secrets were detected in this pull request.\n\n';
+            body += '| Rule | File | Line | Description |\n';
+            body += '|------|------|------|-------------|\n';
+
+            for (const result of results.slice(0, 10)) {
+              const file = result.locations[0]?.physicalLocation?.artifactLocation?.uri || 'unknown';
+              const line = result.locations[0]?.physicalLocation?.region?.startLine || '?';
+              const msg = (result.message?.text || '').replace(/\n/g, ' ').substring(0, 60);
+              body += `| ${result.ruleId} | \`${file}\` | ${line} | ${msg} |\n`;
+            }
+
+            if (results.length > 10) {
+              body += `\n*...and ${results.length - 10} more findings*\n`;
+            }
+
+            body += '\n### Required Actions\n\n';
+            body += '1. Remove any real secrets from the code\n';
+            body += '2. If this is a false positive, add to allowlist in `.gitleaks.toml`\n';
+            body += '3. If secrets were committed, rotate them immediately\n';
+            body += '\n**This PR cannot be merged until all secrets are removed.**';
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Fail if secrets found
+        if: |
+          steps.gitleaks-pr.outputs.LEAKS_FOUND == 'true' ||
+          steps.gitleaks-push.outputs.LEAKS_FOUND == 'true' ||
+          steps.gitleaks-manual.outputs.LEAKS_FOUND == 'true'
+        run: |
+          echo "::error::Secrets detected! Review the Gitleaks report and remove any secrets before merging."
+          echo ""
+          echo "If these are false positives, add exceptions to .gitleaks.toml"
+          echo ""
+          exit 1
+
+  # Status check job for branch protection
+  gitleaks-status:
+    name: Gitleaks Success
+    needs: ["gitleaks"]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check Gitleaks Result
+        run: |
+          if [ "${{ needs.gitleaks.result }}" = "failure" ]; then
+            echo "::error::Gitleaks detected secrets in this PR"
+            exit 1
+          fi
+          echo "Gitleaks scan passed"
