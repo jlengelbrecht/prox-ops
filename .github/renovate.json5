@@ -576,11 +576,13 @@
       ],
     },
     {
-      description: 'Loose versioning for other LinuxServer.io images',
+      description: 'Semantic versioning for LinuxServer.io images (exclude commit hash tags)',
       matchDatasources: [
         'docker',
       ],
-      versioning: 'loose',
+      // Matches: 2.16.0, v2.16.0, 2.16.0-ls210, v2.16.0-ls210, 8.1.1-alpine
+      // Excludes: 19e00ee2-ls3 (commit hash tags have no dots)
+      versioning: 'regex:^v?(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(-ls\\d+)?(-[a-z]+)?$',
       matchPackageNames: [
         '/lscr.io/linuxserver/.*/',
         '/ghcr.io/linuxserver/.*/',
