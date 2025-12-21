@@ -529,13 +529,12 @@
       description: 'Wait 3 days for database updates',
       minimumReleaseAge: '3 days',
       prBodyNotes: [
-        '🐘 **Database**: Critical data infrastructure. PostgreSQL major versions are blocked (require pg_upgrade). MariaDB major versions may have breaking SQL syntax or config changes - review release notes carefully.',
+        '🐘 **Database**: Critical data infrastructure. PostgreSQL major versions are blocked (require pg_upgrade).',
       ],
       matchPackageNames: [
         '/cloudnative-pg/',
         '/postgresql/',
         '/postgres/',
-        '/mariadb/',
       ],
     },
     {
@@ -678,6 +677,10 @@
       // Matches: 12.1.2, 11.8.5, 11.4.9
       // Excludes: 12.2.1-rc, 12.1.2-noble, 12.1.2-ubi10, lts-ubi9
       versioning: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+      minimumReleaseAge: '3 days',
+      prBodyNotes: [
+        '🐘 **MariaDB**: Major versions may have breaking SQL syntax or config changes. Review release notes carefully before merging.',
+      ],
       matchPackageNames: [
         'docker.io/mariadb',
         'mariadb',
