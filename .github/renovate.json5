@@ -576,11 +576,16 @@
       ],
     },
     {
-      description: 'Loose versioning for other LinuxServer.io images',
+      description: 'LinuxServer.io stable builds only (requires -ls suffix)',
       matchDatasources: [
         'docker',
       ],
-      versioning: 'loose',
+      // STABLE ONLY: Requires -ls{build} suffix to ensure production-ready releases
+      // Matches: 2.3.0.5236-ls134, 1.42.2.10156-f737b826c-ls287 (Plex), 4.0.16.2944-ls299
+      // Excludes: nightly-*, develop-*, unstable-* prefixed tags (non-production)
+      // Excludes: 19e00ee2-ls3 (commit hash without version), 2.3.1-nightly (invalid format)
+      // Reference: https://www.linuxserver.io/blog/docker-tags-so-many-tags-so-little-time
+      versioning: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?:\\.(?<build>\\d+))?(?:-[a-f0-9]+)?-ls(?<revision>\\d+)$',
       matchPackageNames: [
         '/lscr.io/linuxserver/.*/',
         '/ghcr.io/linuxserver/.*/',
