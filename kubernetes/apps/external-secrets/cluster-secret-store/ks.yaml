@@ -13,5 +13,11 @@ spec:
     name: flux-system
   wait: true
   timeout: 5m
+  # Explicit health check for cluster-scoped ClusterSecretStore resource
+  # Fixes Flux issue with cluster-scoped resources not being found by default health checker
+  healthChecks:
+    - apiVersion: external-secrets.io/v1
+      kind: ClusterSecretStore
+      name: onepassword-connect
   dependsOn:
     - name: 1password-connect
