@@ -11,10 +11,10 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
-  wait: true
+  # Note: 'wait: true' removed - it overrides healthChecks and uses default
+  # health checker which fails for cluster-scoped resources (Flux bug #5311)
   timeout: 5m
   # Explicit health check for cluster-scoped ClusterSecretStore resource
-  # Fixes Flux issue with cluster-scoped resources not being found by default health checker
   healthChecks:
     - apiVersion: external-secrets.io/v1
       kind: ClusterSecretStore
