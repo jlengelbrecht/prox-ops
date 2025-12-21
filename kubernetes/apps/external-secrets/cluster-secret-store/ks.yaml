@@ -11,13 +11,11 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
-  # Note: 'wait: true' removed - it overrides healthChecks and uses default
-  # health checker which fails for cluster-scoped resources (Flux bug #5311)
+  # Health checking disabled due to Flux bug #5311 - cluster-scoped custom
+  # resources from external API groups fail with 'NotFound' even when healthy.
+  # The ClusterSecretStore is stable and verified working via:
+  #   kubectl get clustersecretstore onepassword-connect
+  # Tracking: https://github.com/fluxcd/flux2/issues/5311
   timeout: 5m
-  # Explicit health check for cluster-scoped ClusterSecretStore resource
-  healthChecks:
-    - apiVersion: external-secrets.io/v1
-      kind: ClusterSecretStore
-      name: onepassword-connect
   dependsOn:
     - name: 1password-connect
