@@ -235,7 +235,7 @@ jobs:
   # ==========================================================================
   pre-upgrade-health-check:
     name: Pre-Upgrade Health Check
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     needs: [validate-inputs, validate-version-upgrade]
     timeout-minutes: 10
     steps:
@@ -302,7 +302,7 @@ jobs:
   # ==========================================================================
   rebuild-templates:
     name: Rebuild Templates v${{ inputs.new_version }}
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 60
     needs: [validate-inputs, validate-version-upgrade, pre-upgrade-health-check]
     # Run when: test_templates=true OR production mode (all test flags false)
@@ -775,7 +775,7 @@ jobs:
   # ==========================================================================
   upgrade-control-plane:
     name: Upgrade Control Plane (In-Place)
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     needs: [validate-inputs, pre-upgrade-health-check, rebuild-templates]
     if: |
       always() &&
@@ -868,7 +868,7 @@ jobs:
   # ==========================================================================
   upgrade-workers:
     name: Upgrade Workers (In-Place)
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     needs: [validate-inputs, upgrade-control-plane]
     if: |
       always() &&
@@ -1007,7 +1007,7 @@ jobs:
   # ==========================================================================
   post-upgrade-validation:
     name: Post-Upgrade Validation
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     needs: [validate-inputs, rebuild-templates, upgrade-control-plane, upgrade-workers]
     if: always()
     timeout-minutes: 10

@@ -118,7 +118,7 @@ jobs:
   # ==========================================================================
   rebuild-templates:
     name: Rebuild Templates v${{ inputs.new_version }}
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 60
     needs: validate-inputs
     # Run when: test_templates=true OR production mode (all test flags false)
@@ -593,7 +593,7 @@ jobs:
   upgrade-control-plane:
     name: Upgrade Control ${{ matrix.node.name }}
     needs: [validate-inputs, rebuild-templates]
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 30
     # Run when: test_controllers=true OR production mode (all test flags false)
     # Use always() to force evaluation even when rebuild-templates is skipped
@@ -1432,7 +1432,7 @@ jobs:
       (inputs.test_workers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped')
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 5
     steps:
       - name: Checkout repository
@@ -1554,7 +1554,7 @@ jobs:
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped') &&
       (needs.pre-worker-health-check.result == 'success' || needs.pre-worker-health-check.result == 'skipped')
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 30
     strategy:
       # Dynamic max-parallel based on rollout mode:
@@ -2449,7 +2449,7 @@ jobs:
       needs.upgrade-workers.result == 'success' &&
       inputs.worker_rollout_mode != 'aggressive' &&
       inputs.test_workers == false
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 5
     strategy:
       max-parallel: 1
@@ -2531,7 +2531,7 @@ jobs:
       always() &&
       inputs.test_templates == false &&
       (needs.validate-pair.result == 'success' || needs.validate-pair.result == 'skipped')
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 10
     steps:
       - name: Checkout repository
