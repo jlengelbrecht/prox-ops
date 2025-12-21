@@ -53,7 +53,14 @@ jobs:
 
           # Validate key format with ssh-keygen
           if ! ssh-keygen -l -f ~/.ssh/proxmox_key &>/dev/null; then
-            echo "::error::PROXMOX_SSH_KEY is not a valid SSH private key"
+            echo "::error::PROXMOX_SSH_KEY is not a valid SSH key"
+            rm -f ~/.ssh/proxmox_key
+            exit 1
+          fi
+
+          # Ensure the key is a private key (ssh-keygen -y only works with private keys)
+          if ! ssh-keygen -y -f ~/.ssh/proxmox_key >/dev/null 2>&1; then
+            echo "::error::PROXMOX_SSH_KEY must be an SSH private key (a public key or invalid file was provided)"
             rm -f ~/.ssh/proxmox_key
             exit 1
           fi
@@ -83,45 +90,88 @@ jobs:
           echo "📦 Proposed Ceph image: $PROPOSED_IMAGE"
           echo "📦 Proposed version: $PROPOSED_VERSION (major: $PROPOSED_MAJOR)"
 
-      - name: Query Proxmox Ceph version
-        id: proxmox
+      - name: Find available Proxmox node
+        id: find_host
         env:
-          PROXMOX_CEPH_HOST: ${{ secrets.PROXMOX_CEPH_HOST }}
+          HOST1: ${{ secrets.PROXMOX_CEPH_HOST1 }}
+          HOST2: ${{ secrets.PROXMOX_CEPH_HOST2 }}
+          HOST3: ${{ secrets.PROXMOX_CEPH_HOST3 }}
+          HOST4: ${{ secrets.PROXMOX_CEPH_HOST4 }}
         run: |
           set -euo pipefail
-          if [ -z "$PROXMOX_CEPH_HOST" ]; then
-            echo "::error::PROXMOX_CEPH_HOST secret not configured"
-            echo "::error::Add a secret with the IP/hostname of a Proxmox node running Ceph"
+
+          # Collect configured hosts
+          HOSTS=()
+          for host in "$HOST1" "$HOST2" "$HOST3" "$HOST4"; do
+            if [ -n "$host" ]; then
+              HOSTS+=("$host")
+            fi
+          done
+
+          if [ ${#HOSTS[@]} -eq 0 ]; then
+            echo "::error::No PROXMOX_CEPH_HOST secrets configured"
+            echo "::error::Add at least one of: PROXMOX_CEPH_HOST1, PROXMOX_CEPH_HOST2, PROXMOX_CEPH_HOST3, PROXMOX_CEPH_HOST4"
             exit 1
           fi
 
-          # Validate PROXMOX_CEPH_HOST format (prevent command injection)
-          # Allow: hostname, FQDN, or IPv4 address only
-          if ! echo "$PROXMOX_CEPH_HOST" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$'; then
-            echo "::error::PROXMOX_CEPH_HOST contains invalid characters"
+          echo "🔍 Testing connectivity to ${#HOSTS[@]} Proxmox node(s)..."
+
+          # Shuffle hosts for load distribution (mapfile avoids word-splitting issues)
+          mapfile -t SHUFFLED < <(printf '%s\n' "${HOSTS[@]}" | shuf)
+
+          # Find first responding host
+          SELECTED_HOST=""
+          for host in "${SHUFFLED[@]}"; do
+            # Validate host format: hostname (RFC1123) or IPv4 address (prevent command injection)
+            # IPv4 regex enforces valid octets (0-255)
+            if ! echo "$host" | grep -qE '^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})$'; then
+              echo "⚠️ Skipping invalid host format: [redacted]"
+              continue
+            fi
+            if echo "$host" | grep -qE "[;&|$\`\"'<>(){}]"; then
+              echo "⚠️ Skipping host with disallowed characters: [redacted]"
+              continue
+            fi
+
+            echo "  Testing $host..."
+            if ssh "${{ env.SSH_OPTIONS }}" -i ~/.ssh/proxmox_key "root@${host}" "echo ok" &>/dev/null; then
+              SELECTED_HOST="$host"
+              echo "✅ Selected: $host"
+              break
+            else
+              echo "  ❌ $host not reachable"
+            fi
+          done
+
+          if [ -z "$SELECTED_HOST" ]; then
+            echo "::error::No Proxmox nodes are reachable"
             exit 1
           fi
 
-          # Additional check: no shell metacharacters
-          if echo "$PROXMOX_CEPH_HOST" | grep -qE '[;&|$`\\"\x27<>(){}]'; then
-            echo "::error::PROXMOX_CEPH_HOST contains disallowed characters"
-            exit 1
-          fi
+          echo "host=$SELECTED_HOST" >> $GITHUB_OUTPUT
+
+      - name: Query Proxmox Ceph version
+        id: proxmox
+        run: |
+          set -euo pipefail
+          PROXMOX_HOST="${{ steps.find_host.outputs.host }}"
 
           echo "🔍 Querying Ceph version from Proxmox node..."
 
-          # Query Ceph version via SSH (username hardcoded to prevent injection)
-          CEPH_OUTPUT=$(ssh ${{ env.SSH_OPTIONS }} -i ~/.ssh/proxmox_key "root@${PROXMOX_CEPH_HOST}" "ceph version" 2>/dev/null) || {
-            echo "::error::Failed to connect to Proxmox node or query Ceph version"
+          # Query Ceph version via SSH
+          # Note: root is required for ceph CLI access; username hardcoded to prevent injection
+          CEPH_OUTPUT=$(ssh "${{ env.SSH_OPTIONS }}" -i ~/.ssh/proxmox_key "root@${PROXMOX_HOST}" "ceph version" 2>/dev/null) || {
+            echo "::error::Failed to query Ceph version from $PROXMOX_HOST"
             exit 1
           }
 
           echo "📡 Ceph version output: $CEPH_OUTPUT"
 
           # Parse version (format: "ceph version 19.2.3 (hash) squid (stable)")
-          PROXMOX_VERSION=$(echo "$CEPH_OUTPUT" | grep -oP 'ceph version \K[0-9]+\.[0-9]+')
+          # Using sed for POSIX compatibility (avoids grep -P which requires PCRE)
+          PROXMOX_VERSION=$(echo "$CEPH_OUTPUT" | sed -n 's/.*ceph version \([0-9]\+\.[0-9]\+\).*/\1/p')
           PROXMOX_MAJOR=$(echo "$PROXMOX_VERSION" | cut -d'.' -f1)
-          PROXMOX_CODENAME=$(echo "$CEPH_OUTPUT" | grep -oP '\) \K\w+' | head -1)
+          PROXMOX_CODENAME=$(echo "$CEPH_OUTPUT" | sed -n 's/.*) \([a-z]\+\).*/\1/p' | head -1)
 
           # Validate parsing succeeded
           if [ -z "$PROXMOX_VERSION" ] || [ -z "$PROXMOX_MAJOR" ]; then
