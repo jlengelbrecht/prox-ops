@@ -529,7 +529,7 @@
       description: 'Wait 3 days for database updates',
       minimumReleaseAge: '3 days',
       prBodyNotes: [
-        '🐘 **Database**: Critical data infrastructure. PostgreSQL minor/patch updates are safe. Major versions are blocked and require manual pg_upgrade migration.',
+        '🐘 **Database**: Critical data infrastructure. PostgreSQL major versions are blocked (require pg_upgrade).',
       ],
       matchPackageNames: [
         '/cloudnative-pg/',
@@ -576,11 +576,17 @@
       ],
     },
     {
-      description: 'Loose versioning for other LinuxServer.io images',
+      description: 'LinuxServer.io stable builds only (requires -ls suffix)',
       matchDatasources: [
         'docker',
       ],
-      versioning: 'loose',
+      // STABLE ONLY: Requires -ls{build} suffix to ensure production-ready releases
+      // Matches: 2.3.0.5236-ls134, 1.42.2.10156-f737b826c-ls287 (Plex), 4.0.16.2944-ls299
+      // Matches: 5.1.4-r1-ls431 (qBittorrent uses -r{N} revision format)
+      // Excludes: nightly-*, develop-*, unstable-* prefixed tags (non-production)
+      // Excludes: 19e00ee2-ls3 (commit hash without version), 2.3.1-nightly (invalid format)
+      // Reference: https://www.linuxserver.io/blog/docker-tags-so-many-tags-so-little-time
+      versioning: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?:\\.(?<build>\\d+))?(?:-(?:r\\d+|[a-f0-9]+))?-ls(?<revision>\\d+)$',
       matchPackageNames: [
         '/lscr.io/linuxserver/.*/',
         '/ghcr.io/linuxserver/.*/',
@@ -598,11 +604,14 @@
       ],
     },
     {
-      description: 'Loose versioning for Home Assistant (calendar versioning)',
+      description: 'Home Assistant stable releases only (excludes dev/beta)',
       matchDatasources: [
         'docker',
       ],
-      versioning: 'loose',
+      // Calendar versioning YYYY.MM.patch - stable releases only
+      // Matches: 2024.12.5, 2025.1.0, 2025.12.4
+      // Excludes: 2025.12.0b0 (beta), 2026.1.0.dev202512210247 (dev)
+      versioning: 'regex:^(?<major>\\d{4})\\.(?<minor>\\d{1,2})\\.(?<patch>\\d+)$',
       matchPackageNames: [
         'ghcr.io/home-assistant/home-assistant',
       ],
@@ -646,6 +655,47 @@
       groupName: 'gabe565-charts',
       matchPackageNames: [
         '/ghcr.io/gabe565/.*/',
+      ],
+    },
+    {
+      description: 'Uptime Kuma stable releases only (excludes beta/nightly/variants)',
+      matchDatasources: [
+        'docker',
+      ],
+      // Matches: 1.23.17, 2.0.2, 2.0.0
+      // Excludes: 2.1.0-beta.0, nightly1, 1.23.17-alpine, 2.0.2-slim, 2.0.2-rootless
+      versioning: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+      matchPackageNames: [
+        'louislam/uptime-kuma',
+      ],
+    },
+    {
+      description: 'MariaDB stable releases only (excludes RC/variants)',
+      matchDatasources: [
+        'docker',
+      ],
+      // Matches: 12.1.2, 11.8.5, 11.4.9
+      // Excludes: 12.2.1-rc, 12.1.2-noble, 12.1.2-ubi10, lts-ubi9
+      versioning: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+      minimumReleaseAge: '3 days',
+      prBodyNotes: [
+        '🐘 **MariaDB**: Major versions may have breaking SQL syntax or config changes. Review release notes carefully before merging.',
+      ],
+      matchPackageNames: [
+        'docker.io/mariadb',
+        'mariadb',
+      ],
+    },
+    {
+      description: 'Homepage stable releases only (semver with v prefix)',
+      matchDatasources: [
+        'docker',
+      ],
+      // Matches: v1.8.0, v0.10.9
+      // Excludes: latest, dev
+      versioning: 'regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+      matchPackageNames: [
+        'ghcr.io/gethomepage/homepage',
       ],
     },
     {
