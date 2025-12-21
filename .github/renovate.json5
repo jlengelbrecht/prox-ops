@@ -658,6 +658,43 @@
       ],
     },
     {
+      description: 'Uptime Kuma stable releases only (excludes beta/nightly/variants)',
+      matchDatasources: [
+        'docker',
+      ],
+      // Matches: 1.23.17, 2.0.2, 2.0.0
+      // Excludes: 2.1.0-beta.0, nightly1, 1.23.17-alpine, 2.0.2-slim, 2.0.2-rootless
+      versioning: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+      matchPackageNames: [
+        'louislam/uptime-kuma',
+      ],
+    },
+    {
+      description: 'MariaDB stable releases only (excludes RC/variants)',
+      matchDatasources: [
+        'docker',
+      ],
+      // Matches: 12.1.2, 11.8.5, 11.4.9
+      // Excludes: 12.2.1-rc, 12.1.2-noble, 12.1.2-ubi10, lts-ubi9
+      versioning: 'regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+      matchPackageNames: [
+        'docker.io/mariadb',
+        'mariadb',
+      ],
+    },
+    {
+      description: 'Homepage stable releases only (semver with v prefix)',
+      matchDatasources: [
+        'docker',
+      ],
+      // Matches: v1.8.0, v0.10.9
+      // Excludes: latest, dev
+      versioning: 'regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$',
+      matchPackageNames: [
+        'ghcr.io/gethomepage/homepage',
+      ],
+    },
+    {
       description: 'Flag images using :latest for pinning',
       matchDatasources: [
         'docker',
