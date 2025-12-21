@@ -1,0 +1,225 @@
+---
+# Ceph Version Compatibility Check
+# Ensures Rook/Ceph image version matches Proxmox Ceph cluster version
+#
+# This workflow prevents version mismatches between:
+# - Rook CSI driver image (managed by Renovate, defined in cephcluster.yaml)
+# - Actual Ceph cluster running on Proxmox
+#
+# For external Ceph clusters, the Rook image version should match the
+# Proxmox Ceph version to ensure CSI driver compatibility.
+
+name: Ceph Version Check
+
+on:
+  pull_request:
+    paths:
+      - 'kubernetes/apps/rook-ceph/rook-ceph-cluster/app/cephcluster.yaml'
+
+env:
+  # SSH configuration (StrictHostKeyChecking disabled for CI automation)
+  SSH_OPTIONS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+
+# Explicit permissions - principle of least privilege
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-ceph-version:
+    name: Verify Ceph Version Compatibility
+    runs-on: gha-runner-scale-set  # Self-hosted K8s runner with Proxmox network access
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup SSH key
+        env:
+          PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Validate key is configured
+          if [ -z "$PROXMOX_SSH_KEY" ]; then
+            echo "::error::PROXMOX_SSH_KEY secret not configured"
+            exit 1
+          fi
+
+          # Write key using printf (prevents heredoc injection)
+          printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_key
+          chmod 600 ~/.ssh/proxmox_key
+
+          # Validate key format with ssh-keygen
+          if ! ssh-keygen -l -f ~/.ssh/proxmox_key &>/dev/null; then
+            echo "::error::PROXMOX_SSH_KEY is not a valid SSH private key"
+            rm -f ~/.ssh/proxmox_key
+            exit 1
+          fi
+
+          echo "✅ SSH key configured"
+
+      - name: Extract proposed Ceph version from PR
+        id: proposed
+        run: |
+          set -euo pipefail
+          # Extract version from cephcluster.yaml
+          PROPOSED_IMAGE=$(grep -E '^\s*image:\s*quay\.io/ceph/ceph:' kubernetes/apps/rook-ceph/rook-ceph-cluster/app/cephcluster.yaml | awk '{print $2}')
+          PROPOSED_VERSION=$(echo "$PROPOSED_IMAGE" | sed 's/.*:v\?//' | cut -d'.' -f1-2)
+          PROPOSED_MAJOR=$(echo "$PROPOSED_VERSION" | cut -d'.' -f1)
+
+          # Validate extraction succeeded
+          if [ -z "$PROPOSED_IMAGE" ] || [ -z "$PROPOSED_MAJOR" ]; then
+            echo "::error::Failed to extract Ceph version from cephcluster.yaml"
+            echo "::error::Expected image pattern: quay.io/ceph/ceph:vX.Y.Z"
+            exit 1
+          fi
+
+          echo "image=$PROPOSED_IMAGE" >> $GITHUB_OUTPUT
+          echo "version=$PROPOSED_VERSION" >> $GITHUB_OUTPUT
+          echo "major=$PROPOSED_MAJOR" >> $GITHUB_OUTPUT
+
+          echo "📦 Proposed Ceph image: $PROPOSED_IMAGE"
+          echo "📦 Proposed version: $PROPOSED_VERSION (major: $PROPOSED_MAJOR)"
+
+      - name: Query Proxmox Ceph version
+        id: proxmox
+        env:
+          PROXMOX_CEPH_HOST: ${{ secrets.PROXMOX_CEPH_HOST }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PROXMOX_CEPH_HOST" ]; then
+            echo "::error::PROXMOX_CEPH_HOST secret not configured"
+            echo "::error::Add a secret with the IP/hostname of a Proxmox node running Ceph"
+            exit 1
+          fi
+
+          # Validate PROXMOX_CEPH_HOST format (prevent command injection)
+          # Allow: hostname, FQDN, or IPv4 address only
+          if ! echo "$PROXMOX_CEPH_HOST" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$'; then
+            echo "::error::PROXMOX_CEPH_HOST contains invalid characters"
+            exit 1
+          fi
+
+          # Additional check: no shell metacharacters
+          if echo "$PROXMOX_CEPH_HOST" | grep -qE '[;&|$`\\"\x27<>(){}]'; then
+            echo "::error::PROXMOX_CEPH_HOST contains disallowed characters"
+            exit 1
+          fi
+
+          echo "🔍 Querying Ceph version from Proxmox node..."
+
+          # Query Ceph version via SSH (username hardcoded to prevent injection)
+          CEPH_OUTPUT=$(ssh ${{ env.SSH_OPTIONS }} -i ~/.ssh/proxmox_key "root@${PROXMOX_CEPH_HOST}" "ceph version" 2>/dev/null) || {
+            echo "::error::Failed to connect to Proxmox node or query Ceph version"
+            exit 1
+          }
+
+          echo "📡 Ceph version output: $CEPH_OUTPUT"
+
+          # Parse version (format: "ceph version 19.2.3 (hash) squid (stable)")
+          PROXMOX_VERSION=$(echo "$CEPH_OUTPUT" | grep -oP 'ceph version \K[0-9]+\.[0-9]+')
+          PROXMOX_MAJOR=$(echo "$PROXMOX_VERSION" | cut -d'.' -f1)
+          PROXMOX_CODENAME=$(echo "$CEPH_OUTPUT" | grep -oP '\) \K\w+' | head -1)
+
+          # Validate parsing succeeded
+          if [ -z "$PROXMOX_VERSION" ] || [ -z "$PROXMOX_MAJOR" ]; then
+            echo "::error::Failed to parse Ceph version from output: $CEPH_OUTPUT"
+            exit 1
+          fi
+
+          echo "version=$PROXMOX_VERSION" >> $GITHUB_OUTPUT
+          echo "major=$PROXMOX_MAJOR" >> $GITHUB_OUTPUT
+          echo "codename=$PROXMOX_CODENAME" >> $GITHUB_OUTPUT
+
+          echo "🖥️ Proxmox Ceph version: $PROXMOX_VERSION (major: $PROXMOX_MAJOR, codename: $PROXMOX_CODENAME)"
+
+      - name: Compare versions
+        id: compare
+        run: |
+          set -euo pipefail
+          PROPOSED_MAJOR="${{ steps.proposed.outputs.major }}"
+          PROXMOX_MAJOR="${{ steps.proxmox.outputs.major }}"
+          PROXMOX_CODENAME="${{ steps.proxmox.outputs.codename }}"
+
+          # Validate major versions are numeric
+          if ! [[ "$PROPOSED_MAJOR" =~ ^[0-9]+$ ]] || ! [[ "$PROXMOX_MAJOR" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid major version format (proposed: $PROPOSED_MAJOR, proxmox: $PROXMOX_MAJOR)"
+            exit 1
+          fi
+
+          echo "=============================================="
+          echo "       Ceph Version Compatibility Check       "
+          echo "=============================================="
+          echo ""
+          echo "📦 Proposed (Rook/CSI):  v${{ steps.proposed.outputs.version }} (major: $PROPOSED_MAJOR)"
+          echo "🖥️ Proxmox (Cluster):    v${{ steps.proxmox.outputs.version }} ($PROXMOX_CODENAME, major: $PROXMOX_MAJOR)"
+          echo ""
+
+          if [ "$PROPOSED_MAJOR" = "$PROXMOX_MAJOR" ]; then
+            echo "✅ Version compatible: Both are major version $PROPOSED_MAJOR"
+            echo "status=compatible" >> $GITHUB_OUTPUT
+          elif [ "$PROPOSED_MAJOR" -gt "$PROXMOX_MAJOR" ]; then
+            echo "::error::❌ Version INCOMPATIBLE"
+            echo "::error::Proposed Rook image (v$PROPOSED_MAJOR) is NEWER than Proxmox Ceph (v$PROXMOX_MAJOR)"
+            echo "::error::"
+            echo "::error::You must upgrade Ceph on Proxmox FIRST before updating the Rook image."
+            echo "::error::See: https://pve.proxmox.com/wiki/Ceph_Reef_to_Squid"
+            echo ""
+            echo "status=incompatible" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "⚠️ Warning: Proposed version (v$PROPOSED_MAJOR) is OLDER than Proxmox (v$PROXMOX_MAJOR)"
+            echo "⚠️ This should work but consider updating to match Proxmox version"
+            echo "status=older" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post result summary
+        if: always()
+        run: |
+          # Use fallback values if earlier steps failed
+          PROPOSED_VERSION="${{ steps.proposed.outputs.version }}"
+          PROPOSED_MAJOR="${{ steps.proposed.outputs.major }}"
+          PROXMOX_VERSION="${{ steps.proxmox.outputs.version }}"
+          PROXMOX_MAJOR="${{ steps.proxmox.outputs.major }}"
+          PROXMOX_CODENAME="${{ steps.proxmox.outputs.codename }}"
+          STATUS="${{ steps.compare.outputs.status }}"
+
+          # Apply defaults for empty values
+          PROPOSED_VERSION="${PROPOSED_VERSION:-N/A}"
+          PROPOSED_MAJOR="${PROPOSED_MAJOR:-N/A}"
+          PROXMOX_VERSION="${PROXMOX_VERSION:-N/A}"
+          PROXMOX_MAJOR="${PROXMOX_MAJOR:-N/A}"
+          PROXMOX_CODENAME="${PROXMOX_CODENAME:-N/A}"
+          STATUS="${STATUS:-unknown}"
+
+          echo "## Ceph Version Check Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Version | Major |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Proposed (Rook/CSI) | v${PROPOSED_VERSION} | ${PROPOSED_MAJOR} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Proxmox (Cluster) | v${PROXMOX_VERSION} (${PROXMOX_CODENAME}) | ${PROXMOX_MAJOR} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$STATUS" = "compatible" ]; then
+            echo "### ✅ Compatible" >> $GITHUB_STEP_SUMMARY
+            echo "Both versions are major version ${PROPOSED_MAJOR}. Safe to merge." >> $GITHUB_STEP_SUMMARY
+          elif [ "$STATUS" = "incompatible" ]; then
+            echo "### ❌ Incompatible" >> $GITHUB_STEP_SUMMARY
+            echo "**Action Required:** Upgrade Ceph on Proxmox to v${PROPOSED_MAJOR} before merging this PR." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "See: [Proxmox Ceph Upgrade Guide](https://pve.proxmox.com/wiki/Ceph_Reef_to_Squid)" >> $GITHUB_STEP_SUMMARY
+          elif [ "$STATUS" = "older" ]; then
+            echo "### ⚠️ Older Version" >> $GITHUB_STEP_SUMMARY
+            echo "Proposed version is older than Proxmox. This should work but consider updating." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ℹ️ Status Unknown" >> $GITHUB_STEP_SUMMARY
+            echo "Version comparison did not complete. Check workflow logs for details." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Cleanup SSH credentials
+        if: always()
+        run: |
+          rm -f ~/.ssh/proxmox_key
+          echo "🧹 SSH credentials cleaned up"
