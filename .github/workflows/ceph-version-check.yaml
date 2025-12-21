@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup SSH key
         env:
@@ -66,6 +66,13 @@ jobs:
           PROPOSED_IMAGE=$(grep -E '^\s*image:\s*quay\.io/ceph/ceph:' kubernetes/apps/rook-ceph/rook-ceph-cluster/app/cephcluster.yaml | awk '{print $2}')
           PROPOSED_VERSION=$(echo "$PROPOSED_IMAGE" | sed 's/.*:v\?//' | cut -d'.' -f1-2)
           PROPOSED_MAJOR=$(echo "$PROPOSED_VERSION" | cut -d'.' -f1)
+
+          # Validate extraction succeeded
+          if [ -z "$PROPOSED_IMAGE" ] || [ -z "$PROPOSED_MAJOR" ]; then
+            echo "::error::Failed to extract Ceph version from cephcluster.yaml"
+            echo "::error::Expected image pattern: quay.io/ceph/ceph:vX.Y.Z"
+            exit 1
+          fi
 
           echo "image=$PROPOSED_IMAGE" >> $GITHUB_OUTPUT
           echo "version=$PROPOSED_VERSION" >> $GITHUB_OUTPUT
@@ -112,6 +119,12 @@ jobs:
           PROXMOX_VERSION=$(echo "$CEPH_OUTPUT" | grep -oP 'ceph version \K[0-9]+\.[0-9]+')
           PROXMOX_MAJOR=$(echo "$PROXMOX_VERSION" | cut -d'.' -f1)
           PROXMOX_CODENAME=$(echo "$CEPH_OUTPUT" | grep -oP '\) \K\w+' | head -1)
+
+          # Validate parsing succeeded
+          if [ -z "$PROXMOX_VERSION" ] || [ -z "$PROXMOX_MAJOR" ]; then
+            echo "::error::Failed to parse Ceph version from output: $CEPH_OUTPUT"
+            exit 1
+          fi
 
           echo "version=$PROXMOX_VERSION" >> $GITHUB_OUTPUT
           echo "major=$PROXMOX_MAJOR" >> $GITHUB_OUTPUT
