@@ -37,6 +37,7 @@ jobs:
         env:
           PROXMOX_SSH_KEY: ${{ secrets.PROXMOX_SSH_KEY }}
         run: |
+          set -euo pipefail
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
@@ -62,6 +63,7 @@ jobs:
       - name: Extract proposed Ceph version from PR
         id: proposed
         run: |
+          set -euo pipefail
           # Extract version from cephcluster.yaml
           PROPOSED_IMAGE=$(grep -E '^\s*image:\s*quay\.io/ceph/ceph:' kubernetes/apps/rook-ceph/rook-ceph-cluster/app/cephcluster.yaml | awk '{print $2}')
           PROPOSED_VERSION=$(echo "$PROPOSED_IMAGE" | sed 's/.*:v\?//' | cut -d'.' -f1-2)
@@ -86,6 +88,7 @@ jobs:
         env:
           PROXMOX_CEPH_HOST: ${{ secrets.PROXMOX_CEPH_HOST }}
         run: |
+          set -euo pipefail
           if [ -z "$PROXMOX_CEPH_HOST" ]; then
             echo "::error::PROXMOX_CEPH_HOST secret not configured"
             echo "::error::Add a secret with the IP/hostname of a Proxmox node running Ceph"
@@ -135,9 +138,16 @@ jobs:
       - name: Compare versions
         id: compare
         run: |
+          set -euo pipefail
           PROPOSED_MAJOR="${{ steps.proposed.outputs.major }}"
           PROXMOX_MAJOR="${{ steps.proxmox.outputs.major }}"
           PROXMOX_CODENAME="${{ steps.proxmox.outputs.codename }}"
+
+          # Validate major versions are numeric
+          if ! [[ "$PROPOSED_MAJOR" =~ ^[0-9]+$ ]] || ! [[ "$PROXMOX_MAJOR" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid major version format (proposed: $PROPOSED_MAJOR, proxmox: $PROXMOX_MAJOR)"
+            exit 1
+          fi
 
           echo "=============================================="
           echo "       Ceph Version Compatibility Check       "
@@ -168,26 +178,44 @@ jobs:
       - name: Post result summary
         if: always()
         run: |
+          # Use fallback values if earlier steps failed
+          PROPOSED_VERSION="${{ steps.proposed.outputs.version }}"
+          PROPOSED_MAJOR="${{ steps.proposed.outputs.major }}"
+          PROXMOX_VERSION="${{ steps.proxmox.outputs.version }}"
+          PROXMOX_MAJOR="${{ steps.proxmox.outputs.major }}"
+          PROXMOX_CODENAME="${{ steps.proxmox.outputs.codename }}"
+          STATUS="${{ steps.compare.outputs.status }}"
+
+          # Apply defaults for empty values
+          PROPOSED_VERSION="${PROPOSED_VERSION:-N/A}"
+          PROPOSED_MAJOR="${PROPOSED_MAJOR:-N/A}"
+          PROXMOX_VERSION="${PROXMOX_VERSION:-N/A}"
+          PROXMOX_MAJOR="${PROXMOX_MAJOR:-N/A}"
+          PROXMOX_CODENAME="${PROXMOX_CODENAME:-N/A}"
+          STATUS="${STATUS:-unknown}"
+
           echo "## Ceph Version Check Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Component | Version | Major |" >> $GITHUB_STEP_SUMMARY
           echo "|-----------|---------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Proposed (Rook/CSI) | v${{ steps.proposed.outputs.version }} | ${{ steps.proposed.outputs.major }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Proxmox (Cluster) | v${{ steps.proxmox.outputs.version }} (${{ steps.proxmox.outputs.codename }}) | ${{ steps.proxmox.outputs.major }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Proposed (Rook/CSI) | v${PROPOSED_VERSION} | ${PROPOSED_MAJOR} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Proxmox (Cluster) | v${PROXMOX_VERSION} (${PROXMOX_CODENAME}) | ${PROXMOX_MAJOR} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          STATUS="${{ steps.compare.outputs.status }}"
           if [ "$STATUS" = "compatible" ]; then
             echo "### ✅ Compatible" >> $GITHUB_STEP_SUMMARY
-            echo "Both versions are major version ${{ steps.proposed.outputs.major }}. Safe to merge." >> $GITHUB_STEP_SUMMARY
+            echo "Both versions are major version ${PROPOSED_MAJOR}. Safe to merge." >> $GITHUB_STEP_SUMMARY
           elif [ "$STATUS" = "incompatible" ]; then
             echo "### ❌ Incompatible" >> $GITHUB_STEP_SUMMARY
-            echo "**Action Required:** Upgrade Ceph on Proxmox to v${{ steps.proposed.outputs.major }} before merging this PR." >> $GITHUB_STEP_SUMMARY
+            echo "**Action Required:** Upgrade Ceph on Proxmox to v${PROPOSED_MAJOR} before merging this PR." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "See: [Proxmox Ceph Upgrade Guide](https://pve.proxmox.com/wiki/Ceph_Reef_to_Squid)" >> $GITHUB_STEP_SUMMARY
-          else
+          elif [ "$STATUS" = "older" ]; then
             echo "### ⚠️ Older Version" >> $GITHUB_STEP_SUMMARY
             echo "Proposed version is older than Proxmox. This should work but consider updating." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ℹ️ Status Unknown" >> $GITHUB_STEP_SUMMARY
+            echo "Version comparison did not complete. Check workflow logs for details." >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Cleanup SSH credentials
