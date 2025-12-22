@@ -7,7 +7,6 @@ metadata:
 spec:
   dependsOn:
     - name: kube-prometheus-stack
-      namespace: flux-system
   interval: 1h
   path: ./kubernetes/apps/observability/unpoller/app
   prune: true
@@ -16,5 +15,10 @@ spec:
     name: flux-system
     namespace: flux-system
   targetNamespace: observability
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: unpoller
+      namespace: observability
   wait: false
   timeout: 10m
