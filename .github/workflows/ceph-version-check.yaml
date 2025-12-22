@@ -8,6 +8,11 @@
 #
 # For external Ceph clusters, the Rook image version should match the
 # Proxmox Ceph version to ensure CSI driver compatibility.
+#
+# Features:
+# - Multi-host failover for Proxmox connectivity
+# - Detects available Ceph versions in Proxmox repository
+# - Posts results as PR comment with upgrade guides
 
 name: Ceph Version Check
 
@@ -19,11 +24,14 @@ on:
 env:
   # SSH configuration (StrictHostKeyChecking disabled for CI automation)
   SSH_OPTIONS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10"
+  # Ceph major version to codename mapping (alphabetical by first letter)
+  # https://docs.ceph.com/en/latest/releases/
+  CEPH_CODENAMES: '{"15":"octopus","16":"pacific","17":"quincy","18":"reef","19":"squid","20":"tentacle"}'
 
 # Explicit permissions - principle of least privilege
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   check-ceph-version:
@@ -32,6 +40,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Generate homebot-0 token
+        id: generate-token
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
       - name: Setup SSH key
         env:
@@ -65,7 +80,7 @@ jobs:
             exit 1
           fi
 
-          echo "✅ SSH key configured"
+          echo "SSH key configured"
 
       - name: Extract proposed Ceph version from PR
         id: proposed
@@ -75,6 +90,9 @@ jobs:
           PROPOSED_IMAGE=$(grep -E '^\s*image:\s*quay\.io/ceph/ceph:' kubernetes/apps/rook-ceph/rook-ceph-cluster/app/cephcluster.yaml | awk '{print $2}')
           PROPOSED_VERSION=$(echo "$PROPOSED_IMAGE" | sed 's/.*:v\?//' | cut -d'.' -f1-2)
           PROPOSED_MAJOR=$(echo "$PROPOSED_VERSION" | cut -d'.' -f1)
+
+          # Get codename from mapping
+          PROPOSED_CODENAME=$(echo '${{ env.CEPH_CODENAMES }}' | jq -r --arg v "$PROPOSED_MAJOR" '.[$v] // "unknown"')
 
           # Validate extraction succeeded
           if [ -z "$PROPOSED_IMAGE" ] || [ -z "$PROPOSED_MAJOR" ]; then
@@ -86,9 +104,10 @@ jobs:
           echo "image=$PROPOSED_IMAGE" >> $GITHUB_OUTPUT
           echo "version=$PROPOSED_VERSION" >> $GITHUB_OUTPUT
           echo "major=$PROPOSED_MAJOR" >> $GITHUB_OUTPUT
+          echo "codename=$PROPOSED_CODENAME" >> $GITHUB_OUTPUT
 
-          echo "📦 Proposed Ceph image: $PROPOSED_IMAGE"
-          echo "📦 Proposed version: $PROPOSED_VERSION (major: $PROPOSED_MAJOR)"
+          echo "Proposed Ceph image: $PROPOSED_IMAGE"
+          echo "Proposed version: $PROPOSED_VERSION (major: $PROPOSED_MAJOR, codename: $PROPOSED_CODENAME)"
 
       - name: Find available Proxmox node
         id: find_host
@@ -114,7 +133,7 @@ jobs:
             exit 1
           fi
 
-          echo "🔍 Testing connectivity to ${#HOSTS[@]} Proxmox node(s)..."
+          echo "Testing connectivity to ${#HOSTS[@]} Proxmox node(s)..."
 
           # Shuffle hosts for load distribution (mapfile avoids word-splitting issues)
           mapfile -t SHUFFLED < <(printf '%s\n' "${HOSTS[@]}" | shuf)
@@ -125,21 +144,21 @@ jobs:
             # Validate host format: hostname (RFC1123) or IPv4 address (prevent command injection)
             # IPv4 regex enforces valid octets (0-255)
             if ! echo "$host" | grep -qE '^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*|(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})$'; then
-              echo "⚠️ Skipping invalid host format: [redacted]"
+              echo "Skipping invalid host format: [redacted]"
               continue
             fi
             if echo "$host" | grep -qE "[;&|$\`\"'<>(){}]"; then
-              echo "⚠️ Skipping host with disallowed characters: [redacted]"
+              echo "Skipping host with disallowed characters: [redacted]"
               continue
             fi
 
             echo "  Testing $host..."
             if ssh ${{ env.SSH_OPTIONS }} -i ~/.ssh/proxmox_key "root@${host}" "echo ok" &>/dev/null; then
               SELECTED_HOST="$host"
-              echo "✅ Selected: $host"
+              echo "  Selected: $host"
               break
             else
-              echo "  ❌ $host not reachable"
+              echo "  $host not reachable"
             fi
           done
 
@@ -150,25 +169,23 @@ jobs:
 
           echo "host=$SELECTED_HOST" >> $GITHUB_OUTPUT
 
-      - name: Query Proxmox Ceph version
+      - name: Query Proxmox Ceph version and available upgrades
         id: proxmox
         run: |
           set -euo pipefail
           PROXMOX_HOST="${{ steps.find_host.outputs.host }}"
 
-          echo "🔍 Querying Ceph version from Proxmox node..."
+          echo "Querying Ceph version from Proxmox node..."
 
-          # Query Ceph version via SSH
-          # Note: root is required for ceph CLI access; username hardcoded to prevent injection
+          # Query current Ceph version via SSH
           CEPH_OUTPUT=$(ssh ${{ env.SSH_OPTIONS }} -i ~/.ssh/proxmox_key "root@${PROXMOX_HOST}" "ceph version" 2>/dev/null) || {
             echo "::error::Failed to query Ceph version from $PROXMOX_HOST"
             exit 1
           }
 
-          echo "📡 Ceph version output: $CEPH_OUTPUT"
+          echo "Ceph version output: $CEPH_OUTPUT"
 
           # Parse version (format: "ceph version 19.2.3 (hash) squid (stable)")
-          # Using sed for POSIX compatibility (avoids grep -P which requires PCRE)
           PROXMOX_VERSION=$(echo "$CEPH_OUTPUT" | sed -n 's/.*ceph version \([0-9]\+\.[0-9]\+\).*/\1/p')
           PROXMOX_MAJOR=$(echo "$PROXMOX_VERSION" | cut -d'.' -f1)
           PROXMOX_CODENAME=$(echo "$CEPH_OUTPUT" | sed -n 's/.*) \([a-z]\+\).*/\1/p' | head -1)
@@ -179,19 +196,53 @@ jobs:
             exit 1
           fi
 
+          echo "Proxmox Ceph version: $PROXMOX_VERSION (major: $PROXMOX_MAJOR, codename: $PROXMOX_CODENAME)"
+
+          # Check available Ceph versions in Proxmox repository
+          echo "Checking available Ceph versions in Proxmox repository..."
+
+          # Query available Ceph package versions
+          AVAILABLE_MAJORS=$(ssh ${{ env.SSH_OPTIONS }} -i ~/.ssh/proxmox_key "root@${PROXMOX_HOST}" \
+            "apt-cache madison ceph-common 2>/dev/null | awk '{print \$3}' | grep -oE '^[0-9]+' | sort -u" 2>/dev/null) || true
+
+          echo "Available major versions in repo: $AVAILABLE_MAJORS"
+
+          # Find the highest available version (validate numeric before comparison)
+          HIGHEST_AVAILABLE=""
+          for v in $AVAILABLE_MAJORS; do
+            # Skip non-numeric values
+            if ! [[ "$v" =~ ^[0-9]+$ ]]; then
+              continue
+            fi
+            if [ -z "$HIGHEST_AVAILABLE" ] || [ "$v" -gt "$HIGHEST_AVAILABLE" ]; then
+              HIGHEST_AVAILABLE="$v"
+            fi
+          done
+
+          # Determine if upgrade is available
+          UPGRADE_AVAILABLE="false"
+          if [ -n "$HIGHEST_AVAILABLE" ] && [ "$HIGHEST_AVAILABLE" -gt "$PROXMOX_MAJOR" ]; then
+            UPGRADE_AVAILABLE="true"
+            UPGRADE_TO_CODENAME=$(echo '${{ env.CEPH_CODENAMES }}' | jq -r --arg v "$HIGHEST_AVAILABLE" '.[$v] // "unknown"')
+            echo "Upgrade available: v$PROXMOX_MAJOR ($PROXMOX_CODENAME) -> v$HIGHEST_AVAILABLE ($UPGRADE_TO_CODENAME)"
+          fi
+
           echo "version=$PROXMOX_VERSION" >> $GITHUB_OUTPUT
           echo "major=$PROXMOX_MAJOR" >> $GITHUB_OUTPUT
           echo "codename=$PROXMOX_CODENAME" >> $GITHUB_OUTPUT
+          echo "upgrade_available=$UPGRADE_AVAILABLE" >> $GITHUB_OUTPUT
+          echo "highest_available=$HIGHEST_AVAILABLE" >> $GITHUB_OUTPUT
 
-          echo "🖥️ Proxmox Ceph version: $PROXMOX_VERSION (major: $PROXMOX_MAJOR, codename: $PROXMOX_CODENAME)"
-
-      - name: Compare versions
+      - name: Compare versions and generate results
         id: compare
         run: |
           set -euo pipefail
           PROPOSED_MAJOR="${{ steps.proposed.outputs.major }}"
+          PROPOSED_CODENAME="${{ steps.proposed.outputs.codename }}"
           PROXMOX_MAJOR="${{ steps.proxmox.outputs.major }}"
           PROXMOX_CODENAME="${{ steps.proxmox.outputs.codename }}"
+          UPGRADE_AVAILABLE="${{ steps.proxmox.outputs.upgrade_available }}"
+          HIGHEST_AVAILABLE="${{ steps.proxmox.outputs.highest_available }}"
 
           # Validate major versions are numeric
           if ! [[ "$PROPOSED_MAJOR" =~ ^[0-9]+$ ]] || ! [[ "$PROXMOX_MAJOR" =~ ^[0-9]+$ ]]; then
@@ -199,31 +250,154 @@ jobs:
             exit 1
           fi
 
+          # Generate upgrade guide URL (capitalize first letter of codenames using awk for portability)
+          CURRENT_CODENAME_CAP=$(printf '%s\n' "$PROXMOX_CODENAME" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+          PROPOSED_CODENAME_CAP=$(printf '%s\n' "$PROPOSED_CODENAME" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+
+          # Fallback URL for generic Ceph documentation if codenames are unknown
+          GENERIC_CEPH_URL="https://pve.proxmox.com/wiki/Ceph"
+
+          # Generate upgrade guide URL (only if both codenames are known)
+          if [ "$PROXMOX_CODENAME" = "unknown" ] || [ "$PROPOSED_CODENAME" = "unknown" ]; then
+            UPGRADE_GUIDE_URL="$GENERIC_CEPH_URL"
+          else
+            UPGRADE_GUIDE_URL="https://pve.proxmox.com/wiki/Ceph_${CURRENT_CODENAME_CAP}_to_${PROPOSED_CODENAME_CAP}"
+          fi
+
+          # If there's a higher version available, generate that guide URL too
+          AVAILABLE_UPGRADE_URL=""
+          if [ "$UPGRADE_AVAILABLE" = "true" ] && [ -n "$HIGHEST_AVAILABLE" ]; then
+            HIGHEST_CODENAME=$(echo '${{ env.CEPH_CODENAMES }}' | jq -r --arg v "$HIGHEST_AVAILABLE" '.[$v] // "unknown"')
+            HIGHEST_CODENAME_CAP=$(printf '%s\n' "$HIGHEST_CODENAME" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+            if [ "$PROXMOX_CODENAME" = "unknown" ] || [ "$HIGHEST_CODENAME" = "unknown" ]; then
+              AVAILABLE_UPGRADE_URL="$GENERIC_CEPH_URL"
+            else
+              AVAILABLE_UPGRADE_URL="https://pve.proxmox.com/wiki/Ceph_${CURRENT_CODENAME_CAP}_to_${HIGHEST_CODENAME_CAP}"
+            fi
+          fi
+
           echo "=============================================="
           echo "       Ceph Version Compatibility Check       "
           echo "=============================================="
           echo ""
-          echo "📦 Proposed (Rook/CSI):  v${{ steps.proposed.outputs.version }} (major: $PROPOSED_MAJOR)"
-          echo "🖥️ Proxmox (Cluster):    v${{ steps.proxmox.outputs.version }} ($PROXMOX_CODENAME, major: $PROXMOX_MAJOR)"
+          echo "Proposed (Rook/CSI):  v${{ steps.proposed.outputs.version }} ($PROPOSED_CODENAME, major: $PROPOSED_MAJOR)"
+          echo "Proxmox (Cluster):    v${{ steps.proxmox.outputs.version }} ($PROXMOX_CODENAME, major: $PROXMOX_MAJOR)"
           echo ""
 
+          # Determine status
           if [ "$PROPOSED_MAJOR" = "$PROXMOX_MAJOR" ]; then
-            echo "✅ Version compatible: Both are major version $PROPOSED_MAJOR"
+            echo "Version compatible: Both are major version $PROPOSED_MAJOR"
             echo "status=compatible" >> $GITHUB_OUTPUT
+            WORKFLOW_FAILED="false"
           elif [ "$PROPOSED_MAJOR" -gt "$PROXMOX_MAJOR" ]; then
-            echo "::error::❌ Version INCOMPATIBLE"
+            echo "::error::Version INCOMPATIBLE"
             echo "::error::Proposed Rook image (v$PROPOSED_MAJOR) is NEWER than Proxmox Ceph (v$PROXMOX_MAJOR)"
-            echo "::error::"
             echo "::error::You must upgrade Ceph on Proxmox FIRST before updating the Rook image."
-            echo "::error::See: https://pve.proxmox.com/wiki/Ceph_Reef_to_Squid"
-            echo ""
             echo "status=incompatible" >> $GITHUB_OUTPUT
-            exit 1
+            WORKFLOW_FAILED="true"
           else
-            echo "⚠️ Warning: Proposed version (v$PROPOSED_MAJOR) is OLDER than Proxmox (v$PROXMOX_MAJOR)"
-            echo "⚠️ This should work but consider updating to match Proxmox version"
+            echo "Warning: Proposed version (v$PROPOSED_MAJOR) is OLDER than Proxmox (v$PROXMOX_MAJOR)"
+            echo "This should work but consider updating to match Proxmox version"
             echo "status=older" >> $GITHUB_OUTPUT
+            WORKFLOW_FAILED="false"
           fi
+
+          echo "upgrade_guide_url=$UPGRADE_GUIDE_URL" >> $GITHUB_OUTPUT
+          echo "available_upgrade_url=$AVAILABLE_UPGRADE_URL" >> $GITHUB_OUTPUT
+          echo "workflow_failed=$WORKFLOW_FAILED" >> $GITHUB_OUTPUT
+
+      - name: Generate PR comment body
+        id: comment
+        if: always()
+        run: |
+          # Use fallback values if steps failed
+          PROPOSED_VERSION="${{ steps.proposed.outputs.version }}"
+          PROPOSED_CODENAME="${{ steps.proposed.outputs.codename }}"
+          PROPOSED_MAJOR="${{ steps.proposed.outputs.major }}"
+          PROXMOX_VERSION="${{ steps.proxmox.outputs.version }}"
+          PROXMOX_CODENAME="${{ steps.proxmox.outputs.codename }}"
+          PROXMOX_MAJOR="${{ steps.proxmox.outputs.major }}"
+
+          PROPOSED_VERSION="${PROPOSED_VERSION:-N/A}"
+          PROPOSED_CODENAME="${PROPOSED_CODENAME:-N/A}"
+          PROPOSED_MAJOR="${PROPOSED_MAJOR:-N/A}"
+          PROXMOX_VERSION="${PROXMOX_VERSION:-N/A}"
+          PROXMOX_CODENAME="${PROXMOX_CODENAME:-N/A}"
+          PROXMOX_MAJOR="${PROXMOX_MAJOR:-N/A}"
+
+          # Build comment body
+          cat > /tmp/pr-comment.md << 'HEADER'
+          ## Ceph Version Compatibility Check
+
+          | Component | Version | Codename |
+          |-----------|---------|----------|
+          HEADER
+
+          echo "| **Proposed (Rook/CSI)** | v${PROPOSED_VERSION} | ${PROPOSED_CODENAME} |" >> /tmp/pr-comment.md
+          echo "| **Proxmox (Cluster)** | v${PROXMOX_VERSION} | ${PROXMOX_CODENAME} |" >> /tmp/pr-comment.md
+          echo "" >> /tmp/pr-comment.md
+
+          STATUS="${{ steps.compare.outputs.status }}"
+          UPGRADE_GUIDE_URL="${{ steps.compare.outputs.upgrade_guide_url }}"
+          AVAILABLE_UPGRADE_URL="${{ steps.compare.outputs.available_upgrade_url }}"
+          UPGRADE_AVAILABLE="${{ steps.proxmox.outputs.upgrade_available }}"
+          HIGHEST_AVAILABLE="${{ steps.proxmox.outputs.highest_available }}"
+
+          if [ "$STATUS" = "compatible" ]; then
+            cat >> /tmp/pr-comment.md << EOF
+          ### ✅ Compatible
+
+          Both versions are major version ${PROPOSED_MAJOR}. Safe to merge.
+          EOF
+          elif [ "$STATUS" = "incompatible" ]; then
+            cat >> /tmp/pr-comment.md << EOF
+          ### ❌ Incompatible
+
+          **Action Required:** Upgrade Ceph on Proxmox from ${PROXMOX_CODENAME} (v${PROXMOX_MAJOR}) to ${PROPOSED_CODENAME} (v${PROPOSED_MAJOR}) before merging this PR.
+
+          📚 **Upgrade Guide:** [Proxmox Ceph Upgrade Guide](${UPGRADE_GUIDE_URL})
+          EOF
+          elif [ "$STATUS" = "older" ]; then
+            cat >> /tmp/pr-comment.md << EOF
+          ### ⚠️ Older Version
+
+          Proposed version is older than Proxmox. This should work but consider updating to match.
+          EOF
+          else
+            cat >> /tmp/pr-comment.md << EOF
+          ### ℹ️ Status Unknown
+
+          Version comparison did not complete. Check workflow logs for details.
+          EOF
+          fi
+
+          # Add upgrade available notice if applicable
+          if [ "$UPGRADE_AVAILABLE" = "true" ] && [ -n "$HIGHEST_AVAILABLE" ]; then
+            HIGHEST_CODENAME=$(echo '${{ env.CEPH_CODENAMES }}' | jq -r --arg v "$HIGHEST_AVAILABLE" '.[$v] // "unknown"')
+            cat >> /tmp/pr-comment.md << EOF
+
+          ---
+
+          ### 📢 Proxmox Ceph Upgrade Available
+
+          A newer Ceph version is available in the Proxmox repository: **v${HIGHEST_AVAILABLE} (${HIGHEST_CODENAME})**
+
+          📚 **Upgrade Guide:** [${AVAILABLE_UPGRADE_URL}](${AVAILABLE_UPGRADE_URL})
+          EOF
+          fi
+
+          # Output the comment body (use unique delimiter to avoid collision)
+          echo "body<<EOF_CEPH_COMMENT" >> $GITHUB_OUTPUT
+          cat /tmp/pr-comment.md >> $GITHUB_OUTPUT
+          echo "EOF_CEPH_COMMENT" >> $GITHUB_OUTPUT
+
+      - name: Post PR comment
+        if: always() && steps.generate-token.outputs.token
+        uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
+        with:
+          repo-token: ${{ steps.generate-token.outputs.token }}
+          message-id: ceph-version-check
+          message: ${{ steps.comment.outputs.body }}
 
       - name: Post result summary
         if: always()
@@ -231,14 +405,19 @@ jobs:
           # Use fallback values if earlier steps failed
           PROPOSED_VERSION="${{ steps.proposed.outputs.version }}"
           PROPOSED_MAJOR="${{ steps.proposed.outputs.major }}"
+          PROPOSED_CODENAME="${{ steps.proposed.outputs.codename }}"
           PROXMOX_VERSION="${{ steps.proxmox.outputs.version }}"
           PROXMOX_MAJOR="${{ steps.proxmox.outputs.major }}"
           PROXMOX_CODENAME="${{ steps.proxmox.outputs.codename }}"
           STATUS="${{ steps.compare.outputs.status }}"
+          UPGRADE_AVAILABLE="${{ steps.proxmox.outputs.upgrade_available }}"
+          HIGHEST_AVAILABLE="${{ steps.proxmox.outputs.highest_available }}"
+          UPGRADE_GUIDE_URL="${{ steps.compare.outputs.upgrade_guide_url }}"
 
           # Apply defaults for empty values
           PROPOSED_VERSION="${PROPOSED_VERSION:-N/A}"
           PROPOSED_MAJOR="${PROPOSED_MAJOR:-N/A}"
+          PROPOSED_CODENAME="${PROPOSED_CODENAME:-N/A}"
           PROXMOX_VERSION="${PROXMOX_VERSION:-N/A}"
           PROXMOX_MAJOR="${PROXMOX_MAJOR:-N/A}"
           PROXMOX_CODENAME="${PROXMOX_CODENAME:-N/A}"
@@ -246,10 +425,10 @@ jobs:
 
           echo "## Ceph Version Check Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Component | Version | Major |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|---------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Proposed (Rook/CSI) | v${PROPOSED_VERSION} | ${PROPOSED_MAJOR} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Proxmox (Cluster) | v${PROXMOX_VERSION} (${PROXMOX_CODENAME}) | ${PROXMOX_MAJOR} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Component | Version | Codename |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|---------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Proposed (Rook/CSI) | v${PROPOSED_VERSION} | ${PROPOSED_CODENAME} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Proxmox (Cluster) | v${PROXMOX_VERSION} | ${PROXMOX_CODENAME} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           if [ "$STATUS" = "compatible" ]; then
@@ -257,9 +436,9 @@ jobs:
             echo "Both versions are major version ${PROPOSED_MAJOR}. Safe to merge." >> $GITHUB_STEP_SUMMARY
           elif [ "$STATUS" = "incompatible" ]; then
             echo "### ❌ Incompatible" >> $GITHUB_STEP_SUMMARY
-            echo "**Action Required:** Upgrade Ceph on Proxmox to v${PROPOSED_MAJOR} before merging this PR." >> $GITHUB_STEP_SUMMARY
+            echo "**Action Required:** Upgrade Ceph on Proxmox to v${PROPOSED_MAJOR} (${PROPOSED_CODENAME}) before merging this PR." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "See: [Proxmox Ceph Upgrade Guide](https://pve.proxmox.com/wiki/Ceph_Reef_to_Squid)" >> $GITHUB_STEP_SUMMARY
+            echo "📚 **Upgrade Guide:** [Proxmox Ceph Upgrade Guide](${UPGRADE_GUIDE_URL})" >> $GITHUB_STEP_SUMMARY
           elif [ "$STATUS" = "older" ]; then
             echo "### ⚠️ Older Version" >> $GITHUB_STEP_SUMMARY
             echo "Proposed version is older than Proxmox. This should work but consider updating." >> $GITHUB_STEP_SUMMARY
@@ -268,8 +447,22 @@ jobs:
             echo "Version comparison did not complete. Check workflow logs for details." >> $GITHUB_STEP_SUMMARY
           fi
 
+          if [ "$UPGRADE_AVAILABLE" = "true" ] && [ -n "$HIGHEST_AVAILABLE" ]; then
+            HIGHEST_CODENAME=$(echo '${{ env.CEPH_CODENAMES }}' | jq -r --arg v "$HIGHEST_AVAILABLE" '.[$v] // "unknown"')
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "---" >> $GITHUB_STEP_SUMMARY
+            echo "### 📢 Proxmox Ceph Upgrade Available" >> $GITHUB_STEP_SUMMARY
+            echo "A newer Ceph version is available in the Proxmox repository: **v${HIGHEST_AVAILABLE} (${HIGHEST_CODENAME})**" >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: Cleanup SSH credentials
         if: always()
         run: |
           rm -f ~/.ssh/proxmox_key
-          echo "🧹 SSH credentials cleaned up"
+          echo "SSH credentials cleaned up"
+
+      - name: Fail workflow if incompatible
+        if: steps.compare.outputs.workflow_failed != 'false'
+        run: |
+          echo "::error::Ceph version incompatibility detected. See PR comment for details."
+          exit 1
