@@ -22,7 +22,7 @@ data:
       "links": [],
       "panels": [
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Total clients connected to the network",
           "fieldConfig": {
             "defaults": {
@@ -65,7 +65,7 @@ data:
           "type": "stat"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Wireless clients connected",
           "fieldConfig": {
             "defaults": {
@@ -108,7 +108,7 @@ data:
           "type": "stat"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Wired clients connected",
           "fieldConfig": {
             "defaults": {
@@ -149,7 +149,7 @@ data:
           "type": "stat"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Number of access points",
           "fieldConfig": {
             "defaults": {
@@ -190,7 +190,7 @@ data:
           "type": "stat"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Number of switches",
           "fieldConfig": {
             "defaults": {
@@ -231,7 +231,7 @@ data:
           "type": "stat"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "UDM/USG devices",
           "fieldConfig": {
             "defaults": {
@@ -272,7 +272,7 @@ data:
           "type": "stat"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Total network throughput",
           "fieldConfig": {
             "defaults": {
@@ -332,7 +332,7 @@ data:
           "type": "timeseries"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Clients per network/VLAN",
           "fieldConfig": {
             "defaults": {
@@ -368,7 +368,7 @@ data:
           "type": "piechart"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Device temperatures",
           "fieldConfig": {
             "defaults": {
@@ -412,7 +412,7 @@ data:
           "type": "gauge"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Device uptime information",
           "fieldConfig": {
             "defaults": {
@@ -483,7 +483,7 @@ data:
           "type": "table"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Top clients by bandwidth usage",
           "fieldConfig": {
             "defaults": {
@@ -538,7 +538,7 @@ data:
           "type": "timeseries"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "WiFi signal strength distribution",
           "fieldConfig": {
             "defaults": {
@@ -574,7 +574,7 @@ data:
           "type": "piechart"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Access point memory utilization",
           "fieldConfig": {
             "defaults": {
@@ -617,7 +617,7 @@ data:
           "type": "gauge"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {"uid": "$datasource"},
           "description": "Device CPU load",
           "fieldConfig": {
             "defaults": {
@@ -664,7 +664,26 @@ data:
       "schemaVersion": 38,
       "tags": ["unifi", "network", "unpoller"],
       "templating": {
-        "list": []
+        "list": [
+          {
+            "current": {
+              "selected": true,
+              "text": "Prometheus",
+              "value": "Prometheus"
+            },
+            "hide": 0,
+            "includeAll": false,
+            "label": "Data Source",
+            "multi": false,
+            "name": "datasource",
+            "options": [],
+            "query": "prometheus",
+            "refresh": 1,
+            "regex": "",
+            "skipUrlSync": false,
+            "type": "datasource"
+          }
+        ]
       },
       "time": {
         "from": "now-24h",
