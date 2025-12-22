@@ -134,7 +134,7 @@ jobs:
             fi
 
             echo "  Testing $host..."
-            if ssh "${{ env.SSH_OPTIONS }}" -i ~/.ssh/proxmox_key "root@${host}" "echo ok" &>/dev/null; then
+            if ssh ${{ env.SSH_OPTIONS }} -i ~/.ssh/proxmox_key "root@${host}" "echo ok" &>/dev/null; then
               SELECTED_HOST="$host"
               echo "✅ Selected: $host"
               break
@@ -160,7 +160,7 @@ jobs:
 
           # Query Ceph version via SSH
           # Note: root is required for ceph CLI access; username hardcoded to prevent injection
-          CEPH_OUTPUT=$(ssh "${{ env.SSH_OPTIONS }}" -i ~/.ssh/proxmox_key "root@${PROXMOX_HOST}" "ceph version" 2>/dev/null) || {
+          CEPH_OUTPUT=$(ssh ${{ env.SSH_OPTIONS }} -i ~/.ssh/proxmox_key "root@${PROXMOX_HOST}" "ceph version" 2>/dev/null) || {
             echo "::error::Failed to query Ceph version from $PROXMOX_HOST"
             exit 1
           }
