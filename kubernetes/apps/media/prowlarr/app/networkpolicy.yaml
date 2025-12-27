@@ -122,17 +122,13 @@ spec:
         - ports:
             - port: "7878"
               protocol: TCP
-    # Allow internet egress (indexer queries via VPN sidecar)
-    # Gluetun handles VPN routing - this allows the tunnel traffic
+    # Allow ONLY VPN tunnel traffic - true CNI-layer kill switch
+    # All indexer HTTP/HTTPS queries MUST go through gluetun's tun0 interface
+    # If gluetun fails, this policy blocks all internet access (defense-in-depth)
     - toEntities:
         - world
       toPorts:
         - ports:
-            # WireGuard VPN traffic
+            # WireGuard VPN traffic (Surfshark)
             - port: "51820"
               protocol: UDP
-            # HTTPS for indexers (through VPN tunnel)
-            - port: "443"
-              protocol: TCP
-            - port: "80"
-              protocol: TCP

@@ -86,8 +86,9 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow internet egress (Usenet traffic via VPN sidecar)
-    # Gluetun handles VPN routing - this allows the tunnel traffic
+    # Allow ONLY VPN tunnel traffic - true CNI-layer kill switch
+    # All Usenet/HTTP/HTTPS traffic MUST go through gluetun's tun0 interface
+    # If gluetun fails, this policy blocks all internet access (defense-in-depth)
     - toEntities:
         - world
       toPorts:
@@ -95,15 +96,3 @@ spec:
             # WireGuard VPN traffic (Surfshark)
             - port: "51820"
               protocol: UDP
-            # HTTPS for Usenet servers (through VPN tunnel)
-            - port: "443"
-              protocol: TCP
-            # NNTP SSL for Usenet (through VPN tunnel)
-            - port: "563"
-              protocol: TCP
-            # NNTP for Usenet (through VPN tunnel)
-            - port: "119"
-              protocol: TCP
-            # HTTP fallback (through VPN tunnel)
-            - port: "80"
-              protocol: TCP

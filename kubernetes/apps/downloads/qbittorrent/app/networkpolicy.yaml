@@ -86,8 +86,9 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow internet egress (BitTorrent traffic via VPN sidecar)
-    # Gluetun handles VPN routing - this allows the tunnel traffic
+    # Allow ONLY VPN tunnel traffic - true CNI-layer kill switch
+    # All BitTorrent/HTTP/HTTPS traffic MUST go through gluetun's tun0 interface
+    # If gluetun fails, this policy blocks all internet access (defense-in-depth)
     - toEntities:
         - world
       toPorts:
@@ -95,14 +96,3 @@ spec:
             # WireGuard VPN traffic (Surfshark)
             - port: "51820"
               protocol: UDP
-            # BitTorrent DHT and peer communication
-            - port: "6881"
-              protocol: TCP
-            - port: "6881"
-              protocol: UDP
-            # HTTPS for trackers (through VPN tunnel)
-            - port: "443"
-              protocol: TCP
-            # HTTP for trackers (through VPN tunnel)
-            - port: "80"
-              protocol: TCP
