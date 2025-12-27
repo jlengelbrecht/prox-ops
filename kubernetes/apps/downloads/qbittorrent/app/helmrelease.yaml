@@ -87,8 +87,10 @@ spec:
               FIREWALL: "on"
               FIREWALL_VPN_INPUT_PORTS: "6881"  # BitTorrent port
               FIREWALL_INPUT_PORTS: "8080,8000,8090,8001"  # Web UI, control, metrics, and VPN metrics
+              FIREWALL_OUTBOUND_SUBNETS: "10.43.0.0/16"  # Allow internal K8s service traffic
               # DNS - use VPN provider DNS (Surfshark)
               DOT: "off"
+              DNS_KEEP_NAMESERVER: "on"  # Preserve K8s DNS for internal resolution
               # Logging
               LOG_LEVEL: info
               TZ: America/New_York
