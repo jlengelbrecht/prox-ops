@@ -220,13 +220,13 @@ data:
         },
         {
           "datasource": "Prometheus",
-          "description": "Items in queue",
-          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}]}, "unit": "short"}},
+          "description": "Total historical events (downloads, failures, imports)",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
           "gridPos": {"h": 4, "w": 4, "x": 16, "y": 5},
           "id": 14,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "max(sonarr_queue_total)", "legendFormat": "Queue", "refId": "A"}],
-          "title": "Queue",
+          "targets": [{"expr": "max(sonarr_history_total)", "legendFormat": "History", "refId": "A"}],
+          "title": "History",
           "type": "stat"
         },
         {
@@ -263,7 +263,7 @@ data:
           "datasource": "Prometheus",
           "description": "Downloaded movies",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 10},
+          "gridPos": {"h": 4, "w": 5, "x": 6, "y": 10},
           "id": 21,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(radarr_movie_downloaded_total)", "legendFormat": "Downloaded", "refId": "A"}],
@@ -274,7 +274,7 @@ data:
           "datasource": "Prometheus",
           "description": "Missing movies",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "orange", "value": 20}, {"color": "red", "value": 50}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 10},
+          "gridPos": {"h": 4, "w": 5, "x": 11, "y": 10},
           "id": 22,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(radarr_movie_missing_total)", "legendFormat": "Missing", "refId": "A"}],
@@ -283,14 +283,25 @@ data:
         },
         {
           "datasource": "Prometheus",
-          "description": "Items in queue",
-          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 10},
+          "description": "Total historical events (downloads, failures, imports)",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 10},
           "id": 23,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "max(radarr_queue_total)", "legendFormat": "Queue", "refId": "A"}],
-          "title": "Queue",
+          "targets": [{"expr": "max(radarr_history_total)", "legendFormat": "History", "refId": "A"}],
+          "title": "History",
           "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Download completion percentage",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "max": 100, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 50}, {"color": "green", "value": 90}]}, "unit": "percent"}},
+          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 10},
+          "id": 24,
+          "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showThresholdLabels": false, "showThresholdMarkers": true},
+          "targets": [{"expr": "(max(radarr_movie_downloaded_total) / (max(radarr_movie_total) > 0 or vector(1))) * 100", "legendFormat": "Completion", "refId": "A"}],
+          "title": "Completion %",
+          "type": "gauge"
         },
         {
           "collapsed": false,
@@ -606,7 +617,7 @@ data:
               "color": {"mode": "palette-classic"},
               "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
               "mappings": [],
-              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
               "unit": "short"
             }
           },
@@ -625,7 +636,7 @@ data:
               "color": {"mode": "palette-classic"},
               "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
               "mappings": [],
-              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
               "unit": "bytes"
             }
           },
@@ -644,7 +655,7 @@ data:
               "color": {"mode": "palette-classic"},
               "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
               "mappings": [],
-              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
               "unit": "Bps"
             }
           },
@@ -674,7 +685,7 @@ data:
               "color": {"mode": "palette-classic"},
               "custom": {"axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 20, "gradientMode": "none", "hideFrom": {"tooltip": false, "viz": false, "legend": false}, "lineInterpolation": "smooth", "lineWidth": 2, "pointSize": 5, "scaleDistribution": {"type": "linear"}, "showPoints": "never", "spanNulls": false, "stacking": {"group": "A", "mode": "none"}, "thresholdsStyle": {"mode": "off"}},
               "mappings": [],
-              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "transparent", "value": null}]},
               "unit": "Bps"
             }
           },
