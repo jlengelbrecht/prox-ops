@@ -1,6 +1,7 @@
 ---
 # Comprehensive Media Stack Dashboard
-# Monitors Plex, Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd
+# Monitors Plex, Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd, Cleanuparr, Huntarr, Maintainerr, Wizarr
+# Note: Cleanuparr, Huntarr, Maintainerr, and Wizarr show pod status only (no Prometheus metrics available)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -26,7 +27,7 @@ data:
           }
         ]
       },
-      "description": "Comprehensive media stack monitoring - Plex, *arr apps, downloaders, VPN status",
+      "description": "Comprehensive media stack monitoring - Plex, *arr apps, downloaders, automation tools, VPN status. Note: Cleanuparr, Huntarr, Maintainerr, Wizarr show pod status only (no metrics exporters available).",
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,
@@ -167,8 +168,88 @@ data:
           "type": "stat"
         },
         {
+          "datasource": "Prometheus",
+          "description": "Cleanuparr pod status",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [
+                {"options": {"0": {"color": "red", "index": 1, "text": "Down"}}, "type": "value"},
+                {"options": {"1": {"color": "green", "index": 0, "text": "Running"}}, "type": "value"}
+              ],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+            }
+          },
+          "gridPos": {"h": 3, "w": 4, "x": 0, "y": 4},
+          "id": 7,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"cleanuparr.*\",phase=\"Running\"})", "legendFormat": "Cleanuparr", "refId": "A"}],
+          "title": "Cleanuparr",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Huntarr pod status",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [
+                {"options": {"0": {"color": "red", "index": 1, "text": "Down"}}, "type": "value"},
+                {"options": {"1": {"color": "green", "index": 0, "text": "Running"}}, "type": "value"}
+              ],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+            }
+          },
+          "gridPos": {"h": 3, "w": 4, "x": 4, "y": 4},
+          "id": 8,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"huntarr.*\",phase=\"Running\"})", "legendFormat": "Huntarr", "refId": "A"}],
+          "title": "Huntarr",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Maintainerr pod status",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [
+                {"options": {"0": {"color": "red", "index": 1, "text": "Down"}}, "type": "value"},
+                {"options": {"1": {"color": "green", "index": 0, "text": "Running"}}, "type": "value"}
+              ],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+            }
+          },
+          "gridPos": {"h": 3, "w": 4, "x": 8, "y": 4},
+          "id": 9,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"maintainerr.*\",phase=\"Running\"})", "legendFormat": "Maintainerr", "refId": "A"}],
+          "title": "Maintainerr",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Wizarr pod status",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [
+                {"options": {"0": {"color": "red", "index": 1, "text": "Down"}}, "type": "value"},
+                {"options": {"1": {"color": "green", "index": 0, "text": "Running"}}, "type": "value"}
+              ],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+            }
+          },
+          "gridPos": {"h": 3, "w": 4, "x": 12, "y": 4},
+          "id": 10,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"wizarr.*\",phase=\"Running\"})", "legendFormat": "Wizarr", "refId": "A"}],
+          "title": "Wizarr",
+          "type": "stat"
+        },
+        {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 4},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 7},
           "id": 101,
           "panels": [],
           "title": "Sonarr - TV Series",
@@ -178,7 +259,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total monitored series",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 5},
+          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 8},
           "id": 10,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(sonarr_series_total)", "legendFormat": "Series", "refId": "A"}],
@@ -189,7 +270,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total monitored episodes",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 5},
+          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 8},
           "id": 11,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(sonarr_episode_total)", "legendFormat": "Episodes", "refId": "A"}],
@@ -200,7 +281,7 @@ data:
           "datasource": "Prometheus",
           "description": "Downloaded episodes",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 5},
+          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 8},
           "id": 12,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(sonarr_episode_downloaded_total)", "legendFormat": "Downloaded", "refId": "A"}],
@@ -211,7 +292,7 @@ data:
           "datasource": "Prometheus",
           "description": "Missing episodes",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "orange", "value": 50}, {"color": "red", "value": 100}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 5},
+          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 8},
           "id": 13,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(sonarr_episode_missing_total)", "legendFormat": "Missing", "refId": "A"}],
@@ -222,7 +303,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total historical events (downloads, failures, imports)",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 5},
+          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 8},
           "id": 14,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(sonarr_history_total)", "legendFormat": "History", "refId": "A"}],
@@ -233,7 +314,7 @@ data:
           "datasource": "Prometheus",
           "description": "Download completion percentage",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "max": 100, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 50}, {"color": "green", "value": 90}]}, "unit": "percent"}},
-          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 5},
+          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 8},
           "id": 15,
           "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showThresholdLabels": false, "showThresholdMarkers": true},
           "targets": [{"expr": "(max(sonarr_episode_downloaded_total) / (max(sonarr_episode_total) > 0 or vector(1))) * 100", "legendFormat": "Completion", "refId": "A"}],
@@ -242,7 +323,7 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 12},
           "id": 102,
           "panels": [],
           "title": "Radarr - Movies",
@@ -252,7 +333,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total monitored movies",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 10},
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 13},
           "id": 20,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(radarr_movie_total)", "legendFormat": "Movies", "refId": "A"}],
@@ -263,7 +344,7 @@ data:
           "datasource": "Prometheus",
           "description": "Downloaded movies",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 5, "x": 6, "y": 10},
+          "gridPos": {"h": 4, "w": 5, "x": 6, "y": 13},
           "id": 21,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(radarr_movie_downloaded_total)", "legendFormat": "Downloaded", "refId": "A"}],
@@ -274,7 +355,7 @@ data:
           "datasource": "Prometheus",
           "description": "Missing movies",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "orange", "value": 20}, {"color": "red", "value": 50}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 5, "x": 11, "y": 10},
+          "gridPos": {"h": 4, "w": 5, "x": 11, "y": 13},
           "id": 22,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(radarr_movie_missing_total)", "legendFormat": "Missing", "refId": "A"}],
@@ -285,7 +366,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total historical events (downloads, failures, imports)",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 10},
+          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 13},
           "id": 23,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(radarr_history_total)", "legendFormat": "History", "refId": "A"}],
@@ -296,7 +377,7 @@ data:
           "datasource": "Prometheus",
           "description": "Download completion percentage",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "max": 100, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 50}, {"color": "green", "value": 90}]}, "unit": "percent"}},
-          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 10},
+          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 13},
           "id": 24,
           "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showThresholdLabels": false, "showThresholdMarkers": true},
           "targets": [{"expr": "(max(radarr_movie_downloaded_total) / (max(radarr_movie_total) > 0 or vector(1))) * 100", "legendFormat": "Completion", "refId": "A"}],
@@ -305,7 +386,7 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 17},
           "id": 103,
           "panels": [],
           "title": "Prowlarr - Indexers",
@@ -315,7 +396,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total configured indexers",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 15},
+          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 18},
           "id": 30,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(prowlarr_indexer_total)", "legendFormat": "Indexers", "refId": "A"}],
@@ -326,7 +407,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total grabs from indexers",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 15},
+          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 18},
           "id": 31,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "sum(prowlarr_indexer_grabs_total)", "legendFormat": "Total Grabs", "refId": "A"}],
@@ -337,7 +418,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total queries to indexers",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "purple", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 15},
+          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 18},
           "id": 32,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "sum(prowlarr_indexer_queries_total)", "legendFormat": "Total Queries", "refId": "A"}],
@@ -346,7 +427,7 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 19},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
           "id": 104,
           "panels": [],
           "title": "qBittorrent - Torrents",
@@ -354,20 +435,30 @@ data:
         },
         {
           "datasource": "Prometheus",
-          "description": "Total active torrents",
-          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 20},
+          "description": "qBittorrent status: 0=Idle, 1=Seeding, 2=Downloading",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [
+                {"options": {"0": {"color": "blue", "index": 0, "text": "Idle"}}, "type": "value"},
+                {"options": {"1": {"color": "orange", "index": 1, "text": "Seeding"}}, "type": "value"},
+                {"options": {"2": {"color": "green", "index": 2, "text": "Downloading"}}, "type": "value"}
+              ],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}, {"color": "orange", "value": 1}, {"color": "green", "value": 2}]}
+            }
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 23},
           "id": 40,
-          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "max(qbittorrent_global_torrents)", "legendFormat": "Torrents", "refId": "A"}],
-          "title": "Active Torrents",
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "((qbittorrent_global_download_speed_bytes > 0) * 2) + (((qbittorrent_global_upload_speed_bytes > 0) * (qbittorrent_global_download_speed_bytes == 0)) * 1) or vector(0)", "legendFormat": "Status", "refId": "A"}],
+          "title": "Status",
           "type": "stat"
         },
         {
           "datasource": "Prometheus",
           "description": "Current download speed",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "Bps"}},
-          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 20},
+          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 23},
           "id": 41,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(qbittorrent_global_download_speed_bytes)", "legendFormat": "Download", "refId": "A"}],
@@ -378,7 +469,7 @@ data:
           "datasource": "Prometheus",
           "description": "Current upload speed",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}]}, "unit": "Bps"}},
-          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 20},
+          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 23},
           "id": 42,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(qbittorrent_global_upload_speed_bytes)", "legendFormat": "Upload", "refId": "A"}],
@@ -389,7 +480,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total downloaded all time",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "bytes"}},
-          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 20},
+          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 23},
           "id": 43,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(qbittorrent_global_alltime_downloaded_bytes)", "legendFormat": "Downloaded", "refId": "A"}],
@@ -400,7 +491,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total uploaded all time",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}]}, "unit": "bytes"}},
-          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 20},
+          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 23},
           "id": 44,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(qbittorrent_global_alltime_uploaded_bytes)", "legendFormat": "Uploaded", "refId": "A"}],
@@ -411,7 +502,7 @@ data:
           "datasource": "Prometheus",
           "description": "Overall share ratio",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 0.5}, {"color": "green", "value": 1}]}, "unit": "short", "decimals": 2}},
-          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 20},
+          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 23},
           "id": 45,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(qbittorrent_global_alltime_uploaded_bytes) / (max(qbittorrent_global_alltime_downloaded_bytes) > 0 or vector(1))", "legendFormat": "Ratio", "refId": "A"}],
@@ -420,7 +511,7 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 24},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 27},
           "id": 105,
           "panels": [],
           "title": "SABnzbd - Usenet",
@@ -441,7 +532,7 @@ data:
               "thresholds": {"mode": "absolute", "steps": [{"color": "gray", "value": null}, {"color": "green", "value": 3}]}
             }
           },
-          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 25},
+          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 28},
           "id": 50,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
           "targets": [{"expr": "max(sabnzbd_status)", "legendFormat": "Status", "refId": "A"}],
@@ -452,7 +543,7 @@ data:
           "datasource": "Prometheus",
           "description": "Number of items in download queue",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "orange", "value": 15}, {"color": "red", "value": 30}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 25},
+          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 28},
           "id": 51,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(sabnzbd_queue_length)", "legendFormat": "Items", "refId": "A"}],
@@ -463,7 +554,7 @@ data:
           "datasource": "Prometheus",
           "description": "Current download speed",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10000000}, {"color": "green", "value": 30000000}]}, "unit": "Bps"}},
-          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 25},
+          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 28},
           "id": 52,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(sabnzbd_speed_bps)", "legendFormat": "Speed", "refId": "A"}],
@@ -474,7 +565,7 @@ data:
           "datasource": "Prometheus",
           "description": "Total data remaining to download in queue",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "bytes"}},
-          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 25},
+          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 28},
           "id": 53,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(sabnzbd_remaining_bytes)", "legendFormat": "Remaining", "refId": "A"}],
@@ -485,7 +576,7 @@ data:
           "datasource": "Prometheus",
           "description": "Estimated time until queue completion",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 3600}, {"color": "orange", "value": 7200}]}, "unit": "s"}},
-          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 25},
+          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 28},
           "id": 54,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
           "targets": [{"expr": "max(sabnzbd_time_estimate_seconds)", "legendFormat": "ETA", "refId": "A"}],
@@ -496,7 +587,7 @@ data:
           "datasource": "Prometheus",
           "description": "Disk space usage percentage",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "max": 100, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "orange", "value": 85}, {"color": "red", "value": 95}]}, "unit": "percent"}},
-          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 25},
+          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 28},
           "id": 55,
           "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showThresholdLabels": false, "showThresholdMarkers": true},
           "targets": [{"expr": "(max(sabnzbd_disk_used_bytes) / max(sabnzbd_disk_total_bytes)) * 100", "legendFormat": "Used", "refId": "A"}],
@@ -505,7 +596,7 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 29},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32},
           "id": 108,
           "panels": [],
           "title": "VPN Status",
@@ -525,7 +616,7 @@ data:
               "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
             }
           },
-          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 30},
+          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 33},
           "id": 80,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
           "targets": [{"expr": "max(gluetun_vpn_infos{job=~\".*prowlarr.*\"}) or vector(0)", "legendFormat": "Prowlarr VPN", "refId": "A"}],
@@ -546,7 +637,7 @@ data:
               "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
             }
           },
-          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 30},
+          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 33},
           "id": 81,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
           "targets": [{"expr": "max(gluetun_vpn_infos{job=~\".*qbittorrent.*\"}) or vector(0)", "legendFormat": "qBittorrent VPN", "refId": "A"}],
@@ -567,7 +658,7 @@ data:
               "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
             }
           },
-          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 30},
+          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 33},
           "id": 82,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
           "targets": [{"expr": "max(gluetun_vpn_infos{job=~\".*sabnzbd.*\"}) or vector(0)", "legendFormat": "SABnzbd VPN", "refId": "A"}],
@@ -591,7 +682,7 @@ data:
               {"matcher": {"id": "byName", "options": "City"}, "properties": [{"id": "custom.width", "value": 150}]}
             ]
           },
-          "gridPos": {"h": 4, "w": 24, "x": 0, "y": 34},
+          "gridPos": {"h": 4, "w": 24, "x": 0, "y": 37},
           "id": 83,
           "options": {"cellHeight": "sm", "footer": {"countRows": false, "fields": "", "reducer": ["sum"], "show": false}, "showHeader": true},
           "targets": [{"expr": "gluetun_vpn_infos", "format": "table", "instant": true, "legendFormat": "", "refId": "A"}],
@@ -603,7 +694,7 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 38},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 41},
           "id": 106,
           "panels": [],
           "title": "Plex - Media Server",
@@ -621,7 +712,7 @@ data:
               "unit": "short"
             }
           },
-          "gridPos": {"h": 7, "w": 12, "x": 0, "y": 39},
+          "gridPos": {"h": 7, "w": 12, "x": 0, "y": 42},
           "id": 60,
           "options": {"legend": {"calcs": ["mean", "max", "current"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"media\",pod=~\"plex.*\",container!=\"\",container!=\"POD\"}[5m]))", "legendFormat": "Plex CPU Cores", "refId": "A"}],
@@ -640,7 +731,7 @@ data:
               "unit": "bytes"
             }
           },
-          "gridPos": {"h": 7, "w": 12, "x": 12, "y": 39},
+          "gridPos": {"h": 7, "w": 12, "x": 12, "y": 42},
           "id": 61,
           "options": {"legend": {"calcs": ["mean", "max", "current"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [{"expr": "sum(container_memory_working_set_bytes{namespace=\"media\",pod=~\"plex.*\",container!=\"\",container!=\"POD\"})", "legendFormat": "Plex Memory", "refId": "A"}],
@@ -659,7 +750,7 @@ data:
               "unit": "Bps"
             }
           },
-          "gridPos": {"h": 7, "w": 24, "x": 0, "y": 46},
+          "gridPos": {"h": 7, "w": 24, "x": 0, "y": 49},
           "id": 62,
           "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
@@ -671,7 +762,7 @@ data:
         },
         {
           "collapsed": false,
-          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 53},
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 56},
           "id": 107,
           "panels": [],
           "title": "Download Speeds Over Time",
@@ -689,7 +780,7 @@ data:
               "unit": "Bps"
             }
           },
-          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 54},
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 57},
           "id": 70,
           "options": {"legend": {"calcs": ["mean", "max", "current"], "displayMode": "table", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
           "targets": [
@@ -703,7 +794,7 @@ data:
       ],
       "refresh": "1m",
       "schemaVersion": 38,
-      "tags": ["media", "plex", "sonarr", "radarr", "prowlarr", "qbittorrent", "sabnzbd", "vpn"],
+      "tags": ["media", "plex", "sonarr", "radarr", "prowlarr", "qbittorrent", "sabnzbd", "cleanuparr", "huntarr", "maintainerr", "wizarr", "vpn"],
       "templating": {"list": []},
       "time": {"from": "now-6h", "to": "now"},
       "timepicker": {},
