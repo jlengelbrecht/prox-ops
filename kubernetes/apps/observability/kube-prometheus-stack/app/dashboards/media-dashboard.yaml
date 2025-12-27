@@ -417,36 +417,80 @@ data:
         },
         {
           "datasource": "Prometheus",
-          "description": "Items in download queue",
-          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 20}]}, "unit": "short"}},
-          "gridPos": {"h": 4, "w": 8, "x": 0, "y": 25},
+          "description": "SABnzbd status: 0=Unknown, 1=Idle, 2=Paused, 3=Downloading",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [
+                {"options": {"0": {"color": "gray", "index": 0, "text": "Unknown"}}, "type": "value"},
+                {"options": {"1": {"color": "blue", "index": 1, "text": "Idle"}}, "type": "value"},
+                {"options": {"2": {"color": "yellow", "index": 2, "text": "Paused"}}, "type": "value"},
+                {"options": {"3": {"color": "green", "index": 3, "text": "Downloading"}}, "type": "value"}
+              ],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "gray", "value": null}, {"color": "green", "value": 3}]}
+            }
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 25},
           "id": 50,
+          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
+          "targets": [{"expr": "max(sabnzbd_status)", "legendFormat": "Status", "refId": "A"}],
+          "title": "Status",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Number of items in download queue",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "orange", "value": 15}, {"color": "red", "value": 30}]}, "unit": "short"}},
+          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 25},
+          "id": 51,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sabnzbd_queue_length", "legendFormat": "Queue", "refId": "A"}],
-          "title": "Queue Size",
+          "targets": [{"expr": "max(sabnzbd_queue_length)", "legendFormat": "Items", "refId": "A"}],
+          "title": "Queue Items",
           "type": "stat"
         },
         {
           "datasource": "Prometheus",
           "description": "Current download speed",
-          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "Bps"}},
-          "gridPos": {"h": 4, "w": 8, "x": 8, "y": 25},
-          "id": 51,
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10000000}, {"color": "green", "value": 30000000}]}, "unit": "Bps"}},
+          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 25},
+          "id": 52,
           "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sabnzbd_speed_bps", "legendFormat": "Speed", "refId": "A"}],
+          "targets": [{"expr": "max(sabnzbd_speed_bps)", "legendFormat": "Speed", "refId": "A"}],
           "title": "Download Speed",
           "type": "stat"
         },
         {
           "datasource": "Prometheus",
-          "description": "Remaining data to download",
+          "description": "Total data remaining to download in queue",
           "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "bytes"}},
-          "gridPos": {"h": 4, "w": 8, "x": 16, "y": 25},
-          "id": 52,
+          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 25},
+          "id": 53,
           "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
-          "targets": [{"expr": "sabnzbd_remaining_bytes", "legendFormat": "Remaining", "refId": "A"}],
-          "title": "Queue Data",
+          "targets": [{"expr": "max(sabnzbd_remaining_bytes)", "legendFormat": "Remaining", "refId": "A"}],
+          "title": "Queue Size",
           "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Estimated time until queue completion",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 3600}, {"color": "orange", "value": 7200}]}, "unit": "s"}},
+          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 25},
+          "id": 54,
+          "options": {"colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name"},
+          "targets": [{"expr": "max(sabnzbd_time_estimate_seconds)", "legendFormat": "ETA", "refId": "A"}],
+          "title": "Time Remaining",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "description": "Disk space usage percentage",
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "max": 100, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "orange", "value": 85}, {"color": "red", "value": 95}]}, "unit": "percent"}},
+          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 25},
+          "id": 55,
+          "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "showThresholdLabels": false, "showThresholdMarkers": true},
+          "targets": [{"expr": "(max(sabnzbd_disk_used_bytes) / max(sabnzbd_disk_total_bytes)) * 100", "legendFormat": "Used", "refId": "A"}],
+          "title": "Disk Usage",
+          "type": "gauge"
         },
         {
           "collapsed": false,
@@ -640,7 +684,7 @@ data:
           "targets": [
             {"expr": "max(qbittorrent_global_download_speed_bytes)", "legendFormat": "qBittorrent Download", "refId": "A"},
             {"expr": "max(qbittorrent_global_upload_speed_bytes)", "legendFormat": "qBittorrent Upload", "refId": "B"},
-            {"expr": "sabnzbd_speed_bps", "legendFormat": "SABnzbd Download", "refId": "C"}
+            {"expr": "max(sabnzbd_speed_bps)", "legendFormat": "SABnzbd Download", "refId": "C"}
           ],
           "title": "Download/Upload Speeds",
           "type": "timeseries"
