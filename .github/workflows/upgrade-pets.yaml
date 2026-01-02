@@ -239,13 +239,13 @@ jobs:
     needs: [validate-inputs, validate-version-upgrade]
     timeout-minutes: 10
     steps:
-      - name: Setup cluster tools
-        run: |
-          echo "Verifying kubectl access..."
-          kubectl version --client
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          echo "Verifying talosctl access..."
-          talosctl version --client
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
 
       - name: Check cluster health
         run: |
@@ -790,6 +790,14 @@ jobs:
       matrix:
         node: ${{ inputs.test_controllers == true && fromJSON('[{"name":"k8s-ctrl-3","ip":"10.20.67.3"}]') || fromJSON('[{"name":"k8s-ctrl-1","ip":"10.20.67.1"},{"name":"k8s-ctrl-2","ip":"10.20.67.2"},{"name":"k8s-ctrl-3","ip":"10.20.67.3"}]') }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
       - name: Pre-upgrade validation
         run: |
           echo "::group::Pre-upgrade validation for ${{ matrix.node.name }}"
@@ -882,6 +890,14 @@ jobs:
       matrix:
         node: ${{ inputs.test_workers == true && fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false}]') || fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false},{"name":"k8s-work-3","ip":"10.20.67.6","is_gpu":false},{"name":"k8s-work-4","ip":"10.20.67.7","is_gpu":true,"gpu_model":"rtx-a2000"},{"name":"k8s-work-5","ip":"10.20.67.8","is_gpu":false},{"name":"k8s-work-6","ip":"10.20.67.9","is_gpu":false},{"name":"k8s-work-7","ip":"10.20.67.10","is_gpu":false},{"name":"k8s-work-8","ip":"10.20.67.11","is_gpu":false},{"name":"k8s-work-9","ip":"10.20.67.12","is_gpu":false},{"name":"k8s-work-10","ip":"10.20.67.13","is_gpu":true,"gpu_model":"rtx-a5000"},{"name":"k8s-work-11","ip":"10.20.67.14","is_gpu":false},{"name":"k8s-work-12","ip":"10.20.67.15","is_gpu":false}]') }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
       - name: Pre-upgrade validation
         run: |
           echo "::group::Pre-upgrade validation for ${{ matrix.node.name }}"
@@ -1012,6 +1028,14 @@ jobs:
     if: always()
     timeout-minutes: 10
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
       - name: Check all nodes upgraded
         run: |
           echo "::group::Verifying all nodes upgraded to v${{ inputs.new_version }}"
