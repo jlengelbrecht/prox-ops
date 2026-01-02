@@ -1,0 +1,387 @@
+---
+# Talos Release Bug Check
+#
+# PURPOSE: Detect critical bugs in proposed Talos versions before upgrade
+#
+# WHEN IT RUNS:
+#   - On PRs modifying terraform/variables.tf or talos/talenv.yaml
+#   - Only if PR has talos-update/pets or talos-update/cattle label
+#
+# WHAT IT CHECKS:
+#   1. GitHub Issues: Open critical/high-severity bugs mentioning this version
+#   2. Release Notes: Known issues section in release documentation
+#   3. Subsequent Patches: Newer patch releases indicate rapid bug fixes
+#   4. Release Age: Very new releases may lack community testing
+#
+# BLOCKING CRITERIA:
+#   - BLOCKS if critical GitHub issues found (priority/critical, severity/high)
+#   - BLOCKS if newer patch releases exist (indicates critical bugs fixed)
+#   - WARNS if known issues in release notes (manual review needed)
+#   - WARNS if release < 24 hours old (handled by Renovate minimumReleaseAge)
+#
+# INTEGRATION:
+#   - Acts as required status check for Talos update PRs
+#   - Prevents auto-merge if critical issues detected
+#   - Posts detailed comment with findings and recommendations
+
+name: Talos Release Bug Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled, reopened]
+    paths:
+      - 'terraform/variables.tf'
+      - 'talos/talenv.yaml'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  check-talos-bugs:
+    name: Check for Critical Bugs
+    runs-on: ubuntu-latest
+
+    # Only run if PR has talos-update label
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'talos-update/pets') ||
+      contains(github.event.pull_request.labels.*.name, 'talos-update/cattle')
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 2  # Need HEAD and HEAD^1 for diff
+
+      - name: Extract Talos version from PR changes
+        id: version
+        run: |
+          echo "::group::Extracting Talos version from PR diff"
+
+          # Check terraform/variables.tf for talos_version change
+          if git diff HEAD^1 HEAD -- terraform/variables.tf | grep -q talos_version; then
+            NEW_VERSION=$(git diff HEAD^1 HEAD -- terraform/variables.tf | \
+              grep -E '^\+.*talos_version' | \
+              sed -E 's/.*"v?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
+            SOURCE_FILE="terraform/variables.tf"
+          fi
+
+          # Check talos/talenv.yaml for talosVersion change
+          if git diff HEAD^1 HEAD -- talos/talenv.yaml | grep -q talosVersion; then
+            NEW_VERSION=$(git diff HEAD^1 HEAD -- talos/talenv.yaml | \
+              grep -E '^\+.*talosVersion:' | \
+              sed -E 's/.*v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+            SOURCE_FILE="talos/talenv.yaml"
+          fi
+
+          if [ -z "$NEW_VERSION" ]; then
+            echo "::error::Failed to extract Talos version from PR changes"
+            exit 1
+          fi
+
+          echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "source_file=${SOURCE_FILE}" >> $GITHUB_OUTPUT
+
+          echo "✅ Detected proposed Talos version: v${NEW_VERSION}"
+          echo "📄 Source file: ${SOURCE_FILE}"
+          echo "::endgroup::"
+
+      - name: Query GitHub Issues for critical bugs
+        id: github-issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::group::Checking GitHub Issues for critical bugs"
+          VERSION="v${{ steps.version.outputs.new_version }}"
+
+          # Query for open issues with critical labels mentioning this version
+          ISSUES=$(gh issue list \
+            --repo siderolabs/talos \
+            --state open \
+            --label "priority/critical,kind/bug,severity/high" \
+            --search "$VERSION" \
+            --json number,title,url,labels \
+            --limit 50)
+
+          CRITICAL_COUNT=$(echo "$ISSUES" | jq 'length')
+
+          echo "critical_count=${CRITICAL_COUNT}" >> $GITHUB_OUTPUT
+          echo "critical_issues<<EOF" >> $GITHUB_OUTPUT
+          echo "$ISSUES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          if [ "$CRITICAL_COUNT" -gt 0 ]; then
+            echo "🚨 Found ${CRITICAL_COUNT} critical/high-severity issues"
+            echo "$ISSUES" | jq -r '.[] | "  - #\(.number): \(.title)"'
+          else
+            echo "✅ No critical issues found"
+          fi
+
+          echo "::endgroup::"
+
+      - name: Check release notes for known issues
+        id: release-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::group::Checking release notes for known issues"
+          VERSION="v${{ steps.version.outputs.new_version }}"
+
+          # Fetch release notes
+          RELEASE_NOTES=$(gh api repos/siderolabs/talos/releases/tags/${VERSION} \
+            --jq '.body' 2>/dev/null || echo "")
+
+          if [ -z "$RELEASE_NOTES" ]; then
+            echo "⚠️ Release notes not found for ${VERSION}"
+            echo "has_release_notes=false" >> $GITHUB_OUTPUT
+            echo "has_known_issues=false" >> $GITHUB_OUTPUT
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          echo "has_release_notes=true" >> $GITHUB_OUTPUT
+
+          # Check for "Known Issues" section (case-insensitive)
+          if echo "$RELEASE_NOTES" | grep -qi "known issue"; then
+            echo "has_known_issues=true" >> $GITHUB_OUTPUT
+
+            # Extract known issues section
+            KNOWN_ISSUES=$(echo "$RELEASE_NOTES" | \
+              sed -n '/[Kk]nown [Ii]ssue/,/^##/p' | \
+              head -n -1)  # Remove the next section header
+
+            echo "known_issues<<EOF" >> $GITHUB_OUTPUT
+            echo "$KNOWN_ISSUES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+
+            echo "⚠️ Known issues documented in release notes"
+          else
+            echo "has_known_issues=false" >> $GITHUB_OUTPUT
+            echo "✅ No known issues section found"
+          fi
+
+          echo "::endgroup::"
+
+      - name: Check for subsequent patch releases
+        id: patch-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "::group::Checking for newer patch releases"
+          VERSION="${{ steps.version.outputs.new_version }}"
+          MAJOR_MINOR=$(echo $VERSION | cut -d. -f1-2)
+
+          # Get all releases for this major.minor version
+          ALL_RELEASES=$(gh api repos/siderolabs/talos/releases \
+            --jq '.[].tag_name' | \
+            grep "^v${MAJOR_MINOR}\." | \
+            sed 's/^v//' | \
+            sort -V)
+
+          # Find releases newer than proposed version
+          NEWER_PATCHES=$(echo "$ALL_RELEASES" | \
+            awk -v ver="$VERSION" '$1 > ver')
+
+          if [ -n "$NEWER_PATCHES" ]; then
+            NEWER_COUNT=$(echo "$NEWER_PATCHES" | wc -l)
+            LATEST=$(echo "$NEWER_PATCHES" | tail -1)
+
+            echo "has_newer_patches=true" >> $GITHUB_OUTPUT
+            echo "newer_count=${NEWER_COUNT}" >> $GITHUB_OUTPUT
+            echo "latest_patch=v${LATEST}" >> $GITHUB_OUTPUT
+            echo "newer_patches<<EOF" >> $GITHUB_OUTPUT
+            echo "$NEWER_PATCHES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+
+            echo "🚨 Found ${NEWER_COUNT} newer patch releases"
+            echo "📦 Latest: v${LATEST}"
+            echo "$NEWER_PATCHES" | sed 's/^/  - v/'
+          else
+            echo "has_newer_patches=false" >> $GITHUB_OUTPUT
+            echo "✅ No newer patch releases (this is the latest)"
+          fi
+
+          echo "::endgroup::"
+
+      - name: Evaluate risk level
+        id: evaluate
+        run: |
+          echo "::group::Evaluating risk level"
+
+          CRITICAL_COUNT="${{ steps.github-issues.outputs.critical_count }}"
+          HAS_KNOWN_ISSUES="${{ steps.release-notes.outputs.has_known_issues }}"
+          HAS_NEWER_PATCHES="${{ steps.patch-check.outputs.has_newer_patches }}"
+
+          RISK_LEVEL="low"
+          BLOCKING=false
+          REASONS=()
+
+          # High-risk: Critical GitHub issues
+          if [ "$CRITICAL_COUNT" -gt 0 ]; then
+            RISK_LEVEL="high"
+            BLOCKING=true
+            REASONS+=("${CRITICAL_COUNT} critical/high-severity GitHub issues")
+          fi
+
+          # High-risk: Newer patches indicate rapid bug fixes
+          if [ "$HAS_NEWER_PATCHES" == "true" ]; then
+            RISK_LEVEL="high"
+            BLOCKING=true
+            REASONS+=("Superseded by v${{ steps.patch-check.outputs.latest_patch }}")
+          fi
+
+          # Medium-risk: Known issues documented
+          if [ "$HAS_KNOWN_ISSUES" == "true" ] && [ "$RISK_LEVEL" == "low" ]; then
+            RISK_LEVEL="medium"
+            REASONS+=("Known issues in release notes")
+          fi
+
+          echo "risk_level=${RISK_LEVEL}" >> $GITHUB_OUTPUT
+          echo "blocking=${BLOCKING}" >> $GITHUB_OUTPUT
+
+          # Join reasons with commas
+          IFS=','
+          echo "reasons=${REASONS[*]}" >> $GITHUB_OUTPUT
+
+          case $RISK_LEVEL in
+            high)
+              echo "🚨 Risk Level: HIGH - BLOCKING MERGE"
+              ;;
+            medium)
+              echo "⚠️ Risk Level: MEDIUM - REVIEW RECOMMENDED"
+              ;;
+            low)
+              echo "✅ Risk Level: LOW - SAFE TO MERGE"
+              ;;
+          esac
+
+          for reason in "${REASONS[@]}"; do
+            echo "  - $reason"
+          done
+
+          echo "::endgroup::"
+
+      - name: Post detailed comment with findings
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const riskLevel = '${{ steps.evaluate.outputs.risk_level }}';
+            const blocking = '${{ steps.evaluate.outputs.blocking }}' === 'true';
+            const version = 'v${{ steps.version.outputs.new_version }}';
+            const criticalCount = parseInt('${{ steps.github-issues.outputs.critical_count }}');
+            const hasKnownIssues = '${{ steps.release-notes.outputs.has_known_issues }}' === 'true';
+            const hasNewerPatches = '${{ steps.patch-check.outputs.has_newer_patches }}' === 'true';
+            const newerCount = '${{ steps.patch-check.outputs.newer_count }}';
+            const latestPatch = '${{ steps.patch-check.outputs.latest_patch }}';
+
+            let emoji = '✅';
+            let status = 'SAFE TO MERGE';
+            let color = '🟢';
+
+            if (riskLevel === 'medium') {
+              emoji = '⚠️';
+              status = 'REVIEW RECOMMENDED';
+              color = '🟡';
+            } else if (riskLevel === 'high') {
+              emoji = '🚨';
+              status = 'CRITICAL ISSUES FOUND';
+              color = '🔴';
+            }
+
+            let body = `## ${emoji} Talos Release Bug Check: ${status}\n\n`;
+            body += `| Property | Value |\n`;
+            body += `|----------|-------|\n`;
+            body += `| **Proposed Version** | ${version} |\n`;
+            body += `| **Risk Level** | ${color} **${riskLevel.toUpperCase()}** |\n`;
+            body += `| **Blocking Merge** | ${blocking ? '🚫 YES' : '✅ NO'} |\n`;
+            body += `| **Source File** | \`${{ steps.version.outputs.source_file }}\` |\n\n`;
+
+            body += `---\n\n`;
+
+            // Critical GitHub Issues
+            if (criticalCount > 0) {
+              body += `### 🚨 Critical GitHub Issues (${criticalCount})\n\n`;
+              body += `Found **${criticalCount}** open critical/high-severity issues mentioning this version.\n\n`;
+
+              const issues = JSON.parse(`${{ steps.github-issues.outputs.critical_issues }}`);
+              issues.forEach(issue => {
+                body += `- [#${issue.number}](${issue.url}): ${issue.title}\n`;
+                const labels = issue.labels.map(l => l.name).filter(l =>
+                  l.includes('priority') || l.includes('severity') || l.includes('kind')
+                );
+                if (labels.length > 0) {
+                  body += `  - Labels: ${labels.map(l => `\`${l}\``).join(', ')}\n`;
+                }
+              });
+
+              body += `\n**⚠️ RECOMMENDATION**: Do not upgrade until these issues are resolved.\n\n`;
+            }
+
+            // Newer patch releases
+            if (hasNewerPatches) {
+              body += `### 🚨 Newer Patch Releases Available\n\n`;
+              body += `This version has been **superseded** by ${newerCount} newer patch release(s).\n\n`;
+              body += `**Latest available**: ${latestPatch}\n\n`;
+
+              const patches = `${{ steps.patch-check.outputs.newer_patches }}`.split('\n').filter(p => p);
+              body += `Newer versions:\n`;
+              patches.forEach(patch => {
+                body += `- v${patch}\n`;
+              });
+
+              body += `\n**⚠️ RECOMMENDATION**: Update Renovate PR to use ${latestPatch} instead.\n\n`;
+              body += `This typically indicates critical bugs were found and fixed rapidly after ${version} release.\n\n`;
+            }
+
+            // Known issues in release notes
+            if (hasKnownIssues) {
+              body += `### ⚠️ Known Issues Documented\n\n`;
+              body += `The release notes contain a "Known Issues" section.\n\n`;
+              body += `<details>\n<summary>View Known Issues</summary>\n\n`;
+              body += `${{ steps.release-notes.outputs.known_issues }}\n\n`;
+              body += `</details>\n\n`;
+              body += `**⚠️ RECOMMENDATION**: Review known issues before approving upgrade.\n\n`;
+            }
+
+            // All clear
+            if (riskLevel === 'low') {
+              body += `### ✅ No Critical Issues Detected\n\n`;
+              body += `All checks passed:\n\n`;
+              body += `- ✅ No open critical/high-severity GitHub issues\n`;
+              body += `- ✅ No known issues documented in release notes\n`;
+              body += `- ✅ No newer patch releases available (latest version)\n\n`;
+              body += `**This release appears safe for deployment.**\n\n`;
+            }
+
+            // Footer with workflow info
+            body += `---\n\n`;
+            body += `<sub>🤖 Automated check by [Talos Release Bug Check](.github/workflows/talos-release-bug-check.yaml) workflow</sub>`;
+
+            // Post comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+
+      - name: Fail check if critical issues found
+        if: steps.evaluate.outputs.blocking == 'true'
+        run: |
+          VERSION="v${{ steps.version.outputs.new_version }}"
+          REASONS="${{ steps.evaluate.outputs.reasons }}"
+
+          echo "::error::Critical issues detected in Talos ${VERSION}"
+          echo "::error::Blocking reasons: ${REASONS}"
+          echo ""
+          echo "This check prevents auto-merge and requires manual review."
+          echo "See PR comment for detailed findings and recommendations."
+          echo ""
+          echo "To override this check:"
+          echo "1. Review the issues thoroughly"
+          echo "2. Assess impact on your cluster configuration"
+          echo "3. Consider waiting for patch releases"
+          echo "4. If proceeding anyway, acknowledge risks in PR review"
+
+          exit 1
