@@ -819,10 +819,15 @@ jobs:
         run: |
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
 
+          # Controllers and workers require factory image with qemu-guest-agent
+          INSTALLER_IMAGE="factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515:v${{ inputs.new_version }}"
+          echo "Control plane node - using base factory image with qemu-guest-agent"
+
+          echo "Installer image: $INSTALLER_IMAGE"
           echo "Starting in-place upgrade..."
           talosctl upgrade \
             --nodes ${{ matrix.node.ip }} \
-            --image ghcr.io/siderolabs/installer:v${{ inputs.new_version }} \
+            --image "$INSTALLER_IMAGE" \
             --preserve \
             --wait \
             --timeout 10m
@@ -886,7 +891,8 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      max-parallel: ${{ inputs.worker_rollout_mode == 'safe' && 1 || inputs.worker_rollout_mode == 'standard' && 4 || inputs.worker_rollout_mode == 'aggressive' && 12 || 4 }}
+      # Simplified parallelism logic: aggressive=12, safe=1, default=4
+      max-parallel: ${{ inputs.worker_rollout_mode == 'aggressive' && 12 || inputs.worker_rollout_mode == 'safe' && 1 || 4 }}
       matrix:
         node: ${{ inputs.test_workers == true && fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false}]') || fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false},{"name":"k8s-work-3","ip":"10.20.67.6","is_gpu":false},{"name":"k8s-work-4","ip":"10.20.67.7","is_gpu":true,"gpu_model":"rtx-a2000"},{"name":"k8s-work-5","ip":"10.20.67.8","is_gpu":false},{"name":"k8s-work-6","ip":"10.20.67.9","is_gpu":false},{"name":"k8s-work-7","ip":"10.20.67.10","is_gpu":false},{"name":"k8s-work-8","ip":"10.20.67.11","is_gpu":false},{"name":"k8s-work-9","ip":"10.20.67.12","is_gpu":false},{"name":"k8s-work-10","ip":"10.20.67.13","is_gpu":true,"gpu_model":"rtx-a5000"},{"name":"k8s-work-11","ip":"10.20.67.14","is_gpu":false},{"name":"k8s-work-12","ip":"10.20.67.15","is_gpu":false}]') }}
     steps:
@@ -923,10 +929,22 @@ jobs:
         run: |
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
 
+          # Select correct factory schematic based on node type
+          if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
+            # GPU schematic: qemu-guest-agent + NVIDIA extensions
+            INSTALLER_IMAGE="factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e:v${{ inputs.new_version }}"
+            echo "GPU node detected - using GPU factory image (qemu-guest-agent + NVIDIA)"
+          else
+            # Base schematic: qemu-guest-agent only
+            INSTALLER_IMAGE="factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515:v${{ inputs.new_version }}"
+            echo "Non-GPU node - using base factory image (qemu-guest-agent)"
+          fi
+
+          echo "Installer image: $INSTALLER_IMAGE"
           echo "Starting in-place upgrade..."
           talosctl upgrade \
             --nodes ${{ matrix.node.ip }} \
-            --image ghcr.io/siderolabs/installer:v${{ inputs.new_version }} \
+            --image "$INSTALLER_IMAGE" \
             --preserve \
             --wait \
             --timeout 10m
