@@ -14,7 +14,7 @@
 #   4. Release Age: Very new releases may lack community testing
 #
 # BLOCKING CRITERIA:
-#   - BLOCKS if critical GitHub issues found (priority/critical, severity/high)
+#   - BLOCKS if critical GitHub issues found (priority/critical OR severity/high)
 #   - BLOCKS if newer patch releases exist (indicates critical bugs fixed)
 #   - WARNS if known issues in release notes (manual review needed)
 #   - WARNS if release < 24 hours old (handled by Renovate minimumReleaseAge)
@@ -36,7 +36,6 @@ on:
 permissions:
   contents: read
   pull-requests: write
-  issues: write
 
 jobs:
   check-talos-bugs:
@@ -50,7 +49,7 @@ jobs:
 
     steps:
       - name: Checkout PR
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 2  # Need HEAD and HEAD^1 for diff
 
@@ -59,21 +58,32 @@ jobs:
         run: |
           echo "::group::Extracting Talos version from PR diff"
 
+          TF_VERSION=""
+          TALENV_VERSION=""
+
           # Check terraform/variables.tf for talos_version change
           if git diff HEAD^1 HEAD -- terraform/variables.tf | grep -q talos_version; then
-            NEW_VERSION=$(git diff HEAD^1 HEAD -- terraform/variables.tf | \
+            TF_VERSION=$(git diff HEAD^1 HEAD -- terraform/variables.tf | \
               grep -E '^\+.*talos_version' | \
               sed -E 's/.*"v?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
-            SOURCE_FILE="terraform/variables.tf"
           fi
 
           # Check talos/talenv.yaml for talosVersion change
           if git diff HEAD^1 HEAD -- talos/talenv.yaml | grep -q talosVersion; then
-            NEW_VERSION=$(git diff HEAD^1 HEAD -- talos/talenv.yaml | \
+            TALENV_VERSION=$(git diff HEAD^1 HEAD -- talos/talenv.yaml | \
               grep -E '^\+.*talosVersion:' | \
               sed -E 's/.*v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
-            SOURCE_FILE="talos/talenv.yaml"
           fi
+
+          # Validate consistency if both files changed
+          if [ -n "$TF_VERSION" ] && [ -n "$TALENV_VERSION" ] && [ "$TF_VERSION" != "$TALENV_VERSION" ]; then
+            echo "::error::Version mismatch: terraform ($TF_VERSION) vs talenv ($TALENV_VERSION)"
+            exit 1
+          fi
+
+          NEW_VERSION="${TF_VERSION:-$TALENV_VERSION}"
+          SOURCE_FILE="${TF_VERSION:+terraform/variables.tf}"
+          SOURCE_FILE="${SOURCE_FILE:-talos/talenv.yaml}"
 
           if [ -z "$NEW_VERSION" ]; then
             echo "::error::Failed to extract Talos version from PR changes"
@@ -95,14 +105,27 @@ jobs:
           echo "::group::Checking GitHub Issues for critical bugs"
           VERSION="v${{ steps.version.outputs.new_version }}"
 
-          # Query for open issues with critical labels mentioning this version
-          ISSUES=$(gh issue list \
+          # Query for critical priority issues (OR logic via separate queries)
+          CRITICAL_ISSUES=$(gh issue list \
             --repo siderolabs/talos \
             --state open \
-            --label "priority/critical,kind/bug,severity/high" \
-            --search "$VERSION" \
+            --label "priority/critical" \
+            --search "$VERSION in:title,body" \
             --json number,title,url,labels \
-            --limit 50)
+            --limit 25) || CRITICAL_ISSUES="[]"
+
+          # Query for high severity issues
+          HIGH_SEV_ISSUES=$(gh issue list \
+            --repo siderolabs/talos \
+            --state open \
+            --label "severity/high" \
+            --search "$VERSION in:title,body" \
+            --json number,title,url,labels \
+            --limit 25) || HIGH_SEV_ISSUES="[]"
+
+          # Merge and deduplicate by issue number
+          ISSUES=$(echo "$CRITICAL_ISSUES $HIGH_SEV_ISSUES" | \
+            jq -s 'add | unique_by(.number)')
 
           CRITICAL_COUNT=$(echo "$ISSUES" | jq 'length')
 
@@ -179,9 +202,11 @@ jobs:
             sed 's/^v//' | \
             sort -V)
 
-          # Find releases newer than proposed version
+          # Find releases newer than proposed version using semver comparison
+          # Create a sorted list with VERSION included, then extract everything after VERSION
           NEWER_PATCHES=$(echo "$ALL_RELEASES" | \
-            awk -v ver="$VERSION" '$1 > ver')
+            (echo "$VERSION"; cat) | sort -V | uniq | \
+            sed -n "/^${VERSION}$/,\$p" | tail -n +2)
 
           if [ -n "$NEWER_PATCHES" ]; then
             NEWER_COUNT=$(echo "$NEWER_PATCHES" | wc -l)
@@ -262,8 +287,12 @@ jobs:
 
           echo "::endgroup::"
 
-      - name: Post detailed comment with findings
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+      - name: Post or update detailed comment with findings
+        uses: actions/github-script@v7
+        env:
+          CRITICAL_ISSUES: ${{ steps.github-issues.outputs.critical_issues }}
+          KNOWN_ISSUES: ${{ steps.release-notes.outputs.known_issues }}
+          NEWER_PATCHES: ${{ steps.patch-check.outputs.newer_patches }}
         with:
           script: |
             const riskLevel = '${{ steps.evaluate.outputs.risk_level }}';
@@ -289,7 +318,9 @@ jobs:
               color = '🔴';
             }
 
-            let body = `## ${emoji} Talos Release Bug Check: ${status}\n\n`;
+            const marker = '<!-- talos-release-bug-check -->';
+            let body = marker + '\n';
+            body += `## ${emoji} Talos Release Bug Check: ${status}\n\n`;
             body += `| Property | Value |\n`;
             body += `|----------|-------|\n`;
             body += `| **Proposed Version** | ${version} |\n`;
@@ -304,7 +335,8 @@ jobs:
               body += `### 🚨 Critical GitHub Issues (${criticalCount})\n\n`;
               body += `Found **${criticalCount}** open critical/high-severity issues mentioning this version.\n\n`;
 
-              const issues = JSON.parse(`${{ steps.github-issues.outputs.critical_issues }}`);
+              const issuesRaw = process.env.CRITICAL_ISSUES || '[]';
+              const issues = JSON.parse(issuesRaw);
               issues.forEach(issue => {
                 body += `- [#${issue.number}](${issue.url}): ${issue.title}\n`;
                 const labels = issue.labels.map(l => l.name).filter(l =>
@@ -324,7 +356,8 @@ jobs:
               body += `This version has been **superseded** by ${newerCount} newer patch release(s).\n\n`;
               body += `**Latest available**: ${latestPatch}\n\n`;
 
-              const patches = `${{ steps.patch-check.outputs.newer_patches }}`.split('\n').filter(p => p);
+              const patchesRaw = process.env.NEWER_PATCHES || '';
+              const patches = patchesRaw.split('\n').filter(p => p);
               body += `Newer versions:\n`;
               patches.forEach(patch => {
                 body += `- v${patch}\n`;
@@ -339,7 +372,8 @@ jobs:
               body += `### ⚠️ Known Issues Documented\n\n`;
               body += `The release notes contain a "Known Issues" section.\n\n`;
               body += `<details>\n<summary>View Known Issues</summary>\n\n`;
-              body += `${{ steps.release-notes.outputs.known_issues }}\n\n`;
+              const knownIssuesRaw = process.env.KNOWN_ISSUES || '';
+              body += knownIssuesRaw + `\n\n`;
               body += `</details>\n\n`;
               body += `**⚠️ RECOMMENDATION**: Review known issues before approving upgrade.\n\n`;
             }
@@ -358,13 +392,34 @@ jobs:
             body += `---\n\n`;
             body += `<sub>🤖 Automated check by [Talos Release Bug Check](.github/workflows/talos-release-bug-check.yaml) workflow</sub>`;
 
-            // Post comment
-            await github.rest.issues.createComment({
+            // Find existing comment by marker
+            const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: body
             });
+
+            const existing = comments.data.find(c => c.body.includes(marker));
+
+            if (existing) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: body
+              });
+              console.log('Updated existing comment');
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+              console.log('Created new comment');
+            }
 
       - name: Fail check if critical issues found
         if: steps.evaluate.outputs.blocking == 'true'
