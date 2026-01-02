@@ -923,10 +923,20 @@ jobs:
         run: |
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
 
+          # GPU nodes require factory image with NVIDIA extensions
+          if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
+            INSTALLER_IMAGE="factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e:v${{ inputs.new_version }}"
+            echo "GPU node detected - using factory image with NVIDIA extensions"
+          else
+            INSTALLER_IMAGE="ghcr.io/siderolabs/installer:v${{ inputs.new_version }}"
+            echo "Non-GPU node - using generic installer"
+          fi
+
+          echo "Installer image: $INSTALLER_IMAGE"
           echo "Starting in-place upgrade..."
           talosctl upgrade \
             --nodes ${{ matrix.node.ip }} \
-            --image ghcr.io/siderolabs/installer:v${{ inputs.new_version }} \
+            --image "$INSTALLER_IMAGE" \
             --preserve \
             --wait \
             --timeout 10m
