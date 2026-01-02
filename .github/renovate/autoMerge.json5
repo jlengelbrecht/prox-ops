@@ -150,12 +150,21 @@
       ]
     },
     {
-      "description": "NEVER automerge Talos updates (cattle/pets strategy)",
-      "matchDatasources": ["docker", "github-releases"],
+      "description": "Auto-merge Talos PETS upgrades (patch versions, 5 day wait)",
+      "matchLabels": ["talos-update/pets"],
+      "automerge": true,
+      "automergeType": "pr",
+      "minimumReleaseAge": "5 days",
+      "prBodyNotes": [
+        "🐾 **Talos PETS**: Patch version will be auto-merged after 5-day stabilization. In-place upgrade via talosctl."
+      ]
+    },
+    {
+      "description": "Require manual review for Talos CATTLE upgrades (major/minor)",
+      "matchLabels": ["talos-update/cattle"],
       "automerge": false,
-      "matchPackagePatterns": [
-        "siderolabs/talos",
-        "siderolabs/installer"
+      "prBodyNotes": [
+        "🐄 **Talos CATTLE**: Major/minor version requires manual approval. Full VM rebuild via Terraform."
       ]
     },
 
