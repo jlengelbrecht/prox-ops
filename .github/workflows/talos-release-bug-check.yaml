@@ -101,10 +101,14 @@ jobs:
           TALENV_VERSION=""
 
           # Check terraform/variables.tf for talos_version change
-          if git diff HEAD^1 HEAD -- terraform/variables.tf | grep -q talos_version; then
-            TF_VERSION=$(git diff HEAD^1 HEAD -- terraform/variables.tf | \
-              grep -E '^\+.*talos_version' | \
-              sed -E 's/.*"v?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')
+          # Handles both terraform.tfvars format (talos_version = "1.12.0")
+          # and variables.tf format (default = "1.12.0" within variable block)
+          if git diff HEAD^1 HEAD -- terraform/variables.tf terraform/terraform.tfvars | grep -q talos_version; then
+            TF_VERSION=$(git diff HEAD^1 HEAD -- terraform/variables.tf terraform/terraform.tfvars | \
+              grep -E '^\+' | \
+              grep -E '(talos_version|default)\s*=' | \
+              sed -E 's/.*[=:]\s*"v?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | \
+              head -1)
           fi
 
           # Check talos/talenv.yaml for talosVersion change
