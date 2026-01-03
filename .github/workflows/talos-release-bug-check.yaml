@@ -98,17 +98,43 @@ jobs:
           echo "::group::Extracting Talos version from PR diff"
 
           TF_VERSION=""
+          TF_SOURCE=""
           TALENV_VERSION=""
 
-          # Check terraform/variables.tf for talos_version change
-          # Handles both terraform.tfvars format (talos_version = "1.12.0")
-          # and variables.tf format (default = "1.12.0" within variable block)
-          if git diff HEAD^1 HEAD -- terraform/variables.tf terraform/terraform.tfvars | grep -q talos_version; then
-            TF_VERSION=$(git diff HEAD^1 HEAD -- terraform/variables.tf terraform/terraform.tfvars | \
+          # Check terraform files for talos_version change
+          # Strategy:
+          # 1. Try terraform.tfvars first (direct assignment: talos_version = "1.12.0")
+          # 2. Try variables.tf for direct assignment (same format)
+          # 3. Fall back to context-aware search in variables.tf (variable block with default)
+
+          # Check terraform.tfvars for direct assignment
+          if git diff HEAD^1 HEAD -- terraform/terraform.tfvars | grep -q talos_version; then
+            TF_VERSION=$(git diff HEAD^1 HEAD -- terraform/terraform.tfvars | \
               grep -E '^\+' | \
-              grep -E '(talos_version|default)\s*=' | \
+              grep -E 'talos_version\s*=' | \
               sed -E 's/.*[=:]\s*"v?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | \
               head -1)
+            [ -n "$TF_VERSION" ] && TF_SOURCE="terraform/terraform.tfvars"
+          fi
+
+          # Check variables.tf for direct assignment (if not found yet)
+          if [ -z "$TF_VERSION" ] && git diff HEAD^1 HEAD -- terraform/variables.tf | grep -q talos_version; then
+            TF_VERSION=$(git diff HEAD^1 HEAD -- terraform/variables.tf | \
+              grep -E '^\+' | \
+              grep -E 'talos_version\s*=' | \
+              sed -E 's/.*[=:]\s*"v?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | \
+              head -1)
+            [ -n "$TF_VERSION" ] && TF_SOURCE="terraform/variables.tf"
+          fi
+
+          # Fall back to context-aware search in variables.tf (variable block)
+          if [ -z "$TF_VERSION" ] && git diff HEAD^1 HEAD -- terraform/variables.tf | grep -q 'variable.*"talos_version"'; then
+            TF_VERSION=$(git diff HEAD^1 HEAD -- terraform/variables.tf | \
+              grep -A 5 '^+.*variable.*"talos_version"' | \
+              grep -E '^\+.*default\s*=' | \
+              sed -E 's/.*[=:]\s*"v?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | \
+              head -1)
+            [ -n "$TF_VERSION" ] && TF_SOURCE="terraform/variables.tf"
           fi
 
           # Check talos/talenv.yaml for talosVersion change
@@ -125,7 +151,7 @@ jobs:
           fi
 
           NEW_VERSION="${TF_VERSION:-$TALENV_VERSION}"
-          SOURCE_FILE="${TF_VERSION:+terraform/variables.tf}"
+          SOURCE_FILE="${TF_SOURCE}"
           SOURCE_FILE="${SOURCE_FILE:-talos/talenv.yaml}"
 
           if [ -z "$NEW_VERSION" ]; then
