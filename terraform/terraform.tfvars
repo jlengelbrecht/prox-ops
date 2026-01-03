@@ -44,7 +44,7 @@ proxmox_ssh_user = "root"
 # -----------------------------------------------------------------------------
 # Talos Linux Configuration
 # -----------------------------------------------------------------------------
-talos_version = "1.11.6"
+talos_version = "1.12.0"
 
 # Talos Factory Schematics (SECURE BOOT ENABLED)
 # Generated at: https://factory.talos.dev/
