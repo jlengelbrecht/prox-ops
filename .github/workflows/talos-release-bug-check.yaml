@@ -397,9 +397,11 @@ jobs:
           }' --jq '.data.search.nodes' 2>/dev/null || echo "[]")
 
           # Filter for Q&A or problem discussions
+          # AND require version in title to avoid false positives
           PROBLEM_DISCUSSIONS=$(echo "$DISCUSSIONS" | jq '
             map(select(
-              .category.name | test("Q&A|Help|Support|General"; "i")
+              (.category.name | test("Q&A|Help|Support|General"; "i")) and
+              (.title | test("'${VERSION}'|'${VERSION#v}'"; "i"))
             ))
           ')
 
@@ -561,6 +563,14 @@ jobs:
       # ===========================================================================
       # Post Detailed PR Comment
       # ===========================================================================
+      - name: Generate GitHub App Token for homelab-0 bot
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
+        id: generate-token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Post or update detailed comment with findings
         if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         uses: actions/github-script@v7
@@ -570,6 +580,7 @@ jobs:
           DISCUSSIONS: ${{ steps.discussions.outputs.discussions }}
           NEWER_PATCHES: ${{ steps.patch-velocity.outputs.newer_patches }}
         with:
+          github-token: ${{ steps.generate-token.outputs.token }}
           script: |
             const riskLevel = '${{ steps.evaluate.outputs.risk_level }}';
             const blocking = '${{ steps.evaluate.outputs.blocking }}' === 'true';
