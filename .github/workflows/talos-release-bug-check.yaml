@@ -9,8 +9,9 @@
 #   Detection strategy uses 5 layers with combined 90%+ confidence
 #
 # WHEN IT RUNS:
-#   - On PRs modifying terraform/variables.tf or talos/talenv.yaml
-#   - Only if PR has talos-update/pets or talos-update/cattle label
+#   - On all PRs (required status check)
+#   - Exits immediately with success if not a Talos update PR
+#   - Full detection runs only for PRs with talos-update/pets or talos-update/cattle label
 #
 # DETECTION LAYERS:
 #   1. Security Advisories (95% confidence) - GHSA API check
@@ -37,9 +38,6 @@ name: Talos Release Bug Check
 on:
   pull_request:
     types: [opened, synchronize, labeled, reopened]
-    paths:
-      - 'terraform/variables.tf'
-      - 'talos/talenv.yaml'
 
 permissions:
   contents: read
@@ -50,19 +48,52 @@ jobs:
     name: Multi-Layer Bug Detection
     runs-on: ubuntu-latest
 
-    # Only run if PR has talos-update label
-    if: |
-      contains(github.event.pull_request.labels.*.name, 'talos-update/pets') ||
-      contains(github.event.pull_request.labels.*.name, 'talos-update/cattle')
-
     steps:
       - name: Checkout PR
         uses: actions/checkout@v4
         with:
           fetch-depth: 2  # Need HEAD and HEAD^1 for diff
 
+      - name: Check if this is a Talos update PR
+        id: is-talos-pr
+        run: |
+          echo "::group::Checking if this is a Talos update PR"
+
+          # Check if PR has talos-update label
+          LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
+          HAS_TALOS_LABEL=$(echo "$LABELS" | jq 'any(. == "talos-update/pets" or . == "talos-update/cattle")')
+
+          # Check if Talos files were modified
+          TALOS_FILES_CHANGED=false
+          if git diff HEAD^1 HEAD --name-only | grep -qE '^(terraform/variables\.tf|talos/talenv\.yaml)$'; then
+            TALOS_FILES_CHANGED=true
+          fi
+
+          # This is a Talos PR if it has the label OR modifies Talos files
+          IS_TALOS_PR=false
+          if [ "$HAS_TALOS_LABEL" == "true" ] || [ "$TALOS_FILES_CHANGED" == "true" ]; then
+            IS_TALOS_PR=true
+          fi
+
+          echo "has_talos_label=${HAS_TALOS_LABEL}" >> $GITHUB_OUTPUT
+          echo "talos_files_changed=${TALOS_FILES_CHANGED}" >> $GITHUB_OUTPUT
+          echo "is_talos_pr=${IS_TALOS_PR}" >> $GITHUB_OUTPUT
+
+          if [ "$IS_TALOS_PR" == "true" ]; then
+            echo "✅ This is a Talos update PR - running full bug detection"
+            echo "   Label: ${HAS_TALOS_LABEL}"
+            echo "   Files changed: ${TALOS_FILES_CHANGED}"
+          else
+            echo "⏩ Not a Talos update PR - skipping bug detection (will pass)"
+            echo "   Label: ${HAS_TALOS_LABEL}"
+            echo "   Files changed: ${TALOS_FILES_CHANGED}"
+          fi
+
+          echo "::endgroup::"
+
       - name: Extract Talos version from PR changes
         id: version
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         run: |
           echo "::group::Extracting Talos version from PR diff"
 
@@ -111,6 +142,7 @@ jobs:
       # ===========================================================================
       - name: Layer 1 - Check Security Advisories
         id: security-advisories
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -164,6 +196,7 @@ jobs:
       # ===========================================================================
       - name: Layer 2 - Patch Release Velocity Analysis
         id: patch-velocity
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -239,6 +272,7 @@ jobs:
       # ===========================================================================
       - name: Layer 3 - GitHub Issues with Bug Keywords
         id: github-issues
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -309,6 +343,7 @@ jobs:
       # ===========================================================================
       - name: Layer 4 - GitHub Discussions Search
         id: discussions
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -360,6 +395,7 @@ jobs:
       # ===========================================================================
       - name: Layer 5 - Release Age Check
         id: release-age
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -404,6 +440,7 @@ jobs:
       # ===========================================================================
       - name: Evaluate Combined Risk Level
         id: evaluate
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         run: |
           echo "::group::Evaluating combined risk level"
 
@@ -495,6 +532,7 @@ jobs:
       # Post Detailed PR Comment
       # ===========================================================================
       - name: Post or update detailed comment with findings
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         uses: actions/github-script@v7
         env:
           ADVISORIES: ${{ steps.security-advisories.outputs.advisories }}
@@ -733,7 +771,7 @@ jobs:
             }
 
       - name: Fail check if critical issues found
-        if: steps.evaluate.outputs.blocking == 'true'
+        if: steps.is-talos-pr.outputs.is_talos_pr == 'true' && steps.evaluate.outputs.blocking == 'true'
         run: |
           VERSION="v${{ steps.version.outputs.new_version }}"
           RISK_LEVEL="${{ steps.evaluate.outputs.risk_level }}"
