@@ -170,37 +170,47 @@ jobs:
 
       - name: Clear stale Terraform locks
         working-directory: ./terraform
+        timeout-minutes: 2
         continue-on-error: true
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "Checking for stale Terraform state locks..."
+          echo "Checking for Terraform state lock in S3..."
 
-          # Try a terraform plan with short lock timeout to detect locks
-          # Capture both stdout and stderr to parse lock ID
-          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
-            echo "Lock detected. Output:"
-            echo "$LOCK_OUTPUT"
+          # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
+          # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
 
-            # Extract lock ID from error message (format: "ID: <uuid>")
-            # Use \K assertion for reliable regex across grep versions
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
+          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "Lock file detected in S3"
+            echo ""
 
-            if [ -n "$LOCK_ID" ]; then
+            # Download lock info and parse JSON
+            LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
+
+            if [ -n "$LOCK_INFO" ]; then
+              echo "Lock details:"
+              echo "$LOCK_INFO" | jq '.'
               echo ""
-              echo "Found stale lock ID: $LOCK_ID"
-              echo "Attempting to force-unlock..."
 
-              if terraform force-unlock -force "$LOCK_ID"; then
-                echo "✓ Successfully cleared stale lock"
+              # Extract lock ID from JSON
+              LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty' 2>/dev/null)
+
+              if [ -n "$LOCK_ID" ]; then
+                echo "Found stale lock ID: $LOCK_ID"
+                echo "Attempting to force-unlock..."
+
+                if terraform force-unlock -force "$LOCK_ID"; then
+                  echo "✓ Successfully cleared stale lock"
+                else
+                  echo "✗ Failed to unlock (may require manual intervention)"
+                  echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+                fi
               else
-                echo "✗ Failed to unlock (may require manual intervention)"
-                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+                echo "Could not extract lock ID from lock file"
+                echo "Lock may need to be cleared manually"
               fi
-            else
-              echo "Could not extract lock ID from error message"
-              echo "Lock may need to be cleared manually"
             fi
           else
             echo "✓ No lock detected - state is accessible"
@@ -653,37 +663,47 @@ jobs:
 
       - name: Clear stale Terraform locks
         working-directory: ./terraform
+        timeout-minutes: 2
         continue-on-error: true
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "Checking for stale Terraform state locks..."
+          echo "Checking for Terraform state lock in S3..."
 
-          # Try a terraform plan with short lock timeout to detect locks
-          # Capture both stdout and stderr to parse lock ID
-          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
-            echo "Lock detected. Output:"
-            echo "$LOCK_OUTPUT"
+          # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
+          # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
 
-            # Extract lock ID from error message (format: "ID: <uuid>")
-            # Use \K assertion for reliable regex across grep versions
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
+          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "Lock file detected in S3"
+            echo ""
 
-            if [ -n "$LOCK_ID" ]; then
+            # Download lock info and parse JSON
+            LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
+
+            if [ -n "$LOCK_INFO" ]; then
+              echo "Lock details:"
+              echo "$LOCK_INFO" | jq '.'
               echo ""
-              echo "Found stale lock ID: $LOCK_ID"
-              echo "Attempting to force-unlock..."
 
-              if terraform force-unlock -force "$LOCK_ID"; then
-                echo "✓ Successfully cleared stale lock"
+              # Extract lock ID from JSON
+              LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty' 2>/dev/null)
+
+              if [ -n "$LOCK_ID" ]; then
+                echo "Found stale lock ID: $LOCK_ID"
+                echo "Attempting to force-unlock..."
+
+                if terraform force-unlock -force "$LOCK_ID"; then
+                  echo "✓ Successfully cleared stale lock"
+                else
+                  echo "✗ Failed to unlock (may require manual intervention)"
+                  echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+                fi
               else
-                echo "✗ Failed to unlock (may require manual intervention)"
-                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+                echo "Could not extract lock ID from lock file"
+                echo "Lock may need to be cleared manually"
               fi
-            else
-              echo "Could not extract lock ID from error message"
-              echo "Lock may need to be cleared manually"
             fi
           else
             echo "✓ No lock detected - state is accessible"
@@ -1698,37 +1718,47 @@ jobs:
 
       - name: Clear stale Terraform locks
         working-directory: ./terraform
+        timeout-minutes: 2
         continue-on-error: true
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
-          echo "Checking for stale Terraform state locks..."
+          echo "Checking for Terraform state lock in S3..."
 
-          # Try a terraform plan with short lock timeout to detect locks
-          # Capture both stdout and stderr to parse lock ID
-          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
-            echo "Lock detected. Output:"
-            echo "$LOCK_OUTPUT"
+          # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
+          # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
 
-            # Extract lock ID from error message (format: "ID: <uuid>")
-            # Use \K assertion for reliable regex across grep versions
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
+          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "Lock file detected in S3"
+            echo ""
 
-            if [ -n "$LOCK_ID" ]; then
+            # Download lock info and parse JSON
+            LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
+
+            if [ -n "$LOCK_INFO" ]; then
+              echo "Lock details:"
+              echo "$LOCK_INFO" | jq '.'
               echo ""
-              echo "Found stale lock ID: $LOCK_ID"
-              echo "Attempting to force-unlock..."
 
-              if terraform force-unlock -force "$LOCK_ID"; then
-                echo "✓ Successfully cleared stale lock"
+              # Extract lock ID from JSON
+              LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty' 2>/dev/null)
+
+              if [ -n "$LOCK_ID" ]; then
+                echo "Found stale lock ID: $LOCK_ID"
+                echo "Attempting to force-unlock..."
+
+                if terraform force-unlock -force "$LOCK_ID"; then
+                  echo "✓ Successfully cleared stale lock"
+                else
+                  echo "✗ Failed to unlock (may require manual intervention)"
+                  echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+                fi
               else
-                echo "✗ Failed to unlock (may require manual intervention)"
-                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
+                echo "Could not extract lock ID from lock file"
+                echo "Lock may need to be cleared manually"
               fi
-            else
-              echo "Could not extract lock ID from error message"
-              echo "Lock may need to be cleared manually"
             fi
           else
             echo "✓ No lock detected - state is accessible"
