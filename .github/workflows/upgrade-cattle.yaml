@@ -612,6 +612,12 @@ jobs:
       always() &&
       (inputs.test_controllers == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)) &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped')
+    # CRITICAL: Enforce sequential controller upgrades (Terraform state lock protection)
+    # max-parallel alone doesn't work with multiple self-hosted runners
+    # This concurrency group ensures only ONE controller upgrades at a time
+    concurrency:
+      group: cattle-upgrade-controllers-${{ github.run_id }}
+      cancel-in-progress: false
     strategy:
       max-parallel: 1
       fail-fast: true
