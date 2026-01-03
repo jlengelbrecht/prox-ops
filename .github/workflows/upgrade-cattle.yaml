@@ -170,54 +170,172 @@ jobs:
 
       - name: Clear stale Terraform locks
         working-directory: ./terraform
-        timeout-minutes: 2
-        continue-on-error: true
+        timeout-minutes: 3
+        # CRITICAL: No continue-on-error - lock clearing MUST succeed or workflow fails
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
           echo "Checking for Terraform state lock in S3..."
+          echo ""
 
           # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
           # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
           LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
 
-          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
-            echo "Lock file detected in S3"
-            echo ""
-
-            # Download lock info and parse JSON
-            LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
-
-            if [ -n "$LOCK_INFO" ]; then
-              echo "Lock details:"
-              echo "$LOCK_INFO" | jq '.'
-              echo ""
-
-              # Extract lock ID from JSON
-              LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty' 2>/dev/null)
-
-              if [ -n "$LOCK_ID" ]; then
-                echo "Found stale lock ID: $LOCK_ID"
-                echo "Attempting to force-unlock..."
-
-                if terraform force-unlock -force "$LOCK_ID"; then
-                  echo "✓ Successfully cleared stale lock"
-                else
-                  echo "✗ Failed to unlock (may require manual intervention)"
-                  echo "  Manual command: terraform force-unlock -force $LOCK_ID"
-                fi
-              else
-                echo "Could not extract lock ID from lock file"
-                echo "Lock may need to be cleared manually"
-              fi
-            fi
-          else
+          if ! aws s3 ls "$LOCK_FILE" 2>/dev/null; then
             echo "✓ No lock detected - state is accessible"
+            exit 0
           fi
 
-          # Ensure clean exit
-          exit 0
+          echo "⚠️  Lock file detected in S3"
+          echo ""
+
+          # Download lock info and parse JSON
+          LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
+
+          if [ -z "$LOCK_INFO" ]; then
+            echo "::error::Could not download lock file contents"
+            exit 1
+          fi
+
+          echo "Lock details:"
+          echo "$LOCK_INFO" | jq '.'
+          echo ""
+
+          # Extract lock metadata
+          LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty')
+          LOCK_CREATED=$(echo "$LOCK_INFO" | jq -r '.Created // empty')
+          LOCK_WHO=$(echo "$LOCK_INFO" | jq -r '.Who // "unknown"')
+          LOCK_OPERATION=$(echo "$LOCK_INFO" | jq -r '.Operation // "unknown"')
+
+          if [ -z "$LOCK_ID" ]; then
+            echo "::error::Could not extract lock ID from lock file"
+            echo "::error::Lock file may be corrupted - attempting direct S3 deletion"
+            aws s3 rm "$LOCK_FILE" --only-show-errors
+            sleep 2
+            if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+              echo "::error::Failed to remove corrupted lock file"
+              exit 1
+            fi
+            echo "✓ Corrupted lock file removed"
+            exit 0
+          fi
+
+          # Calculate lock age
+          CURRENT_TIME=$(date -u +%s)
+          LOCK_TIME=$(date -u -d "$LOCK_CREATED" +%s 2>/dev/null || echo "0")
+          LOCK_AGE_MINUTES=$(( (CURRENT_TIME - LOCK_TIME) / 60 ))
+
+          echo "Lock analysis:"
+          echo "  ID: $LOCK_ID"
+          echo "  Created: $LOCK_CREATED"
+          echo "  Age: $LOCK_AGE_MINUTES minutes"
+          echo "  Owner: $LOCK_WHO"
+          echo "  Operation: $LOCK_OPERATION"
+          echo ""
+
+          # SAFETY: Only clear locks > 5 minutes old
+          MIN_AGE=5
+          if [ "$LOCK_AGE_MINUTES" -lt "$MIN_AGE" ]; then
+            echo "::error::=========================================="
+            echo "::error::LOCK TOO RECENT - POSSIBLE ACTIVE OPERATION"
+            echo "::error::=========================================="
+            echo "::error::"
+            echo "::error::Lock is only $LOCK_AGE_MINUTES minutes old (threshold: $MIN_AGE minutes)"
+            echo "::error::Another operation may be legitimately in progress"
+            echo "::error::"
+            echo "::error::Check for concurrent workflows:"
+            echo "::error::  https://github.com/${{ github.repository }}/actions"
+            echo "::error::"
+            echo "::error::If you're certain the lock is stale, manually remove it:"
+            echo "::error::  aws s3 rm s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+            echo "::error::=========================================="
+            exit 1
+          fi
+
+          echo "Lock is $LOCK_AGE_MINUTES minutes old - safe to clear"
+          echo ""
+
+          # LAYER 1: Try terraform force-unlock
+          echo "Attempting terraform force-unlock..."
+          if terraform force-unlock -force "$LOCK_ID" 2>&1; then
+            echo "✓ terraform force-unlock command succeeded"
+          else
+            echo "⚠️  terraform force-unlock command failed (may be expected)"
+          fi
+
+          # LAYER 2: Verify lock is actually gone from S3
+          echo ""
+          echo "Verifying lock removal from S3..."
+          sleep 2  # S3 eventual consistency
+
+          if ! aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "✓ Lock successfully removed"
+            exit 0
+          fi
+
+          # LAYER 3: terraform force-unlock didn't remove S3 file - do it manually
+          echo "⚠️  terraform force-unlock succeeded but S3 lock file still exists!"
+          echo "This is a known issue with S3 backend - removing file directly..."
+          echo ""
+
+          if aws s3 rm "$LOCK_FILE" --only-show-errors; then
+            echo "✓ S3 lock file removed via direct deletion"
+          else
+            echo "::error::Failed to remove S3 lock file"
+            exit 1
+          fi
+
+          # LAYER 4: Final verification
+          sleep 2  # S3 eventual consistency
+          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "::error::=========================================="
+            echo "::error::LOCK REMOVAL FAILED"
+            echo "::error::=========================================="
+            echo "::error::"
+            echo "::error::Lock file persists after multiple removal attempts"
+            echo "::error::"
+            echo "::error::Lock ID: $LOCK_ID"
+            echo "::error::Lock Age: $LOCK_AGE_MINUTES minutes"
+            echo "::error::Lock Owner: $LOCK_WHO"
+            echo "::error::"
+            echo "::error::MANUAL RECOVERY OPTIONS:"
+            echo "::error::  1. SSH to cattle-runner:"
+            echo "::error::     cd ~/prox-ops/terraform"
+            echo "::error::     terraform force-unlock -force $LOCK_ID"
+            echo "::error::"
+            echo "::error::  2. Direct S3 deletion:"
+            echo "::error::     aws s3 rm s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+            echo "::error::"
+            echo "::error::  3. Check S3 bucket permissions and access"
+            echo "::error::=========================================="
+            exit 1
+          fi
+
+          echo ""
+          echo "✓ Lock successfully cleared and verified"
+
+      - name: Verify state lock is clear before planning
+        working-directory: ./terraform
+        timeout-minutes: 1
+        run: |
+          echo "Final verification: Ensuring no lock exists before Terraform plan..."
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+
+          # Wait for S3 eventual consistency
+          sleep 3
+
+          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "::error::=========================================="
+            echo "::error::CRITICAL: Lock file still exists after clearing step!"
+            echo "::error::This should never happen and indicates a serious issue."
+            echo "::error::=========================================="
+            exit 1
+          fi
+
+          echo "✓ Confirmed: No lock file in S3"
+          echo "✓ Safe to proceed with Terraform operations"
 
       - name: Plan template changes
         working-directory: ./terraform
@@ -669,54 +787,172 @@ jobs:
 
       - name: Clear stale Terraform locks
         working-directory: ./terraform
-        timeout-minutes: 2
-        continue-on-error: true
+        timeout-minutes: 3
+        # CRITICAL: No continue-on-error - lock clearing MUST succeed or workflow fails
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
           echo "Checking for Terraform state lock in S3..."
+          echo ""
 
           # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
           # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
           LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
 
-          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
-            echo "Lock file detected in S3"
-            echo ""
-
-            # Download lock info and parse JSON
-            LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
-
-            if [ -n "$LOCK_INFO" ]; then
-              echo "Lock details:"
-              echo "$LOCK_INFO" | jq '.'
-              echo ""
-
-              # Extract lock ID from JSON
-              LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty' 2>/dev/null)
-
-              if [ -n "$LOCK_ID" ]; then
-                echo "Found stale lock ID: $LOCK_ID"
-                echo "Attempting to force-unlock..."
-
-                if terraform force-unlock -force "$LOCK_ID"; then
-                  echo "✓ Successfully cleared stale lock"
-                else
-                  echo "✗ Failed to unlock (may require manual intervention)"
-                  echo "  Manual command: terraform force-unlock -force $LOCK_ID"
-                fi
-              else
-                echo "Could not extract lock ID from lock file"
-                echo "Lock may need to be cleared manually"
-              fi
-            fi
-          else
+          if ! aws s3 ls "$LOCK_FILE" 2>/dev/null; then
             echo "✓ No lock detected - state is accessible"
+            exit 0
           fi
 
-          # Ensure clean exit
-          exit 0
+          echo "⚠️  Lock file detected in S3"
+          echo ""
+
+          # Download lock info and parse JSON
+          LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
+
+          if [ -z "$LOCK_INFO" ]; then
+            echo "::error::Could not download lock file contents"
+            exit 1
+          fi
+
+          echo "Lock details:"
+          echo "$LOCK_INFO" | jq '.'
+          echo ""
+
+          # Extract lock metadata
+          LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty')
+          LOCK_CREATED=$(echo "$LOCK_INFO" | jq -r '.Created // empty')
+          LOCK_WHO=$(echo "$LOCK_INFO" | jq -r '.Who // "unknown"')
+          LOCK_OPERATION=$(echo "$LOCK_INFO" | jq -r '.Operation // "unknown"')
+
+          if [ -z "$LOCK_ID" ]; then
+            echo "::error::Could not extract lock ID from lock file"
+            echo "::error::Lock file may be corrupted - attempting direct S3 deletion"
+            aws s3 rm "$LOCK_FILE" --only-show-errors
+            sleep 2
+            if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+              echo "::error::Failed to remove corrupted lock file"
+              exit 1
+            fi
+            echo "✓ Corrupted lock file removed"
+            exit 0
+          fi
+
+          # Calculate lock age
+          CURRENT_TIME=$(date -u +%s)
+          LOCK_TIME=$(date -u -d "$LOCK_CREATED" +%s 2>/dev/null || echo "0")
+          LOCK_AGE_MINUTES=$(( (CURRENT_TIME - LOCK_TIME) / 60 ))
+
+          echo "Lock analysis:"
+          echo "  ID: $LOCK_ID"
+          echo "  Created: $LOCK_CREATED"
+          echo "  Age: $LOCK_AGE_MINUTES minutes"
+          echo "  Owner: $LOCK_WHO"
+          echo "  Operation: $LOCK_OPERATION"
+          echo ""
+
+          # SAFETY: Only clear locks > 5 minutes old
+          MIN_AGE=5
+          if [ "$LOCK_AGE_MINUTES" -lt "$MIN_AGE" ]; then
+            echo "::error::=========================================="
+            echo "::error::LOCK TOO RECENT - POSSIBLE ACTIVE OPERATION"
+            echo "::error::=========================================="
+            echo "::error::"
+            echo "::error::Lock is only $LOCK_AGE_MINUTES minutes old (threshold: $MIN_AGE minutes)"
+            echo "::error::Another operation may be legitimately in progress"
+            echo "::error::"
+            echo "::error::Check for concurrent workflows:"
+            echo "::error::  https://github.com/${{ github.repository }}/actions"
+            echo "::error::"
+            echo "::error::If you're certain the lock is stale, manually remove it:"
+            echo "::error::  aws s3 rm s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+            echo "::error::=========================================="
+            exit 1
+          fi
+
+          echo "Lock is $LOCK_AGE_MINUTES minutes old - safe to clear"
+          echo ""
+
+          # LAYER 1: Try terraform force-unlock
+          echo "Attempting terraform force-unlock..."
+          if terraform force-unlock -force "$LOCK_ID" 2>&1; then
+            echo "✓ terraform force-unlock command succeeded"
+          else
+            echo "⚠️  terraform force-unlock command failed (may be expected)"
+          fi
+
+          # LAYER 2: Verify lock is actually gone from S3
+          echo ""
+          echo "Verifying lock removal from S3..."
+          sleep 2  # S3 eventual consistency
+
+          if ! aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "✓ Lock successfully removed"
+            exit 0
+          fi
+
+          # LAYER 3: terraform force-unlock didn't remove S3 file - do it manually
+          echo "⚠️  terraform force-unlock succeeded but S3 lock file still exists!"
+          echo "This is a known issue with S3 backend - removing file directly..."
+          echo ""
+
+          if aws s3 rm "$LOCK_FILE" --only-show-errors; then
+            echo "✓ S3 lock file removed via direct deletion"
+          else
+            echo "::error::Failed to remove S3 lock file"
+            exit 1
+          fi
+
+          # LAYER 4: Final verification
+          sleep 2  # S3 eventual consistency
+          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "::error::=========================================="
+            echo "::error::LOCK REMOVAL FAILED"
+            echo "::error::=========================================="
+            echo "::error::"
+            echo "::error::Lock file persists after multiple removal attempts"
+            echo "::error::"
+            echo "::error::Lock ID: $LOCK_ID"
+            echo "::error::Lock Age: $LOCK_AGE_MINUTES minutes"
+            echo "::error::Lock Owner: $LOCK_WHO"
+            echo "::error::"
+            echo "::error::MANUAL RECOVERY OPTIONS:"
+            echo "::error::  1. SSH to cattle-runner:"
+            echo "::error::     cd ~/prox-ops/terraform"
+            echo "::error::     terraform force-unlock -force $LOCK_ID"
+            echo "::error::"
+            echo "::error::  2. Direct S3 deletion:"
+            echo "::error::     aws s3 rm s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+            echo "::error::"
+            echo "::error::  3. Check S3 bucket permissions and access"
+            echo "::error::=========================================="
+            exit 1
+          fi
+
+          echo ""
+          echo "✓ Lock successfully cleared and verified"
+
+      - name: Verify state lock is clear before operations
+        working-directory: ./terraform
+        timeout-minutes: 1
+        run: |
+          echo "Final verification: Ensuring no lock exists before controller operations..."
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+
+          # Wait for S3 eventual consistency
+          sleep 3
+
+          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "::error::=========================================="
+            echo "::error::CRITICAL: Lock file still exists after clearing step!"
+            echo "::error::This should never happen and indicates a serious issue."
+            echo "::error::=========================================="
+            exit 1
+          fi
+
+          echo "✓ Confirmed: No lock file in S3"
+          echo "✓ Safe to proceed with controller operations"
 
       - name: Validate etcd quorum health
         run: |
@@ -1724,54 +1960,172 @@ jobs:
 
       - name: Clear stale Terraform locks
         working-directory: ./terraform
-        timeout-minutes: 2
-        continue-on-error: true
+        timeout-minutes: 3
+        # CRITICAL: No continue-on-error - lock clearing MUST succeed or workflow fails
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
           echo "Checking for Terraform state lock in S3..."
+          echo ""
 
           # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
           # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
           LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
 
-          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
-            echo "Lock file detected in S3"
-            echo ""
-
-            # Download lock info and parse JSON
-            LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
-
-            if [ -n "$LOCK_INFO" ]; then
-              echo "Lock details:"
-              echo "$LOCK_INFO" | jq '.'
-              echo ""
-
-              # Extract lock ID from JSON
-              LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty' 2>/dev/null)
-
-              if [ -n "$LOCK_ID" ]; then
-                echo "Found stale lock ID: $LOCK_ID"
-                echo "Attempting to force-unlock..."
-
-                if terraform force-unlock -force "$LOCK_ID"; then
-                  echo "✓ Successfully cleared stale lock"
-                else
-                  echo "✗ Failed to unlock (may require manual intervention)"
-                  echo "  Manual command: terraform force-unlock -force $LOCK_ID"
-                fi
-              else
-                echo "Could not extract lock ID from lock file"
-                echo "Lock may need to be cleared manually"
-              fi
-            fi
-          else
+          if ! aws s3 ls "$LOCK_FILE" 2>/dev/null; then
             echo "✓ No lock detected - state is accessible"
+            exit 0
           fi
 
-          # Ensure clean exit
-          exit 0
+          echo "⚠️  Lock file detected in S3"
+          echo ""
+
+          # Download lock info and parse JSON
+          LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
+
+          if [ -z "$LOCK_INFO" ]; then
+            echo "::error::Could not download lock file contents"
+            exit 1
+          fi
+
+          echo "Lock details:"
+          echo "$LOCK_INFO" | jq '.'
+          echo ""
+
+          # Extract lock metadata
+          LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty')
+          LOCK_CREATED=$(echo "$LOCK_INFO" | jq -r '.Created // empty')
+          LOCK_WHO=$(echo "$LOCK_INFO" | jq -r '.Who // "unknown"')
+          LOCK_OPERATION=$(echo "$LOCK_INFO" | jq -r '.Operation // "unknown"')
+
+          if [ -z "$LOCK_ID" ]; then
+            echo "::error::Could not extract lock ID from lock file"
+            echo "::error::Lock file may be corrupted - attempting direct S3 deletion"
+            aws s3 rm "$LOCK_FILE" --only-show-errors
+            sleep 2
+            if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+              echo "::error::Failed to remove corrupted lock file"
+              exit 1
+            fi
+            echo "✓ Corrupted lock file removed"
+            exit 0
+          fi
+
+          # Calculate lock age
+          CURRENT_TIME=$(date -u +%s)
+          LOCK_TIME=$(date -u -d "$LOCK_CREATED" +%s 2>/dev/null || echo "0")
+          LOCK_AGE_MINUTES=$(( (CURRENT_TIME - LOCK_TIME) / 60 ))
+
+          echo "Lock analysis:"
+          echo "  ID: $LOCK_ID"
+          echo "  Created: $LOCK_CREATED"
+          echo "  Age: $LOCK_AGE_MINUTES minutes"
+          echo "  Owner: $LOCK_WHO"
+          echo "  Operation: $LOCK_OPERATION"
+          echo ""
+
+          # SAFETY: Only clear locks > 5 minutes old
+          MIN_AGE=5
+          if [ "$LOCK_AGE_MINUTES" -lt "$MIN_AGE" ]; then
+            echo "::error::=========================================="
+            echo "::error::LOCK TOO RECENT - POSSIBLE ACTIVE OPERATION"
+            echo "::error::=========================================="
+            echo "::error::"
+            echo "::error::Lock is only $LOCK_AGE_MINUTES minutes old (threshold: $MIN_AGE minutes)"
+            echo "::error::Another operation may be legitimately in progress"
+            echo "::error::"
+            echo "::error::Check for concurrent workflows:"
+            echo "::error::  https://github.com/${{ github.repository }}/actions"
+            echo "::error::"
+            echo "::error::If you're certain the lock is stale, manually remove it:"
+            echo "::error::  aws s3 rm s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+            echo "::error::=========================================="
+            exit 1
+          fi
+
+          echo "Lock is $LOCK_AGE_MINUTES minutes old - safe to clear"
+          echo ""
+
+          # LAYER 1: Try terraform force-unlock
+          echo "Attempting terraform force-unlock..."
+          if terraform force-unlock -force "$LOCK_ID" 2>&1; then
+            echo "✓ terraform force-unlock command succeeded"
+          else
+            echo "⚠️  terraform force-unlock command failed (may be expected)"
+          fi
+
+          # LAYER 2: Verify lock is actually gone from S3
+          echo ""
+          echo "Verifying lock removal from S3..."
+          sleep 2  # S3 eventual consistency
+
+          if ! aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "✓ Lock successfully removed"
+            exit 0
+          fi
+
+          # LAYER 3: terraform force-unlock didn't remove S3 file - do it manually
+          echo "⚠️  terraform force-unlock succeeded but S3 lock file still exists!"
+          echo "This is a known issue with S3 backend - removing file directly..."
+          echo ""
+
+          if aws s3 rm "$LOCK_FILE" --only-show-errors; then
+            echo "✓ S3 lock file removed via direct deletion"
+          else
+            echo "::error::Failed to remove S3 lock file"
+            exit 1
+          fi
+
+          # LAYER 4: Final verification
+          sleep 2  # S3 eventual consistency
+          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "::error::=========================================="
+            echo "::error::LOCK REMOVAL FAILED"
+            echo "::error::=========================================="
+            echo "::error::"
+            echo "::error::Lock file persists after multiple removal attempts"
+            echo "::error::"
+            echo "::error::Lock ID: $LOCK_ID"
+            echo "::error::Lock Age: $LOCK_AGE_MINUTES minutes"
+            echo "::error::Lock Owner: $LOCK_WHO"
+            echo "::error::"
+            echo "::error::MANUAL RECOVERY OPTIONS:"
+            echo "::error::  1. SSH to cattle-runner:"
+            echo "::error::     cd ~/prox-ops/terraform"
+            echo "::error::     terraform force-unlock -force $LOCK_ID"
+            echo "::error::"
+            echo "::error::  2. Direct S3 deletion:"
+            echo "::error::     aws s3 rm s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+            echo "::error::"
+            echo "::error::  3. Check S3 bucket permissions and access"
+            echo "::error::=========================================="
+            exit 1
+          fi
+
+          echo ""
+          echo "✓ Lock successfully cleared and verified"
+
+      - name: Verify state lock is clear before operations
+        working-directory: ./terraform
+        timeout-minutes: 1
+        run: |
+          echo "Final verification: Ensuring no lock exists before worker operations..."
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+
+          # Wait for S3 eventual consistency
+          sleep 3
+
+          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+            echo "::error::=========================================="
+            echo "::error::CRITICAL: Lock file still exists after clearing step!"
+            echo "::error::This should never happen and indicates a serious issue."
+            echo "::error::=========================================="
+            exit 1
+          fi
+
+          echo "✓ Confirmed: No lock file in S3"
+          echo "✓ Safe to proceed with worker operations"
 
       - name: Backup Terraform state
         working-directory: ./terraform
