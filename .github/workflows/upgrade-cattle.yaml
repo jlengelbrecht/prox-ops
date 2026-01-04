@@ -172,6 +172,18 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
+      # EMERGENCY: Force-unlock known persistent lock from 2026-01-03
+      # TODO: Remove this step once the persistent lock is cleared
+      - name: Force-unlock persistent lock
+        working-directory: ./terraform
+        continue-on-error: true
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::warning::EMERGENCY: Attempting to force-unlock persistent lock 42879d4b-5ed6-7196-50d5-cf6a14618114"
+          terraform force-unlock -force 42879d4b-5ed6-7196-50d5-cf6a14618114 || echo "Force unlock failed or lock doesn't exist (may be okay)"
+
       # Multi-layer Terraform state lock clearing (composite action for DRY)
       - name: Clear stale Terraform locks
         uses: ./.github/actions/clear-terraform-lock
@@ -651,6 +663,18 @@ jobs:
       - name: Initialize Terraform
         working-directory: ./terraform
         run: terraform init
+
+      # EMERGENCY: Force-unlock known persistent lock from 2026-01-03
+      # TODO: Remove this step once the persistent lock is cleared
+      - name: Force-unlock persistent lock
+        working-directory: ./terraform
+        continue-on-error: true
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::warning::EMERGENCY: Attempting to force-unlock persistent lock 42879d4b-5ed6-7196-50d5-cf6a14618114"
+          terraform force-unlock -force 42879d4b-5ed6-7196-50d5-cf6a14618114 || echo "Force unlock failed or lock doesn't exist (may be okay)"
 
       # Multi-layer Terraform state lock clearing (composite action for DRY)
       - name: Clear stale Terraform locks
@@ -1610,6 +1634,18 @@ jobs:
       - name: Initialize Terraform
         working-directory: ./terraform
         run: terraform init
+
+      # EMERGENCY: Force-unlock known persistent lock from 2026-01-03
+      # TODO: Remove this step once the persistent lock is cleared
+      - name: Force-unlock persistent lock
+        working-directory: ./terraform
+        continue-on-error: true
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "::warning::EMERGENCY: Attempting to force-unlock persistent lock 42879d4b-5ed6-7196-50d5-cf6a14618114"
+          terraform force-unlock -force 42879d4b-5ed6-7196-50d5-cf6a14618114 || echo "Force unlock failed or lock doesn't exist (may be okay)"
 
       - name: Pre-drain health check
         run: |
