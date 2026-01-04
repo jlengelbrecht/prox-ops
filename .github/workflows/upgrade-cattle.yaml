@@ -172,19 +172,7 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
-      # EMERGENCY: Force-unlock known persistent lock from 2026-01-03
-      # TODO: Remove this step once the persistent lock is cleared
-      - name: Force-unlock persistent lock
-        working-directory: ./terraform
-        continue-on-error: true
-        env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-        run: |
-          echo "::warning::EMERGENCY: Attempting to force-unlock persistent lock 42879d4b-5ed6-7196-50d5-cf6a14618114"
-          terraform force-unlock -force 42879d4b-5ed6-7196-50d5-cf6a14618114 || echo "Force unlock failed or lock doesn't exist (may be okay)"
-
-      # Multi-layer Terraform state lock clearing (composite action for DRY)
+      # Error-driven Terraform state lock detection and clearing (S3 native locking compatible)
       - name: Clear stale Terraform locks
         uses: ./.github/actions/clear-terraform-lock
         timeout-minutes: 3
@@ -200,7 +188,7 @@ jobs:
         timeout-minutes: 1
         run: |
           echo "Final verification: Ensuring no lock exists before Terraform plan..."
-          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info"
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock"
 
           # Wait for S3 eventual consistency
           sleep 3
@@ -664,19 +652,7 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
-      # EMERGENCY: Force-unlock known persistent lock from 2026-01-03
-      # TODO: Remove this step once the persistent lock is cleared
-      - name: Force-unlock persistent lock
-        working-directory: ./terraform
-        continue-on-error: true
-        env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-        run: |
-          echo "::warning::EMERGENCY: Attempting to force-unlock persistent lock 42879d4b-5ed6-7196-50d5-cf6a14618114"
-          terraform force-unlock -force 42879d4b-5ed6-7196-50d5-cf6a14618114 || echo "Force unlock failed or lock doesn't exist (may be okay)"
-
-      # Multi-layer Terraform state lock clearing (composite action for DRY)
+      # Error-driven Terraform state lock detection and clearing (S3 native locking compatible)
       - name: Clear stale Terraform locks
         uses: ./.github/actions/clear-terraform-lock
         timeout-minutes: 3
@@ -692,7 +668,7 @@ jobs:
         timeout-minutes: 1
         run: |
           echo "Final verification: Ensuring no lock exists before controller operations..."
-          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info"
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock"
 
           # Wait for S3 eventual consistency
           sleep 3
@@ -793,7 +769,7 @@ jobs:
           echo "Creating state backup before destroy..."
 
           # SECURITY: Check for state lock before proceeding
-          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info 2>/dev/null; then
+          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock 2>/dev/null; then
             echo "::error::Terraform state is locked - another operation in progress"
             echo "::error::Wait for other operation to complete or manually remove lock if stale"
             exit 1
@@ -1635,18 +1611,6 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
-      # EMERGENCY: Force-unlock known persistent lock from 2026-01-03
-      # TODO: Remove this step once the persistent lock is cleared
-      - name: Force-unlock persistent lock
-        working-directory: ./terraform
-        continue-on-error: true
-        env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-        run: |
-          echo "::warning::EMERGENCY: Attempting to force-unlock persistent lock 42879d4b-5ed6-7196-50d5-cf6a14618114"
-          terraform force-unlock -force 42879d4b-5ed6-7196-50d5-cf6a14618114 || echo "Force unlock failed or lock doesn't exist (may be okay)"
-
       - name: Pre-drain health check
         run: |
           echo "::group::Pre-drain health check"
@@ -1741,7 +1705,7 @@ jobs:
         timeout-minutes: 1
         run: |
           echo "Final verification: Ensuring no lock exists before worker operations..."
-          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info"
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock"
 
           # Wait for S3 eventual consistency
           sleep 3
@@ -1763,7 +1727,7 @@ jobs:
           echo "Creating state backup before destroy..."
 
           # SECURITY: Check for state lock before proceeding
-          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info 2>/dev/null; then
+          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock 2>/dev/null; then
             echo "::error::Terraform state is locked - another operation in progress"
             echo "::error::Wait for other operation to complete or manually remove lock if stale"
             exit 1
@@ -1911,7 +1875,7 @@ jobs:
 
                 # Check for state lock (do NOT clear - would bypass age validation)
                 echo "Checking for state lock..."
-                if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info 2>/dev/null; then
+                if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock 2>/dev/null; then
                   echo "::warning::State lock detected during retry"
                   echo "::warning::If lock is stale, cancel workflow and re-run to trigger proper lock clearing"
                   echo "::warning::Do NOT clear lock here - would bypass 5-minute age safety check"
