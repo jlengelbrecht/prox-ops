@@ -35,17 +35,49 @@ runs:
         # S3 lock file: <state-key>.lock.info contains lock metadata as JSON
         # Lock file path is derived from the state file key (e.g., terraform.tfstate → terraform.tfstate.lock.info)
         LOCK_FILE="s3://${{ inputs.terraform_state_bucket }}/${{ inputs.terraform_state_key }}.lock.info"
+        BUCKET="${{ inputs.terraform_state_bucket }}"
+        KEY="${{ inputs.terraform_state_key }}.lock.info"
 
-        if ! aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+        echo "Checking for lock file at: $LOCK_FILE"
+
+        # Try multiple detection methods (some locks are invisible to 'ls' but block operations)
+        LOCK_EXISTS=false
+
+        # Method 1: aws s3 ls (fast but may miss corrupted locks)
+        if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+          echo "✓ Lock detected via 's3 ls'"
+          LOCK_EXISTS=true
+        fi
+
+        # Method 2: aws s3api head-object (more reliable, uses different API)
+        if ! $LOCK_EXISTS; then
+          if aws s3api head-object --bucket "$BUCKET" --key "$KEY" 2>/dev/null; then
+            echo "✓ Lock detected via 's3api head-object' (invisible to ls)"
+            LOCK_EXISTS=true
+          fi
+        fi
+
+        # Method 3: Try to download lock content (definitive test)
+        if ! $LOCK_EXISTS; then
+          if LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null) && [ -n "$LOCK_INFO" ]; then
+            echo "✓ Lock detected via 's3 cp' (can download content)"
+            LOCK_EXISTS=true
+          fi
+        fi
+
+        if ! $LOCK_EXISTS; then
           echo "✓ No lock detected - state is accessible"
+          echo "  Checked with: s3 ls, s3api head-object, s3 cp"
           exit 0
         fi
 
         echo "⚠️  Lock file detected in S3"
         echo ""
 
-        # Download lock info and parse JSON
-        LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
+        # Download lock info and parse JSON (may already have it from Method 3)
+        if [ -z "${LOCK_INFO:-}" ]; then
+          LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
+        fi
 
         if [ -z "$LOCK_INFO" ]; then
           echo "::error::Could not download lock file contents"
@@ -149,38 +181,78 @@ runs:
         echo "This is a known issue with S3 backend - removing file directly..."
         echo ""
 
-        if aws s3 rm "$LOCK_FILE" --only-show-errors; then
-          echo "✓ S3 lock file removed via direct deletion"
+        # Try multiple deletion methods for stubborn locks
+        DELETION_SUCCEEDED=false
+
+        # Method 1: aws s3 rm (standard deletion)
+        if aws s3 rm "$LOCK_FILE" --only-show-errors 2>/dev/null; then
+          echo "✓ S3 lock file removed via 's3 rm'"
+          DELETION_SUCCEEDED=true
         else
-          echo "::error::Failed to remove S3 lock file"
+          echo "⚠️  's3 rm' failed, trying alternative method..."
+        fi
+
+        # Method 2: aws s3api delete-object (low-level API, may work for corrupted files)
+        if ! $DELETION_SUCCEEDED; then
+          if aws s3api delete-object --bucket "$BUCKET" --key "$KEY" 2>/dev/null; then
+            echo "✓ S3 lock file removed via 's3api delete-object'"
+            DELETION_SUCCEEDED=true
+          else
+            echo "⚠️  's3api delete-object' also failed"
+          fi
+        fi
+
+        if ! $DELETION_SUCCEEDED; then
+          echo "::error::Failed to remove S3 lock file via all methods"
+          echo "::error::Tried: s3 rm, s3api delete-object"
           exit 1
         fi
 
-        # LAYER 4: Final verification
-        sleep 2  # S3 eventual consistency
+        # LAYER 4: Final verification using multi-method approach
+        echo ""
+        echo "Final verification: Ensuring lock is truly gone..."
+        sleep 3  # S3 eventual consistency
+
+        LOCK_STILL_EXISTS=false
+
+        # Check with all methods
         if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
+          LOCK_STILL_EXISTS=true
+          echo "⚠️  Lock still visible via 's3 ls'"
+        fi
+
+        if ! $LOCK_STILL_EXISTS && aws s3api head-object --bucket "$BUCKET" --key "$KEY" 2>/dev/null; then
+          LOCK_STILL_EXISTS=true
+          echo "⚠️  Lock still visible via 's3api head-object'"
+        fi
+
+        if ! $LOCK_STILL_EXISTS && aws s3 cp "$LOCK_FILE" - 2>/dev/null >/dev/null; then
+          LOCK_STILL_EXISTS=true
+          echo "⚠️  Lock still downloadable via 's3 cp'"
+        fi
+
+        if $LOCK_STILL_EXISTS; then
           echo "::error::=========================================="
           echo "::error::LOCK REMOVAL FAILED"
           echo "::error::=========================================="
           echo "::error::"
           echo "::error::Lock file persists after multiple removal attempts"
+          echo "::error::Tried deletion methods: s3 rm, s3api delete-object"
+          echo "::error::Tried verification methods: s3 ls, s3api head-object, s3 cp"
           echo "::error::"
           echo "::error::Lock ID: $LOCK_ID"
           echo "::error::Lock Age: $LOCK_AGE_MINUTES minutes"
           echo "::error::Lock Owner: $LOCK_WHO"
           echo "::error::"
-          echo "::error::MANUAL RECOVERY OPTIONS:"
-          echo "::error::  1. SSH to cattle-runner:"
-          echo "::error::     cd ~/prox-ops/terraform"
-          echo "::error::     terraform force-unlock -force $LOCK_ID"
+          echo "::error::This indicates an S3 bucket configuration issue:"
+          echo "::error::  - Object lock/WORM may be enabled"
+          echo "::error::  - S3 versioning with protected delete markers"
+          echo "::error::  - IAM permissions may not allow deletion"
+          echo "::error::  - Corrupted S3 object metadata"
           echo "::error::"
-          echo "::error::  2. Direct S3 deletion:"
-          echo "::error::     aws s3 rm s3://${{ inputs.terraform_state_bucket }}/.terraform.tfstate.lock.info"
-          echo "::error::"
-          echo "::error::  3. Check S3 bucket permissions and access"
+          echo "::error::Manual investigation of S3 bucket required"
           echo "::error::=========================================="
           exit 1
         fi
 
-        echo ""
-        echo "✓ Lock successfully cleared and verified"
+        echo "✓ Lock successfully cleared and verified (checked with all methods)"
