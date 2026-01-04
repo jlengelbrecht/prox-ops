@@ -65,6 +65,10 @@ concurrency:
   group: cattle-upgrade-v2
   cancel-in-progress: true
 
+# Explicit minimal permissions for security (prevents broad default token access)
+permissions:
+  contents: read      # Read repository contents
+
 env:
   AWS_REGION: us-east-2
   TERRAFORM_STATE_BUCKET: prox-ops-terraform-state
@@ -125,7 +129,7 @@ jobs:
     if: inputs.test_templates == true || (inputs.test_templates == false && inputs.test_controllers == false && inputs.test_workers == false)
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Validate version inputs
         run: |
@@ -140,12 +144,12 @@ jobs:
           echo "✅ Version inputs validated"
 
       - name: Setup Node.js (required for Terraform action)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4
         with:
           node-version: '24'
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
@@ -168,56 +172,35 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
+      # Multi-layer Terraform state lock clearing (composite action for DRY)
       - name: Clear stale Terraform locks
-        working-directory: ./terraform
-        timeout-minutes: 2
-        continue-on-error: true
-        env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-        run: |
-          echo "Checking for Terraform state lock in S3..."
+        uses: ./.github/actions/clear-terraform-lock
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+          github_repository: ${{ github.repository }}
 
-          # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
-          # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
+      - name: Verify state lock is clear before planning
+        working-directory: ./terraform
+        timeout-minutes: 1
+        run: |
+          echo "Final verification: Ensuring no lock exists before Terraform plan..."
           LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
 
+          # Wait for S3 eventual consistency
+          sleep 3
+
           if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
-            echo "Lock file detected in S3"
-            echo ""
-
-            # Download lock info and parse JSON
-            LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
-
-            if [ -n "$LOCK_INFO" ]; then
-              echo "Lock details:"
-              echo "$LOCK_INFO" | jq '.'
-              echo ""
-
-              # Extract lock ID from JSON
-              LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty' 2>/dev/null)
-
-              if [ -n "$LOCK_ID" ]; then
-                echo "Found stale lock ID: $LOCK_ID"
-                echo "Attempting to force-unlock..."
-
-                if terraform force-unlock -force "$LOCK_ID"; then
-                  echo "✓ Successfully cleared stale lock"
-                else
-                  echo "✗ Failed to unlock (may require manual intervention)"
-                  echo "  Manual command: terraform force-unlock -force $LOCK_ID"
-                fi
-              else
-                echo "Could not extract lock ID from lock file"
-                echo "Lock may need to be cleared manually"
-              fi
-            fi
-          else
-            echo "✓ No lock detected - state is accessible"
+            echo "::error::=========================================="
+            echo "::error::CRITICAL: Lock file still exists after clearing step!"
+            echo "::error::This should never happen and indicates a serious issue."
+            echo "::error::=========================================="
+            exit 1
           fi
 
-          # Ensure clean exit
-          exit 0
+          echo "✓ Confirmed: No lock file in S3"
+          echo "✓ Safe to proceed with Terraform operations"
 
       - name: Plan template changes
         working-directory: ./terraform
@@ -636,7 +619,7 @@ jobs:
           }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Setup cluster tools
         uses: ./.github/actions/setup-cluster-tools
@@ -644,7 +627,7 @@ jobs:
           talosconfig: ${{ secrets.TALOSCONFIG }}
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
@@ -667,56 +650,35 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
+      # Multi-layer Terraform state lock clearing (composite action for DRY)
       - name: Clear stale Terraform locks
-        working-directory: ./terraform
-        timeout-minutes: 2
-        continue-on-error: true
-        env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-        run: |
-          echo "Checking for Terraform state lock in S3..."
+        uses: ./.github/actions/clear-terraform-lock
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+          github_repository: ${{ github.repository }}
 
-          # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
-          # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
+      - name: Verify state lock is clear before operations
+        working-directory: ./terraform
+        timeout-minutes: 1
+        run: |
+          echo "Final verification: Ensuring no lock exists before controller operations..."
           LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
 
+          # Wait for S3 eventual consistency
+          sleep 3
+
           if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
-            echo "Lock file detected in S3"
-            echo ""
-
-            # Download lock info and parse JSON
-            LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
-
-            if [ -n "$LOCK_INFO" ]; then
-              echo "Lock details:"
-              echo "$LOCK_INFO" | jq '.'
-              echo ""
-
-              # Extract lock ID from JSON
-              LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty' 2>/dev/null)
-
-              if [ -n "$LOCK_ID" ]; then
-                echo "Found stale lock ID: $LOCK_ID"
-                echo "Attempting to force-unlock..."
-
-                if terraform force-unlock -force "$LOCK_ID"; then
-                  echo "✓ Successfully cleared stale lock"
-                else
-                  echo "✗ Failed to unlock (may require manual intervention)"
-                  echo "  Manual command: terraform force-unlock -force $LOCK_ID"
-                fi
-              else
-                echo "Could not extract lock ID from lock file"
-                echo "Lock may need to be cleared manually"
-              fi
-            fi
-          else
-            echo "✓ No lock detected - state is accessible"
+            echo "::error::=========================================="
+            echo "::error::CRITICAL: Lock file still exists after clearing step!"
+            echo "::error::This should never happen and indicates a serious issue."
+            echo "::error::=========================================="
+            exit 1
           fi
 
-          # Ensure clean exit
-          exit 0
+          echo "✓ Confirmed: No lock file in S3"
+          echo "✓ Safe to proceed with controller operations"
 
       - name: Validate etcd quorum health
         run: |
@@ -902,7 +864,8 @@ jobs:
           echo "VMs to be destroyed: $VM_COUNT"
 
           if [[ $VM_COUNT -ne 1 ]]; then
-            echo "::warning::Expected exactly 1 VM to be destroyed, found $VM_COUNT"
+            echo "::error::Expected exactly 1 VM to be destroyed, found $VM_COUNT"
+            exit 1
           fi
 
           echo ""
@@ -1462,7 +1425,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Setup cluster tools
         uses: ./.github/actions/setup-cluster-tools
@@ -1594,26 +1557,26 @@ jobs:
         include: >-
           ${{
             inputs.test_workers == true && fromJSON('[
-              {"node": "k8s-work-1", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-2", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"}
+              {"node": "k8s-work-1", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base", "secret_suffix": "WORK_1"},
+              {"node": "k8s-work-2", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base", "secret_suffix": "WORK_2"}
             ]') || fromJSON('[
-              {"node": "k8s-work-1", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-7", "pair_id": 1, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
-              {"node": "k8s-work-2", "pair_id": 2, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-8", "pair_id": 2, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
-              {"node": "k8s-work-3", "pair_id": 3, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base"},
-              {"node": "k8s-work-9", "pair_id": 3, "is_gpu": false, "proxmox_node": "odin", "template_type": "base"},
-              {"node": "k8s-work-5", "pair_id": 4, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
-              {"node": "k8s-work-11", "pair_id": 4, "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
-              {"node": "k8s-work-6", "pair_id": 5, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base"},
-              {"node": "k8s-work-12", "pair_id": 5, "is_gpu": false, "proxmox_node": "thor", "template_type": "base"},
-              {"node": "k8s-work-4", "pair_id": 6, "is_gpu": true, "proxmox_node": "heimdall", "template_type": "gpu", "gpu_model": "rtx-a2000"},
-              {"node": "k8s-work-10", "pair_id": 7, "is_gpu": true, "proxmox_node": "thor", "template_type": "gpu", "gpu_model": "rtx-a5000"}
+              {"node": "k8s-work-1", "pair_id": 1, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base", "secret_suffix": "WORK_1"},
+              {"node": "k8s-work-7", "pair_id": 1, "is_gpu": false, "proxmox_node": "odin", "template_type": "base", "secret_suffix": "WORK_7"},
+              {"node": "k8s-work-2", "pair_id": 2, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base", "secret_suffix": "WORK_2"},
+              {"node": "k8s-work-8", "pair_id": 2, "is_gpu": false, "proxmox_node": "odin", "template_type": "base", "secret_suffix": "WORK_8"},
+              {"node": "k8s-work-3", "pair_id": 3, "is_gpu": false, "proxmox_node": "baldar", "template_type": "base", "secret_suffix": "WORK_3"},
+              {"node": "k8s-work-9", "pair_id": 3, "is_gpu": false, "proxmox_node": "odin", "template_type": "base", "secret_suffix": "WORK_9"},
+              {"node": "k8s-work-5", "pair_id": 4, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base", "secret_suffix": "WORK_5"},
+              {"node": "k8s-work-11", "pair_id": 4, "is_gpu": false, "proxmox_node": "thor", "template_type": "base", "secret_suffix": "WORK_11"},
+              {"node": "k8s-work-6", "pair_id": 5, "is_gpu": false, "proxmox_node": "heimdall", "template_type": "base", "secret_suffix": "WORK_6"},
+              {"node": "k8s-work-12", "pair_id": 5, "is_gpu": false, "proxmox_node": "thor", "template_type": "base", "secret_suffix": "WORK_12"},
+              {"node": "k8s-work-4", "pair_id": 6, "is_gpu": true, "proxmox_node": "heimdall", "template_type": "gpu", "gpu_model": "rtx-a2000", "secret_suffix": "WORK_4"},
+              {"node": "k8s-work-10", "pair_id": 7, "is_gpu": true, "proxmox_node": "thor", "template_type": "gpu", "gpu_model": "rtx-a5000", "secret_suffix": "WORK_10"}
             ]')
           }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Setup cluster tools
         uses: ./.github/actions/setup-cluster-tools
@@ -1621,7 +1584,7 @@ jobs:
           talosconfig: ${{ secrets.TALOSCONFIG }}
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
@@ -1722,56 +1685,35 @@ jobs:
           echo "✅ Node drained successfully"
           echo "::endgroup::"
 
+      # Multi-layer Terraform state lock clearing (composite action for DRY)
       - name: Clear stale Terraform locks
-        working-directory: ./terraform
-        timeout-minutes: 2
-        continue-on-error: true
-        env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-        run: |
-          echo "Checking for Terraform state lock in S3..."
+        uses: ./.github/actions/clear-terraform-lock
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+          github_repository: ${{ github.repository }}
 
-          # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
-          # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
+      - name: Verify state lock is clear before operations
+        working-directory: ./terraform
+        timeout-minutes: 1
+        run: |
+          echo "Final verification: Ensuring no lock exists before worker operations..."
           LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
 
+          # Wait for S3 eventual consistency
+          sleep 3
+
           if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
-            echo "Lock file detected in S3"
-            echo ""
-
-            # Download lock info and parse JSON
-            LOCK_INFO=$(aws s3 cp "$LOCK_FILE" - 2>/dev/null)
-
-            if [ -n "$LOCK_INFO" ]; then
-              echo "Lock details:"
-              echo "$LOCK_INFO" | jq '.'
-              echo ""
-
-              # Extract lock ID from JSON
-              LOCK_ID=$(echo "$LOCK_INFO" | jq -r '.ID // empty' 2>/dev/null)
-
-              if [ -n "$LOCK_ID" ]; then
-                echo "Found stale lock ID: $LOCK_ID"
-                echo "Attempting to force-unlock..."
-
-                if terraform force-unlock -force "$LOCK_ID"; then
-                  echo "✓ Successfully cleared stale lock"
-                else
-                  echo "✗ Failed to unlock (may require manual intervention)"
-                  echo "  Manual command: terraform force-unlock -force $LOCK_ID"
-                fi
-              else
-                echo "Could not extract lock ID from lock file"
-                echo "Lock may need to be cleared manually"
-              fi
-            fi
-          else
-            echo "✓ No lock detected - state is accessible"
+            echo "::error::=========================================="
+            echo "::error::CRITICAL: Lock file still exists after clearing step!"
+            echo "::error::This should never happen and indicates a serious issue."
+            echo "::error::=========================================="
+            exit 1
           fi
 
-          # Ensure clean exit
-          exit 0
+          echo "✓ Confirmed: No lock file in S3"
+          echo "✓ Safe to proceed with worker operations"
 
       - name: Backup Terraform state
         working-directory: ./terraform
@@ -1925,11 +1867,12 @@ jobs:
                 echo "Waiting ${WAIT_TIME}s before retry..."
                 sleep $WAIT_TIME
 
-                # Clear potential state lock
+                # Check for state lock (do NOT clear - would bypass age validation)
                 echo "Checking for state lock..."
                 if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
-                  echo "State lock detected, clearing..."
-                  aws s3 rm s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info || true
+                  echo "::warning::State lock detected during retry"
+                  echo "::warning::If lock is stale, cancel workflow and re-run to trigger proper lock clearing"
+                  echo "::warning::Do NOT clear lock here - would bypass 5-minute age safety check"
                 fi
               fi
             fi
@@ -2003,7 +1946,7 @@ jobs:
           NODE_NAME: ${{ matrix.node }}
           # SECURITY: Secret passed directly to script, not stored in env var
           # Worker node configs: TALOS_MACHINE_CONFIG_WORK_1, WORK_2, WORK_3, etc.
-          NODE_CONFIG_SECRET: ${{ secrets[format('TALOS_MACHINE_CONFIG_{0}', matrix.node == 'k8s-work-1' && 'WORK_1' || matrix.node == 'k8s-work-2' && 'WORK_2' || matrix.node == 'k8s-work-3' && 'WORK_3' || matrix.node == 'k8s-work-4' && 'WORK_4' || matrix.node == 'k8s-work-5' && 'WORK_5' || matrix.node == 'k8s-work-6' && 'WORK_6' || matrix.node == 'k8s-work-7' && 'WORK_7' || matrix.node == 'k8s-work-8' && 'WORK_8' || matrix.node == 'k8s-work-9' && 'WORK_9' || matrix.node == 'k8s-work-10' && 'WORK_10' || matrix.node == 'k8s-work-11' && 'WORK_11' || matrix.node == 'k8s-work-12' && 'WORK_12')] }}
+          NODE_CONFIG_SECRET: ${{ secrets[format('TALOS_MACHINE_CONFIG_{0}', matrix.secret_suffix)] }}
         shell: bash
         timeout-minutes: 5
         run: |
@@ -2493,7 +2436,7 @@ jobs:
         pair_id: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Setup cluster tools
         uses: ./.github/actions/setup-cluster-tools
@@ -2571,7 +2514,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
       - name: Setup cluster tools
         uses: ./.github/actions/setup-cluster-tools
