@@ -4,6 +4,10 @@ inputs:
   terraform_state_bucket:
     description: S3 bucket name containing Terraform state
     required: true
+  terraform_state_key:
+    description: S3 state file key (e.g., terraform.tfstate)
+    required: false
+    default: terraform.tfstate
   proxmox_username:
     description: Proxmox username for Terraform authentication
     required: true
@@ -28,8 +32,9 @@ runs:
         echo ""
 
         # Fast check: Query S3 directly for lock file (< 1 second vs 3+ minutes for terraform plan)
-        # S3 lock file: .terraform.tfstate.lock.info contains lock metadata as JSON
-        LOCK_FILE="s3://${{ inputs.terraform_state_bucket }}/.terraform.tfstate.lock.info"
+        # S3 lock file: <state-key>.lock.info contains lock metadata as JSON
+        # Lock file path is derived from the state file key (e.g., terraform.tfstate → terraform.tfstate.lock.info)
+        LOCK_FILE="s3://${{ inputs.terraform_state_bucket }}/${{ inputs.terraform_state_key }}.lock.info"
 
         if ! aws s3 ls "$LOCK_FILE" 2>/dev/null; then
           echo "✓ No lock detected - state is accessible"
@@ -113,7 +118,7 @@ runs:
           echo "::error::  https://github.com/${{ inputs.github_repository }}/actions"
           echo "::error::"
           echo "::error::If you're certain the lock is stale, manually remove it:"
-          echo "::error::  aws s3 rm s3://${{ inputs.terraform_state_bucket }}/.terraform.tfstate.lock.info"
+          echo "::error::  aws s3 rm s3://${{ inputs.terraform_state_bucket }}/${{ inputs.terraform_state_key }}.lock.info"
           echo "::error::=========================================="
           exit 1
         fi
