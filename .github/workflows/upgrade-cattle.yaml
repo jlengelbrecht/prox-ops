@@ -178,6 +178,7 @@ jobs:
         timeout-minutes: 3
         with:
           terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
           proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
           github_repository: ${{ github.repository }}
@@ -187,7 +188,7 @@ jobs:
         timeout-minutes: 1
         run: |
           echo "Final verification: Ensuring no lock exists before Terraform plan..."
-          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info"
 
           # Wait for S3 eventual consistency
           sleep 3
@@ -657,6 +658,7 @@ jobs:
         timeout-minutes: 3
         with:
           terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
           proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
           github_repository: ${{ github.repository }}
@@ -666,7 +668,7 @@ jobs:
         timeout-minutes: 1
         run: |
           echo "Final verification: Ensuring no lock exists before controller operations..."
-          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info"
 
           # Wait for S3 eventual consistency
           sleep 3
@@ -767,7 +769,7 @@ jobs:
           echo "Creating state backup before destroy..."
 
           # SECURITY: Check for state lock before proceeding
-          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
+          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info 2>/dev/null; then
             echo "::error::Terraform state is locked - another operation in progress"
             echo "::error::Wait for other operation to complete or manually remove lock if stale"
             exit 1
@@ -1693,6 +1695,7 @@ jobs:
         timeout-minutes: 3
         with:
           terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
           proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
           github_repository: ${{ github.repository }}
@@ -1702,7 +1705,7 @@ jobs:
         timeout-minutes: 1
         run: |
           echo "Final verification: Ensuring no lock exists before worker operations..."
-          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info"
+          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info"
 
           # Wait for S3 eventual consistency
           sleep 3
@@ -1724,7 +1727,7 @@ jobs:
           echo "Creating state backup before destroy..."
 
           # SECURITY: Check for state lock before proceeding
-          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
+          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info 2>/dev/null; then
             echo "::error::Terraform state is locked - another operation in progress"
             echo "::error::Wait for other operation to complete or manually remove lock if stale"
             exit 1
@@ -1872,7 +1875,7 @@ jobs:
 
                 # Check for state lock (do NOT clear - would bypass age validation)
                 echo "Checking for state lock..."
-                if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/.terraform.tfstate.lock.info 2>/dev/null; then
+                if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.lock.info 2>/dev/null; then
                   echo "::warning::State lock detected during retry"
                   echo "::warning::If lock is stale, cancel workflow and re-run to trigger proper lock clearing"
                   echo "::warning::Do NOT clear lock here - would bypass 5-minute age safety check"

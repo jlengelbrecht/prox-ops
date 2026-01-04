@@ -38,6 +38,22 @@ runs:
         BUCKET="${{ inputs.terraform_state_bucket }}"
         KEY="${{ inputs.terraform_state_key }}.lock.info"
 
+        # Validate state key to prevent path traversal and injection
+        STATE_KEY="${{ inputs.terraform_state_key }}"
+        if [[ "$STATE_KEY" =~ \.\.|^/|// ]]; then
+          echo "::error::Invalid terraform_state_key: contains path traversal characters"
+          echo "::error::State key must not contain '..' or leading/double slashes"
+          echo "::error::Provided: $STATE_KEY"
+          exit 1
+        fi
+
+        if [[ ! "$STATE_KEY" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+          echo "::error::Invalid terraform_state_key: contains unsafe characters"
+          echo "::error::Allowed: alphanumerics, dots, underscores, hyphens, forward slashes"
+          echo "::error::Provided: $STATE_KEY"
+          exit 1
+        fi
+
         echo "Checking for lock file at: $LOCK_FILE"
 
         # Try multiple detection methods (some locks are invisible to 'ls' but block operations)
