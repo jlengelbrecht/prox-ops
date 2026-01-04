@@ -227,8 +227,8 @@ except:
             exit 0
           fi
 
-          # Check if this is actually a lock error
-          if ! echo "$LOCK_OUTPUT" | grep -qi "lock\|locked"; then
+          # Check if this is actually a state lock error (not other "lock" mentions)
+          if ! echo "$LOCK_OUTPUT" | grep -qiE "Error.*state lock|state is currently locked|Error acquiring.*lock|Failed to acquire.*lock|Could not acquire.*lock"; then
             echo "::error::Terraform plan failed for non-lock reason:"
             echo "$LOCK_OUTPUT"
             exit 1
