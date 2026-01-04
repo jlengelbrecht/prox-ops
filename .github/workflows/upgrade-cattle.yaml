@@ -65,6 +65,10 @@ concurrency:
   group: cattle-upgrade-v2
   cancel-in-progress: true
 
+# Explicit minimal permissions for security (prevents broad default token access)
+permissions:
+  contents: read      # Read repository contents
+
 env:
   AWS_REGION: us-east-2
   TERRAFORM_STATE_BUCKET: prox-ops-terraform-state
