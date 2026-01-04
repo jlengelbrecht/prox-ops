@@ -280,8 +280,12 @@ runs:
             echo "lock_cleared=true" >> "$GITHUB_OUTPUT"
             echo "lock_id=$LOCK_ID" >> "$GITHUB_OUTPUT"
 
-            # Continue to next iteration to verify lock is truly cleared
-            continue
+            # Lock successfully cleared and verified via S3
+            # Exit successfully instead of verifying with another terraform plan
+            # (terraform plan can take >5min to download providers and analyze state)
+            echo ""
+            echo "✓ Lock detection and clearing completed successfully"
+            exit 0
           else
             echo "::error::Failed to clear lock"
             exit 1
