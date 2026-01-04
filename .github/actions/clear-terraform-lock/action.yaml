@@ -108,15 +108,7 @@ runs:
             echo $(( (current_epoch - lock_epoch) / 60 ))
           # Fall back to Python for macOS or other systems
           elif command -v python3 &>/dev/null; then
-            lock_epoch=$(python3 -c "
-import sys
-from datetime import datetime
-try:
-    dt = datetime.strptime(sys.argv[1], '%Y-%m-%d %H:%M:%S')
-    print(int(dt.timestamp()))
-except:
-    print('0')
-" "$created" 2>/dev/null || echo "0")
+            lock_epoch=$(python3 -c 'import sys; from datetime import datetime; dt = datetime.strptime(sys.argv[1], "%Y-%m-%d %H:%M:%S") if sys.argv[1] else None; print(int(dt.timestamp()) if dt else 0)' "$created" 2>/dev/null || echo "0")
             if [ "$lock_epoch" != "0" ]; then
               echo $(( (current_epoch - lock_epoch) / 60 ))
             else
