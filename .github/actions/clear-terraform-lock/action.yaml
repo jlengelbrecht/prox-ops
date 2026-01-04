@@ -108,7 +108,7 @@ runs:
             echo $(( (current_epoch - lock_epoch) / 60 ))
           # Fall back to Python for macOS or other systems
           elif command -v python3 &>/dev/null; then
-            lock_epoch=$(python3 -c 'import sys; from datetime import datetime; dt = datetime.strptime(sys.argv[1], "%Y-%m-%d %H:%M:%S") if sys.argv[1] else None; print(int(dt.timestamp()) if dt else 0)' "$created" 2>/dev/null || echo "0")
+            lock_epoch=$(python3 -c 'import sys; from datetime import datetime; s = sys.argv[1] if len(sys.argv) > 1 else ""; print(int(datetime.strptime(s, "%Y-%m-%d %H:%M:%S").timestamp()) if s else 0)' "$created" 2>/dev/null || echo "0")
             if [ "$lock_epoch" != "0" ]; then
               echo $(( (current_epoch - lock_epoch) / 60 ))
             else
@@ -280,8 +280,13 @@ runs:
             echo "lock_cleared=true" >> "$GITHUB_OUTPUT"
             echo "lock_id=$LOCK_ID" >> "$GITHUB_OUTPUT"
 
-            # Continue to next iteration to verify lock is truly cleared
-            continue
+            # Lock successfully cleared and verified via S3 only
+            # We do NOT run an additional terraform plan after clearing the lock
+            # The only terraform plan is the initial detection run above (line 215),
+            # which can take >5min to download providers and analyze state
+            echo ""
+            echo "✓ Lock detection and clearing completed successfully"
+            exit 0
           else
             echo "::error::Failed to clear lock"
             exit 1
