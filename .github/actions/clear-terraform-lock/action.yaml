@@ -106,7 +106,8 @@ runs:
             LOCK_AGE=$(( (CURRENT_EPOCH - LOCK_EPOCH) / 60 ))
           # Fallback to Python
           elif command -v python3 &>/dev/null; then
-            LOCK_EPOCH=$(python3 -c "from datetime import datetime; import sys; ts = sys.argv[1].replace('T', ' ').split('.')[0]; dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S'); print(int(dt.timestamp()))" "$LOCK_CREATED" 2>/dev/null || echo "0")
+            # Use UTC-aware parsing to handle timestamps correctly on any runner timezone
+            LOCK_EPOCH=$(python3 -c "from datetime import datetime, timezone; import sys; ts = sys.argv[1].replace('T', ' ').split('.')[0]; dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc); print(int(dt.timestamp()))" "$LOCK_CREATED" 2>/dev/null || echo "0")
             if [ "$LOCK_EPOCH" != "0" ]; then
               LOCK_AGE=$(( (CURRENT_EPOCH - LOCK_EPOCH) / 60 ))
             fi
@@ -150,8 +151,7 @@ runs:
           exit 1
         fi
 
-        # Verify deletion (S3 eventual consistency)
-        sleep 2
+        # Verify deletion (S3 has strong read-after-write consistency)
         if aws s3api head-object --bucket "$STATE_BUCKET" --key "$LOCK_FILE" 2>/dev/null; then
           echo "::error::Lock file still exists after deletion attempt!"
           echo "::endgroup::"
@@ -162,4 +162,13 @@ runs:
         echo "Lock successfully cleared!"
         echo "lock_cleared=true" >> "$GITHUB_OUTPUT"
         echo "lock_id=${LOCK_ID}" >> "$GITHUB_OUTPUT"
+
+        # Attribution logging
+        if [ -n "${WORKFLOW_RUN_ID}" ]; then
+          echo "Cleared by workflow run: ${WORKFLOW_RUN_ID}"
+          echo "### 🔓 Terraform Lock Cleared" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Lock ID**: ${LOCK_ID:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Age**: ${LOCK_AGE} minutes" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Cleared by**: Run ${WORKFLOW_RUN_ID}" >> "$GITHUB_STEP_SUMMARY"
+        fi
         echo "::endgroup::"
