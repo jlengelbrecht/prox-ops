@@ -172,37 +172,13 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
-      # Error-driven Terraform state lock detection and clearing (S3 native locking compatible)
-      - name: Clear stale Terraform locks
+      # S3-native lock clearing - runs immediately before terraform operations
+      - name: Clear stale Terraform locks (pre-plan)
         uses: ./.github/actions/clear-terraform-lock
-        timeout-minutes: 2
+        timeout-minutes: 1
         with:
           terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
           terraform_state_key: terraform.tfstate
-          proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-          github_repository: ${{ github.repository }}
-
-      - name: Verify state lock is clear before planning
-        working-directory: ./terraform
-        timeout-minutes: 1
-        run: |
-          echo "Final verification: Ensuring no lock exists before Terraform plan..."
-          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock"
-
-          # Wait for S3 eventual consistency
-          sleep 3
-
-          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
-            echo "::error::=========================================="
-            echo "::error::CRITICAL: Lock file still exists after clearing step!"
-            echo "::error::This should never happen and indicates a serious issue."
-            echo "::error::=========================================="
-            exit 1
-          fi
-
-          echo "✓ Confirmed: No lock file in S3"
-          echo "✓ Safe to proceed with Terraform operations"
 
       - name: Plan template changes
         working-directory: ./terraform
@@ -582,6 +558,15 @@ jobs:
           **Next**: Control plane and worker nodes will be upgraded sequentially
           EOF
 
+      # CRITICAL: Cleanup any stale locks left by this job on failure
+      - name: Cleanup Terraform locks on failure
+        if: failure()
+        uses: ./.github/actions/clear-terraform-lock
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
+          force_clear: "true"
+
   # ==========================================================================
   # PHASE 2: CONTROL PLANE UPGRADE (SEQUENTIAL)
   # ==========================================================================
@@ -651,38 +636,6 @@ jobs:
       - name: Initialize Terraform
         working-directory: ./terraform
         run: terraform init
-
-      # Error-driven Terraform state lock detection and clearing (S3 native locking compatible)
-      - name: Clear stale Terraform locks
-        uses: ./.github/actions/clear-terraform-lock
-        timeout-minutes: 2
-        with:
-          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
-          terraform_state_key: terraform.tfstate
-          proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-          github_repository: ${{ github.repository }}
-
-      - name: Verify state lock is clear before operations
-        working-directory: ./terraform
-        timeout-minutes: 1
-        run: |
-          echo "Final verification: Ensuring no lock exists before controller operations..."
-          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock"
-
-          # Wait for S3 eventual consistency
-          sleep 3
-
-          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
-            echo "::error::=========================================="
-            echo "::error::CRITICAL: Lock file still exists after clearing step!"
-            echo "::error::This should never happen and indicates a serious issue."
-            echo "::error::=========================================="
-            exit 1
-          fi
-
-          echo "✓ Confirmed: No lock file in S3"
-          echo "✓ Safe to proceed with controller operations"
 
       - name: Validate etcd quorum health
         run: |
@@ -778,9 +731,17 @@ jobs:
           aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
             s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node.name }}-$(date +%s).tfstate
 
+      # S3-native lock clearing - immediately before terraform operations
+      - name: Clear stale Terraform locks (pre-destroy-plan)
+        uses: ./.github/actions/clear-terraform-lock
+        timeout-minutes: 1
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
+
       - name: Plan controller destruction
         working-directory: ./terraform
-        timeout-minutes: 5
+        timeout-minutes: 15
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
@@ -923,9 +884,17 @@ jobs:
 
           echo "::endgroup::"
 
+      # S3-native lock clearing - immediately before terraform operations
+      - name: Clear stale Terraform locks (pre-create-plan)
+        uses: ./.github/actions/clear-terraform-lock
+        timeout-minutes: 1
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
+
       - name: Plan controller recreation
         working-directory: ./terraform
-        timeout-minutes: 5
+        timeout-minutes: 15
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
@@ -1008,6 +977,14 @@ jobs:
           echo "Validation passed - safe to recreate ${{ matrix.node.name }}"
           echo "================================================================"
           echo "::endgroup::"
+
+      # S3-native lock clearing - immediately before terraform operations
+      - name: Clear stale Terraform locks (pre-apply)
+        uses: ./.github/actions/clear-terraform-lock
+        timeout-minutes: 1
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
 
       - name: Recreate VM with retry
         working-directory: ./terraform
@@ -1413,6 +1390,15 @@ jobs:
           **Job Status**: $JOB_STATUS
           EOF
 
+      # CRITICAL: Cleanup any stale locks left by this job on failure
+      - name: Cleanup Terraform locks on failure
+        if: failure()
+        uses: ./.github/actions/clear-terraform-lock
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
+          force_clear: "true"
+
   # ==========================================================================
   # PHASE 2.5: PRE-WORKER HEALTH VALIDATION
   # ==========================================================================
@@ -1689,38 +1675,6 @@ jobs:
           echo "✅ Node drained successfully"
           echo "::endgroup::"
 
-      # Multi-layer Terraform state lock clearing (composite action for DRY)
-      - name: Clear stale Terraform locks
-        uses: ./.github/actions/clear-terraform-lock
-        timeout-minutes: 2
-        with:
-          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
-          terraform_state_key: terraform.tfstate
-          proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-          github_repository: ${{ github.repository }}
-
-      - name: Verify state lock is clear before operations
-        working-directory: ./terraform
-        timeout-minutes: 1
-        run: |
-          echo "Final verification: Ensuring no lock exists before worker operations..."
-          LOCK_FILE="s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock"
-
-          # Wait for S3 eventual consistency
-          sleep 3
-
-          if aws s3 ls "$LOCK_FILE" 2>/dev/null; then
-            echo "::error::=========================================="
-            echo "::error::CRITICAL: Lock file still exists after clearing step!"
-            echo "::error::This should never happen and indicates a serious issue."
-            echo "::error::=========================================="
-            exit 1
-          fi
-
-          echo "✓ Confirmed: No lock file in S3"
-          echo "✓ Safe to proceed with worker operations"
-
       - name: Backup Terraform state
         working-directory: ./terraform
         run: |
@@ -1736,9 +1690,17 @@ jobs:
           aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
             s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node }}-$(date +%s).tfstate
 
+      # S3-native lock clearing - immediately before terraform operations
+      - name: Clear stale Terraform locks (pre-destroy-plan)
+        uses: ./.github/actions/clear-terraform-lock
+        timeout-minutes: 1
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
+
       - name: Plan worker destruction
         working-directory: ./terraform
-        timeout-minutes: 5
+        timeout-minutes: 15
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
@@ -1925,9 +1887,17 @@ jobs:
           echo "✅ Template verified and ready for VM creation"
           echo "::endgroup::"
 
+      # S3-native lock clearing - immediately before terraform operations
+      - name: Clear stale Terraform locks (pre-apply)
+        uses: ./.github/actions/clear-terraform-lock
+        timeout-minutes: 1
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
+
       - name: Recreate VM from new template
         working-directory: ./terraform
-        timeout-minutes: 10
+        timeout-minutes: 15
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
@@ -2413,6 +2383,15 @@ jobs:
           **New Version**: v$NEW_VERSION
           **Job Status**: $JOB_STATUS
           EOF
+
+      # CRITICAL: Cleanup any stale locks left by this job on failure
+      - name: Cleanup Terraform locks on failure
+        if: failure()
+        uses: ./.github/actions/clear-terraform-lock
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
+          force_clear: "true"
 
   # ==========================================================================
   # PHASE 3.5: BETWEEN-PAIR VALIDATION (SAFE/STANDARD MODES)

@@ -1,5 +1,5 @@
 name: Clear Terraform State Lock
-description: Detect and clear stale Terraform locks using error output parsing (S3 native locking compatible)
+description: S3-native lock clearing for Terraform state (no terraform commands - fast and reliable)
 
 inputs:
   terraform_state_bucket:
@@ -9,301 +9,157 @@ inputs:
     description: S3 state file key (e.g., terraform.tfstate)
     required: false
     default: terraform.tfstate
-  proxmox_username:
-    description: Proxmox username for Terraform authentication
-    required: true
-  proxmox_password:
-    description: Proxmox password/token for Terraform authentication
-    required: true
-  github_repository:
-    description: GitHub repository name for error messages
-    required: true
   lock_age_threshold_minutes:
     description: Minimum age (in minutes) before a lock is considered stale
     required: false
     default: "5"
-  max_retry_attempts:
-    description: Maximum retry attempts after clearing lock
+  force_clear:
+    description: Force clear lock regardless of age (use with caution)
     required: false
-    default: "3"
+    default: "false"
+  workflow_run_id:
+    description: Current workflow run ID for attribution tracking
+    required: false
+    default: ""
 
 outputs:
   lock_cleared:
     description: Whether a lock was detected and cleared
-    value: ${{ steps.detect-and-clear.outputs.lock_cleared }}
+    value: ${{ steps.clear-lock.outputs.lock_cleared }}
   lock_id:
     description: The lock ID that was cleared (if any)
-    value: ${{ steps.detect-and-clear.outputs.lock_id }}
+    value: ${{ steps.clear-lock.outputs.lock_id }}
+  lock_age_minutes:
+    description: Age of the cleared lock in minutes
+    value: ${{ steps.clear-lock.outputs.lock_age_minutes }}
 
 runs:
   using: composite
   steps:
-    - name: Detect and clear stale Terraform locks
-      id: detect-and-clear
+    - name: Clear Terraform lock via S3 API
+      id: clear-lock
       shell: bash
-      working-directory: ./terraform
       env:
-        TF_VAR_proxmox_username: ${{ inputs.proxmox_username }}
-        TF_VAR_proxmox_password: ${{ inputs.proxmox_password }}
-        LOCK_AGE_THRESHOLD: ${{ inputs.lock_age_threshold_minutes }}
-        MAX_RETRIES: ${{ inputs.max_retry_attempts }}
         STATE_BUCKET: ${{ inputs.terraform_state_bucket }}
         STATE_KEY: ${{ inputs.terraform_state_key }}
-        GITHUB_REPO: ${{ inputs.github_repository }}
+        LOCK_AGE_THRESHOLD: ${{ inputs.lock_age_threshold_minutes }}
+        FORCE_CLEAR: ${{ inputs.force_clear }}
+        WORKFLOW_RUN_ID: ${{ inputs.workflow_run_id }}
       run: |
         set -euo pipefail
 
-        echo "=============================================="
-        echo "Terraform Lock Detection and Clearing"
-        echo "=============================================="
-        echo "Backend: s3://${STATE_BUCKET}/${STATE_KEY}"
-        echo "Lock age threshold: ${LOCK_AGE_THRESHOLD} minutes"
-        echo "Max retry attempts: ${MAX_RETRIES}"
+        LOCK_FILE="${STATE_KEY}.tflock"
+
+        echo "::group::S3-Native Lock Detection"
+        echo "Bucket: ${STATE_BUCKET}"
+        echo "Lock file: ${LOCK_FILE}"
+        echo "Age threshold: ${LOCK_AGE_THRESHOLD} minutes"
+        echo "Force clear: ${FORCE_CLEAR}"
         echo ""
 
         # Initialize outputs
         echo "lock_cleared=false" >> "$GITHUB_OUTPUT"
         echo "lock_id=" >> "$GITHUB_OUTPUT"
+        echo "lock_age_minutes=0" >> "$GITHUB_OUTPUT"
 
-        #######################################################################
-        # FUNCTION: Parse lock info from Terraform error output
-        #######################################################################
-        parse_lock_info() {
-          local error_output="$1"
+        # Check if lock file exists
+        if ! aws s3api head-object --bucket "$STATE_BUCKET" --key "$LOCK_FILE" 2>/dev/null; then
+          echo "No lock file exists in S3"
+          echo "Safe to proceed with Terraform operations"
+          echo "::endgroup::"
+          exit 0
+        fi
 
-          # Extract lock ID (format: "ID:        <uuid>")
-          LOCK_ID=$(echo "$error_output" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1 || true)
+        echo "Lock file detected! Downloading content..."
 
-          # Extract creation time (format: "Created:   2026-01-03 04:58:39.123456 +0000 UTC")
-          LOCK_CREATED=$(echo "$error_output" | grep -oP 'Created:\s*\K\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}' | head -1 || true)
-
-          # Extract who holds the lock
-          LOCK_WHO=$(echo "$error_output" | grep -oP 'Who:\s*\K\S+' | head -1 || true)
-
-          # Extract operation type
-          LOCK_OPERATION=$(echo "$error_output" | grep -oP 'Operation:\s*\K\S+' | head -1 || true)
-
-          # Export for use in caller
-          export LOCK_ID LOCK_CREATED LOCK_WHO LOCK_OPERATION
+        # Download and parse lock file
+        LOCK_CONTENT=$(aws s3 cp "s3://${STATE_BUCKET}/${LOCK_FILE}" - 2>/dev/null) || {
+          echo "::error::Failed to download lock file"
+          exit 1
         }
 
-        #######################################################################
-        # FUNCTION: Calculate lock age in minutes
-        #######################################################################
-        calculate_lock_age() {
-          local created="$1"
+        echo "Lock content:"
+        echo "$LOCK_CONTENT" | jq '.' 2>/dev/null || echo "$LOCK_CONTENT"
+        echo ""
 
-          if [ -z "$created" ]; then
-            echo "0"
-            return
-          fi
+        # Extract lock metadata
+        LOCK_ID=$(echo "$LOCK_CONTENT" | jq -r '.ID // empty' 2>/dev/null || true)
+        LOCK_WHO=$(echo "$LOCK_CONTENT" | jq -r '.Who // empty' 2>/dev/null || true)
+        LOCK_OPERATION=$(echo "$LOCK_CONTENT" | jq -r '.Operation // empty' 2>/dev/null || true)
+        LOCK_CREATED=$(echo "$LOCK_CONTENT" | jq -r '.Created // empty' 2>/dev/null || true)
 
-          local current_epoch
-          local lock_epoch
+        echo "Lock ID:       ${LOCK_ID:-unknown}"
+        echo "Who:           ${LOCK_WHO:-unknown}"
+        echo "Operation:     ${LOCK_OPERATION:-unknown}"
+        echo "Created:       ${LOCK_CREATED:-unknown}"
+        echo ""
 
-          current_epoch=$(date -u +%s)
+        # Calculate lock age
+        LOCK_AGE=0
+        if [ -n "$LOCK_CREATED" ]; then
+          # Parse ISO 8601 timestamp (format: 2026-01-05T20:08:19.350906573Z)
+          LOCK_TIMESTAMP=$(echo "$LOCK_CREATED" | cut -d'.' -f1 | tr 'T' ' ')
+          CURRENT_EPOCH=$(date -u +%s)
 
           # Try GNU date first (Linux)
-          if lock_epoch=$(date -u -d "$created" +%s 2>/dev/null); then
-            echo $(( (current_epoch - lock_epoch) / 60 ))
-          # Fall back to Python for macOS or other systems
+          if LOCK_EPOCH=$(date -u -d "$LOCK_TIMESTAMP" +%s 2>/dev/null); then
+            LOCK_AGE=$(( (CURRENT_EPOCH - LOCK_EPOCH) / 60 ))
+          # Fallback to Python
           elif command -v python3 &>/dev/null; then
-            lock_epoch=$(python3 -c 'import sys; from datetime import datetime; s = sys.argv[1] if len(sys.argv) > 1 else ""; print(int(datetime.strptime(s, "%Y-%m-%d %H:%M:%S").timestamp()) if s else 0)' "$created" 2>/dev/null || echo "0")
-            if [ "$lock_epoch" != "0" ]; then
-              echo $(( (current_epoch - lock_epoch) / 60 ))
-            else
-              echo "0"
-            fi
-          else
-            echo "0"
-          fi
-        }
-
-        #######################################################################
-        # FUNCTION: Attempt to clear lock
-        #######################################################################
-        clear_lock() {
-          local lock_id="$1"
-          local lock_age="$2"
-
-          echo ""
-          echo "=============================================="
-          echo "STALE LOCK DETECTED"
-          echo "=============================================="
-          echo "Lock ID:     $lock_id"
-          echo "Lock Age:    $lock_age minutes"
-          echo "Who:         ${LOCK_WHO:-unknown}"
-          echo "Operation:   ${LOCK_OPERATION:-unknown}"
-          echo "Created:     ${LOCK_CREATED:-unknown}"
-          echo "=============================================="
-          echo ""
-
-          # Safety check: Only clear locks older than threshold
-          if [ "$lock_age" -lt "$LOCK_AGE_THRESHOLD" ]; then
-            echo "::error::=============================================="
-            echo "::error::LOCK TOO RECENT - REFUSING TO CLEAR"
-            echo "::error::=============================================="
-            echo "::error::"
-            echo "::error::Lock is only $lock_age minutes old (threshold: $LOCK_AGE_THRESHOLD minutes)"
-            echo "::error::Another Terraform operation may be legitimately in progress."
-            echo "::error::"
-            echo "::error::Check for concurrent workflows:"
-            echo "::error::  https://github.com/${GITHUB_REPO}/actions"
-            echo "::error::"
-            echo "::error::If you're certain the lock is stale, manually clear it:"
-            echo "::error::  cd terraform && terraform force-unlock -force $lock_id"
-            echo "::error::=============================================="
-            return 1
-          fi
-
-          echo "Lock is $lock_age minutes old (>= $LOCK_AGE_THRESHOLD threshold) - safe to clear"
-          echo ""
-
-          # LAYER 1: Use terraform force-unlock
-          echo "Attempting terraform force-unlock..."
-          if terraform force-unlock -force "$lock_id" 2>&1; then
-            echo "✓ terraform force-unlock succeeded"
-          else
-            echo "⚠️  terraform force-unlock command returned non-zero (may be expected)"
-          fi
-
-          # LAYER 2: Direct S3 deletion as fallback
-          # With S3 native locking, the lock file is <state-key>.tflock
-          echo ""
-          echo "Verifying lock removal via S3..."
-          sleep 2  # S3 eventual consistency
-
-          local lock_file="${STATE_KEY}.tflock"
-
-          if aws s3api head-object --bucket "$STATE_BUCKET" --key "$lock_file" 2>/dev/null; then
-            echo "⚠️  Lock file still exists - attempting direct S3 deletion..."
-            if aws s3api delete-object --bucket "$STATE_BUCKET" --key "$lock_file" 2>/dev/null; then
-              echo "✓ Lock file deleted via S3 API"
-            else
-              echo "::error::Failed to delete lock file via S3 API"
-              return 1
-            fi
-          else
-            echo "✓ Lock file no longer exists in S3"
-          fi
-
-          # LAYER 3: Also check for legacy .lock.info file (migration safety)
-          local legacy_lock_file="${STATE_KEY}.lock.info"
-          if aws s3api head-object --bucket "$STATE_BUCKET" --key "$legacy_lock_file" 2>/dev/null; then
-            echo "⚠️  Legacy lock file (.lock.info) detected - cleaning up..."
-            aws s3api delete-object --bucket "$STATE_BUCKET" --key "$legacy_lock_file" 2>/dev/null || true
-            echo "✓ Legacy lock file removed"
-          fi
-
-          echo ""
-          echo "✓ Lock successfully cleared"
-          return 0
-        }
-
-        #######################################################################
-        # MAIN: Detection and clearing loop
-        #######################################################################
-        attempt=0
-        while [ $attempt -lt "$MAX_RETRIES" ]; do
-          attempt=$((attempt + 1))
-          echo ""
-          echo "=== Attempt $attempt of $MAX_RETRIES ==="
-          echo ""
-
-          # Run terraform plan with short lock timeout to detect locks
-          echo "Running terraform plan with 10s lock timeout..."
-          if LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=10s 2>&1); then
-            echo "✓ Terraform plan succeeded - no lock detected"
-            echo ""
-            echo "State is accessible. Proceeding with operations."
-            exit 0
-          fi
-
-          # Check if this is actually a state lock error (not other "lock" mentions)
-          if ! echo "$LOCK_OUTPUT" | grep -qiE "Error.*state lock|state is currently locked|Error acquiring.*lock|Failed to acquire.*lock|Could not acquire.*lock"; then
-            echo "::error::Terraform plan failed for non-lock reason:"
-            echo "$LOCK_OUTPUT"
-            exit 1
-          fi
-
-          echo "Lock error detected. Analyzing..."
-          echo ""
-
-          # Parse lock information from error output
-          parse_lock_info "$LOCK_OUTPUT"
-
-          if [ -z "$LOCK_ID" ]; then
-            echo "::error::Could not extract lock ID from error output"
-            echo "::error::Raw error output:"
-            echo "$LOCK_OUTPUT"
-            echo ""
-            echo "::error::Attempting direct S3 lock file detection..."
-
-            # Fallback: Try to detect and remove lock file directly
-            for lock_ext in ".tflock" ".lock.info"; do
-              lock_file="${STATE_KEY}${lock_ext}"
-              if aws s3api head-object --bucket "$STATE_BUCKET" --key "$lock_file" 2>/dev/null; then
-                echo "Found lock file: $lock_file"
-
-                # Download and display lock content
-                if LOCK_CONTENT=$(aws s3 cp "s3://${STATE_BUCKET}/${lock_file}" - 2>/dev/null); then
-                  echo "Lock content:"
-                  echo "$LOCK_CONTENT" | jq '.' 2>/dev/null || echo "$LOCK_CONTENT"
-
-                  # Extract lock ID from file content
-                  LOCK_ID=$(echo "$LOCK_CONTENT" | jq -r '.ID // empty' 2>/dev/null || true)
-                  if [ -n "$LOCK_ID" ]; then
-                    # Extract creation time from lock file
-                    LOCK_CREATED=$(echo "$LOCK_CONTENT" | jq -r '.Created // empty' 2>/dev/null | cut -d'.' -f1 | tr 'T' ' ' || true)
-                    break
-                  fi
-                fi
-              fi
-            done
-
-            if [ -z "$LOCK_ID" ]; then
-              echo "::error::Could not determine lock ID from any source"
-              exit 1
+            LOCK_EPOCH=$(python3 -c "from datetime import datetime; import sys; ts = sys.argv[1].replace('T', ' ').split('.')[0]; dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S'); print(int(dt.timestamp()))" "$LOCK_CREATED" 2>/dev/null || echo "0")
+            if [ "$LOCK_EPOCH" != "0" ]; then
+              LOCK_AGE=$(( (CURRENT_EPOCH - LOCK_EPOCH) / 60 ))
             fi
           fi
+        fi
 
-          # Calculate lock age
-          LOCK_AGE=$(calculate_lock_age "$LOCK_CREATED")
+        echo "Lock age: ${LOCK_AGE} minutes"
+        echo "lock_age_minutes=${LOCK_AGE}" >> "$GITHUB_OUTPUT"
+        echo "::endgroup::"
 
-          # Attempt to clear the lock
-          if clear_lock "$LOCK_ID" "$LOCK_AGE"; then
-            echo ""
-            echo "Lock cleared. Waiting 5 seconds for S3 consistency..."
-            sleep 5
+        # Decision: Clear or refuse
+        echo "::group::Lock Clearing Decision"
 
-            # Update outputs
-            echo "lock_cleared=true" >> "$GITHUB_OUTPUT"
-            echo "lock_id=$LOCK_ID" >> "$GITHUB_OUTPUT"
+        if [ "$FORCE_CLEAR" == "true" ]; then
+          echo "FORCE_CLEAR enabled - clearing lock regardless of age"
+        elif [ "$LOCK_AGE" -lt "$LOCK_AGE_THRESHOLD" ]; then
+          echo "::error::=============================================="
+          echo "::error::LOCK TOO RECENT - REFUSING TO CLEAR"
+          echo "::error::=============================================="
+          echo "::error::"
+          echo "::error::Lock is only ${LOCK_AGE} minutes old (threshold: ${LOCK_AGE_THRESHOLD} minutes)"
+          echo "::error::This may indicate a legitimate Terraform operation in progress."
+          echo "::error::"
+          echo "::error::If you're certain the lock is stale, use force_clear: 'true'"
+          echo "::error::=============================================="
+          echo "::endgroup::"
+          exit 1
+        else
+          echo "Lock is ${LOCK_AGE} minutes old (>= ${LOCK_AGE_THRESHOLD} threshold)"
+          echo "Safe to clear"
+        fi
 
-            # Lock successfully cleared and verified via S3 only
-            # We do NOT run an additional terraform plan after clearing the lock
-            # The only terraform plan is the initial detection run above (line 215),
-            # which can take >5min to download providers and analyze state
-            echo ""
-            echo "✓ Lock detection and clearing completed successfully"
-            exit 0
-          else
-            echo "::error::Failed to clear lock"
-            exit 1
-          fi
-        done
+        # Delete lock file
+        echo ""
+        echo "Deleting lock file from S3..."
+        if aws s3api delete-object --bucket "$STATE_BUCKET" --key "$LOCK_FILE" 2>/dev/null; then
+          echo "Lock file deleted"
+        else
+          echo "::error::Failed to delete lock file"
+          echo "::endgroup::"
+          exit 1
+        fi
 
-        # If we exhausted all retries, the lock keeps coming back
-        echo "::error::=============================================="
-        echo "::error::LOCK PERSISTS AFTER $MAX_RETRIES ATTEMPTS"
-        echo "::error::=============================================="
-        echo "::error::"
-        echo "::error::The lock keeps reappearing after being cleared."
-        echo "::error::This indicates an active concurrent operation."
-        echo "::error::"
-        echo "::error::Check for running workflows:"
-        echo "::error::  https://github.com/${GITHUB_REPO}/actions"
-        echo "::error::"
-        echo "::error::Or a long-running local terraform operation."
-        echo "::error::=============================================="
-        exit 1
+        # Verify deletion (S3 eventual consistency)
+        sleep 2
+        if aws s3api head-object --bucket "$STATE_BUCKET" --key "$LOCK_FILE" 2>/dev/null; then
+          echo "::error::Lock file still exists after deletion attempt!"
+          echo "::endgroup::"
+          exit 1
+        fi
+
+        echo ""
+        echo "Lock successfully cleared!"
+        echo "lock_cleared=true" >> "$GITHUB_OUTPUT"
+        echo "lock_id=${LOCK_ID}" >> "$GITHUB_OUTPUT"
+        echo "::endgroup::"
