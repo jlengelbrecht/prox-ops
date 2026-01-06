@@ -352,46 +352,13 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
-      - name: Clear stale Terraform locks
-        working-directory: ./terraform
-        continue-on-error: true
-        env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-        run: |
-          echo "Checking for stale Terraform state locks..."
-
-          # Try a terraform plan with short lock timeout to detect locks
-          # Capture both stdout and stderr to parse lock ID
-          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
-            echo "Lock detected. Output:"
-            echo "$LOCK_OUTPUT"
-
-            # Extract lock ID from error message (format: "ID: <uuid>")
-            # Use \K assertion for reliable regex across grep versions
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
-
-            if [ -n "$LOCK_ID" ]; then
-              echo ""
-              echo "Found stale lock ID: $LOCK_ID"
-              echo "Attempting to force-unlock..."
-
-              if terraform force-unlock -force "$LOCK_ID"; then
-                echo "✓ Successfully cleared stale lock"
-              else
-                echo "✗ Failed to unlock (may require manual intervention)"
-                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
-              fi
-            else
-              echo "Could not extract lock ID from error message"
-              echo "Lock may need to be cleared manually"
-            fi
-          else
-            echo "✓ No lock detected - state is accessible"
-          fi
-
-          # Ensure clean exit
-          exit 0
+      # S3-native lock clearing - runs immediately before terraform operations
+      - name: Clear stale Terraform locks (pre-plan)
+        uses: ./.github/actions/clear-terraform-lock
+        timeout-minutes: 1
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
 
       - name: Plan template changes
         working-directory: ./terraform
@@ -770,6 +737,16 @@ jobs:
 
           **Next**: Control plane and worker nodes will be upgraded sequentially
           EOF
+
+      # CRITICAL: Cleanup any stale locks left by this job on failure
+      - name: Cleanup Terraform locks on failure
+        if: failure()
+        uses: ./.github/actions/clear-terraform-lock
+        timeout-minutes: 2
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
+          force_clear: "true"
 
   # PHASE 2: CONTROL PLANE IN-PLACE UPGRADE
   # ==========================================================================
