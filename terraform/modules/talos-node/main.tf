@@ -130,9 +130,14 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
   scsi_hardware = "virtio-scsi-pci"
 
   # Agent
+  # Note: Timeout reduced to 30s because QEMU guest agent is not running on
+  # current Talos nodes (extension not included in schematic). This prevents
+  # terraform plan from waiting 15 minutes for agent response.
+  # TODO: Rebuild nodes with qemu-guest-agent extension, then remove timeout
   agent {
     enabled = true
     trim    = true
+    timeout = "30s"
   }
 
   # Serial console
