@@ -2134,6 +2134,7 @@ jobs:
                 sleep $WAIT_TIME
               elif grep -q "i/o timeout" "$ATTEMPT_LOG" 2>/dev/null; then
                 WAIT_TIME=$((ATTEMPT * BASE_WAIT * 2))
+                [[ $WAIT_TIME -gt 120 ]] && WAIT_TIME=120  # Cap at 2 minutes
                 echo "    Error type: I/O timeout - node may still be booting"
                 echo "    Waiting ${WAIT_TIME}s before retry..."
                 sleep $WAIT_TIME
