@@ -27,16 +27,16 @@ runs:
       shell: bash
       run: |
         echo "============================================"
-        echo "Installed tool versions (from .mise.toml):"
+        echo "Installed tool versions (CI-essential subset):"
         echo "============================================"
 
         # Verify critical tools are present (fail fast if missing)
         if ! command -v kubectl &>/dev/null; then
-          echo "❌ ERROR: kubectl not found - check .mise.toml"
+          echo "❌ ERROR: kubectl not found - check install_args"
           exit 1
         fi
         if ! command -v talosctl &>/dev/null; then
-          echo "❌ ERROR: talosctl not found - check .mise.toml"
+          echo "❌ ERROR: talosctl not found - check install_args"
           exit 1
         fi
 
