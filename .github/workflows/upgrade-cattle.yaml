@@ -28,6 +28,10 @@ on:
         description: 'Worker rollout strategy (safe: 1 pair at a time, standard: both in pair parallel, aggressive: multiple pairs parallel)'
         type: string
         default: standard
+      taint_templates:
+        description: Force template rebuild by tainting all template resources before plan
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       old_version:
@@ -58,6 +62,10 @@ on:
           - standard
           - aggressive
         default: standard
+      taint_templates:
+        description: Force template rebuild by tainting all template resources before plan
+        type: boolean
+        default: false
 
 # Prevent concurrent cattle upgrades (Terraform state lock protection)
 # Cancel old queued runs when new run starts (prevents zombie workflow blocking)
@@ -117,6 +125,10 @@ jobs:
             echo "Mode: Worker testing (2 workers only)"
           fi
 
+          if [[ "${{ inputs.taint_templates }}" == "true" ]]; then
+            echo "🔄 Taint Templates: ENABLED (all 8 template modules will be tainted for rebuild)"
+          fi
+
   # ==========================================================================
   # PHASE 1: TEMPLATE REBUILD (CRITICAL - MISSING IN PREVIOUS IMPLEMENTATION)
   # ==========================================================================
@@ -171,6 +183,70 @@ jobs:
       - name: Initialize Terraform
         working-directory: ./terraform
         run: terraform init
+
+      # Taint all template resources to force rebuild when checkbox is checked
+      # This eliminates the need to manually run terraform taint before the workflow
+      - name: Taint template resources (if requested)
+        if: inputs.taint_templates == true
+        working-directory: ./terraform
+        env:
+          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
+          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
+        run: |
+          echo "============================================"
+          echo "Tainting all 8 template modules for rebuild"
+          echo "============================================"
+
+          # List of all template modules (4 nodes × 2 templates each = 8 total)
+          TEMPLATES=(
+            "template_baldar_base"
+            "template_baldar_gpu"
+            "template_heimdall_base"
+            "template_heimdall_gpu"
+            "template_odin_base"
+            "template_odin_gpu"
+            "template_thor_base"
+            "template_thor_gpu"
+          )
+
+          TAINTED=0
+          SKIPPED=0
+          ERRORS=0
+
+          for template in "${TEMPLATES[@]}"; do
+            echo ""
+            echo "Processing module.$template..."
+
+            # Taint the create_template resource (this triggers full template rebuild)
+            # Capture output to distinguish "not found" from real errors
+            TAINT_OUTPUT=$(terraform taint "module.${template}.null_resource.create_template" 2>&1) || true
+
+            if echo "$TAINT_OUTPUT" | grep -q "has been marked as tainted"; then
+              echo "  ✅ Tainted module.${template}.null_resource.create_template"
+              TAINTED=$((TAINTED + 1))
+            elif echo "$TAINT_OUTPUT" | grep -qE "(does not exist|Resource not found|No matching resource)"; then
+              echo "  ⚠️  Skipped module.${template} (resource not in state yet)"
+              SKIPPED=$((SKIPPED + 1))
+            else
+              echo "  ❌ Error tainting module.${template}:"
+              echo "     $TAINT_OUTPUT"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          echo ""
+          echo "============================================"
+          echo "Taint Summary: $TAINTED tainted, $SKIPPED skipped, $ERRORS errors"
+          echo "============================================"
+
+          if [[ $ERRORS -gt 0 ]]; then
+            echo "::error::$ERRORS template(s) failed to taint due to errors (see logs above)"
+            exit 1
+          fi
+
+          if [[ $TAINTED -eq 0 ]]; then
+            echo "::warning::No templates were tainted. They may not exist in state yet."
+          fi
 
       # S3-native lock clearing - runs immediately before terraform operations
       - name: Clear stale Terraform locks (pre-plan)
