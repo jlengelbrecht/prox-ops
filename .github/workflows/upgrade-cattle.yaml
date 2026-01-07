@@ -2314,7 +2314,7 @@ jobs:
         if: matrix.is_gpu == true
         run: |
           echo "::group::GPU stabilization wait for ${{ matrix.node }}"
-          echo "Waiting 60s for NVIDIA components to initialize..."
+          echo "Waiting for NVIDIA components to initialize (up to 90s including stabilization)..."
           echo "This ensures:"
           echo "  - NVIDIA kernel modules are fully loaded"
           echo "  - NVIDIA device plugin DaemonSet is scheduled"
@@ -2322,16 +2322,24 @@ jobs:
           echo "  - Kubelet registers GPU resources"
 
           # Check if NVIDIA device plugin pod is running on this node
+          DEVICE_PLUGIN_FOUND=false
           for i in {1..12}; do
             NVIDIA_POD=$(kubectl get pods -n nvidia-device-plugin -l app=nvidia-device-plugin \
               -o wide 2>/dev/null | grep "${{ matrix.node }}" | grep -c Running || echo "0")
             if [[ "$NVIDIA_POD" -ge 1 ]]; then
               echo "✓ NVIDIA device plugin pod running on ${{ matrix.node }}"
+              DEVICE_PLUGIN_FOUND=true
               break
             fi
             echo "Waiting for NVIDIA device plugin pod... (attempt $i/12)"
             sleep 5
           done
+
+          # Warn if device plugin wasn't found (may still work if it starts during validation)
+          if [[ "$DEVICE_PLUGIN_FOUND" != "true" ]]; then
+            echo "::warning::NVIDIA device plugin pod not found on ${{ matrix.node }} after 60s"
+            echo "::warning::GPU validation may still succeed if device plugin starts shortly"
+          fi
 
           # Additional stabilization time for GPU resource registration
           echo "Waiting additional 30s for GPU resource registration..."
