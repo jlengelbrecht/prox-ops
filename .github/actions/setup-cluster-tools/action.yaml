@@ -27,6 +27,17 @@ runs:
         echo "============================================"
         echo "Installed tool versions (from .mise.toml):"
         echo "============================================"
+
+        # Verify critical tools are present (fail fast if missing)
+        if ! command -v kubectl &>/dev/null; then
+          echo "❌ ERROR: kubectl not found - check .mise.toml"
+          exit 1
+        fi
+        if ! command -v talosctl &>/dev/null; then
+          echo "❌ ERROR: talosctl not found - check .mise.toml"
+          exit 1
+        fi
+
         echo "  kubectl:   $(kubectl version --client -o json 2>/dev/null | jq -r '.clientVersion.gitVersion' || kubectl version --client 2>&1 | head -1)"
         echo "  talosctl:  $(talosctl version --client --short 2>/dev/null | grep Tag | awk '{print $2}' || echo 'version check failed')"
         echo "  flux:      $(flux version --client 2>/dev/null | head -1 || echo 'not available')"
@@ -80,3 +91,12 @@ runs:
         # Verify kubeconfig is valid
         echo "Verifying kubeconfig..."
         kubectl config view --minify
+
+        # Verify cluster connectivity
+        echo "Testing cluster API connectivity..."
+        if ! kubectl version --short &>/dev/null; then
+          echo "⚠️  WARNING: Generated kubeconfig is valid but cannot reach API server"
+          echo "This may indicate network issues or cluster being upgraded"
+          exit 1
+        fi
+        echo "✅ Cluster API server is reachable"

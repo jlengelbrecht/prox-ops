@@ -211,25 +211,38 @@ jobs:
 
           TAINTED=0
           SKIPPED=0
+          ERRORS=0
 
           for template in "${TEMPLATES[@]}"; do
             echo ""
             echo "Processing module.$template..."
 
             # Taint the create_template resource (this triggers full template rebuild)
-            if terraform taint "module.${template}.null_resource.create_template" 2>/dev/null; then
+            # Capture output to distinguish "not found" from real errors
+            TAINT_OUTPUT=$(terraform taint "module.${template}.null_resource.create_template" 2>&1) || true
+
+            if echo "$TAINT_OUTPUT" | grep -q "has been marked as tainted"; then
               echo "  ✅ Tainted module.${template}.null_resource.create_template"
               TAINTED=$((TAINTED + 1))
-            else
-              echo "  ⚠️  Could not taint module.${template} (may not exist in state)"
+            elif echo "$TAINT_OUTPUT" | grep -qE "(does not exist|Resource not found|No matching resource)"; then
+              echo "  ⚠️  Skipped module.${template} (resource not in state yet)"
               SKIPPED=$((SKIPPED + 1))
+            else
+              echo "  ❌ Error tainting module.${template}:"
+              echo "     $TAINT_OUTPUT"
+              ERRORS=$((ERRORS + 1))
             fi
           done
 
           echo ""
           echo "============================================"
-          echo "Taint Summary: $TAINTED tainted, $SKIPPED skipped"
+          echo "Taint Summary: $TAINTED tainted, $SKIPPED skipped, $ERRORS errors"
           echo "============================================"
+
+          if [[ $ERRORS -gt 0 ]]; then
+            echo "::error::$ERRORS template(s) failed to taint due to errors (see logs above)"
+            exit 1
+          fi
 
           if [[ $TAINTED -eq 0 ]]; then
             echo "::warning::No templates were tainted. They may not exist in state yet."
