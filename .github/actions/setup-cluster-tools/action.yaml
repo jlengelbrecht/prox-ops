@@ -1,48 +1,40 @@
 name: Setup Cluster Tools
-description: Install Node.js, kubectl, and configure kubeconfig for cluster access
+description: Install tools from mise (version-controlled) and configure kubeconfig for cluster access
 inputs:
   talosconfig:
     description: Base64-encoded Talos/Kubernetes config
     required: true
-  node-version:
-    description: Node.js version to install
+  working-directory:
+    description: Directory containing .mise.toml (defaults to repository root)
     required: false
-    default: '20'
+    default: '.'
 
 runs:
   using: composite
   steps:
-    - name: Setup Node.js (required for Terraform action)
-      uses: actions/setup-node@v4
+    # mise-action automatically reads .mise.toml from the working directory
+    # and installs all tools at the pinned versions
+    - name: Setup mise and install tools
+      uses: jdx/mise-action@v2
       with:
-        node-version: ${{ inputs.node-version }}
+        cache: true
+        working_directory: ${{ inputs.working-directory }}
+        # Uses ${{ github.token }} by default to avoid rate limits
 
-    - name: Install kubectl
+    - name: Verify tool versions
       shell: bash
       run: |
-        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl.sha256"
-        echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
-        chmod +x kubectl
-        mkdir -p "$HOME/.local/bin"
-        mv kubectl "$HOME/.local/bin/"
-        echo "$HOME/.local/bin" >> $GITHUB_PATH
-        # Use full path since $GITHUB_PATH updates don't take effect until next step
-        "$HOME/.local/bin/kubectl" version --client
-
-    - name: Install talosctl
-      shell: bash
-      run: |
-        # Get latest Talos release version dynamically
-        TALOS_VERSION=$(curl -sL https://api.github.com/repos/siderolabs/talos/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-        echo "Installing talosctl ${TALOS_VERSION}..."
-        curl -LO "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
-        curl -LO "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/sha512sum.txt"
-        grep talosctl-linux-amd64 sha512sum.txt | sha512sum --check
-        chmod +x talosctl-linux-amd64
-        mv talosctl-linux-amd64 "$HOME/.local/bin/talosctl"
-        # Use full path since $GITHUB_PATH updates don't take effect until next step
-        "$HOME/.local/bin/talosctl" version --client
+        echo "============================================"
+        echo "Installed tool versions (from .mise.toml):"
+        echo "============================================"
+        echo "  kubectl:   $(kubectl version --client -o json 2>/dev/null | jq -r '.clientVersion.gitVersion' || kubectl version --client 2>&1 | head -1)"
+        echo "  talosctl:  $(talosctl version --client --short 2>/dev/null | grep Tag | awk '{print $2}' || echo 'version check failed')"
+        echo "  flux:      $(flux version --client 2>/dev/null | head -1 || echo 'not available')"
+        echo "  helm:      $(helm version --short 2>/dev/null || echo 'not available')"
+        echo "  kustomize: $(kustomize version 2>/dev/null || echo 'not available')"
+        echo "  yq:        $(yq --version 2>/dev/null || echo 'not available')"
+        echo "  jq:        $(jq --version 2>/dev/null || echo 'not available')"
+        echo "============================================"
 
     - name: Setup kubeconfig
       shell: bash
@@ -62,7 +54,7 @@ runs:
         for NODE_IP in "${CONTROL_PLANE_IPS[@]}"; do
           echo "Attempting kubeconfig generation from control plane node: $NODE_IP"
 
-          if "$HOME/.local/bin/talosctl" kubeconfig \
+          if talosctl kubeconfig \
             --talosconfig="$HOME/.talos/config" \
             --nodes="$NODE_IP" \
             --merge=false \
@@ -87,4 +79,4 @@ runs:
 
         # Verify kubeconfig is valid
         echo "Verifying kubeconfig..."
-        "$HOME/.local/bin/kubectl" config view --minify
+        kubectl config view --minify
