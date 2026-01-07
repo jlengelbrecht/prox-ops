@@ -1536,7 +1536,12 @@ jobs:
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped') &&
       (needs.pre-worker-health-check.result == 'success' || needs.pre-worker-health-check.result == 'skipped')
     runs-on: cattle-runner
-    timeout-minutes: 30
+    # GPU nodes need longer timeouts due to:
+    # - Extended network-ready wait (3 min vs 1 min)
+    # - More config apply retries (5 vs 3)
+    # - GPU stabilization wait (60s+)
+    # - Extended GPU validation (6 min vs 3.5 min)
+    timeout-minutes: 45
     strategy:
       # Dynamic max-parallel based on rollout mode:
       # safe=1 (one worker at a time), standard=2 (pair together), aggressive=4 (multiple pairs)
@@ -2010,19 +2015,46 @@ jobs:
           echo "Applying configuration to node $NODE_IP..."
 
           # Wait for VM to be network-ready (VM just created)
+          # GPU nodes need longer boot time due to:
+          # - Larger Talos images (NVIDIA drivers + container toolkit)
+          # - More kernel modules to initialize (NVIDIA driver stack)
+          # - PCI passthrough initialization
           echo "Waiting for VM to be network-ready..."
-          MAX_WAIT=60
-          for i in {1..12}; do
+          IS_GPU_NODE="${{ matrix.is_gpu }}"
+          if [[ "$IS_GPU_NODE" == "true" ]]; then
+            MAX_WAIT=180  # 3 minutes for GPU nodes
+            MAX_ATTEMPTS=36  # 36 * 5s = 180s
+            echo "  GPU node detected - using extended timeout (${MAX_WAIT}s)"
+          else
+            MAX_WAIT=60   # 1 minute for regular nodes
+            MAX_ATTEMPTS=12  # 12 * 5s = 60s
+          fi
+
+          NETWORK_READY=false
+          for i in $(seq 1 $MAX_ATTEMPTS); do
             if talosctl -n "$NODE_IP" version --insecure --timeout=5s >/dev/null 2>&1; then
               echo "✓ VM is network-ready after $((i * 5)) seconds"
+              NETWORK_READY=true
               break
             fi
             echo "  Waiting... ($((i * 5))/${MAX_WAIT}s)"
             sleep 5
           done
 
+          if [[ "$NETWORK_READY" != "true" ]]; then
+            echo "::error::VM failed to become network-ready within ${MAX_WAIT}s"
+            echo "::error::This may indicate a boot failure or network configuration issue"
+            exit 1
+          fi
+
           # Application with retry logic and complete output suppression
-          MAX_ATTEMPTS=3
+          # GPU nodes get more attempts due to longer initialization times
+          if [[ "$IS_GPU_NODE" == "true" ]]; then
+            MAX_ATTEMPTS=5  # 5 attempts for GPU nodes
+            echo "  GPU node - using extended retry count (${MAX_ATTEMPTS} attempts)"
+          else
+            MAX_ATTEMPTS=3  # 3 attempts for regular nodes
+          fi
           ATTEMPT=1
           SUCCESS=false
 
@@ -2034,11 +2066,19 @@ jobs:
             touch "$ATTEMPT_LOG"
             chmod 600 "$ATTEMPT_LOG"
 
+            # GPU nodes need longer apply-config timeout due to larger configs
+            # and NVIDIA driver initialization
+            if [[ "$IS_GPU_NODE" == "true" ]]; then
+              APPLY_TIMEOUT="180s"  # 3 minutes for GPU nodes
+            else
+              APPLY_TIMEOUT="120s"  # 2 minutes for regular nodes
+            fi
+
             # Apply configuration with all output captured
             if talosctl -n "$NODE_IP" apply-config \
                 --insecure \
                 --file "$CONFIG_FILE" \
-                --timeout=120s \
+                --timeout=$APPLY_TIMEOUT \
                 >"$ATTEMPT_LOG" 2>&1; then
 
               # CRITICAL: Sanitize log IMMEDIATELY even on success
@@ -2065,15 +2105,43 @@ jobs:
 
               echo "  ⚠ Attempt $ATTEMPT failed"
 
+              # Display sanitized error for debugging (critical for understanding failures)
+              echo "  Sanitized error output:"
+              head -20 "$ATTEMPT_LOG" 2>/dev/null | sed 's/^/    /' || true
+
+              # GPU nodes need longer waits between retries due to NVIDIA driver initialization
+              if [[ "$IS_GPU_NODE" == "true" ]]; then
+                BASE_WAIT=30  # 30s base wait for GPU nodes
+              else
+                BASE_WAIT=10  # 10s base wait for regular nodes
+              fi
+
               # Now safe to check error types from sanitized log
               if grep -q "connection refused" "$ATTEMPT_LOG" 2>/dev/null; then
-                echo "    Node not yet ready, waiting..."
-                sleep $((ATTEMPT * 10))
+                WAIT_TIME=$((ATTEMPT * BASE_WAIT))
+                echo "    Error type: Connection refused - node not yet ready"
+                echo "    Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
               elif grep -q "timeout" "$ATTEMPT_LOG" 2>/dev/null; then
-                echo "    Operation timed out, retrying..."
-                sleep 5
+                WAIT_TIME=$((BASE_WAIT / 2))
+                echo "    Error type: Operation timed out"
+                echo "    Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              elif grep -q "maintenance mode" "$ATTEMPT_LOG" 2>/dev/null; then
+                WAIT_TIME=$((ATTEMPT * BASE_WAIT))
+                echo "    Error type: Node in maintenance mode (expected)"
+                echo "    Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              elif grep -q "i/o timeout" "$ATTEMPT_LOG" 2>/dev/null; then
+                WAIT_TIME=$((ATTEMPT * BASE_WAIT * 2))
+                echo "    Error type: I/O timeout - node may still be booting"
+                echo "    Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
               else
-                echo "    Unknown error occurred"
+                # Show first line of error for unknown errors
+                FIRST_ERROR=$(head -1 "$ATTEMPT_LOG" 2>/dev/null || echo "No error captured")
+                echo "    Error type: Unknown - $FIRST_ERROR"
+                sleep $((ATTEMPT * BASE_WAIT))
               fi
 
               # Shred sanitized log (non-verbose to avoid path leaks)
@@ -2084,7 +2152,8 @@ jobs:
           done
 
           if [[ "$SUCCESS" != "true" ]]; then
-            echo "ERROR: Failed to apply configuration after $MAX_ATTEMPTS attempts"
+            echo "::error::Failed to apply configuration after $MAX_ATTEMPTS attempts"
+            echo "::error::Check the error output above for details"
             exit 1
           fi
 
@@ -2236,30 +2305,77 @@ jobs:
           echo "Uncordoning ${{ matrix.node }}..."
           kubectl uncordon "${{ matrix.node }}"
 
+      # GPU nodes need time for NVIDIA components to fully initialize:
+      # 1. NVIDIA kernel modules need to probe GPU hardware
+      # 2. NVIDIA device plugin DaemonSet needs to schedule
+      # 3. Device plugin needs to detect GPU and register with kubelet
+      # 4. Kubelet needs to update node allocatable resources
+      - name: GPU stabilization wait
+        if: matrix.is_gpu == true
+        run: |
+          echo "::group::GPU stabilization wait for ${{ matrix.node }}"
+          echo "Waiting 60s for NVIDIA components to initialize..."
+          echo "This ensures:"
+          echo "  - NVIDIA kernel modules are fully loaded"
+          echo "  - NVIDIA device plugin DaemonSet is scheduled"
+          echo "  - Device plugin discovers GPU hardware"
+          echo "  - Kubelet registers GPU resources"
+
+          # Check if NVIDIA device plugin pod is running on this node
+          for i in {1..12}; do
+            NVIDIA_POD=$(kubectl get pods -n nvidia-device-plugin -l app=nvidia-device-plugin \
+              -o wide 2>/dev/null | grep "${{ matrix.node }}" | grep -c Running || echo "0")
+            if [[ "$NVIDIA_POD" -ge 1 ]]; then
+              echo "✓ NVIDIA device plugin pod running on ${{ matrix.node }}"
+              break
+            fi
+            echo "Waiting for NVIDIA device plugin pod... (attempt $i/12)"
+            sleep 5
+          done
+
+          # Additional stabilization time for GPU resource registration
+          echo "Waiting additional 30s for GPU resource registration..."
+          sleep 30
+          echo "::endgroup::"
 
       - name: Validate GPU functionality
         if: matrix.is_gpu == true
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           echo "::group::Validating GPU for ${{ matrix.node }}"
 
           # Wait for NVIDIA operator to detect GPU
-          echo "Waiting for NVIDIA device plugin..."
+          # Increased timeout for GPU nodes that may have longer initialization
+          echo "Waiting for NVIDIA device plugin to register GPU..."
           RETRY_COUNT=0
-          MAX_RETRIES=21
+          MAX_RETRIES=36  # 36 * 10s = 6 minutes
 
           while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
             if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
-              echo "✅ GPU detected by Kubernetes"
+              echo "✅ GPU detected by Kubernetes after $((RETRY_COUNT * 10))s"
               break
             fi
+
+            # Show diagnostic info every 30 seconds
+            if [[ $((RETRY_COUNT % 3)) -eq 0 ]]; then
+              echo "  Checking NVIDIA device plugin status..."
+              kubectl get pods -n nvidia-device-plugin -l app=nvidia-device-plugin -o wide 2>/dev/null | grep "${{ matrix.node }}" || echo "  No NVIDIA device plugin pod found on node"
+            fi
+
             echo "Waiting for GPU detection (attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
             sleep 10
             RETRY_COUNT=$((RETRY_COUNT+1))
           done
 
           if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
-            echo "::error::GPU not detected after $MAX_RETRIES attempts"
+            echo "::error::GPU not detected after $((MAX_RETRIES * 10))s"
+            echo "Diagnostic information:"
+            echo "  Node labels:"
+            kubectl get node ${{ matrix.node }} -o jsonpath='{.metadata.labels}' | jq . || true
+            echo "  Node allocatable:"
+            kubectl get node ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | jq . || true
+            echo "  NVIDIA device plugin pods:"
+            kubectl get pods -n nvidia-device-plugin -o wide || true
             exit 1
           fi
 
