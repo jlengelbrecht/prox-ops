@@ -1,5 +1,4 @@
 ---
-# yaml-language-server: $schema=https://raw.githubusercontent.com/bjw-s/helm-charts/main/charts/other/app-template/schemas/helmrelease-helm-v2.schema.json
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -92,12 +91,9 @@ spec:
       # -------------------------------------------------------------------------
       # EVENT EXPORT CONFIGURATION
       # -------------------------------------------------------------------------
-      # Export to stdout for Promtail/Loki collection
-      exportFilename: tetragon.log
-      exportFilePerm: "600"
-      exportFileMaxSizeMB: 10
-      exportFileMaxBackups: 5
-      exportFileCompress: true
+      # Export to stdout for Promtail/Loki collection (required by project guidelines)
+      # Using /dev/stdout ensures logs are collected by Promtail without file rotation
+      exportFilename: /dev/stdout
       exportRateLimit: 1000  # events/second cap to prevent log flooding
 
       # Allow all standard event types for observability
