@@ -9,7 +9,8 @@ spec:
   chart:
     spec:
       chart: tetragon
-      version: 1.2.0
+      # renovate: datasource=helm registryUrl=https://helm.cilium.io
+      version: 1.6.0
       sourceRef:
         kind: HelmRepository
         name: cilium-charts
@@ -23,54 +24,116 @@ spec:
     crds: CreateReplace
     remediation:
       retries: 3
+      remediateLastFailure: true
+  # Rollback to previous version if upgrade fails
+  rollback:
+    cleanupOnFail: true
+    recreate: true
   values:
-    # Tetragon configuration optimized for Talos Linux
+    # =============================================================================
+    # TALOS LINUX COMPATIBILITY CONFIGURATION
+    # =============================================================================
+    # Talos Linux has debugfs and tracefs mounted at the host level, but the
+    # Tetragon Helm chart doesn't mount them into containers by default.
+    # These mounts are REQUIRED for eBPF kprobe attachment on Talos.
+    #
+    # Without these mounts, Tetragon fails with:
+    # "attaching 'event_execve' failed: neither debugfs nor tracefs are mounted"
+    # =============================================================================
+    extraHostPathMounts:
+      - name: debugfs
+        mountPath: /sys/kernel/debug
+        hostPath: /sys/kernel/debug
+        readOnly: false
+      - name: tracefs
+        mountPath: /sys/kernel/tracing
+        hostPath: /sys/kernel/tracing
+        readOnly: false
+
+    # =============================================================================
+    # TETRAGON AGENT CONFIGURATION
+    # =============================================================================
     tetragon:
       enabled: true
       image:
         repository: quay.io/cilium/tetragon
         # renovate: datasource=docker depName=quay.io/cilium/tetragon
-        tag: v1.2.0
+        tag: v1.6.0
 
-      # Prometheus metrics export
+      # -------------------------------------------------------------------------
+      # SAFETY: OBSERVABILITY-ONLY MODE
+      # -------------------------------------------------------------------------
+      # IMPORTANT: All TracingPolicies should use 'action: Post' (logging only)
+      # NOT 'action: Sigkill' or 'action: Override' (enforcement).
+      #
+      # Enforcement policies can cause cluster-wide outages if misconfigured.
+      # Only enable enforcement after thorough testing in a staging environment.
+      # -------------------------------------------------------------------------
+
+      # Prometheus metrics export for Grafana dashboards
       prometheus:
         enabled: true
         port: 2112
+        metricsLabelFilter: "namespace,workload,pod,binary"
         serviceMonitor:
           enabled: true
+          scrapeInterval: 60s
 
-      # Resource limits to prevent DoS
+      # Resource limits to prevent DoS from excessive event processing
       resources:
         limits:
           cpu: 500m
-          memory: 500Mi
+          memory: 512Mi
         requests:
-          cpu: 250m
-          memory: 400Mi
+          cpu: 100m
+          memory: 256Mi
 
-      # Export settings - JSON logs to stdout for Promtail/Loki
+      # -------------------------------------------------------------------------
+      # EVENT EXPORT CONFIGURATION
+      # -------------------------------------------------------------------------
+      # Export to stdout for Promtail/Loki collection (required by project guidelines)
+      # Using /dev/stdout ensures logs are collected by Promtail without file rotation
       exportFilename: /dev/stdout
-      exportRateLimit: 1000  # events/second
+      exportRateLimit: 1000  # events/second cap to prevent log flooding
 
-      # Enable JSON export for structured logging
-      exportAllowList: "{}"
-      exportDenyList: "{}"
+      # Allow all standard event types for observability
+      exportAllowList: |-
+        {"event_set":["PROCESS_EXEC", "PROCESS_EXIT", "PROCESS_KPROBE", "PROCESS_UPROBE", "PROCESS_TRACEPOINT", "PROCESS_LSM"]}
 
-      # gRPC server for tetra CLI
+      # -------------------------------------------------------------------------
+      # SAFETY: EXCLUDE SYSTEM NAMESPACES FROM EXPORT
+      # -------------------------------------------------------------------------
+      # Excluding kube-system and cilium namespaces reduces noise and prevents
+      # potential feedback loops or performance issues from monitoring system pods.
+      # Health check events are also excluded as they generate excessive noise.
+      # -------------------------------------------------------------------------
+      exportDenyList: |-
+        {"health_check":true}
+        {"namespace":["", "cilium", "kube-system"]}
+
+      # gRPC server for tetra CLI debugging
       grpc:
         enabled: true
         address: "localhost:54321"
 
-      # Enable field filters for better log structure
+      # Enable Kubernetes API integration for pod/namespace metadata
       enableK8sAPI: true
 
-    # Tetragon Operator configuration
+      # Process cache size for ancestry tracking
+      processCacheSize: 65536
+
+      # Debug mode - keep disabled in production
+      debug: false
+
+    # =============================================================================
+    # TETRAGON OPERATOR CONFIGURATION
+    # =============================================================================
     tetragonOperator:
       enabled: true
       image:
         repository: quay.io/cilium/tetragon-operator
         # renovate: datasource=docker depName=quay.io/cilium/tetragon-operator
-        tag: v1.2.0
+        tag: v1.6.0
       resources:
         limits:
           cpu: 100m
@@ -79,9 +142,20 @@ spec:
           cpu: 50m
           memory: 64Mi
 
-      # Prometheus metrics for operator
+      # Prometheus metrics for operator health
       prometheus:
         enabled: true
         port: 2113
         serviceMonitor:
           enabled: true
+
+    # =============================================================================
+    # RUNTIME HOOKS (DISABLED)
+    # =============================================================================
+    # Runtime hooks (NRI/OCI) are disabled because:
+    # 1. Talos containerd has NRI disabled by default
+    # 2. Enabling NRI requires additional Talos machine config changes
+    # 3. Tetragon works fine without them (falls back to cgroup scanning)
+    # =============================================================================
+    rthooks:
+      enabled: false
