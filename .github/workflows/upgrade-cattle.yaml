@@ -1178,9 +1178,11 @@ jobs:
           echo "Applying configuration to node $NODE_IP..."
 
           # Wait for VM to be network-ready (VM just created)
+          # Increased from 60s to 120s after workflow failures where VMs
+          # didn't boot fast enough during disk exhaustion conditions
           echo "Waiting for VM to be network-ready..."
-          MAX_WAIT=60
-          for i in {1..12}; do
+          MAX_WAIT=120
+          for i in {1..24}; do
             if talosctl -n "$NODE_IP" version --insecure --timeout=5s >/dev/null 2>&1; then
               echo "✓ VM is network-ready after $((i * 5)) seconds"
               break
@@ -2093,8 +2095,10 @@ jobs:
             MAX_ATTEMPTS=36  # 36 * 5s = 180s
             echo "  GPU node detected - using extended timeout (${MAX_WAIT}s)"
           else
-            MAX_WAIT=60   # 1 minute for regular nodes
-            MAX_ATTEMPTS=12  # 12 * 5s = 60s
+            # Increased from 60s to 120s after workflow failures where VMs
+            # didn't boot fast enough during disk exhaustion conditions
+            MAX_WAIT=120  # 2 minutes for regular nodes
+            MAX_ATTEMPTS=24  # 24 * 5s = 120s
           fi
 
           NETWORK_READY=false
