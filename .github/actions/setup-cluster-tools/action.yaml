@@ -100,8 +100,10 @@ runs:
         kubectl config view --minify
 
         # Verify cluster connectivity
+        # Note: 'kubectl version --short' was removed in kubectl v1.28
+        # Using 'kubectl get --raw /version' for a lightweight API connectivity test
         echo "Testing cluster API connectivity..."
-        if ! kubectl version --short &>/dev/null; then
+        if ! kubectl get --raw /version &>/dev/null; then
           echo "⚠️  WARNING: Generated kubeconfig is valid but cannot reach API server"
           echo "This may indicate network issues or cluster being upgraded"
           exit 1
