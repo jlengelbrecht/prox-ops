@@ -12,6 +12,16 @@ inputs:
 runs:
   using: composite
   steps:
+    # Disable mise Python venv warnings in CI
+    # The .mise.toml configures a Python venv for local development, but CI only
+    # installs essential tools (no Python) to save disk space. This causes mise
+    # to emit warnings on every command. Setting MISE_PYTHON_VENV_AUTO=false
+    # prevents mise from attempting to auto-create/activate the venv.
+    - name: Suppress mise venv warnings
+      shell: bash
+      run: |
+        echo "MISE_PYTHON_VENV_AUTO=false" >> "$GITHUB_ENV"
+
     # mise-action reads .mise.toml but we only install CI-essential tools
     # to avoid filling disk with unnecessary packages (Python 3.14 is ~500MB)
     - name: Setup mise and install tools
