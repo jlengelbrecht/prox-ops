@@ -155,8 +155,12 @@ jobs:
           fi
           echo "✅ Version inputs validated"
 
-      # Node.js and Terraform now installed via mise (setup-cluster-tools action)
-      # No longer need separate setup steps - versions managed in .mise.toml
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
+      # Terraform now installed via mise (in setup-cluster-tools action above)
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
