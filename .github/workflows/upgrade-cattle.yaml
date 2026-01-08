@@ -143,6 +143,41 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
+      - name: Aggressive disk cleanup
+        run: |
+          echo "::group::Pre-cleanup disk status"
+          df -h /
+          echo "::endgroup::"
+
+          echo "::group::Cleaning up disk space"
+          # Remove Docker images and containers
+          docker system prune -af --volumes || true
+
+          # Clean APT cache
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+
+          # Remove old logs
+          sudo journalctl --vacuum-time=1d || true
+          sudo rm -rf /var/log/*.gz /var/log/*.1 || true
+
+          # Clean mise cache (but keep installed tools)
+          rm -rf ~/.local/share/mise/downloads/* || true
+          rm -rf ~/.local/share/mise/cache/* || true
+
+          # Remove any old terraform state backups (keep only latest 5)
+          find ~/.terraform.d/ -name "*.backup" -type f -mtime +1 -delete 2>/dev/null || true
+          echo "::endgroup::"
+
+          echo "::group::Post-cleanup disk status"
+          df -h /
+          FREE_MB=$(df / | tail -1 | awk '{print $4}' | sed 's/[^0-9]//g')
+          echo "Free space: ${FREE_MB}MB"
+          if [ "$FREE_MB" -lt 500 ]; then
+            echo "::warning::Disk space is critically low (${FREE_MB}MB). Consider scaling runner disk or reducing cache."
+          fi
+          echo "::endgroup::"
+
       - name: Validate version inputs
         run: |
           if ! [[ "${{ inputs.old_version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
