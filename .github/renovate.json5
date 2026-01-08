@@ -143,6 +143,37 @@
       ],
     },
     {
+      description: 'Customize commit messages for Talos Terraform updates',
+      matchDatasources: [
+        'github-releases',
+      ],
+      matchPackageNames: [
+        'siderolabs/talos',
+      ],
+      matchFileNames: [
+        'terraform/variables.tf',
+        'terraform/terraform.tfvars',
+      ],
+      semanticCommitType: 'chore',
+      semanticCommitScope: 'talos',
+      commitMessageAction: 'upgrade to',
+    },
+    {
+      description: 'Customize commit messages for Talos talenv updates',
+      matchDatasources: [
+        'docker',
+      ],
+      matchPackageNames: [
+        'ghcr.io/siderolabs/installer',
+      ],
+      matchFileNames: [
+        'talos/talenv.yaml',
+      ],
+      semanticCommitType: 'chore',
+      semanticCommitScope: 'talos',
+      commitMessageAction: 'upgrade to',
+    },
+    {
       description: 'Label major version updates',
       matchUpdateTypes: [
         'major',

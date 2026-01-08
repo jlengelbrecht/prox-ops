@@ -1,0 +1,174 @@
+name: Clear Terraform State Lock
+description: S3-native lock clearing for Terraform state (no terraform commands - fast and reliable)
+
+inputs:
+  terraform_state_bucket:
+    description: S3 bucket name containing Terraform state
+    required: true
+  terraform_state_key:
+    description: S3 state file key (e.g., terraform.tfstate)
+    required: false
+    default: terraform.tfstate
+  lock_age_threshold_minutes:
+    description: Minimum age (in minutes) before a lock is considered stale
+    required: false
+    default: "5"
+  force_clear:
+    description: Force clear lock regardless of age (use with caution)
+    required: false
+    default: "false"
+  workflow_run_id:
+    description: Current workflow run ID for attribution tracking
+    required: false
+    default: ""
+
+outputs:
+  lock_cleared:
+    description: Whether a lock was detected and cleared
+    value: ${{ steps.clear-lock.outputs.lock_cleared }}
+  lock_id:
+    description: The lock ID that was cleared (if any)
+    value: ${{ steps.clear-lock.outputs.lock_id }}
+  lock_age_minutes:
+    description: Age of the cleared lock in minutes
+    value: ${{ steps.clear-lock.outputs.lock_age_minutes }}
+
+runs:
+  using: composite
+  steps:
+    - name: Clear Terraform lock via S3 API
+      id: clear-lock
+      shell: bash
+      env:
+        STATE_BUCKET: ${{ inputs.terraform_state_bucket }}
+        STATE_KEY: ${{ inputs.terraform_state_key }}
+        LOCK_AGE_THRESHOLD: ${{ inputs.lock_age_threshold_minutes }}
+        FORCE_CLEAR: ${{ inputs.force_clear }}
+        WORKFLOW_RUN_ID: ${{ inputs.workflow_run_id }}
+      run: |
+        set -euo pipefail
+
+        LOCK_FILE="${STATE_KEY}.tflock"
+
+        echo "::group::S3-Native Lock Detection"
+        echo "Bucket: ${STATE_BUCKET}"
+        echo "Lock file: ${LOCK_FILE}"
+        echo "Age threshold: ${LOCK_AGE_THRESHOLD} minutes"
+        echo "Force clear: ${FORCE_CLEAR}"
+        echo ""
+
+        # Initialize outputs
+        echo "lock_cleared=false" >> "$GITHUB_OUTPUT"
+        echo "lock_id=" >> "$GITHUB_OUTPUT"
+        echo "lock_age_minutes=0" >> "$GITHUB_OUTPUT"
+
+        # Check if lock file exists
+        if ! aws s3api head-object --bucket "$STATE_BUCKET" --key "$LOCK_FILE" 2>/dev/null; then
+          echo "No lock file exists in S3"
+          echo "Safe to proceed with Terraform operations"
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        echo "Lock file detected! Downloading content..."
+
+        # Download and parse lock file
+        LOCK_CONTENT=$(aws s3 cp "s3://${STATE_BUCKET}/${LOCK_FILE}" - 2>/dev/null) || {
+          echo "::error::Failed to download lock file"
+          exit 1
+        }
+
+        echo "Lock content:"
+        echo "$LOCK_CONTENT" | jq '.' 2>/dev/null || echo "$LOCK_CONTENT"
+        echo ""
+
+        # Extract lock metadata
+        LOCK_ID=$(echo "$LOCK_CONTENT" | jq -r '.ID // empty' 2>/dev/null || true)
+        LOCK_WHO=$(echo "$LOCK_CONTENT" | jq -r '.Who // empty' 2>/dev/null || true)
+        LOCK_OPERATION=$(echo "$LOCK_CONTENT" | jq -r '.Operation // empty' 2>/dev/null || true)
+        LOCK_CREATED=$(echo "$LOCK_CONTENT" | jq -r '.Created // empty' 2>/dev/null || true)
+
+        echo "Lock ID:       ${LOCK_ID:-unknown}"
+        echo "Who:           ${LOCK_WHO:-unknown}"
+        echo "Operation:     ${LOCK_OPERATION:-unknown}"
+        echo "Created:       ${LOCK_CREATED:-unknown}"
+        echo ""
+
+        # Calculate lock age
+        LOCK_AGE=0
+        if [ -n "$LOCK_CREATED" ]; then
+          # Parse ISO 8601 timestamp (format: 2026-01-05T20:08:19.350906573Z)
+          LOCK_TIMESTAMP=$(echo "$LOCK_CREATED" | cut -d'.' -f1 | tr 'T' ' ')
+          CURRENT_EPOCH=$(date -u +%s)
+
+          # Try GNU date first (Linux)
+          if LOCK_EPOCH=$(date -u -d "$LOCK_TIMESTAMP" +%s 2>/dev/null); then
+            LOCK_AGE=$(( (CURRENT_EPOCH - LOCK_EPOCH) / 60 ))
+          # Fallback to Python
+          elif command -v python3 &>/dev/null; then
+            # Use UTC-aware parsing to handle timestamps correctly on any runner timezone
+            LOCK_EPOCH=$(python3 -c "from datetime import datetime, timezone; import sys; ts = sys.argv[1].replace('T', ' ').split('.')[0]; dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc); print(int(dt.timestamp()))" "$LOCK_CREATED" 2>/dev/null || echo "0")
+            if [ "$LOCK_EPOCH" != "0" ]; then
+              LOCK_AGE=$(( (CURRENT_EPOCH - LOCK_EPOCH) / 60 ))
+            fi
+          fi
+        fi
+
+        echo "Lock age: ${LOCK_AGE} minutes"
+        echo "lock_age_minutes=${LOCK_AGE}" >> "$GITHUB_OUTPUT"
+        echo "::endgroup::"
+
+        # Decision: Clear or refuse
+        echo "::group::Lock Clearing Decision"
+
+        if [ "$FORCE_CLEAR" == "true" ]; then
+          echo "FORCE_CLEAR enabled - clearing lock regardless of age"
+        elif [ "$LOCK_AGE" -lt "$LOCK_AGE_THRESHOLD" ]; then
+          echo "::error::=============================================="
+          echo "::error::LOCK TOO RECENT - REFUSING TO CLEAR"
+          echo "::error::=============================================="
+          echo "::error::"
+          echo "::error::Lock is only ${LOCK_AGE} minutes old (threshold: ${LOCK_AGE_THRESHOLD} minutes)"
+          echo "::error::This may indicate a legitimate Terraform operation in progress."
+          echo "::error::"
+          echo "::error::If you're certain the lock is stale, use force_clear: 'true'"
+          echo "::error::=============================================="
+          echo "::endgroup::"
+          exit 1
+        else
+          echo "Lock is ${LOCK_AGE} minutes old (>= ${LOCK_AGE_THRESHOLD} threshold)"
+          echo "Safe to clear"
+        fi
+
+        # Delete lock file
+        echo ""
+        echo "Deleting lock file from S3..."
+        if aws s3api delete-object --bucket "$STATE_BUCKET" --key "$LOCK_FILE" 2>/dev/null; then
+          echo "Lock file deleted"
+        else
+          echo "::error::Failed to delete lock file"
+          echo "::endgroup::"
+          exit 1
+        fi
+
+        # Verify deletion (S3 has strong read-after-write consistency)
+        if aws s3api head-object --bucket "$STATE_BUCKET" --key "$LOCK_FILE" 2>/dev/null; then
+          echo "::error::Lock file still exists after deletion attempt!"
+          echo "::endgroup::"
+          exit 1
+        fi
+
+        echo ""
+        echo "Lock successfully cleared!"
+        echo "lock_cleared=true" >> "$GITHUB_OUTPUT"
+        echo "lock_id=${LOCK_ID}" >> "$GITHUB_OUTPUT"
+
+        # Attribution logging
+        if [ -n "${WORKFLOW_RUN_ID}" ]; then
+          echo "Cleared by workflow run: ${WORKFLOW_RUN_ID}"
+          echo "### 🔓 Terraform Lock Cleared" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Lock ID**: ${LOCK_ID:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Age**: ${LOCK_AGE} minutes" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Cleared by**: Run ${WORKFLOW_RUN_ID}" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        echo "::endgroup::"
