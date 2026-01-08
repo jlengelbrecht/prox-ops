@@ -21,7 +21,7 @@ runs:
         working_directory: ${{ inputs.working-directory }}
         # Only install tools needed for CI workflows (not full .mise.toml)
         # This prevents disk space exhaustion on cattle-runner
-        install_args: "aqua:kubernetes/kubectl aqua:siderolabs/talos aqua:fluxcd/flux2 aqua:helm/helm aqua:jqlang/jq aqua:mikefarah/yq aqua:kubernetes-sigs/kustomize"
+        install_args: "node aqua:hashicorp/terraform aqua:kubernetes/kubectl aqua:siderolabs/talos aqua:fluxcd/flux2 aqua:helm/helm aqua:jqlang/jq aqua:mikefarah/yq aqua:kubernetes-sigs/kustomize"
 
     - name: Verify tool versions
       shell: bash
@@ -39,7 +39,17 @@ runs:
           echo "❌ ERROR: talosctl not found - check install_args"
           exit 1
         fi
+        if ! command -v terraform &>/dev/null; then
+          echo "❌ ERROR: terraform not found - check install_args"
+          exit 1
+        fi
+        if ! command -v node &>/dev/null; then
+          echo "❌ ERROR: node not found - check install_args"
+          exit 1
+        fi
 
+        echo "  node:      $(node --version 2>/dev/null || echo 'version check failed')"
+        echo "  terraform: $(terraform version 2>/dev/null | head -1 || echo 'version check failed')"
         echo "  kubectl:   $(kubectl version --client -o json 2>/dev/null | jq -r '.clientVersion.gitVersion' || kubectl version --client 2>&1 | head -1)"
         echo "  talosctl:  $(talosctl version --client --short 2>/dev/null | grep Tag | awk '{print $2}' || echo 'version check failed')"
         echo "  flux:      $(flux version --client 2>/dev/null | head -1 || echo 'not available')"

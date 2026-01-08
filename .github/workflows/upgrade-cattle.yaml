@@ -155,15 +155,8 @@ jobs:
           fi
           echo "✅ Version inputs validated"
 
-      - name: Setup Node.js (required for Terraform action)
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4
-        with:
-          node-version: '24'
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      # Node.js and Terraform now installed via mise (setup-cluster-tools action)
+      # No longer need separate setup steps - versions managed in .mise.toml
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
@@ -690,10 +683,7 @@ jobs:
         with:
           talosconfig: ${{ secrets.TALOSCONFIG }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      # Terraform now installed via mise (in setup-cluster-tools action above)
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
@@ -1656,10 +1646,7 @@ jobs:
         with:
           talosconfig: ${{ secrets.TALOSCONFIG }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
-        with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
+      # Terraform now installed via mise (in setup-cluster-tools action above)
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
