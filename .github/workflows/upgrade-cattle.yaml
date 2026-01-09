@@ -22,11 +22,21 @@ name: Cattle Upgrade - Complete Workflow
 #    - GitHub limitation: https://github.com/orgs/community/discussions/26531
 #
 # 2. PARALLEL WORKER PROCESSING
-#    The max-parallel setting (standard=2, aggressive=4) does NOT parallelize
-#    terraform operations due to the shared Terraform state lock on S3.
-#    - Terraform operations serialize naturally when lock conflicts occur
-#    - Only config-apply and verification steps benefit from parallelism
-#    - True parallelism would require separate state files per node (not implemented)
+#    The max-parallel setting enables true parallel execution with multiple runners:
+#    - safe mode (max-parallel=1): Sequential, one worker at a time
+#    - standard mode (max-parallel=2): Pair parallelism, requires 2+ cattle-runners
+#    - aggressive mode (max-parallel=4): Multi-pair parallelism, requires 4+ cattle-runners
+#
+#    TERRAFORM STATE LOCK HANDLING:
+#    - All terraform operations share a single S3 state file with DynamoDB locking
+#    - When parallel jobs contend for the lock, they retry with exponential backoff
+#    - Lock contention adds ~15-120s wait time per retry (up to 12 retries)
+#    - Non-terraform steps (talosctl, kubectl) run truly in parallel
+#
+#    RUNNER REQUIREMENTS:
+#    - Each concurrent job needs its own cattle-runner (external to k8s cluster)
+#    - Runners must have cattle-runner label
+#    - VM 9008 should be scaled for multiple runners (4 CPU, 16GB RAM for 3 runners)
 #
 # 3. APPLY MACHINE CONFIGURATION FAILURES
 #    The "Apply machine configuration" step requires the VM to be in MAINTENANCE MODE.
@@ -1747,9 +1757,11 @@ jobs:
       # Dynamic max-parallel based on rollout mode:
       # safe=1 (one worker at a time), standard=2 (pair together), aggressive=4 (multiple pairs)
       #
-      # IMPORTANT: Due to shared Terraform state lock, terraform operations within each job
-      # serialize naturally when lock conflicts occur. The max-parallel setting primarily
-      # benefits the config-apply and verification steps which don't need terraform.
+      # PARALLEL EXECUTION REQUIREMENTS:
+      # - Each concurrent job needs its own cattle-runner (external VM runner)
+      # - Terraform operations retry with exponential backoff on lock contention
+      # - Non-terraform steps (talosctl, kubectl) run truly in parallel
+      # - See workflow header comments for runner scaling requirements
       max-parallel: ${{ inputs.worker_rollout_mode == 'aggressive' && 4 || (inputs.worker_rollout_mode == 'standard' && 2 || 1) }}
       fail-fast: false
       matrix:
@@ -1935,11 +1947,57 @@ jobs:
         run: |
           echo "::group::Planning destruction of ${{ matrix.node }}"
 
-          terraform plan \
-            -input=false \
-            -destroy \
-            -out=worker-destroy-${{ matrix.node }}.tfplan \
-            -target=module.worker_nodes[\"${{ matrix.node }}\"]
+          # PARALLEL EXECUTION: Retry with exponential backoff on lock contention
+          # When multiple workers run in parallel, they may contend for the state lock
+          MAX_LOCK_ATTEMPTS=12
+          BASE_WAIT=15
+          ATTEMPT=1
+
+          while [[ $ATTEMPT -le $MAX_LOCK_ATTEMPTS ]]; do
+            echo "Plan attempt $ATTEMPT of $MAX_LOCK_ATTEMPTS..."
+
+            # Capture output to detect lock contention
+            set +e
+            PLAN_OUTPUT=$(terraform plan \
+              -input=false \
+              -destroy \
+              -out=worker-destroy-${{ matrix.node }}.tfplan \
+              -target=module.worker_nodes[\"${{ matrix.node }}\"] 2>&1)
+            PLAN_EXIT=$?
+            set -e
+
+            if [[ $PLAN_EXIT -eq 0 ]]; then
+              echo "$PLAN_OUTPUT"
+              echo "✅ Plan created successfully on attempt $ATTEMPT"
+              break
+            fi
+
+            # Check if failure was due to lock contention
+            if echo "$PLAN_OUTPUT" | grep -q "Error acquiring the state lock"; then
+              echo "::notice::State lock held by another parallel job (attempt $ATTEMPT)"
+
+              if [[ $ATTEMPT -lt $MAX_LOCK_ATTEMPTS ]]; then
+                # Exponential backoff with jitter to prevent thundering herd
+                WAIT_TIME=$(( BASE_WAIT * ATTEMPT + RANDOM % 10 ))
+                [[ $WAIT_TIME -gt 120 ]] && WAIT_TIME=120
+                echo "Waiting ${WAIT_TIME}s before retry (parallel job has lock)..."
+                sleep $WAIT_TIME
+              fi
+            else
+              # Real error, not lock contention
+              echo "$PLAN_OUTPUT"
+              echo "::error::Terraform plan failed with non-lock error"
+              exit 1
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [[ $ATTEMPT -gt $MAX_LOCK_ATTEMPTS ]]; then
+            echo "::error::Failed to acquire state lock after $MAX_LOCK_ATTEMPTS attempts"
+            echo "::error::Another operation may be stuck - check for stale locks"
+            exit 1
+          fi
 
           echo "Plan saved to worker-destroy-${{ matrix.node }}.tfplan"
           echo "::endgroup::"
@@ -2032,45 +2090,78 @@ jobs:
 
       - name: Destroy VM with retry
         working-directory: ./terraform
-        timeout-minutes: 10
+        timeout-minutes: 15
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
           echo "::group::Destroying ${{ matrix.node }} VM with retry logic"
 
-          MAX_ATTEMPTS=3
+          # PARALLEL EXECUTION: Extended retries for lock contention
+          # Apply operations are typically fast, but may wait for lock
+          MAX_ATTEMPTS=10
+          BASE_WAIT=15
           ATTEMPT=1
           SUCCESS=false
 
           while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
             echo "Destroy attempt $ATTEMPT of $MAX_ATTEMPTS..."
 
-            if terraform apply \
+            # Capture output to detect lock contention
+            set +e
+            APPLY_OUTPUT=$(terraform apply \
                 -input=false \
                 -auto-approve \
-                worker-destroy-${{ matrix.node }}.tfplan; then
+                worker-destroy-${{ matrix.node }}.tfplan 2>&1)
+            APPLY_EXIT=$?
+            set -e
 
+            if [[ $APPLY_EXIT -eq 0 ]]; then
+              echo "$APPLY_OUTPUT"
               echo "✅ VM destroyed successfully on attempt $ATTEMPT"
               SUCCESS=true
               break
-            else
-              EXIT_CODE=$?
-              echo "⚠️  Destroy attempt $ATTEMPT failed with exit code $EXIT_CODE"
+            fi
+
+            # Check if failure was due to lock contention
+            if echo "$APPLY_OUTPUT" | grep -q "Error acquiring the state lock"; then
+              echo "::notice::State lock held by another parallel job (attempt $ATTEMPT)"
 
               if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
-                WAIT_TIME=$((ATTEMPT * 10))
-                echo "Waiting ${WAIT_TIME}s before retry..."
+                # Exponential backoff with jitter
+                WAIT_TIME=$(( BASE_WAIT * ATTEMPT + RANDOM % 10 ))
+                [[ $WAIT_TIME -gt 120 ]] && WAIT_TIME=120
+                echo "Waiting ${WAIT_TIME}s before retry (parallel job has lock)..."
                 sleep $WAIT_TIME
 
-                # Check for state lock (do NOT clear - would bypass age validation)
-                echo "Checking for state lock..."
-                if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock 2>/dev/null; then
-                  echo "::warning::State lock detected during retry"
-                  echo "::warning::If lock is stale, cancel workflow and re-run to trigger proper lock clearing"
-                  echo "::warning::Do NOT clear lock here - would bypass 5-minute age safety check"
-                fi
+                # Re-plan since state may have changed
+                echo "Re-generating plan after lock wait..."
+                terraform plan \
+                  -input=false \
+                  -destroy \
+                  -out=worker-destroy-${{ matrix.node }}.tfplan \
+                  -target=module.worker_nodes[\"${{ matrix.node }}\"] 2>&1 || true
               fi
+            elif echo "$APPLY_OUTPUT" | grep -q "saved plan is stale"; then
+              echo "::notice::Plan became stale (state changed by parallel job)"
+
+              if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+                WAIT_TIME=$(( BASE_WAIT + RANDOM % 10 ))
+                echo "Waiting ${WAIT_TIME}s then re-planning..."
+                sleep $WAIT_TIME
+
+                # Re-plan with fresh state
+                terraform plan \
+                  -input=false \
+                  -destroy \
+                  -out=worker-destroy-${{ matrix.node }}.tfplan \
+                  -target=module.worker_nodes[\"${{ matrix.node }}\"] || true
+              fi
+            else
+              # Real error, not lock/stale related
+              echo "$APPLY_OUTPUT"
+              echo "::error::Terraform apply failed with non-recoverable error"
+              exit 1
             fi
 
             ATTEMPT=$((ATTEMPT + 1))
@@ -2125,42 +2216,73 @@ jobs:
 
       - name: Recreate VM from new template
         working-directory: ./terraform
-        timeout-minutes: 15
+        timeout-minutes: 20
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
           echo "::group::Recreating ${{ matrix.node }} from v${{ inputs.new_version }} template"
 
-          # Capture terraform output and exit code
-          set +e
-          TERRAFORM_OUTPUT=$(terraform apply \
-            -input=false \
-            -auto-approve \
-            -target=module.worker_nodes[\"${{ matrix.node }}\"] 2>&1)
-          TERRAFORM_EXIT=$?
-          set -e
+          # PARALLEL EXECUTION: Retry with exponential backoff on lock contention
+          # VM creation is the longest terraform operation - needs patience
+          MAX_ATTEMPTS=12
+          BASE_WAIT=15
+          ATTEMPT=1
+          SUCCESS=false
 
-          echo "$TERRAFORM_OUTPUT"
+          while [[ $ATTEMPT -le $MAX_ATTEMPTS ]]; do
+            echo "Create attempt $ATTEMPT of $MAX_ATTEMPTS..."
 
-          if [[ $TERRAFORM_EXIT -ne 0 ]]; then
-            echo ""
-            echo "::error::Terraform apply failed with exit code $TERRAFORM_EXIT"
+            # Capture terraform output and exit code
+            set +e
+            TERRAFORM_OUTPUT=$(terraform apply \
+              -input=false \
+              -auto-approve \
+              -target=module.worker_nodes[\"${{ matrix.node }}\"] 2>&1)
+            TERRAFORM_EXIT=$?
+            set -e
 
-            # Check for specific error types
-            if echo "$TERRAFORM_OUTPUT" | grep -q "Error acquiring the state lock"; then
-              echo "::error::TERRAFORM STATE LOCK CONFLICT"
-              echo "::error::Another terraform operation is in progress"
-              echo "::error::This indicates a parallel job is holding the lock"
-            elif echo "$TERRAFORM_OUTPUT" | grep -q "timeout"; then
-              echo "::error::TERRAFORM TIMEOUT"
-              echo "::error::The operation timed out - Proxmox may be overloaded"
+            if [[ $TERRAFORM_EXIT -eq 0 ]]; then
+              echo "$TERRAFORM_OUTPUT"
+              echo "✅ VM recreated successfully on attempt $ATTEMPT"
+              SUCCESS=true
+              break
             fi
 
+            # Check if failure was due to lock contention
+            if echo "$TERRAFORM_OUTPUT" | grep -q "Error acquiring the state lock"; then
+              echo "::notice::State lock held by another parallel job (attempt $ATTEMPT)"
+
+              if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+                # Exponential backoff with jitter
+                WAIT_TIME=$(( BASE_WAIT * ATTEMPT + RANDOM % 10 ))
+                [[ $WAIT_TIME -gt 120 ]] && WAIT_TIME=120
+                echo "Waiting ${WAIT_TIME}s before retry (parallel job has lock)..."
+                sleep $WAIT_TIME
+              fi
+            elif echo "$TERRAFORM_OUTPUT" | grep -q "timeout"; then
+              echo "::warning::Terraform timeout - Proxmox may be overloaded"
+
+              if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+                WAIT_TIME=30
+                echo "Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              fi
+            else
+              # Real error, not lock/timeout related
+              echo "$TERRAFORM_OUTPUT"
+              echo "::error::Terraform apply failed with non-recoverable error"
+              exit 1
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo "::error::Failed to create VM after $MAX_ATTEMPTS attempts"
             exit 1
           fi
 
-          echo "✅ VM recreated from new template"
           echo "::endgroup::"
 
       # CRITICAL: Verify VM was actually created before attempting config apply
