@@ -2924,9 +2924,56 @@ jobs:
             echo "::warning::GPU model label missing or incorrect (expected: ${{ matrix.gpu_model }})"
           }
 
-          # Test GPU with a pod
-          echo "Testing GPU with nvidia-smi pod..."
-          cat <<EOF | kubectl apply -f -
+          # ============================================================
+          # GPU FUNCTIONALITY TEST
+          # ============================================================
+          # Primary method: Exec into existing nvidia-device-plugin pod
+          # This is instant (no image pull) and tests the production GPU stack
+          #
+          # Fallback: Create test pod with extended timeout (180s)
+          # Needed because cattle upgrades clear image cache, requiring fresh pull
+          # of the ~1.5GB CUDA image which can take 1-3 minutes
+          # ============================================================
+
+          echo "Testing GPU functionality..."
+
+          # Find nvidia-device-plugin pod on this node
+          DEVICE_PLUGIN_POD=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=nvidia-device-plugin \
+            --field-selector spec.nodeName=${{ matrix.node }} \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+          # Try alternate label if first doesn't work
+          if [[ -z "$DEVICE_PLUGIN_POD" ]]; then
+            DEVICE_PLUGIN_POD=$(kubectl get pods -n kube-system \
+              --field-selector spec.nodeName=${{ matrix.node }} \
+              -o jsonpath='{.items[?(@.metadata.name contains "nvidia-device-plugin")].metadata.name}' 2>/dev/null || true)
+          fi
+
+          # Final fallback: grep for nvidia-device-plugin pod on this node
+          if [[ -z "$DEVICE_PLUGIN_POD" ]]; then
+            DEVICE_PLUGIN_POD=$(kubectl get pods -n kube-system -o wide 2>/dev/null | grep "nvidia-device-plugin" | grep "${{ matrix.node }}" | awk '{print $1}' | head -1 || true)
+          fi
+
+          GPU_VALIDATED=false
+
+          if [[ -n "$DEVICE_PLUGIN_POD" ]]; then
+            echo "Found nvidia-device-plugin pod: $DEVICE_PLUGIN_POD"
+            echo "Executing nvidia-smi via device plugin pod (instant validation)..."
+
+            if kubectl exec -n kube-system "$DEVICE_PLUGIN_POD" -- nvidia-smi --query-gpu=name,memory.total,driver_version,temperature.gpu --format=csv 2>/dev/null; then
+              echo "✅ GPU validated via nvidia-device-plugin pod"
+              GPU_VALIDATED=true
+            else
+              echo "::warning::nvidia-smi exec failed, falling back to test pod"
+            fi
+          else
+            echo "::warning::nvidia-device-plugin pod not found on ${{ matrix.node }}, using test pod"
+          fi
+
+          # Fallback: Create test pod if device plugin validation failed
+          if [[ "$GPU_VALIDATED" != "true" ]]; then
+            echo "Creating GPU test pod (this may take 1-3 minutes for image pull on fresh nodes)..."
+            cat <<EOF | kubectl apply -f -
           apiVersion: v1
           kind: Pod
           metadata:
@@ -2946,24 +2993,56 @@ jobs:
             restartPolicy: Never
           EOF
 
-          # Wait for pod completion (use Succeeded phase, not Completed condition)
-          if kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/gpu-test-${{ matrix.node }} --timeout=60s; then
-            # Show GPU info on success
-            echo "GPU test output:"
-            kubectl logs pod/gpu-test-${{ matrix.node }}
+            # Extended timeout: 180s to allow for image pull on fresh cattle-upgraded nodes
+            # The CUDA base image is ~1.5GB and needs to be pulled after node rebuild
+            echo "Waiting for GPU test pod (up to 180s for image pull)..."
 
-            # Clean up test pod
-            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+            WAIT_START=$(date +%s)
+            POD_SUCCEEDED=false
 
-            echo "✅ GPU validation successful for ${{ matrix.node }}"
-          else
-            # Handle failure
-            POD_PHASE=$(kubectl get pod gpu-test-${{ matrix.node }} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
-            echo "::error::GPU test pod did not succeed (phase: $POD_PHASE)"
-            kubectl logs pod/gpu-test-${{ matrix.node }} 2>/dev/null || echo "Could not retrieve logs"
-            kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
-            exit 1
+            for i in {1..36}; do
+              POD_PHASE=$(kubectl get pod gpu-test-${{ matrix.node }} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+
+              if [[ "$POD_PHASE" == "Succeeded" ]]; then
+                POD_SUCCEEDED=true
+                break
+              elif [[ "$POD_PHASE" == "Failed" ]]; then
+                echo "::error::GPU test pod failed"
+                kubectl logs pod/gpu-test-${{ matrix.node }} 2>/dev/null || echo "Could not retrieve logs"
+                kubectl describe pod gpu-test-${{ matrix.node }} 2>/dev/null | tail -20 || true
+                kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+                exit 1
+              fi
+
+              # Show progress every 30s with diagnostics
+              if [[ $((i % 6)) -eq 0 ]]; then
+                ELAPSED=$(($(date +%s) - WAIT_START))
+                echo "  Still waiting... (${ELAPSED}s elapsed, phase: $POD_PHASE)"
+                # Show pod events to help diagnose Pending issues
+                kubectl get events --field-selector involvedObject.name=gpu-test-${{ matrix.node }} --sort-by='.lastTimestamp' 2>/dev/null | tail -3 || true
+              fi
+
+              sleep 5
+            done
+
+            if [[ "$POD_SUCCEEDED" == "true" ]]; then
+              echo "GPU test output:"
+              kubectl logs pod/gpu-test-${{ matrix.node }}
+              kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+              echo "✅ GPU validation successful via test pod"
+            else
+              ELAPSED=$(($(date +%s) - WAIT_START))
+              POD_PHASE=$(kubectl get pod gpu-test-${{ matrix.node }} -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+              echo "::error::GPU test pod did not succeed after ${ELAPSED}s (phase: $POD_PHASE)"
+              echo "Pod events:"
+              kubectl get events --field-selector involvedObject.name=gpu-test-${{ matrix.node }} --sort-by='.lastTimestamp' 2>/dev/null || true
+              echo "Pod description:"
+              kubectl describe pod gpu-test-${{ matrix.node }} 2>/dev/null | tail -30 || true
+              kubectl delete pod gpu-test-${{ matrix.node }} --ignore-not-found
+              exit 1
+            fi
           fi
+
           echo "::endgroup::"
       - name: Post-upgrade validation
         run: |
