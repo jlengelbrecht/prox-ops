@@ -29,7 +29,7 @@ name: Cattle Upgrade - Complete Workflow
 #
 #    TERRAFORM STATE LOCK HANDLING:
 #    - All terraform operations share a single S3 state file with DynamoDB locking
-#    - When parallel jobs contend for the lock, they retry with exponential backoff
+#    - When parallel jobs contend for the lock, they retry with linear backoff
 #    - Lock contention adds ~15-120s wait time per retry (up to 12 retries)
 #    - Non-terraform steps (talosctl, kubectl) run truly in parallel
 #
@@ -1759,7 +1759,7 @@ jobs:
       #
       # PARALLEL EXECUTION REQUIREMENTS:
       # - Each concurrent job needs its own cattle-runner (external VM runner)
-      # - Terraform operations retry with exponential backoff on lock contention
+      # - Terraform operations retry with linear backoff on lock contention
       # - Non-terraform steps (talosctl, kubectl) run truly in parallel
       # - See workflow header comments for runner scaling requirements
       max-parallel: ${{ inputs.worker_rollout_mode == 'aggressive' && 4 || (inputs.worker_rollout_mode == 'standard' && 2 || 1) }}
@@ -1947,7 +1947,7 @@ jobs:
         run: |
           echo "::group::Planning destruction of ${{ matrix.node }}"
 
-          # PARALLEL EXECUTION: Retry with exponential backoff on lock contention
+          # PARALLEL EXECUTION: Retry with linear backoff on lock contention
           # When multiple workers run in parallel, they may contend for the state lock
           MAX_LOCK_ATTEMPTS=12
           BASE_WAIT=15
@@ -1977,7 +1977,7 @@ jobs:
               echo "::notice::State lock held by another parallel job (attempt $ATTEMPT)"
 
               if [[ $ATTEMPT -lt $MAX_LOCK_ATTEMPTS ]]; then
-                # Exponential backoff with jitter to prevent thundering herd
+                # Linear backoff with jitter to prevent thundering herd
                 WAIT_TIME=$(( BASE_WAIT * ATTEMPT + RANDOM % 10 ))
                 [[ $WAIT_TIME -gt 120 ]] && WAIT_TIME=120
                 echo "Waiting ${WAIT_TIME}s before retry (parallel job has lock)..."
@@ -2128,7 +2128,7 @@ jobs:
               echo "::notice::State lock held by another parallel job (attempt $ATTEMPT)"
 
               if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
-                # Exponential backoff with jitter
+                # Linear backoff with jitter
                 WAIT_TIME=$(( BASE_WAIT * ATTEMPT + RANDOM % 10 ))
                 [[ $WAIT_TIME -gt 120 ]] && WAIT_TIME=120
                 echo "Waiting ${WAIT_TIME}s before retry (parallel job has lock)..."
@@ -2136,11 +2136,13 @@ jobs:
 
                 # Re-plan since state may have changed
                 echo "Re-generating plan after lock wait..."
-                terraform plan \
+                if ! terraform plan \
                   -input=false \
                   -destroy \
                   -out=worker-destroy-${{ matrix.node }}.tfplan \
-                  -target=module.worker_nodes[\"${{ matrix.node }}\"] 2>&1 || true
+                  -target=module.worker_nodes[\"${{ matrix.node }}\"] 2>&1; then
+                  echo "::warning::Re-plan failed, will retry with next attempt"
+                fi
               fi
             elif echo "$APPLY_OUTPUT" | grep -q "saved plan is stale"; then
               echo "::notice::Plan became stale (state changed by parallel job)"
@@ -2151,11 +2153,13 @@ jobs:
                 sleep $WAIT_TIME
 
                 # Re-plan with fresh state
-                terraform plan \
+                if ! terraform plan \
                   -input=false \
                   -destroy \
                   -out=worker-destroy-${{ matrix.node }}.tfplan \
-                  -target=module.worker_nodes[\"${{ matrix.node }}\"] || true
+                  -target=module.worker_nodes[\"${{ matrix.node }}\"] 2>&1; then
+                  echo "::warning::Re-plan failed, will retry with next attempt"
+                fi
               fi
             else
               # Real error, not lock/stale related
@@ -2223,7 +2227,7 @@ jobs:
         run: |
           echo "::group::Recreating ${{ matrix.node }} from v${{ inputs.new_version }} template"
 
-          # PARALLEL EXECUTION: Retry with exponential backoff on lock contention
+          # PARALLEL EXECUTION: Retry with linear backoff on lock contention
           # VM creation is the longest terraform operation - needs patience
           MAX_ATTEMPTS=12
           BASE_WAIT=15
@@ -2254,7 +2258,7 @@ jobs:
               echo "::notice::State lock held by another parallel job (attempt $ATTEMPT)"
 
               if [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; then
-                # Exponential backoff with jitter
+                # Linear backoff with jitter
                 WAIT_TIME=$(( BASE_WAIT * ATTEMPT + RANDOM % 10 ))
                 [[ $WAIT_TIME -gt 120 ]] && WAIT_TIME=120
                 echo "Waiting ${WAIT_TIME}s before retry (parallel job has lock)..."
