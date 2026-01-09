@@ -3135,7 +3135,7 @@ jobs:
           fi
 
           echo "✅ Core Flux Kustomizations reconciling:"
-          kubectl get kustomizations.kustomize.toolkit.fluxcd.io -n flux-system -o custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,MESSAGE:.status.conditions[?(@.type=="Ready")].message | grep -E "(cluster-apps|external-secrets-operator|1password-connect)" || true
+          kubectl get kustomizations.kustomize.toolkit.fluxcd.io -n flux-system -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,MESSAGE:.status.conditions[?(@.type=="Ready")].message' | grep -E 'cluster-apps|external-secrets-operator|1password-connect' || true
 
           echo ""
           echo "✅ Flux GitOps functional"
