@@ -135,6 +135,9 @@ env:
   AWS_REGION: us-east-2
   TERRAFORM_STATE_BUCKET: prox-ops-terraform-state
   TERRAFORM_VERSION: "1.14.0"  # Managed by Renovate
+  # Cache Terraform providers to prevent GitHub rate limiting and download timeouts
+  # (work-9 failed in run 20842324836 due to provider download timeout)
+  TF_PLUGIN_CACHE_DIR: /tmp/terraform-plugin-cache
 
 jobs:
   # ==========================================================================
@@ -231,9 +234,28 @@ jobs:
           printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
           chmod 600 ~/.ssh/proxmox_terraform
 
-      - name: Initialize Terraform
+      - name: Initialize Terraform (with provider caching)
         working-directory: ./terraform
-        run: terraform init
+        run: |
+          # Create provider cache directory (prevents GitHub rate limiting)
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+          # Retry terraform init up to 3 times (GitHub occasionally rate-limits provider downloads)
+          for attempt in 1 2 3; do
+            echo "::group::Terraform init attempt $attempt"
+            if terraform init; then
+              echo "::endgroup::"
+              echo "✅ Terraform initialized successfully"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if [[ $attempt -lt 3 ]]; then
+              echo "⚠️ terraform init failed, retrying in 30 seconds..."
+              sleep 30
+            fi
+          done
+          echo "::error::terraform init failed after 3 attempts"
+          exit 1
 
       # Taint all template resources to force rebuild when checkbox is checked
       # This eliminates the need to manually run terraform taint before the workflow
@@ -758,9 +780,28 @@ jobs:
           printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
           chmod 600 ~/.ssh/proxmox_terraform
 
-      - name: Initialize Terraform
+      - name: Initialize Terraform (with provider caching)
         working-directory: ./terraform
-        run: terraform init
+        run: |
+          # Create provider cache directory (prevents GitHub rate limiting)
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+          # Retry terraform init up to 3 times (GitHub occasionally rate-limits provider downloads)
+          for attempt in 1 2 3; do
+            echo "::group::Terraform init attempt $attempt"
+            if terraform init; then
+              echo "::endgroup::"
+              echo "✅ Terraform initialized successfully"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if [[ $attempt -lt 3 ]]; then
+              echo "⚠️ terraform init failed, retrying in 30 seconds..."
+              sleep 30
+            fi
+          done
+          echo "::error::terraform init failed after 3 attempts"
+          exit 1
 
       - name: Validate etcd quorum health
         run: |
@@ -1761,9 +1802,28 @@ jobs:
           printf '%s\n' "$PROXMOX_SSH_KEY" > ~/.ssh/proxmox_terraform
           chmod 600 ~/.ssh/proxmox_terraform
 
-      - name: Initialize Terraform
+      - name: Initialize Terraform (with provider caching)
         working-directory: ./terraform
-        run: terraform init
+        run: |
+          # Create provider cache directory (prevents GitHub rate limiting)
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+          # Retry terraform init up to 3 times (GitHub occasionally rate-limits provider downloads)
+          for attempt in 1 2 3; do
+            echo "::group::Terraform init attempt $attempt"
+            if terraform init; then
+              echo "::endgroup::"
+              echo "✅ Terraform initialized successfully"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if [[ $attempt -lt 3 ]]; then
+              echo "⚠️ terraform init failed, retrying in 30 seconds..."
+              sleep 30
+            fi
+          done
+          echo "::error::terraform init failed after 3 attempts"
+          exit 1
 
       - name: Pre-drain health check
         run: |
