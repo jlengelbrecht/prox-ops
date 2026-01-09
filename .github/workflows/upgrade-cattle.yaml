@@ -300,21 +300,24 @@ jobs:
             echo ""
             echo "Processing module.$template..."
 
-            # Taint the create_template resource (this triggers full template rebuild)
-            # Capture output to distinguish "not found" from real errors
-            TAINT_OUTPUT=$(terraform taint "module.${template}.null_resource.create_template" 2>&1) || true
+            # Taint BOTH download and create resources
+            # download_talos_image: Ensures image is downloaded on fresh runners
+            # create_template: Triggers full template rebuild
+            for resource in "download_talos_image" "create_template"; do
+              TAINT_OUTPUT=$(terraform taint "module.${template}.null_resource.${resource}" 2>&1) || true
 
-            if echo "$TAINT_OUTPUT" | grep -q "has been marked as tainted"; then
-              echo "  ✅ Tainted module.${template}.null_resource.create_template"
-              TAINTED=$((TAINTED + 1))
-            elif echo "$TAINT_OUTPUT" | grep -qE "(does not exist|Resource not found|No matching resource)"; then
-              echo "  ⚠️  Skipped module.${template} (resource not in state yet)"
-              SKIPPED=$((SKIPPED + 1))
-            else
-              echo "  ❌ Error tainting module.${template}:"
-              echo "     $TAINT_OUTPUT"
-              ERRORS=$((ERRORS + 1))
-            fi
+              if echo "$TAINT_OUTPUT" | grep -q "has been marked as tainted"; then
+                echo "  ✅ Tainted module.${template}.null_resource.${resource}"
+                TAINTED=$((TAINTED + 1))
+              elif echo "$TAINT_OUTPUT" | grep -qE "(does not exist|Resource not found|No matching resource)"; then
+                echo "  ⚠️  Skipped module.${template}.${resource} (resource not in state yet)"
+                SKIPPED=$((SKIPPED + 1))
+              else
+                echo "  ❌ Error tainting module.${template}.${resource}:"
+                echo "     $TAINT_OUTPUT"
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
           done
 
           echo ""

@@ -20,7 +20,7 @@ locals {
   raw_image_path = "/tmp/talos-images/talos-${var.talos_version}-${var.schematic_id}.raw"
 
   # Template naming
-  template_desc  = "Talos ${var.talos_version} - Schematic: ${var.schematic_id}"
+  template_desc = "Talos ${var.talos_version} - Schematic: ${var.schematic_id}"
 }
 
 # Download and decompress Talos nocloud image
@@ -94,14 +94,16 @@ resource "null_resource" "create_template" {
   # Uses SCP with 3 retry attempts to handle transient network issues
   # during large file transfers (1.7GB Talos images)
   provisioner "local-exec" {
-    command = <<-EOT
+    # Use bash explicitly for brace expansion and better error handling
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
       set -e
 
       echo "[Template Upload] Uploading talos-${var.talos_version}-${var.schematic_id}.raw to ${var.proxmox_host}..."
       echo "[Template Upload] File size: $(du -h ${local.raw_image_path} | cut -f1)"
 
       # Retry logic: 3 attempts with 10 second delays
-      for attempt in {1..3}; do
+      for attempt in 1 2 3; do
         echo "[Template Upload] Attempt $attempt of 3..."
 
         if scp -i ~/.ssh/proxmox_terraform \
