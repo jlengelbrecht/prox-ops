@@ -14,6 +14,13 @@ runs:
   steps:
     # mise-action reads .mise.toml but we only install CI-essential tools
     # to avoid filling disk with unnecessary packages (Python 3.14 is ~500MB)
+    # Suppress mise venv warnings - we don't install Python in CI to save disk space
+    # but .mise.toml has venv config for local development
+    - name: Suppress mise Python venv warnings
+      shell: bash
+      run: |
+        echo "MISE_PYTHON_VENV_AUTO_CREATE=0" >> $GITHUB_ENV
+
     - name: Setup mise and install tools
       uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
       with:

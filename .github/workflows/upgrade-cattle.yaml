@@ -1,5 +1,59 @@
 ---
 name: Cattle Upgrade - Complete Workflow
+#
+# =============================================================================
+# CATTLE UPGRADE WORKFLOW - CRITICAL DOCUMENTATION
+# =============================================================================
+#
+# WHAT THIS WORKFLOW DOES:
+# This workflow performs a "cattle" upgrade of the Talos Linux cluster by:
+# 1. Creating new VM templates with the new Talos version
+# 2. Destroying and recreating each node VM from the new template
+# 3. Applying machine configuration to bootstrap Talos
+# 4. Waiting for nodes to rejoin the Kubernetes cluster
+#
+# KNOWN LIMITATIONS:
+#
+# 1. CANCEL BUTTON BEHAVIOR
+#    The GitHub Actions "Cancel" button may not immediately stop a running job.
+#    - cancel-in-progress: true only affects QUEUED runs, not the currently executing job
+#    - To emergency stop: You must either wait for the job to complete/fail, or
+#      stop the self-hosted runner (cattle-runner VM) via Proxmox
+#    - GitHub limitation: https://github.com/orgs/community/discussions/26531
+#
+# 2. PARALLEL WORKER PROCESSING
+#    The max-parallel setting (standard=2, aggressive=4) does NOT parallelize
+#    terraform operations due to the shared Terraform state lock on S3.
+#    - Terraform operations serialize naturally when lock conflicts occur
+#    - Only config-apply and verification steps benefit from parallelism
+#    - True parallelism would require separate state files per node (not implemented)
+#
+# 3. APPLY MACHINE CONFIGURATION FAILURES
+#    The "Apply machine configuration" step requires the VM to be in MAINTENANCE MODE.
+#    Common failure causes:
+#    a) Terraform silently failed - VM was never destroyed/recreated
+#    b) Old VM still running full Talos (not maintenance mode)
+#    c) Network connectivity issues to the new VM
+#    d) Proxmox failed to properly clone the template
+#
+#    Symptoms: "certificate required" or "x509:" errors mean the node is running
+#    FULL Talos (not maintenance mode) - the --insecure flag only works in maintenance.
+#
+# RECOVERY PROCEDURES:
+#
+# If a worker node fails mid-upgrade:
+# 1. Check if VM exists: Proxmox UI or `terraform state list | grep <node>`
+# 2. If VM exists but full Talos: terraform destroy then apply for that node
+# 3. If VM doesn't exist: terraform apply -target=module.worker_nodes["<node>"]
+# 4. Apply config manually: talosctl apply-config --insecure -n <IP> -f <config>
+#
+# Manual cattle recovery for a single node:
+#   cd terraform
+#   terraform destroy -target=module.worker_nodes["k8s-work-X"] -auto-approve
+#   terraform apply -target=module.worker_nodes["k8s-work-X"] -auto-approve
+#   talosctl apply-config --insecure -n 10.20.67.X -f ../talos/clusterconfig/kubernetes-k8s-work-X.yaml
+#
+# =============================================================================
 
 on:
   workflow_call:
@@ -1617,6 +1671,10 @@ jobs:
     strategy:
       # Dynamic max-parallel based on rollout mode:
       # safe=1 (one worker at a time), standard=2 (pair together), aggressive=4 (multiple pairs)
+      #
+      # IMPORTANT: Due to shared Terraform state lock, terraform operations within each job
+      # serialize naturally when lock conflicts occur. The max-parallel setting primarily
+      # benefits the config-apply and verification steps which don't need terraform.
       max-parallel: ${{ inputs.worker_rollout_mode == 'aggressive' && 4 || (inputs.worker_rollout_mode == 'standard' && 2 || 1) }}
       fail-fast: false
       matrix:
@@ -1979,12 +2037,66 @@ jobs:
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
         run: |
           echo "::group::Recreating ${{ matrix.node }} from v${{ inputs.new_version }} template"
-          terraform apply \
+
+          # Capture terraform output and exit code
+          set +e
+          TERRAFORM_OUTPUT=$(terraform apply \
             -input=false \
             -auto-approve \
-            -target=module.worker_nodes[\"${{ matrix.node }}\"]
+            -target=module.worker_nodes[\"${{ matrix.node }}\"] 2>&1)
+          TERRAFORM_EXIT=$?
+          set -e
+
+          echo "$TERRAFORM_OUTPUT"
+
+          if [[ $TERRAFORM_EXIT -ne 0 ]]; then
+            echo ""
+            echo "::error::Terraform apply failed with exit code $TERRAFORM_EXIT"
+
+            # Check for specific error types
+            if echo "$TERRAFORM_OUTPUT" | grep -q "Error acquiring the state lock"; then
+              echo "::error::TERRAFORM STATE LOCK CONFLICT"
+              echo "::error::Another terraform operation is in progress"
+              echo "::error::This indicates a parallel job is holding the lock"
+            elif echo "$TERRAFORM_OUTPUT" | grep -q "timeout"; then
+              echo "::error::TERRAFORM TIMEOUT"
+              echo "::error::The operation timed out - Proxmox may be overloaded"
+            fi
+
+            exit 1
+          fi
 
           echo "✅ VM recreated from new template"
+          echo "::endgroup::"
+
+      # CRITICAL: Verify VM was actually created before attempting config apply
+      # This prevents the "VM not network-ready" error when terraform silently failed
+      - name: Verify VM exists in Terraform state
+        id: verify_vm
+        working-directory: ./terraform
+        run: |
+          echo "::group::Verifying ${{ matrix.node }} exists in Terraform state"
+
+          # Check if VM resource exists in state
+          if ! terraform state list 2>/dev/null | grep -q "module.worker_nodes\[\"${{ matrix.node }}\"\]"; then
+            echo "::error::CRITICAL: VM ${{ matrix.node }} not found in Terraform state!"
+            echo "::error::The terraform apply may have failed silently"
+            echo "::error::Cannot proceed with config apply - VM does not exist"
+            terraform state list | grep worker || echo "No worker nodes in state"
+            exit 1
+          fi
+
+          echo "✅ VM ${{ matrix.node }} exists in Terraform state"
+
+          # Extract VM ID from state for additional verification
+          VM_INFO=$(terraform state show "module.worker_nodes[\"${{ matrix.node }}\"].proxmox_virtual_environment_vm.talos_node" 2>/dev/null || true)
+
+          if [[ -n "$VM_INFO" ]]; then
+            VM_ID=$(echo "$VM_INFO" | grep "vm_id" | head -1 | awk '{print $3}' || echo "unknown")
+            echo "VM ID: $VM_ID"
+            echo "vm_id=$VM_ID" >> $GITHUB_OUTPUT
+          fi
+
           echo "::endgroup::"
 
       # ==========================================================================
@@ -2102,19 +2214,64 @@ jobs:
           fi
 
           NETWORK_READY=false
+          FULL_TALOS_DETECTED=false
+
           for i in $(seq 1 $MAX_ATTEMPTS); do
-            if talosctl -n "$NODE_IP" version --insecure --timeout=5s >/dev/null 2>&1; then
-              echo "✓ VM is network-ready after $((i * 5)) seconds"
+            # Capture output to diagnose failures
+            VERSION_OUTPUT=$(talosctl -n "$NODE_IP" version --insecure --timeout=5s 2>&1) || true
+
+            if echo "$VERSION_OUTPUT" | grep -q "Server:"; then
+              echo "✓ VM is network-ready (maintenance mode) after $((i * 5)) seconds"
               NETWORK_READY=true
               break
             fi
+
+            # CRITICAL: Detect if node is running FULL Talos (not maintenance mode)
+            # This happens when terraform destroy/apply failed and the old VM is still running
+            if echo "$VERSION_OUTPUT" | grep -qi "certificate required\|tls:\|x509:"; then
+              echo ""
+              echo "::error::CRITICAL: Node at $NODE_IP is running FULL Talos (not maintenance mode)"
+              echo "::error::This means the VM was NOT destroyed and recreated by terraform"
+              echo "::error::The --insecure flag only works in maintenance mode"
+              echo "::error::"
+              echo "::error::ROOT CAUSE: Terraform destroy or apply likely failed earlier"
+              echo "::error::Check the 'Recreate VM from new template' step logs"
+              echo "::error::"
+              echo "::error::Manual recovery required:"
+              echo "::error::  1. Check terraform state: terraform state list | grep ${{ matrix.node }}"
+              echo "::error::  2. Manually destroy VM: terraform destroy -target='module.worker_nodes[\"${{ matrix.node }}\"]'"
+              echo "::error::  3. Recreate VM: terraform apply -target='module.worker_nodes[\"${{ matrix.node }}\"]'"
+              echo "::error::  4. Re-run workflow"
+              FULL_TALOS_DETECTED=true
+              break
+            fi
+
+            # Show diagnostic info every 30 seconds
+            if (( i % 6 == 0 )); then
+              echo "  Diagnostic: $VERSION_OUTPUT" | head -1 | sed 's/^/  /'
+            fi
+
             echo "  Waiting... ($((i * 5))/${MAX_WAIT}s)"
             sleep 5
           done
 
+          # Exit with clear error if full Talos detected (don't waste time waiting)
+          if [[ "$FULL_TALOS_DETECTED" == "true" ]]; then
+            echo ""
+            echo "::error::ABORTING: Cannot apply config to node running full Talos"
+            exit 1
+          fi
+
           if [[ "$NETWORK_READY" != "true" ]]; then
+            echo ""
             echo "::error::VM failed to become network-ready within ${MAX_WAIT}s"
-            echo "::error::This may indicate a boot failure or network configuration issue"
+            echo "::error::Possible causes:"
+            echo "::error::  1. VM did not boot (check Proxmox console)"
+            echo "::error::  2. Network configuration issue (check VM NICs)"
+            echo "::error::  3. Talos image boot failure (check serial console)"
+            echo "::error::  4. IP address conflict on network"
+            echo ""
+            echo "::error::Last talosctl output: $(echo "$VERSION_OUTPUT" | head -3)"
             exit 1
           fi
 
