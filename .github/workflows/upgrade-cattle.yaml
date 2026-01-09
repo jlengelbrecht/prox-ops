@@ -1237,7 +1237,8 @@ jobs:
           echo "Waiting for VM to be network-ready..."
           MAX_WAIT=120
           for i in {1..24}; do
-            if talosctl -n "$NODE_IP" version --insecure --timeout=5s >/dev/null 2>&1; then
+            # Use system timeout command - talosctl version has no --timeout flag
+            if timeout 5 talosctl -n "$NODE_IP" version --insecure >/dev/null 2>&1; then
               echo "✓ VM is network-ready after $((i * 5)) seconds"
               break
             fi
@@ -2218,7 +2219,8 @@ jobs:
 
           for i in $(seq 1 $MAX_ATTEMPTS); do
             # Capture output to diagnose failures
-            VERSION_OUTPUT=$(talosctl -n "$NODE_IP" version --insecure --timeout=5s 2>&1) || true
+            # Use system timeout command - talosctl version has no --timeout flag
+            VERSION_OUTPUT=$(timeout 5 talosctl -n "$NODE_IP" version --insecure 2>&1) || true
 
             if echo "$VERSION_OUTPUT" | grep -q "Server:"; then
               echo "✓ VM is network-ready (maintenance mode) after $((i * 5)) seconds"
