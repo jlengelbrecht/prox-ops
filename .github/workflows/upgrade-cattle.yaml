@@ -1920,23 +1920,19 @@ jobs:
         run: |
           echo "Creating state backup before destroy..."
 
-          # SECURITY: Check for state lock before proceeding
-          if aws s3 ls s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate.tflock 2>/dev/null; then
-            echo "::error::Terraform state is locked - another operation in progress"
-            echo "::error::Wait for other operation to complete or manually remove lock if stale"
-            exit 1
-          fi
+          # NOTE: Lock check removed for parallel execution support
+          # The retry logic in terraform operations handles lock contention properly
+          # Checking for locks here would cause race conditions with parallel jobs
 
+          # Backup the state (this is a read-only S3 copy operation)
           aws s3 cp s3://${{ env.TERRAFORM_STATE_BUCKET }}/terraform.tfstate \
             s3://${{ env.TERRAFORM_STATE_BUCKET }}/backups/pre-upgrade-${{ matrix.node }}-$(date +%s).tfstate
 
-      # S3-native lock clearing - immediately before terraform operations
-      - name: Clear stale Terraform locks (pre-destroy-plan)
-        uses: ./.github/actions/clear-terraform-lock
-        timeout-minutes: 1
-        with:
-          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
-          terraform_state_key: terraform.tfstate
+          echo "State backup created successfully"
+
+      # NOTE: Lock clearing action removed for parallel execution support
+      # When running parallel jobs, clearing locks can delete locks held by other jobs
+      # The terraform retry logic handles lock contention by waiting and retrying
 
       - name: Plan worker destruction
         working-directory: ./terraform
@@ -2123,7 +2119,23 @@ jobs:
               break
             fi
 
-            # Check if failure was due to lock contention
+            # PARALLEL EXECUTION: Handle lock release errors as non-fatal
+            # If apply succeeded but lock release failed (e.g., lock file deleted by
+            # another job), the operation was still successful
+            if echo "$APPLY_OUTPUT" | grep -q "Error releasing the state lock"; then
+              echo "$APPLY_OUTPUT"
+              if echo "$APPLY_OUTPUT" | grep -q "Destroy complete"; then
+                echo "::warning::Lock release failed but destroy operation completed successfully"
+                echo "::warning::This can happen when parallel jobs interact with state lock"
+                echo "✅ VM destroyed successfully (lock release error ignored)"
+                SUCCESS=true
+                break
+              else
+                echo "::error::Lock release error but destroy did not complete"
+              fi
+            fi
+
+            # Check if failure was due to lock contention (acquiring)
             if echo "$APPLY_OUTPUT" | grep -q "Error acquiring the state lock"; then
               echo "::notice::State lock held by another parallel job (attempt $ATTEMPT)"
 
@@ -2161,8 +2173,8 @@ jobs:
                   echo "::warning::Re-plan failed, will retry with next attempt"
                 fi
               fi
-            else
-              # Real error, not lock/stale related
+            elif ! echo "$APPLY_OUTPUT" | grep -q "Error releasing the state lock"; then
+              # Real error, not lock related
               echo "$APPLY_OUTPUT"
               echo "::error::Terraform apply failed with non-recoverable error"
               exit 1
@@ -2210,13 +2222,9 @@ jobs:
           echo "✅ Template verified and ready for VM creation"
           echo "::endgroup::"
 
-      # S3-native lock clearing - immediately before terraform operations
-      - name: Clear stale Terraform locks (pre-apply)
-        uses: ./.github/actions/clear-terraform-lock
-        timeout-minutes: 1
-        with:
-          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
-          terraform_state_key: terraform.tfstate
+      # NOTE: Lock clearing action removed for parallel execution support
+      # When running parallel jobs, clearing locks can delete locks held by other jobs
+      # The terraform retry logic handles lock contention by waiting and retrying
 
       - name: Recreate VM from new template
         working-directory: ./terraform
@@ -2253,7 +2261,23 @@ jobs:
               break
             fi
 
-            # Check if failure was due to lock contention
+            # PARALLEL EXECUTION: Handle lock release errors as non-fatal
+            # If apply succeeded but lock release failed (e.g., lock file deleted by
+            # another job), the operation was still successful
+            if echo "$TERRAFORM_OUTPUT" | grep -q "Error releasing the state lock"; then
+              echo "$TERRAFORM_OUTPUT"
+              if echo "$TERRAFORM_OUTPUT" | grep -q "Apply complete"; then
+                echo "::warning::Lock release failed but apply operation completed successfully"
+                echo "::warning::This can happen when parallel jobs interact with state lock"
+                echo "✅ VM recreated successfully (lock release error ignored)"
+                SUCCESS=true
+                break
+              else
+                echo "::error::Lock release error but apply did not complete"
+              fi
+            fi
+
+            # Check if failure was due to lock contention (acquiring)
             if echo "$TERRAFORM_OUTPUT" | grep -q "Error acquiring the state lock"; then
               echo "::notice::State lock held by another parallel job (attempt $ATTEMPT)"
 
@@ -2272,8 +2296,8 @@ jobs:
                 echo "Waiting ${WAIT_TIME}s before retry..."
                 sleep $WAIT_TIME
               fi
-            else
-              # Real error, not lock/timeout related
+            elif ! echo "$TERRAFORM_OUTPUT" | grep -q "Error releasing the state lock"; then
+              # Real error, not lock related
               echo "$TERRAFORM_OUTPUT"
               echo "::error::Terraform apply failed with non-recoverable error"
               exit 1
