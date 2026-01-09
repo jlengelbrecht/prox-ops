@@ -1246,8 +1246,22 @@ jobs:
             sleep 5
           done
 
+          # ============================================================
+          # CRITICAL: Network Stabilization Delay
+          # ============================================================
+          # After VM responds to talosctl version --insecure, the network
+          # interface goes through a brief reconfiguration phase where it
+          # becomes temporarily unreachable ("no route to host").
+          # Controllers typically stabilize faster than workers.
+          # ============================================================
+          STABILIZATION_DELAY=30  # 30s for controllers
+          echo "Waiting ${STABILIZATION_DELAY}s for VM network to stabilize..."
+          sleep $STABILIZATION_DELAY
+          echo "✓ Stabilization delay complete"
+
           # Application with retry logic and complete output suppression
-          MAX_ATTEMPTS=3
+          # Increased retry count for better reliability
+          MAX_ATTEMPTS=5
           ATTEMPT=1
           SUCCESS=false
 
@@ -1290,15 +1304,34 @@ jobs:
 
               echo "  ⚠ Attempt $ATTEMPT failed"
 
+              # Display sanitized error for debugging
+              echo "  Sanitized error output:"
+              head -10 "$ATTEMPT_LOG" 2>/dev/null | sed 's/^/    /' || true
+
               # Now safe to check error types from sanitized log
+              BASE_WAIT=15  # 15s base wait for controllers
               if grep -q "connection refused" "$ATTEMPT_LOG" 2>/dev/null; then
-                echo "    Node not yet ready, waiting..."
-                sleep $((ATTEMPT * 10))
+                WAIT_TIME=$((ATTEMPT * BASE_WAIT))
+                echo "    Error type: Connection refused - node not yet ready"
+                echo "    Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              elif grep -qi "no route to host" "$ATTEMPT_LOG" 2>/dev/null; then
+                # "no route to host" indicates network interface still initializing
+                WAIT_TIME=$((ATTEMPT * BASE_WAIT * 2))
+                [[ $WAIT_TIME -gt 60 ]] && WAIT_TIME=60  # Cap at 60 seconds
+                echo "    Error type: No route to host - network interface initializing"
+                echo "    Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
               elif grep -q "timeout" "$ATTEMPT_LOG" 2>/dev/null; then
-                echo "    Operation timed out, retrying..."
-                sleep 5
+                WAIT_TIME=$((BASE_WAIT / 2))
+                echo "    Error type: Operation timed out"
+                echo "    Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
               else
-                echo "    Unknown error occurred"
+                WAIT_TIME=$((ATTEMPT * BASE_WAIT))
+                echo "    Error type: Unknown"
+                echo "    Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
               fi
 
               # Shred sanitized log (non-verbose to avoid path leaks)
@@ -1309,7 +1342,7 @@ jobs:
           done
 
           if [[ "$SUCCESS" != "true" ]]; then
-            echo "ERROR: Failed to apply configuration after $MAX_ATTEMPTS attempts"
+            echo "::error::Failed to apply configuration after $MAX_ATTEMPTS attempts"
             exit 1
           fi
 
@@ -2277,13 +2310,40 @@ jobs:
             exit 1
           fi
 
-          # Application with retry logic and complete output suppression
-          # GPU nodes get more attempts due to longer initialization times
+          # ============================================================
+          # CRITICAL: Network Stabilization Delay
+          # ============================================================
+          # After VM responds to talosctl version --insecure, the network interface
+          # goes through a brief reconfiguration phase where it becomes temporarily
+          # unreachable ("no route to host"). This is a race condition between:
+          #   1. VM boot completing (talosctl version succeeds)
+          #   2. Network interface fully initializing for apply-config traffic
+          #
+          # Log analysis from workflow run 20842324836:
+          #   - work-7 (SUCCESS): Network stabilized at ~37 seconds
+          #   - work-1 (FAILED):  Network still unstable at ~40 seconds
+          #
+          # GPU nodes need longer stabilization due to NVIDIA driver initialization
+          # affecting PCI passthrough network timing.
+          # ============================================================
           if [[ "$IS_GPU_NODE" == "true" ]]; then
-            MAX_ATTEMPTS=5  # 5 attempts for GPU nodes
+            STABILIZATION_DELAY=60  # 60s for GPU nodes (NVIDIA driver init)
+          else
+            STABILIZATION_DELAY=45  # 45s for regular nodes
+          fi
+          echo "Waiting ${STABILIZATION_DELAY}s for VM network to stabilize after boot..."
+          echo "  (This prevents 'no route to host' errors during apply-config)"
+          sleep $STABILIZATION_DELAY
+          echo "✓ Stabilization delay complete - proceeding with configuration"
+
+          # Application with retry logic and complete output suppression
+          # Increased retry count after workflow failures in run 20842324836
+          # where 8/12 workers failed due to insufficient retry window
+          if [[ "$IS_GPU_NODE" == "true" ]]; then
+            MAX_ATTEMPTS=6  # 6 attempts for GPU nodes (was 5)
             echo "  GPU node - using extended retry count (${MAX_ATTEMPTS} attempts)"
           else
-            MAX_ATTEMPTS=3  # 3 attempts for regular nodes
+            MAX_ATTEMPTS=6  # 6 attempts for regular nodes (was 3)
           fi
           ATTEMPT=1
           SUCCESS=false
@@ -2340,16 +2400,28 @@ jobs:
               head -20 "$ATTEMPT_LOG" 2>/dev/null | sed 's/^/    /' || true
 
               # GPU nodes need longer waits between retries due to NVIDIA driver initialization
+              # Increased BASE_WAIT from 10s to 15s after workflow run 20842324836 analysis
+              # showed VMs need longer network stabilization windows
               if [[ "$IS_GPU_NODE" == "true" ]]; then
                 BASE_WAIT=30  # 30s base wait for GPU nodes
               else
-                BASE_WAIT=10  # 10s base wait for regular nodes
+                BASE_WAIT=15  # 15s base wait for regular nodes (was 10s)
               fi
 
               # Now safe to check error types from sanitized log
               if grep -q "connection refused" "$ATTEMPT_LOG" 2>/dev/null; then
                 WAIT_TIME=$((ATTEMPT * BASE_WAIT))
                 echo "    Error type: Connection refused - node not yet ready"
+                echo "    Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              elif grep -qi "no route to host" "$ATTEMPT_LOG" 2>/dev/null; then
+                # CRITICAL: "no route to host" indicates VM network interface is still
+                # initializing after boot. This was the primary failure mode in run
+                # 20842324836 where 8/12 workers failed. Use extended wait times.
+                WAIT_TIME=$((ATTEMPT * BASE_WAIT * 2))
+                [[ $WAIT_TIME -gt 90 ]] && WAIT_TIME=90  # Cap at 90 seconds
+                echo "    Error type: No route to host - network interface still initializing"
+                echo "    This is expected during VM boot transition - using extended wait"
                 echo "    Waiting ${WAIT_TIME}s before retry..."
                 sleep $WAIT_TIME
               elif grep -q "timeout" "$ATTEMPT_LOG" 2>/dev/null; then
