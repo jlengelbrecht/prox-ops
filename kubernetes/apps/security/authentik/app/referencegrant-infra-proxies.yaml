@@ -1,21 +1,21 @@
 ---
-# ReferenceGrant allows tools namespace resources to reference Authentik service:
+# ReferenceGrant allows infra-proxies namespace resources to reference Authentik service:
 # - SecurityPolicy: for forward auth (extAuth) validation
 # - HTTPRoute: for /outpost.goauthentik.io/* paths (login/callback flow)
-# Required by: n8n, and future tools namespace apps needing Authentik auth
+# Required by: Proxmox, TrueNAS, UDM, and other off-cluster infrastructure proxies
 apiVersion: gateway.networking.k8s.io/v1
 kind: ReferenceGrant
 metadata:
-  name: allow-tools-namespace-extauth
+  name: allow-infra-proxies-namespace-extauth
   namespace: security
 spec:
   from:
     - group: gateway.envoyproxy.io
       kind: SecurityPolicy
-      namespace: tools
+      namespace: infra-proxies
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
-      namespace: tools
+      namespace: infra-proxies
   to:
     - group: ""
       kind: Service

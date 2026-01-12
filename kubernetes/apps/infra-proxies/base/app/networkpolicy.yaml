@@ -1,0 +1,38 @@
+---
+# Base NetworkPolicy for infra-proxies namespace
+# This namespace contains Service/Endpoints pointing to off-cluster infrastructure
+# (Proxmox, TrueNAS, UDM, or any app that doesn't run well in K8s)
+# Note: No pods run here, but policy documents allowed traffic patterns
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: infra-proxies-base
+  namespace: infra-proxies
+spec:
+  description: "Base policy for infra-proxies - allows egress to infrastructure VLAN"
+  endpointSelector: {}
+
+  egress:
+    # To infrastructure VLAN (Proxmox, TrueNAS, UDM, etc.)
+    - toCIDR:
+        - 10.20.66.0/24
+      toPorts:
+        - ports:
+            - port: "8006"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
