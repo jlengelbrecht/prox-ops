@@ -91,14 +91,14 @@ data:
             try:
                 for conn in user.usersourceconnection_set.all():
                     source_slugs.append(conn.source.slug)
-            except:
+            except Exception:
                 pass
 
             # Admins get full access
             if user.is_superuser:
                 groups.append("bookstack-uid-full-access")
-            # Plex users get media-only access
-            elif "plex" in source_slugs:
+            # Plex users get media-only access (slug: media-server-access)
+            elif "media-server-access" in source_slugs:
                 groups.append("bookstack-plex-media-users")
             # UID users get full access
             elif "unifi-identity-enterprise" in source_slugs:
@@ -416,6 +416,7 @@ data:
           user_matching_mode: identifier
           group_matching_mode: identifier
           user_path_template: goauthentik.io/sources/%(slug)s
+          # Plex OAuth client_id - public identifier, not a secret credential
           client_id: TTQ3eAL7FI0gW2ULMCP0r0s7n23Ng2v9pOMNLDmc
           plex_token: !Env AUTHENTIK_PLEX_TOKEN
           allow_friends: true
