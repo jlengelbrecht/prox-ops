@@ -49,16 +49,6 @@ spec:
             - port: "80"
               protocol: TCP
 
-    # To LightRAG API (sync destination via LiteLLM)
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            app.kubernetes.io/name: lightrag
-      toPorts:
-        - ports:
-            - port: "9621"
-              protocol: TCP
-
     # To LiteLLM (AI API gateway)
     - toEndpoints:
         - matchLabels:

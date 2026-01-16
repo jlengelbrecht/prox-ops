@@ -224,7 +224,7 @@ data:
 
   # =============================================================
   # PROXY PROVIDERS BLUEPRINT
-  # Forward auth providers for n8n, LightRAG, Wizarr
+  # Forward auth providers for n8n, Wizarr
   # =============================================================
   providers-proxy.yaml: |
     version: 1
@@ -250,27 +250,6 @@ data:
           name: n8n
           mode: forward_single
           external_host: https://n8n.homelab0.org
-          authorization_flow: !Context authorization_flow
-          invalidation_flow: !Context invalidation_flow
-          property_mappings:
-            - !Context scope_proxy
-            - !Context scope_email
-            - !Context scope_profile
-            - !Context scope_openid
-            - !Context scope_entitlements
-          access_token_validity: hours=24
-          refresh_token_validity: days=30
-          intercept_header_auth: true
-          internal_host_ssl_validation: true
-      # LightRAG - Forward Auth
-      - model: authentik_providers_proxy.proxyprovider
-        id: proxy-lightrag
-        identifiers:
-          name: LightRAG
-        attrs:
-          name: LightRAG
-          mode: forward_single
-          external_host: https://lightrag.homelab0.org
           authorization_flow: !Context authorization_flow
           invalidation_flow: !Context invalidation_flow
           property_mappings:
@@ -366,16 +345,6 @@ data:
           group: Tools
           policy_engine_mode: any
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "n8n"]]
-      - model: authentik_core.application
-        id: app-lightrag
-        identifiers:
-          slug: light-rag
-        attrs:
-          name: LightRAG
-          slug: light-rag
-          group: AI
-          policy_engine_mode: any
-          provider: !Find [authentik_providers_proxy.proxyprovider, [name, "LightRAG"]]
       - model: authentik_core.application
         id: app-wizarr
         identifiers:

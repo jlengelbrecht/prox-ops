@@ -25,14 +25,6 @@ spec:
         - ports:
             - port: "11434"
               protocol: TCP
-    # Allow from LightRAG (STORY-096)
-    - fromEndpoints:
-        - matchLabels:
-            app.kubernetes.io/name: lightrag
-      toPorts:
-        - ports:
-            - port: "11434"
-              protocol: TCP
   egress:
     # Allow HTTPS egress for model downloads from registries
     # (registry.ollama.ai, huggingface.co, etc.)
