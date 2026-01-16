@@ -18,6 +18,9 @@ spec:
   values:
     global:
       env:
+        # =============================================================
+        # CORE AUTHENTIK SECRETS
+        # =============================================================
         - name: AUTHENTIK_SECRET_KEY
           valueFrom:
             secretKeyRef:
@@ -39,10 +42,78 @@ spec:
               name: authentik-secret
               key: POSTGRES_PASSWORD
 
+        # =============================================================
+        # OAUTH2 PROVIDER CREDENTIALS (Direct OIDC)
+        # =============================================================
+        # Open WebUI
+        - name: AUTHENTIK_OPENWEBUI_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_OPENWEBUI_CLIENT_ID
+        - name: AUTHENTIK_OPENWEBUI_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_OPENWEBUI_CLIENT_SECRET
+        # BookStack
+        - name: AUTHENTIK_BOOKSTACK_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_BOOKSTACK_CLIENT_ID
+        - name: AUTHENTIK_BOOKSTACK_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_BOOKSTACK_CLIENT_SECRET
+        # LiteLLM
+        - name: AUTHENTIK_LITELLM_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_LITELLM_CLIENT_ID
+        - name: AUTHENTIK_LITELLM_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_LITELLM_CLIENT_SECRET
+
+        # =============================================================
+        # SOURCE CREDENTIALS
+        # =============================================================
+        # Plex Source
+        - name: AUTHENTIK_PLEX_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_PLEX_TOKEN
+        - name: AUTHENTIK_PLEX_SERVER_ID
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_PLEX_SERVER_ID
+        # UniFi Identity Enterprise Source
+        - name: AUTHENTIK_UID_CONSUMER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_UID_CONSUMER_KEY
+        - name: AUTHENTIK_UID_CONSUMER_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_UID_CONSUMER_SECRET
+
     authentik:
       error_reporting:
         enabled: false
       disable_startup_analytics: true
+
+    # Mount blueprints from ConfigMap for GitOps-managed configuration
+    blueprints:
+      configMaps:
+        - authentik-blueprints
 
     server:
       replicas: 1
