@@ -11,7 +11,18 @@ spec:
     type: Kubernetes
     kubernetes:
       envoyDeployment:
-        replicas: 2
+        replicas: 4
+        pod:
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                      - key: gateway.envoyproxy.io/owning-gateway-namespace
+                        operator: In
+                        values:
+                          - network
+                  topologyKey: kubernetes.io/hostname
         container:
           resources:
             requests:
