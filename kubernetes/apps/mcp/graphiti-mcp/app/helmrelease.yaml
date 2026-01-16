@@ -1,0 +1,104 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: graphiti-mcp
+  namespace: mcp
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: mcp
+  interval: 1h
+  values:
+    controllers:
+      graphiti-mcp:
+        strategy: RollingUpdate
+        containers:
+          app:
+            image:
+              repository: docker.io/zepai/knowledge-graph-mcp
+              # renovate: datasource=docker depName=zepai/knowledge-graph-mcp
+              tag: 1.0.1
+            env:
+              # FalkorDB connection (database namespace)
+              # Graphiti uses FALKORDB_URI for Redis-protocol FalkorDB
+              FALKORDB_URI: "redis://falkordb.database.svc.cluster.local:6379"
+              # Database name (defaults to default_db if not set)
+              FALKORDB_DATABASE: "graphiti"
+              # Graph namespace/group identifier
+              GRAPHITI_GROUP_ID: "homelab"
+              # Concurrency limit for episode processing
+              # Adjust based on OpenAI rate tier (default 10)
+              SEMAPHORE_LIMIT: "5"
+            envFrom:
+              - secretRef:
+                  name: graphiti-mcp-secret
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: &port 8000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *port
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 250m
+                memory: 512Mi
+              limits:
+                cpu: 2
+                memory: 2Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      annotations:
+        # Stakater Reloader: restart pod when secrets change
+        secret.reloader.stakater.com/reload: "graphiti-mcp-secret"
+        security.homelab/purpose: "Knowledge graph MCP server for RAG operations"
+        security.homelab/network: "Restricted - only LiteLLM gateway can access"
+        security.homelab/data: "Homelab documentation knowledge graph via FalkorDB"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+    service:
+      app:
+        controller: graphiti-mcp
+        type: ClusterIP
+        ports:
+          http:
+            port: 8000
+            targetPort: 8000
+            protocol: TCP
