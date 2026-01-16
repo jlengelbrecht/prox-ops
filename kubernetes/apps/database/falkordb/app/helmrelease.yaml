@@ -29,19 +29,8 @@ spec:
             # Use REDIS_ARGS for configuration (FalkorDB recommended approach)
             # The image handles module loading automatically
             env:
-              # REDIS_ARGS configures Redis/FalkorDB startup options
-              # Pass all configuration via this env var
-              REDIS_ARGS: >-
-                --requirepass $(FALKORDB_PASSWORD)
-                --appendonly yes
-                --appendfsync everysec
-                --auto-aof-rewrite-percentage 100
-                --auto-aof-rewrite-min-size 64mb
-                --save 900 1
-                --save 300 10
-                --save 60 10000
-                --maxmemory 1900mb
-                --maxmemory-policy noeviction
+              # Password must be defined BEFORE REDIS_ARGS for $(VAR) expansion
+              # Kubernetes expands env vars in order - referenced vars must exist first
               FALKORDB_PASSWORD:
                 valueFrom:
                   secretKeyRef:
@@ -53,6 +42,19 @@ spec:
                   secretKeyRef:
                     name: falkordb-secret
                     key: password
+              # REDIS_ARGS configures Redis/FalkorDB startup options
+              # Uses $(FALKORDB_PASSWORD) which expands because it's defined above
+              REDIS_ARGS: >-
+                --requirepass $(FALKORDB_PASSWORD)
+                --appendonly yes
+                --appendfsync everysec
+                --auto-aof-rewrite-percentage 100
+                --auto-aof-rewrite-min-size 64mb
+                --save 900 1
+                --save 300 10
+                --save 60 10000
+                --maxmemory 1900mb
+                --maxmemory-policy noeviction
             probes:
               liveness:
                 enabled: true
