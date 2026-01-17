@@ -37,12 +37,13 @@ spec:
               protocol: TCP
 
     # Allow egress to n8n API (tools namespace)
-    # n8n service exposes port 80 (maps to internal 5678)
+    # Cilium policies operate at pod level, so we must use the container port (5678)
+    # even though the service exposes port 80 (kube-proxy DNATs 80->5678)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: tools
             app.kubernetes.io/name: n8n
       toPorts:
         - ports:
-            - port: "80"
+            - port: "5678"
               protocol: TCP
