@@ -168,12 +168,24 @@ data:
         auth_type: "bearer_token"
         auth_value: "os.environ/GRAPHITI_MCP_TOKEN"
         description: "Homelab knowledge graph - BookStack docs, runbooks, infrastructure knowledge"
-        # Available tools: add_episode, search_nodes, search_facts, delete_episode, get_status
+        # Available tools: add_memory, search, get_status, get_episodes, clear_graph, etc.
+
+      n8n:
+        url: "http://n8n-mcp.mcp.svc.cluster.local:3000/mcp"
+        transport: "http"
+        auth_type: "bearer_token"
+        auth_value: "os.environ/N8N_MCP_TOKEN"
+        description: "n8n workflow automation - execute workflows, manage nodes, automate tasks"
+        # Available tools: workflow execution, node management, automation triggers
 
     # MCP Aliases for easier access
-    # Users can reference "kb" instead of "graphiti" in MCP calls
     mcp_aliases:
+      # Graphiti aliases
       kb: "graphiti"
       memory: "graphiti"
       rag: "graphiti"
       knowledge: "graphiti"
+      # n8n aliases
+      workflow: "n8n"
+      automation: "n8n"
+      tasks: "n8n"

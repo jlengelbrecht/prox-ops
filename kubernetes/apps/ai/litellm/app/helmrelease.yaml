@@ -56,7 +56,7 @@ spec:
       security.homelab/network: "Internal + external API via envoy-internal"
       security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
       # Restart pods when any ExternalSecret-backed secret is updated
-      secret.reloader.stakater.com/reload: "litellm-masterkey,litellm-oidc,litellm-openai,litellm-graphiti-mcp"
+      secret.reloader.stakater.com/reload: "litellm-masterkey,litellm-oidc,litellm-openai,litellm-graphiti-mcp,litellm-n8n-mcp"
 
     # Pod security context
     # Note: litellm-database image specifies USER as text "root" in Dockerfile,
@@ -177,4 +177,11 @@ spec:
         valueFrom:
           secretKeyRef:
             name: litellm-graphiti-mcp
+            key: token
+      # n8n MCP auth token for MCP gateway
+      # Used by mcp_servers.n8n in config.yaml
+      - name: N8N_MCP_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: litellm-n8n-mcp
             key: token
