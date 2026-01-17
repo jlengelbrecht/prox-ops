@@ -34,7 +34,8 @@ spec:
               # Disable telemetry
               N8N_MCP_TELEMETRY_DISABLED: "true"
               # n8n API connection (cross-namespace to tools)
-              N8N_API_URL: "http://n8n.tools.svc.cluster.local:5678"
+              # n8n service exposes port 80 (not the internal 5678)
+              N8N_API_URL: "http://n8n.tools.svc.cluster.local:80"
               N8N_API_KEY:
                 valueFrom:
                   secretKeyRef:
