@@ -76,6 +76,16 @@ spec:
         - ports:
             - port: "3000"
               protocol: TCP
+    # Allow egress to graphiti-mcp server (mcp namespace)
+    # Knowledge graph MCP for RAG operations (BookStack docs, runbooks)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: graphiti-mcp
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
     # Allow HTTPS egress for Prisma CLI download (first startup only)
     - toEntities:
         - world
