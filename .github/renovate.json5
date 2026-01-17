@@ -740,6 +740,20 @@
       ],
     },
     {
+      description: 'LiteLLM stable releases versioning (main-v prefix with -stable suffix)',
+      matchDatasources: [
+        'docker',
+      ],
+      // Matches: main-v1.80.11-stable, main-v1.80.11-stable.1, main-v1.80.8-stable.1
+      // Excludes: main-v1.80.9-nightly, main-v1.80.16.dev6, main-latest
+      // Production-ready stable releases only
+      versioning: 'regex:^main-v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-stable(?:\\.(?<build>\\d+))?$',
+      matchPackageNames: [
+        'ghcr.io/berriai/litellm-database',
+        'ghcr.io/berriai/litellm',
+      ],
+    },
+    {
       description: 'Flag images using :latest for pinning',
       matchDatasources: [
         'docker',
