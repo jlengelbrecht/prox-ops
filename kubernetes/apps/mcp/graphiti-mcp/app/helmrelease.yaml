@@ -72,6 +72,9 @@ spec:
               SEMAPHORE_LIMIT: "5"
               # Disable embedded FalkorDB browser (we use external FalkorDB)
               BROWSER: "0"
+              # uv cache directory (must be writable by non-root user)
+              UV_CACHE_DIR: "/cache/uv"
+              XDG_CACHE_HOME: "/cache"
             envFrom:
               - secretRef:
                   name: graphiti-mcp-secret
@@ -135,6 +138,14 @@ spec:
         sizeLimit: 100Mi
         globalMounts:
           - path: /shared/bin
+      # Cache directory for uv and other tools (writable by non-root)
+      cache:
+        type: emptyDir
+        sizeLimit: 500Mi
+        advancedMounts:
+          graphiti-mcp:
+            app:
+              - path: /cache
 
     service:
       app:
