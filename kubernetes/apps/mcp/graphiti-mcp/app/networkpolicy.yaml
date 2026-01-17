@@ -47,7 +47,10 @@ spec:
             - port: "6379"
               protocol: TCP
 
-    # Allow HTTPS egress to OpenAI API (for entity extraction)
+    # Allow HTTPS egress to OpenAI API (for entity extraction via OPENAI_API_KEY)
+    # Using toEntities:world instead of toFQDNs because Cilium FQDN policy requires
+    # DNS proxy interception which has complex setup requirements in some configurations.
+    # Trade-off accepted: broader egress in exchange for simpler Cilium config.
     - toEntities:
         - world
       toPorts:
