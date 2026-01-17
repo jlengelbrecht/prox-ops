@@ -157,3 +157,23 @@ data:
       drop_params: true
       # Enable logging for audit
       set_verbose: false
+
+    # MCP Server Configuration
+    # LiteLLM acts as the MCP gateway - all MCP operations go through here
+    # Reference: https://docs.litellm.ai/docs/mcp
+    mcp_servers:
+      graphiti:
+        url: "http://graphiti-mcp.mcp.svc.cluster.local:8000"
+        transport: "http"
+        auth_type: "bearer_token"
+        auth_value: "os.environ/GRAPHITI_MCP_TOKEN"
+        description: "Homelab knowledge graph - BookStack docs, runbooks, infrastructure knowledge"
+        # Available tools: add_episode, search_nodes, search_facts, delete_episode, get_status
+
+    # MCP Aliases for easier access
+    # Users can reference "kb" instead of "graphiti" in MCP calls
+    mcp_aliases:
+      kb: "graphiti"
+      memory: "graphiti"
+      rag: "graphiti"
+      knowledge: "graphiti"
