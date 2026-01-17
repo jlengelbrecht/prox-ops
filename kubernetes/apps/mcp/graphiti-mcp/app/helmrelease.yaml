@@ -27,14 +27,16 @@ spec:
               tag: 1.0.1
             env:
               # FalkorDB connection (database namespace)
-              # Graphiti uses FALKORDB_URI for Redis-protocol FalkorDB
+              # Graphiti uses FALKORDB_URI for Redis-protocol connection.
+              # FALKORDB_PASSWORD is set separately via envFrom secretRef below.
               FALKORDB_URI: "redis://falkordb.database.svc.cluster.local:6379"
               # Database name (defaults to default_db if not set)
               FALKORDB_DATABASE: "graphiti"
               # Graph namespace/group identifier
               GRAPHITI_GROUP_ID: "homelab"
-              # Concurrency limit for episode processing
-              # Adjust based on OpenAI rate tier (default 10)
+              # Concurrency limit for episode processing (default: 10).
+              # Set to 5 for shared OpenAI account via LiteLLM gateway to stay
+              # within rate limits. Increase if using dedicated higher-tier API key.
               SEMAPHORE_LIMIT: "5"
             envFrom:
               - secretRef:
@@ -71,6 +73,7 @@ spec:
                 memory: 2Gi
             securityContext:
               allowPrivilegeEscalation: false
+              # Graphiti writes temp/cache data; kept false until refactored to use emptyDir
               readOnlyRootFilesystem: false
               capabilities:
                 drop:
