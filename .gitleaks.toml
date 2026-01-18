@@ -232,8 +232,8 @@ tags = ["medium", "api"]
 [[rules]]
 id = "generic-password"
 description = "Generic Password Assignment"
-# Exclude lines containing reloader.stakater.com using negative lookahead
-regex = '''(?i)(?!.*reloader\.stakater\.com)(password|passwd|pwd|secret)[^\n]*[:=]\s*["']([^"'\s]{12,})["']'''
+# Use word boundaries to avoid matching secret.reloader.stakater.com
+regex = '''(?i)\b(password|passwd|pwd|secret)\b\s*[:=]\s*["']([^"'\s]{12,})["']'''
 keywords = ["password", "passwd", "pwd", "secret"]
 tags = ["medium", "credentials"]
 
