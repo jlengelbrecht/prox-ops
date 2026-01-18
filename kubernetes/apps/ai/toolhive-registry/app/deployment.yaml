@@ -21,7 +21,9 @@ spec:
         app.kubernetes.io/component: registry
         app.kubernetes.io/part-of: toolhive
       annotations:
-        reloader.stakater.com/auto: "true"
+        # Stakater Reloader: restart pod when secrets/configmaps change
+        secret.reloader.stakater.com/reload: "toolhive-registry-secrets"
+        configmap.reloader.stakater.com/reload: "toolhive-registry-config"
     spec:
       serviceAccountName: toolhive-registry
       securityContext:
