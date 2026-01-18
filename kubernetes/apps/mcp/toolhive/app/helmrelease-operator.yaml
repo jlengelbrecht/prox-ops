@@ -28,6 +28,14 @@ spec:
     operator:
       # Number of operator replicas
       replicaCount: 1
+      # Resource requests and limits (prevents BestEffort QoS)
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
       # Feature flags - enable all controllers
       features:
         experimental: false
