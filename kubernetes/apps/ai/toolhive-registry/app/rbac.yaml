@@ -38,6 +38,41 @@ roleRef:
   name: toolhive-registry-crds
   apiGroup: rbac.authorization.k8s.io
 ---
+# Role for leader election in ai namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: toolhive-registry-leader-election
+  namespace: ai
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+---
+# Bind leader election Role to ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: toolhive-registry-leader-election
+  namespace: ai
+subjects:
+  - kind: ServiceAccount
+    name: toolhive-registry
+    namespace: ai
+roleRef:
+  kind: Role
+  name: toolhive-registry-leader-election
+  apiGroup: rbac.authorization.k8s.io
+---
 # Namespaced Role for pods/services in mcp namespace only
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
