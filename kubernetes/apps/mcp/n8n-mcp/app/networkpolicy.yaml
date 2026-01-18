@@ -12,12 +12,21 @@ spec:
       app.kubernetes.io/name: n8n-mcp
 
   ingress:
-    # ONLY allow ingress from LiteLLM (MCP gateway in ai namespace)
-    # This is the sole entry point to MCP servers
+    # Allow ingress from LiteLLM (direct MCP access)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
             app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+
+    # Allow ingress from ToolHive VirtualMCPServer gateway
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: homelab-gateway
       toPorts:
         - ports:
             - port: "3000"
