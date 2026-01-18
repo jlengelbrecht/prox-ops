@@ -54,14 +54,13 @@ spec:
             - port: "8080"
               protocol: TCP
 
-    # Egress to Authentik for OIDC (via envoy-internal gateway)
+    # Egress to Authentik for OIDC (internal K8s networking)
     - toEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: network
-            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+            io.kubernetes.pod.namespace: security
+            app.kubernetes.io/name: authentik
+            app.kubernetes.io/component: server
       toPorts:
         - ports:
-            - port: "443"
-              protocol: TCP
-            - port: "10443"
+            - port: "9443"
               protocol: TCP

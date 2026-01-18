@@ -38,9 +38,9 @@ spec:
               containerPort: 3000
               protocol: TCP
           env:
-            # OIDC Configuration (Authentik)
+            # OIDC Configuration (Authentik - internal K8s networking)
             - name: OIDC_ISSUER_URL
-              value: "https://authentik.homelab0.org/application/o/toolhive/"
+              value: "https://authentik-server.security.svc.cluster.local/application/o/toolhive/"
             - name: OIDC_CLIENT_ID
               valueFrom:
                 secretKeyRef:
@@ -52,7 +52,7 @@ spec:
                   name: toolhive-ui-secrets
                   key: OIDC_CLIENT_SECRET
             - name: OIDC_PROVIDER_ID
-              value: "oidc"
+              value: "authentik"
             # Application Configuration
             - name: BETTER_AUTH_SECRET
               valueFrom:
@@ -64,9 +64,9 @@ spec:
             # Backend API (ToolHive Registry)
             - name: API_BASE_URL
               value: "http://toolhive-registry.ai.svc.cluster.local:8080"
-            # Trust internal and external origins
+            # Trust internal origins
             - name: TRUSTED_ORIGINS
-              value: "https://mcp.homelab0.org,https://authentik.homelab0.org"
+              value: "https://mcp.homelab0.org,https://authentik-server.security.svc.cluster.local"
           livenessProbe:
             httpGet:
               path: /
