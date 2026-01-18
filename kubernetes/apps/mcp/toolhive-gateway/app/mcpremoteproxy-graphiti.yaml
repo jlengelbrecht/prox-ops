@@ -16,12 +16,16 @@ metadata:
     toolhive.stacklok.dev/group: homelab-mcp
 spec:
   remoteURL: http://graphiti-mcp.mcp.svc.cluster.local:8000
+  # WORKAROUND: insecureAllowHTTP bypasses TLS verification for OIDC discovery
+  # Required due to ToolHive bug #3142 - thvCABundlePath not applied to token validator
+  # TODO: Remove insecureAllowHTTP once bug is fixed in upstream release
+  # Tracking: STORY-030 in .claude/.ai-docs/stories/
   oidcConfig:
     type: inline
     inline:
       issuer: https://kubernetes.default.svc
       audience: toolhive
-      thvCABundlePath: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
       jwksAllowPrivateIP: true
+      insecureAllowHTTP: true
   audit:
     enabled: true
