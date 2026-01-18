@@ -10,16 +10,9 @@ data:
     # Registry Server Configuration
     registryName: homelab
 
-    # Registry sources - multiple backends for MCP server discovery
+    # Registry sources - Kubernetes discovery for local MCP servers
+    # Note: Official MCP Registry disabled due to data quality issues (duplicates, broken URLs)
     registries:
-      # Official MCP Registry - community MCP servers
-      - name: official-mcp
-        format: upstream
-        api:
-          endpoint: https://registry.modelcontextprotocol.io
-        syncPolicy:
-          interval: 1h
-
       # Kubernetes discovery - local MCP servers with export annotation
       - name: kubernetes
         format: toolhive
