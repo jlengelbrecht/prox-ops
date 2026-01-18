@@ -55,12 +55,7 @@ spec:
               protocol: TCP
 
     # Egress to envoy-internal gateway for Authentik OIDC flow
-    # Token exchange uses https://authentik.homelab0.org via internal gateway
-    # Use toServices for LoadBalancer IP access + toEndpoints for pod IPs
-    - toServices:
-        - k8sService:
-            namespace: network
-            serviceName: envoy-internal
+    # Matches LiteLLM pattern exactly - toEndpoints with ports 443 + 10443
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
