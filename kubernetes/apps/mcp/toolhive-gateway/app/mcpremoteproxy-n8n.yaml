@@ -1,0 +1,17 @@
+---
+# MCPRemoteProxy for n8n MCP server
+# Provides workflow automation and n8n node/template access
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRemoteProxy
+metadata:
+  name: n8n-mcp
+  namespace: mcp
+  labels:
+    app.kubernetes.io/name: n8n-mcp
+    app.kubernetes.io/component: mcp-proxy
+    app.kubernetes.io/part-of: toolhive-gateway
+    toolhive.stacklok.dev/group: homelab-mcp
+spec:
+  remoteURL: http://n8n-mcp.mcp.svc.cluster.local:3000
+  audit:
+    enabled: true

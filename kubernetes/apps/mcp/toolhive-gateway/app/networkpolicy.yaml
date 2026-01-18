@@ -1,27 +1,17 @@
 ---
-# CiliumNetworkPolicy for ToolHive Registry Server
+# CiliumNetworkPolicy for ToolHive Gateway (VirtualMCPServer proxy)
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: toolhive-registry
-  namespace: ai
+  name: toolhive-gateway
+  namespace: mcp
 spec:
   endpointSelector:
     matchLabels:
-      app.kubernetes.io/name: toolhive-registry
+      app.kubernetes.io/name: homelab-gateway
 
   ingress:
-    # Allow ingress from Envoy gateway (external API access)
-    - fromEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: network
-            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
-      toPorts:
-        - ports:
-            - port: "8080"
-              protocol: TCP
-
-    # Allow from LiteLLM (for future MCP integration)
+    # Allow from LiteLLM (primary MCP gateway client)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
@@ -31,7 +21,17 @@ spec:
             - port: "8080"
               protocol: TCP
 
-    # Prometheus metrics scraping (kube-prometheus-stack in observability namespace)
+    # Allow from ToolHive Registry (for discovery)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: toolhive-registry
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Prometheus metrics scraping
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: observability
@@ -54,20 +54,22 @@ spec:
             - port: "53"
               protocol: TCP
 
-    # Kubernetes API server (for CRD discovery)
-    - toEntities:
-        - kube-apiserver
-      toPorts:
-        - ports:
-            - port: "6443"
-              protocol: TCP
-
-    # PostgreSQL in database namespace
+    # Egress to n8n-mcp backend
     - toEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: database
-            cnpg.io/cluster: postgres
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: n8n-mcp
       toPorts:
         - ports:
-            - port: "5432"
+            - port: "3000"
+              protocol: TCP
+
+    # Egress to graphiti-mcp backend
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: graphiti-mcp
+      toPorts:
+        - ports:
+            - port: "8000"
               protocol: TCP
