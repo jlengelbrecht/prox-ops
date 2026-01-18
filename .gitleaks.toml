@@ -236,6 +236,13 @@ regex = '''(?i)(password|passwd|pwd|secret)[^\n]*[:=]\s*["']([^"'\s]{12,})["']''
 keywords = ["password", "passwd", "pwd", "secret"]
 tags = ["medium", "credentials"]
 
+  [rules.allowlist]
+  description = "Exclude Stakater Reloader annotations"
+  regexes = [
+    '''reloader\.stakater\.com''',
+    '''stakater\.com/reload''',
+  ]
+
 [[rules]]
 id = "high-entropy-base64"
 description = "High entropy base64 string (potential secret)"
