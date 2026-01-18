@@ -31,10 +31,10 @@ spec:
             - port: "8080"
               protocol: TCP
 
-    # Prometheus metrics scraping
+    # Prometheus metrics scraping (kube-prometheus-stack in observability namespace)
     - fromEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: monitoring
+            io.kubernetes.pod.namespace: observability
             app.kubernetes.io/name: prometheus
       toPorts:
         - ports:
