@@ -1,0 +1,63 @@
+---
+# CiliumNetworkPolicy for ToolHive-managed MCPServer pods
+# Applies to all pods created by ToolHive operator for MCPServer resources
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-mcpservers
+  namespace: mcp
+spec:
+  # Match all ToolHive-managed MCP server pods
+  endpointSelector:
+    matchLabels:
+      toolhive: "true"
+
+  ingress:
+    # Allow from VirtualMCPServer gateway (homelab-gateway)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: homelab-gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow from ToolHive operator (for health checks)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: toolhive-operator
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow HTTPS to external websites (for fetch server and similar)
+    - toCIDR:
+        - 0.0.0.0/0
+      toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
