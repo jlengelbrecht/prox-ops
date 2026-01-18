@@ -1,0 +1,72 @@
+---
+# ServiceAccount for ToolHive Registry Server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: toolhive-registry
+  namespace: ai
+---
+# ClusterRole for cluster-scoped ToolHive CRDs only
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: toolhive-registry-crds
+rules:
+  # Watch ToolHive CRDs for Kubernetes discovery (cluster-scoped)
+  - apiGroups:
+      - toolhive.stacklok.dev
+    resources:
+      - mcpservers
+      - mcpremoteproxies
+      - virtualmcpservers
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Bind ClusterRole to ServiceAccount for CRD access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: toolhive-registry-crds
+subjects:
+  - kind: ServiceAccount
+    name: toolhive-registry
+    namespace: ai
+roleRef:
+  kind: ClusterRole
+  name: toolhive-registry-crds
+  apiGroup: rbac.authorization.k8s.io
+---
+# Namespaced Role for pods/services in mcp namespace only
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: toolhive-registry-mcp-reader
+  namespace: mcp
+rules:
+  # Watch pods and services for status (scoped to mcp namespace)
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Bind Role to ServiceAccount for mcp namespace access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: toolhive-registry-mcp-reader
+  namespace: mcp
+subjects:
+  - kind: ServiceAccount
+    name: toolhive-registry
+    namespace: ai
+roleRef:
+  kind: Role
+  name: toolhive-registry-mcp-reader
+  apiGroup: rbac.authorization.k8s.io
