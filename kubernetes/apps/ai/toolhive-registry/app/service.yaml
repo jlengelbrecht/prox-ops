@@ -1,0 +1,20 @@
+---
+# ToolHive Registry Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: toolhive-registry
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: toolhive-registry
+    app.kubernetes.io/component: registry
+    app.kubernetes.io/part-of: toolhive
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: toolhive-registry

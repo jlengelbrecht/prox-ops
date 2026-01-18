@@ -1,0 +1,94 @@
+---
+# ToolHive Registry Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: toolhive-registry
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: toolhive-registry
+    app.kubernetes.io/component: registry
+    app.kubernetes.io/part-of: toolhive
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: toolhive-registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: toolhive-registry
+        app.kubernetes.io/component: registry
+        app.kubernetes.io/part-of: toolhive
+      annotations:
+        reloader.stakater.com/auto: "true"
+    spec:
+      serviceAccountName: toolhive-registry
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: registry
+          # renovate: datasource=docker registryUrl=ghcr.io
+          image: ghcr.io/stacklok/thv-registry-api:v0.4.9
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+            - --config
+            - /config/config.yaml
+            - --address
+            - ":8080"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-registry-secrets
+                  key: DATABASE_URL
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: toolhive-registry-config
+        - name: tmp
+          emptyDir: {}

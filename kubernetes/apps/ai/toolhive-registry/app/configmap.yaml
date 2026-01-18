@@ -1,0 +1,29 @@
+---
+# ToolHive Registry Server Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: toolhive-registry-config
+  namespace: ai
+data:
+  config.yaml: |
+    # Registry Server Configuration
+    registryName: homelab
+
+    # Registry sources - discover MCP servers from Kubernetes
+    registries:
+      - name: kubernetes
+        format: toolhive
+        kubernetes:
+          namespaces:
+            - mcp
+        syncPolicy:
+          interval: 5m
+
+    # Authentication - start with anonymous, add OIDC later
+    # TODO: Configure OIDC with Authentik in future story
+    auth:
+      mode: anonymous
+
+    # Database configuration - uses environment variable
+    # DATABASE_URL is injected from secret

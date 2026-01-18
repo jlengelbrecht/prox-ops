@@ -1,0 +1,49 @@
+---
+# ServiceAccount for ToolHive Registry Server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: toolhive-registry
+  namespace: ai
+---
+# ClusterRole to discover MCPServer resources in mcp namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: toolhive-registry-discovery
+rules:
+  # Watch ToolHive CRDs for Kubernetes discovery
+  - apiGroups:
+      - toolhive.stacklok.dev
+    resources:
+      - mcpservers
+      - mcpremoteproxies
+      - virtualmcpservers
+    verbs:
+      - get
+      - list
+      - watch
+  # Watch pods and services for status
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+---
+# Bind ClusterRole to ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: toolhive-registry-discovery
+subjects:
+  - kind: ServiceAccount
+    name: toolhive-registry
+    namespace: ai
+roleRef:
+  kind: ClusterRole
+  name: toolhive-registry-discovery
+  apiGroup: rbac.authorization.k8s.io
