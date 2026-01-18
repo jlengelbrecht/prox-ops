@@ -38,9 +38,10 @@ spec:
               containerPort: 3000
               protocol: TCP
           env:
-            # OIDC Configuration (Authentik - internal K8s networking via HTTP)
+            # OIDC Configuration (Authentik via internal gateway)
+            # Uses external URL for browser-based OAuth redirects
             - name: OIDC_ISSUER_URL
-              value: "http://authentik-server.security.svc.cluster.local/application/o/toolhive/"
+              value: "https://authentik.homelab0.org/application/o/toolhive/"
             - name: OIDC_CLIENT_ID
               valueFrom:
                 secretKeyRef:
@@ -66,7 +67,7 @@ spec:
               value: "http://toolhive-registry.ai.svc.cluster.local:8080"
             # Trust internal origins
             - name: TRUSTED_ORIGINS
-              value: "https://mcp.homelab0.org,http://authentik-server.security.svc.cluster.local"
+              value: "https://mcp.homelab0.org,https://authentik.homelab0.org"
           livenessProbe:
             httpGet:
               path: /
