@@ -55,7 +55,7 @@ spec:
               protocol: TCP
 
     # Egress to envoy-internal gateway for Authentik OIDC flow
-    # Matches LiteLLM pattern exactly - toEndpoints with ports 443 + 10443
+    # toEndpoints for direct pod-to-pod communication
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
@@ -65,4 +65,13 @@ spec:
             - port: "443"
               protocol: TCP
             - port: "10443"
+              protocol: TCP
+
+    # Egress to external HTTPS (LoadBalancer IPs for Authentik OIDC)
+    # Required because toEndpoints doesn't cover LoadBalancer traffic
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
               protocol: TCP
