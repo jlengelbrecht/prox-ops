@@ -1,0 +1,27 @@
+---
+# VirtualMCPServer aggregating homelab MCP servers
+# Provides a unified endpoint for all MCP tools
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: homelab-gateway
+  namespace: mcp
+  labels:
+    app.kubernetes.io/name: homelab-gateway
+    app.kubernetes.io/component: mcp-gateway
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  config:
+    groupRef: homelab-mcp
+    aggregation:
+      # Prefix tool names with workload identifier to avoid conflicts
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    audit:
+      enabled: true
+      includeRequestData: false
+      includeResponseData: false
+  # Anonymous auth for internal use - LiteLLM handles external auth
+  incomingAuth:
+    type: anonymous

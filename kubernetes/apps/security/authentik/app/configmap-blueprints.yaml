@@ -221,6 +221,32 @@ data:
           include_claims_in_id_token: true
           sub_mode: hashed_user_id
           issuer_mode: per_provider
+      # ToolHive - Direct OIDC (MCP Platform UI)
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-toolhive
+        identifiers:
+          name: ToolHive
+        attrs:
+          name: ToolHive
+          client_id: !Env AUTHENTIK_TOOLHIVE_CLIENT_ID
+          client_secret: !Env AUTHENTIK_TOOLHIVE_CLIENT_SECRET
+          client_type: confidential
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          signing_key: !Context signing_key
+          property_mappings:
+            - !Context scope_email
+            - !Context scope_profile
+            - !Context scope_openid
+          redirect_uris:
+            - matching_mode: strict
+              url: https://mcp.homelab0.org/api/auth/callback/oidc
+          access_code_validity: minutes=1
+          access_token_validity: minutes=5
+          refresh_token_validity: days=30
+          include_claims_in_id_token: true
+          sub_mode: hashed_user_id
+          issuer_mode: per_provider
 
   # =============================================================
   # PROXY PROVIDERS BLUEPRINT
@@ -334,6 +360,16 @@ data:
           group: AI
           policy_engine_mode: any
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "LiteLLM"]]
+      - model: authentik_core.application
+        id: app-toolhive
+        identifiers:
+          slug: toolhive
+        attrs:
+          name: ToolHive
+          slug: toolhive
+          group: AI
+          policy_engine_mode: any
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "ToolHive"]]
       # Forward Auth Applications
       - model: authentik_core.application
         id: app-n8n

@@ -1,44 +1,34 @@
 ---
-# CiliumNetworkPolicy for ToolHive Registry Server
+# CiliumNetworkPolicy for ToolHive Cloud UI
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: toolhive-registry
+  name: toolhive-ui
   namespace: ai
 spec:
   endpointSelector:
     matchLabels:
-      app.kubernetes.io/name: toolhive-registry
+      app.kubernetes.io/name: toolhive-ui
 
   ingress:
-    # Allow ingress from Envoy gateway (external API access)
+    # Allow ingress from Envoy gateway (external web access)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
             gateway.envoyproxy.io/owning-gateway-name: envoy-internal
       toPorts:
         - ports:
-            - port: "8080"
+            - port: "3000"
               protocol: TCP
 
-    # Allow from LiteLLM (for future MCP integration)
-    - fromEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            app.kubernetes.io/name: litellm
-      toPorts:
-        - ports:
-            - port: "8080"
-              protocol: TCP
-
-    # Prometheus metrics scraping (kube-prometheus-stack in observability namespace)
+    # Prometheus metrics scraping
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: observability
             app.kubernetes.io/name: prometheus
       toPorts:
         - ports:
-            - port: "8080"
+            - port: "3000"
               protocol: TCP
 
   egress:
@@ -54,20 +44,24 @@ spec:
             - port: "53"
               protocol: TCP
 
-    # Kubernetes API server (for CRD discovery)
-    - toEntities:
-        - kube-apiserver
-      toPorts:
-        - ports:
-            - port: "6443"
-              protocol: TCP
-
-    # PostgreSQL in database namespace
+    # Egress to ToolHive Registry API (same namespace)
     - toEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: database
-            cnpg.io/cluster: postgres
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: toolhive-registry
       toPorts:
         - ports:
-            - port: "5432"
+            - port: "8080"
+              protocol: TCP
+
+    # Egress to Authentik for OIDC (via envoy-internal gateway)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
               protocol: TCP
