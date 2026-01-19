@@ -9,7 +9,8 @@ metadata:
   annotations:
     # Registry discovery annotations
     toolhive.stacklok.dev/registry-export: "true"
-    toolhive.stacklok.dev/registry-url: "http://mcp-n8n-proxy.mcp.svc.cluster.local:8080/mcp"
+    # Use headless service to reach StatefulSet directly (proxyrunner may crash after deployment)
+    toolhive.stacklok.dev/registry-url: "http://mcp-n8n-headless.mcp.svc.cluster.local:3000/mcp"
     toolhive.stacklok.dev/registry-description: "n8n workflow automation - execute workflows, manage nodes, and automate tasks"
   labels:
     app.kubernetes.io/name: n8n
