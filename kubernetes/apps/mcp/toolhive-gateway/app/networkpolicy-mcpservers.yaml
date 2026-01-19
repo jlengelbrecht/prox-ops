@@ -33,6 +33,17 @@ spec:
             - port: "8080"
               protocol: TCP
 
+    # Allow proxyrunner to reach backend StatefulSet on mcpPort (3000)
+    # Proxyrunner (app.kubernetes.io/name: mcpserver) → backend (toolhive: true) on mcpPort
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: mcpserver
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+
   egress:
     # DNS resolution
     - toEndpoints:
@@ -56,6 +67,17 @@ spec:
             - port: "6443"
               protocol: TCP
 
+    # Proxyrunner → backend StatefulSet (mcpPort 3000)
+    # Allows proxyrunner to forward requests to the backend MCP server
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            toolhive: "true"
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+
     # graphiti-mcp → FalkorDB (database namespace)
     - toEndpoints:
         - matchLabels:
@@ -66,14 +88,15 @@ spec:
             - port: "6379"
               protocol: TCP
 
-    # n8n-mcp → n8n (tools namespace)
+    # n8n-mcp → n8n API (tools namespace)
+    # n8n service exposes port 80 (service port), not 5678 (container port)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: tools
             app.kubernetes.io/name: n8n
       toPorts:
         - ports:
-            - port: "5678"
+            - port: "80"
               protocol: TCP
 
     # Allow HTTPS to external APIs (OpenAI for graphiti entity extraction)
