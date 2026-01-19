@@ -1,0 +1,111 @@
+---
+# Proxmox MCP HelmRelease
+# NOTE: This requires a forked repo with Docker image publishing.
+# See: .claude/.ai-docs/mcp/PROXMOX_MCP_SETUP.md for setup instructions.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: proxmox-mcp
+  namespace: mcp
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: mcp
+  interval: 1h
+  values:
+    controllers:
+      proxmox-mcp:
+        strategy: RollingUpdate
+        containers:
+          app:
+            image:
+              # TODO: Replace with your forked repo image after setting up GitHub Actions
+              # See: .claude/.ai-docs/mcp/PROXMOX_MCP_SETUP.md
+              repository: ghcr.io/jlengelbrecht/proxmoxmcp-plus
+              # renovate: datasource=docker depName=ghcr.io/jlengelbrecht/proxmoxmcp-plus
+              tag: latest
+            env:
+              # mcpo HTTP server settings
+              API_HOST: "0.0.0.0"
+              API_PORT: "8811"
+            envFrom:
+              - secretRef:
+                  name: proxmox-mcp-secrets
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /openapi.json
+                    port: 8811
+                  initialDelaySeconds: 20
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /openapi.json
+                    port: 8811
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      annotations:
+        # Stakater Reloader: restart pod when secrets change
+        secret.reloader.stakater.com/reload: "proxmox-mcp-secrets"
+        security.homelab/purpose: "MCP server for Proxmox VE infrastructure management"
+        security.homelab/network: "Restricted - only LiteLLM gateway can access"
+        security.homelab/gateway: "LiteLLM in ai namespace"
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+    persistence:
+      # Config file mount - the server reads from PROXMOX_MCP_CONFIG env var
+      config:
+        type: secret
+        name: proxmox-mcp-config
+        globalMounts:
+          - path: /app/proxmox-config/config.json
+            subPath: config.json
+            readOnly: true
+
+    service:
+      app:
+        controller: proxmox-mcp
+        type: ClusterIP
+        ports:
+          http:
+            port: 8811
+            targetPort: 8811
+            protocol: TCP
