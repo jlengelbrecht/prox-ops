@@ -1,0 +1,129 @@
+---
+# MCPServer for Graphiti Knowledge Graph
+# Migrated from standalone HelmRelease to ToolHive-managed deployment
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: graphiti
+  namespace: mcp
+  annotations:
+    # Registry discovery annotations
+    toolhive.stacklok.dev/registry-export: "true"
+    toolhive.stacklok.dev/registry-url: "http://mcp-graphiti-proxy.mcp.svc.cluster.local:8080/mcp"
+    toolhive.stacklok.dev/registry-description: "Knowledge graph memory for AI agents - stores entities, relationships, and facts"
+  labels:
+    app.kubernetes.io/name: graphiti
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  # renovate: datasource=docker depName=zepai/knowledge-graph-mcp
+  image: docker.io/zepai/knowledge-graph-mcp:1.0.1
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8000
+  # Link to MCPGroup for VirtualMCPServer aggregation
+  groupRef: homelab-mcp
+  # Network permission profile
+  permissionProfile:
+    type: builtin
+    name: network
+  # Environment variables (non-secret)
+  env:
+    - name: FALKORDB_URI
+      value: "redis://falkordb.database.svc.cluster.local:6379"
+    - name: FALKORDB_DATABASE
+      value: "graphiti"
+    - name: GRAPHITI_GROUP_ID
+      value: "homelab"
+    - name: SEMAPHORE_LIMIT
+      value: "5"
+    - name: BROWSER
+      value: "0"
+    - name: UV_CACHE_DIR
+      value: "/cache/uv"
+    - name: XDG_CACHE_HOME
+      value: "/cache"
+  # Secrets from ExternalSecret
+  secrets:
+    - name: graphiti-mcp-secret
+      key: OPENAI_API_KEY
+      targetEnvName: OPENAI_API_KEY
+    - name: graphiti-mcp-secret
+      key: FALKORDB_PASSWORD
+      targetEnvName: FALKORDB_PASSWORD
+    - name: graphiti-mcp-secret
+      key: AUTH_TOKEN
+      targetEnvName: AUTH_TOKEN
+  # Resource limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  # Full pod customization for init container and volumes
+  podTemplateSpec:
+    metadata:
+      annotations:
+        secret.reloader.stakater.com/reload: "graphiti-mcp-secret"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Copy uv binary from /root/.local/bin to shared volume accessible by non-root user
+        - name: copy-uv
+          image: docker.io/zepai/knowledge-graph-mcp:1.0.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cp -a /root/.local/bin/uv /shared/bin/uv
+              cp -a /root/.local/bin/uvx /shared/bin/uvx 2>/dev/null || true
+              chmod 755 /shared/bin/*
+              echo "Copied uv binary to /shared/bin/"
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: shared-bin
+              mountPath: /shared/bin
+      containers:
+        # Override the mcp container with custom command
+        - name: mcp
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cd /app/mcp
+              exec /shared/bin/uv run --no-sync main.py
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: shared-bin
+              mountPath: /shared/bin
+            - name: cache
+              mountPath: /cache
+      volumes:
+        - name: shared-bin
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: cache
+          emptyDir:
+            sizeLimit: 500Mi
