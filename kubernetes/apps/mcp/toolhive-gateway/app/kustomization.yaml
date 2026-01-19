@@ -3,11 +3,9 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - mcpgroup.yaml
-  # MCPServer resources (ToolHive-managed MCP servers)
-  # Note: graphiti uses standalone HelmRelease due to complex image requirements
-  # TODO: Migrate graphiti to MCPServer when ToolHive supports init containers better
-  - mcpserver-n8n.yaml
-  - mcpexternalauthconfig-n8n.yaml
+  # n8n switched to standalone deployment due to ToolHive headerInjection bug (#3111)
+  # MCPServer n8n removed - see ../n8n-mcp/ for standalone deployment
+  # ExternalSecret kept here as it's shared by standalone n8n-mcp
   - externalsecret-n8n.yaml
   - virtualmcpserver.yaml
   - networkpolicy.yaml

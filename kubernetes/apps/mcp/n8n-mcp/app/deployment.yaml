@@ -1,0 +1,92 @@
+---
+# Standalone n8n-mcp deployment
+# Temporary workaround for ToolHive K8s operator limitation (Issue #3111)
+# Backend auth (MCPExternalAuthConfig headerInjection) not yet implemented
+# TODO: Migrate to ToolHive MCPServer when Issue #3111 is resolved
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n8n-mcp
+  namespace: mcp
+  labels:
+    app.kubernetes.io/name: n8n-mcp
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: mcp-servers
+  annotations:
+    secret.reloader.stakater.com/reload: "n8n-mcp-secrets"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: n8n-mcp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: n8n-mcp
+        app.kubernetes.io/component: mcp-server
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: n8n-mcp
+          # renovate: datasource=docker depName=ghcr.io/czlonkowski/n8n-mcp
+          image: ghcr.io/czlonkowski/n8n-mcp:2.30.1
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: MCP_MODE
+              value: "http"
+            - name: USE_FIXED_HTTP
+              value: "true"
+            - name: PORT
+              value: "3000"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: N8N_MCP_TELEMETRY_DISABLED
+              value: "true"
+            - name: N8N_API_URL
+              value: "http://n8n.tools.svc.cluster.local:80"
+            # Secrets from ExternalSecret (reuse existing n8n-mcp-secrets)
+            - name: N8N_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-mcp-secrets
+                  key: n8n-api-key
+            - name: AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: n8n-mcp-secrets
+                  key: auth-token
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
