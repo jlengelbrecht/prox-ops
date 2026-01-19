@@ -46,6 +46,16 @@ spec:
             - port: "53"
               protocol: TCP
 
+    # Kubernetes API access (required for proxyrunner to create StatefulSets)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+
     # graphiti-mcp → FalkorDB (database namespace)
     - toEndpoints:
         - matchLabels:
