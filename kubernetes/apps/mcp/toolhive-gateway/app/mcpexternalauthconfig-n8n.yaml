@@ -1,0 +1,17 @@
+---
+# MCPExternalAuthConfig for n8n backend authentication
+# This configures the proxyrunner to inject the Authorization header
+# when communicating with the backend n8n MCP server
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: n8n-backend-auth
+  namespace: mcp
+spec:
+  type: headerInjection
+  headerInjection:
+    # Inject Authorization header with Bearer token
+    headerName: Authorization
+    valueSecretRef:
+      name: n8n-mcp-secrets
+      key: auth-header-value

@@ -9,8 +9,8 @@ metadata:
   annotations:
     # Registry discovery annotations
     toolhive.stacklok.dev/registry-export: "true"
-    # Use headless service to reach StatefulSet directly (proxyrunner may crash after deployment)
-    toolhive.stacklok.dev/registry-url: "http://mcp-n8n-headless.mcp.svc.cluster.local:3000/mcp"
+    # Route through proxyrunner for auth, audit, and security features
+    toolhive.stacklok.dev/registry-url: "http://mcp-n8n-proxy.mcp.svc.cluster.local:8080/mcp"
     toolhive.stacklok.dev/registry-description: "n8n workflow automation - execute workflows, manage nodes, and automate tasks"
   labels:
     app.kubernetes.io/name: n8n
@@ -24,6 +24,9 @@ spec:
   mcpPort: 3000
   # Link to MCPGroup for VirtualMCPServer aggregation
   groupRef: homelab-mcp
+  # Backend authentication - proxyrunner injects Authorization header
+  externalAuthConfigRef:
+    name: n8n-backend-auth
   # Network permission profile (needs to reach n8n in tools namespace)
   permissionProfile:
     type: builtin
