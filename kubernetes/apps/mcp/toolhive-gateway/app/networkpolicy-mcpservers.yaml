@@ -46,7 +46,27 @@ spec:
             - port: "53"
               protocol: TCP
 
-    # Allow HTTPS to external websites (for fetch server and similar)
+    # graphiti-mcp → FalkorDB (database namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            app.kubernetes.io/name: falkordb
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # n8n-mcp → n8n (tools namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+            app.kubernetes.io/name: n8n
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
+
+    # Allow HTTPS to external APIs (OpenAI for graphiti entity extraction)
     # Note: Using toCIDRSet with except to block private ranges
     - toCIDRSet:
         - cidr: 0.0.0.0/0
@@ -57,6 +77,4 @@ spec:
       toPorts:
         - ports:
             - port: "443"
-              protocol: TCP
-            - port: "80"
               protocol: TCP

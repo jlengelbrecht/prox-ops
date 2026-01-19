@@ -1,0 +1,81 @@
+---
+# MCPServer for n8n Workflow Automation
+# Migrated from standalone HelmRelease to ToolHive-managed deployment
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: n8n
+  namespace: mcp
+  annotations:
+    # Registry discovery annotations
+    toolhive.stacklok.dev/registry-export: "true"
+    toolhive.stacklok.dev/registry-url: "http://mcp-n8n-proxy.mcp.svc.cluster.local:8080/mcp"
+    toolhive.stacklok.dev/registry-description: "n8n workflow automation - execute workflows, manage nodes, and automate tasks"
+  labels:
+    app.kubernetes.io/name: n8n
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  # renovate: datasource=docker depName=ghcr.io/czlonkowski/n8n-mcp
+  image: ghcr.io/czlonkowski/n8n-mcp:2.30.1
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 3000
+  # Link to MCPGroup for VirtualMCPServer aggregation
+  groupRef: homelab-mcp
+  # Network permission profile (needs to reach n8n in tools namespace)
+  permissionProfile:
+    type: builtin
+    name: network
+  # Environment variables (non-secret)
+  env:
+    - name: MCP_MODE
+      value: "http"
+    - name: USE_FIXED_HTTP
+      value: "true"
+    - name: PORT
+      value: "3000"
+    - name: LOG_LEVEL
+      value: "info"
+    - name: N8N_MCP_TELEMETRY_DISABLED
+      value: "true"
+    - name: N8N_API_URL
+      value: "http://n8n.tools.svc.cluster.local:80"
+  # Secrets from ExternalSecret
+  secrets:
+    - name: n8n-mcp-secrets
+      key: n8n-api-key
+      targetEnvName: N8N_API_KEY
+    - name: n8n-mcp-secrets
+      key: auth-token
+      targetEnvName: AUTH_TOKEN
+  # Resource limits
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Pod customization for security context
+  podTemplateSpec:
+    metadata:
+      annotations:
+        secret.reloader.stakater.com/reload: "n8n-mcp-secrets"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
