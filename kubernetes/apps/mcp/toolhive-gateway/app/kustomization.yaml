@@ -4,8 +4,10 @@ kind: Kustomization
 resources:
   - mcpgroup.yaml
   # MCPServer resources (ToolHive-managed MCP servers)
-  - mcpserver-graphiti.yaml
+  # Note: graphiti uses standalone HelmRelease due to complex image requirements
+  # TODO: Migrate graphiti to MCPServer when ToolHive supports init containers better
   - mcpserver-n8n.yaml
+  - externalsecret-n8n.yaml
   - virtualmcpserver.yaml
   - networkpolicy.yaml
   - networkpolicy-mcpservers.yaml
