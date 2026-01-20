@@ -592,11 +592,17 @@ jobs:
       - name: Check for Changes
         id: check-changes
         run: |
-          if git diff --quiet "${{ env.REGISTRY_PATH }}"; then
-            echo "No changes to registry.json"
+          # Compare registry content excluding timestamp to avoid unnecessary commits
+          CURRENT=$(cat "${{ env.REGISTRY_PATH }}" | jq 'del(.meta.last_updated)' | jq -S '.')
+          PREVIOUS=$(git show HEAD:"${{ env.REGISTRY_PATH }}" 2>/dev/null | jq 'del(.meta.last_updated)' | jq -S '.' || echo "{}")
+
+          if [ "$CURRENT" = "$PREVIOUS" ]; then
+            echo "No meaningful changes to registry.json (only timestamp differs)"
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            # Restore original file to avoid committing timestamp-only changes
+            git checkout "${{ env.REGISTRY_PATH }}"
           else
-            echo "Registry.json has been updated"
+            echo "Registry.json has meaningful updates"
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             git diff "${{ env.REGISTRY_PATH }}"
           fi
