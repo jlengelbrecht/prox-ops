@@ -438,7 +438,7 @@ jobs:
         id: generate
         run: |
           # Process all MCPServer files and generate registry.json
-          # Using upstream format for registry server validation with clean naming
+          # Using upstream format with owner/repo naming and image version tracking
           REGISTRY_FILE="${{ env.REGISTRY_PATH }}"
           MCPSERVER_DIR="${{ env.MCPSERVER_PATH }}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -452,12 +452,28 @@ jobs:
             echo "Processing: $mcpfile"
 
             # Extract metadata from MCPServer
-            NAME=$(yq eval '.metadata.name' "$mcpfile")
+            K8S_NAME=$(yq eval '.metadata.name' "$mcpfile")
             DESCRIPTION=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/registry-description"] // "No description available"' "$mcpfile")
             TITLE=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-title"] // .metadata.name' "$mcpfile")
             TOOLS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tools"] // ""' "$mcpfile")
-            TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "homelab,mcp"' "$mcpfile")
+            TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "mcp"' "$mcpfile")
             REPO_URL=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/repository-url"] // ""' "$mcpfile")
+            IMAGE=$(yq eval '.spec.image' "$mcpfile")
+
+            # Extract owner/repo from repository URL for catalog name
+            # e.g., "https://github.com/bradthebeeble/coderabbitai-mcp" -> "bradthebeeble/coderabbitai-mcp"
+            CATALOG_NAME=$(echo "$REPO_URL" | sed -E 's|https?://[^/]+/||' | sed 's|\.git$||')
+            if [ -z "$CATALOG_NAME" ] || [ "$CATALOG_NAME" = "$REPO_URL" ]; then
+              # Fallback to k8s name with homelab prefix if URL parsing fails
+              CATALOG_NAME="homelab/${K8S_NAME}"
+            fi
+
+            # Extract version from image tag
+            # e.g., "ghcr.io/czlonkowski/n8n-mcp:2.30.1" -> "2.30.1"
+            IMAGE_VERSION=$(echo "$IMAGE" | sed -E 's/.*:([^:]+)$/\1/')
+            if [ -z "$IMAGE_VERSION" ] || [ "$IMAGE_VERSION" = "$IMAGE" ]; then
+              IMAGE_VERSION="latest"
+            fi
 
             # Derive repo source from URL
             if echo "$REPO_URL" | grep -q "github.com"; then
@@ -472,15 +488,17 @@ jobs:
             TOOLS_JSON=$(echo "$TOOLS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
             TAGS_JSON=$(echo "$TAGS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
 
-            # Build the endpoint URL
-            ENDPOINT_URL="https://mcp.homelab0.org/servers/${NAME}/mcp"
+            # Build the endpoint URL (uses k8s name for routing)
+            ENDPOINT_URL="https://mcp.homelab0.org/servers/${K8S_NAME}/mcp"
 
-            # Create server entry in upstream format with clean naming
-            # Using just the server name (e.g., "coderabbit") for better UI display
+            # Create server entry in upstream format
+            # - name: owner/repo from source repository (identifies the MCP server origin)
+            # - version: from deployed image tag (tracks what's running)
             SERVER_ENTRY=$(jq -n \
-              --arg name "$NAME" \
+              --arg name "$CATALOG_NAME" \
               --arg title "$TITLE" \
               --arg description "$DESCRIPTION" \
+              --arg version "$IMAGE_VERSION" \
               --arg repo_url "$REPO_URL" \
               --arg repo_source "$REPO_SOURCE" \
               --arg endpoint "$ENDPOINT_URL" \
@@ -490,6 +508,7 @@ jobs:
                 "name": $name,
                 "title": $title,
                 "description": $description,
+                "version": $version,
                 "repository": {
                   "url": $repo_url,
                   "source": $repo_source
@@ -507,7 +526,7 @@ jobs:
             # Add to servers array
             SERVERS=$(echo "$SERVERS" | jq --argjson entry "$SERVER_ENTRY" '. += [$entry]')
 
-            echo "  Added: $NAME"
+            echo "  Added: $CATALOG_NAME (v$IMAGE_VERSION)"
           done
 
           # Build final registry.json in upstream format
