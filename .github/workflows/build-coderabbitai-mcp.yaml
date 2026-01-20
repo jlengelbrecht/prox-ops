@@ -19,7 +19,8 @@ env:
 
 jobs:
   build:
-    runs-on: gha-runner-scale-set
+    # Use GitHub-hosted runners for Docker builds (K8s runners don't have Docker daemon)
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
