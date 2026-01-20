@@ -2,8 +2,9 @@
   "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
   "version": "1.0.0",
   "last_updated": "2026-01-20T00:00:00Z",
-  "servers": {
-    "n8n": {
+  "remote_servers": {
+    "n8n-mcp": {
+      "url": "https://mcp.homelab0.org/servers/n8n/mcp",
       "description": "n8n Workflow Automation - AI assistant integration for comprehensive n8n workflow management. Access thousands of n8n nodes and workflow templates, execute workflows, manage webhooks, and automate tasks.",
       "tier": "Community",
       "status": "Active",
@@ -40,30 +41,10 @@
         "webhooks",
         "templates"
       ],
-      "custom_metadata": {
-        "author": "czlonkowski",
-        "author_url": "https://github.com/czlonkowski",
-        "icon_url": "https://n8n.io/favicon.ico",
-        "homelab_url": "https://mcp.homelab0.org/servers/n8n/mcp"
-      },
-      "repository_url": "https://github.com/czlonkowski/n8n-mcp",
-      "image": "ghcr.io/czlonkowski/n8n-mcp:2.30.1",
-      "env_vars": [
-        {
-          "name": "N8N_API_URL",
-          "description": "URL to your n8n instance API",
-          "required": true,
-          "secret": false
-        },
-        {
-          "name": "N8N_API_KEY",
-          "description": "n8n API key for authentication",
-          "required": true,
-          "secret": true
-        }
-      ]
+      "repository_url": "https://github.com/czlonkowski/n8n-mcp"
     },
-    "graphiti": {
+    "graphiti-mcp": {
+      "url": "https://mcp.homelab0.org/servers/graphiti/mcp",
       "description": "Graphiti Knowledge Graph - Build and query temporally-aware knowledge graphs for AI agents. Add memories, search facts, query entities, and manage episodic data with hybrid retrieval (semantic + BM25 + graph traversal). Powered by FalkorDB for graph storage.",
       "tier": "Community",
       "status": "Active",
@@ -90,40 +71,7 @@
         "falkordb",
         "temporal-data"
       ],
-      "custom_metadata": {
-        "author": "Zep",
-        "author_url": "https://github.com/getzep",
-        "icon_url": "https://avatars.githubusercontent.com/u/122759527",
-        "homelab_url": "https://mcp.homelab0.org/servers/graphiti/mcp"
-      },
-      "repository_url": "https://github.com/getzep/graphiti",
-      "image": "docker.io/zepai/knowledge-graph-mcp:1.0.1",
-      "env_vars": [
-        {
-          "name": "OPENAI_API_KEY",
-          "description": "OpenAI API key for entity extraction and embeddings",
-          "required": true,
-          "secret": true
-        },
-        {
-          "name": "FALKORDB_URI",
-          "description": "FalkorDB connection URI (redis://host:port)",
-          "required": true,
-          "secret": false
-        },
-        {
-          "name": "FALKORDB_PASSWORD",
-          "description": "FalkorDB authentication password",
-          "required": false,
-          "secret": true
-        },
-        {
-          "name": "GRAPHITI_GROUP_ID",
-          "description": "Graph namespace/group identifier",
-          "required": false,
-          "secret": false
-        }
-      ]
+      "repository_url": "https://github.com/getzep/graphiti"
     }
   }
 }
