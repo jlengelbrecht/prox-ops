@@ -119,7 +119,7 @@ jobs:
       - name: Install yq
         run: |
           # Download yq with checksum verification for supply chain security
-          wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o /tmp/yq
           echo "${{ env.YQ_CHECKSUM }}  /tmp/yq" | sha256sum -c -
           sudo mv /tmp/yq /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
@@ -247,7 +247,7 @@ jobs:
       - name: Install yq
         run: |
           # Download yq with checksum verification for supply chain security
-          wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o /tmp/yq
           echo "${{ env.YQ_CHECKSUM }}  /tmp/yq" | sha256sum -c -
           sudo mv /tmp/yq /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
@@ -289,13 +289,13 @@ jobs:
       - name: Install Tools
         run: |
           # Install yq
-          wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o /tmp/yq
           echo "${{ env.YQ_CHECKSUM }}  /tmp/yq" | sha256sum -c -
           sudo mv /tmp/yq /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
 
           # Install thv CLI for MCP protocol validation with checksum verification
-          wget -qO /tmp/thv.tar.gz "https://github.com/stacklok/toolhive/releases/download/v${{ env.THV_VERSION }}/toolhive_${{ env.THV_VERSION }}_linux_amd64.tar.gz"
+          curl -sSL "https://github.com/stacklok/toolhive/releases/download/v${{ env.THV_VERSION }}/toolhive_${{ env.THV_VERSION }}_linux_amd64.tar.gz" -o /tmp/thv.tar.gz
           echo "${{ env.THV_CHECKSUM }}  /tmp/thv.tar.gz" | sha256sum -c -
           tar -xzf /tmp/thv.tar.gz -C /tmp
           sudo mv /tmp/thv /usr/local/bin/thv
@@ -466,7 +466,7 @@ jobs:
       - name: Install Tools
         run: |
           # Download yq with checksum verification for supply chain security
-          wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o /tmp/yq
           echo "${{ env.YQ_CHECKSUM }}  /tmp/yq" | sha256sum -c -
           sudo mv /tmp/yq /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
