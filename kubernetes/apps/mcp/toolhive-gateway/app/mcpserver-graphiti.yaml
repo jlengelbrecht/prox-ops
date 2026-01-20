@@ -31,6 +31,10 @@ spec:
     name: network
   # Environment variables
   env:
+    # Server port - graphiti uses pydantic-settings with nested delimiter __
+    # This makes graphiti listen on 8080 to match proxyrunner expectations
+    - name: SERVER__PORT
+      value: "8080"
     # FalkorDB connection (database namespace)
     - name: FALKORDB_URI
       value: "redis://falkordb.database.svc.cluster.local:6379"
