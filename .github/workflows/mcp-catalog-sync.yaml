@@ -466,14 +466,14 @@ jobs:
         id: generate
         run: |
           # Process all MCPServer files and generate registry.json
-          # Using ToolHive native format with servers object (container-based servers)
-          # This format matches the official ToolHive registry and displays properly in the UI
+          # Using MCP Registry API upstream format for clean names and full metadata
+          # Name format: owner/repo from repository URL (e.g., getzep/graphiti)
           REGISTRY_FILE="${{ env.REGISTRY_PATH }}"
           MCPSERVER_DIR="${{ env.MCPSERVER_PATH }}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Start building servers object (ToolHive native format)
-          SERVERS="{}"
+          # Start building servers array (upstream format)
+          SERVERS="[]"
           SERVER_COUNT=0
 
           for mcpfile in "$MCPSERVER_DIR"/mcpserver-*.yaml; do
@@ -483,20 +483,34 @@ jobs:
 
             # Extract metadata from MCPServer
             K8S_NAME=$(yq eval '.metadata.name' "$mcpfile")
+            TITLE=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-title"] // ""' "$mcpfile")
             DESCRIPTION=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/registry-description"] // "No description available"' "$mcpfile")
             TOOLS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tools"] // ""' "$mcpfile")
             TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "mcp"' "$mcpfile")
             REPO_URL=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/repository-url"] // ""' "$mcpfile")
 
-            # Extract image (provides version info from tag)
+            # Extract image and version from tag
             IMAGE=$(yq eval '.spec.image' "$mcpfile")
+            VERSION=$(echo "$IMAGE" | sed -E 's/.*:([^:]+)$/\1/')
+            [ "$VERSION" = "$IMAGE" ] && VERSION="latest"
 
-            # Extract native transport and proxyMode
-            TRANSPORT=$(yq eval '.spec.transport // "stdio"' "$mcpfile")
+            # Extract proxyMode for remote transport type
             PROXY_MODE=$(yq eval '.spec.proxyMode // "streamable-http"' "$mcpfile")
 
-            # Extract target port if applicable
-            TARGET_PORT=$(yq eval '.spec.proxyPort // 8080' "$mcpfile")
+            # Build server name from repository URL (owner/repo format)
+            # e.g., https://github.com/getzep/graphiti -> getzep/graphiti
+            if [ -n "$REPO_URL" ]; then
+              SERVER_NAME=$(echo "$REPO_URL" | sed -E 's|https?://github\.com/([^/]+/[^/]+).*|\1|')
+              REPO_SOURCE="github"
+            else
+              SERVER_NAME="homelab/${K8S_NAME}"
+              REPO_SOURCE="unknown"
+            fi
+
+            # If title not set, generate from server name
+            if [ -z "$TITLE" ]; then
+              TITLE=$(echo "$K8S_NAME" | sed 's/-/ /g' | sed 's/\b\(.\)/\u\1/g')
+            fi
 
             # Convert CSV to JSON arrays
             TOOLS_JSON=$(echo "$TOOLS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
@@ -505,73 +519,73 @@ jobs:
             # Build the endpoint URL (uses k8s name for routing)
             ENDPOINT_URL="https://mcp.homelab0.org/servers/${K8S_NAME}/mcp"
 
-            # Create server entry in ToolHive native format (container-based)
-            # This format includes: name, image (for version), tools, transport, packages (for endpoints)
+            # Create server entry in upstream format
             SERVER_ENTRY=$(jq -n \
-              --arg name "$K8S_NAME" \
+              --arg name "$SERVER_NAME" \
+              --arg title "$TITLE" \
               --arg description "$DESCRIPTION" \
-              --arg transport "$TRANSPORT" \
-              --arg image "$IMAGE" \
-              --argjson target_port "$TARGET_PORT" \
+              --arg version "$VERSION" \
               --arg repo_url "$REPO_URL" \
+              --arg repo_source "$REPO_SOURCE" \
+              --arg remote_type "$PROXY_MODE" \
               --arg endpoint_url "$ENDPOINT_URL" \
-              --arg proxy_transport "$PROXY_MODE" \
               --argjson tools "$TOOLS_JSON" \
               --argjson tags "$TAGS_JSON" \
               '{
                 "name": $name,
+                "title": $title,
                 "description": $description,
-                "status": "Active",
-                "tier": "Community",
-                "transport": $transport,
-                "image": $image,
-                "target_port": $target_port,
-                "tools": $tools,
-                "repository_url": $repo_url,
-                "tags": $tags,
-                "packages": [
+                "version": $version,
+                "repository": {
+                  "url": $repo_url,
+                  "source": $repo_source
+                },
+                "remotes": [
                   {
-                    "name": "homelab",
-                    "registry_type": "url",
-                    "url": $endpoint_url,
-                    "transport": $proxy_transport
+                    "type": $remote_type,
+                    "url": $endpoint_url
                   }
-                ]
+                ],
+                "tools": $tools,
+                "tags": $tags
               }')
 
-            # Add to servers object with k8s name as key
-            SERVERS=$(echo "$SERVERS" | jq --arg key "$K8S_NAME" --argjson entry "$SERVER_ENTRY" '. + {($key): $entry}')
+            # Add to servers array
+            SERVERS=$(echo "$SERVERS" | jq --argjson entry "$SERVER_ENTRY" '. + [$entry]')
             SERVER_COUNT=$((SERVER_COUNT + 1))
 
-            echo "  Added: $K8S_NAME (image: $IMAGE)"
+            echo "  Added: $SERVER_NAME (version: $VERSION)"
           done
 
-          # Build final registry.json in ToolHive native format
+          # Build final registry.json in upstream format
           REGISTRY=$(jq -n \
-            --arg schema "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json" \
+            --arg schema "https://raw.githubusercontent.com/stacklok/toolhive-registry-server/main/internal/registry/upstream-registry.schema.json" \
             --arg timestamp "$TIMESTAMP" \
             --argjson servers "$SERVERS" \
             '{
               "$schema": $schema,
               "version": "1.0.0",
-              "last_updated": $timestamp,
-              "servers": $servers,
-              "remote_servers": {}
+              "meta": {
+                "last_updated": $timestamp
+              },
+              "data": {
+                "servers": $servers
+              }
             }')
 
           # Write registry.json
           echo "$REGISTRY" | jq '.' > "$REGISTRY_FILE"
 
-          echo "Generated registry with $SERVER_COUNT servers"
+          echo "Generated registry with $SERVER_COUNT servers (upstream format)"
           echo "servers_count=$SERVER_COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Check for Changes
         id: check-changes
         run: |
           # Compare registry content excluding timestamp to avoid unnecessary commits
-          # ToolHive native format uses last_updated at root level
-          CURRENT=$(cat "${{ env.REGISTRY_PATH }}" | jq 'del(.last_updated)' | jq -S '.')
-          PREVIOUS=$(git show HEAD:"${{ env.REGISTRY_PATH }}" 2>/dev/null | jq 'del(.last_updated) | del(.meta.last_updated)' | jq -S '.' || echo "{}")
+          # Upstream format uses meta.last_updated
+          CURRENT=$(cat "${{ env.REGISTRY_PATH }}" | jq 'del(.meta.last_updated)' | jq -S '.')
+          PREVIOUS=$(git show HEAD:"${{ env.REGISTRY_PATH }}" 2>/dev/null | jq 'del(.meta.last_updated) | del(.last_updated)' | jq -S '.' || echo "{}")
 
           if [ "$CURRENT" = "$PREVIOUS" ]; then
             echo "No meaningful changes to registry.json (only timestamp differs)"

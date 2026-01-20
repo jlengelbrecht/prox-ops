@@ -1,97 +1,97 @@
 {
-  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json",
+  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive-registry-server/main/internal/registry/upstream-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2026-01-20T18:35:00Z",
-  "servers": {
-    "graphiti": {
-      "name": "graphiti",
-      "description": "Graphiti Knowledge Graph - Build and query temporally-aware knowledge graphs for AI agents.",
-      "status": "Active",
-      "tier": "Community",
-      "transport": "streamable-http",
-      "image": "docker.io/zepai/knowledge-graph-mcp:1.0.1",
-      "target_port": 8080,
-      "tools": [
-        "add_memory",
-        "search_memory_facts",
-        "search_nodes",
-        "get_entity_edge",
-        "delete_entity_edge",
-        "get_episodes",
-        "delete_episode",
-        "clear_graph",
-        "get_status"
-      ],
-      "repository_url": "https://github.com/getzep/graphiti",
-      "tags": [
-        "knowledge-graph",
-        "rag",
-        "memory",
-        "ai-agents",
-        "graph-database",
-        "semantic-search",
-        "homelab",
-        "falkordb",
-        "temporal-data"
-      ],
-      "packages": [
-        {
-          "name": "homelab",
-          "registry_type": "url",
-          "url": "https://mcp.homelab0.org/servers/graphiti/mcp",
-          "transport": "streamable-http"
-        }
-      ]
-    },
-    "n8n": {
-      "name": "n8n",
-      "description": "n8n Workflow Automation - AI assistant integration for comprehensive n8n workflow management.",
-      "status": "Active",
-      "tier": "Community",
-      "transport": "stdio",
-      "image": "ghcr.io/czlonkowski/n8n-mcp:2.30.1",
-      "tools": [
-        "workflow_execute",
-        "workflow_list",
-        "workflow_get",
-        "workflow_create",
-        "workflow_update",
-        "workflow_delete",
-        "workflow_activate",
-        "workflow_deactivate",
-        "node_list",
-        "node_get",
-        "node_search",
-        "credential_list",
-        "credential_get",
-        "webhook_list",
-        "webhook_create",
-        "template_list",
-        "template_search",
-        "execution_list",
-        "execution_get",
-        "documentation_search"
-      ],
-      "repository_url": "https://github.com/czlonkowski/n8n-mcp",
-      "tags": [
-        "automation",
-        "workflows",
-        "n8n",
-        "homelab",
-        "productivity",
-        "integration",
-        "webhooks",
-        "templates"
-      ],
-      "packages": [
-        {
-          "name": "homelab",
-          "registry_type": "url",
-          "url": "https://mcp.homelab0.org/servers/n8n/mcp",
-          "transport": "streamable-http"
-        }
-      ]
-    }
+  "meta": {
+    "last_updated": "2026-01-20T19:00:00Z"
   },
-  "remote_servers": {}
+  "data": {
+    "servers": [
+      {
+        "name": "getzep/graphiti",
+        "title": "Graphiti Knowledge Graph",
+        "description": "Build and query temporally-aware knowledge graphs for AI agents.",
+        "version": "1.0.1",
+        "repository": {
+          "url": "https://github.com/getzep/graphiti",
+          "source": "github"
+        },
+        "remotes": [
+          {
+            "type": "streamable-http",
+            "url": "https://mcp.homelab0.org/servers/graphiti/mcp"
+          }
+        ],
+        "tools": [
+          "add_memory",
+          "search_memory_facts",
+          "search_nodes",
+          "get_entity_edge",
+          "delete_entity_edge",
+          "get_episodes",
+          "delete_episode",
+          "clear_graph",
+          "get_status"
+        ],
+        "tags": [
+          "knowledge-graph",
+          "rag",
+          "memory",
+          "ai-agents",
+          "graph-database",
+          "semantic-search",
+          "homelab",
+          "falkordb",
+          "temporal-data"
+        ]
+      },
+      {
+        "name": "czlonkowski/n8n-mcp",
+        "title": "n8n Workflow Automation",
+        "description": "AI assistant integration for comprehensive n8n workflow management.",
+        "version": "2.30.1",
+        "repository": {
+          "url": "https://github.com/czlonkowski/n8n-mcp",
+          "source": "github"
+        },
+        "remotes": [
+          {
+            "type": "streamable-http",
+            "url": "https://mcp.homelab0.org/servers/n8n/mcp"
+          }
+        ],
+        "tools": [
+          "workflow_execute",
+          "workflow_list",
+          "workflow_get",
+          "workflow_create",
+          "workflow_update",
+          "workflow_delete",
+          "workflow_activate",
+          "workflow_deactivate",
+          "node_list",
+          "node_get",
+          "node_search",
+          "credential_list",
+          "credential_get",
+          "webhook_list",
+          "webhook_create",
+          "template_list",
+          "template_search",
+          "execution_list",
+          "execution_get",
+          "documentation_search"
+        ],
+        "tags": [
+          "automation",
+          "workflows",
+          "n8n",
+          "homelab",
+          "productivity",
+          "integration",
+          "webhooks",
+          "templates"
+        ]
+      }
+    ]
+  }
 }
