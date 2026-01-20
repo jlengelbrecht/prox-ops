@@ -66,7 +66,8 @@ spec:
     limits:
       cpu: "2"
       memory: "2Gi"
-  # Pod customization - includes init container for uv binary
+  # Pod customization
+  # Use pre-installed venv python directly instead of uv (avoids root init container)
   podTemplateSpec:
     metadata:
       annotations:
@@ -79,40 +80,16 @@ spec:
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
-      # Init container to copy uv binary from /root/.local/bin to shared volume
-      # The /root directory has 700 permissions, blocking non-root access
-      initContainers:
-        - name: copy-uv
-          image: docker.io/zepai/knowledge-graph-mcp:1.0.1
-          command:
-            - /bin/sh
-            - -c
-            - |
-              cp -a /root/.local/bin/uv /shared/bin/uv
-              cp -a /root/.local/bin/uvx /shared/bin/uvx 2>/dev/null || true
-              chmod 755 /shared/bin/*
-              echo "Copied uv binary to /shared/bin/"
-          securityContext:
-            runAsUser: 0
-            runAsGroup: 0
-            allowPrivilegeEscalation: false
-            seccompProfile:
-              type: RuntimeDefault
-            capabilities:
-              drop:
-                - ALL
-          volumeMounts:
-            - name: shared-bin
-              mountPath: /shared/bin
       containers:
         - name: mcp
-          # Override command to use copied uv binary
+          # Use the pre-installed venv python directly (no uv needed)
+          # The image has dependencies pre-installed in /app/mcp/.venv
           command:
             - /bin/sh
             - -c
             - |
               cd /app/mcp
-              exec /shared/bin/uv run --no-sync main.py
+              exec /app/mcp/.venv/bin/python main.py
           securityContext:
             runAsUser: 1000
             runAsGroup: 1000
@@ -122,15 +99,3 @@ spec:
             capabilities:
               drop:
                 - ALL
-          volumeMounts:
-            - name: shared-bin
-              mountPath: /shared/bin
-            - name: cache
-              mountPath: /cache
-      volumes:
-        - name: shared-bin
-          emptyDir:
-            sizeLimit: 100Mi
-        - name: cache
-          emptyDir:
-            sizeLimit: 500Mi
