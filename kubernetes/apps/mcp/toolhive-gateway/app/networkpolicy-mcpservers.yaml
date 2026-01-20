@@ -13,11 +13,11 @@ spec:
       toolhive: "true"
 
   ingress:
-    # Allow from VirtualMCPServer gateway (homelab-gateway)
+    # Allow from VirtualMCPServer gateway (pods labeled virtualmcpserver)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: homelab-gateway
+            app.kubernetes.io/name: virtualmcpserver
       toPorts:
         - ports:
             - port: "8080"
