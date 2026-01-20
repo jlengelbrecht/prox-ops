@@ -30,14 +30,7 @@ env:
   REGISTRY_PATH: "kubernetes/apps/mcp/registry-data/registry.json"
   # renovate: datasource=github-releases depName=aquasecurity/trivy
   TRIVY_VERSION: "0.58.2"
-  # renovate: datasource=github-releases depName=mikefarah/yq
-  YQ_VERSION: "4.45.1"
-  # SHA256 checksum for yq_linux_amd64 v4.45.1 (from official checksums file)
-  YQ_CHECKSUM: "654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049"
-  # renovate: datasource=github-releases depName=stacklok/toolhive
-  THV_VERSION: "0.7.2"
-  # SHA256 checksum for toolhive_linux_amd64.tar.gz (from official checksums file)
-  THV_CHECKSUM: "84a89a735f3c5d7eaa4fe0f4cba164eb2a04b83f2525c9709dc60dc86fc9dab1"
+  # Tool versions managed by mise (.mise.toml) - yq, thv installed via setup-mcp-tools action
 
 jobs:
   # =============================================================================
@@ -116,15 +109,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Install yq
-        run: |
-          # Download yq with checksum verification for supply chain security
-          mkdir -p "$HOME/.local/bin"
-          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o "$HOME/.local/bin/yq"
-          echo "${{ env.YQ_CHECKSUM }}  $HOME/.local/bin/yq" | sha256sum -c -
-          chmod +x "$HOME/.local/bin/yq"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/yq" --version
+      - name: Setup MCP Tools
+        uses: ./.github/actions/setup-mcp-tools
 
       - name: Validate YAML Syntax
         run: |
@@ -245,15 +231,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Install yq
-        run: |
-          # Download yq with checksum verification for supply chain security
-          mkdir -p "$HOME/.local/bin"
-          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o "$HOME/.local/bin/yq"
-          echo "${{ env.YQ_CHECKSUM }}  $HOME/.local/bin/yq" | sha256sum -c -
-          chmod +x "$HOME/.local/bin/yq"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/yq" --version
+      - name: Setup MCP Tools
+        uses: ./.github/actions/setup-mcp-tools
 
       - name: Extract Image
         id: image
@@ -288,22 +267,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Install Tools
-        run: |
-          # Install yq with checksum verification
-          mkdir -p "$HOME/.local/bin"
-          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o "$HOME/.local/bin/yq"
-          echo "${{ env.YQ_CHECKSUM }}  $HOME/.local/bin/yq" | sha256sum -c -
-          chmod +x "$HOME/.local/bin/yq"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-          # Install thv CLI for MCP protocol validation with checksum verification
-          curl -sSL "https://github.com/stacklok/toolhive/releases/download/v${{ env.THV_VERSION }}/toolhive_${{ env.THV_VERSION }}_linux_amd64.tar.gz" -o /tmp/thv.tar.gz
-          echo "${{ env.THV_CHECKSUM }}  /tmp/thv.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/thv.tar.gz -C "$HOME/.local/bin"
-          chmod +x "$HOME/.local/bin/thv"
-          "$HOME/.local/bin/yq" --version
-          "$HOME/.local/bin/thv" --version
+      - name: Setup MCP Tools
+        uses: ./.github/actions/setup-mcp-tools
 
       - name: Extract MCP Server Config
         id: config
@@ -466,15 +431,8 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
-      - name: Install Tools
-        run: |
-          # Download yq with checksum verification for supply chain security
-          mkdir -p "$HOME/.local/bin"
-          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o "$HOME/.local/bin/yq"
-          echo "${{ env.YQ_CHECKSUM }}  $HOME/.local/bin/yq" | sha256sum -c -
-          chmod +x "$HOME/.local/bin/yq"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/yq" --version
+      - name: Setup MCP Tools
+        uses: ./.github/actions/setup-mcp-tools
 
       - name: Generate Registry Entries
         id: generate

@@ -1,0 +1,49 @@
+name: Setup MCP Tools
+description: Install tools from mise for MCP catalog sync workflows
+inputs:
+  working-directory:
+    description: Directory containing .mise.toml (defaults to repository root)
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    # Suppress mise Python venv warnings - we don't install Python in CI
+    - name: Suppress mise Python venv warnings
+      shell: bash
+      run: |
+        echo "MISE_PYTHON_VENV_AUTO_CREATE=0" >> $GITHUB_ENV
+
+    - name: Setup mise and install MCP tools
+      uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+      with:
+        cache: true
+        working_directory: ${{ inputs.working-directory }}
+        # Only install tools needed for MCP workflows
+        # yq: YAML parsing for MCPServer files
+        # thv: ToolHive CLI for MCP protocol validation
+        install_args: "aqua:mikefarah/yq github:stacklok/toolhive"
+
+    - name: Verify MCP tool versions
+      shell: bash
+      run: |
+        echo "============================================"
+        echo "Installed MCP tool versions:"
+        echo "============================================"
+
+        # Verify yq is available
+        if ! command -v yq &>/dev/null; then
+          echo "ERROR: yq not found"
+          exit 1
+        fi
+        echo "  yq:  $(yq --version 2>/dev/null || echo 'version check failed')"
+
+        # Verify thv is available
+        if ! command -v thv &>/dev/null; then
+          echo "ERROR: thv not found"
+          exit 1
+        fi
+        echo "  thv: $(thv --version 2>/dev/null || echo 'version check failed')"
+
+        echo "============================================"
