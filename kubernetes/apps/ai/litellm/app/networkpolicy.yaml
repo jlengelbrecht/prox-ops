@@ -66,17 +66,17 @@ spec:
               protocol: TCP
             - port: "10443"
               protocol: TCP
-    # Allow egress to n8n-mcp server (mcp namespace)
-    # LiteLLM acts as the MCP gateway - sole entry point to MCP servers
+    # Allow egress to ToolHive VirtualMCPServer gateway (homelab-gateway)
+    # Routes to all ToolHive-managed MCP servers (n8n-mcp, etc.)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: n8n-mcp
+            app.kubernetes.io/name: homelab-gateway
       toPorts:
         - ports:
-            - port: "3000"
+            - port: "4483"
               protocol: TCP
-    # Allow egress to graphiti-mcp server (mcp namespace)
+    # Allow egress to graphiti-mcp server (standalone, not ToolHive-managed yet)
     # Knowledge graph MCP for RAG operations (BookStack docs, runbooks)
     - toEndpoints:
         - matchLabels:
