@@ -1,0 +1,75 @@
+# n8n Workflow Automation MCP Server
+# Source: https://github.com/czlonkowski/n8n-mcp
+name: n8n
+description: |
+  n8n Workflow Automation - AI assistant integration for comprehensive n8n
+  workflow management. Access 1,084 n8n nodes, 2,709 workflow templates,
+  execute workflows, manage webhooks, and automate tasks.
+tier: Homelab
+status: Active
+transport: stdio
+
+# Tools provided by this MCP server
+tools:
+  - workflow_execute
+  - workflow_list
+  - workflow_get
+  - workflow_create
+  - workflow_update
+  - workflow_delete
+  - workflow_activate
+  - workflow_deactivate
+  - node_list
+  - node_get
+  - node_search
+  - credential_list
+  - credential_get
+  - webhook_list
+  - webhook_create
+  - template_list
+  - template_search
+  - execution_list
+  - execution_get
+  - documentation_search
+
+# Catalog display metadata
+metadata:
+  author: czlonkowski
+  author_url: https://github.com/czlonkowski
+  icon_url: https://n8n.io/favicon.ico
+  last_updated: "2026-01-20T00:00:00Z"
+
+# Source repository
+repository_url: https://github.com/czlonkowski/n8n-mcp
+
+# Container image (for reference)
+image: ghcr.io/czlonkowski/n8n-mcp:2.30.1
+
+# Searchable tags
+tags:
+  - automation
+  - workflows
+  - n8n
+  - homelab
+  - productivity
+  - integration
+  - webhooks
+  - templates
+
+# Environment variables (documentation only - actual secrets managed separately)
+env_vars:
+  - name: N8N_API_URL
+    description: URL to your n8n instance API
+    required: true
+    secret: false
+  - name: N8N_API_KEY
+    description: n8n API key for authentication
+    required: true
+    secret: true
+
+# Deployed endpoint (your homelab instance)
+packages:
+  - name: homelab
+    registry_type: url
+    url: https://mcp.homelab0.org/servers/n8n/mcp
+    transport: streamable-http

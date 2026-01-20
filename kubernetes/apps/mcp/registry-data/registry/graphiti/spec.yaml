@@ -1,0 +1,75 @@
+# Graphiti Knowledge Graph MCP Server
+# Source: https://github.com/getzep/graphiti
+name: graphiti
+description: |
+  Graphiti Knowledge Graph - Build and query temporally-aware knowledge graphs
+  for AI agents. Add memories, search facts, query entities, and manage
+  episodic data with hybrid retrieval (semantic + BM25 + graph traversal).
+  Powered by FalkorDB for graph storage.
+tier: Homelab
+status: Active
+transport: streamable-http
+
+# Tools provided by this MCP server
+tools:
+  - add_memory
+  - search_memory_facts
+  - search_nodes
+  - get_entity_edge
+  - delete_entity_edge
+  - get_episodes
+  - delete_episode
+  - clear_graph
+  - get_status
+
+# Catalog display metadata
+metadata:
+  author: Zep
+  author_url: https://github.com/getzep
+  icon_url: https://avatars.githubusercontent.com/u/122759527
+  stars: 22100
+  last_updated: "2026-01-20T00:00:00Z"
+
+# Source repository
+repository_url: https://github.com/getzep/graphiti
+
+# Container image (for reference)
+image: docker.io/zepai/knowledge-graph-mcp:1.0.1
+
+# Searchable tags
+tags:
+  - knowledge-graph
+  - rag
+  - memory
+  - ai-agents
+  - graph-database
+  - semantic-search
+  - homelab
+  - falkordb
+  - temporal-data
+
+# Environment variables (documentation only - actual secrets managed separately)
+env_vars:
+  - name: OPENAI_API_KEY
+    description: OpenAI API key for entity extraction and embeddings
+    required: true
+    secret: true
+  - name: FALKORDB_URI
+    description: FalkorDB connection URI (redis://host:port)
+    required: true
+    secret: false
+  - name: FALKORDB_PASSWORD
+    description: FalkorDB authentication password
+    required: false
+    secret: true
+  - name: GRAPHITI_GROUP_ID
+    description: Graph namespace/group identifier
+    required: false
+    secret: false
+
+# Deployed endpoint (your homelab instance)
+packages:
+  - name: homelab
+    registry_type: url
+    url: https://mcp.homelab0.org/servers/graphiti/mcp
+    transport: streamable-http

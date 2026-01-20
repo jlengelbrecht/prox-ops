@@ -10,16 +10,19 @@ data:
     # Registry Server Configuration
     registryName: homelab
 
-    # Registry sources - Kubernetes discovery for local MCP servers
-    # Note: Official MCP Registry disabled due to data quality issues (duplicates, broken URLs)
-    # Registry now runs in mcp namespace alongside MCPServers for automatic discovery
+    # Registry sources
+    # Using Git source for rich metadata (display names, icons, tags, descriptions)
+    # Kubernetes discovery disabled to avoid duplicate entries
     registries:
-      # Kubernetes discovery - watches MCPServers in same namespace
-      - name: kubernetes
+      # Homelab curated catalog - rich metadata from prox-ops repo
+      - name: homelab
         format: toolhive
-        kubernetes: {}
+        git:
+          repository: https://github.com/jlengelbrecht/prox-ops.git
+          branch: main
+          path: kubernetes/apps/mcp/registry-data/registry/
         syncPolicy:
-          interval: 5m
+          interval: 10m
 
     # Authentication - start with anonymous, add OIDC later
     # TODO: Configure OIDC with Authentik in future story
