@@ -119,11 +119,12 @@ jobs:
       - name: Install yq
         run: |
           # Download yq with checksum verification for supply chain security
-          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o /tmp/yq
-          echo "${{ env.YQ_CHECKSUM }}  /tmp/yq" | sha256sum -c -
-          sudo mv /tmp/yq /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
-          yq --version
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o "$HOME/.local/bin/yq"
+          echo "${{ env.YQ_CHECKSUM }}  $HOME/.local/bin/yq" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/yq" --version
 
       - name: Validate YAML Syntax
         run: |
@@ -247,11 +248,12 @@ jobs:
       - name: Install yq
         run: |
           # Download yq with checksum verification for supply chain security
-          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o /tmp/yq
-          echo "${{ env.YQ_CHECKSUM }}  /tmp/yq" | sha256sum -c -
-          sudo mv /tmp/yq /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
-          yq --version
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o "$HOME/.local/bin/yq"
+          echo "${{ env.YQ_CHECKSUM }}  $HOME/.local/bin/yq" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/yq" --version
 
       - name: Extract Image
         id: image
@@ -288,19 +290,20 @@ jobs:
 
       - name: Install Tools
         run: |
-          # Install yq
-          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o /tmp/yq
-          echo "${{ env.YQ_CHECKSUM }}  /tmp/yq" | sha256sum -c -
-          sudo mv /tmp/yq /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
+          # Install yq with checksum verification
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o "$HOME/.local/bin/yq"
+          echo "${{ env.YQ_CHECKSUM }}  $HOME/.local/bin/yq" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
           # Install thv CLI for MCP protocol validation with checksum verification
           curl -sSL "https://github.com/stacklok/toolhive/releases/download/v${{ env.THV_VERSION }}/toolhive_${{ env.THV_VERSION }}_linux_amd64.tar.gz" -o /tmp/thv.tar.gz
           echo "${{ env.THV_CHECKSUM }}  /tmp/thv.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/thv.tar.gz -C /tmp
-          sudo mv /tmp/thv /usr/local/bin/thv
-          sudo chmod +x /usr/local/bin/thv
-          thv --version
+          tar -xzf /tmp/thv.tar.gz -C "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/thv"
+          "$HOME/.local/bin/yq" --version
+          "$HOME/.local/bin/thv" --version
 
       - name: Extract MCP Server Config
         id: config
@@ -466,11 +469,12 @@ jobs:
       - name: Install Tools
         run: |
           # Download yq with checksum verification for supply chain security
-          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o /tmp/yq
-          echo "${{ env.YQ_CHECKSUM }}  /tmp/yq" | sha256sum -c -
-          sudo mv /tmp/yq /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
-          yq --version
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64" -o "$HOME/.local/bin/yq"
+          echo "${{ env.YQ_CHECKSUM }}  $HOME/.local/bin/yq" | sha256sum -c -
+          chmod +x "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/yq" --version
 
       - name: Generate Registry Entries
         id: generate
