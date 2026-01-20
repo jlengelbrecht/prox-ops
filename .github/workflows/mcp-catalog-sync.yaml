@@ -45,7 +45,7 @@ jobs:
   # =============================================================================
   preflight:
     name: Detect MCP Changes
-    runs-on: ubuntu-latest
+    runs-on: gha-runner-scale-set
     outputs:
       mcpservers_changed: ${{ steps.changed.outputs.mcpservers_changed }}
       mcpserver_files: ${{ steps.changed.outputs.mcpserver_files }}
@@ -107,7 +107,7 @@ jobs:
     name: Validate MCPServer
     needs: preflight
     if: needs.preflight.outputs.mcpservers_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: gha-runner-scale-set
     strategy:
       matrix:
         file: ${{ fromJson(needs.preflight.outputs.mcpserver_files) }}
@@ -234,7 +234,7 @@ jobs:
     name: Scan Container Image
     needs: [preflight, validate]
     if: needs.preflight.outputs.mcpservers_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: gha-runner-scale-set
     strategy:
       matrix:
         file: ${{ fromJson(needs.preflight.outputs.mcpserver_files) }}
@@ -276,7 +276,7 @@ jobs:
     name: Validate MCP Protocol
     needs: [preflight, validate]
     if: needs.preflight.outputs.mcpservers_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: gha-runner-scale-set
     strategy:
       matrix:
         file: ${{ fromJson(needs.preflight.outputs.mcpserver_files) }}
@@ -452,7 +452,7 @@ jobs:
     name: Generate Catalog Entry
     needs: [preflight, validate]
     if: needs.preflight.outputs.mcpservers_changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: gha-runner-scale-set
     permissions:
       contents: write       # Required: Auto-commit registry.json changes to PR
       pull-requests: write  # Required: Add status comment to PR
@@ -648,7 +648,7 @@ jobs:
     name: MCP Catalog Sync Status
     needs: [preflight, validate, image-scan, mcp-validate, generate-catalog]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: gha-runner-scale-set
     steps:
       - name: Check Results
         run: |
