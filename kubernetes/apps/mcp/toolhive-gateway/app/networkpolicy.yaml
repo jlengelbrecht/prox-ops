@@ -6,9 +6,10 @@ metadata:
   name: toolhive-gateway
   namespace: mcp
 spec:
+  # VirtualMCPServer pods use 'virtualmcpserver' as app.kubernetes.io/name
   endpointSelector:
     matchLabels:
-      app.kubernetes.io/name: homelab-gateway
+      app.kubernetes.io/name: virtualmcpserver
 
   ingress:
     # Allow from LiteLLM (primary MCP gateway client)
