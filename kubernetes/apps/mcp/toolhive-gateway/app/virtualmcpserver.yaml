@@ -22,6 +22,50 @@ spec:
       enabled: true
       includeRequestData: false
       includeResponseData: false
-  # Anonymous auth for internal use - LiteLLM handles external auth
+  # OIDC authentication via Authentik for external clients (thv CLI, Claude Code, etc.)
+  # LiteLLM connects internally via anonymous endpoint (separate VirtualMCPServer below)
+  incomingAuth:
+    type: oidc
+    oidcConfig:
+      type: inline
+      inline:
+        # Authentik OIDC issuer for the MCP Gateway application
+        issuer: "https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/"
+        # Client ID must match the OAuth2 provider client_id in Authentik
+        clientId: "toolhive-mcp-gateway"
+        # Audience claim expected in JWT tokens
+        audience: "toolhive-mcp-gateway"
+        # Allow JWKS endpoint on private IP (internal Authentik access)
+        jwksAllowPrivateIP: true
+        # Scopes to advertise in well-known endpoint
+        scopes:
+          - openid
+          - profile
+          - email
+          - offline_access
+---
+# VirtualMCPServer for internal/anonymous access (LiteLLM, internal services)
+# This provides an unauthenticated endpoint for trusted internal cluster traffic
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: homelab-gateway-internal
+  namespace: mcp
+  labels:
+    app.kubernetes.io/name: homelab-gateway-internal
+    app.kubernetes.io/component: mcp-gateway
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  config:
+    groupRef: homelab-mcp
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    audit:
+      enabled: true
+      includeRequestData: false
+      includeResponseData: false
+  # Anonymous auth for internal cluster services (LiteLLM, etc.)
   incomingAuth:
     type: anonymous

@@ -247,6 +247,36 @@ data:
           include_claims_in_id_token: true
           sub_mode: hashed_user_id
           issuer_mode: per_provider
+      # ToolHive MCP Gateway - Public OIDC for CLI/Desktop clients
+      # Uses PKCE flow (no client secret required) for thv CLI, Claude Code, etc.
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-toolhive-mcp-gateway
+        identifiers:
+          name: ToolHive MCP Gateway
+        attrs:
+          name: ToolHive MCP Gateway
+          client_id: !Env AUTHENTIK_TOOLHIVE_MCP_GATEWAY_CLIENT_ID
+          client_type: public
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          signing_key: !Context signing_key
+          property_mappings:
+            - !Context scope_email
+            - !Context scope_profile
+            - !Context scope_openid
+            - !Context scope_offline
+          redirect_uris:
+            # Local callbacks for CLI tools (thv, Claude Code, etc.)
+            - matching_mode: regex
+              url: http://localhost:[0-9]+/.*
+            - matching_mode: regex
+              url: http://127\.0\.0\.1:[0-9]+/.*
+          access_code_validity: minutes=5
+          access_token_validity: hours=1
+          refresh_token_validity: days=30
+          include_claims_in_id_token: true
+          sub_mode: hashed_user_id
+          issuer_mode: per_provider
 
   # =============================================================
   # PROXY PROVIDERS BLUEPRINT
@@ -370,6 +400,16 @@ data:
           group: AI
           policy_engine_mode: any
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "ToolHive"]]
+      - model: authentik_core.application
+        id: app-toolhive-mcp-gateway
+        identifiers:
+          slug: toolhive-mcp-gateway
+        attrs:
+          name: ToolHive MCP Gateway
+          slug: toolhive-mcp-gateway
+          group: AI
+          policy_engine_mode: any
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "ToolHive MCP Gateway"]]
       # Forward Auth Applications
       - model: authentik_core.application
         id: app-n8n

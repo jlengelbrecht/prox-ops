@@ -12,7 +12,17 @@ spec:
       app.kubernetes.io/name: virtualmcpserver
 
   ingress:
-    # Allow from LiteLLM (primary MCP gateway client)
+    # Allow from Envoy gateway (external access via OIDC-authenticated endpoint)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "4483"
+              protocol: TCP
+
+    # Allow from LiteLLM (internal MCP client - uses anonymous gateway)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
@@ -53,6 +63,28 @@ spec:
             - port: "53"
               protocol: UDP
             - port: "53"
+              protocol: TCP
+
+    # Egress to Authentik for OIDC/JWKS token validation
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: security
+            app.kubernetes.io/name: authentik
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+
+    # Egress to envoy-internal gateway for Authentik OIDC validation (external URL)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
               protocol: TCP
 
     # Egress to n8n-mcp proxyrunner (ToolHive MCPServer creates pods with mcpserver label)
