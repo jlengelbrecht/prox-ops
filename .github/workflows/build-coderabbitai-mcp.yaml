@@ -37,6 +37,40 @@ jobs:
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
+      - name: Fix Dockerfile
+        run: |
+          # Upstream Dockerfile has a bug: uses --only=production but needs devDependencies for build
+          cat > Dockerfile << 'DOCKERFILE'
+          FROM node:18-alpine
+
+          WORKDIR /app
+
+          # Copy package files
+          COPY package*.json ./
+
+          # Install ALL dependencies (including devDependencies for build)
+          RUN npm ci
+
+          # Copy source code
+          COPY . .
+
+          # Build the application
+          RUN npm run build
+
+          # Remove devDependencies after build
+          RUN npm prune --production
+
+          # Create non-root user
+          RUN addgroup -g 1001 -S nodejs && \
+              adduser -S nodejs -u 1001
+
+          RUN chown -R nodejs:nodejs /app
+          USER nodejs
+
+          # MCP servers use stdio, not HTTP port
+          CMD ["node", "dist/index.js"]
+          DOCKERFILE
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
