@@ -25,6 +25,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
+# Default to read-only permissions; jobs that need write access override explicitly
+permissions:
+  contents: read
+  pull-requests: read
+
 env:
   MCPSERVER_PATH: "kubernetes/apps/mcp/toolhive-gateway/app"
   REGISTRY_PATH: "kubernetes/apps/mcp/registry-data/registry.json"
@@ -59,12 +64,20 @@ jobs:
             echo "registry_changed=false" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             # Get changed files in PR using PR-specific refs
-            CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+            # Use --diff-filter=d to exclude deleted files for validation (we can't validate files that don't exist)
+            CHANGED=$(git diff --name-only --diff-filter=d ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
             MCPSERVER_FILES=$(echo "$CHANGED" | grep -E "^${{ env.MCPSERVER_PATH }}/mcpserver-.*\.yaml$" || true)
             REGISTRY_CHANGED=$(echo "$CHANGED" | grep -E "^${{ env.REGISTRY_PATH }}$" || true)
 
-            if [ -n "$MCPSERVER_FILES" ]; then
+            # Also check for deleted MCPServer files - we still need to regenerate the catalog
+            DELETED_MCPSERVERS=$(git diff --name-only --diff-filter=D ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | grep -E "^${{ env.MCPSERVER_PATH }}/mcpserver-.*\.yaml$" || true)
+
+            if [ -n "$MCPSERVER_FILES" ] || [ -n "$DELETED_MCPSERVERS" ]; then
               echo "mcpservers_changed=true" >> "$GITHUB_OUTPUT"
+              if [ -n "$DELETED_MCPSERVERS" ]; then
+                echo "MCPServer files deleted (catalog will be regenerated):"
+                echo "$DELETED_MCPSERVERS"
+              fi
             else
               echo "mcpservers_changed=false" >> "$GITHUB_OUTPUT"
             fi
@@ -99,7 +112,8 @@ jobs:
   validate:
     name: Validate MCPServer
     needs: preflight
-    if: needs.preflight.outputs.mcpservers_changed == 'true'
+    # Only run when there are actual files to validate (not just deletions)
+    if: needs.preflight.outputs.mcpservers_changed == 'true' && needs.preflight.outputs.mcpserver_files != '[]'
     runs-on: gha-runner-scale-set
     strategy:
       matrix:
@@ -220,7 +234,12 @@ jobs:
   image-scan:
     name: Scan Container Image
     needs: [preflight, validate]
-    if: needs.preflight.outputs.mcpservers_changed == 'true'
+    # Only run when there are actual files to scan (not just deletions)
+    if: |
+      always() &&
+      needs.preflight.outputs.mcpservers_changed == 'true' &&
+      needs.preflight.outputs.mcpserver_files != '[]' &&
+      (needs.validate.result == 'success' || needs.validate.result == 'skipped')
     runs-on: gha-runner-scale-set
     strategy:
       matrix:
@@ -256,7 +275,12 @@ jobs:
   mcp-validate:
     name: Validate MCP Protocol
     needs: [preflight, validate]
-    if: needs.preflight.outputs.mcpservers_changed == 'true'
+    # Only run when there are actual files to validate (not just deletions)
+    if: |
+      always() &&
+      needs.preflight.outputs.mcpservers_changed == 'true' &&
+      needs.preflight.outputs.mcpserver_files != '[]' &&
+      (needs.validate.result == 'success' || needs.validate.result == 'skipped')
     runs-on: gha-runner-scale-set
     strategy:
       matrix:
@@ -419,7 +443,11 @@ jobs:
   generate-catalog:
     name: Generate Catalog Entry
     needs: [preflight, validate]
-    if: needs.preflight.outputs.mcpservers_changed == 'true'
+    # Run when MCPServers changed AND validate passed or was skipped (deletions only)
+    if: |
+      always() &&
+      needs.preflight.outputs.mcpservers_changed == 'true' &&
+      (needs.validate.result == 'success' || needs.validate.result == 'skipped')
     runs-on: gha-runner-scale-set
     permissions:
       contents: write       # Required: Auto-commit registry.json changes to PR
@@ -438,7 +466,7 @@ jobs:
         id: generate
         run: |
           # Process all MCPServer files and generate registry.json
-          # Using upstream format for registry server validation with clean naming
+          # Using upstream format with owner/repo naming and image version tracking
           REGISTRY_FILE="${{ env.REGISTRY_PATH }}"
           MCPSERVER_DIR="${{ env.MCPSERVER_PATH }}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -452,12 +480,38 @@ jobs:
             echo "Processing: $mcpfile"
 
             # Extract metadata from MCPServer
-            NAME=$(yq eval '.metadata.name' "$mcpfile")
+            K8S_NAME=$(yq eval '.metadata.name' "$mcpfile")
             DESCRIPTION=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/registry-description"] // "No description available"' "$mcpfile")
             TITLE=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-title"] // .metadata.name' "$mcpfile")
             TOOLS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tools"] // ""' "$mcpfile")
-            TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "homelab,mcp"' "$mcpfile")
+            TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "mcp"' "$mcpfile")
             REPO_URL=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/repository-url"] // ""' "$mcpfile")
+            IMAGE=$(yq eval '.spec.image' "$mcpfile")
+
+            # Extract owner/repo from repository URL for catalog name
+            # e.g., "https://github.com/bradthebeeble/coderabbitai-mcp" -> "bradthebeeble/coderabbitai-mcp"
+            # Strip trailing slashes, .git suffix, and protocol/host
+            CATALOG_NAME=$(echo "$REPO_URL" | sed -E 's|/$||' | sed -E 's|https?://[^/]+/||' | sed 's|\.git$||')
+            if [ -z "$CATALOG_NAME" ] || [ "$CATALOG_NAME" = "$REPO_URL" ]; then
+              # Fallback to k8s name with homelab prefix if URL parsing fails
+              CATALOG_NAME="homelab/${K8S_NAME}"
+            fi
+
+            # Extract version from image tag
+            # e.g., "ghcr.io/czlonkowski/n8n-mcp:2.30.1" -> "2.30.1"
+            # Handle edge cases: registries with ports, digest references
+            if echo "$IMAGE" | grep -q '@sha256:'; then
+              # Digest reference - no semantic version available
+              IMAGE_VERSION="latest"
+            else
+              # Extract basename (last path segment) then check for tag
+              IMAGE_BASENAME=$(echo "$IMAGE" | sed 's|.*/||')
+              if echo "$IMAGE_BASENAME" | grep -q ':'; then
+                IMAGE_VERSION=$(echo "$IMAGE_BASENAME" | sed 's/.*://')
+              else
+                IMAGE_VERSION="latest"
+              fi
+            fi
 
             # Derive repo source from URL
             if echo "$REPO_URL" | grep -q "github.com"; then
@@ -472,15 +526,17 @@ jobs:
             TOOLS_JSON=$(echo "$TOOLS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
             TAGS_JSON=$(echo "$TAGS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
 
-            # Build the endpoint URL
-            ENDPOINT_URL="https://mcp.homelab0.org/servers/${NAME}/mcp"
+            # Build the endpoint URL (uses k8s name for routing)
+            ENDPOINT_URL="https://mcp.homelab0.org/servers/${K8S_NAME}/mcp"
 
-            # Create server entry in upstream format with clean naming
-            # Using just the server name (e.g., "coderabbit") for better UI display
+            # Create server entry in upstream format
+            # - name: owner/repo from source repository (identifies the MCP server origin)
+            # - version: from deployed image tag (tracks what's running)
             SERVER_ENTRY=$(jq -n \
-              --arg name "$NAME" \
+              --arg name "$CATALOG_NAME" \
               --arg title "$TITLE" \
               --arg description "$DESCRIPTION" \
+              --arg version "$IMAGE_VERSION" \
               --arg repo_url "$REPO_URL" \
               --arg repo_source "$REPO_SOURCE" \
               --arg endpoint "$ENDPOINT_URL" \
@@ -490,6 +546,7 @@ jobs:
                 "name": $name,
                 "title": $title,
                 "description": $description,
+                "version": $version,
                 "repository": {
                   "url": $repo_url,
                   "source": $repo_source
@@ -507,7 +564,7 @@ jobs:
             # Add to servers array
             SERVERS=$(echo "$SERVERS" | jq --argjson entry "$SERVER_ENTRY" '. += [$entry]')
 
-            echo "  Added: $NAME"
+            echo "  Added: $CATALOG_NAME (v$IMAGE_VERSION)"
           done
 
           # Build final registry.json in upstream format
@@ -535,11 +592,17 @@ jobs:
       - name: Check for Changes
         id: check-changes
         run: |
-          if git diff --quiet "${{ env.REGISTRY_PATH }}"; then
-            echo "No changes to registry.json"
+          # Compare registry content excluding timestamp to avoid unnecessary commits
+          CURRENT=$(cat "${{ env.REGISTRY_PATH }}" | jq 'del(.meta.last_updated)' | jq -S '.')
+          PREVIOUS=$(git show HEAD:"${{ env.REGISTRY_PATH }}" 2>/dev/null | jq 'del(.meta.last_updated)' | jq -S '.' || echo "{}")
+
+          if [ "$CURRENT" = "$PREVIOUS" ]; then
+            echo "No meaningful changes to registry.json (only timestamp differs)"
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            # Restore original file to avoid committing timestamp-only changes
+            git checkout "${{ env.REGISTRY_PATH }}"
           else
-            echo "Registry.json has been updated"
+            echo "Registry.json has meaningful updates"
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             git diff "${{ env.REGISTRY_PATH }}"
           fi
@@ -567,9 +630,7 @@ jobs:
           git add "${{ env.REGISTRY_PATH }}"
           git commit -m "chore(mcp): auto-generate registry catalog from MCPServer CRDs
 
-          Generated ${{ steps.generate.outputs.servers_count }} catalog entries from MCPServer definitions.
-
-          [skip ci]"
+          Generated ${{ steps.generate.outputs.servers_count }} catalog entries from MCPServer definitions."
           git push
 
       - name: Comment on PR
@@ -611,12 +672,14 @@ jobs:
 
           # Only require validation and catalog generation to pass if MCPServers changed
           if [ "${{ needs.preflight.outputs.mcpservers_changed }}" = "true" ]; then
+            # Validate is required only when there are files to validate (not just deletions)
+            # When validate is skipped (due to empty matrix from deletions), that's OK
             if [ "${{ needs.validate.result }}" = "failure" ]; then
               echo "::error::MCPServer validation failed"
               exit 1
             fi
 
-            # Generate-catalog is required when MCPServers change
+            # Generate-catalog is required when MCPServers change (additions or deletions)
             if [ "${{ needs.generate-catalog.result }}" = "failure" ]; then
               echo "::error::Catalog generation failed"
               exit 1
