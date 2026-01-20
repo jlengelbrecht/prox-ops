@@ -22,10 +22,10 @@ spec:
             - port: "4483"
               protocol: TCP
 
-    # Allow from ToolHive Registry (for discovery)
+    # Allow from ToolHive Registry (for discovery) - registry is in mcp namespace
     - fromEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: ai
+            io.kubernetes.pod.namespace: mcp
             app.kubernetes.io/name: toolhive-registry
       toPorts:
         - ports:
@@ -66,12 +66,13 @@ spec:
             - port: "8080"
               protocol: TCP
 
-    # Egress to graphiti-mcp backend
+    # Egress to graphiti-mcp proxyrunner (ToolHive MCPServer creates pods with mcpserver label)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: graphiti-mcp
+            app.kubernetes.io/name: mcpserver
+            toolhive-name: graphiti
       toPorts:
         - ports:
-            - port: "8000"
+            - port: "8080"
               protocol: TCP

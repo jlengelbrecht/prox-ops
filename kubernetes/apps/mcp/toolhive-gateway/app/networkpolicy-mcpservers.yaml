@@ -33,8 +33,9 @@ spec:
             - port: "8080"
               protocol: TCP
 
-    # Allow proxyrunner to reach backend StatefulSet on mcpPort (3000)
+    # Allow proxyrunner to reach backend StatefulSet on mcpPort
     # Proxyrunner (app.kubernetes.io/name: mcpserver) → backend (toolhive: true) on mcpPort
+    # Port 3000 for stdio mode (n8n), Port 8000 for HTTP mode (graphiti)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
@@ -42,6 +43,8 @@ spec:
       toPorts:
         - ports:
             - port: "3000"
+              protocol: TCP
+            - port: "8000"
               protocol: TCP
 
   egress:
@@ -67,8 +70,9 @@ spec:
             - port: "6443"
               protocol: TCP
 
-    # Proxyrunner → backend StatefulSet (mcpPort 3000)
+    # Proxyrunner → backend StatefulSet (mcpPort)
     # Allows proxyrunner to forward requests to the backend MCP server
+    # Port 3000 for stdio mode (n8n), Port 8000 for HTTP mode (graphiti)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
@@ -76,6 +80,8 @@ spec:
       toPorts:
         - ports:
             - port: "3000"
+              protocol: TCP
+            - port: "8000"
               protocol: TCP
 
     # graphiti-mcp → FalkorDB (database namespace)
