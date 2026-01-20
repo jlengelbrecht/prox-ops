@@ -55,14 +55,15 @@ spec:
             - port: "53"
               protocol: TCP
 
-    # Egress to n8n-mcp backend
+    # Egress to n8n-mcp proxyrunner (ToolHive MCPServer creates pods with mcpserver label)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: n8n-mcp
+            app.kubernetes.io/name: mcpserver
+            toolhive-name: n8n
       toPorts:
         - ports:
-            - port: "3000"
+            - port: "8080"
               protocol: TCP
 
     # Egress to graphiti-mcp backend
