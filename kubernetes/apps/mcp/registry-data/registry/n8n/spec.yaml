@@ -7,6 +7,8 @@ description: |
   execute workflows, manage webhooks, and automate tasks.
 tier: Homelab
 status: Active
+# Native transport is stdio; homelab deployment wraps via ToolHive proxyrunner
+# which exposes it as streamable-http (see packages section below)
 transport: stdio
 
 # Tools provided by this MCP server
@@ -37,12 +39,12 @@ metadata:
   author: czlonkowski
   author_url: https://github.com/czlonkowski
   icon_url: https://n8n.io/favicon.ico
-  last_updated: "2026-01-20T00:00:00Z"
 
 # Source repository
 repository_url: https://github.com/czlonkowski/n8n-mcp
 
-# Container image (for reference)
+# Container image (reference only - actual deployment managed via MCPServer CRD)
+# See: kubernetes/apps/mcp/toolhive-gateway/app/mcpserver-n8n.yaml
 image: ghcr.io/czlonkowski/n8n-mcp:2.30.1
 
 # Searchable tags

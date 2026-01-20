@@ -81,3 +81,14 @@ spec:
         - ports:
             - port: "5432"
               protocol: TCP
+
+    # GitHub access for Git registry source (clone prox-ops repo for metadata)
+    # Required for registry to sync spec.yaml files from registry-data/
+    - toFQDNs:
+        - matchName: "github.com"
+        - matchName: "raw.githubusercontent.com"
+        - matchPattern: "*.github.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
