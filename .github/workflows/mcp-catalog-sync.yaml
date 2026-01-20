@@ -438,14 +438,13 @@ jobs:
         id: generate
         run: |
           # Process all MCPServer files and generate registry.json
-          # Using ToolHive native format for proper UI display
+          # Using upstream format for registry server validation with clean naming
           REGISTRY_FILE="${{ env.REGISTRY_PATH }}"
           MCPSERVER_DIR="${{ env.MCPSERVER_PATH }}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Start building servers object (not array - ToolHive native format)
-          SERVERS="{}"
-          SERVER_COUNT=0
+          # Start building servers array (upstream format)
+          SERVERS="[]"
 
           for mcpfile in "$MCPSERVER_DIR"/mcpserver-*.yaml; do
             [ -f "$mcpfile" ] || continue
@@ -459,58 +458,79 @@ jobs:
             TOOLS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tools"] // ""' "$mcpfile")
             TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "homelab,mcp"' "$mcpfile")
             REPO_URL=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/repository-url"] // ""' "$mcpfile")
-            IMAGE=$(yq eval '.spec.image' "$mcpfile")
-            TRANSPORT=$(yq eval '.spec.transport // "stdio"' "$mcpfile")
+
+            # Derive repo source from URL
+            if echo "$REPO_URL" | grep -q "github.com"; then
+              REPO_SOURCE="github"
+            elif echo "$REPO_URL" | grep -q "gitlab"; then
+              REPO_SOURCE="gitlab"
+            else
+              REPO_SOURCE="other"
+            fi
 
             # Convert CSV to JSON arrays
             TOOLS_JSON=$(echo "$TOOLS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
             TAGS_JSON=$(echo "$TAGS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
 
-            # Create server entry in ToolHive native format
-            # Key fields: description, image, status, tier, tools, transport
-            # Also includes: title, tags, repository_url for enhanced display
+            # Build the endpoint URL
+            ENDPOINT_URL="https://mcp.homelab0.org/servers/${NAME}/mcp"
+
+            # Create server entry in upstream format with clean naming
+            # Using just the server name (e.g., "coderabbit") for better UI display
             SERVER_ENTRY=$(jq -n \
+              --arg name "$NAME" \
               --arg title "$TITLE" \
               --arg description "$DESCRIPTION" \
-              --arg image "$IMAGE" \
-              --arg transport "$TRANSPORT" \
               --arg repo_url "$REPO_URL" \
+              --arg repo_source "$REPO_SOURCE" \
+              --arg endpoint "$ENDPOINT_URL" \
               --argjson tools "$TOOLS_JSON" \
               --argjson tags "$TAGS_JSON" \
               '{
+                "name": $name,
                 "title": $title,
                 "description": $description,
-                "image": $image,
-                "transport": $transport,
-                "status": "Active",
-                "tier": "Community",
+                "repository": {
+                  "url": $repo_url,
+                  "source": $repo_source
+                },
+                "remotes": [
+                  {
+                    "type": "streamable-http",
+                    "url": $endpoint
+                  }
+                ],
                 "tools": $tools,
-                "tags": $tags,
-                "repository_url": $repo_url
+                "tags": $tags
               }')
 
-            # Add to servers object with clean name as key (e.g., "coderabbit", not "homelab/coderabbit-mcp")
-            SERVERS=$(echo "$SERVERS" | jq --arg name "$NAME" --argjson entry "$SERVER_ENTRY" '. + {($name): $entry}')
-            SERVER_COUNT=$((SERVER_COUNT + 1))
+            # Add to servers array
+            SERVERS=$(echo "$SERVERS" | jq --argjson entry "$SERVER_ENTRY" '. += [$entry]')
 
             echo "  Added: $NAME"
           done
 
-          # Build final registry.json in ToolHive native format
+          # Build final registry.json in upstream format
           REGISTRY=$(jq -n \
+            --arg schema "https://raw.githubusercontent.com/stacklok/toolhive-registry-server/main/internal/registry/upstream-registry.schema.json" \
             --arg timestamp "$TIMESTAMP" \
             --argjson servers "$SERVERS" \
             '{
+              "$schema": $schema,
               "version": "1.0.0",
-              "last_updated": $timestamp,
-              "servers": $servers
+              "meta": {
+                "last_updated": $timestamp
+              },
+              "data": {
+                "servers": $servers
+              }
             }')
 
           # Write registry.json
           echo "$REGISTRY" | jq '.' > "$REGISTRY_FILE"
 
-          echo "Generated registry with $SERVER_COUNT servers"
-          echo "servers_count=$SERVER_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Generated registry with $(echo "$SERVERS" | jq 'length') servers"
+          echo "servers_count=$(echo "$SERVERS" | jq 'length')" >> "$GITHUB_OUTPUT"
 
       - name: Check for Changes
         id: check-changes
