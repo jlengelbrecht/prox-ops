@@ -466,14 +466,14 @@ jobs:
         id: generate
         run: |
           # Process all MCPServer files and generate registry.json
-          # Using ToolHive native format with servers object (container-based servers)
-          # This format matches the official ToolHive registry and displays properly in the UI
+          # Using remote_servers format for externally-hosted MCP servers
+          # These servers are already deployed in the cluster and exposed via the ToolHive gateway
           REGISTRY_FILE="${{ env.REGISTRY_PATH }}"
           MCPSERVER_DIR="${{ env.MCPSERVER_PATH }}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Start building servers object (ToolHive native format)
-          SERVERS="{}"
+          # Start building remote_servers object
+          REMOTE_SERVERS="{}"
           SERVER_COUNT=0
 
           for mcpfile in "$MCPSERVER_DIR"/mcpserver-*.yaml; do
@@ -488,15 +488,12 @@ jobs:
             TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "mcp"' "$mcpfile")
             REPO_URL=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/repository-url"] // ""' "$mcpfile")
 
-            # Extract image (provides version info from tag)
+            # Extract image to get version from tag (e.g., "docker.io/image:1.0.1" -> "v1.0.1")
             IMAGE=$(yq eval '.spec.image' "$mcpfile")
+            VERSION=$(echo "$IMAGE" | sed -E 's/.*:([^:]+)$/\1/' | sed 's/^/v/')
 
-            # Extract native transport and proxyMode
-            TRANSPORT=$(yq eval '.spec.transport // "stdio"' "$mcpfile")
+            # Extract proxyMode for transport (remote servers use the proxy transport)
             PROXY_MODE=$(yq eval '.spec.proxyMode // "streamable-http"' "$mcpfile")
-
-            # Extract target port if applicable
-            TARGET_PORT=$(yq eval '.spec.proxyPort // 8080' "$mcpfile")
 
             # Convert CSV to JSON arrays
             TOOLS_JSON=$(echo "$TOOLS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
@@ -505,64 +502,53 @@ jobs:
             # Build the endpoint URL (uses k8s name for routing)
             ENDPOINT_URL="https://mcp.homelab0.org/servers/${K8S_NAME}/mcp"
 
-            # Create server entry in ToolHive native format (container-based)
-            # This format includes: name, image (for version), tools, transport, packages (for endpoints)
+            # Include version in description for display purposes
+            DESCRIPTION_WITH_VERSION="${DESCRIPTION} (${VERSION})"
+
+            # Create remote_server entry - for external MCP servers accessed via URL
+            # Schema: url (required), description, status, tier, tools, transport, repository_url, tags
             SERVER_ENTRY=$(jq -n \
-              --arg name "$K8S_NAME" \
-              --arg description "$DESCRIPTION" \
-              --arg transport "$TRANSPORT" \
-              --arg image "$IMAGE" \
-              --argjson target_port "$TARGET_PORT" \
+              --arg url "$ENDPOINT_URL" \
+              --arg description "$DESCRIPTION_WITH_VERSION" \
+              --arg transport "$PROXY_MODE" \
               --arg repo_url "$REPO_URL" \
-              --arg endpoint_url "$ENDPOINT_URL" \
-              --arg proxy_transport "$PROXY_MODE" \
               --argjson tools "$TOOLS_JSON" \
               --argjson tags "$TAGS_JSON" \
               '{
-                "name": $name,
+                "url": $url,
                 "description": $description,
                 "status": "Active",
                 "tier": "Community",
                 "transport": $transport,
-                "image": $image,
-                "target_port": $target_port,
                 "tools": $tools,
                 "repository_url": $repo_url,
-                "tags": $tags,
-                "packages": [
-                  {
-                    "name": "homelab",
-                    "registry_type": "url",
-                    "url": $endpoint_url,
-                    "transport": $proxy_transport
-                  }
-                ]
+                "tags": $tags
               }')
 
-            # Add to servers object with k8s name as key
-            SERVERS=$(echo "$SERVERS" | jq --arg key "$K8S_NAME" --argjson entry "$SERVER_ENTRY" '. + {($key): $entry}')
+            # Add to remote_servers object with k8s name as key
+            REMOTE_SERVERS=$(echo "$REMOTE_SERVERS" | jq --arg key "$K8S_NAME" --argjson entry "$SERVER_ENTRY" '. + {($key): $entry}')
             SERVER_COUNT=$((SERVER_COUNT + 1))
 
-            echo "  Added: $K8S_NAME (image: $IMAGE)"
+            echo "  Added: $K8S_NAME (url: $ENDPOINT_URL)"
           done
 
-          # Build final registry.json in ToolHive native format
+          # Build final registry.json with empty servers and populated remote_servers
           REGISTRY=$(jq -n \
             --arg schema "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json" \
             --arg timestamp "$TIMESTAMP" \
-            --argjson servers "$SERVERS" \
+            --argjson remote_servers "$REMOTE_SERVERS" \
             '{
               "$schema": $schema,
               "version": "1.0.0",
               "last_updated": $timestamp,
-              "servers": $servers,
-              "remote_servers": {}
+              "servers": {},
+              "remote_servers": $remote_servers
             }')
 
           # Write registry.json
           echo "$REGISTRY" | jq '.' > "$REGISTRY_FILE"
 
-          echo "Generated registry with $SERVER_COUNT servers"
+          echo "Generated registry with $SERVER_COUNT remote servers"
           echo "servers_count=$SERVER_COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Check for Changes
@@ -607,7 +593,7 @@ jobs:
           git add "${{ env.REGISTRY_PATH }}"
           git commit -m "chore(mcp): auto-generate registry catalog from MCPServer CRDs
 
-          Generated ${{ steps.generate.outputs.servers_count }} catalog entries from MCPServer definitions."
+          Generated ${{ steps.generate.outputs.servers_count }} remote server entries from MCPServer definitions."
           git push
 
       - name: Comment on PR
