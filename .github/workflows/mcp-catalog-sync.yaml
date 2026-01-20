@@ -59,12 +59,20 @@ jobs:
             echo "registry_changed=false" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             # Get changed files in PR using PR-specific refs
-            CHANGED=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+            # Use --diff-filter=d to exclude deleted files for validation (we can't validate files that don't exist)
+            CHANGED=$(git diff --name-only --diff-filter=d ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
             MCPSERVER_FILES=$(echo "$CHANGED" | grep -E "^${{ env.MCPSERVER_PATH }}/mcpserver-.*\.yaml$" || true)
             REGISTRY_CHANGED=$(echo "$CHANGED" | grep -E "^${{ env.REGISTRY_PATH }}$" || true)
 
-            if [ -n "$MCPSERVER_FILES" ]; then
+            # Also check for deleted MCPServer files - we still need to regenerate the catalog
+            DELETED_MCPSERVERS=$(git diff --name-only --diff-filter=D ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }} | grep -E "^${{ env.MCPSERVER_PATH }}/mcpserver-.*\.yaml$" || true)
+
+            if [ -n "$MCPSERVER_FILES" ] || [ -n "$DELETED_MCPSERVERS" ]; then
               echo "mcpservers_changed=true" >> "$GITHUB_OUTPUT"
+              if [ -n "$DELETED_MCPSERVERS" ]; then
+                echo "MCPServer files deleted (catalog will be regenerated):"
+                echo "$DELETED_MCPSERVERS"
+              fi
             else
               echo "mcpservers_changed=false" >> "$GITHUB_OUTPUT"
             fi
