@@ -1,162 +1,103 @@
 {
-  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive-registry-server/main/internal/registry/upstream-registry.schema.json",
   "version": "1.0.0",
-  "meta": {
-    "last_updated": "2026-01-20T09:09:49Z"
-  },
-  "data": {
-    "servers": [
-      {
-        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
-        "name": "homelab/coderabbit-mcp",
-        "title": "CodeRabbit MCP",
-        "description": "CodeRabbit AI - Retrieve and manage CodeRabbit code review suggestions on GitHub pull requests.",
-        "version": "1.0.0",
-        "repository": {
-          "url": "https://github.com/bradthebeeble/coderabbitai-mcp",
-          "source": "github"
-        },
-        "remotes": [
-          {
-            "type": "streamable-http",
-            "url": "https://mcp.homelab0.org/servers/coderabbit/mcp"
-          }
-        ],
-        "_meta": {
-          "io.modelcontextprotocol.registry/publisher-provided": {
-            "homelab": {
-              "https://mcp.homelab0.org/servers/coderabbit/mcp": {
-                "status": "Active",
-                "tier": "Community",
-                "tags": [
-                  "coderabbit",
-                  "code-review",
-                  "github",
-                  "pull-requests",
-                  "ai-review",
-                  "homelab",
-                  "automation"
-                ],
-                "tools": [
-                  "get_coderabbit_reviews",
-                  "get_review_details",
-                  "get_review_comments",
-                  "get_comment_details",
-                  "resolve_comment"
-                ]
-              }
-            }
-          }
-        }
-      },
-      {
-        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
-        "name": "homelab/graphiti-mcp",
-        "title": "Graphiti MCP",
-        "description": "Graphiti Knowledge Graph - Build and query temporally-aware knowledge graphs for AI agents.",
-        "version": "1.0.0",
-        "repository": {
-          "url": "https://github.com/getzep/graphiti",
-          "source": "github"
-        },
-        "remotes": [
-          {
-            "type": "streamable-http",
-            "url": "https://mcp.homelab0.org/servers/graphiti/mcp"
-          }
-        ],
-        "_meta": {
-          "io.modelcontextprotocol.registry/publisher-provided": {
-            "homelab": {
-              "https://mcp.homelab0.org/servers/graphiti/mcp": {
-                "status": "Active",
-                "tier": "Community",
-                "tags": [
-                  "knowledge-graph",
-                  "rag",
-                  "memory",
-                  "ai-agents",
-                  "graph-database",
-                  "semantic-search",
-                  "homelab",
-                  "falkordb",
-                  "temporal-data"
-                ],
-                "tools": [
-                  "add_memory",
-                  "search_memory_facts",
-                  "search_nodes",
-                  "get_entity_edge",
-                  "delete_entity_edge",
-                  "get_episodes",
-                  "delete_episode",
-                  "clear_graph",
-                  "get_status"
-                ]
-              }
-            }
-          }
-        }
-      },
-      {
-        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
-        "name": "homelab/n8n-mcp",
-        "title": "n8n MCP",
-        "description": "n8n Workflow Automation - AI assistant integration for comprehensive n8n workflow management.",
-        "version": "1.0.0",
-        "repository": {
-          "url": "https://github.com/czlonkowski/n8n-mcp",
-          "source": "github"
-        },
-        "remotes": [
-          {
-            "type": "streamable-http",
-            "url": "https://mcp.homelab0.org/servers/n8n/mcp"
-          }
-        ],
-        "_meta": {
-          "io.modelcontextprotocol.registry/publisher-provided": {
-            "homelab": {
-              "https://mcp.homelab0.org/servers/n8n/mcp": {
-                "status": "Active",
-                "tier": "Community",
-                "tags": [
-                  "automation",
-                  "workflows",
-                  "n8n",
-                  "homelab",
-                  "productivity",
-                  "integration",
-                  "webhooks",
-                  "templates"
-                ],
-                "tools": [
-                  "workflow_execute",
-                  "workflow_list",
-                  "workflow_get",
-                  "workflow_create",
-                  "workflow_update",
-                  "workflow_delete",
-                  "workflow_activate",
-                  "workflow_deactivate",
-                  "node_list",
-                  "node_get",
-                  "node_search",
-                  "credential_list",
-                  "credential_get",
-                  "webhook_list",
-                  "webhook_create",
-                  "template_list",
-                  "template_search",
-                  "execution_list",
-                  "execution_get",
-                  "documentation_search"
-                ]
-              }
-            }
-          }
-        }
-      }
-    ]
+  "last_updated": "2026-01-20T10:30:00Z",
+  "servers": {
+    "coderabbit": {
+      "title": "CodeRabbit MCP",
+      "description": "CodeRabbit AI - Retrieve and manage CodeRabbit code review suggestions on GitHub pull requests.",
+      "image": "ghcr.io/jlengelbrecht/coderabbitai-mcp:latest",
+      "transport": "stdio",
+      "status": "Active",
+      "tier": "Community",
+      "tools": [
+        "get_coderabbit_reviews",
+        "get_review_details",
+        "get_review_comments",
+        "get_comment_details",
+        "resolve_comment"
+      ],
+      "tags": [
+        "coderabbit",
+        "code-review",
+        "github",
+        "pull-requests",
+        "ai-review",
+        "homelab",
+        "automation"
+      ],
+      "repository_url": "https://github.com/bradthebeeble/coderabbitai-mcp"
+    },
+    "graphiti": {
+      "title": "Graphiti MCP",
+      "description": "Graphiti Knowledge Graph - Build and query temporally-aware knowledge graphs for AI agents.",
+      "image": "docker.io/zepai/knowledge-graph-mcp:1.0.1",
+      "transport": "streamable-http",
+      "status": "Active",
+      "tier": "Community",
+      "tools": [
+        "add_memory",
+        "search_memory_facts",
+        "search_nodes",
+        "get_entity_edge",
+        "delete_entity_edge",
+        "get_episodes",
+        "delete_episode",
+        "clear_graph",
+        "get_status"
+      ],
+      "tags": [
+        "knowledge-graph",
+        "rag",
+        "memory",
+        "ai-agents",
+        "graph-database",
+        "semantic-search",
+        "homelab",
+        "falkordb",
+        "temporal-data"
+      ],
+      "repository_url": "https://github.com/getzep/graphiti"
+    },
+    "n8n": {
+      "title": "n8n MCP",
+      "description": "n8n Workflow Automation - AI assistant integration for comprehensive n8n workflow management.",
+      "image": "ghcr.io/czlonkowski/n8n-mcp:2.30.1",
+      "transport": "stdio",
+      "status": "Active",
+      "tier": "Community",
+      "tools": [
+        "workflow_execute",
+        "workflow_list",
+        "workflow_get",
+        "workflow_create",
+        "workflow_update",
+        "workflow_delete",
+        "workflow_activate",
+        "workflow_deactivate",
+        "node_list",
+        "node_get",
+        "node_search",
+        "credential_list",
+        "credential_get",
+        "webhook_list",
+        "webhook_create",
+        "template_list",
+        "template_search",
+        "execution_list",
+        "execution_get",
+        "documentation_search"
+      ],
+      "tags": [
+        "automation",
+        "workflows",
+        "n8n",
+        "homelab",
+        "productivity",
+        "integration",
+        "webhooks",
+        "templates"
+      ],
+      "repository_url": "https://github.com/czlonkowski/n8n-mcp"
+    }
   }
 }
