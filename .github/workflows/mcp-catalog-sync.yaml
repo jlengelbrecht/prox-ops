@@ -25,6 +25,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
+# Default to read-only permissions; jobs that need write access override explicitly
+permissions:
+  contents: read
+  pull-requests: read
+
 env:
   MCPSERVER_PATH: "kubernetes/apps/mcp/toolhive-gateway/app"
   REGISTRY_PATH: "kubernetes/apps/mcp/registry-data/registry.json"
@@ -485,7 +490,8 @@ jobs:
 
             # Extract owner/repo from repository URL for catalog name
             # e.g., "https://github.com/bradthebeeble/coderabbitai-mcp" -> "bradthebeeble/coderabbitai-mcp"
-            CATALOG_NAME=$(echo "$REPO_URL" | sed -E 's|https?://[^/]+/||' | sed 's|\.git$||')
+            # Strip trailing slashes, .git suffix, and protocol/host
+            CATALOG_NAME=$(echo "$REPO_URL" | sed -E 's|/$||' | sed -E 's|https?://[^/]+/||' | sed 's|\.git$||')
             if [ -z "$CATALOG_NAME" ] || [ "$CATALOG_NAME" = "$REPO_URL" ]; then
               # Fallback to k8s name with homelab prefix if URL parsing fails
               CATALOG_NAME="homelab/${K8S_NAME}"
@@ -493,9 +499,18 @@ jobs:
 
             # Extract version from image tag
             # e.g., "ghcr.io/czlonkowski/n8n-mcp:2.30.1" -> "2.30.1"
-            IMAGE_VERSION=$(echo "$IMAGE" | sed -E 's/.*:([^:]+)$/\1/')
-            if [ -z "$IMAGE_VERSION" ] || [ "$IMAGE_VERSION" = "$IMAGE" ]; then
+            # Handle edge cases: registries with ports, digest references
+            if echo "$IMAGE" | grep -q '@sha256:'; then
+              # Digest reference - no semantic version available
               IMAGE_VERSION="latest"
+            else
+              # Extract basename (last path segment) then check for tag
+              IMAGE_BASENAME=$(echo "$IMAGE" | sed 's|.*/||')
+              if echo "$IMAGE_BASENAME" | grep -q ':'; then
+                IMAGE_VERSION=$(echo "$IMAGE_BASENAME" | sed 's/.*://')
+              else
+                IMAGE_VERSION="latest"
+              fi
             fi
 
             # Derive repo source from URL
