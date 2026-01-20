@@ -535,6 +535,7 @@ jobs:
           done
 
           # Build final registry.json in ToolHive native format
+          # Note: servers (empty) is required by schema even when only using remote_servers
           REGISTRY=$(jq -n \
             --arg schema "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json" \
             --arg timestamp "$TIMESTAMP" \
@@ -543,6 +544,7 @@ jobs:
               "$schema": $schema,
               "version": "1.0.0",
               "last_updated": $timestamp,
+              "servers": {},
               "remote_servers": $remote_servers
             }')
 
