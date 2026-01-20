@@ -4,7 +4,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: toolhive-registry
-  namespace: ai
+  namespace: mcp
 ---
 # ClusterRole for cluster-scoped ToolHive CRDs only
 apiVersion: rbac.authorization.k8s.io/v1
@@ -32,18 +32,18 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: toolhive-registry
-    namespace: ai
+    namespace: mcp
 roleRef:
   kind: ClusterRole
   name: toolhive-registry-crds
   apiGroup: rbac.authorization.k8s.io
 ---
-# Role for leader election in ai namespace
+# Role for leader election in mcp namespace
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: toolhive-registry-leader-election
-  namespace: ai
+  namespace: mcp
 rules:
   - apiGroups:
       - coordination.k8s.io
@@ -63,24 +63,24 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: toolhive-registry-leader-election
-  namespace: ai
+  namespace: mcp
 subjects:
   - kind: ServiceAccount
     name: toolhive-registry
-    namespace: ai
+    namespace: mcp
 roleRef:
   kind: Role
   name: toolhive-registry-leader-election
   apiGroup: rbac.authorization.k8s.io
 ---
-# Namespaced Role for pods/services in mcp namespace only
+# Role for pods/services in mcp namespace (for status discovery)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: toolhive-registry-mcp-reader
   namespace: mcp
 rules:
-  # Watch pods and services for status (scoped to mcp namespace)
+  # Watch pods and services for status
   - apiGroups:
       - ""
     resources:
@@ -100,7 +100,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: toolhive-registry
-    namespace: ai
+    namespace: mcp
 roleRef:
   kind: Role
   name: toolhive-registry-mcp-reader
