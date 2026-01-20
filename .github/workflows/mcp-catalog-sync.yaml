@@ -466,13 +466,14 @@ jobs:
         id: generate
         run: |
           # Process all MCPServer files and generate registry.json
-          # Using upstream format with owner/repo naming and image version tracking
+          # Using ToolHive native format with remote_servers object for HTTP-accessible servers
           REGISTRY_FILE="${{ env.REGISTRY_PATH }}"
           MCPSERVER_DIR="${{ env.MCPSERVER_PATH }}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Start building servers array (upstream format)
-          SERVERS="[]"
+          # Start building remote_servers object (ToolHive native format)
+          REMOTE_SERVERS="{}"
+          SERVER_COUNT=0
 
           for mcpfile in "$MCPSERVER_DIR"/mcpserver-*.yaml; do
             [ -f "$mcpfile" ] || continue
@@ -482,45 +483,9 @@ jobs:
             # Extract metadata from MCPServer
             K8S_NAME=$(yq eval '.metadata.name' "$mcpfile")
             DESCRIPTION=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/registry-description"] // "No description available"' "$mcpfile")
-            TITLE=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-title"] // .metadata.name' "$mcpfile")
             TOOLS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tools"] // ""' "$mcpfile")
             TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "mcp"' "$mcpfile")
             REPO_URL=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/repository-url"] // ""' "$mcpfile")
-            IMAGE=$(yq eval '.spec.image' "$mcpfile")
-
-            # Extract owner/repo from repository URL for catalog name
-            # e.g., "https://github.com/bradthebeeble/coderabbitai-mcp" -> "bradthebeeble/coderabbitai-mcp"
-            # Strip trailing slashes, .git suffix, and protocol/host
-            CATALOG_NAME=$(echo "$REPO_URL" | sed -E 's|/$||' | sed -E 's|https?://[^/]+/||' | sed 's|\.git$||')
-            if [ -z "$CATALOG_NAME" ] || [ "$CATALOG_NAME" = "$REPO_URL" ]; then
-              # Fallback to k8s name with homelab prefix if URL parsing fails
-              CATALOG_NAME="homelab/${K8S_NAME}"
-            fi
-
-            # Extract version from image tag
-            # e.g., "ghcr.io/czlonkowski/n8n-mcp:2.30.1" -> "2.30.1"
-            # Handle edge cases: registries with ports, digest references
-            if echo "$IMAGE" | grep -q '@sha256:'; then
-              # Digest reference - no semantic version available
-              IMAGE_VERSION="latest"
-            else
-              # Extract basename (last path segment) then check for tag
-              IMAGE_BASENAME=$(echo "$IMAGE" | sed 's|.*/||')
-              if echo "$IMAGE_BASENAME" | grep -q ':'; then
-                IMAGE_VERSION=$(echo "$IMAGE_BASENAME" | sed 's/.*://')
-              else
-                IMAGE_VERSION="latest"
-              fi
-            fi
-
-            # Derive repo source from URL
-            if echo "$REPO_URL" | grep -q "github.com"; then
-              REPO_SOURCE="github"
-            elif echo "$REPO_URL" | grep -q "gitlab"; then
-              REPO_SOURCE="gitlab"
-            else
-              REPO_SOURCE="other"
-            fi
 
             # Convert CSV to JSON arrays
             TOOLS_JSON=$(echo "$TOOLS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
@@ -529,72 +494,57 @@ jobs:
             # Build the endpoint URL (uses k8s name for routing)
             ENDPOINT_URL="https://mcp.homelab0.org/servers/${K8S_NAME}/mcp"
 
-            # Create server entry in upstream format
-            # - name: owner/repo from source repository (identifies the MCP server origin)
-            # - version: from deployed image tag (tracks what's running)
+            # Create remote_server entry in ToolHive native format
+            # Required fields: url, description, status, tier, tools, transport
             SERVER_ENTRY=$(jq -n \
-              --arg name "$CATALOG_NAME" \
-              --arg title "$TITLE" \
+              --arg url "$ENDPOINT_URL" \
               --arg description "$DESCRIPTION" \
-              --arg version "$IMAGE_VERSION" \
               --arg repo_url "$REPO_URL" \
-              --arg repo_source "$REPO_SOURCE" \
-              --arg endpoint "$ENDPOINT_URL" \
               --argjson tools "$TOOLS_JSON" \
               --argjson tags "$TAGS_JSON" \
               '{
-                "name": $name,
-                "title": $title,
+                "url": $url,
                 "description": $description,
-                "version": $version,
-                "repository": {
-                  "url": $repo_url,
-                  "source": $repo_source
-                },
-                "remotes": [
-                  {
-                    "type": "streamable-http",
-                    "url": $endpoint
-                  }
-                ],
+                "status": "Active",
+                "tier": "Community",
+                "transport": "streamable-http",
                 "tools": $tools,
+                "repository_url": $repo_url,
                 "tags": $tags
               }')
 
-            # Add to servers array
-            SERVERS=$(echo "$SERVERS" | jq --argjson entry "$SERVER_ENTRY" '. += [$entry]')
+            # Add to remote_servers object with k8s name as key
+            REMOTE_SERVERS=$(echo "$REMOTE_SERVERS" | jq --arg key "$K8S_NAME" --argjson entry "$SERVER_ENTRY" '. + {($key): $entry}')
+            SERVER_COUNT=$((SERVER_COUNT + 1))
 
-            echo "  Added: $CATALOG_NAME (v$IMAGE_VERSION)"
+            echo "  Added: $K8S_NAME"
           done
 
-          # Build final registry.json in upstream format
+          # Build final registry.json in ToolHive native format
           REGISTRY=$(jq -n \
-            --arg schema "https://raw.githubusercontent.com/stacklok/toolhive-registry-server/main/internal/registry/upstream-registry.schema.json" \
+            --arg schema "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json" \
             --arg timestamp "$TIMESTAMP" \
-            --argjson servers "$SERVERS" \
+            --argjson remote_servers "$REMOTE_SERVERS" \
             '{
               "$schema": $schema,
               "version": "1.0.0",
-              "meta": {
-                "last_updated": $timestamp
-              },
-              "data": {
-                "servers": $servers
-              }
+              "last_updated": $timestamp,
+              "remote_servers": $remote_servers
             }')
 
           # Write registry.json
           echo "$REGISTRY" | jq '.' > "$REGISTRY_FILE"
 
-          echo "Generated registry with $(echo "$SERVERS" | jq 'length') servers"
-          echo "servers_count=$(echo "$SERVERS" | jq 'length')" >> "$GITHUB_OUTPUT"
+          echo "Generated registry with $SERVER_COUNT remote servers"
+          echo "servers_count=$SERVER_COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Check for Changes
         id: check-changes
         run: |
           # Compare registry content excluding timestamp to avoid unnecessary commits
-          CURRENT=$(cat "${{ env.REGISTRY_PATH }}" | jq 'del(.meta.last_updated)' | jq -S '.')
-          PREVIOUS=$(git show HEAD:"${{ env.REGISTRY_PATH }}" 2>/dev/null | jq 'del(.meta.last_updated)' | jq -S '.' || echo "{}")
+          # ToolHive native format uses last_updated at root level
+          CURRENT=$(cat "${{ env.REGISTRY_PATH }}" | jq 'del(.last_updated)' | jq -S '.')
+          PREVIOUS=$(git show HEAD:"${{ env.REGISTRY_PATH }}" 2>/dev/null | jq 'del(.last_updated) | del(.meta.last_updated)' | jq -S '.' || echo "{}")
 
           if [ "$CURRENT" = "$PREVIOUS" ]; then
             echo "No meaningful changes to registry.json (only timestamp differs)"
