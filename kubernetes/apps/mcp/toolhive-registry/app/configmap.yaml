@@ -4,7 +4,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: toolhive-registry-config
-  namespace: ai
+  namespace: mcp
 data:
   config.yaml: |
     # Registry Server Configuration
@@ -12,13 +12,12 @@ data:
 
     # Registry sources - Kubernetes discovery for local MCP servers
     # Note: Official MCP Registry disabled due to data quality issues (duplicates, broken URLs)
+    # Registry now runs in mcp namespace alongside MCPServers for automatic discovery
     registries:
-      # Kubernetes discovery - local MCP servers with export annotation
+      # Kubernetes discovery - watches MCPServers in same namespace
       - name: kubernetes
         format: toolhive
-        kubernetes:
-          namespaces:
-            - mcp
+        kubernetes: {}
         syncPolicy:
           interval: 5m
 

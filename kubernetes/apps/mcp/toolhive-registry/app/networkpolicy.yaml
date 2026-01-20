@@ -4,7 +4,7 @@ apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
   name: toolhive-registry
-  namespace: ai
+  namespace: mcp
 spec:
   endpointSelector:
     matchLabels:
@@ -21,7 +21,7 @@ spec:
             - port: "8080"
               protocol: TCP
 
-    # Allow from LiteLLM (for future MCP integration)
+    # Allow from LiteLLM (for MCP integration)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
@@ -31,7 +31,7 @@ spec:
             - port: "8080"
               protocol: TCP
 
-    # Allow from ToolHive UI (backend API calls)
+    # Allow from ToolHive UI (backend API calls - UI is in ai namespace)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
