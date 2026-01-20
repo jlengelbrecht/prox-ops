@@ -4,10 +4,9 @@ kind: Kustomization
 resources:
   - mcpgroup.yaml
   # MCPServer resources (ToolHive-managed MCP servers)
-  # Note: graphiti uses standalone HelmRelease due to complex image requirements
-  # TODO: Migrate graphiti to MCPServer when ToolHive supports init containers better
+  # n8n uses stdio transport - no AUTH_TOKEN or headerInjection needed
   - mcpserver-n8n.yaml
-  - mcpexternalauthconfig-n8n.yaml
+  # MCPExternalAuthConfig removed - not needed for stdio transport
   - externalsecret-n8n.yaml
   - virtualmcpserver.yaml
   - networkpolicy.yaml

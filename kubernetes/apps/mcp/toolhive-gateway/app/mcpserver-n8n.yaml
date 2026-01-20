@@ -1,6 +1,6 @@
 ---
 # MCPServer for n8n Workflow Automation
-# Migrated from standalone HelmRelease to ToolHive-managed deployment
+# Using stdio transport - no AUTH_TOKEN required, proxyrunner handles protocol translation
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: MCPServer
 metadata:
@@ -19,40 +19,34 @@ metadata:
 spec:
   # renovate: datasource=docker depName=ghcr.io/czlonkowski/n8n-mcp
   image: ghcr.io/czlonkowski/n8n-mcp:2.30.1
-  transport: streamable-http
+  # stdio transport - proxyrunner attaches to container stdin/stdout
+  # No AUTH_TOKEN needed, bypasses headerInjection bug (#3111)
+  transport: stdio
+  # Proxy exposes stdio as streamable-http for HTTP clients
+  proxyMode: streamable-http
   proxyPort: 8080
-  mcpPort: 3000
   # Link to MCPGroup for VirtualMCPServer aggregation
   groupRef: homelab-mcp
-  # Backend authentication - proxyrunner injects Authorization header
-  externalAuthConfigRef:
-    name: n8n-backend-auth
+  # No externalAuthConfigRef needed - stdio doesn't require backend auth
   # Network permission profile (needs to reach n8n in tools namespace)
   permissionProfile:
     type: builtin
     name: network
   # Environment variables (non-secret)
+  # Note: MCP_MODE defaults to stdio, no need to set it
   env:
-    - name: MCP_MODE
-      value: "http"
-    - name: USE_FIXED_HTTP
-      value: "true"
-    - name: PORT
-      value: "3000"
     - name: LOG_LEVEL
       value: "info"
     - name: N8N_MCP_TELEMETRY_DISABLED
       value: "true"
     - name: N8N_API_URL
       value: "http://n8n.tools.svc.cluster.local:80"
-  # Secrets from ExternalSecret
+  # Secrets from ExternalSecret - only N8N_API_KEY needed for n8n API access
+  # AUTH_TOKEN not required in stdio mode
   secrets:
     - name: n8n-mcp-secrets
       key: n8n-api-key
       targetEnvName: N8N_API_KEY
-    - name: n8n-mcp-secrets
-      key: auth-token
-      targetEnvName: AUTH_TOKEN
   # Resource limits
   resources:
     requests:
