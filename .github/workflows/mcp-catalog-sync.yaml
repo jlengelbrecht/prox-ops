@@ -107,7 +107,8 @@ jobs:
   validate:
     name: Validate MCPServer
     needs: preflight
-    if: needs.preflight.outputs.mcpservers_changed == 'true'
+    # Only run when there are actual files to validate (not just deletions)
+    if: needs.preflight.outputs.mcpservers_changed == 'true' && needs.preflight.outputs.mcpserver_files != '[]'
     runs-on: gha-runner-scale-set
     strategy:
       matrix:
@@ -228,7 +229,12 @@ jobs:
   image-scan:
     name: Scan Container Image
     needs: [preflight, validate]
-    if: needs.preflight.outputs.mcpservers_changed == 'true'
+    # Only run when there are actual files to scan (not just deletions)
+    if: |
+      always() &&
+      needs.preflight.outputs.mcpservers_changed == 'true' &&
+      needs.preflight.outputs.mcpserver_files != '[]' &&
+      (needs.validate.result == 'success' || needs.validate.result == 'skipped')
     runs-on: gha-runner-scale-set
     strategy:
       matrix:
@@ -264,7 +270,12 @@ jobs:
   mcp-validate:
     name: Validate MCP Protocol
     needs: [preflight, validate]
-    if: needs.preflight.outputs.mcpservers_changed == 'true'
+    # Only run when there are actual files to validate (not just deletions)
+    if: |
+      always() &&
+      needs.preflight.outputs.mcpservers_changed == 'true' &&
+      needs.preflight.outputs.mcpserver_files != '[]' &&
+      (needs.validate.result == 'success' || needs.validate.result == 'skipped')
     runs-on: gha-runner-scale-set
     strategy:
       matrix:
@@ -427,7 +438,11 @@ jobs:
   generate-catalog:
     name: Generate Catalog Entry
     needs: [preflight, validate]
-    if: needs.preflight.outputs.mcpservers_changed == 'true'
+    # Run when MCPServers changed AND validate passed or was skipped (deletions only)
+    if: |
+      always() &&
+      needs.preflight.outputs.mcpservers_changed == 'true' &&
+      (needs.validate.result == 'success' || needs.validate.result == 'skipped')
     runs-on: gha-runner-scale-set
     permissions:
       contents: write       # Required: Auto-commit registry.json changes to PR
@@ -638,12 +653,14 @@ jobs:
 
           # Only require validation and catalog generation to pass if MCPServers changed
           if [ "${{ needs.preflight.outputs.mcpservers_changed }}" = "true" ]; then
+            # Validate is required only when there are files to validate (not just deletions)
+            # When validate is skipped (due to empty matrix from deletions), that's OK
             if [ "${{ needs.validate.result }}" = "failure" ]; then
               echo "::error::MCPServer validation failed"
               exit 1
             fi
 
-            # Generate-catalog is required when MCPServers change
+            # Generate-catalog is required when MCPServers change (additions or deletions)
             if [ "${{ needs.generate-catalog.result }}" = "failure" ]; then
               echo "::error::Catalog generation failed"
               exit 1
