@@ -68,10 +68,11 @@ spec:
               protocol: TCP
     # Allow egress to ToolHive VirtualMCPServer gateway (homelab-gateway)
     # Routes to all ToolHive-managed MCP servers (n8n-mcp, etc.)
+    # Note: VirtualMCPServer pods use 'virtualmcpserver' as app.kubernetes.io/name
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: homelab-gateway
+            app.kubernetes.io/name: virtualmcpserver
       toPorts:
         - ports:
             - port: "4483"
