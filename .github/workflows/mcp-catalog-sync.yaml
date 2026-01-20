@@ -487,6 +487,18 @@ jobs:
             TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "mcp"' "$mcpfile")
             REPO_URL=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/repository-url"] // ""' "$mcpfile")
 
+            # Extract access transport from proxyMode (how the server is accessed through the gateway)
+            # spec.proxyMode defines how the proxyrunner exposes the server (streamable-http, sse)
+            # This differs from spec.transport which is the native protocol (stdio, streamable-http, sse)
+            # All servers in our catalog are accessed via HTTP through the ToolHive gateway
+            PROXY_MODE=$(yq eval '.spec.proxyMode // "streamable-http"' "$mcpfile")
+
+            # Only add to remote_servers if accessible via HTTP (streamable-http or sse)
+            if [ "$PROXY_MODE" != "streamable-http" ] && [ "$PROXY_MODE" != "sse" ]; then
+              echo "  Skipping $K8S_NAME (proxyMode: $PROXY_MODE not HTTP-accessible)"
+              continue
+            fi
+
             # Convert CSV to JSON arrays
             TOOLS_JSON=$(echo "$TOOLS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
             TAGS_JSON=$(echo "$TAGS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
@@ -496,9 +508,11 @@ jobs:
 
             # Create remote_server entry in ToolHive native format
             # Required fields: url, description, status, tier, tools, transport
+            # Transport is taken from proxyMode (how the gateway exposes the server)
             SERVER_ENTRY=$(jq -n \
               --arg url "$ENDPOINT_URL" \
               --arg description "$DESCRIPTION" \
+              --arg transport "$PROXY_MODE" \
               --arg repo_url "$REPO_URL" \
               --argjson tools "$TOOLS_JSON" \
               --argjson tags "$TAGS_JSON" \
@@ -507,7 +521,7 @@ jobs:
                 "description": $description,
                 "status": "Active",
                 "tier": "Community",
-                "transport": "streamable-http",
+                "transport": $transport,
                 "tools": $tools,
                 "repository_url": $repo_url,
                 "tags": $tags
