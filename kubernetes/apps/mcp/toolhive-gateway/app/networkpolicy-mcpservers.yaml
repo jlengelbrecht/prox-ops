@@ -89,14 +89,14 @@ spec:
               protocol: TCP
 
     # n8n-mcp → n8n API (tools namespace)
-    # n8n service exposes port 80 (service port), not 5678 (container port)
+    # Cilium evaluates at pod level, so use container port 5678 (not service port 80)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: tools
             app.kubernetes.io/name: n8n
       toPorts:
         - ports:
-            - port: "80"
+            - port: "5678"
               protocol: TCP
 
     # Allow HTTPS to external APIs (OpenAI for graphiti entity extraction)
