@@ -12,12 +12,13 @@ spec:
       app.kubernetes.io/name: falkordb
 
   ingress:
-    # ONLY allow ingress from Graphiti MCP (mcp namespace)
+    # ONLY allow ingress from Graphiti MCP backend (ToolHive-managed in mcp namespace)
     # This is the sole consumer of the graph database
+    # ToolHive creates pods with toolhive-name label, not app.kubernetes.io/name
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: graphiti-mcp
+            toolhive-name: graphiti
       toPorts:
         - ports:
             - port: "6379"
