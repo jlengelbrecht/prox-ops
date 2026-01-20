@@ -466,13 +466,14 @@ jobs:
         id: generate
         run: |
           # Process all MCPServer files and generate registry.json
-          # Using ToolHive native format with remote_servers object for HTTP-accessible servers
+          # Using ToolHive native format with servers object (container-based servers)
+          # This format matches the official ToolHive registry and displays properly in the UI
           REGISTRY_FILE="${{ env.REGISTRY_PATH }}"
           MCPSERVER_DIR="${{ env.MCPSERVER_PATH }}"
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Start building remote_servers object (ToolHive native format)
-          REMOTE_SERVERS="{}"
+          # Start building servers object (ToolHive native format)
+          SERVERS="{}"
           SERVER_COUNT=0
 
           for mcpfile in "$MCPSERVER_DIR"/mcpserver-*.yaml; do
@@ -487,17 +488,15 @@ jobs:
             TAGS_CSV=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tags"] // "mcp"' "$mcpfile")
             REPO_URL=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/repository-url"] // ""' "$mcpfile")
 
-            # Extract access transport from proxyMode (how the server is accessed through the gateway)
-            # spec.proxyMode defines how the proxyrunner exposes the server (streamable-http, sse)
-            # This differs from spec.transport which is the native protocol (stdio, streamable-http, sse)
-            # All servers in our catalog are accessed via HTTP through the ToolHive gateway
+            # Extract image (provides version info from tag)
+            IMAGE=$(yq eval '.spec.image' "$mcpfile")
+
+            # Extract native transport and proxyMode
+            TRANSPORT=$(yq eval '.spec.transport // "stdio"' "$mcpfile")
             PROXY_MODE=$(yq eval '.spec.proxyMode // "streamable-http"' "$mcpfile")
 
-            # Only add to remote_servers if accessible via HTTP (streamable-http or sse)
-            if [ "$PROXY_MODE" != "streamable-http" ] && [ "$PROXY_MODE" != "sse" ]; then
-              echo "  Skipping $K8S_NAME (proxyMode: $PROXY_MODE not HTTP-accessible)"
-              continue
-            fi
+            # Extract target port if applicable
+            TARGET_PORT=$(yq eval '.spec.proxyPort // 8080' "$mcpfile")
 
             # Convert CSV to JSON arrays
             TOOLS_JSON=$(echo "$TOOLS_CSV" | tr ',' '\n' | jq -R -s -c 'split("\n") | map(select(length > 0) | gsub("^\\s+|\\s+$"; ""))')
@@ -506,52 +505,64 @@ jobs:
             # Build the endpoint URL (uses k8s name for routing)
             ENDPOINT_URL="https://mcp.homelab0.org/servers/${K8S_NAME}/mcp"
 
-            # Create remote_server entry in ToolHive native format
-            # Required fields: url, description, status, tier, tools, transport
-            # Transport is taken from proxyMode (how the gateway exposes the server)
+            # Create server entry in ToolHive native format (container-based)
+            # This format includes: name, image (for version), tools, transport, packages (for endpoints)
             SERVER_ENTRY=$(jq -n \
-              --arg url "$ENDPOINT_URL" \
+              --arg name "$K8S_NAME" \
               --arg description "$DESCRIPTION" \
-              --arg transport "$PROXY_MODE" \
+              --arg transport "$TRANSPORT" \
+              --arg image "$IMAGE" \
+              --argjson target_port "$TARGET_PORT" \
               --arg repo_url "$REPO_URL" \
+              --arg endpoint_url "$ENDPOINT_URL" \
+              --arg proxy_transport "$PROXY_MODE" \
               --argjson tools "$TOOLS_JSON" \
               --argjson tags "$TAGS_JSON" \
               '{
-                "url": $url,
+                "name": $name,
                 "description": $description,
                 "status": "Active",
                 "tier": "Community",
                 "transport": $transport,
+                "image": $image,
+                "target_port": $target_port,
                 "tools": $tools,
                 "repository_url": $repo_url,
-                "tags": $tags
+                "tags": $tags,
+                "packages": [
+                  {
+                    "name": "homelab",
+                    "registry_type": "url",
+                    "url": $endpoint_url,
+                    "transport": $proxy_transport
+                  }
+                ]
               }')
 
-            # Add to remote_servers object with k8s name as key
-            REMOTE_SERVERS=$(echo "$REMOTE_SERVERS" | jq --arg key "$K8S_NAME" --argjson entry "$SERVER_ENTRY" '. + {($key): $entry}')
+            # Add to servers object with k8s name as key
+            SERVERS=$(echo "$SERVERS" | jq --arg key "$K8S_NAME" --argjson entry "$SERVER_ENTRY" '. + {($key): $entry}')
             SERVER_COUNT=$((SERVER_COUNT + 1))
 
-            echo "  Added: $K8S_NAME"
+            echo "  Added: $K8S_NAME (image: $IMAGE)"
           done
 
           # Build final registry.json in ToolHive native format
-          # Note: servers (empty) is required by schema even when only using remote_servers
           REGISTRY=$(jq -n \
             --arg schema "https://raw.githubusercontent.com/stacklok/toolhive/main/pkg/registry/data/toolhive-legacy-registry.schema.json" \
             --arg timestamp "$TIMESTAMP" \
-            --argjson remote_servers "$REMOTE_SERVERS" \
+            --argjson servers "$SERVERS" \
             '{
               "$schema": $schema,
               "version": "1.0.0",
               "last_updated": $timestamp,
-              "servers": {},
-              "remote_servers": $remote_servers
+              "servers": $servers,
+              "remote_servers": {}
             }')
 
           # Write registry.json
           echo "$REGISTRY" | jq '.' > "$REGISTRY_FILE"
 
-          echo "Generated registry with $SERVER_COUNT remote servers"
+          echo "Generated registry with $SERVER_COUNT servers"
           echo "servers_count=$SERVER_COUNT" >> "$GITHUB_OUTPUT"
 
       - name: Check for Changes
