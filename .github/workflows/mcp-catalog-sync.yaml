@@ -32,8 +32,12 @@ env:
   TRIVY_VERSION: "0.58.2"
   # renovate: datasource=github-releases depName=mikefarah/yq
   YQ_VERSION: "4.45.1"
-  # SHA256 checksum for yq_linux_amd64 v4.45.1 (from official checksums.txt)
-  YQ_CHECKSUM: "654d2943ca1d3be2024089eb4f270f4070f491a0610481d128d1b7c8b6c4a080"
+  # SHA256 checksum for yq_linux_amd64 v4.45.1 (from official checksums file)
+  YQ_CHECKSUM: "654d2943ca1d3be2024089eb4f270f4070f491a0610481d128509b2834870049"
+  # renovate: datasource=github-releases depName=stacklok/toolhive
+  THV_VERSION: "0.7.2"
+  # SHA256 checksum for toolhive_linux_amd64.tar.gz (from official checksums file)
+  THV_CHECKSUM: "84a89a735f3c5d7eaa4fe0f4cba164eb2a04b83f2525c9709dc60dc86fc9dab1"
 
 jobs:
   # =============================================================================
@@ -284,11 +288,13 @@ jobs:
           sudo mv /tmp/yq /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
 
-          # Install thv CLI for MCP protocol validation
-          # renovate: datasource=github-releases depName=stacklok/toolhive
-          THV_VERSION="0.3.3"
-          curl -sSfL https://raw.githubusercontent.com/stacklok/toolhive/main/install.sh | sh -s -- -v "v${THV_VERSION}"
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          # Install thv CLI for MCP protocol validation with checksum verification
+          wget -qO /tmp/thv.tar.gz "https://github.com/stacklok/toolhive/releases/download/v${{ env.THV_VERSION }}/toolhive_${{ env.THV_VERSION }}_linux_amd64.tar.gz"
+          echo "${{ env.THV_CHECKSUM }}  /tmp/thv.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/thv.tar.gz -C /tmp
+          sudo mv /tmp/thv /usr/local/bin/thv
+          sudo chmod +x /usr/local/bin/thv
+          thv --version
 
       - name: Extract MCP Server Config
         id: config
@@ -331,15 +337,29 @@ jobs:
                 exit 0
               }
 
-            # Wait for container to be ready
-            sleep 10
+            # Wait for container to be ready with poll-based health check
+            READY=false
+            for i in {1..30}; do
+              if ! docker ps | grep -q "mcp-test-$NAME"; then
+                echo "::warning::Container exited after ${i}s"
+                break
+              fi
+              # Check if MCP endpoint responds
+              if curl -sf http://localhost:8080/mcp >/dev/null 2>&1 || \
+                 curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+                echo "Container ready after ${i}s"
+                READY=true
+                break
+              fi
+              sleep 1
+            done
 
-            # Check if container is running
-            if docker ps | grep -q "mcp-test-$NAME"; then
+            # Set output based on readiness
+            if [ "$READY" = "true" ]; then
               echo "started=true" >> "$GITHUB_OUTPUT"
               echo "url=http://localhost:8080/mcp" >> "$GITHUB_OUTPUT"
             else
-              echo "::warning::Container exited - likely missing required dependencies"
+              echo "::warning::Container not ready after 30s - likely missing required dependencies"
               docker logs "mcp-test-$NAME" 2>&1 | tail -20 || true
               echo "started=false" >> "$GITHUB_OUTPUT"
             fi
