@@ -202,6 +202,12 @@ jobs:
             "token:"
             "sk-"
             "Bearer "
+            "ghp_"
+            "gho_"
+            "glpat-"
+            "PRIVATE_KEY"
+            "private.key"
+            "AWS_SECRET"
           )
 
           FOUND=""
@@ -413,14 +419,22 @@ jobs:
           # This may fail if the server needs specific env vars
           timeout 30 thv run --name "test-$NAME" "$IMAGE" &
           THV_PID=$!
-          sleep 5
 
-          # Try to list tools
-          thv mcp list tools --server "test-$NAME" --format json 2>/dev/null || {
+          # Poll until server responds or timeout (max 20s)
+          TOOLS_RESULT=""
+          for i in {1..10}; do
+            if TOOLS_RESULT=$(thv mcp list tools --server "test-$NAME" --format json 2>/dev/null); then
+              echo "Server ready after $((i * 2))s"
+              echo "$TOOLS_RESULT"
+              break
+            fi
+            sleep 2
+          done
+
+          # Check if we got tools
+          if [ -z "$TOOLS_RESULT" ]; then
             echo "::warning::Could not query stdio MCP server - may need required env vars"
-            kill $THV_PID 2>/dev/null || true
-            exit 0
-          }
+          fi
 
           kill $THV_PID 2>/dev/null || true
 
