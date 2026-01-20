@@ -252,7 +252,159 @@ jobs:
           ignore-unfixed: true
 
   # =============================================================================
-  # Job 4: Generate Registry Catalog Entry
+  # Job 4: MCP Protocol Validation (optional - requires thv CLI)
+  # =============================================================================
+  mcp-validate:
+    name: Validate MCP Protocol
+    needs: [preflight, validate]
+    if: needs.preflight.outputs.mcpservers_changed == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        file: ${{ fromJson(needs.preflight.outputs.mcpserver_files) }}
+      fail-fast: false
+    continue-on-error: true  # Don't block PR - MCP servers may need external deps
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Tools
+        run: |
+          # Install yq
+          wget -qO /tmp/yq "https://github.com/mikefarah/yq/releases/download/v${{ env.YQ_VERSION }}/yq_linux_amd64"
+          echo "${{ env.YQ_CHECKSUM }}  /tmp/yq" | sha256sum -c -
+          sudo mv /tmp/yq /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+
+          # Install thv CLI for MCP protocol validation
+          # renovate: datasource=github-releases depName=stacklok/toolhive
+          THV_VERSION="0.3.3"
+          curl -sSfL https://raw.githubusercontent.com/stacklok/toolhive/main/install.sh | sh -s -- -v "v${THV_VERSION}"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Extract MCP Server Config
+        id: config
+        run: |
+          FILE="${{ matrix.file }}"
+          NAME=$(yq eval '.metadata.name' "$FILE")
+          IMAGE=$(yq eval '.spec.image' "$FILE")
+          TRANSPORT=$(yq eval '.spec.transport' "$FILE")
+          DECLARED_TOOLS=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/catalog-tools"] // ""' "$FILE")
+
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "transport=$TRANSPORT" >> "$GITHUB_OUTPUT"
+          echo "declared_tools=$DECLARED_TOOLS" >> "$GITHUB_OUTPUT"
+
+          echo "MCP Server: $NAME"
+          echo "Image: $IMAGE"
+          echo "Transport: $TRANSPORT"
+          echo "Declared tools: $DECLARED_TOOLS"
+
+      - name: Start MCP Server Container
+        id: start-server
+        run: |
+          IMAGE="${{ steps.config.outputs.image }}"
+          NAME="${{ steps.config.outputs.name }}"
+          TRANSPORT="${{ steps.config.outputs.transport }}"
+
+          echo "Starting MCP server container for validation..."
+
+          # For stdio transport, we can't easily test without running thv
+          # For streamable-http, we can start the container and probe it
+          if [ "$TRANSPORT" = "streamable-http" ]; then
+            # Start container with default port
+            docker run -d --name "mcp-test-$NAME" \
+              -p 8080:8080 \
+              -e SERVER__PORT=8080 \
+              "$IMAGE" || {
+                echo "::warning::Failed to start container - may need required env vars"
+                echo "started=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              }
+
+            # Wait for container to be ready
+            sleep 10
+
+            # Check if container is running
+            if docker ps | grep -q "mcp-test-$NAME"; then
+              echo "started=true" >> "$GITHUB_OUTPUT"
+              echo "url=http://localhost:8080/mcp" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Container exited - likely missing required dependencies"
+              docker logs "mcp-test-$NAME" 2>&1 | tail -20 || true
+              echo "started=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "::notice::stdio transport - using thv for validation"
+            echo "started=skip" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate MCP Tools (HTTP transport)
+        if: steps.start-server.outputs.started == 'true'
+        run: |
+          URL="${{ steps.start-server.outputs.url }}"
+          DECLARED="${{ steps.config.outputs.declared_tools }}"
+
+          echo "Querying MCP server at $URL..."
+
+          # Use thv to list tools
+          TOOLS_JSON=$(thv mcp list tools --server "$URL" --format json 2>/dev/null) || {
+            echo "::warning::Could not query MCP tools - server may not be ready"
+            exit 0
+          }
+
+          echo "Tools returned by server:"
+          echo "$TOOLS_JSON" | jq -r '.[].name' 2>/dev/null || echo "$TOOLS_JSON"
+
+          # Compare with declared tools if provided
+          if [ -n "$DECLARED" ]; then
+            echo ""
+            echo "Comparing with declared tools in annotations..."
+            ACTUAL_TOOLS=$(echo "$TOOLS_JSON" | jq -r '.[].name' | sort | tr '\n' ',' | sed 's/,$//')
+            DECLARED_SORTED=$(echo "$DECLARED" | tr ',' '\n' | sort | tr '\n' ',' | sed 's/,$//')
+
+            if [ "$ACTUAL_TOOLS" != "$DECLARED_SORTED" ]; then
+              echo "::warning::Tool mismatch detected"
+              echo "Declared: $DECLARED_SORTED"
+              echo "Actual: $ACTUAL_TOOLS"
+            else
+              echo "Tools match declared annotations"
+            fi
+          fi
+
+      - name: Validate MCP Tools (stdio transport)
+        if: steps.start-server.outputs.started == 'skip'
+        run: |
+          IMAGE="${{ steps.config.outputs.image }}"
+          NAME="${{ steps.config.outputs.name }}"
+
+          echo "Validating stdio MCP server using thv run..."
+
+          # Try to run with thv and list tools
+          # This may fail if the server needs specific env vars
+          timeout 30 thv run --name "test-$NAME" "$IMAGE" &
+          THV_PID=$!
+          sleep 5
+
+          # Try to list tools
+          thv mcp list tools --server "test-$NAME" --format json 2>/dev/null || {
+            echo "::warning::Could not query stdio MCP server - may need required env vars"
+            kill $THV_PID 2>/dev/null || true
+            exit 0
+          }
+
+          kill $THV_PID 2>/dev/null || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          NAME="${{ steps.config.outputs.name }}"
+          docker rm -f "mcp-test-$NAME" 2>/dev/null || true
+          thv rm "test-$NAME" 2>/dev/null || true
+
+  # =============================================================================
+  # Job 5: Generate Registry Catalog Entry
   # =============================================================================
   generate-catalog:
     name: Generate Catalog Entry
@@ -441,19 +593,23 @@ jobs:
             **Changes committed to this PR.** The catalog will be available after merge.
 
   # =============================================================================
-  # Job 5: Status Check
+  # Job 6: Status Check
   # =============================================================================
   mcp-catalog-status:
     name: MCP Catalog Sync Status
-    needs: [preflight, validate, generate-catalog]
+    needs: [preflight, validate, image-scan, mcp-validate, generate-catalog]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check Results
         run: |
+          echo "=== Job Results ==="
           echo "Preflight: ${{ needs.preflight.result }}"
           echo "Validate: ${{ needs.validate.result }}"
-          echo "Generate: ${{ needs.generate-catalog.result }}"
+          echo "Image Scan: ${{ needs.image-scan.result }}"
+          echo "MCP Validate: ${{ needs.mcp-validate.result }}"
+          echo "Generate Catalog: ${{ needs.generate-catalog.result }}"
+          echo ""
 
           # Only require validation to pass if MCPServers changed
           if [ "${{ needs.preflight.outputs.mcpservers_changed }}" = "true" ]; then
@@ -461,6 +617,15 @@ jobs:
               echo "::error::MCPServer validation failed"
               exit 1
             fi
+          fi
+
+          # Report on optional jobs (non-blocking)
+          if [ "${{ needs.image-scan.result }}" = "failure" ]; then
+            echo "::warning::Image vulnerability scan reported issues - review recommended"
+          fi
+
+          if [ "${{ needs.mcp-validate.result }}" = "failure" ]; then
+            echo "::warning::MCP protocol validation failed - server may need external dependencies"
           fi
 
           echo "MCP Catalog Sync completed successfully"
