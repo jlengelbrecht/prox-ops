@@ -579,6 +579,64 @@ jobs:
           echo "Generated registry with $SERVER_COUNT servers (upstream format)"
           echo "servers_count=$SERVER_COUNT" >> "$GITHUB_OUTPUT"
 
+      - name: Validate Registry Schema
+        run: |
+          REGISTRY_FILE="${{ env.REGISTRY_PATH }}"
+
+          echo "Validating registry.json against schema constraints..."
+
+          # Download the official schema for reference
+          SCHEMA_URL="https://raw.githubusercontent.com/stacklok/toolhive-registry-server/main/internal/registry/upstream-registry.schema.json"
+          curl -sL "$SCHEMA_URL" -o /tmp/registry-schema.json
+
+          # Validate key constraints that the registry server enforces
+          ERRORS=0
+
+          # Check description length (max 100 chars)
+          while IFS= read -r desc; do
+            LEN=${#desc}
+            if [ "$LEN" -gt 100 ]; then
+              echo "::error::Description exceeds 100 char limit ($LEN chars): ${desc:0:50}..."
+              ERRORS=$((ERRORS + 1))
+            fi
+          done < <(jq -r '.data.servers[].description // empty' "$REGISTRY_FILE")
+
+          # Check name format (should be owner/repo)
+          while IFS= read -r name; do
+            if ! echo "$name" | grep -qE '^[^/]+/[^/]+$'; then
+              echo "::error::Invalid server name format (expected owner/repo): $name"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done < <(jq -r '.data.servers[].name // empty' "$REGISTRY_FILE")
+
+          # Check required fields
+          for i in $(seq 0 $(($(jq '.data.servers | length' "$REGISTRY_FILE") - 1))); do
+            NAME=$(jq -r ".data.servers[$i].name" "$REGISTRY_FILE")
+
+            # Check required fields exist
+            for field in name title description version; do
+              VALUE=$(jq -r ".data.servers[$i].$field // empty" "$REGISTRY_FILE")
+              if [ -z "$VALUE" ]; then
+                echo "::error::Server '$NAME' missing required field: $field"
+                ERRORS=$((ERRORS + 1))
+              fi
+            done
+
+            # Check remotes array exists and has entries
+            REMOTES=$(jq -r ".data.servers[$i].remotes | length" "$REGISTRY_FILE")
+            if [ "$REMOTES" -eq 0 ]; then
+              echo "::error::Server '$NAME' has no remotes configured"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::Registry schema validation failed with $ERRORS error(s)"
+            exit 1
+          fi
+
+          echo "Registry schema validation passed"
+
       - name: Check for Changes
         id: check-changes
         run: |
