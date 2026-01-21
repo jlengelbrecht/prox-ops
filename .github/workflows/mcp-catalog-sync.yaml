@@ -595,9 +595,10 @@ jobs:
           pip-audit -r /tmp/requirements.txt --progress-spinner=off --format=json --output=/tmp/pip-audit-results.json 2>/dev/null || true
 
           # Process results
+          # pip-audit JSON format: [{"name": "pkg", "version": "1.0", "vulns": [{"id": "...", "fix_versions": [...]}]}]
           if [ -f /tmp/pip-audit-results.json ]; then
-            # Count HIGH/CRITICAL vulnerabilities (pip-audit doesn't have severity, treat all as HIGH)
-            VULN_COUNT=$(jq 'length' /tmp/pip-audit-results.json)
+            # Count total vulnerabilities across all packages
+            VULN_COUNT=$(jq '[.[].vulns | length] | add // 0' /tmp/pip-audit-results.json)
 
             echo "Vulnerabilities found: $VULN_COUNT"
             echo "vuln_count=$VULN_COUNT" >> "$GITHUB_OUTPUT"
@@ -605,9 +606,12 @@ jobs:
             if [ "$VULN_COUNT" -gt 0 ]; then
               echo ""
               echo "=== Vulnerability Details ==="
-              jq -r '.[] | "[HIGH] \(.id): \(.name) \(.version) - \(.description // "No description")"' /tmp/pip-audit-results.json | head -20
+              # Parse pip-audit nested JSON format correctly
+              jq -r '.[] | select(.vulns | length > 0) | .name as $pkg | .version as $ver | .vulns[] | "[HIGH] \(.id): \($pkg) \($ver) - Fix: \(.fix_versions | join(", ") // "No fix available")"' /tmp/pip-audit-results.json | head -20
               echo "scan_status=failed" >> "$GITHUB_OUTPUT"
+              echo ""
               echo "::error::pip-audit found $VULN_COUNT vulnerabilities in $PACKAGE"
+              echo "::notice::To resolve: Check if a newer version is available that fixes these vulnerabilities"
               exit 1  # BLOCKING: Fail on any vulnerability
             else
               echo "No vulnerabilities found"
