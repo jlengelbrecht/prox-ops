@@ -1,0 +1,89 @@
+---
+# MCPServer for TrueNAS Heimdall Management
+# Provides comprehensive TrueNAS SCALE management via natural language
+# ACCESS RESTRICTED: Only available to admin user via Cedar policy
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: truenas-heimdall
+  namespace: mcp
+  annotations:
+    # Registry discovery annotations
+    toolhive.stacklok.dev/registry-export: "true"
+    toolhive.stacklok.dev/registry-url: "http://mcp-truenas-heimdall-proxy.mcp.svc.cluster.local:8080/mcp"
+    toolhive.stacklok.dev/registry-description: "TrueNAS Heimdall - Manage storage, datasets, snapshots, shares, and system."
+    # Catalog metadata for registry.json generation
+    toolhive.stacklok.dev/catalog-title: "TrueNAS Heimdall MCP"
+    toolhive.stacklok.dev/catalog-tags: "truenas,storage,zfs,nas,datasets,snapshots,smb,nfs,iscsi,homelab"
+    toolhive.stacklok.dev/catalog-tools: "list_pools,list_datasets,create_dataset,delete_dataset,list_snapshots,create_snapshot,delete_snapshot,rollback_snapshot,list_shares,create_smb_share,delete_smb_share,list_users,create_user,system_info,pool_status"
+    toolhive.stacklok.dev/repository-url: "https://github.com/vespo92/TrueNasCoreMCP"
+    # Access control annotation - ADMIN ONLY
+    toolhive.stacklok.dev/access-restricted: "true"
+    toolhive.stacklok.dev/access-policy: "admin-only"
+  labels:
+    app.kubernetes.io/name: truenas-heimdall
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  # renovate: datasource=pypi depName=truenas-mcp-server
+  image: uvx://truenas-mcp-server@3.0.2
+  # stdio transport - ToolHive builds container and attaches to stdin/stdout
+  transport: stdio
+  # Proxy exposes stdio as streamable-http for HTTP clients
+  proxyMode: streamable-http
+  proxyPort: 8080
+  # Link to MCPGroup for VirtualMCPServer aggregation
+  groupRef: homelab-mcp
+  # Network permission profile (needs to reach TrueNAS server)
+  permissionProfile:
+    type: builtin
+    name: network
+  # Environment variables from secrets
+  secrets:
+    - name: truenas-heimdall-mcp-secrets
+      key: TRUENAS_URL
+      targetEnvName: TRUENAS_URL
+    - name: truenas-heimdall-mcp-secrets
+      key: TRUENAS_API_KEY
+      targetEnvName: TRUENAS_API_KEY
+    - name: truenas-heimdall-mcp-secrets
+      key: TRUENAS_VERIFY_SSL
+      targetEnvName: TRUENAS_VERIFY_SSL
+  # Additional environment variables
+  env:
+    # Enable destructive operations (delete datasets, snapshots, etc.)
+    - name: TRUENAS_ENABLE_DESTRUCTIVE_OPS
+      value: "true"
+    - name: TRUENAS_LOG_LEVEL
+      value: "INFO"
+  # Resource limits
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Pod customization for security context
+  podTemplateSpec:
+    metadata:
+      annotations:
+        secret.reloader.stakater.com/reload: "truenas-heimdall-mcp-secrets"
+        security.homelab/purpose: "TrueNAS Heimdall management MCP server - ADMIN ACCESS ONLY"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
