@@ -569,8 +569,15 @@ jobs:
             REPO_URL=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/repository-url"] // ""' "$mcpfile")
 
             # Extract image and version from tag
+            # Supports both Docker images (image:tag) and uvx images (uvx://package@version)
             IMAGE=$(yq eval '.spec.image' "$mcpfile")
-            VERSION=$(echo "$IMAGE" | sed -E 's/.*:([^:]+)$/\1/')
+            if echo "$IMAGE" | grep -qE '^uvx://'; then
+              # uvx:// format: uvx://truenas-mcp-server@3.0.2 -> 3.0.2
+              VERSION=$(echo "$IMAGE" | sed -E 's/.*@([^@]+)$/\1/')
+            else
+              # Docker format: image:tag -> tag
+              VERSION=$(echo "$IMAGE" | sed -E 's/.*:([^:]+)$/\1/')
+            fi
             [ "$VERSION" = "$IMAGE" ] && VERSION="latest"
 
             # Extract proxyMode for remote transport type
