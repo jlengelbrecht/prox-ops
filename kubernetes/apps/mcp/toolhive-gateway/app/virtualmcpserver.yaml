@@ -23,7 +23,6 @@ spec:
       includeRequestData: false
       includeResponseData: false
   # OIDC authentication via Authentik for external clients (thv CLI, Claude Code, etc.)
-  # LiteLLM connects internally via anonymous endpoint (separate VirtualMCPServer below)
   incomingAuth:
     type: oidc
     oidcConfig:
@@ -43,9 +42,44 @@ spec:
           - profile
           - email
           - offline_access
+  # Cedar authorization policies for fine-grained access control
+  # Restricts unifi tools to admin user only
+  authzConfig:
+    type: inline
+    inline:
+      policies:
+        # Allow admin user (jlengelbrecht96@gmail.com) access to ALL tools including unifi
+        - |
+          permit(
+            principal,
+            action == Action::"call_tool",
+            resource
+          ) when {
+            principal.claim_email == "jlengelbrecht96@gmail.com"
+          };
+        # Allow all authenticated users access to non-unifi tools only
+        - |
+          permit(
+            principal,
+            action == Action::"call_tool",
+            resource
+          ) when {
+            !resource.name like "unifi_*"
+          };
+        # Deny unifi tools to non-admin users (explicit deny for safety)
+        - |
+          forbid(
+            principal,
+            action == Action::"call_tool",
+            resource
+          ) when {
+            resource.name like "unifi_*" &&
+            principal.claim_email != "jlengelbrecht96@gmail.com"
+          };
 ---
 # VirtualMCPServer for internal/anonymous access (LiteLLM, internal services)
 # This provides an unauthenticated endpoint for trusted internal cluster traffic
+# EXCLUDES sensitive tools (unifi) - only graphiti and n8n available
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: VirtualMCPServer
 metadata:
@@ -62,6 +96,16 @@ spec:
       conflictResolution: prefix
       conflictResolutionConfig:
         prefixFormat: "{workload}_"
+      # Tool filtering: exclude unifi from internal gateway
+      # LiteLLM and internal services should NOT have access to network management
+      # Note: VirtualMCPServer uses allow-list pattern - empty filter = no tools exposed
+      # By not listing unifi workload at all, its tools are excluded from aggregation
+      tools:
+        - workload: graphiti
+          # Include all graphiti tools (no filter = all tools)
+        - workload: n8n
+          # Include all n8n tools (no filter = all tools)
+        # unifi workload intentionally omitted - not exposed to internal gateway
     audit:
       enabled: true
       includeRequestData: false

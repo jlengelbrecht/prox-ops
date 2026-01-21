@@ -1,0 +1,91 @@
+---
+# MCPServer for UniFi Network Management
+# Provides 67+ tools for managing UniFi network infrastructure
+# ACCESS RESTRICTED: Only available to admin user via Cedar policy
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: unifi
+  namespace: mcp
+  annotations:
+    # Registry discovery annotations
+    toolhive.stacklok.dev/registry-export: "true"
+    toolhive.stacklok.dev/registry-url: "http://mcp-unifi-proxy.mcp.svc.cluster.local:8080/mcp"
+    toolhive.stacklok.dev/registry-description: "UniFi Network MCP - Manage UniFi network infrastructure including clients, devices, firewall rules, and VLANs."
+    # Catalog metadata for registry.json generation
+    toolhive.stacklok.dev/catalog-title: "UniFi Network MCP"
+    toolhive.stacklok.dev/catalog-tags: "unifi,networking,firewall,vlans,wifi,homelab,ubiquiti,network-management"
+    toolhive.stacklok.dev/catalog-tools: "unifi_get_clients,unifi_get_devices,unifi_get_networks,unifi_get_wlans,unifi_get_firewall_rules,unifi_get_port_forwards,unifi_get_traffic_routes,unifi_create_firewall_rule,unifi_update_firewall_rule,unifi_delete_firewall_rule,unifi_block_client,unifi_unblock_client,unifi_reconnect_client,unifi_adopt_device,unifi_restart_device,unifi_execute,unifi_batch,unifi_tool_index"
+    toolhive.stacklok.dev/repository-url: "https://github.com/sirkirby/unifi-network-mcp"
+    # Access control annotation
+    toolhive.stacklok.dev/access-restricted: "true"
+    toolhive.stacklok.dev/access-policy: "admin-only"
+  labels:
+    app.kubernetes.io/name: unifi
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  # renovate: datasource=docker depName=ghcr.io/sirkirby/unifi-network-mcp
+  image: ghcr.io/sirkirby/unifi-network-mcp:0.4.2
+  # stdio transport - proxyrunner attaches to container stdin/stdout
+  transport: stdio
+  # Proxy exposes stdio as streamable-http for HTTP clients
+  proxyMode: streamable-http
+  proxyPort: 8080
+  # Link to MCPGroup for VirtualMCPServer aggregation
+  groupRef: homelab-mcp
+  # Network permission profile (needs to reach UniFi controller)
+  permissionProfile:
+    type: builtin
+    name: network
+  # Environment variables from secrets
+  secrets:
+    - name: unifi-mcp-secrets
+      key: UNIFI_USERNAME
+      targetEnvName: UNIFI_USERNAME
+    - name: unifi-mcp-secrets
+      key: UNIFI_PASSWORD
+      targetEnvName: UNIFI_PASSWORD
+    - name: unifi-mcp-secrets
+      key: UNIFI_HOST
+      targetEnvName: UNIFI_HOST
+    - name: unifi-mcp-secrets
+      key: UNIFI_PORT
+      targetEnvName: UNIFI_PORT
+    - name: unifi-mcp-secrets
+      key: UNIFI_SITE
+      targetEnvName: UNIFI_SITE
+    - name: unifi-mcp-secrets
+      key: UNIFI_VERIFY_SSL
+      targetEnvName: UNIFI_VERIFY_SSL
+  # Resource limits
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Pod customization for security context
+  podTemplateSpec:
+    metadata:
+      annotations:
+        secret.reloader.stakater.com/reload: "unifi-mcp-secrets"
+        security.homelab/purpose: "UniFi network management MCP server - ADMIN ACCESS ONLY"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
