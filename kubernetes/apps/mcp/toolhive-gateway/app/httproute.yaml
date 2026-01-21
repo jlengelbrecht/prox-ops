@@ -33,6 +33,13 @@ spec:
           port: 4483
           weight: 1
       filters:
+        # URL Rewrite: thv proxy sends to root /, gateway expects /mcp
+        # This enables production thv CLI usage without port-forwarding
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /mcp
         - type: ResponseHeaderModifier
           responseHeaderModifier:
             set:
