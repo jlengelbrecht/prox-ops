@@ -1,0 +1,100 @@
+# UniFi Network MCP Server
+# Source: https://github.com/sirkirby/unifi-network-mcp
+# ACCESS RESTRICTED: Admin user only via Cedar policy
+name: unifi
+description: |
+  UniFi Network Management - Manage UniFi network infrastructure including
+  clients, devices, firewall rules, VLANs, and WiFi settings. Provides 67+
+  tools for comprehensive network management. ADMIN ACCESS ONLY - restricted
+  via Cedar authorization policy to specific users.
+tier: Homelab
+status: Active
+# Native transport is stdio; homelab deployment wraps via ToolHive proxyrunner
+# which exposes it as streamable-http (see packages section below)
+transport: stdio
+
+# Access control metadata
+access_control:
+  restricted: true
+  policy: admin-only
+  description: Only available to admin user (jlengelbrecht96@gmail.com) via Cedar policy
+
+# Tools provided by this MCP server (subset - server provides 67+ tools)
+tools:
+  - unifi_get_clients
+  - unifi_get_devices
+  - unifi_get_networks
+  - unifi_get_wlans
+  - unifi_get_firewall_rules
+  - unifi_get_port_forwards
+  - unifi_get_traffic_routes
+  - unifi_create_firewall_rule
+  - unifi_update_firewall_rule
+  - unifi_delete_firewall_rule
+  - unifi_block_client
+  - unifi_unblock_client
+  - unifi_reconnect_client
+  - unifi_adopt_device
+  - unifi_restart_device
+  - unifi_execute
+  - unifi_batch
+  - unifi_tool_index
+
+# Catalog display metadata
+metadata:
+  author: sirkirby
+  author_url: https://github.com/sirkirby
+  icon_url: https://ui.com/favicon.ico
+
+# Source repository
+repository_url: https://github.com/sirkirby/unifi-network-mcp
+
+# Container image (reference only - actual deployment managed via MCPServer CRD)
+# See: kubernetes/apps/mcp/toolhive-gateway/app/mcpserver-unifi.yaml
+image: ghcr.io/sirkirby/unifi-network-mcp:latest
+
+# Searchable tags
+tags:
+  - unifi
+  - networking
+  - firewall
+  - vlans
+  - wifi
+  - homelab
+  - ubiquiti
+  - network-management
+  - admin-only
+
+# Environment variables (documentation only - actual secrets managed separately)
+env_vars:
+  - name: UNIFI_HOST
+    description: UniFi controller hostname or IP address
+    required: true
+    secret: false
+  - name: UNIFI_PORT
+    description: UniFi controller port (443 for UniFi OS, 8443 for legacy)
+    required: true
+    secret: false
+  - name: UNIFI_USERNAME
+    description: UniFi admin username
+    required: true
+    secret: true
+  - name: UNIFI_PASSWORD
+    description: UniFi admin password
+    required: true
+    secret: true
+  - name: UNIFI_SITE
+    description: UniFi site name (usually "default")
+    required: true
+    secret: false
+  - name: UNIFI_VERIFY_SSL
+    description: Whether to verify SSL certificate (false for self-signed)
+    required: false
+    secret: false
+
+# Deployed endpoint (your homelab instance)
+packages:
+  - name: homelab
+    registry_type: url
+    url: https://mcp.homelab0.org/servers/unifi/mcp
+    transport: streamable-http
