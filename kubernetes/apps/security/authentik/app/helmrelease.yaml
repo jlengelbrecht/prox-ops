@@ -89,6 +89,12 @@ spec:
             secretKeyRef:
               name: authentik-secret
               key: AUTHENTIK_TOOLHIVE_CLIENT_SECRET
+        # ToolHive MCP Gateway (public client for CLI/Desktop apps)
+        - name: AUTHENTIK_TOOLHIVE_MCP_GATEWAY_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: authentik-secret
+              key: AUTHENTIK_TOOLHIVE_MCP_GATEWAY_CLIENT_ID
 
         # =============================================================
         # SOURCE CREDENTIALS
@@ -160,6 +166,7 @@ spec:
       replicas: 1
       podAnnotations:
         secret.reloader.stakater.com/reload: "authentik-secret"
+        configmap.reloader.stakater.com/reload: "authentik-blueprints"
       resources:
         requests:
           cpu: 100m
