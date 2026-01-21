@@ -315,58 +315,76 @@ jobs:
           ERRORS=0
           WARNINGS=0
 
+          # NOTE: yq's // operator treats 'false' as falsy, so we use 'type' checks instead
+          # to properly detect boolean false values vs missing fields
+
           # Check for runAsNonRoot in podTemplateSpec
-          RUN_AS_NON_ROOT=$(yq eval '.spec.podTemplateSpec.spec.securityContext.runAsNonRoot // ""' "$FILE")
-          if [ "$RUN_AS_NON_ROOT" != "true" ]; then
+          RUN_AS_NON_ROOT=$(yq eval '.spec.podTemplateSpec.spec.securityContext.runAsNonRoot' "$FILE")
+          if [ "$RUN_AS_NON_ROOT" = "true" ]; then
+            echo "✓ runAsNonRoot: true"
+          elif [ "$RUN_AS_NON_ROOT" = "null" ]; then
             echo "::warning::Missing runAsNonRoot: true in podTemplateSpec.spec.securityContext"
             WARNINGS=$((WARNINGS + 1))
           else
-            echo "✓ runAsNonRoot: true"
+            echo "::warning::runAsNonRoot should be true, found: $RUN_AS_NON_ROOT"
+            WARNINGS=$((WARNINGS + 1))
           fi
 
           # Check for seccompProfile
-          SECCOMP=$(yq eval '.spec.podTemplateSpec.spec.securityContext.seccompProfile.type // ""' "$FILE")
-          if [ -z "$SECCOMP" ]; then
+          SECCOMP=$(yq eval '.spec.podTemplateSpec.spec.securityContext.seccompProfile.type' "$FILE")
+          if [ "$SECCOMP" = "null" ] || [ -z "$SECCOMP" ]; then
             echo "::warning::Missing seccompProfile in podTemplateSpec.spec.securityContext"
             WARNINGS=$((WARNINGS + 1))
           else
             echo "✓ seccompProfile: $SECCOMP"
           fi
 
-          # Check container security context
-          CONTAINER_ALLOW_PRIV=$(yq eval '.spec.podTemplateSpec.spec.containers[0].securityContext.allowPrivilegeEscalation // ""' "$FILE")
-          if [ "$CONTAINER_ALLOW_PRIV" != "false" ]; then
-            echo "::error::Container must have allowPrivilegeEscalation: false"
+          # Check container security context - allowPrivilegeEscalation must be false
+          CONTAINER_ALLOW_PRIV=$(yq eval '.spec.podTemplateSpec.spec.containers[0].securityContext.allowPrivilegeEscalation' "$FILE")
+          if [ "$CONTAINER_ALLOW_PRIV" = "false" ]; then
+            echo "✓ allowPrivilegeEscalation: false"
+          elif [ "$CONTAINER_ALLOW_PRIV" = "null" ]; then
+            echo "::error::Container must have allowPrivilegeEscalation: false (field missing)"
             ERRORS=$((ERRORS + 1))
           else
-            echo "✓ allowPrivilegeEscalation: false"
+            echo "::error::Container must have allowPrivilegeEscalation: false (found: $CONTAINER_ALLOW_PRIV)"
+            ERRORS=$((ERRORS + 1))
           fi
 
           # Check for capability drops
-          CAPS_DROP=$(yq eval '.spec.podTemplateSpec.spec.containers[0].securityContext.capabilities.drop[0] // ""' "$FILE")
-          if [ "$CAPS_DROP" != "ALL" ]; then
-            echo "::warning::Container should drop ALL capabilities"
+          CAPS_DROP=$(yq eval '.spec.podTemplateSpec.spec.containers[0].securityContext.capabilities.drop[0]' "$FILE")
+          if [ "$CAPS_DROP" = "ALL" ]; then
+            echo "✓ capabilities.drop: ALL"
+          elif [ "$CAPS_DROP" = "null" ]; then
+            echo "::warning::Container should drop ALL capabilities (field missing)"
             WARNINGS=$((WARNINGS + 1))
           else
-            echo "✓ capabilities.drop: ALL"
+            echo "::warning::Container should drop ALL capabilities (found: $CAPS_DROP)"
+            WARNINGS=$((WARNINGS + 1))
           fi
 
           # Check readOnlyRootFilesystem
-          READ_ONLY=$(yq eval '.spec.podTemplateSpec.spec.containers[0].securityContext.readOnlyRootFilesystem // ""' "$FILE")
-          if [ "$READ_ONLY" != "true" ]; then
-            echo "::warning::Container should have readOnlyRootFilesystem: true"
+          READ_ONLY=$(yq eval '.spec.podTemplateSpec.spec.containers[0].securityContext.readOnlyRootFilesystem' "$FILE")
+          if [ "$READ_ONLY" = "true" ]; then
+            echo "✓ readOnlyRootFilesystem: true"
+          elif [ "$READ_ONLY" = "null" ]; then
+            echo "::warning::Container should have readOnlyRootFilesystem: true (field missing)"
             WARNINGS=$((WARNINGS + 1))
           else
-            echo "✓ readOnlyRootFilesystem: true"
+            echo "::warning::Container should have readOnlyRootFilesystem: true (found: $READ_ONLY)"
+            WARNINGS=$((WARNINGS + 1))
           fi
 
           # Check automountServiceAccountToken
-          AUTOMOUNT=$(yq eval '.spec.podTemplateSpec.spec.automountServiceAccountToken // ""' "$FILE")
-          if [ "$AUTOMOUNT" != "false" ]; then
-            echo "::warning::Pod should have automountServiceAccountToken: false"
+          AUTOMOUNT=$(yq eval '.spec.podTemplateSpec.spec.automountServiceAccountToken' "$FILE")
+          if [ "$AUTOMOUNT" = "false" ]; then
+            echo "✓ automountServiceAccountToken: false"
+          elif [ "$AUTOMOUNT" = "null" ]; then
+            echo "::warning::Pod should have automountServiceAccountToken: false (field missing)"
             WARNINGS=$((WARNINGS + 1))
           else
-            echo "✓ automountServiceAccountToken: false"
+            echo "::warning::Pod should have automountServiceAccountToken: false (found: $AUTOMOUNT)"
+            WARNINGS=$((WARNINGS + 1))
           fi
 
           if [ "$ERRORS" -gt 0 ]; then
