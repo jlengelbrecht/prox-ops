@@ -480,10 +480,8 @@ jobs:
       needs.preflight.outputs.mcpserver_files != '[]' &&
       (needs.validate.result == 'success' || needs.validate.result == 'skipped')
     runs-on: gha-runner-scale-set
-    outputs:
-      scan_results: ${{ steps.aggregate.outputs.scan_results }}
-      has_vulnerabilities: ${{ steps.aggregate.outputs.has_vulnerabilities }}
-      vulnerability_summary: ${{ steps.aggregate.outputs.vulnerability_summary }}
+    # Note: Individual scan results are checked via job success/failure status
+    # No aggregated outputs needed since security scans are BLOCKING
     strategy:
       matrix:
         file: ${{ fromJson(needs.preflight.outputs.mcpserver_files) }}
@@ -679,15 +677,12 @@ jobs:
           PKG_VERSION=$(echo "$PACKAGE" | grep -oE '@[^@]+$' | tr -d '@')
           [ -z "$PKG_VERSION" ] && PKG_VERSION="latest"
 
-          cat > package.json << EOF
-          {
-            "name": "audit-check",
-            "version": "1.0.0",
-            "dependencies": {
-              "$PKG_NAME": "$PKG_VERSION"
-            }
-          }
-          EOF
+          # Use jq to safely construct JSON (prevents injection from special characters)
+          jq -n \
+            --arg name "$PKG_NAME" \
+            --arg version "$PKG_VERSION" \
+            '{name: "audit-check", version: "1.0.0", dependencies: {($name): $version}}' \
+            > package.json
 
           # Install and audit
           echo "=== Installing package ==="
