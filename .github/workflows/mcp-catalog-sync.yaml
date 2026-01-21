@@ -260,7 +260,8 @@ jobs:
               [ -f "$es_file" ] || continue
 
               # Check if this ExternalSecret creates our secret (spec.target.name or metadata.name)
-              TARGET_NAME=$(yq eval 'select(.kind == "ExternalSecret") | (.spec.target.name // .metadata.name)' "$es_file" 2>/dev/null || true)
+              # Use eval-all to handle multi-document YAML files
+              TARGET_NAME=$(yq eval-all 'select(.kind == "ExternalSecret") | (.spec.target.name // .metadata.name)' "$es_file" 2>/dev/null | head -n1 || true)
 
               if [ "$TARGET_NAME" = "$SECRET_NAME" ]; then
                 EXTERNAL_SECRET_FILE="$es_file"
@@ -279,7 +280,9 @@ jobs:
                 echo "Add to spec.podTemplateSpec.metadata.annotations:"
                 echo "  secret.reloader.stakater.com/reload: \"$SECRET_NAME\""
                 ERRORS=$((ERRORS + 1))
-              elif [[ "$RELOADER_ANNOTATION" != *"$SECRET_NAME"* ]]; then
+              elif ! echo ",$RELOADER_ANNOTATION," | grep -qF ",$SECRET_NAME,"; then
+                # Use comma-delimited matching to avoid false positives on substring matches
+                # e.g., "api" should not match "my-api-keys"
                 echo "::error::Reloader annotation does not include secret '$SECRET_NAME'"
                 echo "  Current: $RELOADER_ANNOTATION"
                 echo "  Expected to include: $SECRET_NAME"
