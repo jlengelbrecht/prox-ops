@@ -228,6 +228,85 @@ jobs:
 
           echo "No hardcoded secrets detected"
 
+      - name: Validate Reloader Policy for ExternalSecrets
+        run: |
+          FILE="${{ matrix.file }}"
+          MCP_DIR="${{ env.MCPSERVER_PATH }}"
+          echo "Validating Reloader policy for ExternalSecrets in: $FILE"
+
+          # Get unique secret names referenced by this MCPServer
+          SECRET_NAMES=$(yq eval '.spec.secrets[].name // ""' "$FILE" 2>/dev/null | sort -u | grep -v '^$' || true)
+
+          if [ -z "$SECRET_NAMES" ]; then
+            echo "No secrets referenced - skipping reloader validation"
+            exit 0
+          fi
+
+          echo "Referenced secrets: $(echo $SECRET_NAMES | tr '\n' ' ')"
+
+          # Get the reloader annotation from podTemplateSpec
+          RELOADER_ANNOTATION=$(yq eval '.spec.podTemplateSpec.metadata.annotations["secret.reloader.stakater.com/reload"] // ""' "$FILE")
+
+          ERRORS=0
+
+          for SECRET_NAME in $SECRET_NAMES; do
+            echo ""
+            echo "Checking secret: $SECRET_NAME"
+
+            # Search for an ExternalSecret that creates this secret
+            # Look in the same directory and parent MCP directory
+            EXTERNAL_SECRET_FILE=""
+            for es_file in "$MCP_DIR"/../*/app/externalsecret*.yaml "$MCP_DIR"/externalsecret*.yaml; do
+              [ -f "$es_file" ] || continue
+
+              # Check if this ExternalSecret creates our secret (spec.target.name or metadata.name)
+              # Use eval-all to handle multi-document YAML files
+              TARGET_NAME=$(yq eval-all 'select(.kind == "ExternalSecret") | (.spec.target.name // .metadata.name)' "$es_file" 2>/dev/null | head -n1 || true)
+
+              if [ "$TARGET_NAME" = "$SECRET_NAME" ]; then
+                EXTERNAL_SECRET_FILE="$es_file"
+                break
+              fi
+            done
+
+            if [ -n "$EXTERNAL_SECRET_FILE" ]; then
+              echo "  → Secret is backed by ExternalSecret: $EXTERNAL_SECRET_FILE"
+              echo "  → This is a 1Password-managed secret - Reloader annotation REQUIRED"
+
+              # Verify reloader annotation includes this secret
+              if [ -z "$RELOADER_ANNOTATION" ]; then
+                echo "::error::MCPServer '$FILE' uses ExternalSecret '$SECRET_NAME' but has NO Reloader annotation"
+                echo ""
+                echo "Add to spec.podTemplateSpec.metadata.annotations:"
+                echo "  secret.reloader.stakater.com/reload: \"$SECRET_NAME\""
+                ERRORS=$((ERRORS + 1))
+              elif ! echo ",$RELOADER_ANNOTATION," | grep -qF ",$SECRET_NAME,"; then
+                # Use comma-delimited matching to avoid false positives on substring matches
+                # e.g., "api" should not match "my-api-keys"
+                echo "::error::Reloader annotation does not include secret '$SECRET_NAME'"
+                echo "  Current: $RELOADER_ANNOTATION"
+                echo "  Expected to include: $SECRET_NAME"
+                ERRORS=$((ERRORS + 1))
+              else
+                echo "  ✓ Reloader annotation correctly configured"
+              fi
+            else
+              echo "  → Secret is not an ExternalSecret (inline or manual) - no reloader required"
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "::error::$ERRORS Reloader policy violation(s) found"
+            echo ""
+            echo "MCPServers using ExternalSecrets (1Password) MUST have Reloader annotations"
+            echo "to ensure pods automatically restart when secrets are updated in 1Password."
+            exit 1
+          fi
+
+          echo ""
+          echo "Reloader policy validation passed"
+
   # =============================================================================
   # Job 3: Security scan container images (optional but recommended)
   # =============================================================================
