@@ -158,3 +158,81 @@ spec:
               protocol: TCP
             - port: "8443"
               protocol: TCP
+---
+# Network policy for truenas-heimdall-mcp to access TrueNAS Heimdall on private network
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-truenas-heimdall-mcp
+  namespace: mcp
+spec:
+  # Match only the truenas-heimdall MCP server pods
+  endpointSelector:
+    matchLabels:
+      toolhive: "true"
+      toolhive-name: truenas-heimdall
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow truenas-heimdall-mcp to reach TrueNAS on private networks
+    # TrueNAS SCALE uses port 443 (HTTPS) and 80 (HTTP)
+    - toCIDRSet:
+        - cidr: 10.0.0.0/8
+        - cidr: 172.16.0.0/12
+        - cidr: 192.168.0.0/16
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+---
+# Network policy for truenas-baldar-mcp to access TrueNAS Baldar on private network
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-truenas-baldar-mcp
+  namespace: mcp
+spec:
+  # Match only the truenas-baldar MCP server pods
+  endpointSelector:
+    matchLabels:
+      toolhive: "true"
+      toolhive-name: truenas-baldar
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow truenas-baldar-mcp to reach TrueNAS on private networks
+    # TrueNAS SCALE uses port 443 (HTTPS) and 80 (HTTP)
+    - toCIDRSet:
+        - cidr: 10.0.0.0/8
+        - cidr: 172.16.0.0/12
+        - cidr: 192.168.0.0/16
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP

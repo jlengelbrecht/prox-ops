@@ -92,6 +92,20 @@
       ],
       "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}docker{{/if}}",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Track PyPI packages in ToolHive MCPServer uvx:// images",
+      "managerFilePatterns": [
+        "/(^|/)kubernetes/apps/mcp/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=pypi depName=truenas-mcp-server
+        //          image: uvx://truenas-mcp-server@3.0.2
+        "# renovate: datasource=pypi depName=(?<depName>\\S+)\\n\\s*image:\\s*uvx://[^@]+@(?<currentValue>[^\\s\"]+)"
+      ],
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
     }
   ]
 }
