@@ -117,3 +117,43 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+---
+# Separate policy for unifi-mcp to access UniFi controller on private network
+# UniFi controllers typically run on homelab private networks (10.x, 192.168.x, etc.)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-unifi-mcp
+  namespace: mcp
+spec:
+  # Match only the unifi MCP server pods
+  endpointSelector:
+    matchLabels:
+      toolhive: "true"
+      app.kubernetes.io/name: unifi
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow unifi-mcp to reach UniFi controllers on private networks
+    # UniFi OS uses port 443, legacy controllers use port 8443
+    - toCIDRSet:
+        - cidr: 10.0.0.0/8
+        - cidr: 172.16.0.0/12
+        - cidr: 192.168.0.0/16
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "8443"
+              protocol: TCP

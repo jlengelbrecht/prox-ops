@@ -98,14 +98,14 @@ spec:
         prefixFormat: "{workload}_"
       # Tool filtering: exclude unifi from internal gateway
       # LiteLLM and internal services should NOT have access to network management
+      # Note: VirtualMCPServer uses allow-list pattern - empty filter = no tools exposed
+      # By not listing unifi workload at all, its tools are excluded from aggregation
       tools:
         - workload: graphiti
           # Include all graphiti tools (no filter = all tools)
         - workload: n8n
           # Include all n8n tools (no filter = all tools)
-        - workload: unifi
-          # Exclude ALL unifi tools from internal gateway
-          excludeAll: true
+        # unifi workload intentionally omitted - not exposed to internal gateway
     audit:
       enabled: true
       includeRequestData: false
