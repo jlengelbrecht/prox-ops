@@ -594,11 +594,40 @@ jobs:
           echo "=== Vulnerability Scan Results ==="
           pip-audit -r /tmp/requirements.txt --progress-spinner=off --format=json --output=/tmp/pip-audit-results.json 2>/dev/null || true
 
-          # Process results
-          # pip-audit JSON format: [{"name": "pkg", "version": "1.0", "vulns": [{"id": "...", "fix_versions": [...]}]}]
+          # Process results - handle various pip-audit output formats
           if [ -f /tmp/pip-audit-results.json ]; then
-            # Count total vulnerabilities across all packages
-            VULN_COUNT=$(jq '[.[].vulns | length] | add // 0' /tmp/pip-audit-results.json)
+            # Debug: Show the JSON structure
+            echo "=== Raw JSON Output ==="
+            cat /tmp/pip-audit-results.json | head -50
+            echo ""
+            echo "=== JSON Structure Analysis ==="
+
+            # pip-audit JSON format varies:
+            # Standard: {"dependencies": [{"name": "pkg", "version": "1.0", "vulns": [...]}]}
+            # Or array: [{"name": "pkg", "version": "1.0", "vulns": [...]}]
+            # Detect format and extract vulnerabilities accordingly
+
+            # Check if top-level has 'dependencies' key (newer format) or is direct array (older format)
+            HAS_DEPS_KEY=$(jq 'has("dependencies")' /tmp/pip-audit-results.json 2>/dev/null || echo "false")
+            IS_ARRAY=$(jq 'type == "array"' /tmp/pip-audit-results.json 2>/dev/null || echo "false")
+
+            echo "Has dependencies key: $HAS_DEPS_KEY"
+            echo "Is array: $IS_ARRAY"
+
+            if [ "$HAS_DEPS_KEY" = "true" ]; then
+              # Newer format: {"dependencies": [...]}
+              VULN_COUNT=$(jq '[.dependencies[]? | .vulns // [] | length] | add // 0' /tmp/pip-audit-results.json 2>/dev/null || echo "0")
+              VULN_DETAILS_CMD='.dependencies[]? | select((.vulns // []) | length > 0) | .name as $pkg | .version as $ver | (.vulns // [])[] | "[HIGH] \(.id // "unknown"): \($pkg) \($ver) - Fix: \(.fix_versions | join(", ") // "No fix available")"'
+            elif [ "$IS_ARRAY" = "true" ]; then
+              # Array format: [{"name": ..., "vulns": ...}]
+              VULN_COUNT=$(jq '[.[]? | .vulns // [] | length] | add // 0' /tmp/pip-audit-results.json 2>/dev/null || echo "0")
+              VULN_DETAILS_CMD='.[]? | select((.vulns // []) | length > 0) | .name as $pkg | .version as $ver | (.vulns // [])[] | "[HIGH] \(.id // "unknown"): \($pkg) \($ver) - Fix: \(.fix_versions | join(", ") // "No fix available")"'
+            else
+              # Unknown format - try to handle gracefully
+              echo "::warning::Unknown pip-audit JSON format, attempting fallback parsing"
+              VULN_COUNT=$(jq '.. | .vulns? // empty | length' /tmp/pip-audit-results.json 2>/dev/null | jq -s 'add // 0' || echo "0")
+              VULN_DETAILS_CMD='.. | select(type == "object" and .vulns?) | .name as $pkg | .version as $ver | .vulns[] | "[HIGH] \(.id // "unknown"): \($pkg // "unknown") \($ver // "?") - Fix: \(.fix_versions | join(", ") // "No fix available")"'
+            fi
 
             echo "Vulnerabilities found: $VULN_COUNT"
             echo "vuln_count=$VULN_COUNT" >> "$GITHUB_OUTPUT"
@@ -606,8 +635,7 @@ jobs:
             if [ "$VULN_COUNT" -gt 0 ]; then
               echo ""
               echo "=== Vulnerability Details ==="
-              # Parse pip-audit nested JSON format correctly
-              jq -r '.[] | select(.vulns | length > 0) | .name as $pkg | .version as $ver | .vulns[] | "[HIGH] \(.id): \($pkg) \($ver) - Fix: \(.fix_versions | join(", ") // "No fix available")"' /tmp/pip-audit-results.json | head -20
+              jq -r "$VULN_DETAILS_CMD" /tmp/pip-audit-results.json 2>/dev/null | head -20 || echo "Could not parse vulnerability details"
               echo "scan_status=failed" >> "$GITHUB_OUTPUT"
               echo ""
               echo "::error::pip-audit found $VULN_COUNT vulnerabilities in $PACKAGE"
@@ -619,6 +647,7 @@ jobs:
             fi
           else
             # Fallback to text output if JSON failed
+            echo "::warning::JSON output not generated, falling back to text"
             pip-audit -r /tmp/requirements.txt --progress-spinner=off
             echo "scan_status=passed" >> "$GITHUB_OUTPUT"
           fi
