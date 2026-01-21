@@ -339,16 +339,19 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Scanning image: $IMAGE"
 
-          # Check if this is a uvx:// image (dynamically built by ToolHive, no pre-built container)
+          # Check if this is a uvx:// image (dynamically built by ToolHive from PyPI)
           if echo "$IMAGE" | grep -qE '^uvx://'; then
-            echo "::notice::Skipping scan for uvx:// image - container is built dynamically by ToolHive"
-            echo "skip_scan=true" >> "$GITHUB_OUTPUT"
+            echo "image_type=pypi" >> "$GITHUB_OUTPUT"
+            # Extract package name and version: uvx://package@version -> package==version
+            PYPI_PACKAGE=$(echo "$IMAGE" | sed -E 's|^uvx://([^@]+)@(.+)$|\1==\2|')
+            echo "pypi_package=$PYPI_PACKAGE" >> "$GITHUB_OUTPUT"
+            echo "PyPI package: $PYPI_PACKAGE"
           else
-            echo "skip_scan=false" >> "$GITHUB_OUTPUT"
+            echo "image_type=docker" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run Trivy Scan
-        if: steps.image.outputs.skip_scan != 'true'
+      - name: Run Trivy Scan (Docker images)
+        if: steps.image.outputs.image_type == 'docker'
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
         with:
           image-ref: ${{ steps.image.outputs.image }}
@@ -356,6 +359,30 @@ jobs:
           exit-code: "0"  # Don't fail, just report
           severity: "HIGH,CRITICAL"
           ignore-unfixed: true
+
+      - name: Run pip-audit (PyPI packages)
+        if: steps.image.outputs.image_type == 'pypi'
+        run: |
+          PACKAGE="${{ steps.image.outputs.pypi_package }}"
+          echo "Auditing PyPI package: $PACKAGE"
+
+          # Install pip-audit
+          pip install pip-audit --quiet
+
+          # Create temporary requirements file
+          echo "$PACKAGE" > /tmp/requirements.txt
+
+          # Run pip-audit to check for known vulnerabilities
+          echo "=== Vulnerability Scan Results ==="
+          pip-audit -r /tmp/requirements.txt --progress-spinner=off || {
+            echo "::warning::pip-audit found vulnerabilities in $PACKAGE"
+            echo "Review the vulnerabilities above before deploying"
+          }
+
+          # Also check package metadata
+          echo ""
+          echo "=== Package Metadata ==="
+          pip index versions "${PACKAGE%%==*}" 2>/dev/null | head -5 || echo "Could not fetch package versions"
 
   # =============================================================================
   # Job 4: MCP Protocol Validation (optional - requires thv CLI)
@@ -594,8 +621,18 @@ jobs:
 
             # Build server name from repository URL (owner/repo format)
             # e.g., https://github.com/getzep/graphiti -> getzep/graphiti
+            # For multiple instances of same repo, use owner/k8s-name for uniqueness
             if [ -n "$REPO_URL" ]; then
-              SERVER_NAME=$(echo "$REPO_URL" | sed -E 's|https?://github\.com/([^/]+/[^/]+).*|\1|')
+              REPO_OWNER=$(echo "$REPO_URL" | sed -E 's|https?://github\.com/([^/]+)/.*|\1|')
+              REPO_NAME=$(echo "$REPO_URL" | sed -E 's|https?://github\.com/([^/]+/[^/]+).*|\1|')
+              # Check if this repo name will be duplicated (multiple MCPServers from same repo)
+              DUPE_COUNT=$(grep -l "repository-url.*$REPO_URL" "$MCPSERVER_DIR"/mcpserver-*.yaml 2>/dev/null | wc -l)
+              if [ "$DUPE_COUNT" -gt 1 ]; then
+                # Multiple instances from same repo - use owner/k8s-name for uniqueness
+                SERVER_NAME="${REPO_OWNER}/${K8S_NAME}"
+              else
+                SERVER_NAME="$REPO_NAME"
+              fi
               REPO_SOURCE="github"
             else
               SERVER_NAME="homelab/${K8S_NAME}"
