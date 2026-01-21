@@ -339,13 +339,28 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Scanning image: $IMAGE"
 
-          # Check if this is a uvx:// image (dynamically built by ToolHive from PyPI)
+          # Detect image type based on ToolHive transport scheme
+          # Supported: uvx:// (PyPI), npx:// (npm), go://, github://, docker (default)
           if echo "$IMAGE" | grep -qE '^uvx://'; then
             echo "image_type=pypi" >> "$GITHUB_OUTPUT"
             # Extract package name and version: uvx://package@version -> package==version
             PYPI_PACKAGE=$(echo "$IMAGE" | sed -E 's|^uvx://([^@]+)@(.+)$|\1==\2|')
             echo "pypi_package=$PYPI_PACKAGE" >> "$GITHUB_OUTPUT"
             echo "PyPI package: $PYPI_PACKAGE"
+          elif echo "$IMAGE" | grep -qE '^npx://'; then
+            echo "image_type=npm" >> "$GITHUB_OUTPUT"
+            # Extract package name and version: npx://package@version -> package@version
+            NPM_PACKAGE=$(echo "$IMAGE" | sed -E 's|^npx://(.+)$|\1|')
+            echo "npm_package=$NPM_PACKAGE" >> "$GITHUB_OUTPUT"
+            echo "npm package: $NPM_PACKAGE"
+          elif echo "$IMAGE" | grep -qE '^go://'; then
+            echo "image_type=go" >> "$GITHUB_OUTPUT"
+            # Go packages - security scanning via govulncheck (future)
+            echo "::notice::Go package detected - vulnerability scanning not yet implemented"
+          elif echo "$IMAGE" | grep -qE '^github://'; then
+            echo "image_type=github" >> "$GITHUB_OUTPUT"
+            # GitHub source - security scanning via repo analysis (future)
+            echo "::notice::GitHub source detected - vulnerability scanning not yet implemented"
           else
             echo "image_type=docker" >> "$GITHUB_OUTPUT"
           fi
@@ -360,6 +375,12 @@ jobs:
           severity: "HIGH,CRITICAL"
           ignore-unfixed: true
 
+      - name: Setup Python (for PyPI audit)
+        if: steps.image.outputs.image_type == 'pypi'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
       - name: Run pip-audit (PyPI packages)
         if: steps.image.outputs.image_type == 'pypi'
         run: |
@@ -367,7 +388,7 @@ jobs:
           echo "Auditing PyPI package: $PACKAGE"
 
           # Install pip-audit
-          pip install pip-audit --quiet
+          python -m pip install pip-audit --quiet
 
           # Create temporary requirements file
           echo "$PACKAGE" > /tmp/requirements.txt
@@ -382,7 +403,53 @@ jobs:
           # Also check package metadata
           echo ""
           echo "=== Package Metadata ==="
-          pip index versions "${PACKAGE%%==*}" 2>/dev/null | head -5 || echo "Could not fetch package versions"
+          python -m pip index versions "${PACKAGE%%==*}" 2>/dev/null | head -5 || echo "Could not fetch package versions"
+
+      - name: Setup Node.js (for npm audit)
+        if: steps.image.outputs.image_type == 'npm'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Run npm audit (npm packages)
+        if: steps.image.outputs.image_type == 'npm'
+        run: |
+          PACKAGE="${{ steps.image.outputs.npm_package }}"
+          echo "Auditing npm package: $PACKAGE"
+
+          # Create temporary package.json with the dependency
+          mkdir -p /tmp/npm-audit
+          cd /tmp/npm-audit
+
+          # Extract package name and version
+          PKG_NAME=$(echo "$PACKAGE" | sed -E 's/@[^@]+$//')
+          PKG_VERSION=$(echo "$PACKAGE" | grep -oE '@[^@]+$' | tr -d '@')
+          [ -z "$PKG_VERSION" ] && PKG_VERSION="latest"
+
+          cat > package.json << EOF
+          {
+            "name": "audit-check",
+            "version": "1.0.0",
+            "dependencies": {
+              "$PKG_NAME": "$PKG_VERSION"
+            }
+          }
+          EOF
+
+          # Install and audit
+          echo "=== Installing package ==="
+          npm install --ignore-scripts --package-lock-only 2>/dev/null || true
+
+          echo ""
+          echo "=== Vulnerability Scan Results ==="
+          npm audit --json 2>/dev/null | jq -r '
+            if .vulnerabilities then
+              .vulnerabilities | to_entries[] |
+              "[\(.value.severity | ascii_upcase)] \(.key): \(.value.via[0].title // .value.via[0])"
+            else
+              "No vulnerabilities found"
+            end
+          ' || echo "Could not run npm audit"
 
   # =============================================================================
   # Job 4: MCP Protocol Validation (optional - requires thv CLI)
