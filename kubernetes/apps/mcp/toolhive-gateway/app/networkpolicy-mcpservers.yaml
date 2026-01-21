@@ -127,10 +127,11 @@ metadata:
   namespace: mcp
 spec:
   # Match only the unifi MCP server pods
+  # Note: ToolHive operator uses "app: <name>" not "app.kubernetes.io/name"
   endpointSelector:
     matchLabels:
       toolhive: "true"
-      app.kubernetes.io/name: unifi
+      toolhive-name: unifi
 
   egress:
     # DNS resolution
