@@ -339,7 +339,16 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Scanning image: $IMAGE"
 
+          # Check if this is a uvx:// image (dynamically built by ToolHive, no pre-built container)
+          if echo "$IMAGE" | grep -qE '^uvx://'; then
+            echo "::notice::Skipping scan for uvx:// image - container is built dynamically by ToolHive"
+            echo "skip_scan=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_scan=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run Trivy Scan
+        if: steps.image.outputs.skip_scan != 'true'
         uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
         with:
           image-ref: ${{ steps.image.outputs.image }}
