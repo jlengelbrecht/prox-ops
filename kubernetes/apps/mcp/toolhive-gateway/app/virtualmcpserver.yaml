@@ -42,40 +42,40 @@ spec:
           - profile
           - email
           - offline_access
-  # Cedar authorization policies for fine-grained access control
-  # Restricts unifi tools to admin user only
-  authzConfig:
-    type: inline
-    inline:
-      policies:
-        # Allow admin user (jlengelbrecht96@gmail.com) access to ALL tools including unifi
-        - |
-          permit(
-            principal,
-            action == Action::"call_tool",
-            resource
-          ) when {
-            principal.claim_email == "jlengelbrecht96@gmail.com"
-          };
-        # Allow all authenticated users access to non-unifi tools only
-        - |
-          permit(
-            principal,
-            action == Action::"call_tool",
-            resource
-          ) when {
-            !resource.name like "unifi_*"
-          };
-        # Deny unifi tools to non-admin users (explicit deny for safety)
-        - |
-          forbid(
-            principal,
-            action == Action::"call_tool",
-            resource
-          ) when {
-            resource.name like "unifi_*" &&
-            principal.claim_email != "jlengelbrecht96@gmail.com"
-          };
+    # Cedar authorization policies for fine-grained access control
+    # Restricts unifi tools to admin user only
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          # Allow admin user access to ALL tools including unifi
+          - |
+            permit(
+              principal,
+              action == Action::"call_tool",
+              resource
+            ) when {
+              principal.claim_email == "jlengelbrecht96@gmail.com"
+            };
+          # Allow all authenticated users access to non-unifi tools only
+          - |
+            permit(
+              principal,
+              action == Action::"call_tool",
+              resource
+            ) when {
+              !resource.name like "unifi_*"
+            };
+          # Deny unifi tools to non-admin users (explicit deny for safety)
+          - |
+            forbid(
+              principal,
+              action == Action::"call_tool",
+              resource
+            ) when {
+              resource.name like "unifi_*" &&
+              principal.claim_email != "jlengelbrecht96@gmail.com"
+            };
 ---
 # VirtualMCPServer for internal/anonymous access (LiteLLM, internal services)
 # This provides an unauthenticated endpoint for trusted internal cluster traffic
