@@ -123,7 +123,8 @@
       "matchStrings": [
         // Matches: # renovate: datasource=npm depName=@modelcontextprotocol/server-filesystem
         //          # mcp-source: npx://@modelcontextprotocol/server-filesystem@1.0.0
-        "# renovate: datasource=npm depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*npx://[^@]+@(?<currentValue>[^\\s]+)"
+        // Note: Uses [^\\s]+@ to support scoped packages (regex backtracks to find last @)
+        "# renovate: datasource=npm depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*npx://[^\\s]+@(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "npm",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}npm{{/if}}"

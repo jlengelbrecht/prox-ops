@@ -405,6 +405,7 @@ jobs:
         run: |
           FILE="${{ matrix.file }}"
           MCP_DIR="${{ env.MCPSERVER_PATH }}"
+          ERRORS=0
           echo "Validating NetworkPolicy coverage for: $FILE"
 
           # Extract MCPServer name for policy correlation
@@ -435,7 +436,8 @@ jobs:
               if [ "$NEEDS_NETWORK" = "true" ]; then
                 EGRESS_RULES=$(echo "$SPECIFIC_POLICY" | yq eval '.spec.egress | length' -)
                 if [ "$EGRESS_RULES" -eq 0 ]; then
-                  echo "::warning::NetworkPolicy exists but has no egress rules"
+                  echo "::error::NetworkPolicy exists but has no egress rules (required for network access)"
+                  ERRORS=$((ERRORS + 1))
                 else
                   echo "✓ NetworkPolicy has $EGRESS_RULES egress rule(s)"
                 fi
@@ -452,19 +454,40 @@ jobs:
                 DESCRIPTION=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/registry-description"] // ""' "$FILE")
 
                 if echo "$DESCRIPTION" | grep -qiE "(truenas|unifi|private|homelab|internal)"; then
-                  echo "::warning::$MCP_NAME may need private network access but lacks specific NetworkPolicy"
-                  echo "Consider adding a dedicated policy with toCIDRSet for private IP ranges"
+                  if [ "$NEEDS_NETWORK" = "true" ]; then
+                    echo "::error::$MCP_NAME needs private network access but lacks specific NetworkPolicy"
+                    echo "A dedicated policy with toCIDRSet for private IP ranges is required"
+                    ERRORS=$((ERRORS + 1))
+                  else
+                    echo "::warning::$MCP_NAME may need private network access but lacks specific NetworkPolicy"
+                    echo "Consider adding a dedicated policy with toCIDRSet for private IP ranges"
+                  fi
                 fi
               else
-                echo "::warning::No NetworkPolicy found covering $MCP_NAME"
-                echo "ToolHive MCPServers should have CiliumNetworkPolicy for security"
+                if [ "$NEEDS_NETWORK" = "true" ]; then
+                  echo "::error::No NetworkPolicy found covering $MCP_NAME (required for network access)"
+                  echo "ToolHive MCPServers with network permission profile must have CiliumNetworkPolicy"
+                  ERRORS=$((ERRORS + 1))
+                else
+                  echo "::warning::No NetworkPolicy found covering $MCP_NAME"
+                  echo "ToolHive MCPServers should have CiliumNetworkPolicy for security"
+                fi
               fi
             fi
           else
-            echo "::warning::NetworkPolicy file not found: $POLICY_FILE"
+            if [ "$NEEDS_NETWORK" = "true" ]; then
+              echo "::error::NetworkPolicy file not found: $POLICY_FILE (required for network access)"
+              ERRORS=$((ERRORS + 1))
+            else
+              echo "::warning::NetworkPolicy file not found: $POLICY_FILE"
+            fi
           fi
 
           echo ""
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::NetworkPolicy validation failed with $ERRORS error(s)"
+            exit 1
+          fi
           echo "NetworkPolicy validation completed"
 
   # =============================================================================
@@ -530,21 +553,23 @@ jobs:
               PACKAGE=""
               DATASOURCE=""
 
+              # Note: sed patterns use (.+)@[^@]+$ to support scoped packages (e.g., @scope/pkg@1.0.0)
+              # The .+ greedily matches, then backtracks to find the last @ before version
               if echo "$MCP_SOURCE" | grep -qE '^uvx://'; then
                 PROTOCOL="uvx"
-                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^uvx://([^@]+)@.*|\1|')
+                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^uvx://(.+)@[^@]+$|\1|')
                 DATASOURCE="pypi"
               elif echo "$MCP_SOURCE" | grep -qE '^npx://'; then
                 PROTOCOL="npx"
-                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^npx://([^@]+)@.*|\1|')
+                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^npx://(.+)@[^@]+$|\1|')
                 DATASOURCE="npm"
               elif echo "$MCP_SOURCE" | grep -qE '^go://'; then
                 PROTOCOL="go"
-                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^go://([^@]+)@.*|\1|')
+                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^go://(.+)@[^@]+$|\1|')
                 DATASOURCE="go"
               elif echo "$MCP_SOURCE" | grep -qE '^github://'; then
                 PROTOCOL="github"
-                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^github://([^@]+)@.*|\1|')
+                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^github://(.+)@[^@]+$|\1|')
                 DATASOURCE="github-releases"
               fi
 
@@ -704,9 +729,10 @@ jobs:
 
             if [ -n "$MCP_SOURCE" ]; then
               echo "path=A" >> "$GITHUB_OUTPUT"
+              # Note: sed patterns use (.+)@([^@]+)$ to support scoped packages
               if echo "$MCP_SOURCE" | grep -qE '^uvx://'; then
                 echo "image_type=pypi" >> "$GITHUB_OUTPUT"
-                PYPI_PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^uvx://([^@]+)@(.+)$|\1==\2|')
+                PYPI_PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^uvx://(.+)@([^@]+)$|\1==\2|')
                 echo "pypi_package=$PYPI_PACKAGE" >> "$GITHUB_OUTPUT"
               elif echo "$MCP_SOURCE" | grep -qE '^npx://'; then
                 echo "image_type=npm" >> "$GITHUB_OUTPUT"
@@ -1111,6 +1137,8 @@ jobs:
       matrix:
         include: ${{ fromJson(needs.classify.outputs.build_matrix) }}
       fail-fast: false
+      # Serialize to prevent race conditions when committing to same branch
+      max-parallel: 1
     # Only process entries that need building
     steps:
       - name: Check if Build Needed
@@ -1153,12 +1181,18 @@ jobs:
           VERSION="${{ matrix.source_version }}"
           PROTOCOL="${{ matrix.protocol }}"
 
+          # Normalize package name for Docker image naming
+          # Scoped npm packages like @scope/pkg become scope-pkg
+          # Remove leading @ and replace / with -
+          IMAGE_PACKAGE=$(echo "$PACKAGE" | sed -E 's|^@||; s|/|-|g')
+
           # Generate image name following convention: ghcr.io/jlengelbrecht/mcp/<package>:<version>
-          IMAGE_NAME="ghcr.io/jlengelbrecht/mcp/${PACKAGE}:${VERSION}"
+          IMAGE_NAME="ghcr.io/jlengelbrecht/mcp/${IMAGE_PACKAGE}:${VERSION}"
 
           echo "=== Building Container ==="
           echo "Source: $SOURCE"
           echo "Package: $PACKAGE"
+          echo "Normalized for Docker: $IMAGE_PACKAGE"
           echo "Version: $VERSION"
           echo "Protocol: $PROTOCOL"
           echo "Target Image: $IMAGE_NAME"
@@ -1169,9 +1203,10 @@ jobs:
           thv build "$SOURCE" --tag "$IMAGE_NAME"
 
           # Also tag as latest
-          docker tag "$IMAGE_NAME" "ghcr.io/jlengelbrecht/mcp/${PACKAGE}:latest"
+          docker tag "$IMAGE_NAME" "ghcr.io/jlengelbrecht/mcp/${IMAGE_PACKAGE}:latest"
 
           echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "image_package=$IMAGE_PACKAGE" >> "$GITHUB_OUTPUT"
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
@@ -1179,15 +1214,15 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         run: |
           IMAGE_NAME="${{ steps.build.outputs.image_name }}"
-          PACKAGE="${{ steps.build.outputs.package }}"
+          IMAGE_PACKAGE="${{ steps.build.outputs.image_package }}"
 
           echo "Pushing $IMAGE_NAME to GHCR..."
           docker push "$IMAGE_NAME"
-          docker push "ghcr.io/jlengelbrecht/mcp/${PACKAGE}:latest"
+          docker push "ghcr.io/jlengelbrecht/mcp/${IMAGE_PACKAGE}:latest"
 
           echo "Successfully pushed:"
           echo "  - $IMAGE_NAME"
-          echo "  - ghcr.io/jlengelbrecht/mcp/${PACKAGE}:latest"
+          echo "  - ghcr.io/jlengelbrecht/mcp/${IMAGE_PACKAGE}:latest"
 
       - name: Update MCPServer Manifest
         if: steps.check.outputs.skip != 'true'
@@ -1216,11 +1251,18 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           FILE="${{ matrix.file }}"
           PACKAGE="${{ steps.build.outputs.package }}"
           VERSION="${{ steps.build.outputs.version }}"
           IMAGE_NAME="${{ steps.build.outputs.image_name }}"
+
+          # Validate HEAD_REF to prevent command injection from untrusted branch names
+          if ! [[ "$HEAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Invalid head_ref value - potential injection attempt"
+            exit 1
+          fi
 
           # Configure git for GitHub App bot
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
@@ -1230,7 +1272,7 @@ jobs:
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
           # Pull latest changes (in case other matrix jobs committed)
-          git pull --rebase origin ${{ github.head_ref }} || true
+          git pull --rebase origin "$HEAD_REF" || true
 
           # Check if there are changes to commit
           if git diff --quiet "$FILE"; then
@@ -1323,7 +1365,8 @@ jobs:
               REPO_OWNER=$(echo "$REPO_URL" | sed -E 's|https?://github\.com/([^/]+)/.*|\1|')
               REPO_NAME=$(echo "$REPO_URL" | sed -E 's|https?://github\.com/([^/]+/[^/]+).*|\1|')
               # Check if this repo name will be duplicated (multiple MCPServers from same repo)
-              DUPE_COUNT=$(grep -l "repository-url.*$REPO_URL" "$MCPSERVER_DIR"/mcpserver-*.yaml 2>/dev/null | wc -l)
+              # Use grep -F for fixed-string matching to avoid regex metacharacter issues in URLs
+              DUPE_COUNT=$(grep -lF "$REPO_URL" "$MCPSERVER_DIR"/mcpserver-*.yaml 2>/dev/null | wc -l)
               if [ "$DUPE_COUNT" -gt 1 ]; then
                 # Multiple instances from same repo - use owner/k8s-name for uniqueness
                 SERVER_NAME="${REPO_OWNER}/${K8S_NAME}"
@@ -1525,8 +1568,24 @@ jobs:
             NAME=$(yq eval '.metadata.name' "$mcpfile")
             IMAGE=$(yq eval '.spec.image' "$mcpfile")
 
-            # Determine image type
-            if echo "$IMAGE" | grep -qE '^uvx://'; then
+            # Check mcp-source comment first (for source-built containers)
+            # This correctly labels PATH A servers that now use GHCR images
+            MCP_SOURCE=$(grep -oP '#\s*mcp-source:\s*\K.*' "$mcpfile" 2>/dev/null || echo "")
+
+            # Determine image type from mcp-source, falling back to spec.image
+            if [ -n "$MCP_SOURCE" ]; then
+              if echo "$MCP_SOURCE" | grep -qE '^uvx://'; then
+                IMAGE_TYPE="PyPI (pip-audit)"
+              elif echo "$MCP_SOURCE" | grep -qE '^npx://'; then
+                IMAGE_TYPE="npm (npm audit)"
+              elif echo "$MCP_SOURCE" | grep -qE '^go://'; then
+                IMAGE_TYPE="Go (pending)"
+              elif echo "$MCP_SOURCE" | grep -qE '^github://'; then
+                IMAGE_TYPE="GitHub (pending)"
+              else
+                IMAGE_TYPE="Source (unknown)"
+              fi
+            elif echo "$IMAGE" | grep -qE '^uvx://'; then
               IMAGE_TYPE="PyPI (pip-audit)"
             elif echo "$IMAGE" | grep -qE '^npx://'; then
               IMAGE_TYPE="npm (npm audit)"
