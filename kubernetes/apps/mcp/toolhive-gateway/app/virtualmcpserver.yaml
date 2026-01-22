@@ -22,6 +22,19 @@ spec:
       enabled: true
       includeRequestData: false
       includeResponseData: false
+    # Operational settings for health checks and timeouts
+    operational:
+      # Longer timeouts for TrueNAS backends (stdio transport + external API calls)
+      timeouts:
+        default: 30s
+        perWorkload:
+          truenas-baldar: 60s
+          truenas-heimdall: 60s
+      # More lenient health check settings for slow backends
+      failureHandling:
+        healthCheckInterval: 60s
+        unhealthyThreshold: 5
+        partialFailureMode: best_effort
   # OIDC authentication via Authentik for external clients (thv CLI, Claude Code, etc.)
   incomingAuth:
     type: oidc
@@ -110,6 +123,14 @@ spec:
       enabled: true
       includeRequestData: false
       includeResponseData: false
+    # Operational settings for health checks and timeouts
+    operational:
+      timeouts:
+        default: 30s
+      failureHandling:
+        healthCheckInterval: 60s
+        unhealthyThreshold: 5
+        partialFailureMode: best_effort
   # Anonymous auth for internal cluster services (LiteLLM, etc.)
   incomingAuth:
     type: anonymous
