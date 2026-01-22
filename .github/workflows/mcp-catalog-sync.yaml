@@ -1145,7 +1145,8 @@ jobs:
       needs.classify.result == 'success' &&
       needs.classify.outputs.has_builds == 'true' &&
       needs.image-scan.result == 'success'
-    runs-on: gha-runner-scale-set
+    # Use GitHub-hosted runner for Docker support (self-hosted runners lack Docker daemon)
+    runs-on: ubuntu-latest
     permissions:
       contents: write    # Required: Commit manifest updates to PR
       packages: write    # Required: Push to GHCR
@@ -1220,9 +1221,24 @@ jobs:
           echo "Target Image: $IMAGE_NAME"
           echo ""
 
-          # Build using thv CLI
+          # Verify Docker is available
+          echo "Checking Docker availability..."
+          if ! docker info > /dev/null 2>&1; then
+            echo "::error::Docker is not available or not running"
+            echo "Docker info output:"
+            docker info 2>&1 || true
+            exit 1
+          fi
+          echo "Docker is available"
+
+          # Build using thv CLI with debug output
           echo "Running: thv build $SOURCE --tag $IMAGE_NAME"
-          thv build "$SOURCE" --tag "$IMAGE_NAME"
+          if ! thv build --debug "$SOURCE" --tag "$IMAGE_NAME" 2>&1; then
+            echo "::error::thv build failed"
+            echo "Trying dry-run to see generated Dockerfile..."
+            thv build --dry-run "$SOURCE" 2>&1 || true
+            exit 1
+          fi
 
           # Also tag as latest
           docker tag "$IMAGE_NAME" "ghcr.io/jlengelbrecht/mcp/${IMAGE_PACKAGE}:latest"
@@ -1300,14 +1316,21 @@ jobs:
           # Use GitHub App token for push authentication
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
+          # Stash local changes (from yq manifest update) before pulling
+          git stash --include-untracked
+
           # Pull latest changes (in case other matrix jobs committed)
           # Fail fast on rebase conflicts instead of swallowing errors
           if ! git pull --rebase origin "$HEAD_REF"; then
             echo "::error::Rebase failed - likely concurrent change conflict on $HEAD_REF"
             echo "::error::This shouldn't happen with max-parallel: 1, check workflow configuration"
             git rebase --abort 2>/dev/null || true
+            git stash pop 2>/dev/null || true
             exit 1
           fi
+
+          # Restore stashed changes
+          git stash pop
 
           # Check if there are changes to commit
           if git diff --quiet "$FILE"; then
