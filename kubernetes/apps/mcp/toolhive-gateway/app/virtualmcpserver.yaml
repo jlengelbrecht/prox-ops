@@ -31,10 +31,10 @@ spec:
           truenas-baldar: 60s
           truenas-heimdall: 60s
       # More lenient health check settings for slow backends
+      # NOTE: partialFailureMode omitted due to ToolHive bug - CRD wants "best_effort" but binary wants "bestEffort"
       failureHandling:
         healthCheckInterval: 60s
         unhealthyThreshold: 5
-        partialFailureMode: bestEffort
   # OIDC authentication via Authentik for external clients (thv CLI, Claude Code, etc.)
   incomingAuth:
     type: oidc
@@ -124,13 +124,13 @@ spec:
       includeRequestData: false
       includeResponseData: false
     # Operational settings for health checks and timeouts
+    # NOTE: partialFailureMode omitted due to ToolHive bug - CRD wants "best_effort" but binary wants "bestEffort"
     operational:
       timeouts:
         default: 30s
       failureHandling:
         healthCheckInterval: 60s
         unhealthyThreshold: 5
-        partialFailureMode: bestEffort
   # Anonymous auth for internal cluster services (LiteLLM, etc.)
   incomingAuth:
     type: anonymous
