@@ -109,7 +109,8 @@
       "matchStrings": [
         // Matches: # renovate: datasource=pypi depName=truenas-mcp-server versioning=pep440
         //          # mcp-source: uvx://truenas-mcp-server@3.0.2
-        "# renovate: datasource=pypi depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*uvx://[^@]+@(?<currentValue>[^\\s]+)"
+        // Note: \\s* at start handles YAML indentation
+        "\\s*# renovate: datasource=pypi depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*uvx://[^@]+@(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "pypi",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}pep440{{/if}}"
@@ -124,7 +125,8 @@
         // Matches: # renovate: datasource=npm depName=@modelcontextprotocol/server-filesystem
         //          # mcp-source: npx://@modelcontextprotocol/server-filesystem@1.0.0
         // Note: Uses [^\\s]+@ to support scoped packages (regex backtracks to find last @)
-        "# renovate: datasource=npm depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*npx://[^\\s]+@(?<currentValue>[^\\s]+)"
+        // Note: \\s* at start handles YAML indentation
+        "\\s*# renovate: datasource=npm depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*npx://[^\\s]+@(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "npm",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}npm{{/if}}"
@@ -138,7 +140,8 @@
       "matchStrings": [
         // Matches: # renovate: datasource=go depName=github.com/user/repo
         //          # mcp-source: go://github.com/user/repo@v1.0.0
-        "# renovate: datasource=go depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*go://[^@]+@(?<currentValue>[^\\s]+)"
+        // Note: \\s* at start handles YAML indentation
+        "\\s*# renovate: datasource=go depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*go://[^@]+@(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "go",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
@@ -152,7 +155,8 @@
       "matchStrings": [
         // Matches: # renovate: datasource=github-releases depName=user/repo
         //          # mcp-source: github://user/repo@v1.0.0
-        "# renovate: datasource=github-releases depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*github://[^@]+@(?<currentValue>[^\\s]+)"
+        // Note: \\s* at start handles YAML indentation
+        "\\s*# renovate: datasource=github-releases depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*github://[^@]+@(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
