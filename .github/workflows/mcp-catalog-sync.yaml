@@ -1599,7 +1599,14 @@ jobs:
               IMAGE_TYPE="Docker (Trivy)"
             fi
 
-            VALIDATION_RESULTS="${VALIDATION_RESULTS}| ${NAME} | ${IMAGE_TYPE} | ✅ Passed |\n"
+            # Determine scan status based on whether scanning actually occurred
+            # Go and GitHub types have "(pending)" scans - no actual scanning happens
+            if [ "$IMAGE_TYPE" = "Go (pending)" ] || [ "$IMAGE_TYPE" = "GitHub (pending)" ] || [ "$IMAGE_TYPE" = "Source (unknown)" ]; then
+              SCAN_STATUS="⚠️ Manual review required"
+            else
+              SCAN_STATUS="✅ Passed"
+            fi
+            VALIDATION_RESULTS="${VALIDATION_RESULTS}| ${NAME} | ${IMAGE_TYPE} | ${SCAN_STATUS} |\n"
           done
 
           # Store results for PR comment
