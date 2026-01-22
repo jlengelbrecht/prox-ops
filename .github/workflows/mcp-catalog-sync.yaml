@@ -405,6 +405,7 @@ jobs:
         run: |
           FILE="${{ matrix.file }}"
           MCP_DIR="${{ env.MCPSERVER_PATH }}"
+          ERRORS=0
           echo "Validating NetworkPolicy coverage for: $FILE"
 
           # Extract MCPServer name for policy correlation
@@ -435,7 +436,8 @@ jobs:
               if [ "$NEEDS_NETWORK" = "true" ]; then
                 EGRESS_RULES=$(echo "$SPECIFIC_POLICY" | yq eval '.spec.egress | length' -)
                 if [ "$EGRESS_RULES" -eq 0 ]; then
-                  echo "::warning::NetworkPolicy exists but has no egress rules"
+                  echo "::error::NetworkPolicy exists but has no egress rules (required for network access)"
+                  ERRORS=$((ERRORS + 1))
                 else
                   echo "✓ NetworkPolicy has $EGRESS_RULES egress rule(s)"
                 fi
@@ -452,41 +454,62 @@ jobs:
                 DESCRIPTION=$(yq eval '.metadata.annotations["toolhive.stacklok.dev/registry-description"] // ""' "$FILE")
 
                 if echo "$DESCRIPTION" | grep -qiE "(truenas|unifi|private|homelab|internal)"; then
-                  echo "::warning::$MCP_NAME may need private network access but lacks specific NetworkPolicy"
-                  echo "Consider adding a dedicated policy with toCIDRSet for private IP ranges"
+                  if [ "$NEEDS_NETWORK" = "true" ]; then
+                    echo "::error::$MCP_NAME needs private network access but lacks specific NetworkPolicy"
+                    echo "A dedicated policy with toCIDRSet for private IP ranges is required"
+                    ERRORS=$((ERRORS + 1))
+                  else
+                    echo "::warning::$MCP_NAME may need private network access but lacks specific NetworkPolicy"
+                    echo "Consider adding a dedicated policy with toCIDRSet for private IP ranges"
+                  fi
                 fi
               else
-                echo "::warning::No NetworkPolicy found covering $MCP_NAME"
-                echo "ToolHive MCPServers should have CiliumNetworkPolicy for security"
+                if [ "$NEEDS_NETWORK" = "true" ]; then
+                  echo "::error::No NetworkPolicy found covering $MCP_NAME (required for network access)"
+                  echo "ToolHive MCPServers with network permission profile must have CiliumNetworkPolicy"
+                  ERRORS=$((ERRORS + 1))
+                else
+                  echo "::warning::No NetworkPolicy found covering $MCP_NAME"
+                  echo "ToolHive MCPServers should have CiliumNetworkPolicy for security"
+                fi
               fi
             fi
           else
-            echo "::warning::NetworkPolicy file not found: $POLICY_FILE"
+            if [ "$NEEDS_NETWORK" = "true" ]; then
+              echo "::error::NetworkPolicy file not found: $POLICY_FILE (required for network access)"
+              ERRORS=$((ERRORS + 1))
+            else
+              echo "::warning::NetworkPolicy file not found: $POLICY_FILE"
+            fi
           fi
 
           echo ""
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::NetworkPolicy validation failed with $ERRORS error(s)"
+            exit 1
+          fi
           echo "NetworkPolicy validation completed"
 
   # =============================================================================
-  # Job 3: Security scan container images (BLOCKING on HIGH/CRITICAL)
+  # Job 3: Classify MCPServers into deployment paths
   # =============================================================================
-  image-scan:
-    name: Scan Container Image
+  # PATH A: Source-built (has mcp-source comment) - CI/CD builds container
+  # PATH B: Pre-built (no mcp-source) - Use maintainer's container directly
+  # =============================================================================
+  classify:
+    name: Classify Deployment Paths
     needs: [preflight, validate]
-    # Only run when there are actual files to scan (not just deletions)
     if: |
       always() &&
       needs.preflight.outputs.mcpservers_changed == 'true' &&
       needs.preflight.outputs.mcpserver_files != '[]' &&
       (needs.validate.result == 'success' || needs.validate.result == 'skipped')
     runs-on: gha-runner-scale-set
-    # Note: Individual scan results are checked via job success/failure status
-    # No aggregated outputs needed since security scans are BLOCKING
-    strategy:
-      matrix:
-        file: ${{ fromJson(needs.preflight.outputs.mcpserver_files) }}
-      fail-fast: false
-    # Security scans are BLOCKING - HIGH/CRITICAL vulnerabilities fail the workflow
+    outputs:
+      build_matrix: ${{ steps.classify.outputs.build_matrix }}
+      prebuilt_matrix: ${{ steps.classify.outputs.prebuilt_matrix }}
+      has_builds: ${{ steps.classify.outputs.has_builds }}
+      has_prebuilt: ${{ steps.classify.outputs.has_prebuilt }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -494,37 +517,249 @@ jobs:
       - name: Setup MCP Tools
         uses: ./.github/actions/setup-mcp-tools
 
-      - name: Extract Image
+      - name: Classify MCPServers
+        id: classify
+        run: |
+          BUILD_MATRIX="[]"      # PATH A: needs container build
+          PREBUILT_MATRIX="[]"   # PATH B: pre-built, scan only
+
+          # Process each file from preflight
+          FILES='${{ needs.preflight.outputs.mcpserver_files }}'
+
+          for file in $(echo "$FILES" | jq -r '.[]'); do
+            echo "=== Classifying: $file ==="
+
+            IMAGE=$(yq eval '.spec.image' "$file")
+            MCP_SOURCE=$(grep -oP '#\s*mcp-source:\s*\K.*' "$file" || echo "")
+
+            echo "  spec.image: $IMAGE"
+            echo "  mcp-source: ${MCP_SOURCE:-<none>}"
+
+            if [ -n "$MCP_SOURCE" ]; then
+              # PATH A: Has mcp-source → source-built container
+              echo "  Path: A (source-built)"
+
+              # Extract version from mcp-source
+              SOURCE_VERSION=$(echo "$MCP_SOURCE" | grep -oP '@\K[^@\s]+$' || echo "")
+
+              # Extract version from current spec.image
+              CURRENT_VERSION=$(echo "$IMAGE" | grep -oP ':\K[^:]+$' || echo "")
+
+              echo "  Source version: $SOURCE_VERSION"
+              echo "  Image version: $CURRENT_VERSION"
+
+              # Determine protocol and package name
+              PROTOCOL=""
+              PACKAGE=""
+              DATASOURCE=""
+
+              # Note: sed patterns use (.+)@[^@]+$ to support scoped packages (e.g., @scope/pkg@1.0.0)
+              # The .+ greedily matches, then backtracks to find the last @ before version
+              if echo "$MCP_SOURCE" | grep -qE '^uvx://'; then
+                PROTOCOL="uvx"
+                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^uvx://(.+)@[^@]+$|\1|')
+                DATASOURCE="pypi"
+              elif echo "$MCP_SOURCE" | grep -qE '^npx://'; then
+                PROTOCOL="npx"
+                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^npx://(.+)@[^@]+$|\1|')
+                DATASOURCE="npm"
+              elif echo "$MCP_SOURCE" | grep -qE '^go://'; then
+                PROTOCOL="go"
+                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^go://(.+)@[^@]+$|\1|')
+                DATASOURCE="go"
+              elif echo "$MCP_SOURCE" | grep -qE '^github://'; then
+                PROTOCOL="github"
+                PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^github://(.+)@[^@]+$|\1|')
+                DATASOURCE="github-releases"
+              fi
+
+              echo "  Protocol: $PROTOCOL"
+              echo "  Package: $PACKAGE"
+
+              # Fail-fast: Validate required fields before proceeding
+              if [ -z "$PROTOCOL" ] || [ -z "$PACKAGE" ]; then
+                echo "::error::Failed to extract protocol/package from mcp-source: $MCP_SOURCE"
+                echo "::error::Protocol='$PROTOCOL', Package='$PACKAGE'"
+                exit 1
+              fi
+              if [ -z "$SOURCE_VERSION" ]; then
+                echo "::error::Failed to extract version from mcp-source: $MCP_SOURCE"
+                exit 1
+              fi
+
+              # Determine if build is needed (version mismatch)
+              NEEDS_BUILD="false"
+              if [ "$SOURCE_VERSION" != "$CURRENT_VERSION" ]; then
+                NEEDS_BUILD="true"
+                echo "  Status: VERSION MISMATCH - build needed"
+              else
+                echo "  Status: versions match - no build needed"
+              fi
+
+              # Use jq -c for compact (single-line) JSON output for GITHUB_OUTPUT
+              BUILD_MATRIX=$(echo "$BUILD_MATRIX" | jq -c \
+                --arg file "$file" \
+                --arg source "$MCP_SOURCE" \
+                --arg protocol "$PROTOCOL" \
+                --arg package "$PACKAGE" \
+                --arg datasource "$DATASOURCE" \
+                --arg source_version "$SOURCE_VERSION" \
+                --arg current_version "$CURRENT_VERSION" \
+                --arg needs_build "$NEEDS_BUILD" \
+                '. + [{
+                  "file": $file,
+                  "source": $source,
+                  "protocol": $protocol,
+                  "package": $package,
+                  "datasource": $datasource,
+                  "source_version": $source_version,
+                  "current_version": $current_version,
+                  "needs_build": ($needs_build == "true"),
+                  "path": "A"
+                }]')
+            else
+              # PATH B: No mcp-source → pre-built container
+              echo "  Path: B (pre-built)"
+
+              # Use jq -c for compact (single-line) JSON output for GITHUB_OUTPUT
+              PREBUILT_MATRIX=$(echo "$PREBUILT_MATRIX" | jq -c \
+                --arg file "$file" \
+                --arg image "$IMAGE" \
+                '. + [{
+                  "file": $file,
+                  "image": $image,
+                  "path": "B"
+                }]')
+            fi
+
+            echo ""
+          done
+
+          # Output matrices
+          echo "build_matrix=$BUILD_MATRIX" >> "$GITHUB_OUTPUT"
+          echo "prebuilt_matrix=$PREBUILT_MATRIX" >> "$GITHUB_OUTPUT"
+
+          # Output flags
+          BUILD_COUNT=$(echo "$BUILD_MATRIX" | jq 'length')
+          PREBUILT_COUNT=$(echo "$PREBUILT_MATRIX" | jq 'length')
+          NEEDS_BUILD_COUNT=$(echo "$BUILD_MATRIX" | jq '[.[] | select(.needs_build == true)] | length')
+
+          echo "has_builds=$( [ "$NEEDS_BUILD_COUNT" -gt 0 ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+          echo "has_prebuilt=$( [ "$PREBUILT_COUNT" -gt 0 ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+
+          echo "=== Classification Summary ==="
+          echo "PATH A (source-built): $BUILD_COUNT files"
+          echo "  - Needs build: $NEEDS_BUILD_COUNT"
+          echo "PATH B (pre-built): $PREBUILT_COUNT files"
+
+  # =============================================================================
+  # Job 4: Security scan (BLOCKING on HIGH/CRITICAL)
+  # =============================================================================
+  # PATH A (source-built): Scans source packages (pip-audit, npm audit, etc.)
+  # PATH B (pre-built): Scans container images (Trivy)
+  # =============================================================================
+  image-scan:
+    name: Security Scan
+    needs: [preflight, validate, classify]
+    if: |
+      always() &&
+      needs.preflight.outputs.mcpservers_changed == 'true' &&
+      needs.preflight.outputs.mcpserver_files != '[]' &&
+      needs.classify.result == 'success'
+    runs-on: gha-runner-scale-set
+    strategy:
+      matrix:
+        file: ${{ fromJson(needs.preflight.outputs.mcpserver_files) }}
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup MCP Tools
+        uses: ./.github/actions/setup-mcp-tools
+
+      - name: Determine Scan Type
         id: image
         run: |
-          IMAGE=$(yq eval '.spec.image' "${{ matrix.file }}")
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "Scanning image: $IMAGE"
+          FILE="${{ matrix.file }}"
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
 
-          # Detect image type based on ToolHive transport scheme
-          # Supported: uvx:// (PyPI), npx:// (npm), go://, github://, docker (default)
-          if echo "$IMAGE" | grep -qE '^uvx://'; then
-            echo "image_type=pypi" >> "$GITHUB_OUTPUT"
-            # Extract package name and version: uvx://package@version -> package==version
-            PYPI_PACKAGE=$(echo "$IMAGE" | sed -E 's|^uvx://([^@]+)@(.+)$|\1==\2|')
-            echo "pypi_package=$PYPI_PACKAGE" >> "$GITHUB_OUTPUT"
-            echo "PyPI package: $PYPI_PACKAGE"
-          elif echo "$IMAGE" | grep -qE '^npx://'; then
-            echo "image_type=npm" >> "$GITHUB_OUTPUT"
-            # Extract package name and version: npx://package@version -> package@version
-            NPM_PACKAGE=$(echo "$IMAGE" | sed -E 's|^npx://(.+)$|\1|')
-            echo "npm_package=$NPM_PACKAGE" >> "$GITHUB_OUTPUT"
-            echo "npm package: $NPM_PACKAGE"
-          elif echo "$IMAGE" | grep -qE '^go://'; then
-            echo "image_type=go" >> "$GITHUB_OUTPUT"
-            # Go packages - security scanning via govulncheck (future)
-            echo "::notice::Go package detected - vulnerability scanning not yet implemented"
-          elif echo "$IMAGE" | grep -qE '^github://'; then
-            echo "image_type=github" >> "$GITHUB_OUTPUT"
-            # GitHub source - security scanning via repo analysis (future)
-            echo "::notice::GitHub source detected - vulnerability scanning not yet implemented"
-          else
+          # Check classification from classify job outputs
+          BUILD_MATRIX='${{ needs.classify.outputs.build_matrix }}'
+          PREBUILT_MATRIX='${{ needs.classify.outputs.prebuilt_matrix }}'
+
+          # Find this file in either matrix
+          BUILD_ENTRY=$(echo "$BUILD_MATRIX" | jq --arg f "$FILE" '.[] | select(.file == $f)' 2>/dev/null || echo "")
+          PREBUILT_ENTRY=$(echo "$PREBUILT_MATRIX" | jq --arg f "$FILE" '.[] | select(.file == $f)' 2>/dev/null || echo "")
+
+          if [ -n "$BUILD_ENTRY" ] && [ "$BUILD_ENTRY" != "null" ]; then
+            # PATH A: Source-built - extract info from classification
+            echo "path=A" >> "$GITHUB_OUTPUT"
+            PROTOCOL=$(echo "$BUILD_ENTRY" | jq -r '.protocol')
+            PACKAGE=$(echo "$BUILD_ENTRY" | jq -r '.package')
+            VERSION=$(echo "$BUILD_ENTRY" | jq -r '.source_version')
+            SOURCE=$(echo "$BUILD_ENTRY" | jq -r '.source')
+
+            echo "protocol=$PROTOCOL" >> "$GITHUB_OUTPUT"
+            echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+
+            # Set image_type based on protocol for downstream steps
+            case "$PROTOCOL" in
+              uvx)
+                echo "image_type=pypi" >> "$GITHUB_OUTPUT"
+                echo "pypi_package=${PACKAGE}==${VERSION}" >> "$GITHUB_OUTPUT"
+                ;;
+              npx)
+                echo "image_type=npm" >> "$GITHUB_OUTPUT"
+                echo "npm_package=${PACKAGE}@${VERSION}" >> "$GITHUB_OUTPUT"
+                ;;
+              go)
+                echo "image_type=go" >> "$GITHUB_OUTPUT"
+                ;;
+              github)
+                echo "image_type=github" >> "$GITHUB_OUTPUT"
+                ;;
+            esac
+
+            echo "PATH A: Scanning source package $PACKAGE@$VERSION ($PROTOCOL)"
+
+          elif [ -n "$PREBUILT_ENTRY" ] && [ "$PREBUILT_ENTRY" != "null" ]; then
+            # PATH B: Pre-built - scan docker image
+            echo "path=B" >> "$GITHUB_OUTPUT"
             echo "image_type=docker" >> "$GITHUB_OUTPUT"
+            IMAGE=$(echo "$PREBUILT_ENTRY" | jq -r '.image')
+            echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+            echo "PATH B: Scanning pre-built image $IMAGE"
+
+          else
+            # Fallback: read from file directly
+            echo "::warning::File not found in classification matrices, reading directly"
+            IMAGE=$(yq eval '.spec.image' "$FILE")
+            MCP_SOURCE=$(grep -oP '#\s*mcp-source:\s*\K.*' "$FILE" || echo "")
+
+            if [ -n "$MCP_SOURCE" ]; then
+              echo "path=A" >> "$GITHUB_OUTPUT"
+              # Note: sed patterns use (.+)@([^@]+)$ to support scoped packages
+              if echo "$MCP_SOURCE" | grep -qE '^uvx://'; then
+                echo "image_type=pypi" >> "$GITHUB_OUTPUT"
+                PYPI_PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^uvx://(.+)@([^@]+)$|\1==\2|')
+                echo "pypi_package=$PYPI_PACKAGE" >> "$GITHUB_OUTPUT"
+              elif echo "$MCP_SOURCE" | grep -qE '^npx://'; then
+                echo "image_type=npm" >> "$GITHUB_OUTPUT"
+                NPM_PACKAGE=$(echo "$MCP_SOURCE" | sed -E 's|^npx://(.+)$|\1|')
+                echo "npm_package=$NPM_PACKAGE" >> "$GITHUB_OUTPUT"
+              fi
+            else
+              # Fail fast: If file isn't in matrices and has no mcp-source, classification is broken
+              echo "::error::Classification error: File $FILE not found in classification matrices"
+              echo "::error::spec.image value: $IMAGE"
+              echo "::error::This indicates a bug in the classify job - all MCPServer files should be classified"
+              echo "::error::Check the 'Classify Deployment Paths' job output for issues"
+              exit 1
+            fi
           fi
 
       - name: Run Trivy Scan (Docker images)
@@ -896,18 +1131,212 @@ jobs:
           thv rm "test-$NAME" 2>/dev/null || true
 
   # =============================================================================
-  # Job 5: Generate Registry Catalog Entry
+  # Job 5: Build Containers (PATH A only - source-built MCPServers)
+  # =============================================================================
+  # Uses thv build to create containers from uvx://, npx://, go://, github:// sources
+  # Pushes to GHCR and updates MCPServer manifests with new image reference
+  # =============================================================================
+  build-container:
+    name: Build Container
+    needs: [preflight, classify, image-scan]
+    # Only run if there are PATH A files that need building
+    if: |
+      always() &&
+      needs.classify.result == 'success' &&
+      needs.classify.outputs.has_builds == 'true' &&
+      needs.image-scan.result == 'success'
+    runs-on: gha-runner-scale-set
+    permissions:
+      contents: write    # Required: Commit manifest updates to PR
+      packages: write    # Required: Push to GHCR
+    strategy:
+      matrix:
+        include: ${{ fromJson(needs.classify.outputs.build_matrix) }}
+      fail-fast: false
+      # Serialize to prevent race conditions when committing to same branch
+      max-parallel: 1
+    # Only process entries that need building
+    steps:
+      - name: Check if Build Needed
+        id: check
+        run: |
+          NEEDS_BUILD="${{ matrix.needs_build }}"
+          if [ "$NEEDS_BUILD" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping ${{ matrix.file }} - versions already match"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Building container for ${{ matrix.file }}"
+          fi
+
+      - name: Checkout
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Use head_ref for PRs, ref_name for workflow_dispatch/push
+          ref: ${{ github.head_ref || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Setup MCP Tools
+        if: steps.check.outputs.skip != 'true'
+        uses: ./.github/actions/setup-mcp-tools
+
+      - name: Login to GHCR
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Container
+        id: build
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          SOURCE="${{ matrix.source }}"
+          PACKAGE="${{ matrix.package }}"
+          VERSION="${{ matrix.source_version }}"
+          PROTOCOL="${{ matrix.protocol }}"
+
+          # Normalize package name for Docker image naming
+          # Scoped npm packages like @scope/pkg become scope-pkg
+          # Remove leading @ and replace / with -
+          IMAGE_PACKAGE=$(echo "$PACKAGE" | sed -E 's|^@||; s|/|-|g')
+
+          # Sanitize version for Docker tag compatibility
+          # Docker tags can only contain: a-z, A-Z, 0-9, underscore, period, hyphen
+          # Replace '+' (semver build metadata) with '_', strip any other invalid chars
+          SAFE_VERSION=$(echo "$VERSION" | sed -E 's/\+/_/g; s/[^A-Za-z0-9._-]//g')
+
+          # Generate image name following convention: ghcr.io/jlengelbrecht/mcp/<package>:<version>
+          IMAGE_NAME="ghcr.io/jlengelbrecht/mcp/${IMAGE_PACKAGE}:${SAFE_VERSION}"
+
+          echo "=== Building Container ==="
+          echo "Source: $SOURCE"
+          echo "Package: $PACKAGE"
+          echo "Normalized for Docker: $IMAGE_PACKAGE"
+          echo "Version: $VERSION (sanitized: $SAFE_VERSION)"
+          echo "Protocol: $PROTOCOL"
+          echo "Target Image: $IMAGE_NAME"
+          echo ""
+
+          # Build using thv CLI
+          echo "Running: thv build $SOURCE --tag $IMAGE_NAME"
+          thv build "$SOURCE" --tag "$IMAGE_NAME"
+
+          # Also tag as latest
+          docker tag "$IMAGE_NAME" "ghcr.io/jlengelbrecht/mcp/${IMAGE_PACKAGE}:latest"
+
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "image_package=$IMAGE_PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Push to GHCR
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          IMAGE_NAME="${{ steps.build.outputs.image_name }}"
+          IMAGE_PACKAGE="${{ steps.build.outputs.image_package }}"
+
+          echo "Pushing $IMAGE_NAME to GHCR..."
+          docker push "$IMAGE_NAME"
+          docker push "ghcr.io/jlengelbrecht/mcp/${IMAGE_PACKAGE}:latest"
+
+          echo "Successfully pushed:"
+          echo "  - $IMAGE_NAME"
+          echo "  - ghcr.io/jlengelbrecht/mcp/${IMAGE_PACKAGE}:latest"
+
+      - name: Update MCPServer Manifest
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          FILE="${{ matrix.file }}"
+          IMAGE_NAME="${{ steps.build.outputs.image_name }}"
+
+          echo "Updating spec.image in $FILE to $IMAGE_NAME"
+
+          # Update spec.image to the new GHCR image
+          yq eval -i ".spec.image = \"$IMAGE_NAME\"" "$FILE"
+
+          # Show the change
+          echo "Updated manifest:"
+          grep -A1 "spec:" "$FILE" | head -10
+
+      - name: Generate GitHub App Token
+        if: steps.check.outputs.skip != 'true'
+        id: generate-token
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Commit Manifest Update
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.generate-token.outputs.token }}
+          # Use head_ref for PRs, ref_name for workflow_dispatch/push
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          FILE="${{ matrix.file }}"
+          PACKAGE="${{ steps.build.outputs.package }}"
+          VERSION="${{ steps.build.outputs.version }}"
+          IMAGE_NAME="${{ steps.build.outputs.image_name }}"
+
+          # Guard: Ensure HEAD_REF is set (should always be with fallback)
+          if [ -z "$HEAD_REF" ]; then
+            echo "::error::HEAD_REF is empty - cannot determine branch for push"
+            exit 1
+          fi
+
+          # Validate HEAD_REF to prevent command injection from untrusted branch names
+          if ! [[ "$HEAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Invalid head_ref value - potential injection attempt"
+            exit 1
+          fi
+
+          # Configure git for GitHub App bot
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Use GitHub App token for push authentication
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+
+          # Pull latest changes (in case other matrix jobs committed)
+          # Fail fast on rebase conflicts instead of swallowing errors
+          if ! git pull --rebase origin "$HEAD_REF"; then
+            echo "::error::Rebase failed - likely concurrent change conflict on $HEAD_REF"
+            echo "::error::This shouldn't happen with max-parallel: 1, check workflow configuration"
+            git rebase --abort 2>/dev/null || true
+            exit 1
+          fi
+
+          # Check if there are changes to commit
+          if git diff --quiet "$FILE"; then
+            echo "No changes to commit for $FILE"
+          else
+            git add "$FILE"
+            git commit -m "chore(mcp): build container for ${PACKAGE}@${VERSION}
+
+          Built from mcp-source using thv build.
+          Image: ${IMAGE_NAME}"
+            git push
+            echo "Committed and pushed manifest update"
+          fi
+
+  # =============================================================================
+  # Job 6: Generate Registry Catalog Entry
   # =============================================================================
   generate-catalog:
     name: Generate Catalog Entry
-    needs: [preflight, validate, image-scan]
+    needs: [preflight, validate, image-scan, build-container]
     # Run when MCPServers changed AND validate passed or was skipped (deletions only)
     # Also requires security scan to pass (image-scan is now BLOCKING)
+    # build-container may be skipped if no builds needed - that's OK
     if: |
       always() &&
       needs.preflight.outputs.mcpservers_changed == 'true' &&
       (needs.validate.result == 'success' || needs.validate.result == 'skipped') &&
-      (needs.image-scan.result == 'success' || needs.image-scan.result == 'skipped')
+      (needs.image-scan.result == 'success' || needs.image-scan.result == 'skipped') &&
+      (needs.build-container.result == 'success' || needs.build-container.result == 'skipped')
     runs-on: gha-runner-scale-set
     permissions:
       contents: write       # Required: Auto-commit registry.json changes to PR
@@ -916,7 +1345,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.head_ref }}
+          # Use head_ref for PRs, ref_name for workflow_dispatch/push
+          ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
 
       - name: Setup MCP Tools
@@ -971,7 +1401,8 @@ jobs:
               REPO_OWNER=$(echo "$REPO_URL" | sed -E 's|https?://github\.com/([^/]+)/.*|\1|')
               REPO_NAME=$(echo "$REPO_URL" | sed -E 's|https?://github\.com/([^/]+/[^/]+).*|\1|')
               # Check if this repo name will be duplicated (multiple MCPServers from same repo)
-              DUPE_COUNT=$(grep -l "repository-url.*$REPO_URL" "$MCPSERVER_DIR"/mcpserver-*.yaml 2>/dev/null | wc -l)
+              # Use grep -F for fixed-string matching to avoid regex metacharacter issues in URLs
+              DUPE_COUNT=$(grep -lF "$REPO_URL" "$MCPSERVER_DIR"/mcpserver-*.yaml 2>/dev/null | wc -l)
               if [ "$DUPE_COUNT" -gt 1 ]; then
                 # Multiple instances from same repo - use owner/k8s-name for uniqueness
                 SERVER_NAME="${REPO_OWNER}/${K8S_NAME}"
@@ -1173,8 +1604,24 @@ jobs:
             NAME=$(yq eval '.metadata.name' "$mcpfile")
             IMAGE=$(yq eval '.spec.image' "$mcpfile")
 
-            # Determine image type
-            if echo "$IMAGE" | grep -qE '^uvx://'; then
+            # Check mcp-source comment first (for source-built containers)
+            # This correctly labels PATH A servers that now use GHCR images
+            MCP_SOURCE=$(grep -oP '#\s*mcp-source:\s*\K.*' "$mcpfile" 2>/dev/null || echo "")
+
+            # Determine image type from mcp-source, falling back to spec.image
+            if [ -n "$MCP_SOURCE" ]; then
+              if echo "$MCP_SOURCE" | grep -qE '^uvx://'; then
+                IMAGE_TYPE="PyPI (pip-audit)"
+              elif echo "$MCP_SOURCE" | grep -qE '^npx://'; then
+                IMAGE_TYPE="npm (npm audit)"
+              elif echo "$MCP_SOURCE" | grep -qE '^go://'; then
+                IMAGE_TYPE="Go (pending)"
+              elif echo "$MCP_SOURCE" | grep -qE '^github://'; then
+                IMAGE_TYPE="GitHub (pending)"
+              else
+                IMAGE_TYPE="Source (unknown)"
+              fi
+            elif echo "$IMAGE" | grep -qE '^uvx://'; then
               IMAGE_TYPE="PyPI (pip-audit)"
             elif echo "$IMAGE" | grep -qE '^npx://'; then
               IMAGE_TYPE="npm (npm audit)"
@@ -1186,7 +1633,14 @@ jobs:
               IMAGE_TYPE="Docker (Trivy)"
             fi
 
-            VALIDATION_RESULTS="${VALIDATION_RESULTS}| ${NAME} | ${IMAGE_TYPE} | ✅ Passed |\n"
+            # Determine scan status based on whether scanning actually occurred
+            # Go and GitHub types have "(pending)" scans - no actual scanning happens
+            if [ "$IMAGE_TYPE" = "Go (pending)" ] || [ "$IMAGE_TYPE" = "GitHub (pending)" ] || [ "$IMAGE_TYPE" = "Source (unknown)" ]; then
+              SCAN_STATUS="⚠️ Manual review required"
+            else
+              SCAN_STATUS="✅ Passed"
+            fi
+            VALIDATION_RESULTS="${VALIDATION_RESULTS}| ${NAME} | ${IMAGE_TYPE} | ${SCAN_STATUS} |\n"
           done
 
           # Store results for PR comment
@@ -1251,7 +1705,7 @@ jobs:
   # =============================================================================
   mcp-catalog-status:
     name: MCP Catalog Sync Status
-    needs: [preflight, validate, image-scan, mcp-validate, generate-catalog]
+    needs: [preflight, validate, classify, image-scan, build-container, mcp-validate, generate-catalog]
     if: always()
     runs-on: gha-runner-scale-set
     steps:
@@ -1260,7 +1714,9 @@ jobs:
           echo "=== Job Results ==="
           echo "Preflight: ${{ needs.preflight.result }}"
           echo "Validate: ${{ needs.validate.result }}"
+          echo "Classify: ${{ needs.classify.result }}"
           echo "Image Scan: ${{ needs.image-scan.result }}"
+          echo "Build Container: ${{ needs.build-container.result }}"
           echo "MCP Validate: ${{ needs.mcp-validate.result }}"
           echo "Generate Catalog: ${{ needs.generate-catalog.result }}"
           echo ""
@@ -1276,6 +1732,12 @@ jobs:
               ERRORS=$((ERRORS + 1))
             fi
 
+            # Classify must succeed for the pipeline to work
+            if [ "${{ needs.classify.result }}" = "failure" ]; then
+              echo "::error::Classification of MCPServers failed"
+              ERRORS=$((ERRORS + 1))
+            fi
+
             # Security scan is now BLOCKING - HIGH/CRITICAL vulnerabilities must be fixed
             if [ "${{ needs.image-scan.result }}" = "failure" ]; then
               echo "::error::Security vulnerability scan FAILED - HIGH/CRITICAL vulnerabilities detected"
@@ -1284,6 +1746,18 @@ jobs:
               echo "  1. Review the security scan logs above"
               echo "  2. Update dependencies to patched versions"
               echo "  3. Re-push to trigger new scans"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            # Build-container is required when PATH A (source-built) MCPServers are present
+            # Skipped state is OK (means no source-built containers to build)
+            if [ "${{ needs.build-container.result }}" = "failure" ]; then
+              echo "::error::Container build FAILED - unable to build MCP server container"
+              echo ""
+              echo "This PR cannot be merged until the container build issue is resolved:"
+              echo "  1. Review the build-container job logs above"
+              echo "  2. Check the mcp-source specification is valid"
+              echo "  3. Ensure the package exists and version is correct"
               ERRORS=$((ERRORS + 1))
             fi
 

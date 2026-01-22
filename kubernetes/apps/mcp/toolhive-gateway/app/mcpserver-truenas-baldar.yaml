@@ -25,8 +25,15 @@ metadata:
     app.kubernetes.io/component: mcp-server
     app.kubernetes.io/part-of: toolhive-gateway
 spec:
-  # renovate: datasource=pypi depName=truenas-mcp-server
-  image: uvx://truenas-mcp-server@3.0.2
+  # ┌─────────────────────────────────────────────────────────────────────────┐
+  # │ SOURCE SPECIFICATION (Renovate monitors PyPI for updates)               │
+  # │ CI/CD builds container from this source when version changes            │
+  # └─────────────────────────────────────────────────────────────────────────┘
+  # renovate: datasource=pypi depName=truenas-mcp-server versioning=pep440
+  # mcp-source: uvx://truenas-mcp-server@3.0.2
+  #
+  # Built container image (auto-updated by CI/CD when mcp-source changes)
+  image: ghcr.io/jlengelbrecht/mcp/truenas-mcp-server:3.0.2
   # stdio transport - ToolHive builds container and attaches to stdin/stdout
   transport: stdio
   # Proxy exposes stdio as streamable-http for HTTP clients

@@ -93,19 +93,69 @@
       "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}docker{{/if}}",
       "versioningTemplate": "docker"
     },
+    // =========================================================================
+    // MCP Source Package Managers (for CI/CD container building)
+    // =========================================================================
+    // These managers track # mcp-source: comments in MCPServer manifests.
+    // When Renovate updates the version, CI/CD detects the mismatch between
+    // mcp-source version and spec.image version, then builds a new container.
+    // =========================================================================
     {
       "customType": "regex",
-      "description": "Track PyPI packages in ToolHive MCPServer uvx:// images",
+      "description": "Track PyPI packages in MCP source comments (uvx://)",
       "managerFilePatterns": [
         "/(^|/)kubernetes/apps/mcp/.+\\.ya?ml$/"
       ],
       "matchStrings": [
-        // Matches: # renovate: datasource=pypi depName=truenas-mcp-server
-        //          image: uvx://truenas-mcp-server@3.0.2
-        "# renovate: datasource=pypi depName=(?<depName>\\S+)\\n\\s*image:\\s*uvx://[^@]+@(?<currentValue>[^\\s\"]+)"
+        // Matches: # renovate: datasource=pypi depName=truenas-mcp-server versioning=pep440
+        //          # mcp-source: uvx://truenas-mcp-server@3.0.2
+        "# renovate: datasource=pypi depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*uvx://[^@]+@(?<currentValue>[^\\s]+)"
       ],
       "datasourceTemplate": "pypi",
-      "versioningTemplate": "pep440"
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}pep440{{/if}}"
+    },
+    {
+      "customType": "regex",
+      "description": "Track npm packages in MCP source comments (npx://)",
+      "managerFilePatterns": [
+        "/(^|/)kubernetes/apps/mcp/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=npm depName=@modelcontextprotocol/server-filesystem
+        //          # mcp-source: npx://@modelcontextprotocol/server-filesystem@1.0.0
+        // Note: Uses [^\\s]+@ to support scoped packages (regex backtracks to find last @)
+        "# renovate: datasource=npm depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*npx://[^\\s]+@(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}npm{{/if}}"
+    },
+    {
+      "customType": "regex",
+      "description": "Track Go modules in MCP source comments (go://)",
+      "managerFilePatterns": [
+        "/(^|/)kubernetes/apps/mcp/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=go depName=github.com/user/repo
+        //          # mcp-source: go://github.com/user/repo@v1.0.0
+        "# renovate: datasource=go depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*go://[^@]+@(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "go",
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
+    },
+    {
+      "customType": "regex",
+      "description": "Track GitHub releases in MCP source comments (github://)",
+      "managerFilePatterns": [
+        "/(^|/)kubernetes/apps/mcp/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=github-releases depName=user/repo
+        //          # mcp-source: github://user/repo@v1.0.0
+        "# renovate: datasource=github-releases depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n\\s*# mcp-source:\\s*github://[^@]+@(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
     }
   ]
 }
