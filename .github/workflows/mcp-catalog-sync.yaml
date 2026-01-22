@@ -742,9 +742,12 @@ jobs:
                 echo "npm_package=$NPM_PACKAGE" >> "$GITHUB_OUTPUT"
               fi
             else
-              echo "path=B" >> "$GITHUB_OUTPUT"
-              echo "image_type=docker" >> "$GITHUB_OUTPUT"
-              echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+              # Fail fast: If file isn't in matrices and has no mcp-source, classification is broken
+              echo "::error::Classification error: File $FILE not found in classification matrices"
+              echo "::error::spec.image value: $IMAGE"
+              echo "::error::This indicates a bug in the classify job - all MCPServer files should be classified"
+              echo "::error::Check the 'Classify Deployment Paths' job output for issues"
+              exit 1
             fi
           fi
 
