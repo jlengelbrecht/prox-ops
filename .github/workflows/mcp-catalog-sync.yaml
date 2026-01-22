@@ -2,11 +2,16 @@
 # MCP Server Catalog Sync Workflow
 # Automatically generates registry catalog entries from MCPServer CRD definitions
 #
-# Triggers when MCPServer files are added/modified in PRs
-# Validates the MCPServer, checks security, and generates catalog entries
+# Triggers when MCPServer files are added/modified in PRs or merged to main
+# Validates the MCPServer, checks security, builds containers, and generates catalog entries
 name: "MCP Catalog Sync"
 
 on:
+  push:
+    branches: ["main"]
+    paths:
+      # Trigger on merge to main when MCPServer files change
+      - "kubernetes/apps/mcp/toolhive-gateway/app/mcpserver-*.yaml"
   pull_request:
     branches: ["main"]
     paths:
