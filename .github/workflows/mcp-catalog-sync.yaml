@@ -4,6 +4,9 @@
 #
 # Triggers when MCPServer files are added/modified in PRs or merged to main
 # Validates the MCPServer, checks security, builds containers, and generates catalog entries
+#
+# IMPORTANT: After merge, it takes ~2-3 minutes for new MCP servers to appear in the catalog.
+# The ToolHive registry syncs from GitHub on a 2-minute interval, plus Flux reconciliation time.
 name: "MCP Catalog Sync"
 
 on:
@@ -1738,7 +1741,10 @@ jobs:
 
             ### ✅ Merge Decision
 
-            **SAFE TO MERGE** - All security checks passed. The catalog will be available after merge.
+            **SAFE TO MERGE** - All security checks passed.
+
+            > ⏱️ **Note:** After merge, it takes ~2-3 minutes for new servers to appear in the catalog.
+            > The ToolHive registry syncs from GitHub every 2 minutes, plus Flux reconciliation time.
 
             ---
             <details>
