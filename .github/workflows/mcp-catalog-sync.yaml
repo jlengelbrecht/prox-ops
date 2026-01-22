@@ -1334,8 +1334,17 @@ jobs:
             exit 1
           fi
 
-          # Restore stashed changes
-          git stash pop
+          # Restore stashed changes - fail fast if conflicts occur
+          if ! git stash pop; then
+            echo "::error::Failed to restore stashed changes - likely conflict with pulled changes"
+            echo "::error::This indicates a race condition between matrix jobs"
+            # Cleanup: abort any in-progress operations and reset
+            git rebase --abort 2>/dev/null || true
+            git merge --abort 2>/dev/null || true
+            git reset --hard HEAD
+            git stash drop 2>/dev/null || true
+            exit 1
+          fi
 
           # Check if there are changes to commit
           if git diff --quiet "$FILE"; then
