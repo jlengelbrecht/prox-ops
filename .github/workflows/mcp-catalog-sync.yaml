@@ -1301,7 +1301,13 @@ jobs:
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
 
           # Pull latest changes (in case other matrix jobs committed)
-          git pull --rebase origin "$HEAD_REF" || true
+          # Fail fast on rebase conflicts instead of swallowing errors
+          if ! git pull --rebase origin "$HEAD_REF"; then
+            echo "::error::Rebase failed - likely concurrent change conflict on $HEAD_REF"
+            echo "::error::This shouldn't happen with max-parallel: 1, check workflow configuration"
+            git rebase --abort 2>/dev/null || true
+            exit 1
+          fi
 
           # Check if there are changes to commit
           if git diff --quiet "$FILE"; then
@@ -1339,7 +1345,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.head_ref }}
+          # Use head_ref for PRs, ref_name for workflow_dispatch/push
+          ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
 
       - name: Setup MCP Tools
