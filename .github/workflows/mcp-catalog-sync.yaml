@@ -585,7 +585,8 @@ jobs:
                 echo "  Status: versions match - no build needed"
               fi
 
-              BUILD_MATRIX=$(echo "$BUILD_MATRIX" | jq \
+              # Use jq -c for compact (single-line) JSON output for GITHUB_OUTPUT
+              BUILD_MATRIX=$(echo "$BUILD_MATRIX" | jq -c \
                 --arg file "$file" \
                 --arg source "$MCP_SOURCE" \
                 --arg protocol "$PROTOCOL" \
@@ -609,7 +610,8 @@ jobs:
               # PATH B: No mcp-source → pre-built container
               echo "  Path: B (pre-built)"
 
-              PREBUILT_MATRIX=$(echo "$PREBUILT_MATRIX" | jq \
+              # Use jq -c for compact (single-line) JSON output for GITHUB_OUTPUT
+              PREBUILT_MATRIX=$(echo "$PREBUILT_MATRIX" | jq -c \
                 --arg file "$file" \
                 --arg image "$IMAGE" \
                 '. + [{
