@@ -257,42 +257,158 @@ jobs:
 
             **This PR cannot be merged until blueprint validation passes.**
 
-  # Document reconciliation flow after merge
+  # Trigger immediate blueprint reconciliation after merge
+  # Uses self-hosted runner to access cluster network and Authentik API
   reconcile-blueprints:
-    name: Post-Merge Info
-    runs-on: ubuntu-latest
+    name: Reconcile Blueprints
+    runs-on: gha-runner-scale-set
     needs: validate-blueprints
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - name: Blueprint Reconciliation Info
+      - name: Wait for Flux Reconciliation
         run: |
+          echo "Waiting 60 seconds for Flux to reconcile ConfigMap..."
+          echo "This ensures the new blueprint content is available to Authentik"
+          sleep 60
+
+      - name: Get Authentik API Token
+        id: get-token
+        run: |
+          echo "Fetching API token from Kubernetes secret..."
+          TOKEN=$(kubectl get secret -n security authentik-secret -o jsonpath='{.data.AUTHENTIK_API_TOKEN}' | base64 -d)
+          if [ -z "$TOKEN" ]; then
+            echo "::error::AUTHENTIK_API_TOKEN not found in secret"
+            echo "Please create an API token in Authentik and store in 1Password"
+            exit 1
+          fi
+          echo "API token retrieved successfully"
+          # Mask the token in logs
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Check Authentik Health
+        env:
+          AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
+        run: |
+          echo "Checking Authentik availability..."
+          for i in $(seq 1 10); do
+            if curl -sf "${AUTHENTIK_URL}/-/health/ready/" > /dev/null 2>&1; then
+              echo "Authentik is ready"
+              exit 0
+            fi
+            echo "Attempt $i/10: Authentik not ready, waiting..."
+            sleep 5
+          done
+          echo "::error::Authentik not ready after 10 attempts"
+          exit 1
+
+      - name: Reconcile All Blueprints
+        env:
+          AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
+          AUTHENTIK_API_TOKEN: ${{ steps.get-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
           echo "=============================================="
-          echo "  Authentik Blueprint Reconciliation Flow"
+          echo "  Authentik Blueprint Reconciliation"
           echo "=============================================="
           echo ""
-          echo "Blueprint changes have been merged to main."
+
+          # Get list of all blueprint instances
+          echo "Fetching blueprint instances..."
+          BLUEPRINTS=$(curl -sf \
+            -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${AUTHENTIK_URL}/api/v3/managed/blueprints/") || {
+            echo "::error::Failed to fetch blueprints from API"
+            exit 1
+          }
+
+          # Parse blueprint count
+          COUNT=$(echo "$BLUEPRINTS" | jq -r '.pagination.count // .count // 0')
+          echo "Found $COUNT blueprint instance(s)"
           echo ""
-          echo "Automatic reconciliation:"
-          echo "  1. Flux will reconcile the ConfigMap (~30 seconds)"
-          echo "  2. Stakater Reloader will restart authentik-worker"
-          echo "  3. Worker will re-discover and apply blueprints"
-          echo "  4. CronJob runs every 15min as safety net"
+
+          # Process each blueprint
+          APPLIED=0
+          SKIPPED=0
+          FAILED=0
+
+          echo "Blueprint Status:"
+          echo "----------------------------------------"
+
+          for pk in $(echo "$BLUEPRINTS" | jq -r '.results[].pk'); do
+            # Get blueprint details
+            DETAIL=$(curl -sf \
+              -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+              "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/") || {
+              echo "  WARNING: Failed to fetch details for $pk"
+              FAILED=$((FAILED + 1))
+              continue
+            }
+
+            NAME=$(echo "$DETAIL" | jq -r '.name')
+            STATUS=$(echo "$DETAIL" | jq -r '.status')
+            ENABLED=$(echo "$DETAIL" | jq -r '.enabled')
+
+            printf "  %-40s status=%-12s enabled=%s\n" "$NAME" "$STATUS" "$ENABLED"
+
+            # Apply all enabled blueprints to ensure they're up-to-date
+            if [ "$ENABLED" = "true" ]; then
+              echo "    -> Applying blueprint..."
+              APPLY_RESULT=$(curl -sf -X POST \
+                -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/apply/" 2>&1) || {
+                echo "    -> WARNING: Apply failed"
+                FAILED=$((FAILED + 1))
+                continue
+              }
+              echo "    -> Applied successfully"
+              APPLIED=$((APPLIED + 1))
+            else
+              echo "    -> Skipped (disabled)"
+              SKIPPED=$((SKIPPED + 1))
+            fi
+          done
+
           echo ""
-          echo "If blueprints don't apply automatically:"
+          echo "----------------------------------------"
+          echo "Reconciliation Summary:"
+          echo "  Applied: $APPLIED"
+          echo "  Skipped: $SKIPPED"
+          echo "  Failed:  $FAILED"
           echo ""
-          echo "  Option A: Manual trigger via CronJob"
-          echo "    kubectl create job manual-bp-$(date +%s) \\"
-          echo "      --from=cronjob/authentik-blueprint-reconcile \\"
-          echo "      -n security"
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::warning::$FAILED blueprint(s) failed to apply"
+          fi
+
+          echo "Blueprint reconciliation complete!"
+
+      - name: Verify Blueprint Status
+        env:
+          AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
+          AUTHENTIK_API_TOKEN: ${{ steps.get-token.outputs.token }}
+        run: |
           echo ""
-          echo "  Option B: Restart worker deployment"
-          echo "    kubectl rollout restart deployment/authentik-worker -n security"
+          echo "Final Blueprint Status:"
+          echo "----------------------------------------"
+
+          BLUEPRINTS=$(curl -sf \
+            -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+            "${AUTHENTIK_URL}/api/v3/managed/blueprints/")
+
+          echo "$BLUEPRINTS" | jq -r '.results[] | "  \(.name): \(.status)"'
+
+          # Check for any errors
+          ERRORS=$(echo "$BLUEPRINTS" | jq -r '[.results[] | select(.status == "error")] | length')
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "::error::$ERRORS blueprint(s) have error status"
+            echo "Check Authentik Admin UI for details: Customization > Blueprints"
+            exit 1
+          fi
+
           echo ""
-          echo "  Option C: Check Authentik Admin UI"
-          echo "    Customization > Blueprints > Select blueprint > Apply"
-          echo ""
-          echo "Troubleshooting:"
-          echo "  - Worker logs: kubectl logs -n security -l app.kubernetes.io/name=authentik,app.kubernetes.io/component=worker -f"
-          echo "  - CronJob logs: kubectl logs -n security -l app.kubernetes.io/name=authentik-blueprint-reconcile --tail=100"
-          echo "  - Blueprint status: curl -H 'Authorization: Bearer \$TOKEN' https://authentik.homelab0.org/api/v3/managed/blueprints/"
-          echo ""
+          echo "All blueprints applied successfully!"
