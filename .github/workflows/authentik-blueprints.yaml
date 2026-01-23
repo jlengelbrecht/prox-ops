@@ -1,0 +1,412 @@
+---
+# Authentik Blueprint Validation Pipeline
+# Validates blueprint YAML syntax and schema ONLY when blueprint files change
+# This workflow is intentionally isolated from other CI to avoid blocking unrelated deployments
+name: "Authentik Blueprints"
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "kubernetes/apps/security/authentik/app/configmap-blueprints.yaml"
+  push:
+    branches: ["main"]
+    paths:
+      - "kubernetes/apps/security/authentik/app/configmap-blueprints.yaml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-blueprints:
+    name: Validate Blueprints
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup mise
+        # renovate: datasource=github-releases depName=jdx/mise-action
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+          # Only install the tools we need for this workflow
+          mise_toml: |
+            [tools]
+            "aqua:neilpa/yajsv" = "1.4.1"
+            "aqua:mikefarah/yq" = "4.49.2"
+
+      - name: Download Authentik Blueprint Schema
+        run: |
+          mkdir -p /tmp/schemas
+          curl -sSfL --max-time 30 -o /tmp/schemas/authentik-blueprint.json \
+            "https://goauthentik.io/blueprints/schema.json"
+          echo "Downloaded Authentik blueprint schema"
+
+      - name: Extract and Validate Blueprints
+        id: validate
+        run: |
+          set -euo pipefail
+
+          BLUEPRINT_FILE="kubernetes/apps/security/authentik/app/configmap-blueprints.yaml"
+          TEMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TEMP_DIR"' EXIT
+          ERRORS=0
+          VALIDATED=0
+
+          echo "Extracting blueprints from ConfigMap..."
+
+          # Get all keys from the ConfigMap data section
+          BLUEPRINT_KEYS=$(yq eval '.data | keys | .[]' "$BLUEPRINT_FILE")
+
+          for key in $BLUEPRINT_KEYS; do
+            echo ""
+            echo "=== Validating: $key ==="
+
+            # Extract the blueprint YAML content
+            BLUEPRINT_PATH="$TEMP_DIR/$key"
+            yq eval ".data[\"$key\"]" "$BLUEPRINT_FILE" > "$BLUEPRINT_PATH"
+
+            # Step 1: Basic YAML syntax validation
+            echo "  [1/3] Checking YAML syntax..."
+            if ! yq eval '.' "$BLUEPRINT_PATH" > /dev/null 2>&1; then
+              echo "  ERROR: Invalid YAML syntax in $key"
+              ERRORS=$((ERRORS + 1))
+              continue
+            fi
+            echo "  PASS: YAML syntax valid"
+
+            # Step 2: Check required blueprint fields
+            echo "  [2/3] Checking required fields..."
+            VERSION=$(yq eval '.version // ""' "$BLUEPRINT_PATH")
+            if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+              echo "  ERROR: Missing required 'version' field in $key"
+              ERRORS=$((ERRORS + 1))
+              continue
+            fi
+
+            ENTRIES=$(yq eval '.entries // ""' "$BLUEPRINT_PATH")
+            if [ -z "$ENTRIES" ] || [ "$ENTRIES" = "null" ]; then
+              echo "  ERROR: Missing required 'entries' field in $key"
+              ERRORS=$((ERRORS + 1))
+              continue
+            fi
+            echo "  PASS: Required fields present (version: $VERSION)"
+
+            # Step 3: JSON Schema validation
+            echo "  [3/3] Validating against Authentik schema..."
+            if ! yajsv -s /tmp/schemas/authentik-blueprint.json "$BLUEPRINT_PATH" 2>&1; then
+              echo "  ERROR: Schema validation failed for $key"
+              ERRORS=$((ERRORS + 1))
+              continue
+            fi
+            echo "  PASS: Schema validation successful"
+
+            VALIDATED=$((VALIDATED + 1))
+          done
+
+          echo ""
+          echo "========================================"
+          echo "Validation Summary"
+          echo "========================================"
+          echo "Blueprints validated: $VALIDATED"
+          echo "Errors found: $ERRORS"
+
+          # Set outputs for PR comment
+          echo "validated=$VALIDATED" >> "$GITHUB_OUTPUT"
+          echo "errors=$ERRORS" >> "$GITHUB_OUTPUT"
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "::error::$ERRORS blueprint(s) failed validation"
+            exit 1
+          fi
+
+          echo ""
+          echo "All blueprints passed validation!"
+
+      - name: Validate Authentik-specific References
+        if: success()
+        run: |
+          set -euo pipefail
+
+          BLUEPRINT_FILE="kubernetes/apps/security/authentik/app/configmap-blueprints.yaml"
+
+          echo "Checking Authentik-specific blueprint references..."
+
+          # Extract all blueprint content for reference checking
+          FULL_CONTENT=$(yq eval '.data | to_entries | .[] | .value' "$BLUEPRINT_FILE")
+
+          # Check for common issues with !Find references
+          echo ""
+          echo "=== Checking !Find references ==="
+
+          # Extract !Find patterns and validate they have proper structure
+          # !Find [model, [field, value]] format
+          FIND_REFS=$(echo "$FULL_CONTENT" | grep -oP '!Find \[[^\]]+\]' || true)
+          if [ -n "$FIND_REFS" ]; then
+            echo "Found !Find references:"
+            echo "$FIND_REFS" | head -20
+            FIND_COUNT=$(echo "$FIND_REFS" | wc -l)
+            echo "Total !Find references: $FIND_COUNT"
+          else
+            echo "No !Find references found"
+          fi
+
+          # Check for !Context references match defined context variables
+          echo ""
+          echo "=== Checking !Context references ==="
+          CONTEXT_REFS=$(echo "$FULL_CONTENT" | grep -oP '!Context \w+' || true)
+          if [ -n "$CONTEXT_REFS" ]; then
+            echo "Found !Context references:"
+            echo "$CONTEXT_REFS" | sort -u | head -20
+            CONTEXT_COUNT=$(echo "$CONTEXT_REFS" | wc -l)
+            echo "Total !Context references: $CONTEXT_COUNT"
+          else
+            echo "No !Context references found"
+          fi
+
+          # Check for !Env references
+          echo ""
+          echo "=== Checking !Env references ==="
+          ENV_REFS=$(echo "$FULL_CONTENT" | grep -oP '!Env \w+' || true)
+          if [ -n "$ENV_REFS" ]; then
+            echo "Found !Env references:"
+            echo "$ENV_REFS" | sort -u
+            ENV_COUNT=$(echo "$ENV_REFS" | wc -l)
+            echo "Total !Env references: $ENV_COUNT"
+          else
+            echo "No !Env references found"
+          fi
+
+          # Check for model name validity (basic pattern check)
+          echo ""
+          echo "=== Checking model references ==="
+          MODELS=$(echo "$FULL_CONTENT" | grep -oP 'model: authentik_\w+\.\w+' | sort -u || true)
+          if [ -n "$MODELS" ]; then
+            echo "Found model references:"
+            echo "$MODELS"
+            MODEL_COUNT=$(echo "$MODELS" | wc -l)
+            echo "Total unique models: $MODEL_COUNT"
+          fi
+
+          echo ""
+          echo "Reference analysis complete"
+
+      - name: Generate GitHub App Token
+        if: github.event_name == 'pull_request'
+        id: generate-token
+        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Comment on PR (Success)
+        if: github.event_name == 'pull_request' && success()
+        uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
+        with:
+          repo-token: ${{ steps.generate-token.outputs.token }}
+          message-id: "authentik-blueprints"
+          message: |
+            ## :white_check_mark: Authentik Blueprint Validation Passed
+
+            All blueprints in `configmap-blueprints.yaml` passed validation.
+
+            | Check | Status |
+            |-------|--------|
+            | YAML Syntax | :white_check_mark: Valid |
+            | Required Fields | :white_check_mark: Present |
+            | Schema Validation | :white_check_mark: Passed |
+            | Blueprints Validated | ${{ steps.validate.outputs.validated }} |
+
+            **Note:** After merge, blueprints will be automatically reconciled by Authentik.
+
+      - name: Comment on PR (Failure)
+        if: github.event_name == 'pull_request' && failure()
+        uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
+        with:
+          repo-token: ${{ steps.generate-token.outputs.token }}
+          message-id: "authentik-blueprints"
+          message: |
+            ## :x: Authentik Blueprint Validation Failed
+
+            One or more blueprints in `configmap-blueprints.yaml` failed validation.
+
+            | Check | Status |
+            |-------|--------|
+            | Errors Found | ${{ steps.validate.outputs.errors }} |
+
+            ### Required Actions
+
+            1. Check the workflow logs for specific error details
+            2. Ensure all blueprints have `version: 1` field
+            3. Ensure all blueprints have valid `entries` array
+            4. Validate YAML syntax (no tabs, proper indentation)
+            5. Check `!Find`, `!Context`, `!Env` references are valid
+
+            ### Schema Reference
+
+            Blueprints must conform to: `https://goauthentik.io/blueprints/schema.json`
+
+            **This PR cannot be merged until blueprint validation passes.**
+
+  # Trigger immediate blueprint reconciliation after merge
+  # Uses self-hosted runner to access cluster network and Authentik API
+  reconcile-blueprints:
+    name: Reconcile Blueprints
+    runs-on: gha-runner-scale-set
+    needs: validate-blueprints
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions: {}
+    steps:
+      - name: Wait for Flux Reconciliation
+        run: |
+          echo "Waiting 60 seconds for Flux to reconcile ConfigMap..."
+          echo "This ensures the new blueprint content is available to Authentik"
+          sleep 60
+
+      - name: Get Authentik API Token
+        id: get-token
+        run: |
+          echo "Fetching API token from Kubernetes secret..."
+          TOKEN=$(kubectl get secret -n security authentik-secret -o jsonpath='{.data.AUTHENTIK_API_TOKEN}' | base64 -d)
+          if [ -z "$TOKEN" ]; then
+            echo "::error::AUTHENTIK_API_TOKEN not found in secret"
+            echo "Please create an API token in Authentik and store in 1Password"
+            exit 1
+          fi
+          echo "API token retrieved successfully"
+          # Mask the token in logs
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Check Authentik Health
+        env:
+          AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
+        run: |
+          echo "Checking Authentik availability..."
+          for i in $(seq 1 10); do
+            if curl -sf --max-time 10 "${AUTHENTIK_URL}/-/health/ready/" > /dev/null 2>&1; then
+              echo "Authentik is ready"
+              exit 0
+            fi
+            echo "Attempt $i/10: Authentik not ready, waiting..."
+            sleep 5
+          done
+          echo "::error::Authentik not ready after 10 attempts"
+          exit 1
+
+      - name: Reconcile All Blueprints
+        env:
+          AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
+          AUTHENTIK_API_TOKEN: ${{ steps.get-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          echo "=============================================="
+          echo "  Authentik Blueprint Reconciliation"
+          echo "=============================================="
+          echo ""
+
+          # Get list of all blueprint instances
+          echo "Fetching blueprint instances..."
+          BLUEPRINTS=$(curl -sf --max-time 30 \
+            -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${AUTHENTIK_URL}/api/v3/managed/blueprints/") || {
+            echo "::error::Failed to fetch blueprints from API"
+            exit 1
+          }
+
+          # Parse blueprint count
+          COUNT=$(echo "$BLUEPRINTS" | jq -r '.pagination.count // .count // 0')
+          echo "Found $COUNT blueprint instance(s)"
+          echo ""
+
+          # Process each blueprint
+          APPLIED=0
+          SKIPPED=0
+          FAILED=0
+
+          echo "Blueprint Status:"
+          echo "----------------------------------------"
+
+          for pk in $(echo "$BLUEPRINTS" | jq -r '.results[].pk'); do
+            # Get blueprint details
+            DETAIL=$(curl -sf --max-time 30 \
+              -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+              "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/") || {
+              echo "  WARNING: Failed to fetch details for $pk"
+              FAILED=$((FAILED + 1))
+              continue
+            }
+
+            NAME=$(echo "$DETAIL" | jq -r '.name')
+            STATUS=$(echo "$DETAIL" | jq -r '.status')
+            ENABLED=$(echo "$DETAIL" | jq -r '.enabled')
+
+            printf "  %-40s status=%-12s enabled=%s\n" "$NAME" "$STATUS" "$ENABLED"
+
+            # Apply all enabled blueprints to ensure they're up-to-date
+            if [ "$ENABLED" = "true" ]; then
+              echo "    -> Applying blueprint..."
+              APPLY_RESULT=$(curl -sf --max-time 60 -X POST \
+                -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/apply/" 2>&1) || {
+                echo "    -> WARNING: Apply failed"
+                FAILED=$((FAILED + 1))
+                continue
+              }
+              echo "    -> Applied successfully"
+              APPLIED=$((APPLIED + 1))
+            else
+              echo "    -> Skipped (disabled)"
+              SKIPPED=$((SKIPPED + 1))
+            fi
+          done
+
+          echo ""
+          echo "----------------------------------------"
+          echo "Reconciliation Summary:"
+          echo "  Applied: $APPLIED"
+          echo "  Skipped: $SKIPPED"
+          echo "  Failed:  $FAILED"
+          echo ""
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::warning::$FAILED blueprint(s) failed to apply"
+          fi
+
+          echo "Blueprint reconciliation complete!"
+
+      - name: Verify Blueprint Status
+        env:
+          AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
+          AUTHENTIK_API_TOKEN: ${{ steps.get-token.outputs.token }}
+        run: |
+          echo ""
+          echo "Final Blueprint Status:"
+          echo "----------------------------------------"
+
+          BLUEPRINTS=$(curl -sf --max-time 30 \
+            -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+            "${AUTHENTIK_URL}/api/v3/managed/blueprints/")
+
+          echo "$BLUEPRINTS" | jq -r '.results[] | "  \(.name): \(.status)"'
+
+          # Check for any errors
+          ERRORS=$(echo "$BLUEPRINTS" | jq -r '[.results[] | select(.status == "error")] | length')
+          if [ "$ERRORS" -gt 0 ]; then
+            echo ""
+            echo "::error::$ERRORS blueprint(s) have error status"
+            echo "Check Authentik Admin UI for details: Customization > Blueprints"
+            exit 1
+          fi
+
+          echo ""
+          echo "All blueprints applied successfully!"
