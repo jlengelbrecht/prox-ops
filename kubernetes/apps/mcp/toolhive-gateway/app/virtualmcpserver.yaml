@@ -50,11 +50,13 @@ spec:
         # Allow JWKS endpoint on private IP (internal Authentik access)
         jwksAllowPrivateIP: true
         # Scopes to advertise in well-known endpoint
+        # Note: 'mcp' scope requires Authentik scope mapping with aud claim
         scopes:
           - openid
           - profile
           - email
           - offline_access
+          - mcp
     # Cedar authorization policies for fine-grained access control
     # Restricts unifi tools to admin user only
     authzConfig:
