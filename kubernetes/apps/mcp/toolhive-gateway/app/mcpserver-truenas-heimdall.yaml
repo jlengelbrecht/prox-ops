@@ -61,8 +61,17 @@ spec:
     # Enable destructive operations (delete datasets, snapshots, etc.)
     - name: TRUENAS_ENABLE_DESTRUCTIVE_OPS
       value: "true"
+    # CRITICAL: Suppress logging to prevent stdout pollution
+    # Python INFO logs mixed with JSON-RPC messages break the stdio transport
+    # Setting to ERROR prevents log messages from corrupting the protocol
     - name: TRUENAS_LOG_LEVEL
-      value: "INFO"
+      value: "ERROR"
+    # Suppress MCP SDK logging (mcp.server.lowlevel.server logs)
+    - name: LOG_LEVEL
+      value: "error"
+    # Ensure unbuffered stdio for proper JSON-RPC communication
+    - name: PYTHONUNBUFFERED
+      value: "1"
   # Resource limits
   resources:
     requests:
