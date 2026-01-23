@@ -32,10 +32,22 @@ spec:
             app.kubernetes.io/name: authentik-blueprint-reconcile
         spec:
           restartPolicy: OnFailure
-          serviceAccountName: default
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 101
+            fsGroup: 101
           containers:
             - name: reconcile
+              # renovate: datasource=docker depName=curlimages/curl
               image: curlimages/curl:8.11.1
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
               imagePullPolicy: IfNotPresent
               env:
                 - name: AUTHENTIK_URL
@@ -65,7 +77,7 @@ spec:
                   # Wait for Authentik to be ready
                   echo "Checking Authentik availability..."
                   for i in $(seq 1 5); do
-                    if curl -sf "${AUTHENTIK_URL}/-/health/ready/" > /dev/null 2>&1; then
+                    if curl -sf --max-time 10 "${AUTHENTIK_URL}/-/health/ready/" > /dev/null 2>&1; then
                       echo "Authentik is ready"
                       break
                     fi
@@ -78,7 +90,7 @@ spec:
                   # Get list of all blueprint instances
                   echo ""
                   echo "Fetching blueprint instances..."
-                  BLUEPRINTS=$(curl -sf \
+                  BLUEPRINTS=$(curl -sf --max-time 30 \
                     -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
                     -H "Content-Type: application/json" \
                     "${AUTHENTIK_URL}/api/v3/managed/blueprints/" 2>&1) || {
@@ -100,7 +112,7 @@ spec:
                   NEEDS_APPLY=""
                   echo "$BLUEPRINTS" | grep -o '"pk":"[^"]*"' | cut -d'"' -f4 | while read pk; do
                     # Get blueprint details
-                    DETAIL=$(curl -sf \
+                    DETAIL=$(curl -sf --max-time 30 \
                       -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
                       "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/" 2>/dev/null) || continue
 
@@ -113,7 +125,7 @@ spec:
                     # Apply blueprints that have errors or warnings
                     if [ "$ENABLED" = "true" ] && [ "$STATUS" != "successful" ]; then
                       echo "    -> Triggering apply for $NAME (status: $STATUS)"
-                      APPLY_RESULT=$(curl -sf -X POST \
+                      APPLY_RESULT=$(curl -sf --max-time 60 -X POST \
                         -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
                         -H "Content-Type: application/json" \
                         "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/apply/" 2>&1) || {

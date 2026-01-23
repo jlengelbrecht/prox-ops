@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup mise
+        # renovate: datasource=github-releases depName=jdx/mise-action
         uses: jdx/mise-action@v2
         with:
           install: true
@@ -43,7 +44,7 @@ jobs:
       - name: Download Authentik Blueprint Schema
         run: |
           mkdir -p /tmp/schemas
-          curl -sSfL -o /tmp/schemas/authentik-blueprint.json \
+          curl -sSfL --max-time 30 -o /tmp/schemas/authentik-blueprint.json \
             "https://goauthentik.io/blueprints/schema.json"
           echo "Downloaded Authentik blueprint schema"
 
@@ -54,6 +55,7 @@ jobs:
 
           BLUEPRINT_FILE="kubernetes/apps/security/authentik/app/configmap-blueprints.yaml"
           TEMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TEMP_DIR"' EXIT
           ERRORS=0
           VALIDATED=0
 
@@ -119,9 +121,6 @@ jobs:
           echo "validated=$VALIDATED" >> "$GITHUB_OUTPUT"
           echo "errors=$ERRORS" >> "$GITHUB_OUTPUT"
 
-          # Cleanup
-          rm -rf "$TEMP_DIR"
-
           if [ "$ERRORS" -gt 0 ]; then
             echo ""
             echo "::error::$ERRORS blueprint(s) failed validation"
@@ -137,7 +136,6 @@ jobs:
           set -euo pipefail
 
           BLUEPRINT_FILE="kubernetes/apps/security/authentik/app/configmap-blueprints.yaml"
-          ERRORS=0
 
           echo "Checking Authentik-specific blueprint references..."
 
@@ -264,6 +262,7 @@ jobs:
     runs-on: gha-runner-scale-set
     needs: validate-blueprints
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions: {}
     steps:
       - name: Wait for Flux Reconciliation
         run: |
@@ -292,7 +291,7 @@ jobs:
         run: |
           echo "Checking Authentik availability..."
           for i in $(seq 1 10); do
-            if curl -sf "${AUTHENTIK_URL}/-/health/ready/" > /dev/null 2>&1; then
+            if curl -sf --max-time 10 "${AUTHENTIK_URL}/-/health/ready/" > /dev/null 2>&1; then
               echo "Authentik is ready"
               exit 0
             fi
@@ -316,7 +315,7 @@ jobs:
 
           # Get list of all blueprint instances
           echo "Fetching blueprint instances..."
-          BLUEPRINTS=$(curl -sf \
+          BLUEPRINTS=$(curl -sf --max-time 30 \
             -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
             -H "Content-Type: application/json" \
             "${AUTHENTIK_URL}/api/v3/managed/blueprints/") || {
@@ -339,7 +338,7 @@ jobs:
 
           for pk in $(echo "$BLUEPRINTS" | jq -r '.results[].pk'); do
             # Get blueprint details
-            DETAIL=$(curl -sf \
+            DETAIL=$(curl -sf --max-time 30 \
               -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
               "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/") || {
               echo "  WARNING: Failed to fetch details for $pk"
@@ -356,7 +355,7 @@ jobs:
             # Apply all enabled blueprints to ensure they're up-to-date
             if [ "$ENABLED" = "true" ]; then
               echo "    -> Applying blueprint..."
-              APPLY_RESULT=$(curl -sf -X POST \
+              APPLY_RESULT=$(curl -sf --max-time 60 -X POST \
                 -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
                 -H "Content-Type: application/json" \
                 "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/apply/" 2>&1) || {
@@ -395,7 +394,7 @@ jobs:
           echo "Final Blueprint Status:"
           echo "----------------------------------------"
 
-          BLUEPRINTS=$(curl -sf \
+          BLUEPRINTS=$(curl -sf --max-time 30 \
             -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
             "${AUTHENTIK_URL}/api/v3/managed/blueprints/")
 
