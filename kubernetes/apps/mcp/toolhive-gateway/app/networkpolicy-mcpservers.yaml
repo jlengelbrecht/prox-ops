@@ -189,12 +189,11 @@ spec:
       toolhive-name: truenas-heimdall
 
   egress:
-    # Allow direct access to TrueNAS on private networks (fallback/alternative to proxy)
+    # Allow direct access to TrueNAS Heimdall (fallback/alternative to proxy)
+    # Restricted to specific host IP for least-privilege access
     # TrueNAS backend uses port 81 (HTTP), also allow standard HTTPS ports
     - toCIDRSet:
-        - cidr: 10.0.0.0/8
-        - cidr: 172.16.0.0/12
-        - cidr: 192.168.0.0/16
+        - cidr: 10.20.66.11/32
       toPorts:
         - ports:
             - port: "443"
@@ -219,12 +218,11 @@ spec:
       toolhive-name: truenas-baldar
 
   egress:
-    # Allow direct access to TrueNAS on private networks (fallback/alternative to proxy)
+    # Allow direct access to TrueNAS Baldar (fallback/alternative to proxy)
+    # Restricted to specific host IP for least-privilege access
     # TrueNAS backend uses port 81 (HTTP), also allow standard HTTPS ports
     - toCIDRSet:
-        - cidr: 10.0.0.0/8
-        - cidr: 172.16.0.0/12
-        - cidr: 192.168.0.0/16
+        - cidr: 10.20.66.15/32
       toPorts:
         - ports:
             - port: "443"
