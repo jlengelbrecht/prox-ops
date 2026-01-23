@@ -21,6 +21,8 @@ concurrency:
 jobs:
   validate-blueprints:
     name: Validate Blueprints
+    # Only validate on PR - validation already passed before merge
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -426,7 +428,7 @@ jobs:
   reconcile-blueprints:
     name: Reconcile Blueprints
     runs-on: gha-runner-scale-set
-    needs: validate-blueprints
+    # Run directly on push - no need for validation (already passed in PR)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions: {}
     steps:
@@ -435,21 +437,6 @@ jobs:
           echo "Waiting 60 seconds for Flux to reconcile ConfigMap..."
           echo "This ensures the new blueprint content is available to Authentik"
           sleep 60
-
-      - name: Get Authentik API Token
-        id: get-token
-        run: |
-          echo "Fetching API token from Kubernetes secret..."
-          TOKEN=$(kubectl get secret -n security authentik-secret -o jsonpath='{.data.AUTHENTIK_API_TOKEN}' | base64 -d)
-          if [ -z "$TOKEN" ]; then
-            echo "::error::AUTHENTIK_API_TOKEN not found in secret"
-            echo "Please create an API token in Authentik and store in 1Password"
-            exit 1
-          fi
-          echo "API token retrieved successfully"
-          # Mask the token in logs
-          echo "::add-mask::$TOKEN"
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Check Authentik Health
         env:
@@ -470,7 +457,7 @@ jobs:
       - name: Reconcile All Blueprints
         env:
           AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
-          AUTHENTIK_API_TOKEN: ${{ steps.get-token.outputs.token }}
+          AUTHENTIK_API_TOKEN: ${{ secrets.AUTHENTIK_API_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -554,7 +541,7 @@ jobs:
       - name: Verify Blueprint Status
         env:
           AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
-          AUTHENTIK_API_TOKEN: ${{ steps.get-token.outputs.token }}
+          AUTHENTIK_API_TOKEN: ${{ secrets.AUTHENTIK_API_TOKEN }}
         run: |
           echo ""
           echo "Final Blueprint Status:"
