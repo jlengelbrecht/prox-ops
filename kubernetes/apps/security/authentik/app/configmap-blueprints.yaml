@@ -119,6 +119,18 @@ data:
           expression: |
             # Return user's Authentik group names for Open WebUI
             return {"groups": [group.name for group in user.ak_groups.all()]}
+      # MCP Gateway Audience - adds aud claim for ToolHive gateway token validation
+      - model: authentik_providers_oauth2.scopemapping
+        id: scope-mcp-audience
+        identifiers:
+          name: MCP Gateway Audience
+        attrs:
+          name: MCP Gateway Audience
+          scope_name: mcp
+          description: "Adds audience claim for ToolHive MCP Gateway token validation"
+          expression: |
+            # Return the expected audience for MCP Gateway
+            return {"aud": "toolhive-mcp-gateway"}
 
   # =============================================================
   # OAUTH2 PROVIDERS BLUEPRINT
@@ -140,6 +152,7 @@ data:
       scope_offline: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-offline_access]]
       scope_openwebui_groups: !Find [authentik_providers_oauth2.scopemapping, [name, "Open WebUI Groups"]]
       scope_bookstack_groups: !Find [authentik_providers_oauth2.scopemapping, [name, "BookStack Groups"]]
+      scope_mcp_audience: !Find [authentik_providers_oauth2.scopemapping, [name, "MCP Gateway Audience"]]
     entries:
       # Open WebUI - Direct OIDC
       - model: authentik_providers_oauth2.oauth2provider
@@ -261,6 +274,7 @@ data:
           invalidation_flow: !Context invalidation_flow
           signing_key: !Context signing_key
           property_mappings:
+            - !Context scope_mcp_audience
             - !Context scope_email
             - !Context scope_profile
             - !Context scope_openid
