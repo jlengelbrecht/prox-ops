@@ -159,7 +159,7 @@ spec:
             - port: "8443"
               protocol: TCP
 ---
-# Network policy for truenas-heimdall-mcp to access TrueNAS Heimdall on private network
+# Network policy for truenas-heimdall-mcp to access TrueNAS Heimdall via Envoy Gateway
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -185,8 +185,22 @@ spec:
             - port: "53"
               protocol: TCP
 
-    # Allow truenas-heimdall-mcp to reach TrueNAS on private networks
-    # TrueNAS SCALE uses port 443 (HTTPS) and 80 (HTTP)
+    # Allow truenas-heimdall-mcp to reach Envoy Gateway (internal proxy for TrueNAS)
+    # TrueNAS is proxied via envoy-internal gateway in the network namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: envoy
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+
+    # Fallback: Allow direct access to TrueNAS on private networks if not using proxy
+    # TrueNAS SCALE typically uses ports 80/443 or 81 (HTTP backend)
     - toCIDRSet:
         - cidr: 10.0.0.0/8
         - cidr: 172.16.0.0/12
@@ -197,8 +211,10 @@ spec:
               protocol: TCP
             - port: "80"
               protocol: TCP
+            - port: "81"
+              protocol: TCP
 ---
-# Network policy for truenas-baldar-mcp to access TrueNAS Baldar on private network
+# Network policy for truenas-baldar-mcp to access TrueNAS Baldar via Envoy Gateway
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -224,8 +240,22 @@ spec:
             - port: "53"
               protocol: TCP
 
-    # Allow truenas-baldar-mcp to reach TrueNAS on private networks
-    # TrueNAS SCALE uses port 443 (HTTPS) and 80 (HTTP)
+    # Allow truenas-baldar-mcp to reach Envoy Gateway (internal proxy for TrueNAS)
+    # TrueNAS is proxied via envoy-internal gateway in the network namespace
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: envoy
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+
+    # Fallback: Allow direct access to TrueNAS on private networks if not using proxy
+    # TrueNAS SCALE typically uses ports 80/443 or 81 (HTTP backend)
     - toCIDRSet:
         - cidr: 10.0.0.0/8
         - cidr: 172.16.0.0/12
@@ -235,4 +265,6 @@ spec:
             - port: "443"
               protocol: TCP
             - port: "80"
+              protocol: TCP
+            - port: "81"
               protocol: TCP
