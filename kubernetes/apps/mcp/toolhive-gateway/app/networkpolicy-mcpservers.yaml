@@ -121,6 +121,7 @@ spec:
     # Allow MCP servers to reach internal Envoy Gateway proxy
     # Many homelab services (Proxmox, TrueNAS, etc.) are proxied via envoy-internal
     # This enables MCP servers to access *.homelab0.org endpoints that route through Envoy
+    # Note: Cilium evaluates at pod level, so use container ports (10080/10443) not service ports (80/443)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
@@ -128,9 +129,9 @@ spec:
             gateway.envoyproxy.io/owning-gateway-name: envoy-internal
       toPorts:
         - ports:
-            - port: "443"
+            - port: "10443"
               protocol: TCP
-            - port: "80"
+            - port: "10080"
               protocol: TCP
 ---
 # Separate policy for unifi-mcp to access UniFi controller on private network
