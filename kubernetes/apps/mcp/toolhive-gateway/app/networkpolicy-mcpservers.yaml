@@ -117,6 +117,21 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+
+    # Allow MCP servers to reach internal Envoy Gateway proxy
+    # Many homelab services (Proxmox, TrueNAS, etc.) are proxied via envoy-internal
+    # This enables MCP servers to access *.homelab0.org endpoints that route through Envoy
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: envoy
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
 ---
 # Separate policy for unifi-mcp to access UniFi controller on private network
 # UniFi controllers typically run on homelab private networks (10.x, 192.168.x, etc.)
@@ -159,7 +174,8 @@ spec:
             - port: "8443"
               protocol: TCP
 ---
-# Network policy for truenas-heimdall-mcp to access TrueNAS Heimdall on private network
+# Network policy for truenas-heimdall-mcp - additional ports for direct TrueNAS access
+# Note: Envoy Gateway access is provided by the base toolhive-mcpservers policy
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -173,32 +189,22 @@ spec:
       toolhive-name: truenas-heimdall
 
   egress:
-    # DNS resolution
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
-              protocol: TCP
-
-    # Allow truenas-heimdall-mcp to reach TrueNAS on private networks
-    # TrueNAS SCALE uses port 443 (HTTPS) and 80 (HTTP)
+    # Allow direct access to TrueNAS Heimdall (fallback/alternative to proxy)
+    # Restricted to specific host IP for least-privilege access
+    # TrueNAS backend uses port 81 (HTTP), also allow standard HTTPS ports
     - toCIDRSet:
-        - cidr: 10.0.0.0/8
-        - cidr: 172.16.0.0/12
-        - cidr: 192.168.0.0/16
+        - cidr: 10.20.66.11/32
       toPorts:
         - ports:
             - port: "443"
               protocol: TCP
             - port: "80"
               protocol: TCP
+            - port: "81"
+              protocol: TCP
 ---
-# Network policy for truenas-baldar-mcp to access TrueNAS Baldar on private network
+# Network policy for truenas-baldar-mcp - additional ports for direct TrueNAS access
+# Note: Envoy Gateway access is provided by the base toolhive-mcpservers policy
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -212,27 +218,16 @@ spec:
       toolhive-name: truenas-baldar
 
   egress:
-    # DNS resolution
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
-              protocol: TCP
-
-    # Allow truenas-baldar-mcp to reach TrueNAS on private networks
-    # TrueNAS SCALE uses port 443 (HTTPS) and 80 (HTTP)
+    # Allow direct access to TrueNAS Baldar (fallback/alternative to proxy)
+    # Restricted to specific host IP for least-privilege access
+    # TrueNAS backend uses port 81 (HTTP), also allow standard HTTPS ports
     - toCIDRSet:
-        - cidr: 10.0.0.0/8
-        - cidr: 172.16.0.0/12
-        - cidr: 192.168.0.0/16
+        - cidr: 10.20.66.15/32
       toPorts:
         - ports:
             - port: "443"
               protocol: TCP
             - port: "80"
+              protocol: TCP
+            - port: "81"
               protocol: TCP
