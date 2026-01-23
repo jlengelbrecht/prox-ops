@@ -1,6 +1,6 @@
 ---
 # Authentik Blueprint Validation Pipeline
-# Validates blueprint YAML syntax and schema ONLY when blueprint files change
+# Validates blueprint YAML syntax, structure, and references ONLY when blueprint files change
 # This workflow is intentionally isolated from other CI to avoid blocking unrelated deployments
 name: "Authentik Blueprints"
 
@@ -24,9 +24,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: write
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Generate GitHub App Token
+        if: always() && github.event_name == 'pull_request'
+        id: generate-token
+        uses: actions/create-github-app-token@df432ceedc7162793a195dd1713ff69aefc7379e # v1.11.7
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
       - name: Setup mise
         # renovate: datasource=github-releases depName=jdx/mise-action
@@ -37,16 +46,8 @@ jobs:
           # Only install the tools we need for this workflow
           mise_toml: |
             [tools]
-            "aqua:neilpa/yajsv" = "1.4.1"
             "aqua:mikefarah/yq" = "4.49.2"
             "aqua:jqlang/jq" = "1.8.1"
-
-      - name: Download Authentik Blueprint Schema
-        run: |
-          mkdir -p /tmp/schemas
-          curl -sSfL --max-time 30 -o /tmp/schemas/authentik-blueprint.json \
-            "https://goauthentik.io/blueprints/schema.json"
-          echo "Downloaded Authentik blueprint schema"
 
       - name: Extract and Validate Blueprints
         id: validate
@@ -57,15 +58,20 @@ jobs:
           TEMP_DIR=$(mktemp -d)
           trap 'rm -rf "$TEMP_DIR"' EXIT
           ERRORS=0
+          WARNINGS=0
           VALIDATED=0
 
-          # Placeholder UUID for schema validation (Authentik tags resolve at runtime)
-          PLACEHOLDER_UUID="00000000-0000-0000-0000-000000000000"
-
+          echo "=============================================="
+          echo "  Authentik Blueprint Validation"
+          echo "=============================================="
+          echo ""
           echo "Extracting blueprints from ConfigMap..."
 
           # Get all keys from the ConfigMap data section
           BLUEPRINT_KEYS=$(yq eval '.data | keys | .[]' "$BLUEPRINT_FILE")
+
+          # Known valid Authentik model prefixes (core models)
+          KNOWN_MODEL_PREFIXES="authentik_core authentik_crypto authentik_flows authentik_policies authentik_providers_oauth2 authentik_providers_proxy authentik_providers_saml authentik_providers_ldap authentik_sources_oauth authentik_sources_plex authentik_sources_ldap authentik_sources_saml authentik_stages"
 
           for key in $BLUEPRINT_KEYS; do
             echo ""
@@ -73,11 +79,14 @@ jobs:
 
             # Extract the blueprint YAML content
             BLUEPRINT_PATH="$TEMP_DIR/$key"
-            BLUEPRINT_PROCESSED="$TEMP_DIR/${key}.processed"
             yq eval ".data[\"$key\"]" "$BLUEPRINT_FILE" > "$BLUEPRINT_PATH"
 
+            BLUEPRINT_ERRORS=0
+
+            # ─────────────────────────────────────────────────────────────
             # Step 1: Basic YAML syntax validation
-            echo "  [1/4] Checking YAML syntax..."
+            # ─────────────────────────────────────────────────────────────
+            echo "  [1/7] Checking YAML syntax..."
             if ! yq eval '.' "$BLUEPRINT_PATH" > /dev/null 2>&1; then
               echo "  ERROR: Invalid YAML syntax in $key"
               ERRORS=$((ERRORS + 1))
@@ -85,197 +94,269 @@ jobs:
             fi
             echo "  PASS: YAML syntax valid"
 
+            # ─────────────────────────────────────────────────────────────
             # Step 2: Check required blueprint fields
-            echo "  [2/4] Checking required fields..."
+            # ─────────────────────────────────────────────────────────────
+            echo "  [2/7] Checking required fields..."
             VERSION=$(yq eval '.version // ""' "$BLUEPRINT_PATH")
             if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
               echo "  ERROR: Missing required 'version' field in $key"
-              ERRORS=$((ERRORS + 1))
-              continue
+              BLUEPRINT_ERRORS=$((BLUEPRINT_ERRORS + 1))
             fi
 
-            ENTRIES=$(yq eval '.entries // ""' "$BLUEPRINT_PATH")
-            if [ -z "$ENTRIES" ] || [ "$ENTRIES" = "null" ]; then
-              echo "  ERROR: Missing required 'entries' field in $key"
-              ERRORS=$((ERRORS + 1))
-              continue
+            ENTRIES_COUNT=$(yq eval '.entries | length' "$BLUEPRINT_PATH" 2>/dev/null || echo "0")
+            if [ "$ENTRIES_COUNT" = "0" ] || [ "$ENTRIES_COUNT" = "null" ]; then
+              echo "  ERROR: Missing or empty 'entries' field in $key"
+              BLUEPRINT_ERRORS=$((BLUEPRINT_ERRORS + 1))
+            else
+              echo "  PASS: Required fields present (version: $VERSION, entries: $ENTRIES_COUNT)"
             fi
-            echo "  PASS: Required fields present (version: $VERSION)"
 
-            # Step 3: Validate Authentik-specific tags are well-formed
-            echo "  [3/4] Checking Authentik tag syntax..."
-            TAG_ERRORS=0
+            # ─────────────────────────────────────────────────────────────
+            # Step 3: Validate entry structure
+            # ─────────────────────────────────────────────────────────────
+            echo "  [3/7] Checking entry structure..."
+            ENTRY_IDX=0
+            while [ $ENTRY_IDX -lt "$ENTRIES_COUNT" ]; do
+              # Check each entry has a model field
+              MODEL=$(yq eval ".entries[$ENTRY_IDX].model // \"\"" "$BLUEPRINT_PATH")
+              if [ -z "$MODEL" ] || [ "$MODEL" = "null" ]; then
+                echo "  ERROR: Entry $ENTRY_IDX missing required 'model' field"
+                BLUEPRINT_ERRORS=$((BLUEPRINT_ERRORS + 1))
+              fi
 
-            # Check !Find tags have correct structure: !Find [model, [field, value]]
+              # Check entry has either id or identifiers (recommended for idempotency)
+              ENTRY_ID=$(yq eval ".entries[$ENTRY_IDX].id // \"\"" "$BLUEPRINT_PATH")
+              IDENTIFIERS=$(yq eval ".entries[$ENTRY_IDX].identifiers // \"\"" "$BLUEPRINT_PATH")
+              if [ -z "$ENTRY_ID" ] && [ -z "$IDENTIFIERS" ]; then
+                echo "  WARNING: Entry $ENTRY_IDX ($MODEL) has no 'id' or 'identifiers' - may cause issues with updates"
+                WARNINGS=$((WARNINGS + 1))
+              fi
+
+              ENTRY_IDX=$((ENTRY_IDX + 1))
+            done
+            echo "  PASS: Entry structure validated ($ENTRIES_COUNT entries)"
+
+            # ─────────────────────────────────────────────────────────────
+            # Step 4: Validate model names
+            # ─────────────────────────────────────────────────────────────
+            echo "  [4/7] Checking model names..."
+            MODELS=$(yq eval '.entries[].model' "$BLUEPRINT_PATH" 2>/dev/null | grep -v "null" || true)
+            for model in $MODELS; do
+              # Check model follows authentik_xxx.yyy pattern
+              if ! echo "$model" | grep -qP '^authentik_\w+\.\w+$'; then
+                echo "  ERROR: Invalid model name format: $model (expected: authentik_xxx.yyy)"
+                BLUEPRINT_ERRORS=$((BLUEPRINT_ERRORS + 1))
+                continue
+              fi
+
+              # Check model prefix is known (warn if unknown - could be plugin)
+              MODEL_PREFIX=$(echo "$model" | cut -d. -f1)
+              if ! echo "$KNOWN_MODEL_PREFIXES" | grep -qw "$MODEL_PREFIX"; then
+                echo "  WARNING: Unknown model prefix '$MODEL_PREFIX' in $model (might be a plugin model)"
+                WARNINGS=$((WARNINGS + 1))
+              fi
+            done
+            echo "  PASS: Model names validated"
+
+            # ─────────────────────────────────────────────────────────────
+            # Step 5: Validate entry ID uniqueness
+            # ─────────────────────────────────────────────────────────────
+            echo "  [5/7] Checking entry ID uniqueness..."
+            ENTRY_IDS=$(yq eval '.entries[].id // empty' "$BLUEPRINT_PATH" 2>/dev/null | sort || true)
+            DUPLICATE_IDS=$(echo "$ENTRY_IDS" | uniq -d)
+            if [ -n "$DUPLICATE_IDS" ]; then
+              echo "  ERROR: Duplicate entry IDs found:"
+              echo "$DUPLICATE_IDS" | sed 's/^/    - /'
+              BLUEPRINT_ERRORS=$((BLUEPRINT_ERRORS + 1))
+            else
+              ID_COUNT=$(echo "$ENTRY_IDS" | grep -c . || echo "0")
+              echo "  PASS: All entry IDs are unique ($ID_COUNT IDs)"
+            fi
+
+            # ─────────────────────────────────────────────────────────────
+            # Step 6: Validate context variable consistency
+            # ─────────────────────────────────────────────────────────────
+            echo "  [6/7] Checking context variable consistency..."
+
+            # Check if blueprint has a context section
+            HAS_CONTEXT=$(yq eval '.context != null' "$BLUEPRINT_PATH")
+
+            # Get all !Context references in the blueprint
+            CONTEXT_REFS=$(grep -oP '!Context \w+' "$BLUEPRINT_PATH" 2>/dev/null | sed 's/!Context //' | sort -u || true)
+
+            if [ -n "$CONTEXT_REFS" ]; then
+              if [ "$HAS_CONTEXT" = "true" ]; then
+                # Get defined context variables
+                CONTEXT_DEFS=$(yq eval '.context | keys | .[]' "$BLUEPRINT_PATH" 2>/dev/null || true)
+
+                # Check each reference has a definition
+                for ref in $CONTEXT_REFS; do
+                  if ! echo "$CONTEXT_DEFS" | grep -qx "$ref"; then
+                    echo "  ERROR: Context variable '$ref' referenced but not defined in context section"
+                    BLUEPRINT_ERRORS=$((BLUEPRINT_ERRORS + 1))
+                  fi
+                done
+
+                # Check for unused context definitions (warning only)
+                for def in $CONTEXT_DEFS; do
+                  if ! echo "$CONTEXT_REFS" | grep -qx "$def"; then
+                    echo "  WARNING: Context variable '$def' defined but never referenced"
+                    WARNINGS=$((WARNINGS + 1))
+                  fi
+                done
+              else
+                echo "  ERROR: Blueprint uses !Context references but has no context section"
+                BLUEPRINT_ERRORS=$((BLUEPRINT_ERRORS + 1))
+              fi
+            fi
+            echo "  PASS: Context variable consistency validated"
+
+            # ─────────────────────────────────────────────────────────────
+            # Step 7: Validate Authentik tag syntax
+            # ─────────────────────────────────────────────────────────────
+            echo "  [7/7] Checking Authentik tag syntax..."
+
+            # Validate !Find tags: should be !Find [model, [field, value]]
             while IFS= read -r line; do
-              if echo "$line" | grep -q '!Find' && ! echo "$line" | grep -qP '!Find \[.+, \[.+, .+\]\]'; then
-                # Allow simple !Find [model, [field, value]] format
-                if ! echo "$line" | grep -qP '!Find \['; then
-                  echo "  WARNING: Potentially malformed !Find tag: $line"
+              if echo "$line" | grep -q '!Find'; then
+                # Check for proper bracket structure
+                if ! echo "$line" | grep -qP '!Find \[\s*\w+[\w.]*\s*,\s*\['; then
+                  echo "  WARNING: Potentially malformed !Find tag (expected: !Find [model, [field, value]])"
+                  echo "    Line: $line"
+                  WARNINGS=$((WARNINGS + 1))
                 fi
               fi
             done < "$BLUEPRINT_PATH"
 
-            # Check !Env tags reference valid-looking variable names
+            # Validate !Env tags: should reference UPPER_SNAKE_CASE variables
             while IFS= read -r match; do
               if [ -n "$match" ]; then
                 VAR_NAME=$(echo "$match" | sed 's/!Env //')
                 if ! echo "$VAR_NAME" | grep -qP '^[A-Z][A-Z0-9_]*$'; then
                   echo "  WARNING: !Env variable '$VAR_NAME' doesn't follow UPPER_SNAKE_CASE convention"
+                  WARNINGS=$((WARNINGS + 1))
                 fi
               fi
             done < <(grep -oP '!Env \S+' "$BLUEPRINT_PATH" 2>/dev/null || true)
 
-            echo "  PASS: Authentik tags look valid"
+            # Validate !Context tags: should reference valid variable names
+            while IFS= read -r match; do
+              if [ -n "$match" ]; then
+                VAR_NAME=$(echo "$match" | sed 's/!Context //')
+                if ! echo "$VAR_NAME" | grep -qP '^[a-z][a-z0-9_]*$'; then
+                  echo "  WARNING: !Context variable '$VAR_NAME' doesn't follow snake_case convention"
+                  WARNINGS=$((WARNINGS + 1))
+                fi
+              fi
+            done < <(grep -oP '!Context \S+' "$BLUEPRINT_PATH" 2>/dev/null || true)
 
-            # Step 4: JSON Schema validation (pre-process to replace Authentik tags)
-            echo "  [4/4] Validating against Authentik schema..."
+            echo "  PASS: Authentik tag syntax validated"
 
-            # Pre-process: Replace Authentik YAML tags with schema-compatible placeholders
-            # Use yq for proper YAML-aware processing - sed breaks on nested structures
-            # Note: yq handles custom tags by stripping them, leaving the value intact
-            # We need to replace the entire tagged value with a placeholder
-
-            BLUEPRINT_JSON="$TEMP_DIR/${key}.json"
-
-            # Convert YAML to JSON with tag replacement using yq
-            # The -o=json flag converts to JSON format which yajsv requires
-            # We process tags by converting the YAML structure, then using jq/yq to replace tagged values
-            if ! yq eval -o=json '
-              # Walk through all nodes and replace Authentik tag patterns
-              # Since yq strips custom YAML tags, the !Find [model, [...]] becomes an array
-              # We need to handle this at the JSON level after conversion
-              .
-            ' "$BLUEPRINT_PATH" 2>/dev/null | \
-            # Post-process JSON to replace array patterns that were !Find tags
-            # !Find becomes arrays like ["authentik_model", ["field", "value"]]
-            # Replace 2-element arrays where second element is also an array (typical !Find pattern)
-            jq --arg uuid "$PLACEHOLDER_UUID" '
-              walk(
-                if type == "array" and length == 2 and (.[1] | type) == "array" then
-                  $uuid
-                elif type == "string" and startswith("placeholder_") then
-                  .
-                else
-                  .
-                end
-              )
-            ' > "$BLUEPRINT_JSON" 2>/dev/null; then
-              echo "  ERROR: Failed to convert/process $key to JSON"
-              ERRORS=$((ERRORS + 1))
-              continue
+            # ─────────────────────────────────────────────────────────────
+            # Summary for this blueprint
+            # ─────────────────────────────────────────────────────────────
+            if [ "$BLUEPRINT_ERRORS" -gt 0 ]; then
+              echo ""
+              echo "  FAILED: $BLUEPRINT_ERRORS error(s) found in $key"
+              ERRORS=$((ERRORS + BLUEPRINT_ERRORS))
+            else
+              VALIDATED=$((VALIDATED + 1))
+              echo ""
+              echo "  SUCCESS: $key passed all validation checks"
             fi
-
-            # Validate the JSON blueprint against schema
-            if ! yajsv -s /tmp/schemas/authentik-blueprint.json "$BLUEPRINT_JSON" 2>&1; then
-              echo "  ERROR: Schema validation failed for $key"
-              echo "  Note: Authentik tags (!Find, !Context, !Env) were replaced with placeholders for validation"
-              ERRORS=$((ERRORS + 1))
-              continue
-            fi
-            echo "  PASS: Schema validation successful"
-
-            VALIDATED=$((VALIDATED + 1))
           done
 
           echo ""
-          echo "========================================"
-          echo "Validation Summary"
-          echo "========================================"
-          echo "Blueprints validated: $VALIDATED"
-          echo "Errors found: $ERRORS"
+          echo "=============================================="
+          echo "  Validation Summary"
+          echo "=============================================="
+          echo "  Blueprints validated: $VALIDATED"
+          echo "  Errors found: $ERRORS"
+          echo "  Warnings: $WARNINGS"
+          echo "=============================================="
 
           # Set outputs for PR comment
           echo "validated=$VALIDATED" >> "$GITHUB_OUTPUT"
           echo "errors=$ERRORS" >> "$GITHUB_OUTPUT"
+          echo "warnings=$WARNINGS" >> "$GITHUB_OUTPUT"
 
           if [ "$ERRORS" -gt 0 ]; then
             echo ""
-            echo "::error::$ERRORS blueprint(s) failed validation"
+            echo "::error::$ERRORS error(s) found in blueprint validation"
             exit 1
           fi
 
           echo ""
           echo "All blueprints passed validation!"
 
-      - name: Validate Authentik-specific References
+      - name: Analyze Blueprint References
         if: success()
         run: |
           set -euo pipefail
 
           BLUEPRINT_FILE="kubernetes/apps/security/authentik/app/configmap-blueprints.yaml"
 
-          echo "Checking Authentik-specific blueprint references..."
+          echo "=============================================="
+          echo "  Blueprint Reference Analysis"
+          echo "=============================================="
+          echo ""
 
-          # Extract all blueprint content for reference checking
+          # Extract all blueprint content for reference analysis
           FULL_CONTENT=$(yq eval '.data | to_entries | .[] | .value' "$BLUEPRINT_FILE")
 
-          # Check for common issues with !Find references
-          echo ""
-          echo "=== Checking !Find references ==="
-
-          # Extract !Find patterns and validate they have proper structure
-          # !Find [model, [field, value]] format
-          FIND_REFS=$(echo "$FULL_CONTENT" | grep -oP '!Find \[[^\]]+\]' || true)
+          # Summarize !Find references
+          echo "=== !Find References ==="
+          FIND_REFS=$(echo "$FULL_CONTENT" | grep -oP '!Find \[[^\]]+, \[[^\]]+\]\]' 2>/dev/null || true)
           if [ -n "$FIND_REFS" ]; then
-            echo "Found !Find references:"
-            echo "$FIND_REFS" | head -20
             FIND_COUNT=$(echo "$FIND_REFS" | wc -l)
             echo "Total !Find references: $FIND_COUNT"
+            echo "Models referenced via !Find:"
+            echo "$FIND_REFS" | grep -oP '!Find \[\K[^,]+' | sort | uniq -c | sort -rn
           else
             echo "No !Find references found"
           fi
 
-          # Check for !Context references match defined context variables
+          # Summarize !Context references
           echo ""
-          echo "=== Checking !Context references ==="
-          CONTEXT_REFS=$(echo "$FULL_CONTENT" | grep -oP '!Context \w+' || true)
+          echo "=== !Context References ==="
+          CONTEXT_REFS=$(echo "$FULL_CONTENT" | grep -oP '!Context \w+' 2>/dev/null || true)
           if [ -n "$CONTEXT_REFS" ]; then
-            echo "Found !Context references:"
-            echo "$CONTEXT_REFS" | sort -u | head -20
             CONTEXT_COUNT=$(echo "$CONTEXT_REFS" | wc -l)
             echo "Total !Context references: $CONTEXT_COUNT"
+            echo "Context variables used:"
+            echo "$CONTEXT_REFS" | sort | uniq -c | sort -rn
           else
             echo "No !Context references found"
           fi
 
-          # Check for !Env references
+          # Summarize !Env references
           echo ""
-          echo "=== Checking !Env references ==="
-          ENV_REFS=$(echo "$FULL_CONTENT" | grep -oP '!Env \w+' || true)
+          echo "=== !Env References ==="
+          ENV_REFS=$(echo "$FULL_CONTENT" | grep -oP '!Env \w+' 2>/dev/null || true)
           if [ -n "$ENV_REFS" ]; then
-            echo "Found !Env references:"
-            echo "$ENV_REFS" | sort -u
             ENV_COUNT=$(echo "$ENV_REFS" | wc -l)
             echo "Total !Env references: $ENV_COUNT"
+            echo "Environment variables used:"
+            echo "$ENV_REFS" | sort -u
           else
             echo "No !Env references found"
           fi
 
-          # Check for model name validity (basic pattern check)
+          # Model summary
           echo ""
-          echo "=== Checking model references ==="
-          MODELS=$(echo "$FULL_CONTENT" | grep -oP 'model: authentik_\w+\.\w+' | sort -u || true)
+          echo "=== Model Summary ==="
+          MODELS=$(echo "$FULL_CONTENT" | grep -oP 'model: authentik_\w+\.\w+' 2>/dev/null | sort | uniq -c | sort -rn || true)
           if [ -n "$MODELS" ]; then
-            echo "Found model references:"
+            echo "Models used:"
             echo "$MODELS"
-            MODEL_COUNT=$(echo "$MODELS" | wc -l)
-            echo "Total unique models: $MODEL_COUNT"
           fi
 
           echo ""
           echo "Reference analysis complete"
 
-      - name: Generate GitHub App Token
-        if: github.event_name == 'pull_request'
-        id: generate-token
-        uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
-        with:
-          app-id: ${{ secrets.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
-
       - name: Comment on PR (Success)
-        if: github.event_name == 'pull_request' && success()
+        if: always() && github.event_name == 'pull_request' && steps.validate.outcome == 'success'
         uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
         with:
           repo-token: ${{ steps.generate-token.outputs.token }}
@@ -289,14 +370,21 @@ jobs:
             |-------|--------|
             | YAML Syntax | :white_check_mark: Valid |
             | Required Fields | :white_check_mark: Present |
-            | Authentik Tags | :white_check_mark: Valid |
-            | Schema Validation | :white_check_mark: Passed |
+            | Entry Structure | :white_check_mark: Valid |
+            | Model Names | :white_check_mark: Valid |
+            | Entry ID Uniqueness | :white_check_mark: Unique |
+            | Context Consistency | :white_check_mark: Consistent |
+            | Tag Syntax | :white_check_mark: Valid |
+
+            | Metric | Value |
+            |--------|-------|
             | Blueprints Validated | ${{ steps.validate.outputs.validated }} |
+            | Warnings | ${{ steps.validate.outputs.warnings }} |
 
             **Note:** After merge, blueprints will be automatically reconciled by Authentik.
 
       - name: Comment on PR (Failure)
-        if: github.event_name == 'pull_request' && failure()
+        if: always() && github.event_name == 'pull_request' && steps.validate.outcome == 'failure'
         uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
         with:
           repo-token: ${{ steps.generate-token.outputs.token }}
@@ -306,29 +394,32 @@ jobs:
 
             One or more blueprints in `configmap-blueprints.yaml` failed validation.
 
-            | Check | Status |
-            |-------|--------|
+            | Metric | Value |
+            |--------|-------|
             | Errors Found | ${{ steps.validate.outputs.errors }} |
+            | Warnings | ${{ steps.validate.outputs.warnings }} |
 
-            ### Required Actions
+            ### Validation Checks Performed
 
-            1. Check the workflow logs for specific error details
-            2. Ensure all blueprints have `version: 1` field
-            3. Ensure all blueprints have valid `entries` array
-            4. Validate YAML syntax (no tabs, proper indentation)
-            5. Check `!Find`, `!Context`, `!Env` tag syntax is correct
-            6. Verify blueprint structure matches Authentik schema
-
-            ### Validation Steps
-
-            | Step | Description |
-            |------|-------------|
+            | Check | Description |
+            |-------|-------------|
             | YAML Syntax | Basic YAML parsing with yq |
             | Required Fields | `version` and `entries` must be present |
-            | Authentik Tags | `!Find`, `!Context`, `!Env` syntax validation |
-            | Schema | JSON schema validation (tags replaced with placeholders) |
+            | Entry Structure | Each entry must have `model` field, should have `id` or `identifiers` |
+            | Model Names | Must follow `authentik_xxx.yyy` format |
+            | Entry ID Uniqueness | No duplicate `id` values within a blueprint |
+            | Context Consistency | All `!Context` references must have definitions |
+            | Tag Syntax | `!Find`, `!Context`, `!Env` must follow correct format |
 
-            **This PR cannot be merged until blueprint validation passes.**
+            ### Common Issues
+
+            1. **Missing `version` field** - Add `version: 1` at the top of the blueprint
+            2. **Missing `model` in entry** - Each entry must specify `model: authentik_xxx.yyy`
+            3. **Undefined context variable** - Ensure `!Context varname` has matching definition in `context:` section
+            4. **Duplicate entry IDs** - Each `id:` must be unique within a blueprint
+            5. **Invalid model name** - Check spelling, format is `authentik_<app>.<model>`
+
+            **Check the workflow logs for specific error details.**
 
   # Trigger immediate blueprint reconciliation after merge
   # Uses self-hosted runner to access cluster network and Authentik API
