@@ -113,10 +113,6 @@ spec:
                   echo "----------------------------------------"
 
                   # Parse results and apply each enabled blueprint
-                  APPLIED=0
-                  SKIPPED=0
-                  FAILED=0
-
                   echo "$BLUEPRINTS" | grep -o '"pk":"[^"]*"' | cut -d'"' -f4 | while read pk; do
                     # Get blueprint details
                     DETAIL=$(curl -sf --max-time 30 \
