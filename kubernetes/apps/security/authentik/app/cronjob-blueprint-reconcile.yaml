@@ -1,11 +1,13 @@
 ---
 # CronJob for automated Authentik blueprint reconciliation
-# This serves as a safety net to ensure blueprints are applied even if
-# file watching or Stakater Reloader fails to trigger properly
+# Runs every 15 minutes to apply ALL enabled blueprints, ensuring:
+# - ConfigMap changes are applied even if file watcher misses them
+# - Blueprint state is consistent after Authentik restarts
+# - Any failed blueprints are retried automatically
 #
 # Prerequisites:
 # 1. Create an API token in Authentik (Admin > System > Tokens)
-# 2. Store the token in 1Password under "authentik" with property "api-token"
+# 2. Store the token in 1Password under "authentik" with property "AUTHENTIK_API_TOKEN"
 # 3. The token needs permissions to read and apply blueprints
 apiVersion: batch/v1
 kind: CronJob
@@ -110,8 +112,11 @@ spec:
                   echo "Blueprint Status:"
                   echo "----------------------------------------"
 
-                  # Parse results and check each blueprint
-                  NEEDS_APPLY=""
+                  # Parse results and apply each enabled blueprint
+                  APPLIED=0
+                  SKIPPED=0
+                  FAILED=0
+
                   echo "$BLUEPRINTS" | grep -o '"pk":"[^"]*"' | cut -d'"' -f4 | while read pk; do
                     # Get blueprint details
                     DETAIL=$(curl -sf --max-time 30 \
@@ -124,9 +129,10 @@ spec:
 
                     printf "  %-40s status=%-10s enabled=%s\n" "$NAME" "$STATUS" "$ENABLED"
 
-                    # Apply blueprints that have errors or warnings
-                    if [ "$ENABLED" = "true" ] && [ "$STATUS" != "successful" ]; then
-                      echo "    -> Triggering apply for $NAME (status: $STATUS)"
+                    # Apply ALL enabled blueprints to ensure they're up-to-date
+                    # This forces Authentik to re-read the file and apply any changes
+                    if [ "$ENABLED" = "true" ]; then
+                      echo "    -> Applying blueprint..."
                       APPLY_RESULT=$(curl -sf --max-time 60 -X POST \
                         -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
                         -H "Content-Type: application/json" \
@@ -134,7 +140,9 @@ spec:
                         echo "    -> WARNING: Apply failed for $NAME"
                         continue
                       }
-                      echo "    -> Apply triggered successfully"
+                      echo "    -> Applied successfully"
+                    else
+                      echo "    -> Skipped (disabled)"
                     fi
                   done
 
