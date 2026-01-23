@@ -117,6 +117,21 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+
+    # Allow MCP servers to reach internal Envoy Gateway proxy
+    # Many homelab services (Proxmox, TrueNAS, etc.) are proxied via envoy-internal
+    # This enables MCP servers to access *.homelab0.org endpoints that route through Envoy
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: envoy
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
 ---
 # Separate policy for unifi-mcp to access UniFi controller on private network
 # UniFi controllers typically run on homelab private networks (10.x, 192.168.x, etc.)
@@ -159,7 +174,8 @@ spec:
             - port: "8443"
               protocol: TCP
 ---
-# Network policy for truenas-heimdall-mcp to access TrueNAS Heimdall via Envoy Gateway
+# Network policy for truenas-heimdall-mcp - additional ports for direct TrueNAS access
+# Note: Envoy Gateway access is provided by the base toolhive-mcpservers policy
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -173,34 +189,8 @@ spec:
       toolhive-name: truenas-heimdall
 
   egress:
-    # DNS resolution
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
-              protocol: TCP
-
-    # Allow truenas-heimdall-mcp to reach Envoy Gateway (internal proxy for TrueNAS)
-    # TrueNAS is proxied via envoy-internal gateway in the network namespace
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: network
-            app.kubernetes.io/name: envoy
-            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP
-            - port: "80"
-              protocol: TCP
-
-    # Fallback: Allow direct access to TrueNAS on private networks if not using proxy
-    # TrueNAS SCALE typically uses ports 80/443 or 81 (HTTP backend)
+    # Allow direct access to TrueNAS on private networks (fallback/alternative to proxy)
+    # TrueNAS backend uses port 81 (HTTP), also allow standard HTTPS ports
     - toCIDRSet:
         - cidr: 10.0.0.0/8
         - cidr: 172.16.0.0/12
@@ -214,7 +204,8 @@ spec:
             - port: "81"
               protocol: TCP
 ---
-# Network policy for truenas-baldar-mcp to access TrueNAS Baldar via Envoy Gateway
+# Network policy for truenas-baldar-mcp - additional ports for direct TrueNAS access
+# Note: Envoy Gateway access is provided by the base toolhive-mcpservers policy
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -228,34 +219,8 @@ spec:
       toolhive-name: truenas-baldar
 
   egress:
-    # DNS resolution
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
-              protocol: TCP
-
-    # Allow truenas-baldar-mcp to reach Envoy Gateway (internal proxy for TrueNAS)
-    # TrueNAS is proxied via envoy-internal gateway in the network namespace
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: network
-            app.kubernetes.io/name: envoy
-            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP
-            - port: "80"
-              protocol: TCP
-
-    # Fallback: Allow direct access to TrueNAS on private networks if not using proxy
-    # TrueNAS SCALE typically uses ports 80/443 or 81 (HTTP backend)
+    # Allow direct access to TrueNAS on private networks (fallback/alternative to proxy)
+    # TrueNAS backend uses port 81 (HTTP), also allow standard HTTPS ports
     - toCIDRSet:
         - cidr: 10.0.0.0/8
         - cidr: 172.16.0.0/12
