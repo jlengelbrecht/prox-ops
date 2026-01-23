@@ -39,6 +39,7 @@ jobs:
             [tools]
             "aqua:neilpa/yajsv" = "1.4.1"
             "aqua:mikefarah/yq" = "4.49.2"
+            "aqua:jqlang/jq" = "1.8.1"
 
       - name: Download Authentik Blueprint Schema
         run: |
@@ -131,19 +132,42 @@ jobs:
             echo "  [4/4] Validating against Authentik schema..."
 
             # Pre-process: Replace Authentik YAML tags with schema-compatible placeholders
-            # This allows schema validation while preserving the actual blueprint structure
-            sed -E \
-              -e "s/!Find \[[^]]+\]/${PLACEHOLDER_UUID}/g" \
-              -e "s/!Find \[[^]]+, \[[^]]+\]\]/${PLACEHOLDER_UUID}/g" \
-              -e "s/!Context [a-zA-Z_][a-zA-Z0-9_]*/placeholder_context_value/g" \
-              -e "s/!Env [A-Z_][A-Z0-9_]*/placeholder_env_value/g" \
-              -e "s/!Format [^\n]+/placeholder_format_value/g" \
-              -e "s/!If [^\n]+/true/g" \
-              -e "s/!Condition \[[^]]+\]/true/g" \
-              "$BLUEPRINT_PATH" > "$BLUEPRINT_PROCESSED"
+            # Use yq for proper YAML-aware processing - sed breaks on nested structures
+            # Note: yq handles custom tags by stripping them, leaving the value intact
+            # We need to replace the entire tagged value with a placeholder
 
-            # Validate the pre-processed blueprint against schema
-            if ! yajsv -s /tmp/schemas/authentik-blueprint.json "$BLUEPRINT_PROCESSED" 2>&1; then
+            BLUEPRINT_JSON="$TEMP_DIR/${key}.json"
+
+            # Convert YAML to JSON with tag replacement using yq
+            # The -o=json flag converts to JSON format which yajsv requires
+            # We process tags by converting the YAML structure, then using jq/yq to replace tagged values
+            if ! yq eval -o=json '
+              # Walk through all nodes and replace Authentik tag patterns
+              # Since yq strips custom YAML tags, the !Find [model, [...]] becomes an array
+              # We need to handle this at the JSON level after conversion
+              .
+            ' "$BLUEPRINT_PATH" 2>/dev/null | \
+            # Post-process JSON to replace array patterns that were !Find tags
+            # !Find becomes arrays like ["authentik_model", ["field", "value"]]
+            # Replace 2-element arrays where second element is also an array (typical !Find pattern)
+            jq --arg uuid "$PLACEHOLDER_UUID" '
+              walk(
+                if type == "array" and length == 2 and (.[1] | type) == "array" then
+                  $uuid
+                elif type == "string" and startswith("placeholder_") then
+                  .
+                else
+                  .
+                end
+              )
+            ' > "$BLUEPRINT_JSON" 2>/dev/null; then
+              echo "  ERROR: Failed to convert/process $key to JSON"
+              ERRORS=$((ERRORS + 1))
+              continue
+            fi
+
+            # Validate the JSON blueprint against schema
+            if ! yajsv -s /tmp/schemas/authentik-blueprint.json "$BLUEPRINT_JSON" 2>&1; then
               echo "  ERROR: Schema validation failed for $key"
               echo "  Note: Authentik tags (!Find, !Context, !Env) were replaced with placeholders for validation"
               ERRORS=$((ERRORS + 1))
