@@ -1,0 +1,33 @@
+# Test InferenceService using SKLearn predictor
+# This file is for manual testing after KServe deployment
+# DO NOT include in kustomization.yaml (kept separate for validation)
+#
+# Usage:
+#   kubectl apply -f test-sklearn-inference.yaml -n ai
+#   kubectl get inferenceservice -n ai
+#   kubectl get pods -n ai
+#
+# Expected behavior:
+#   - Pod should scale from 0 to 1 when first request arrives
+#   - Pod should scale back to 0 after idle timeout (default 60s)
+#   - Service endpoint: http://sklearn-iris.ai.svc.cluster.local/v1/models/sklearn-iris:predict
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: sklearn-iris
+  namespace: ai
+spec:
+  predictor:
+    minReplicas: 0  # Enable scale-to-zero
+    maxReplicas: 1  # Single replica for testing
+    sklearn:
+      # Pre-trained iris classification model from KServe examples
+      storageUri: "gs://kfserving-examples/models/sklearn/1.0/model"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
