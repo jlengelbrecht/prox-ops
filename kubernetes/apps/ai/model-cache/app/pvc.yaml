@@ -1,0 +1,28 @@
+---
+# Shared model cache for KServe InferenceServices
+# Provides ReadWriteMany access so all vLLM-Omni pods can share cached models
+# Reduces cold start time from 2-5min (download) to 15-30s (load from cache)
+#
+# Storage Strategy:
+# - First pod downloads model from HuggingFace → /models/<org>/<model-name>/
+# - Subsequent pods find model cached and skip download
+# - CephFS (Rook-Ceph) provides NFS-like multi-pod access
+#
+# Capacity Planning:
+# - 500Gi supports ~10-15 models
+# - Llama-3.1-8B: ~16GB
+# - Mistral-7B: ~14GB
+# - CodeLlama-13B: ~26GB
+# - Llama-3.1-70B: ~140GB (future)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache
+  namespace: ai
+spec:
+  accessModes:
+    - ReadWriteMany  # Multiple vLLM pods can mount simultaneously
+  storageClassName: ceph-filesystem  # Rook-Ceph CephFS (NFS-like)
+  resources:
+    requests:
+      storage: 500Gi  # Sufficient for ~10-15 models
