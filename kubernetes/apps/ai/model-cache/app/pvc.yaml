@@ -1,4 +1,7 @@
 ---
+# PROTECTED: This PVC is in a separate Kustomization with prune: false
+# to prevent accidental data loss during Flux reconciliation or cattle upgrades
+#
 # Shared model cache for KServe InferenceServices
 # Provides ReadWriteMany access so all vLLM-Omni pods can share cached models
 # Reduces cold start time from 2-5min (download) to 15-30s (load from cache)
@@ -19,6 +22,11 @@ kind: PersistentVolumeClaim
 metadata:
   name: model-cache
   namespace: ai
+  labels:
+    app.kubernetes.io/name: kserve
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   accessModes:
     - ReadWriteMany  # Multiple vLLM pods can mount simultaneously
