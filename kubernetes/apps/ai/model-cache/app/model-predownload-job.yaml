@@ -14,6 +14,12 @@
 # Total download: ~50GB
 # Expected runtime: 30-60 minutes (depends on network bandwidth)
 #
+# IMPORTANT: Job Immutability
+# Kubernetes Jobs have immutable pod templates. To update models/command/image:
+# 1. Delete existing Job: kubectl delete job -n ai model-predownload
+# 2. Apply updated manifest (Flux will reconcile)
+# Alternatively, create versioned Jobs (model-predownload-v2, etc.)
+#
 # Usage:
 #   kubectl apply -f model-predownload-job.yaml
 #   kubectl logs -n ai job/model-predownload -f
@@ -29,8 +35,11 @@ metadata:
 spec:
   # Allow 3 retries in case of network failures
   backoffLimit: 3
-  # Clean up completed job after 24 hours
-  ttlSecondsAfterFinished: 86400
+  # NOTE: ttlSecondsAfterFinished is intentionally OMITTED
+  # Reason: Flux reconciles this Kustomization every 1h. If the Job is auto-deleted
+  # after TTL expiry, Flux will recreate it, causing wasteful 50GB re-downloads.
+  # Completed Job objects are small (just status) and safe to keep indefinitely.
+  # To re-run downloads, manually delete: kubectl delete job -n ai model-predownload
   template:
     metadata:
       labels:
@@ -40,14 +49,27 @@ spec:
       # Don't restart on failure - let backoffLimit handle retries
       restartPolicy: Never
 
-      # Use default service account (no special permissions needed)
-      serviceAccountName: default
+      # Disable automatic service account token mounting (defense-in-depth)
+      # This Job doesn't need Kubernetes API access
+      automountServiceAccountToken: false
 
       containers:
         - name: huggingface-downloader
           # Using official Python 3.11 slim image
           # We'll install huggingface-hub package for CLI access
           image: python:3.11-slim
+
+          # Security hardening (defense-in-depth)
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # pip install requires write access to /tmp
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
 
           command:
             - /bin/bash
@@ -56,7 +78,8 @@ spec:
               set -euo pipefail
 
               echo "Installing huggingface-hub CLI..."
-              pip install --no-cache-dir huggingface-hub[cli]
+              # Pin version for reproducibility (avoid breaking changes on retries)
+              pip install --no-cache-dir 'huggingface-hub[cli]>=0.27,<0.28'
 
               echo "Starting model downloads to /models/"
               echo "RTX A5000 24GB VRAM compatible models"
@@ -132,6 +155,13 @@ spec:
 
           # Environment variables for HuggingFace CLI
           env:
+            # HuggingFace API token (required for gated models like Llama-3.1-8B)
+            # Injected from 1Password via ExternalSecret
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: HF_TOKEN
             # Cache directory for huggingface-hub
             - name: HF_HOME
               value: /models/.cache
