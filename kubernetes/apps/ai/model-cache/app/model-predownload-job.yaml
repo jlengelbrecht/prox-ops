@@ -162,6 +162,10 @@ spec:
                 secretKeyRef:
                   name: huggingface-token
                   key: HF_TOKEN
+            # Set writable home directory for pip user installs
+            # Required because runAsUser: 1000 can't write to default home
+            - name: HOME
+              value: /tmp
             # Cache directory for huggingface-hub
             - name: HF_HOME
               value: /models/.cache
