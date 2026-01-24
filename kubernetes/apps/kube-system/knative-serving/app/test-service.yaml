@@ -1,0 +1,37 @@
+---
+# Test Knative Service to validate scale-to-zero functionality
+# This service can be applied after Knative Serving is deployed
+# Usage:
+#   kubectl apply -f test-service.yaml
+#   kubectl get ksvc -n default
+#   curl http://hello-knative.default.svc.cluster.local
+#
+# Expected behavior:
+#   1. Initially 0 replicas
+#   2. First request triggers scale-up (cold start ~5-10s)
+#   3. After 5 minutes idle, scales back to 0
+#
+# To clean up:
+#   kubectl delete -f test-service.yaml
+#
+# NOTE: This file is for testing only and should NOT be deployed via Flux
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: hello-knative
+  namespace: default
+spec:
+  template:
+    metadata:
+      annotations:
+        # Scale to zero after 5 minutes (matches config-autoscaler)
+        autoscaling.knative.dev/min-scale: "0"
+        autoscaling.knative.dev/max-scale: "3"
+    spec:
+      containers:
+        - image: gcr.io/knative-samples/helloworld-go:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: TARGET
+              value: "Knative on prox-ops"
