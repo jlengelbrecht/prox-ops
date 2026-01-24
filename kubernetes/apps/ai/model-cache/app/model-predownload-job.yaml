@@ -3,14 +3,14 @@
 # Downloads RTX A5000 24GB VRAM compatible models from HuggingFace to shared cache PVC
 # Reduces InferenceService cold start from 2-5min to 15-30s
 #
-# Text-Only Models (vLLM - Uncensored):
-# - cognitivecomputations/dolphin-3.0-llama-3.1-8b (~16GB VRAM, ~16GB disk)
-# - cognitivecomputations/dolphin-2.9.3-qwen2.5-coder-7b (~14GB VRAM, ~14GB disk)
+# Text-Only Models (vLLM):
+# - cognitivecomputations/Dolphin3.0-Llama3.1-8B (~16GB VRAM, ~16GB disk) - Uncensored chat
+# - Qwen/Qwen2.5-Coder-7B-Instruct (~14GB VRAM, ~15GB disk) - Official coder (censored)
 #
 # Multimodal Models (vLLM-Omni):
 # - Qwen/Qwen2.5-Omni-7B (~17GB VRAM, ~14GB disk) - Multimodal comprehension
 # - Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (~5-10GB VRAM, ~5GB disk) - Voice cloning
-# - black-forest-labs/FLUX.2-klein-9B (~20GB VRAM, ~18GB disk) - Image generation
+# - black-forest-labs/FLUX.2-klein-9b-fp8 (~20GB VRAM FP8, ~18GB disk) - Image generation
 # - Wan-AI/Wan2.2-TI2V-5B-Diffusers (24GB w/offload, ~10GB disk) - Video generation
 # - stabilityai/stable-audio-open-1.0 (~?GB VRAM, ~8GB disk) - Audio generation
 #
@@ -111,25 +111,25 @@ spec:
               echo "Total size: ~85GB across 7 models"
               echo ""
 
-              # Text-Only Models (vLLM - Uncensored)
-              echo "=== Text-Only Models (vLLM - Uncensored) ==="
+              # Text-Only Models (vLLM)
+              echo "=== Text-Only Models (vLLM) ==="
 
-              # Download Dolphin-3.0-Llama-3.1-8B (~16GB VRAM)
-              echo "=== Downloading cognitivecomputations/dolphin-3.0-llama-3.1-8b (~16GB VRAM) ==="
+              # Download Dolphin3.0-Llama3.1-8B (~16GB VRAM)
+              echo "=== Downloading cognitivecomputations/Dolphin3.0-Llama3.1-8B (~16GB VRAM) ==="
               huggingface-cli download \
-                cognitivecomputations/dolphin-3.0-llama-3.1-8b \
-                --local-dir /models/cognitivecomputations/dolphin-3.0-llama-3.1-8b \
+                cognitivecomputations/Dolphin3.0-Llama3.1-8B \
+                --local-dir /models/cognitivecomputations/Dolphin3.0-Llama3.1-8B \
                 --local-dir-use-symlinks False
-              echo "✓ dolphin-3.0-llama-3.1-8b downloaded successfully (uncensored chat)"
+              echo "✓ Dolphin3.0-Llama3.1-8B downloaded successfully (uncensored chat)"
               echo ""
 
-              # Download Dolphin-Qwen2.5-Coder-7B (~14GB VRAM)
-              echo "=== Downloading cognitivecomputations/dolphin-2.9.3-qwen2.5-coder-7b (~14GB VRAM) ==="
+              # Download Qwen2.5-Coder-7B-Instruct (~14GB VRAM)
+              echo "=== Downloading Qwen/Qwen2.5-Coder-7B-Instruct (~14GB VRAM) ==="
               huggingface-cli download \
-                cognitivecomputations/dolphin-2.9.3-qwen2.5-coder-7b \
-                --local-dir /models/cognitivecomputations/dolphin-2.9.3-qwen2.5-coder-7b \
+                Qwen/Qwen2.5-Coder-7B-Instruct \
+                --local-dir /models/Qwen/Qwen2.5-Coder-7B-Instruct \
                 --local-dir-use-symlinks False
-              echo "✓ dolphin-2.9.3-qwen2.5-coder-7b downloaded successfully (uncensored coding)"
+              echo "✓ Qwen2.5-Coder-7B-Instruct downloaded successfully (official coder, censored)"
               echo ""
 
               # Multimodal Models (vLLM-Omni)
@@ -153,13 +153,13 @@ spec:
               echo "✓ Qwen3-TTS-12Hz-1.7B-CustomVoice downloaded successfully (voice cloning)"
               echo ""
 
-              # Download FLUX.2-klein-9B (~20GB VRAM)
-              echo "=== Downloading black-forest-labs/FLUX.2-klein-9B (~20GB VRAM) ==="
+              # Download FLUX.2-klein-9b-fp8 (~20GB VRAM FP8 quantized)
+              echo "=== Downloading black-forest-labs/FLUX.2-klein-9b-fp8 (~20GB VRAM FP8) ==="
               huggingface-cli download \
-                black-forest-labs/FLUX.2-klein-9B \
-                --local-dir /models/black-forest-labs/FLUX.2-klein-9B \
+                black-forest-labs/FLUX.2-klein-9b-fp8 \
+                --local-dir /models/black-forest-labs/FLUX.2-klein-9b-fp8 \
                 --local-dir-use-symlinks False
-              echo "✓ FLUX.2-klein-9B downloaded successfully (image generation)"
+              echo "✓ FLUX.2-klein-9b-fp8 downloaded successfully (image generation, FP8 quantized)"
               echo ""
 
               # Download Wan2.2-TI2V-5B-Diffusers (24GB w/offload)
@@ -181,14 +181,14 @@ spec:
               echo ""
 
               echo "=== All 7 models downloaded successfully ==="
-              echo "✅ Text-only (vLLM): dolphin-3.0-llama-3.1-8b, dolphin-2.9.3-qwen2.5-coder-7b"
-              echo "✅ Multimodal (vLLM-Omni): Qwen2.5-Omni-7B, Qwen3-TTS, FLUX.2-klein, Wan2.2-TI2V, stable-audio"
+              echo "✅ Text-only (vLLM): Dolphin3.0-Llama3.1-8B, Qwen2.5-Coder-7B-Instruct"
+              echo "✅ Multimodal (vLLM-Omni): Qwen2.5-Omni-7B, Qwen3-TTS, FLUX.2-klein-fp8, Wan2.2-TI2V, stable-audio"
               echo ""
               echo "Model Coverage:"
-              echo "  - Chat (uncensored): dolphin-3.0-llama-3.1-8b"
-              echo "  - Coding (uncensored): dolphin-2.9.3-qwen2.5-coder-7b"
+              echo "  - Chat (uncensored): Dolphin3.0-Llama3.1-8B"
+              echo "  - Coding (official): Qwen2.5-Coder-7B-Instruct"
               echo "  - Voice Cloning: Qwen3-TTS-12Hz-1.7B-CustomVoice"
-              echo "  - Image Gen: FLUX.2-klein-9B"
+              echo "  - Image Gen: FLUX.2-klein-9b-fp8 (FP8 quantized for 24GB VRAM)"
               echo "  - Video Gen: Wan2.2-TI2V-5B-Diffusers"
               echo "  - Audio Gen: stable-audio-open-1.0"
               echo "  - Multimodal Input: Qwen2.5-Omni-7B"
