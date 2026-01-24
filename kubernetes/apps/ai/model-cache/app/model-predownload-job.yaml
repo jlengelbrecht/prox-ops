@@ -53,6 +53,24 @@ spec:
       # This Job doesn't need Kubernetes API access
       automountServiceAccountToken: false
 
+      # Fix PVC permissions for non-root user (runAsUser: 1000)
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              # Set ownership of /models to user 1000 (huggingface-downloader container user)
+              chown -R 1000:1000 /models
+              echo "Permissions fixed: /models is now owned by user 1000"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+          securityContext:
+            # initContainer runs as root to fix permissions, then main container runs as user 1000
+            runAsUser: 0
+
       containers:
         - name: huggingface-downloader
           # Using official Python 3.11 slim image
