@@ -1,12 +1,9 @@
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: knative-serving
 
 resources:
-  # Knative Serving CRDs
-  - https://github.com/knative/serving/releases/download/knative-v1.15.2/serving-crds.yaml
-  # Knative Serving Core (includes namespace)
+  # Knative Serving Core (includes CRDs, namespace, and deployments)
   - https://github.com/knative/serving/releases/download/knative-v1.15.2/serving-core.yaml
   # Kourier networking layer (lightweight alternative to Istio)
   - https://github.com/knative/net-kourier/releases/download/knative-v1.15.1/kourier.yaml
