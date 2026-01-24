@@ -28,8 +28,8 @@ configMapGenerator:
       - deploy={"defaultDeploymentMode":"Serverless"}
       # Configure storage initializer for model downloads
       - storageInitializer={"image":"kserve/storage-initializer:v0.13.1","memoryRequest":"100Mi","memoryLimit":"1Gi","cpuRequest":"100m","cpuLimit":"1"}
-      # Configure ingress (uses Kourier from Knative)
-      - ingress={"ingressClassName":"kourier.ingress.networking.knative.dev","ingressDomain":"svc.cluster.local","domainTemplate":"{{.Name}}.{{.Namespace}}.svc.cluster.local","urlScheme":"http"}
+      # Configure ingress (uses Kourier from Knative, not Istio)
+      - ingress={"ingressClassName":"kourier.ingress.networking.knative.dev","ingressDomain":"svc.cluster.local","domainTemplate":"{{.Name}}.{{.Namespace}}.svc.cluster.local","urlScheme":"http","disableIstioVirtualHost":true}
 
 patches:
   # Add resource limits to controller manager
