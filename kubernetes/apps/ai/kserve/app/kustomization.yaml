@@ -29,7 +29,9 @@ configMapGenerator:
       # Configure storage initializer for model downloads
       - storageInitializer={"image":"kserve/storage-initializer:v0.13.1","memoryRequest":"100Mi","memoryLimit":"1Gi","cpuRequest":"100m","cpuLimit":"1"}
       # Configure ingress (uses Kourier from Knative, not Istio)
-      - ingress={"ingressClassName":"kourier.ingress.networking.knative.dev","ingressDomain":"svc.cluster.local","domainTemplate":"{{.Name}}.{{.Namespace}}.svc.cluster.local","urlScheme":"http","disableIstioVirtualHost":true}
+      # Note: ingressGateway and ingressService are required by KServe validation even with disableIstioVirtualHost=true
+      # These values point to Kourier but are not actually used when disableIstioVirtualHost is enabled
+      - ingress={"ingressClassName":"kourier.ingress.networking.knative.dev","ingressDomain":"svc.cluster.local","domainTemplate":"{{.Name}}.{{.Namespace}}.svc.cluster.local","urlScheme":"http","disableIstioVirtualHost":true,"ingressGateway":"knative-serving/knative-ingress-gateway","ingressService":"kourier.kourier-system.svc.cluster.local"}
 
 patches:
   # Add resource limits to controller manager
