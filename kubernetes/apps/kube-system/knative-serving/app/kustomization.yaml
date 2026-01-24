@@ -3,10 +3,16 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
+  # renovate: datasource=github-releases depName=knative/serving
   # Knative Serving Core (includes CRDs, namespace, and deployments)
   - https://github.com/knative/serving/releases/download/knative-v1.15.2/serving-core.yaml
+  # renovate: datasource=github-releases depName=knative/net-kourier
   # Kourier networking layer (lightweight alternative to Istio)
   - https://github.com/knative/net-kourier/releases/download/knative-v1.15.1/kourier.yaml
+
+# Disable hash suffix for ConfigMaps so Knative can find them
+generatorOptions:
+  disableNameSuffixHash: true
 
 configMapGenerator:
   - name: config-autoscaler
@@ -35,6 +41,7 @@ configMapGenerator:
 
 patches:
   # Patch Kourier service to use Cilium LoadBalancer with specific IP
+  # IP must be within default pool range: 10.20.66.0/23
   - target:
       kind: Service
       name: kourier
@@ -42,4 +49,4 @@ patches:
     patch: |-
       - op: add
         path: /metadata/annotations/io.cilium~1lb-ipam-ips
-        value: 10.20.0.150
+        value: 10.20.67.150

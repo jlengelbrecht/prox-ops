@@ -2,9 +2,10 @@
 # Test Knative Service to validate scale-to-zero functionality
 # This service can be applied after Knative Serving is deployed
 # Usage:
+#   kubectl create namespace knative-test
 #   kubectl apply -f test-service.yaml
-#   kubectl get ksvc -n default
-#   curl http://hello-knative.default.svc.cluster.local
+#   kubectl get ksvc -n knative-test
+#   curl http://hello-knative.knative-test.svc.cluster.local
 #
 # Expected behavior:
 #   1. Initially 0 replicas
@@ -19,7 +20,7 @@ apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: hello-knative
-  namespace: default
+  namespace: knative-test
 spec:
   template:
     metadata:

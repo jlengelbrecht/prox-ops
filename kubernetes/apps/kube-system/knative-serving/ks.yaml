@@ -8,6 +8,9 @@ spec:
   interval: 1h
   path: ./kubernetes/apps/kube-system/knative-serving/app
   prune: true
+  dependsOn:
+    - name: cilium
+      namespace: flux-system
   sourceRef:
     kind: GitRepository
     name: flux-system
