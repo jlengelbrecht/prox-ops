@@ -160,6 +160,20 @@
       ],
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
+    },
+    {
+      "customType": "regex",
+      "description": "Track KServe storage-initializer image version in ConfigMap literals",
+      "managerFilePatterns": [
+        "/(^|/)kubernetes/apps/ai/kserve/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=docker depName=kserve/storage-initializer
+        //          - storageInitializer={"image":"kserve/storage-initializer:v0.13.1",...}
+        "# renovate: datasource=docker depName=(?<depName>kserve/storage-initializer)\\n[\\s\\S]*?\"image\":\"kserve/storage-initializer:(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
     }
   ]
 }

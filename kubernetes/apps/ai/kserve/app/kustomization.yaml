@@ -8,6 +8,7 @@ resources:
   # Version: v0.13.1 (latest stable)
   # Note: Installing in serverless mode with Knative Serving integration
   - https://github.com/kserve/kserve/releases/download/v0.13.1/kserve.yaml
+  # renovate: datasource=github-releases depName=kserve/kserve
   # KServe cluster resources (ClusterServingRuntimes for various frameworks)
   - https://github.com/kserve/kserve/releases/download/v0.13.1/kserve-cluster-resources.yaml
 
@@ -27,6 +28,7 @@ configMapGenerator:
       # Enable serverless deployment mode (uses Knative)
       - deploy={"defaultDeploymentMode":"Serverless"}
       # Configure storage initializer for model downloads
+      # NOTE: storage-initializer image version should match KServe release version above
       - storageInitializer={"image":"kserve/storage-initializer:v0.13.1","memoryRequest":"100Mi","memoryLimit":"1Gi","cpuRequest":"100m","cpuLimit":"1"}
       # Configure ingress (uses Kourier from Knative, not Istio)
       # Note: ingressGateway and ingressService are required by KServe validation even with disableIstioVirtualHost=true
