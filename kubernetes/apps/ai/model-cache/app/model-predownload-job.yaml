@@ -8,11 +8,14 @@
 # - Qwen/Qwen2.5-Omni-7B (~17GB VRAM FP16)
 #
 # Regular vLLM Models (text-only, OpenAI-compatible):
-# - meta-llama/Llama-3.1-8B-Instruct (~16-20GB VRAM)
 # - mistralai/Mistral-7B-Instruct-v0.3 (~14GB VRAM)
 #
-# Total download: ~50GB
-# Expected runtime: 30-60 minutes (depends on network bandwidth)
+# NOTE: meta-llama/Llama-3.1-8B-Instruct is SKIPPED (pending Meta approval)
+# Llama requires HuggingFace account approval by Meta before download
+# Uncomment in script after approval is granted
+#
+# Total download: ~35GB (3 models)
+# Expected runtime: 20-40 minutes (depends on network bandwidth)
 #
 # IMPORTANT: Job Immutability
 # Kubernetes Jobs have immutable pod templates. To update models/command/image:
@@ -131,13 +134,17 @@ spec:
               # Regular vLLM Models (text-only)
               echo "=== Regular vLLM Models (text-only, OpenAI-compatible) ==="
 
-              # Download Llama-3.1-8B-Instruct (~16-20GB VRAM)
-              echo "=== Downloading meta-llama/Llama-3.1-8B-Instruct (~16-20GB VRAM) ==="
-              huggingface-cli download \
-                meta-llama/Llama-3.1-8B-Instruct \
-                --local-dir /models/meta-llama/Llama-3.1-8B-Instruct \
-                --local-dir-use-symlinks False
-              echo "✓ Llama-3.1-8B-Instruct downloaded successfully"
+              # NOTE: Llama-3.1-8B-Instruct is SKIPPED (pending Meta approval)
+              # Gated model requires HuggingFace account to be approved by Meta
+              # To re-enable: uncomment the following lines after approval
+              # echo "=== Downloading meta-llama/Llama-3.1-8B-Instruct (~16-20GB VRAM) ==="
+              # huggingface-cli download \
+              #   meta-llama/Llama-3.1-8B-Instruct \
+              #   --local-dir /models/meta-llama/Llama-3.1-8B-Instruct \
+              #   --local-dir-use-symlinks False
+              # echo "✓ Llama-3.1-8B-Instruct downloaded successfully"
+              # echo ""
+              echo "⏭️  Skipping meta-llama/Llama-3.1-8B-Instruct (pending Meta approval)"
               echo ""
 
               # Download Mistral-7B-Instruct-v0.3 (~14GB VRAM)
@@ -149,16 +156,22 @@ spec:
               echo "✓ Mistral-7B-Instruct-v0.3 downloaded successfully"
               echo ""
 
-              echo "=== All 4 models downloaded successfully ==="
-              echo "vLLM-Omni models: Qwen2.5-Omni-3B, Qwen2.5-Omni-7B"
-              echo "Regular vLLM models: Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.3"
+              echo "=== 3 of 4 models downloaded successfully ==="
+              echo "✅ vLLM-Omni models: Qwen2.5-Omni-3B, Qwen2.5-Omni-7B"
+              echo "✅ Regular vLLM models: Mistral-7B-Instruct-v0.3"
+              echo "⏭️  Skipped: meta-llama/Llama-3.1-8B-Instruct (pending Meta approval)"
+              echo ""
+              echo "To add Llama later after approval:"
+              echo "  1. Get Meta approval at https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct"
+              echo "  2. Uncomment Llama section in Job manifest"
+              echo "  3. Delete and recreate Job: kubectl delete job -n ai model-predownload"
               echo ""
               echo "Listing /models/ directory:"
               du -sh /models/* 2>/dev/null || echo "No models found"
 
               echo ""
               echo "Model cache ready for KServe InferenceServices"
-              echo "All models fit within RTX A5000 24GB VRAM limit"
+              echo "All downloaded models fit within RTX A5000 24GB VRAM limit"
 
           # Resource allocation
           resources:
