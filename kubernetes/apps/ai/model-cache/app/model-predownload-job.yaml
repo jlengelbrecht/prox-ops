@@ -1,0 +1,176 @@
+---
+# Model Pre-download Job for KServe Model Cache
+# Downloads RTX A5000 24GB VRAM compatible models from HuggingFace to shared cache PVC
+# Reduces InferenceService cold start from 2-5min to 15-30s
+#
+# vLLM-Omni Models (true omni-modal: text+audio+video+image):
+# - Qwen/Qwen2.5-Omni-3B (~6-8GB VRAM)
+# - Qwen/Qwen2.5-Omni-7B (~17GB VRAM FP16)
+#
+# Regular vLLM Models (text-only, OpenAI-compatible):
+# - meta-llama/Llama-3.1-8B-Instruct (~16-20GB VRAM)
+# - mistralai/Mistral-7B-Instruct-v0.3 (~14GB VRAM)
+#
+# Total download: ~50GB
+# Expected runtime: 30-60 minutes (depends on network bandwidth)
+#
+# IMPORTANT: Job Immutability
+# Kubernetes Jobs have immutable pod templates. To update models/command/image:
+# 1. Delete existing Job: kubectl delete job -n ai model-predownload
+# 2. Apply updated manifest (Flux will reconcile)
+# Alternatively, create versioned Jobs (model-predownload-v2, etc.)
+#
+# Usage:
+#   kubectl apply -f model-predownload-job.yaml
+#   kubectl logs -n ai job/model-predownload -f
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-predownload
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: model-predownload
+    app.kubernetes.io/component: cache-loader
+    app.kubernetes.io/part-of: kserve
+spec:
+  # Allow 3 retries in case of network failures
+  backoffLimit: 3
+  # NOTE: ttlSecondsAfterFinished is intentionally OMITTED
+  # Reason: Flux reconciles this Kustomization every 1h. If the Job is auto-deleted
+  # after TTL expiry, Flux will recreate it, causing wasteful 50GB re-downloads.
+  # Completed Job objects are small (just status) and safe to keep indefinitely.
+  # To re-run downloads, manually delete: kubectl delete job -n ai model-predownload
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: model-predownload
+        app.kubernetes.io/component: cache-loader
+    spec:
+      # Don't restart on failure - let backoffLimit handle retries
+      restartPolicy: Never
+
+      # Disable automatic service account token mounting (defense-in-depth)
+      # This Job doesn't need Kubernetes API access
+      automountServiceAccountToken: false
+
+      containers:
+        - name: huggingface-downloader
+          # Using official Python 3.11 slim image
+          # We'll install huggingface-hub package for CLI access
+          image: python:3.11-slim
+
+          # Security hardening (defense-in-depth)
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # pip install requires write access to /tmp
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              echo "Installing huggingface-hub CLI..."
+              # Pin version for reproducibility (avoid breaking changes on retries)
+              pip install --no-cache-dir 'huggingface-hub[cli]>=0.27,<0.28'
+
+              echo "Starting model downloads to /models/"
+              echo "RTX A5000 24GB VRAM compatible models"
+              echo "Total size: ~50GB across 4 models"
+              echo ""
+
+              # vLLM-Omni Models (true omni-modal)
+              echo "=== vLLM-Omni Models (text+audio+video+image) ==="
+
+              # Download Qwen2.5-Omni-3B (~6-8GB VRAM)
+              echo "=== Downloading Qwen/Qwen2.5-Omni-3B (~6-8GB VRAM) ==="
+              huggingface-cli download \
+                Qwen/Qwen2.5-Omni-3B \
+                --local-dir /models/Qwen/Qwen2.5-Omni-3B \
+                --local-dir-use-symlinks False
+              echo "✓ Qwen2.5-Omni-3B downloaded successfully"
+              echo ""
+
+              # Download Qwen2.5-Omni-7B (~17GB VRAM FP16)
+              echo "=== Downloading Qwen/Qwen2.5-Omni-7B (~17GB VRAM FP16) ==="
+              huggingface-cli download \
+                Qwen/Qwen2.5-Omni-7B \
+                --local-dir /models/Qwen/Qwen2.5-Omni-7B \
+                --local-dir-use-symlinks False
+              echo "✓ Qwen2.5-Omni-7B downloaded successfully"
+              echo ""
+
+              # Regular vLLM Models (text-only)
+              echo "=== Regular vLLM Models (text-only, OpenAI-compatible) ==="
+
+              # Download Llama-3.1-8B-Instruct (~16-20GB VRAM)
+              echo "=== Downloading meta-llama/Llama-3.1-8B-Instruct (~16-20GB VRAM) ==="
+              huggingface-cli download \
+                meta-llama/Llama-3.1-8B-Instruct \
+                --local-dir /models/meta-llama/Llama-3.1-8B-Instruct \
+                --local-dir-use-symlinks False
+              echo "✓ Llama-3.1-8B-Instruct downloaded successfully"
+              echo ""
+
+              # Download Mistral-7B-Instruct-v0.3 (~14GB VRAM)
+              echo "=== Downloading mistralai/Mistral-7B-Instruct-v0.3 (~14GB VRAM) ==="
+              huggingface-cli download \
+                mistralai/Mistral-7B-Instruct-v0.3 \
+                --local-dir /models/mistralai/Mistral-7B-Instruct-v0.3 \
+                --local-dir-use-symlinks False
+              echo "✓ Mistral-7B-Instruct-v0.3 downloaded successfully"
+              echo ""
+
+              echo "=== All 4 models downloaded successfully ==="
+              echo "vLLM-Omni models: Qwen2.5-Omni-3B, Qwen2.5-Omni-7B"
+              echo "Regular vLLM models: Llama-3.1-8B-Instruct, Mistral-7B-Instruct-v0.3"
+              echo ""
+              echo "Listing /models/ directory:"
+              du -sh /models/* 2>/dev/null || echo "No models found"
+
+              echo ""
+              echo "Model cache ready for KServe InferenceServices"
+              echo "All models fit within RTX A5000 24GB VRAM limit"
+
+          # Resource allocation
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+
+          # Mount the shared model cache PVC
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+
+          # Environment variables for HuggingFace CLI
+          env:
+            # HuggingFace API token (required for gated models like Llama-3.1-8B)
+            # Injected from 1Password via ExternalSecret
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: HF_TOKEN
+            # Cache directory for huggingface-hub
+            - name: HF_HOME
+              value: /models/.cache
+            # Disable HuggingFace telemetry
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+
+      # Volume definition
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache
