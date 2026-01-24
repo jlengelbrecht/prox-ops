@@ -3,19 +3,20 @@
 # Downloads RTX A5000 24GB VRAM compatible models from HuggingFace to shared cache PVC
 # Reduces InferenceService cold start from 2-5min to 15-30s
 #
-# vLLM-Omni Models (true omni-modal: text+audio+video+image):
-# - Qwen/Qwen2.5-Omni-3B (~6-8GB VRAM)
-# - Qwen/Qwen2.5-Omni-7B (~17GB VRAM FP16)
+# Text-Only Models (vLLM - Uncensored):
+# - cognitivecomputations/dolphin-3.0-llama-3.1-8b (~16GB VRAM, ~16GB disk)
+# - cognitivecomputations/dolphin-2.9.3-qwen2.5-coder-7b (~14GB VRAM, ~14GB disk)
 #
-# Regular vLLM Models (text-only, OpenAI-compatible):
-# - mistralai/Mistral-7B-Instruct-v0.3 (~14GB VRAM)
+# Multimodal Models (vLLM-Omni):
+# - Qwen/Qwen2.5-Omni-7B (~17GB VRAM, ~14GB disk) - Multimodal comprehension
+# - Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (~5-10GB VRAM, ~5GB disk) - Voice cloning
+# - black-forest-labs/FLUX.2-klein-9B (~20GB VRAM, ~18GB disk) - Image generation
+# - Wan-AI/Wan2.2-TI2V-5B-Diffusers (24GB w/offload, ~10GB disk) - Video generation
+# - stabilityai/stable-audio-open-1.0 (~?GB VRAM, ~8GB disk) - Audio generation
 #
-# NOTE: meta-llama/Llama-3.1-8B-Instruct is SKIPPED (pending Meta approval)
-# Llama requires HuggingFace account approval by Meta before download
-# Uncomment in script after approval is granted
-#
-# Total download: ~35GB (3 models)
-# Expected runtime: 20-40 minutes (depends on network bandwidth)
+# Total download: ~85GB (7 models)
+# Total storage: 17% of 500Gi PVC capacity
+# Expected runtime: 45-60 minutes (depends on network bandwidth)
 #
 # IMPORTANT: Job Immutability
 # Kubernetes Jobs have immutable pod templates. To update models/command/image:
@@ -107,64 +108,90 @@ spec:
 
               echo "Starting model downloads to /models/"
               echo "RTX A5000 24GB VRAM compatible models"
-              echo "Total size: ~50GB across 4 models"
+              echo "Total size: ~85GB across 7 models"
               echo ""
 
-              # vLLM-Omni Models (true omni-modal)
-              echo "=== vLLM-Omni Models (text+audio+video+image) ==="
+              # Text-Only Models (vLLM - Uncensored)
+              echo "=== Text-Only Models (vLLM - Uncensored) ==="
 
-              # Download Qwen2.5-Omni-3B (~6-8GB VRAM)
-              echo "=== Downloading Qwen/Qwen2.5-Omni-3B (~6-8GB VRAM) ==="
+              # Download Dolphin-3.0-Llama-3.1-8B (~16GB VRAM)
+              echo "=== Downloading cognitivecomputations/dolphin-3.0-llama-3.1-8b (~16GB VRAM) ==="
               huggingface-cli download \
-                Qwen/Qwen2.5-Omni-3B \
-                --local-dir /models/Qwen/Qwen2.5-Omni-3B \
+                cognitivecomputations/dolphin-3.0-llama-3.1-8b \
+                --local-dir /models/cognitivecomputations/dolphin-3.0-llama-3.1-8b \
                 --local-dir-use-symlinks False
-              echo "✓ Qwen2.5-Omni-3B downloaded successfully"
+              echo "✓ dolphin-3.0-llama-3.1-8b downloaded successfully (uncensored chat)"
               echo ""
 
-              # Download Qwen2.5-Omni-7B (~17GB VRAM FP16)
-              echo "=== Downloading Qwen/Qwen2.5-Omni-7B (~17GB VRAM FP16) ==="
+              # Download Dolphin-Qwen2.5-Coder-7B (~14GB VRAM)
+              echo "=== Downloading cognitivecomputations/dolphin-2.9.3-qwen2.5-coder-7b (~14GB VRAM) ==="
+              huggingface-cli download \
+                cognitivecomputations/dolphin-2.9.3-qwen2.5-coder-7b \
+                --local-dir /models/cognitivecomputations/dolphin-2.9.3-qwen2.5-coder-7b \
+                --local-dir-use-symlinks False
+              echo "✓ dolphin-2.9.3-qwen2.5-coder-7b downloaded successfully (uncensored coding)"
+              echo ""
+
+              # Multimodal Models (vLLM-Omni)
+              echo "=== Multimodal Models (vLLM-Omni) ==="
+
+              # Download Qwen2.5-Omni-7B (~17GB VRAM)
+              echo "=== Downloading Qwen/Qwen2.5-Omni-7B (~17GB VRAM) ==="
               huggingface-cli download \
                 Qwen/Qwen2.5-Omni-7B \
                 --local-dir /models/Qwen/Qwen2.5-Omni-7B \
                 --local-dir-use-symlinks False
-              echo "✓ Qwen2.5-Omni-7B downloaded successfully"
+              echo "✓ Qwen2.5-Omni-7B downloaded successfully (multimodal comprehension)"
               echo ""
 
-              # Regular vLLM Models (text-only)
-              echo "=== Regular vLLM Models (text-only, OpenAI-compatible) ==="
-
-              # NOTE: Llama-3.1-8B-Instruct is SKIPPED (pending Meta approval)
-              # Gated model requires HuggingFace account to be approved by Meta
-              # To re-enable: uncomment the following lines after approval
-              # echo "=== Downloading meta-llama/Llama-3.1-8B-Instruct (~16-20GB VRAM) ==="
-              # huggingface-cli download \
-              #   meta-llama/Llama-3.1-8B-Instruct \
-              #   --local-dir /models/meta-llama/Llama-3.1-8B-Instruct \
-              #   --local-dir-use-symlinks False
-              # echo "✓ Llama-3.1-8B-Instruct downloaded successfully"
-              # echo ""
-              echo "⏭️  Skipping meta-llama/Llama-3.1-8B-Instruct (pending Meta approval)"
-              echo ""
-
-              # Download Mistral-7B-Instruct-v0.3 (~14GB VRAM)
-              echo "=== Downloading mistralai/Mistral-7B-Instruct-v0.3 (~14GB VRAM) ==="
+              # Download Qwen3-TTS-12Hz-1.7B-CustomVoice (~5-10GB VRAM)
+              echo "=== Downloading Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (~5-10GB VRAM) ==="
               huggingface-cli download \
-                mistralai/Mistral-7B-Instruct-v0.3 \
-                --local-dir /models/mistralai/Mistral-7B-Instruct-v0.3 \
+                Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+                --local-dir /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
                 --local-dir-use-symlinks False
-              echo "✓ Mistral-7B-Instruct-v0.3 downloaded successfully"
+              echo "✓ Qwen3-TTS-12Hz-1.7B-CustomVoice downloaded successfully (voice cloning)"
               echo ""
 
-              echo "=== 3 of 4 models downloaded successfully ==="
-              echo "✅ vLLM-Omni models: Qwen2.5-Omni-3B, Qwen2.5-Omni-7B"
-              echo "✅ Regular vLLM models: Mistral-7B-Instruct-v0.3"
-              echo "⏭️  Skipped: meta-llama/Llama-3.1-8B-Instruct (pending Meta approval)"
+              # Download FLUX.2-klein-9B (~20GB VRAM)
+              echo "=== Downloading black-forest-labs/FLUX.2-klein-9B (~20GB VRAM) ==="
+              huggingface-cli download \
+                black-forest-labs/FLUX.2-klein-9B \
+                --local-dir /models/black-forest-labs/FLUX.2-klein-9B \
+                --local-dir-use-symlinks False
+              echo "✓ FLUX.2-klein-9B downloaded successfully (image generation)"
               echo ""
-              echo "To add Llama later after approval:"
-              echo "  1. Get Meta approval at https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct"
-              echo "  2. Uncomment Llama section in Job manifest"
-              echo "  3. Delete and recreate Job: kubectl delete job -n ai model-predownload"
+
+              # Download Wan2.2-TI2V-5B-Diffusers (24GB w/offload)
+              echo "=== Downloading Wan-AI/Wan2.2-TI2V-5B-Diffusers (24GB VRAM w/offload) ==="
+              huggingface-cli download \
+                Wan-AI/Wan2.2-TI2V-5B-Diffusers \
+                --local-dir /models/Wan-AI/Wan2.2-TI2V-5B-Diffusers \
+                --local-dir-use-symlinks False
+              echo "✓ Wan2.2-TI2V-5B-Diffusers downloaded successfully (video generation)"
+              echo ""
+
+              # Download Stable-Audio-Open-1.0 (~?GB VRAM)
+              echo "=== Downloading stabilityai/stable-audio-open-1.0 (~?GB VRAM) ==="
+              huggingface-cli download \
+                stabilityai/stable-audio-open-1.0 \
+                --local-dir /models/stabilityai/stable-audio-open-1.0 \
+                --local-dir-use-symlinks False
+              echo "✓ stable-audio-open-1.0 downloaded successfully (audio generation)"
+              echo ""
+
+              echo "=== All 7 models downloaded successfully ==="
+              echo "✅ Text-only (vLLM): dolphin-3.0-llama-3.1-8b, dolphin-2.9.3-qwen2.5-coder-7b"
+              echo "✅ Multimodal (vLLM-Omni): Qwen2.5-Omni-7B, Qwen3-TTS, FLUX.2-klein, Wan2.2-TI2V, stable-audio"
+              echo ""
+              echo "Model Coverage:"
+              echo "  - Chat (uncensored): dolphin-3.0-llama-3.1-8b"
+              echo "  - Coding (uncensored): dolphin-2.9.3-qwen2.5-coder-7b"
+              echo "  - Voice Cloning: Qwen3-TTS-12Hz-1.7B-CustomVoice"
+              echo "  - Image Gen: FLUX.2-klein-9B"
+              echo "  - Video Gen: Wan2.2-TI2V-5B-Diffusers"
+              echo "  - Audio Gen: stable-audio-open-1.0"
+              echo "  - Multimodal Input: Qwen2.5-Omni-7B"
               echo ""
               echo "Listing /models/ directory:"
               du -sh /models/* 2>/dev/null || echo "No models found"
@@ -172,6 +199,8 @@ spec:
               echo ""
               echo "Model cache ready for KServe InferenceServices"
               echo "All downloaded models fit within RTX A5000 24GB VRAM limit"
+              echo "Total storage used: ~85GB / 500Gi PVC (17% capacity)"
+              echo "Storage remaining: ~415GB for future models"
 
           # Resource allocation
           resources:
