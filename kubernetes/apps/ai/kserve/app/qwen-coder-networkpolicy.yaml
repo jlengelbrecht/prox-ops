@@ -10,8 +10,9 @@
 #
 # Rationale:
 # - Prevents lateral movement if vLLM container compromised
-# - Qwen2.5-Coder-7B-Instruct pre-cached (no HuggingFace download needed)
-# - No legitimate need for internet access during inference
+# - Qwen2.5-Coder-7B-Instruct pre-cached in model-cache PVC
+# - vLLM runs in offline mode (HF_HUB_OFFLINE=1), no internet access needed
+# - No legitimate need for egress beyond DNS resolution
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -74,7 +75,8 @@ spec:
 
   # Egress Rules
   egress:
-    # Allow DNS resolution (required for internal cluster communication)
+    # Allow DNS resolution ONLY (required for internal cluster communication)
+    # No internet egress needed - vLLM runs in offline mode with cached models
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kube-system
@@ -86,16 +88,3 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
-
-    # Allow HuggingFace access for model config verification
-    # vLLM contacts HuggingFace even when model is cached locally
-    # to verify model configuration and tokenizer
-    - toFQDNs:
-        - matchName: huggingface.co
-        - matchPattern: "*.huggingface.co"
-        - matchName: cdn.lfs.github.com
-        - matchPattern: "*.hf.co"
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP

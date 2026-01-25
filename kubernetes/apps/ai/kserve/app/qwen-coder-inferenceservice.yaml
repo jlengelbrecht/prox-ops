@@ -10,6 +10,7 @@
 # - Warm inference: ~50ms (model in VRAM)
 # - Scale-to-zero: 5 minutes idle timeout
 # - VRAM usage: ~14GB / 24GB available
+# - Offline mode: HF_HUB_OFFLINE=1 (no internet access, uses cached files only)
 #
 # Usage:
 #   # Test via curl (cold start)
@@ -104,6 +105,11 @@ spec:
 
           # Disable HuggingFace telemetry
           - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # Enable offline mode (use cached model files only, no HuggingFace access)
+          # Prevents vLLM from calling hf_list_repo_files during initialization
+          - name: HF_HUB_OFFLINE
             value: "1"
 
           # NVIDIA GPU visibility
