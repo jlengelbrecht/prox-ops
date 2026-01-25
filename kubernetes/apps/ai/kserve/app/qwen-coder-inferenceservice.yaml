@@ -6,7 +6,7 @@
 # GPU: RTX A5000 24GB (k8s-work-10 ONLY, NOT Plex rtx-a2000 node)
 #
 # Performance Characteristics (STORY-141 optimized):
-# - Cold start: ~10-15s (fastsafetensors parallel loading)
+# - Cold start: ~25-40s (safetensors with inference optimizations)
 # - Warm inference: ~30-35ms (chunked prefill enabled)
 # - Cached prompt: ~0.6s TTFT (prefix caching enabled)
 # - Scale-to-zero: 5 minutes idle timeout
@@ -24,8 +24,8 @@
 #   kubectl get pods -n ai -w | grep qwen-coder
 #
 # Expected behavior:
-# - First request triggers cold start (pod 0→1, ~10-15s delay)
-# - Model loads from /models/Qwen/Qwen2.5-Coder-7B-Instruct (cache hit, fastsafetensors)
+# - First request triggers cold start (pod 0→1, ~25-40s delay)
+# - Model loads from /models/Qwen/Qwen2.5-Coder-7B-Instruct (cache hit, safetensors)
 # - Subsequent requests are fast (~30-35ms with chunked prefill)
 # - Repeated prompts even faster (~0.6s TTFT with prefix caching)
 # - After 5min idle, pod scales to 0 (GPU freed)
@@ -76,9 +76,9 @@ spec:
           # In offline mode, must use full path to model directory
           - --model=/models/Qwen/Qwen2.5-Coder-7B-Instruct
 
-          # STORY-141: Load format optimization (4.8-7.5x faster model loading)
-          # Uses parallel async I/O with GPU direct storage instead of slow mmap
-          - --load-format=fastsafetensors
+          # STORY-141: Load format optimization (eager loading for CephFS)
+          # Note: fastsafetensors not available in v0.7.3 - using safetensors with eager load
+          - --load-format=safetensors
 
           # Inference optimization
           - --dtype=auto  # Use FP16/BF16 automatically
@@ -142,7 +142,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 30  # STORY-141: Reduced from 120s (fastsafetensors loads in ~12s)
+          initialDelaySeconds: 60  # STORY-141: safetensors load takes ~25-40s
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
@@ -151,7 +151,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 30  # STORY-141: Reduced from 120s (fastsafetensors loads in ~12s)
+          initialDelaySeconds: 60  # STORY-141: safetensors load takes ~25-40s
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
