@@ -1,0 +1,179 @@
+---
+# KServe InferenceService: FLUX.2-klein-9b-fp8 (Image Generation)
+# STORY-142 Phase 3: Image generation model
+# Model: black-forest-labs/FLUX.2-klein-9b-fp8 (~18GB VRAM, image diffusion)
+# Framework: vLLM-Omni (multimodal fork)
+# GPU: RTX A5000 24GB (k8s-work-10 ONLY)
+#
+# Performance Characteristics:
+# - Cold start: ~120-180s (large diffusion model loading)
+# - Warm inference: ~10-60s (varies by image resolution)
+# - Scale-to-zero: 5 minutes idle timeout
+# - VRAM usage: ~18GB / 24GB available
+# - Single GPU: maxReplicas=1 enforced
+#
+# API Endpoints:
+# - /v1/images/generations - Image generation endpoint
+#
+# Usage:
+#   # Generate image from text prompt
+#   kubectl run -it --rm test-flux --image=curlimages/curl --restart=Never -- \
+#     curl -X POST http://flux-klein.ai.svc.cluster.local/v1/images/generations \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"/models/black-forest-labs/FLUX.2-klein-9b-fp8","prompt":"A beautiful sunset over mountains","n":1,"size":"1024x1024"}'
+#
+# GPU Contention Note:
+# - Only ONE InferenceService can run at a time (single RTX A5000)
+# - Scale down other models before testing flux-klein
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: flux-klein
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: flux-klein
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: vllm-omni
+    model.type: image-diffusion
+    model.modality: text-image
+    model.size: 9b
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A5000 for image generation"
+    security.homelab/network: "Internal only - ClusterIP service"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
+    maxReplicas: 1  # Single GPU workload - only 1 pod can run at a time
+
+    # CRITICAL: GPU and Node Targeting
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      gpu.nvidia.com/model: rtx-a5000
+
+    containers:
+      - name: vllm-omni
+        # renovate: datasource=docker depName=vllm/vllm-omni
+        image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
+
+        # vLLM-Omni uses 'vllm serve --omni' for diffusion models
+        command:
+          - vllm
+          - serve
+
+        # vLLM-Omni server arguments
+        args:
+          # Model path (absolute path to cached model)
+          - /models/black-forest-labs/FLUX.2-klein-9b-fp8
+
+          # Enable Omni mode for diffusion models
+          - --omni
+
+          # Inference optimization
+          - --dtype=auto  # Use FP8 as model specifies
+          - --gpu-memory-utilization=0.92  # Higher utilization for large model
+
+          # Fast cold start optimization (skip compilation)
+          - --enforce-eager
+
+          # Server configuration
+          - --host=0.0.0.0
+          - --port=8080
+
+          # Disable telemetry
+          - --disable-log-stats
+          - --disable-log-requests
+
+        # Environment variables
+        env:
+          # HuggingFace token (optional)
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: huggingface-token
+                key: HF_TOKEN
+                optional: true
+
+          # Disable HuggingFace telemetry
+          - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # Enable offline mode (use cached model files only)
+          - name: HF_HUB_OFFLINE
+            value: "1"
+
+          # NVIDIA GPU visibility
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+
+          # Fix for non-root user compatibility
+          - name: HOME
+            value: "/tmp"
+
+        # Resource requirements for large diffusion model
+        resources:
+          requests:
+            cpu: 4
+            memory: 20Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 8
+            memory: 24Gi
+            nvidia.com/gpu: 1
+
+        # Health checks
+        ports:
+          - containerPort: 8080
+            name: http1
+            protocol: TCP
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 120  # Large model needs more time
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 120  # Large model needs more time
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+
+        # Volume mounts
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: false
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+
+    # NVIDIA container runtime for GPU access
+    runtimeClassName: nvidia
+
+    # Security context (pod-level)
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    serviceAccountName: default
+
+    # Volumes
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache
