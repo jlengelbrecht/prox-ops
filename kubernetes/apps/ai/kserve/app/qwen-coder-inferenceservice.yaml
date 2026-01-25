@@ -47,7 +47,7 @@ spec:
   predictor:
     # Scale-to-zero configuration (Knative Serving)
     minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
-    maxReplicas: 2  # Allow up to 2 replicas for load balancing
+    maxReplicas: 1  # Single GPU workload - only 1 pod can run at a time
 
     # Scaling behavior (inherited from Knative Serving global config)
     # - scale-to-zero-grace-period: 5m (from knative-serving ConfigMap)
@@ -143,7 +143,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 20
+          initialDelaySeconds: 120  # Model loading takes ~80s, allow extra buffer
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
