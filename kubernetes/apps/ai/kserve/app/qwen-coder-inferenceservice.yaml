@@ -121,6 +121,11 @@ spec:
           - name: NVIDIA_VISIBLE_DEVICES
             value: "all"
 
+          # STORY-141b: Fix for vLLM v0.11.0 non-root user compatibility
+          # Prevents getpwuid() errors when running without /etc/passwd entry
+          - name: HOME
+            value: "/tmp"
+
         # Resource requirements
         resources:
           requests:
@@ -174,12 +179,11 @@ spec:
     runtimeClassName: nvidia
 
     # Security context (pod-level)
+    # STORY-141b: vLLM v0.11.0 requires running as container's default user
+    # The image doesn't have UID 1000 in /etc/passwd, causing getpwuid() errors
+    # Keeping fsGroup for PVC volume permissions
     securityContext:
-      runAsNonRoot: true
-      runAsUser: 1000
-      runAsGroup: 1000
       fsGroup: 1000
-      # fsGroupChangePolicy not supported by Knative podspec-securitycontext feature
       seccompProfile:
         type: RuntimeDefault
 
