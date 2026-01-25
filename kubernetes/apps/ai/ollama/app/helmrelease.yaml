@@ -21,6 +21,10 @@ spec:
         # CRITICAL: Recreate strategy ensures GPU is released before new pod starts
         # This prevents GPU resource lock issues during upgrades
         strategy: Recreate
+        # TEMPORARY: Scaled to 0 for KServe migration testing (STORY-140)
+        # GPU freed for first InferenceService deployment (Qwen2.5-Coder)
+        # Will be deprecated after STORY-148 completes
+        replicas: 0
         containers:
           app:
             image:
