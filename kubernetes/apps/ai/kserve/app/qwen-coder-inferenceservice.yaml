@@ -159,26 +159,24 @@ spec:
             drop:
               - ALL
 
-    # Pod-level configuration
-    podSpec:
-      # NVIDIA container runtime for GPU access
-      runtimeClassName: nvidia
+    # NVIDIA container runtime for GPU access
+    runtimeClassName: nvidia
 
-      # Security context (pod-level)
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
-        fsGroupChangePolicy: OnRootMismatch
-        seccompProfile:
-          type: RuntimeDefault
+    # Security context (pod-level)
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        type: RuntimeDefault
 
-      # Disable service account token mounting
-      automountServiceAccountToken: false
+    # Disable service account token mounting
+    serviceAccountName: default
 
-      # Volumes
-      volumes:
-        - name: model-cache
-          persistentVolumeClaim:
-            claimName: model-cache
+    # Volumes
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache
