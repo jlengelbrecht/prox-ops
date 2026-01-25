@@ -5,7 +5,7 @@
 #
 # Security Posture:
 # - Ingress: ONLY from envoy-internal gateway (HTTPRoute traffic)
-# - Egress: DNS resolution only (model already cached, no internet needed)
+# - Egress: DNS + PyPI (for runtime onnxruntime-gpu install workaround)
 # - Default: DENY all other traffic
 #
 # Rationale:
@@ -71,7 +71,7 @@ spec:
 
   # Egress Rules
   egress:
-    # Allow DNS resolution ONLY (required for internal cluster communication)
+    # Allow DNS resolution (required for internal cluster communication AND PyPI lookups)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kube-system
@@ -83,3 +83,16 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
+
+    # TEMPORARY: Allow PyPI access for runtime onnxruntime-gpu installation
+    # Container startup executes: pip install --no-cache-dir onnxruntime-gpu
+    # Workaround for missing onnxruntime in vLLM-Omni Docker image
+    # Track: https://github.com/vllm-project/vllm-omni/pull/909
+    # TODO: Remove after PR #909 merges AND a new vLLM-Omni release includes onnxruntime
+    - toFQDNs:
+        - matchName: "pypi.org"
+        - matchName: "files.pythonhosted.org"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
