@@ -70,14 +70,11 @@ spec:
 
         # vLLM server arguments
         args:
-          # Model path (relative to /models mount)
-          - --model=Qwen/Qwen2.5-Coder-7B-Instruct
+          # Model path (absolute path to cached model)
+          # In offline mode, must use full path to model directory
+          - --model=/models/Qwen/Qwen2.5-Coder-7B-Instruct
 
-          # Model cache directory (shared PVC)
-          - --download-dir=/models
-
-          # Disable model download (already cached)
-          # vLLM will find model at /models/Qwen/Qwen2.5-Coder-7B-Instruct
+          # Load format (auto-detect safetensors)
           - --load-format=auto
 
           # Inference optimization
