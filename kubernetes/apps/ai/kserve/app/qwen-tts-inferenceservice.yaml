@@ -59,16 +59,18 @@ spec:
         # renovate: datasource=docker depName=vllm/vllm-omni
         image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
 
-        # vLLM-Omni requires explicit command (different from vllm-openai)
+        # vLLM-Omni uses 'vllm serve --omni' for multimodal/TTS models
         command:
-          - python
-          - -m
-          - vllm.entrypoints.openai.api_server
+          - vllm
+          - serve
 
         # vLLM-Omni server arguments
         args:
           # Model path (absolute path to cached model)
-          - --model=/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+          - /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+
+          # Enable Omni mode for TTS/multimodal models
+          - --omni
 
           # Load format optimization
           - --load-format=safetensors
