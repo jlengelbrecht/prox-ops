@@ -5,8 +5,8 @@
 # Framework: vLLM (regular, NOT vLLM-Omni) for text-only autoregressive models
 # GPU: RTX A5000 24GB (k8s-work-10 ONLY, NOT Plex rtx-a2000 node)
 #
-# Performance Characteristics (STORY-141 optimized):
-# - Cold start: ~25-40s (safetensors with inference optimizations)
+# Performance Characteristics (STORY-141b optimized):
+# - Cold start: ~15-20s (fastsafetensors parallel async I/O in v0.11.0)
 # - Warm inference: ~30-35ms (chunked prefill enabled)
 # - Cached prompt: ~0.6s TTFT (prefix caching enabled)
 # - Scale-to-zero: 5 minutes idle timeout
@@ -24,8 +24,8 @@
 #   kubectl get pods -n ai -w | grep qwen-coder
 #
 # Expected behavior:
-# - First request triggers cold start (pod 0→1, ~25-40s delay)
-# - Model loads from /models/Qwen/Qwen2.5-Coder-7B-Instruct (cache hit, safetensors)
+# - First request triggers cold start (pod 0→1, ~15-20s delay)
+# - Model loads from /models/Qwen/Qwen2.5-Coder-7B-Instruct (cache hit, fastsafetensors)
 # - Subsequent requests are fast (~30-35ms with chunked prefill)
 # - Repeated prompts even faster (~0.6s TTFT with prefix caching)
 # - After 5min idle, pod scales to 0 (GPU freed)
@@ -68,7 +68,7 @@ spec:
     containers:
       - name: vllm
         # renovate: datasource=docker depName=vllm/vllm-openai
-        image: vllm/vllm-openai:v0.7.3  # Pinned version (NOT vllm-omni)
+        image: vllm/vllm-openai:v0.11.0  # STORY-141b: Upgraded from v0.7.3 to test fastsafetensors
 
         # vLLM server arguments
         args:
@@ -76,9 +76,9 @@ spec:
           # In offline mode, must use full path to model directory
           - --model=/models/Qwen/Qwen2.5-Coder-7B-Instruct
 
-          # STORY-141: Load format optimization (eager loading for CephFS)
-          # Note: fastsafetensors not available in v0.7.3 - using safetensors with eager load
-          - --load-format=safetensors
+          # STORY-141b: Load format optimization (parallel async I/O for CephFS)
+          # Testing fastsafetensors in v0.11.0 for 4.8-7.5x faster model loading
+          - --load-format=fastsafetensors
 
           # Inference optimization
           - --dtype=auto  # Use FP16/BF16 automatically
@@ -142,7 +142,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 60  # STORY-141: safetensors load takes ~25-40s
+          initialDelaySeconds: 30  # STORY-141b: fastsafetensors expected ~15-20s load
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
@@ -151,7 +151,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 60  # STORY-141: safetensors load takes ~25-40s
+          initialDelaySeconds: 30  # STORY-141b: fastsafetensors expected ~15-20s load
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
