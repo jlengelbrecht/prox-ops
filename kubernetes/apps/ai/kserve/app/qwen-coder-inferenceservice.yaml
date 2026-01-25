@@ -1,0 +1,184 @@
+---
+# KServe InferenceService: Qwen2.5-Coder-7B-Instruct (vLLM Text-Only)
+# STORY-140: First production InferenceService deployment
+# Model: Qwen/Qwen2.5-Coder-7B-Instruct (~14GB VRAM, official coding model)
+# Framework: vLLM (regular, NOT vLLM-Omni) for text-only autoregressive models
+# GPU: RTX A5000 24GB (k8s-work-10 ONLY, NOT Plex rtx-a2000 node)
+#
+# Performance Characteristics:
+# - Cold start: ~15-20s (model loads from cache)
+# - Warm inference: ~50ms (model in VRAM)
+# - Scale-to-zero: 5 minutes idle timeout
+# - VRAM usage: ~14GB / 24GB available
+#
+# Usage:
+#   # Test via curl (cold start)
+#   kubectl run -it --rm test-curl --image=curlimages/curl --restart=Never -- \
+#     curl -X POST http://qwen-coder.ai.svc.cluster.local/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"Qwen/Qwen2.5-Coder-7B-Instruct","messages":[{"role":"user","content":"Write a Python function to reverse a string"}]}'
+#
+#   # Watch pod scaling
+#   kubectl get pods -n ai -w | grep qwen-coder
+#
+# Expected behavior:
+# - First request triggers cold start (pod 0→1, ~15-20s delay)
+# - Model loads from /models/Qwen/Qwen2.5-Coder-7B-Instruct (cache hit)
+# - Subsequent requests are fast (~50ms)
+# - After 5min idle, pod scales to 0 (GPU freed)
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen-coder
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen-coder
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: vllm
+    model.type: text-only
+    model.size: 7b
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A5000 for LLM inference"
+    security.homelab/network: "Internal only - ClusterIP service"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
+    maxReplicas: 2  # Allow up to 2 replicas for load balancing
+
+    # Scaling behavior (inherited from Knative Serving global config)
+    # - scale-to-zero-grace-period: 5m (from knative-serving ConfigMap)
+    # - stable-window: 60s (stabilization before scaling)
+    # - Activator holds requests during cold start
+
+    # CRITICAL: GPU and Node Targeting
+    # Target ONLY k8s-work-10 (RTX A5000 24GB)
+    # Do NOT schedule on Plex node (rtx-a2000 reserved for transcoding)
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      gpu.nvidia.com/model: rtx-a5000
+
+    # Custom container approach (no ClusterServingRuntime needed)
+    # Using official vLLM OpenAI-compatible image
+    containers:
+      - name: vllm
+        # renovate: datasource=docker depName=vllm/vllm-openai
+        image: vllm/vllm-openai:v0.7.3  # Pinned version (NOT vllm-omni)
+
+        # vLLM server arguments
+        args:
+          # Model path (relative to /models mount)
+          - --model=Qwen/Qwen2.5-Coder-7B-Instruct
+
+          # Model cache directory (shared PVC)
+          - --download-dir=/models
+
+          # Disable model download (already cached)
+          # vLLM will find model at /models/Qwen/Qwen2.5-Coder-7B-Instruct
+          - --load-format=auto
+
+          # Inference optimization
+          - --dtype=auto  # Use FP16/BF16 automatically
+          - --max-model-len=8192  # Context window (8k tokens)
+          - --gpu-memory-utilization=0.9  # Use 90% of VRAM efficiently
+
+          # Server configuration
+          - --host=0.0.0.0
+          - --port=8080
+
+          # Disable telemetry
+          - --disable-log-stats
+          - --disable-log-requests
+
+        # Environment variables
+        env:
+          # HuggingFace token (for gated models, not needed for Qwen2.5-Coder but good practice)
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: huggingface-token
+                key: HF_TOKEN
+                optional: true  # Don't fail if secret missing (Qwen is public)
+
+          # Disable HuggingFace telemetry
+          - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # NVIDIA GPU visibility
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+
+        # Resource requirements
+        resources:
+          requests:
+            cpu: 4
+            memory: 14Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 8  # Reduced from 14 (vLLM is GPU-bound, not CPU-bound)
+            memory: 20Gi
+            nvidia.com/gpu: 1
+
+        # Health checks
+        ports:
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Volume mounts
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: false  # vLLM may write cache metadata
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # vLLM needs writable /tmp
+          capabilities:
+            drop:
+              - ALL
+
+    # Pod-level configuration
+    podSpec:
+      # NVIDIA container runtime for GPU access
+      runtimeClassName: nvidia
+
+      # Security context (pod-level)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Disable service account token mounting
+      automountServiceAccountToken: false
+
+      # Volumes
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache
