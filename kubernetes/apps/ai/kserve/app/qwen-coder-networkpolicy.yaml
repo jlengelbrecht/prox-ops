@@ -87,13 +87,15 @@ spec:
             dns:
               - matchPattern: "*"
 
-    # Block all other egress
-    # Model already cached in model-cache PVC (no HuggingFace download needed)
-    # If HuggingFace download is required at runtime, add:
-    # - toFQDNs:
-    #     - matchName: huggingface.co
-    #     - matchName: cdn.lfs.github.com
-    #   toPorts:
-    #     - ports:
-    #         - port: "443"
-    #           protocol: TCP
+    # Allow HuggingFace access for model config verification
+    # vLLM contacts HuggingFace even when model is cached locally
+    # to verify model configuration and tokenizer
+    - toFQDNs:
+        - matchName: huggingface.co
+        - matchPattern: "*.huggingface.co"
+        - matchName: cdn.lfs.github.com
+        - matchPattern: "*.hf.co"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
