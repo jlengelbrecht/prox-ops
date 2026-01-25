@@ -85,10 +85,10 @@ spec:
           - --max-model-len=8192  # Context window (8k tokens)
           - --gpu-memory-utilization=0.9  # Use 90% of VRAM efficiently
 
-          # STORY-141: Inference optimizations (from v0.6.6 setup)
+          # STORY-141: Inference optimizations
           - --enable-chunked-prefill  # 20-40% faster TTFT
           - --enable-prefix-caching  # 85% faster on repeated prompts
-          - --max-num-batched-tokens=131072  # Larger batch processing
+          # NOTE: --max-num-batched-tokens=131072 removed - causes OOM during profiling
 
           # Server configuration
           - --host=0.0.0.0
