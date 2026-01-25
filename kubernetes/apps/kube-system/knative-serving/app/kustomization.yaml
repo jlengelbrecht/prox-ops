@@ -37,6 +37,21 @@ configMapGenerator:
       - ingress-class=kourier.ingress.networking.knative.dev
       - domain-template={{.Name}}.{{.Namespace}}.svc.cluster.local
       - enable-tag-header-based-routing=true
+  - name: config-features
+    namespace: knative-serving
+    behavior: merge
+    literals:
+      # Enable PVC support for KServe InferenceServices with model cache
+      - kubernetes.podspec-persistent-volume-claim=enabled
+      - kubernetes.podspec-persistent-volume-write=enabled
+      # Enable GPU node targeting for KServe InferenceServices
+      - kubernetes.podspec-nodeselector=enabled
+      # Enable NVIDIA container runtime for GPU access
+      - kubernetes.podspec-runtimeclassname=enabled
+      # Enable pod security context for non-root execution
+      - kubernetes.podspec-securitycontext=enabled
+      # Enable volume support for EmptyDir (default enabled, explicit for clarity)
+      - kubernetes.podspec-volumes-emptydir=enabled
 
 patches:
   # Patch Kourier service to use Cilium LoadBalancer with specific IP
