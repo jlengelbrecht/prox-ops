@@ -5,8 +5,8 @@
 # Framework: vLLM-Omni (multimodal fork) - DIFFERENT from vllm-openai!
 # GPU: RTX A5000 24GB (k8s-work-10 ONLY)
 #
-# Performance Characteristics:
-# - Cold start: ~60-90s (larger model + multimodal components)
+# Performance Characteristics (STORY-142b optimized):
+# - Cold start: ~120-150s (weight loading from NFS is bottleneck)
 # - Warm inference: ~100-200ms (multimodal processing)
 # - Scale-to-zero: 5 minutes idle timeout
 # - VRAM usage: ~17GB / 24GB available
@@ -82,10 +82,15 @@ spec:
 
           # Inference optimization
           - --dtype=auto  # Use BF16 automatically
+          - --max-model-len=8192  # STORY-142b: Reduced from 32k to speed up KV cache init
           - --gpu-memory-utilization=0.9  # Use 90% of VRAM
 
           # Fast cold start optimization (skip compilation)
           - --enforce-eager
+
+          # STORY-142b: Inference optimizations
+          - --enable-chunked-prefill  # Faster TTFT
+          - --enable-prefix-caching   # Faster on repeated prompts
 
           # Server configuration
           - --host=0.0.0.0
