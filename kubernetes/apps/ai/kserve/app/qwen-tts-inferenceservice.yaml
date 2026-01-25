@@ -6,7 +6,7 @@
 # GPU: RTX A5000 24GB (k8s-work-10 ONLY)
 #
 # Performance Characteristics:
-# - Cold start: ~120-180s (includes pip install for onnxruntime-gpu)
+# - Cold start: ~4-5min (pip install onnxruntime-gpu ~2min + model load ~2min)
 # - Warm inference: ~50-100ms
 # - Scale-to-zero: 5 minutes idle timeout
 # - VRAM usage: ~5GB / 24GB available
@@ -133,7 +133,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 120  # Extra time for pip install + model load
+          initialDelaySeconds: 300  # 5min for pip install (~2min) + model load (~2min)
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
@@ -142,7 +142,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 120  # Extra time for pip install + model load
+          initialDelaySeconds: 300  # 5min for pip install (~2min) + model load (~2min)
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 6
