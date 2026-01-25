@@ -76,9 +76,10 @@ spec:
           # In offline mode, must use full path to model directory
           - --model=/models/Qwen/Qwen2.5-Coder-7B-Instruct
 
-          # STORY-141b: Load format optimization (parallel async I/O for CephFS)
-          # Testing fastsafetensors in v0.11.0 for 4.8-7.5x faster model loading
-          - --load-format=fastsafetensors
+          # STORY-141b: Load format optimization
+          # Note: fastsafetensors requires vllm[fastsafetensors] extra (not in base image)
+          # Using safetensors as fallback - still faster than default 'auto' (mmap)
+          - --load-format=safetensors
 
           # Inference optimization
           - --dtype=auto  # Use FP16/BF16 automatically
