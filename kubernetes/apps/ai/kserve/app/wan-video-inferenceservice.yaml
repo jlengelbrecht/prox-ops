@@ -1,0 +1,184 @@
+---
+# KServe InferenceService: Wan2.2-TI2V-5B (Video Generation)
+# STORY-142 Phase 3: Video generation model
+# Model: Wan-AI/Wan2.2-TI2V-5B-Diffusers (~20GB VRAM, video diffusion)
+# Framework: vLLM-Omni (multimodal fork)
+# GPU: RTX A5000 24GB (k8s-work-10 ONLY)
+#
+# WARNING: This model pushes VRAM limits. May OOM on complex prompts.
+#
+# Performance Characteristics:
+# - Cold start: ~180-240s (large video diffusion model)
+# - Warm inference: ~30-120s (varies by video length/resolution)
+# - Scale-to-zero: 5 minutes idle timeout
+# - VRAM usage: ~20GB / 24GB available (tight fit)
+# - Single GPU: maxReplicas=1 enforced
+#
+# API Endpoints:
+# - /v1/videos/generations - Video generation endpoint (if supported)
+# - /v1/images/generations - May use image endpoint for frame generation
+#
+# Usage:
+#   # Generate video from text prompt
+#   kubectl run -it --rm test-video --image=curlimages/curl --restart=Never -- \
+#     curl -X POST http://wan-video.ai.svc.cluster.local/v1/videos/generations \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"/models/Wan-AI/Wan2.2-TI2V-5B-Diffusers","prompt":"A cat walking across a field","duration":5}'
+#
+# GPU Contention Note:
+# - Only ONE InferenceService can run at a time (single RTX A5000)
+# - Scale down other models before testing wan-video
+# - This model uses most of available VRAM - ensure no other GPU workloads
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: wan-video
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: wan-video
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: vllm-omni
+    model.type: video-diffusion
+    model.modality: text-video
+    model.size: 5b
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A5000 for video generation"
+    security.homelab/network: "Internal only - ClusterIP service"
+    homelab/vram-warning: "High VRAM usage (~20GB), may OOM on complex prompts"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
+    maxReplicas: 1  # Single GPU workload - only 1 pod can run at a time
+
+    # CRITICAL: GPU and Node Targeting
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      gpu.nvidia.com/model: rtx-a5000
+
+    containers:
+      - name: vllm-omni
+        # renovate: datasource=docker depName=vllm/vllm-omni
+        image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
+
+        # vLLM-Omni uses 'vllm serve --omni' for video diffusion models
+        command:
+          - vllm
+          - serve
+
+        # vLLM-Omni server arguments
+        args:
+          # Model path (absolute path to cached model)
+          - /models/Wan-AI/Wan2.2-TI2V-5B-Diffusers
+
+          # Enable Omni mode for video diffusion models
+          - --omni
+
+          # Inference optimization
+          - --dtype=auto  # Use BF16 automatically
+          - --gpu-memory-utilization=0.95  # Push VRAM limits for video model
+
+          # Fast cold start optimization (skip compilation)
+          - --enforce-eager
+
+          # Server configuration
+          - --host=0.0.0.0
+          - --port=8080
+
+          # Disable telemetry
+          - --disable-log-stats
+          - --disable-log-requests
+
+        # Environment variables
+        env:
+          # HuggingFace token (optional)
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: huggingface-token
+                key: HF_TOKEN
+                optional: true
+
+          # Disable HuggingFace telemetry
+          - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # Enable offline mode (use cached model files only)
+          - name: HF_HUB_OFFLINE
+            value: "1"
+
+          # NVIDIA GPU visibility
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+
+          # Fix for non-root user compatibility
+          - name: HOME
+            value: "/tmp"
+
+        # Resource requirements for video diffusion (maximum available)
+        resources:
+          requests:
+            cpu: 4
+            memory: 22Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 8
+            memory: 28Gi
+            nvidia.com/gpu: 1
+
+        # Health checks
+        ports:
+          - containerPort: 8080
+            name: http1
+            protocol: TCP
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 180  # Video models need longest load time
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 180  # Video models need longest load time
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+
+        # Volume mounts
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: false
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+
+    # NVIDIA container runtime for GPU access
+    runtimeClassName: nvidia
+
+    # Security context (pod-level)
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    serviceAccountName: default
+
+    # Volumes
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache
