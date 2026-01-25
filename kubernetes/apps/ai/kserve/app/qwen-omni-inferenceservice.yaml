@@ -65,6 +65,12 @@ spec:
         # renovate: datasource=docker depName=vllm/vllm-omni
         image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
 
+        # vLLM-Omni requires explicit command (different from vllm-openai)
+        command:
+          - python
+          - -m
+          - vllm.entrypoints.openai.api_server
+
         # vLLM-Omni server arguments
         args:
           # Model path (absolute path to cached model)
