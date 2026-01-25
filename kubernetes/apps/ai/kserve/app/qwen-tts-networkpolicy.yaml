@@ -84,11 +84,11 @@ spec:
             dns:
               - matchPattern: "*"
 
-    # TEMPORARY: Allow PyPI access for runtime onnxruntime-gpu installation
-    # Container startup executes: pip install --no-cache-dir onnxruntime-gpu
-    # Workaround for missing onnxruntime in vLLM-Omni Docker image
+    # TEMPORARY: Allow PyPI access for runtime dependency installation
+    # Container startup executes: pip install --no-cache-dir onnxruntime-gpu sox
+    # Workaround for missing dependencies in vLLM-Omni Docker image
     # Track: https://github.com/vllm-project/vllm-omni/pull/909
-    # TODO: Remove after PR #909 merges AND a new vLLM-Omni release includes onnxruntime
+    # TODO: Remove after vLLM-Omni includes these dependencies in base image
     - toFQDNs:
         - matchName: "pypi.org"
         - matchName: "files.pythonhosted.org"
