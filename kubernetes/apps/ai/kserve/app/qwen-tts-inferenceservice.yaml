@@ -6,7 +6,7 @@
 # GPU: RTX A5000 24GB (k8s-work-10 ONLY)
 #
 # Performance Characteristics:
-# - Cold start: ~60-90s (smaller model than Omni-7B)
+# - Cold start: ~120-180s (includes pip install for onnxruntime-gpu)
 # - Warm inference: ~50-100ms
 # - Scale-to-zero: 5 minutes idle timeout
 # - VRAM usage: ~5GB / 24GB available
@@ -59,41 +59,32 @@ spec:
         # renovate: datasource=docker depName=vllm/vllm-omni
         image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
 
-        # vLLM-Omni uses 'vllm serve --omni' for multimodal/TTS models
+        # Install missing onnxruntime-gpu dependency at runtime
+        # Workaround for https://github.com/vllm-project/vllm-omni/pull/909
+        # TODO: Remove after vLLM-Omni includes onnxruntime in base image
         command:
-          - vllm
-          - serve
+          - /bin/bash
+          - -c
+          - |
+            echo "Installing onnxruntime-gpu for Qwen3-TTS support..."
+            pip install --no-cache-dir onnxruntime-gpu 2>&1 | tail -5
+            echo "Starting vLLM-Omni server..."
+            exec vllm serve /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+              --omni \
+              --load-format=safetensors \
+              --dtype=auto \
+              --max-model-len=4096 \
+              --gpu-memory-utilization=0.9 \
+              --enforce-eager \
+              --enable-chunked-prefill \
+              --enable-prefix-caching \
+              --host=0.0.0.0 \
+              --port=8080 \
+              --disable-log-stats \
+              --disable-log-requests
 
-        # vLLM-Omni server arguments
-        args:
-          # Model path (absolute path to cached model)
-          - /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
-
-          # Enable Omni mode for TTS/multimodal models
-          - --omni
-
-          # Load format optimization
-          - --load-format=safetensors
-
-          # Inference optimization
-          - --dtype=auto  # Use BF16 automatically
-          - --max-model-len=4096  # TTS typically uses shorter context
-          - --gpu-memory-utilization=0.9  # Use 90% of VRAM
-
-          # Fast cold start optimization (skip compilation)
-          - --enforce-eager
-
-          # Inference optimizations
-          - --enable-chunked-prefill  # Faster TTFT
-          - --enable-prefix-caching   # Faster on repeated prompts
-
-          # Server configuration
-          - --host=0.0.0.0
-          - --port=8080
-
-          # Disable telemetry
-          - --disable-log-stats
-          - --disable-log-requests
+        # No args needed - all in command above
+        args: []
 
         # Environment variables
         env:
@@ -142,7 +133,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 60  # Faster for smaller model
+          initialDelaySeconds: 120  # Extra time for pip install + model load
           periodSeconds: 30
           timeoutSeconds: 10
           failureThreshold: 3
@@ -151,7 +142,7 @@ spec:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 60  # Faster for smaller model
+          initialDelaySeconds: 120  # Extra time for pip install + model load
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 6
