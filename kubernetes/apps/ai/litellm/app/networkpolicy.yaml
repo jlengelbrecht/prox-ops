@@ -38,13 +38,14 @@ spec:
     # Allow egress to Kourier (KServe's Knative ingress gateway)
     # KServe predictor services are ExternalName pointing to kourier-internal
     # Traffic path: LiteLLM → Kourier → Activator → Predictor Pod
+    # kourier-internal service: port 80 -> targetPort 8081
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kourier-system
             app: 3scale-kourier-gateway
       toPorts:
         - ports:
-            - port: "8080"
+            - port: "8081"
               protocol: TCP
     # Allow egress to Knative Serving activator (handles cold start buffering)
     - toEndpoints:
