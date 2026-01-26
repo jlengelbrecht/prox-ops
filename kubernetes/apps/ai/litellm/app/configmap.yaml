@@ -141,7 +141,7 @@ data:
 
       - model_name: "qwen-coder"
         litellm_params:
-          model: "openai//models/Qwen/Qwen2.5-Coder-7B-Instruct"
+          model: "openai/Qwen/Qwen2.5-Coder-7B-Instruct"
           api_base: "http://qwen-coder-predictor.ai.svc.cluster.local"
           api_key: "dummy"
           timeout: 120
@@ -150,7 +150,7 @@ data:
 
       - model_name: "dolphin-chat"
         litellm_params:
-          model: "openai//models/cognitivecomputations/Dolphin3.0-Llama3.1-8B"
+          model: "openai/cognitivecomputations/Dolphin3.0-Llama3.1-8B"
           api_base: "http://dolphin-chat-predictor.ai.svc.cluster.local"
           api_key: "dummy"
           timeout: 180
@@ -159,7 +159,7 @@ data:
 
       - model_name: "qwen-omni"
         litellm_params:
-          model: "openai//models/Qwen/Qwen2.5-Omni-7B"
+          model: "openai/Qwen/Qwen2.5-Omni-7B"
           api_base: "http://qwen-omni-predictor.ai.svc.cluster.local"
           api_key: "dummy"
           timeout: 300
@@ -168,39 +168,42 @@ data:
 
       - model_name: "qwen-tts"
         litellm_params:
-          model: "openai//models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+          model: "openai/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
           api_base: "http://qwen-tts-predictor.ai.svc.cluster.local"
           api_key: "dummy"
           timeout: 360
         model_info:
-          description: "KServe Qwen3-TTS voice cloning (~5min cold start)"
+          description: "KServe Qwen3-TTS voice cloning (~5min cold start) - may need custom endpoint"
 
+      # Note: Audio/Image/Video models may require custom API handling
+      # LiteLLM primarily routes to /v1/chat/completions - these models
+      # may expose different endpoints. Verify vLLM/KServe interface compatibility.
       - model_name: "stable-audio"
         litellm_params:
-          model: "openai//models/stabilityai/stable-audio-open-1.0"
+          model: "openai/stabilityai/stable-audio-open-1.0"
           api_base: "http://stable-audio-predictor.ai.svc.cluster.local"
           api_key: "dummy"
           timeout: 300
         model_info:
-          description: "KServe Stable Audio - music/sound generation"
+          description: "KServe Stable Audio - music generation (may need custom endpoint)"
 
       - model_name: "flux-klein"
         litellm_params:
-          model: "openai//models/black-forest-labs/FLUX.2-klein-9b-fp8"
+          model: "openai/black-forest-labs/FLUX.2-klein-9b-fp8"
           api_base: "http://flux-klein-predictor.ai.svc.cluster.local"
           api_key: "dummy"
           timeout: 300
         model_info:
-          description: "KServe FLUX.2-klein image generation"
+          description: "KServe FLUX.2-klein image generation (may need custom endpoint)"
 
       - model_name: "wan-video"
         litellm_params:
-          model: "openai//models/Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+          model: "openai/Wan-AI/Wan2.2-TI2V-5B-Diffusers"
           api_base: "http://wan-video-predictor.ai.svc.cluster.local"
           api_key: "dummy"
           timeout: 300
         model_info:
-          description: "KServe Wan2.2 video generation"
+          description: "KServe Wan2.2 video generation (may need custom endpoint)"
 
     # Explicit fallback routing configuration
     # When primary model fails (timeout, rate limit, error), try fallback model
