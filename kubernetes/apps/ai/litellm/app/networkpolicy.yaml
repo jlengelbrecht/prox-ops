@@ -35,6 +35,16 @@ spec:
         - ports:
             - port: "11434"
               protocol: TCP
+    # Allow egress to KServe InferenceService predictors
+    # Scale-to-zero models (qwen-coder, dolphin-chat, qwen-omni, etc.)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            component: predictor
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     # Allow egress to PostgreSQL for virtual keys and usage tracking
     - toEndpoints:
         - matchLabels:
