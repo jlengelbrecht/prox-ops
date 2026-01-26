@@ -35,34 +35,25 @@ spec:
         - ports:
             - port: "11434"
               protocol: TCP
-    # Allow egress to KServe InferenceService predictors
-    # Scale-to-zero models on RTX A5000 (k8s-work-10)
-    # Each InferenceService requires explicit label selector
+    # Allow egress to Kourier (KServe's Knative ingress gateway)
+    # KServe predictor services are ExternalName pointing to kourier-internal
+    # Traffic path: LiteLLM → Kourier → Activator → Predictor Pod
     - toEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            serving.kserve.io/inferenceservice: qwen-coder
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            serving.kserve.io/inferenceservice: dolphin-chat
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            serving.kserve.io/inferenceservice: qwen-omni
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            serving.kserve.io/inferenceservice: qwen-tts
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            serving.kserve.io/inferenceservice: stable-audio
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            serving.kserve.io/inferenceservice: flux-klein
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            serving.kserve.io/inferenceservice: wan-video
+            io.kubernetes.pod.namespace: kourier-system
+            app: 3scale-kourier-gateway
       toPorts:
         - ports:
             - port: "8080"
+              protocol: TCP
+    # Allow egress to Knative Serving activator (handles cold start buffering)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: activator
+      toPorts:
+        - ports:
+            - port: "8012"
               protocol: TCP
     # Allow egress to PostgreSQL for virtual keys and usage tracking
     - toEndpoints:
