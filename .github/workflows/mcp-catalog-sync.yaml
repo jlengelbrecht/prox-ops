@@ -1890,6 +1890,20 @@ jobs:
             return 0
           }
 
+          # Risk acceptance: allow merging despite security scan failures
+          # Apply the 'security-risk-accepted' label to the PR to override
+          RISK_ACCEPTED="false"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Post-merge: security gate is informational only (code already merged)
+            RISK_ACCEPTED="true"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
+            if echo ",$PR_LABELS," | grep -qF ",security-risk-accepted,"; then
+              RISK_ACCEPTED="true"
+              echo "::warning::Security risk accepted via PR label on PR #${{ github.event.pull_request.number }}"
+            fi
+          fi
+
           # Store results in variables for reliable checking
           PREFLIGHT_RESULT="${{ needs.preflight.result }}"
           VALIDATE_RESULT="${{ needs.validate.result }}"
@@ -1919,24 +1933,35 @@ jobs:
               ERRORS=$((ERRORS + 1))
             fi
 
-            # Security scan is BLOCKING - HIGH/CRITICAL vulnerabilities must be addressed
+            # Security scan - BLOCKING unless risk is explicitly accepted
             if ! check_required "Security Scan" "$IMAGE_SCAN_RESULT"; then
-              echo ""
-              echo "Options to resolve:"
-              echo "  1. Wait for the upstream maintainer to release a patched image"
-              echo "  2. Open an issue on the upstream repository"
-              echo "  3. Pin to an older version without known CVEs"
-              echo "  4. Add a security exemption with documented justification"
-              ERRORS=$((ERRORS + 1))
+              if [ "$RISK_ACCEPTED" = "true" ]; then
+                echo "::warning::Security Scan failed but risk accepted — treating as warning"
+                WARNINGS=$((WARNINGS + 1))
+              else
+                echo ""
+                echo "Options to resolve:"
+                echo "  1. Wait for the upstream maintainer to release a patched image"
+                echo "  2. Open an issue on the upstream repository"
+                echo "  3. Pin to an older version without known CVEs"
+                echo "  4. Apply the 'security-risk-accepted' label to accept the risk and merge anyway"
+                ERRORS=$((ERRORS + 1))
+              fi
             fi
 
             # Build-container: skipped is OK (no source-built containers)
+            # When risk is accepted and scan failed, build may also fail/skip — that's expected
             if ! check_required "Build Container" "$BUILD_RESULT"; then
-              echo ""
-              echo "  1. Review the build-container job logs above"
-              echo "  2. Check the mcp-source specification is valid"
-              echo "  3. Ensure the package exists and version is correct"
-              ERRORS=$((ERRORS + 1))
+              if [ "$RISK_ACCEPTED" = "true" ] && [ "$IMAGE_SCAN_RESULT" != "success" ]; then
+                echo "::warning::Build Container skipped/failed due to accepted scan failure"
+                WARNINGS=$((WARNINGS + 1))
+              else
+                echo ""
+                echo "  1. Review the build-container job logs above"
+                echo "  2. Check the mcp-source specification is valid"
+                echo "  3. Ensure the package exists and version is correct"
+                ERRORS=$((ERRORS + 1))
+              fi
             fi
 
             # Generate-catalog is required when MCPServers change (additions or deletions)
