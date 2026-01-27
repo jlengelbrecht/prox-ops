@@ -91,6 +91,11 @@ spec:
                   secretKeyRef:
                     name: moltbot-secrets
                     key: LITELLM_VIRTUAL_KEY
+              ANTHROPIC_OAUTH_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: moltbot-secrets
+                    key: ANTHROPIC_OAUTH_TOKEN
             probes:
               liveness:
                 enabled: true
@@ -138,7 +143,7 @@ spec:
 
     defaultPodOptions:
       annotations:
-        secret.reloader.stakater.com/reload: "moltbot-secrets,moltbot-claude-credentials"
+        secret.reloader.stakater.com/reload: "moltbot-secrets"
       automountServiceAccountToken: false
       affinity:
         nodeAffinity:
@@ -157,15 +162,6 @@ spec:
             subPath: state
           - path: /root/clawd
             subPath: workspace
-      claude-credentials:
-        enabled: true
-        type: secret
-        name: moltbot-claude-credentials
-        globalMounts:
-          - path: /home/node/.claude/.credentials.json
-            subPath: credentials.json
-            readOnly: true
-
     service:
       app:
         controller: moltbot
