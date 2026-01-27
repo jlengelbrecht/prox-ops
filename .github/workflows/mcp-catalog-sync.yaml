@@ -1877,9 +1877,31 @@ jobs:
           ERRORS=0
           WARNINGS=0
 
+          # Helper: check if a job result is a failure (not success and not skipped)
+          # GitHub Actions result values: success, failure, cancelled, skipped
+          # When a job fails at "Set up job" (infra/SSL), result may be 'failure' or empty
+          check_required() {
+            local job_name="$1"
+            local result="$2"
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "::error::${job_name} failed (result: ${result:-empty})"
+              return 1
+            fi
+            return 0
+          }
+
+          # Store results in variables for reliable checking
+          PREFLIGHT_RESULT="${{ needs.preflight.result }}"
+          VALIDATE_RESULT="${{ needs.validate.result }}"
+          CLASSIFY_RESULT="${{ needs.classify.result }}"
+          IMAGE_SCAN_RESULT="${{ needs.image-scan.result }}"
+          BUILD_RESULT="${{ needs.build-container.result }}"
+          MCP_VALIDATE_RESULT="${{ needs.mcp-validate.result }}"
+          GENERATE_RESULT="${{ needs.generate-catalog.result }}"
+
           # Preflight must succeed for the pipeline to work at all
-          if [ "${{ needs.preflight.result }}" = "failure" ]; then
-            echo "::error::Preflight detection failed - cannot determine MCPServer changes"
+          if ! check_required "Preflight" "$PREFLIGHT_RESULT"; then
+            echo "  Cannot determine MCPServer changes"
             ERRORS=$((ERRORS + 1))
           fi
 
@@ -1887,20 +1909,18 @@ jobs:
           if [ "${{ needs.preflight.outputs.mcpservers_changed }}" = "true" ]; then
             # Validate is required only when there are files to validate (not just deletions)
             # When validate is skipped (due to empty matrix from deletions), that's OK
-            if [ "${{ needs.validate.result }}" = "failure" ]; then
-              echo "::error::MCPServer validation failed - check for security issues"
+            if ! check_required "Validate" "$VALIDATE_RESULT"; then
+              echo "  MCPServer validation failed - check for security issues"
               ERRORS=$((ERRORS + 1))
             fi
 
             # Classify must succeed for the pipeline to work
-            if [ "${{ needs.classify.result }}" = "failure" ]; then
-              echo "::error::Classification of MCPServers failed"
+            if ! check_required "Classify" "$CLASSIFY_RESULT"; then
               ERRORS=$((ERRORS + 1))
             fi
 
             # Security scan is BLOCKING - HIGH/CRITICAL vulnerabilities must be addressed
-            if [ "${{ needs.image-scan.result }}" = "failure" ]; then
-              echo "::error::Security scan FAILED - HIGH/CRITICAL vulnerabilities detected in upstream image"
+            if ! check_required "Security Scan" "$IMAGE_SCAN_RESULT"; then
               echo ""
               echo "Options to resolve:"
               echo "  1. Wait for the upstream maintainer to release a patched image"
@@ -1910,10 +1930,8 @@ jobs:
               ERRORS=$((ERRORS + 1))
             fi
 
-            # Build-container is required only for PATH A (source-built) MCPServers
-            # Skipped is OK (no source-built containers or scan failed for pre-built image)
-            if [ "${{ needs.build-container.result }}" = "failure" ]; then
-              echo "::error::Container build FAILED - unable to build MCP server container"
+            # Build-container: skipped is OK (no source-built containers)
+            if ! check_required "Build Container" "$BUILD_RESULT"; then
               echo ""
               echo "  1. Review the build-container job logs above"
               echo "  2. Check the mcp-source specification is valid"
@@ -1922,14 +1940,13 @@ jobs:
             fi
 
             # Generate-catalog is required when MCPServers change (additions or deletions)
-            if [ "${{ needs.generate-catalog.result }}" = "failure" ]; then
-              echo "::error::Catalog generation failed"
+            if ! check_required "Generate Catalog" "$GENERATE_RESULT"; then
               ERRORS=$((ERRORS + 1))
             fi
           fi
 
           # Report on optional jobs (non-blocking warnings)
-          if [ "${{ needs.mcp-validate.result }}" = "failure" ]; then
+          if [ "$MCP_VALIDATE_RESULT" = "failure" ]; then
             echo "::warning::MCP protocol validation failed - server may need external dependencies"
             echo "This is a warning only - the server may still work correctly in production"
             WARNINGS=$((WARNINGS + 1))
