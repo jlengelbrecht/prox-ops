@@ -77,10 +77,8 @@ spec:
           # Model path (absolute path to cached model)
           - --model=/models/Qwen/Qwen2.5-Omni-7B
 
-          # STORY-150: Run:ai Streamer for faster model loading
-          # Streams weights directly to GPU at ~280 MiB/s (vs ~150 MB/s safetensors)
-          - --load-format=runai_streamer
-          - --model-loader-extra-config={"concurrency":16}
+          # Load format optimization
+          - --load-format=safetensors
 
           # Inference optimization
           - --dtype=auto  # Use BF16 automatically

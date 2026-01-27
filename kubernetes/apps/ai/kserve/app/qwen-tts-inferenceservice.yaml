@@ -69,11 +69,9 @@ spec:
             echo "Installing missing dependencies for Qwen3-TTS support..."
             pip install --no-cache-dir onnxruntime-gpu sox 2>&1 | tail -10
             echo "Starting vLLM-Omni server..."
-            # STORY-150: Run:ai Streamer for faster model loading
             exec vllm serve /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
               --omni \
-              --load-format=runai_streamer \
-              --model-loader-extra-config='{"concurrency":16}' \
+              --load-format=safetensors \
               --dtype=auto \
               --max-model-len=4096 \
               --gpu-memory-utilization=0.9 \
