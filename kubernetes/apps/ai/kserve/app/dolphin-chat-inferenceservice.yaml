@@ -68,8 +68,11 @@ spec:
           # Model path (absolute path to cached model)
           - --model=/models/cognitivecomputations/Dolphin3.0-Llama3.1-8B
 
-          # Load format optimization (safetensors, not mmap)
-          - --load-format=safetensors
+          # STORY-150: Run:ai Streamer for faster model loading
+          # Streams weights directly to GPU at ~280 MiB/s (vs ~150 MB/s safetensors)
+          # Saves ~12s on cold start (97s vs 109s baseline)
+          - --load-format=runai_streamer
+          - --model-loader-extra-config={"concurrency":16}
 
           # Inference optimization
           - --dtype=auto  # Use FP16/BF16 automatically
