@@ -675,6 +675,9 @@ jobs:
       needs.preflight.outputs.mcpserver_files != '[]' &&
       needs.classify.result == 'success'
     runs-on: gha-runner-scale-set
+    permissions:
+      contents: read
+      pull-requests: write   # Required: Post security scan results as PR comment
     strategy:
       matrix:
         file: ${{ fromJson(needs.preflight.outputs.mcpserver_files) }}
@@ -969,6 +972,93 @@ jobs:
             echo "Could not run npm audit"
             echo "scan_status=skipped" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Consolidate Scan Results
+        if: always()
+        id: scan-summary
+        run: |
+          # Consolidate results from whichever scanner ran (trivy, pip-audit, or npm-audit)
+          CRITICAL="${{ steps.trivy-process.outputs.critical_count }}"
+          HIGH="${{ steps.trivy-process.outputs.high_count }}"
+          STATUS="${{ steps.trivy-process.outputs.scan_status }}"
+
+          # Fallback to pip-audit results
+          if [ -z "$STATUS" ]; then
+            STATUS="${{ steps.pip-audit.outputs.scan_status }}"
+            CRITICAL="0"
+            HIGH="${{ steps.pip-audit.outputs.vuln_count }}"
+          fi
+
+          # Fallback to npm-audit results
+          if [ -z "$STATUS" ]; then
+            STATUS="${{ steps.npm-audit.outputs.scan_status }}"
+            CRITICAL="${{ steps.npm-audit.outputs.critical_count }}"
+            HIGH="${{ steps.npm-audit.outputs.high_count }}"
+          fi
+
+          echo "critical_count=${CRITICAL:-0}" >> "$GITHUB_OUTPUT"
+          echo "high_count=${HIGH:-0}" >> "$GITHUB_OUTPUT"
+          echo "scan_status=${STATUS:-skipped}" >> "$GITHUB_OUTPUT"
+
+          # Extract CVE details for PR comment (trivy only for now)
+          if [ -f "trivy-results.json" ]; then
+            CVE_LIST=$(jq -r '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL" or .Severity == "HIGH") | "| \(.Severity) | [\(.VulnerabilityID)](https://nvd.nist.gov/vuln/detail/\(.VulnerabilityID)) | \(.PkgName) | \(.Title // "No description") |"' trivy-results.json 2>/dev/null | head -20)
+            echo "cve_details<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$CVE_LIST" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate GitHub App Token (for PR comment)
+        if: always() && github.event_name == 'pull_request'
+        id: generate-token
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Comment Security Scan Results on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
+        with:
+          repo-token: ${{ steps.generate-token.outputs.token }}
+          message-id: "mcp-security-scan-${{ matrix.file }}"
+          message-failure: |
+            ## :rotating_light: MCP Security Scan Failed
+
+            **File:** `${{ matrix.file }}`
+            **Image:** `${{ steps.image.outputs.image }}`
+            **Scan Type:** ${{ steps.image.outputs.image_type }}
+
+            ### Vulnerability Summary
+
+            | Severity | Count |
+            |----------|-------|
+            | Critical | ${{ steps.scan-summary.outputs.critical_count }} |
+            | High | ${{ steps.scan-summary.outputs.high_count }} |
+
+            ### CVE Details
+
+            | Severity | CVE | Package | Description |
+            |----------|-----|---------|-------------|
+            ${{ steps.scan-summary.outputs.cve_details }}
+
+            ### What to do
+
+            These vulnerabilities are in the **upstream container image**, not in this repository's code.
+
+            - **Option 1:** Wait for the upstream maintainer to release a patched version
+            - **Option 2:** Open an issue on the upstream repository requesting a dependency update
+            - **Option 3:** If the risk is acceptable, add a security exemption with justification
+
+            > HIGH/CRITICAL vulnerabilities block PR merge. Review the Security Scan job logs for full details.
+          message-success: |
+            ## :white_check_mark: MCP Security Scan Passed
+
+            **File:** `${{ matrix.file }}`
+            **Image:** `${{ steps.image.outputs.image }}`
+            **Scan Type:** ${{ steps.image.outputs.image_type }}
+
+            No HIGH or CRITICAL vulnerabilities detected.
 
   # =============================================================================
   # Job 4: MCP Protocol Validation (optional - requires thv CLI)
