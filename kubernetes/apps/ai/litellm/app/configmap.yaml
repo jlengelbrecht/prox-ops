@@ -153,34 +153,11 @@ data:
       set_verbose: false
 
     # MCP Server Configuration
-    # LiteLLM acts as the MCP gateway - all MCP operations go through here
+    # ToolHive homelab-gateway-internal provides scoped, unauthenticated
+    # access to MCP servers (graphiti, n8n, etc.) for internal services.
     # Reference: https://docs.litellm.ai/docs/mcp
     mcp_servers:
-      graphiti:
-        url: "http://graphiti-mcp.mcp.svc.cluster.local:8000/mcp"
+      homelab:
+        url: "http://vmcp-homelab-gateway-internal.mcp.svc.cluster.local:4483/mcp"
         transport: "http"
-        auth_type: "bearer_token"
-        auth_value: "os.environ/GRAPHITI_MCP_TOKEN"
-        description: "Homelab knowledge graph - BookStack docs, runbooks, infrastructure knowledge"
-        # Available tools: add_memory, search, get_status, get_episodes, clear_graph, etc.
-
-      n8n:
-        # ToolHive-managed n8n MCP server (via proxyrunner for auth/security)
-        url: "http://mcp-n8n-proxy.mcp.svc.cluster.local:8080/mcp"
-        transport: "http"
-        auth_type: "bearer_token"
-        auth_value: "os.environ/N8N_MCP_TOKEN"
-        description: "n8n workflow automation - execute workflows, manage nodes, automate tasks"
-        # Available tools: workflow execution, node management, automation triggers
-
-    # MCP Aliases for easier access
-    mcp_aliases:
-      # Graphiti aliases
-      kb: "graphiti"
-      memory: "graphiti"
-      rag: "graphiti"
-      knowledge: "graphiti"
-      # n8n aliases
-      workflow: "n8n"
-      automation: "n8n"
-      tasks: "n8n"
+        description: "ToolHive homelab gateway (internal, unauthenticated) - graphiti, n8n, and other scoped MCP tools"
