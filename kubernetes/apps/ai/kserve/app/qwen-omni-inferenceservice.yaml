@@ -145,6 +145,7 @@ spec:
 
         # STORY-150: Optimized probes for faster cold start detection
         # Multimodal model - longer load time expected (~120-150s)
+        # Liveness must allow full cold start: 90 + (5-1)×15 = 150s total
         livenessProbe:
           httpGet:
             path: /health
@@ -152,7 +153,7 @@ spec:
           initialDelaySeconds: 90   # Keep same - multimodal needs longer
           periodSeconds: 15         # Reduced from 30 - check more frequently
           timeoutSeconds: 10
-          failureThreshold: 4       # Increased from 3 - 4×15=60s tolerance
+          failureThreshold: 5       # 5th failure at ~150s total (covers ~120-150s startup)
 
         readinessProbe:
           httpGet:
@@ -161,7 +162,7 @@ spec:
           initialDelaySeconds: 60   # Reduced from 90 - start checking earlier
           periodSeconds: 5          # Reduced from 10 - catch ready state faster
           timeoutSeconds: 5
-          failureThreshold: 24      # Increased from 6 - 24×5=120s tolerance
+          failureThreshold: 24      # 24×5=120s after initial delay (~180s total)
 
         # Volume mounts
         volumeMounts:

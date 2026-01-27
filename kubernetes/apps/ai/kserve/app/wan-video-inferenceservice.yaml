@@ -136,6 +136,7 @@ spec:
 
         # STORY-150: Optimized probes for faster cold start detection
         # Large video model - longest load time expected (~180-240s)
+        # Liveness must allow full cold start: 180 + (5-1)×15 = 240s total
         livenessProbe:
           httpGet:
             path: /health
@@ -143,7 +144,7 @@ spec:
           initialDelaySeconds: 180  # Keep same - video models need longest time
           periodSeconds: 15         # Reduced from 30 - check more frequently
           timeoutSeconds: 10
-          failureThreshold: 4       # Increased from 3 - 4×15=60s tolerance
+          failureThreshold: 5       # 5th failure at ~240s total (covers ~180-240s startup)
 
         readinessProbe:
           httpGet:
@@ -152,7 +153,7 @@ spec:
           initialDelaySeconds: 90   # Reduced from 180 - start checking earlier
           periodSeconds: 5          # Reduced from 10 - catch ready state faster
           timeoutSeconds: 5
-          failureThreshold: 36      # Increased from 6 - 36×5=180s tolerance
+          failureThreshold: 36      # 36×5=180s after initial delay (~270s total)
 
         # Volume mounts
         volumeMounts:

@@ -5,8 +5,8 @@
 # Framework: vLLM (regular, NOT vLLM-Omni) for text-only autoregressive models
 # GPU: RTX A5000 24GB (k8s-work-10 ONLY, NOT Plex rtx-a2000 node)
 #
-# Performance Characteristics (STORY-141b optimized):
-# - Cold start: ~60s (enforce-eager skips torch.compile/cudagraph for faster startup)
+# Performance Characteristics (STORY-141b optimized, STORY-150 measured):
+# - Cold start: ~100s (STORY-150 measured; bottleneck is CephFS model loading)
 # - Warm inference: ~50-80ms (eager mode, slightly slower than compiled)
 # - Cached prompt: ~0.6s TTFT (prefix caching enabled)
 # - Scale-to-zero: 5 minutes idle timeout
@@ -25,7 +25,7 @@
 #   kubectl get pods -n ai -w | grep qwen-coder
 #
 # Expected behavior:
-# - First request triggers cold start (pod 0→1, ~60s delay with enforce-eager)
+# - First request triggers cold start (pod 0→1, ~100s delay - CephFS bottleneck)
 # - Model loads from /models/Qwen/Qwen2.5-Coder-7B-Instruct (safetensors format)
 # - Subsequent requests: ~50-80ms (eager mode inference)
 # - Repeated prompts: ~0.6s TTFT (prefix caching enabled)
@@ -150,7 +150,8 @@ spec:
             protocol: TCP
 
         # STORY-150: Optimized probes for faster cold start detection
-        # Strategy: Start checking earlier, check more frequently, higher tolerance
+        # Model loads in ~100s from CephFS (STORY-150 measured)
+        # Liveness must allow full cold start: 60 + (5-1)×15 = 120s total
         livenessProbe:
           httpGet:
             path: /health
@@ -158,7 +159,7 @@ spec:
           initialDelaySeconds: 60   # Keep same - don't kill pod during model load
           periodSeconds: 15         # Reduced from 30 - check more frequently
           timeoutSeconds: 10
-          failureThreshold: 4       # Increased from 3 - 4×15=60s tolerance
+          failureThreshold: 5       # 5th failure at ~120s total (covers ~100s startup)
 
         readinessProbe:
           httpGet:
@@ -167,7 +168,7 @@ spec:
           initialDelaySeconds: 30   # Reduced from 60 - start checking earlier
           periodSeconds: 5          # Reduced from 10 - catch ready state faster
           timeoutSeconds: 5
-          failureThreshold: 20      # Increased from 6 - 20×5=100s tolerance
+          failureThreshold: 20      # 20×5=100s after initial delay (~130s total)
 
         # Volume mounts
         volumeMounts:

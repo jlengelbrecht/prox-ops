@@ -131,6 +131,7 @@ spec:
 
         # STORY-150: Optimized probes for faster cold start detection
         # Large diffusion model - longer load time expected (~120-180s)
+        # Liveness must allow full cold start: 120 + (5-1)×15 = 180s total
         livenessProbe:
           httpGet:
             path: /health
@@ -138,7 +139,7 @@ spec:
           initialDelaySeconds: 120  # Keep same - large model needs time
           periodSeconds: 15         # Reduced from 30 - check more frequently
           timeoutSeconds: 10
-          failureThreshold: 4       # Increased from 3 - 4×15=60s tolerance
+          failureThreshold: 5       # 5th failure at ~180s total (covers ~120-180s startup)
 
         readinessProbe:
           httpGet:
@@ -147,7 +148,7 @@ spec:
           initialDelaySeconds: 60   # Reduced from 120 - start checking earlier
           periodSeconds: 5          # Reduced from 10 - catch ready state faster
           timeoutSeconds: 5
-          failureThreshold: 30      # Increased from 6 - 30×5=150s tolerance
+          failureThreshold: 30      # 30×5=150s after initial delay (~210s total)
 
         # Volume mounts
         volumeMounts:
