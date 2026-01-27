@@ -1898,7 +1898,7 @@ jobs:
             RISK_ACCEPTED="true"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             PR_LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
-            if echo "$PR_LABELS" | grep -q "security-risk-accepted"; then
+            if echo ",$PR_LABELS," | grep -qF ",security-risk-accepted,"; then
               RISK_ACCEPTED="true"
               echo "::warning::Security risk accepted via PR label on PR #${{ github.event.pull_request.number }}"
             fi
