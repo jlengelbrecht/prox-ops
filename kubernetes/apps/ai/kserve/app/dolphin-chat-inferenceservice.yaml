@@ -5,8 +5,8 @@
 # Framework: vLLM (regular, NOT vLLM-Omni) for text-only autoregressive models
 # GPU: RTX A5000 24GB (k8s-work-10 ONLY)
 #
-# Performance Characteristics (based on qwen-coder learnings):
-# - Cold start: ~23-30s (enforce-eager mode, API ready)
+# Performance Characteristics (STORY-150 measured):
+# - Cold start: ~100s (STORY-150 measured; bottleneck is CephFS model loading)
 # - Warm inference: ~50-80ms (eager mode)
 # - Scale-to-zero: 5 minutes idle timeout
 # - VRAM usage: ~16GB / 24GB available
@@ -19,7 +19,7 @@
 #     -d '{"model":"/models/cognitivecomputations/Dolphin3.0-Llama3.1-8B","messages":[{"role":"user","content":"Hello"}]}'
 #
 # Expected behavior:
-# - First request triggers cold start (pod 0->1, ~23-30s delay)
+# - First request triggers cold start (pod 0→1, ~100s delay - CephFS bottleneck)
 # - Model loads from /models/cognitivecomputations/Dolphin3.0-Llama3.1-8B (safetensors format)
 # - Subsequent requests: ~50-80ms (eager mode inference)
 # - After 5min idle, pod scales to 0 (GPU freed for other workloads)
@@ -155,7 +155,7 @@ spec:
           initialDelaySeconds: 30   # Reduced from 60 - start checking earlier
           periodSeconds: 5          # Reduced from 10 - catch ready state faster
           timeoutSeconds: 5
-          failureThreshold: 20      # 20×5=100s after initial delay (~130s total)
+          failureThreshold: 20      # (20-1)×5=95s after initial delay (~125s total)
 
         # Volume mounts
         volumeMounts:

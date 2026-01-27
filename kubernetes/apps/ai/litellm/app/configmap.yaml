@@ -141,8 +141,9 @@ data:
 
       # =====================================================
       # STORY-150: Timeout optimization for cold starts
-      # Increased timeouts + num_retries=0 to prevent retry storms
-      # Actual cold start measured: ~100-180s depending on model
+      # Extended per-model timeouts to accommodate cold start delays
+      # Retries disabled globally via router_settings.num_retries: 0
+      # Actual cold start measured: ~100-420s depending on model
       # =====================================================
 
       - model_name: "qwen-coder"
@@ -152,7 +153,6 @@ data:
           api_base: "http://qwen-coder-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
           timeout: 180        # STORY-150: Increased from 120 for cold start
-          num_retries: 0      # STORY-150: Disable retries during cold start
         model_info:
           description: "KServe Qwen2.5-Coder-7B (~100s cold start)"
 
@@ -163,7 +163,6 @@ data:
           api_base: "http://dolphin-chat-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
           timeout: 180        # STORY-150: Keep at 180 (actual cold start ~109s)
-          num_retries: 0      # STORY-150: Disable retries during cold start
         model_info:
           description: "KServe Dolphin3.0 uncensored (~100s cold start)"
 
@@ -174,7 +173,6 @@ data:
           api_base: "http://qwen-omni-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
           timeout: 300        # STORY-150: Keep at 300 for multimodal
-          num_retries: 0      # STORY-150: Disable retries during cold start
         model_info:
           description: "KServe Qwen2.5-Omni multimodal (~150s cold start)"
 
@@ -185,7 +183,6 @@ data:
           api_base: "http://qwen-tts-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
           timeout: 420        # STORY-150: Increased from 360 for pip install overhead
-          num_retries: 0      # STORY-150: Disable retries during cold start
         model_info:
           description: "KServe Qwen3-TTS voice cloning (~5min cold start) - may need custom endpoint"
 
@@ -199,7 +196,6 @@ data:
           api_base: "http://stable-audio-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
           timeout: 300        # STORY-150: Keep at 300 for diffusion model
-          num_retries: 0      # STORY-150: Disable retries during cold start
         model_info:
           description: "KServe Stable Audio - music generation (~120s cold start)"
 
@@ -210,7 +206,6 @@ data:
           api_base: "http://flux-klein-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
           timeout: 360        # STORY-150: Increased from 300 for large model
-          num_retries: 0      # STORY-150: Disable retries during cold start
         model_info:
           description: "KServe FLUX.2-klein image generation (~180s cold start)"
 
@@ -221,7 +216,6 @@ data:
           api_base: "http://wan-video-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
           timeout: 420        # STORY-150: Increased from 300 for video model
-          num_retries: 0      # STORY-150: Disable retries during cold start
         model_info:
           description: "KServe Wan2.2 video generation (~240s cold start)"
 
@@ -234,9 +228,10 @@ data:
         - gpt-4: ["gpt-4-ollama"]
         - gpt-3.5-turbo: ["gpt-3.5-turbo-ollama"]
         - rag-embedding: ["rag-embedding-ollama"]
-      # Retry failed requests before falling back (applies to fallback models only)
-      # Note: KServe models use per-model num_retries: 0 which overrides this setting
-      num_retries: 2
+      # STORY-150: Disable retries to prevent retry storms during KServe cold starts
+      # Per-model num_retries in litellm_params is NOT supported - only router_settings applies
+      # With 100-420s cold starts, retries would cascade into multiple concurrent requests
+      num_retries: 0
       # Timeout for fallback routing decisions (not per-request timeout)
       timeout: 120
 
