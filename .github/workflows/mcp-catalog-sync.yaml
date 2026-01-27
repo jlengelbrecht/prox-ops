@@ -1909,8 +1909,8 @@ jobs:
           if [ "${{ needs.preflight.outputs.mcpservers_changed }}" = "true" ]; then
             # Validate is required only when there are files to validate (not just deletions)
             # When validate is skipped (due to empty matrix from deletions), that's OK
-            if [ "$VALIDATE_RESULT" = "failure" ]; then
-              echo "::error::MCPServer validation failed - check for security issues"
+            if ! check_required "Validate" "$VALIDATE_RESULT"; then
+              echo "  MCPServer validation failed - check for security issues"
               ERRORS=$((ERRORS + 1))
             fi
 
@@ -1920,8 +1920,7 @@ jobs:
             fi
 
             # Security scan is BLOCKING - HIGH/CRITICAL vulnerabilities must be addressed
-            if [ "$IMAGE_SCAN_RESULT" = "failure" ]; then
-              echo "::error::Security scan FAILED - HIGH/CRITICAL vulnerabilities detected in upstream image"
+            if ! check_required "Security Scan" "$IMAGE_SCAN_RESULT"; then
               echo ""
               echo "Options to resolve:"
               echo "  1. Wait for the upstream maintainer to release a patched image"
@@ -1931,10 +1930,8 @@ jobs:
               ERRORS=$((ERRORS + 1))
             fi
 
-            # Build-container is required only for PATH A (source-built) MCPServers
-            # Skipped is OK (no source-built containers or scan failed for pre-built image)
-            if [ "$BUILD_RESULT" = "failure" ]; then
-              echo "::error::Container build FAILED - unable to build MCP server container"
+            # Build-container: skipped is OK (no source-built containers)
+            if ! check_required "Build Container" "$BUILD_RESULT"; then
               echo ""
               echo "  1. Review the build-container job logs above"
               echo "  2. Check the mcp-source specification is valid"
