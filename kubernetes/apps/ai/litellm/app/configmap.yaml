@@ -219,6 +219,16 @@ data:
         model_info:
           description: "KServe Wan2.2 video generation (~240s cold start)"
 
+      - model_name: "hermes-jarvis"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/NousResearch/Hermes-3-Llama-3.1-8B"
+          api_base: "http://hermes-jarvis-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 180        # STORY-150: Similar to other 8B models (~97s cold start)
+        model_info:
+          description: "KServe Hermes-3 Jarvis assistant (~97s cold start, function calling enabled)"
+
     # Explicit fallback routing configuration
     # When primary model fails (timeout, rate limit, error), try fallback model
     # Reference: https://docs.litellm.ai/docs/routing#fallbacks
