@@ -1726,114 +1726,114 @@ jobs:
         id: collect-results
         run: |
           # Collect validation results from all jobs for PR comment
+          # Use the actual image-scan job result to determine per-server status
           MCPSERVER_DIR="${{ env.MCPSERVER_PATH }}"
+          IMAGE_SCAN_RESULT="${{ needs.image-scan.result }}"
           VALIDATION_RESULTS=""
-          SECURITY_RESULTS=""
 
-          # Process each MCPServer file for summary
+          # Get the list of changed files from preflight to mark which were scanned
+          CHANGED_FILES='${{ needs.preflight.outputs.mcpserver_files }}'
+
           for mcpfile in $MCPSERVER_DIR/mcpserver-*.yaml; do
             [ -f "$mcpfile" ] || continue
             NAME=$(yq eval '.metadata.name' "$mcpfile")
             IMAGE=$(yq eval '.spec.image' "$mcpfile")
-
-            # Check mcp-source comment first (for source-built containers)
-            # This correctly labels PATH A servers that now use GHCR images
             MCP_SOURCE=$(grep -oP '#\s*mcp-source:\s*\K.*' "$mcpfile" 2>/dev/null || echo "")
 
-            # Determine image type from mcp-source, falling back to spec.image
+            # Determine scan type
             if [ -n "$MCP_SOURCE" ]; then
-              if echo "$MCP_SOURCE" | grep -qE '^uvx://'; then
-                IMAGE_TYPE="PyPI (pip-audit)"
-              elif echo "$MCP_SOURCE" | grep -qE '^npx://'; then
-                IMAGE_TYPE="npm (npm audit)"
-              elif echo "$MCP_SOURCE" | grep -qE '^go://'; then
-                IMAGE_TYPE="Go (pending)"
-              elif echo "$MCP_SOURCE" | grep -qE '^github://'; then
-                IMAGE_TYPE="GitHub (pending)"
-              else
-                IMAGE_TYPE="Source (unknown)"
-              fi
-            elif echo "$IMAGE" | grep -qE '^uvx://'; then
-              IMAGE_TYPE="PyPI (pip-audit)"
-            elif echo "$IMAGE" | grep -qE '^npx://'; then
-              IMAGE_TYPE="npm (npm audit)"
-            elif echo "$IMAGE" | grep -qE '^go://'; then
-              IMAGE_TYPE="Go (pending)"
-            elif echo "$IMAGE" | grep -qE '^github://'; then
-              IMAGE_TYPE="GitHub (pending)"
+              case "$MCP_SOURCE" in
+                uvx://*) IMAGE_TYPE="PyPI (pip-audit)" ;;
+                npx://*) IMAGE_TYPE="npm (npm audit)" ;;
+                go://*)  IMAGE_TYPE="Go (pending)" ;;
+                github://*) IMAGE_TYPE="GitHub (pending)" ;;
+                *) IMAGE_TYPE="Source (unknown)" ;;
+              esac
             else
-              IMAGE_TYPE="Docker (Trivy)"
+              case "$IMAGE" in
+                uvx://*) IMAGE_TYPE="PyPI (pip-audit)" ;;
+                npx://*) IMAGE_TYPE="npm (npm audit)" ;;
+                go://*)  IMAGE_TYPE="Go (pending)" ;;
+                github://*) IMAGE_TYPE="GitHub (pending)" ;;
+                *) IMAGE_TYPE="Docker (Trivy)" ;;
+              esac
             fi
 
-            # Determine scan status based on whether scanning actually occurred
-            # Go and GitHub types have "(pending)" scans - no actual scanning happens
+            # Check if this file was in the changed set (actually scanned)
+            FILE_WAS_SCANNED=false
+            if echo "$CHANGED_FILES" | jq -e --arg f "$mcpfile" '.[] | select(. == $f)' >/dev/null 2>&1; then
+              FILE_WAS_SCANNED=true
+            fi
+
+            # Determine status from actual scan results
             if [ "$IMAGE_TYPE" = "Go (pending)" ] || [ "$IMAGE_TYPE" = "GitHub (pending)" ] || [ "$IMAGE_TYPE" = "Source (unknown)" ]; then
-              SCAN_STATUS="⚠️ Manual review required"
-            else
+              SCAN_STATUS="⚠️ Manual review"
+            elif [ "$FILE_WAS_SCANNED" = "true" ] && [ "$IMAGE_SCAN_RESULT" = "failure" ]; then
+              SCAN_STATUS="❌ CVEs found"
+            elif [ "$FILE_WAS_SCANNED" = "true" ] && [ "$IMAGE_SCAN_RESULT" = "success" ]; then
               SCAN_STATUS="✅ Passed"
+            else
+              SCAN_STATUS="⏭️ Not scanned"
             fi
             VALIDATION_RESULTS="${VALIDATION_RESULTS}| ${NAME} | ${IMAGE_TYPE} | ${SCAN_STATUS} |\n"
           done
 
-          # Store results for PR comment
           echo "validation_results<<EOF" >> "$GITHUB_OUTPUT"
           echo -e "$VALIDATION_RESULTS" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "scan_result=$IMAGE_SCAN_RESULT" >> "$GITHUB_OUTPUT"
 
-      - name: Comment on PR
-        if: steps.check-changes.outputs.has_changes == 'true'
+      - name: Generate GitHub App Token (for PR comment)
+        if: always() && github.event_name == 'pull_request'
+        id: generate-comment-token
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Comment Catalog Report on PR
+        if: always() && github.event_name == 'pull_request'
         uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
         with:
-          repo-token: ${{ steps.generate-token.outputs.token }}
+          repo-token: ${{ steps.generate-comment-token.outputs.token }}
           message-id: "mcp-catalog-sync"
-          message: |
-            ## 🛡️ MCP Catalog Security Report
+          status: ${{ needs.image-scan.result == 'failure' && 'failure' || 'success' }}
+          message-success: |
+            ## MCP Catalog Report
 
-            The registry catalog has been automatically updated from MCPServer CRD definitions.
-
-            ### 📊 Summary
+            Registry catalog updated from MCPServer CRD definitions.
 
             | Metric | Value |
             |--------|-------|
             | Servers in catalog | ${{ steps.generate.outputs.servers_count }} |
-            | Validation status | ✅ All checks passed |
-            | Security scan status | ✅ No HIGH/CRITICAL vulnerabilities |
-            | Commit | ${{ github.sha }} |
+            | Security scan | ✅ Passed |
+            | Catalog updated | ${{ steps.check-changes.outputs.has_changes }} |
 
-            ### 🔒 Security Validations Performed
-
-            | Check | Status |
-            |-------|--------|
-            | Hardcoded secrets scan | ✅ Passed |
-            | SecurityContext validation | ✅ Passed |
-            | NetworkPolicy correlation | ✅ Passed |
-            | ExternalSecret/Reloader policy | ✅ Passed |
-            | Container vulnerability scan | ✅ Passed |
-
-            ### 📦 MCPServer Security Summary
+            ### MCPServer Summary
 
             | Server | Scan Type | Status |
             |--------|-----------|--------|
             ${{ steps.collect-results.outputs.validation_results }}
 
-            ### ✅ Merge Decision
+            **Safe to merge** - all security checks passed.
+          message-failure: |
+            ## MCP Catalog Report
 
-            **SAFE TO MERGE** - All security checks passed.
+            Registry catalog updated from MCPServer CRD definitions.
 
-            > ⏱️ **Note:** After merge, it takes ~2-3 minutes for new servers to appear in the catalog.
-            > The ToolHive registry syncs from GitHub every 2 minutes, plus Flux reconciliation time.
+            | Metric | Value |
+            |--------|-------|
+            | Servers in catalog | ${{ steps.generate.outputs.servers_count }} |
+            | Security scan | ❌ HIGH/CRITICAL CVEs detected |
+            | Catalog updated | ${{ steps.check-changes.outputs.has_changes }} |
 
-            ---
-            <details>
-            <summary>Security scan methodology</summary>
+            ### MCPServer Summary
 
-            - **Docker images**: Scanned with Trivy for HIGH/CRITICAL CVEs
-            - **PyPI packages (uvx://)**: Scanned with pip-audit for known vulnerabilities
-            - **npm packages (npx://)**: Scanned with npm audit for HIGH/CRITICAL issues
-            - **Go/GitHub sources**: Pending implementation (manual review recommended)
+            | Server | Scan Type | Status |
+            |--------|-----------|--------|
+            ${{ steps.collect-results.outputs.validation_results }}
 
-            All scans are **BLOCKING** - PRs with HIGH/CRITICAL vulnerabilities cannot be merged.
-            </details>
+            **Blocked from merge** - see security scan comment above for CVE details.
 
   # =============================================================================
   # Job 6: Status Check (BLOCKING on security failures)
