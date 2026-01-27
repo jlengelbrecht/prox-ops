@@ -129,23 +129,26 @@ spec:
             name: http1
             protocol: TCP
 
+        # STORY-150: Optimized probes for faster cold start detection
+        # TTS model with pip install overhead - keep longer delays but improve frequency
+        # pip install (~2min) + model load (~2min) = ~4min expected
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 300  # 5min for pip install (~2min) + model load (~2min)
-          periodSeconds: 30
+          initialDelaySeconds: 240  # Reduced from 300 - pip + load ~4min
+          periodSeconds: 15         # Reduced from 30 - check more frequently
           timeoutSeconds: 10
-          failureThreshold: 3
+          failureThreshold: 4       # Increased from 3 - 4×15=60s tolerance
 
         readinessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 300  # 5min for pip install (~2min) + model load (~2min)
-          periodSeconds: 10
+          initialDelaySeconds: 180  # Reduced from 300 - start checking earlier
+          periodSeconds: 5          # Reduced from 10 - catch ready state faster
           timeoutSeconds: 5
-          failureThreshold: 6
+          failureThreshold: 36      # Increased from 6 - 36×5=180s tolerance
 
         # Volume mounts
         volumeMounts:

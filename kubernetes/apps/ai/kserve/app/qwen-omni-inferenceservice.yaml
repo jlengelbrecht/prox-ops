@@ -143,23 +143,25 @@ spec:
             name: http1
             protocol: TCP
 
+        # STORY-150: Optimized probes for faster cold start detection
+        # Multimodal model - longer load time expected (~120-150s)
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 90  # Longer for multimodal model loading
-          periodSeconds: 30
+          initialDelaySeconds: 90   # Keep same - multimodal needs longer
+          periodSeconds: 15         # Reduced from 30 - check more frequently
           timeoutSeconds: 10
-          failureThreshold: 3
+          failureThreshold: 4       # Increased from 3 - 4×15=60s tolerance
 
         readinessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 90  # Longer for multimodal model loading
-          periodSeconds: 10
+          initialDelaySeconds: 60   # Reduced from 90 - start checking earlier
+          periodSeconds: 5          # Reduced from 10 - catch ready state faster
           timeoutSeconds: 5
-          failureThreshold: 6
+          failureThreshold: 24      # Increased from 6 - 24×5=120s tolerance
 
         # Volume mounts
         volumeMounts:

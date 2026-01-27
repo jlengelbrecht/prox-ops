@@ -134,23 +134,25 @@ spec:
             name: http1
             protocol: TCP
 
+        # STORY-150: Optimized probes for faster cold start detection
+        # Large video model - longest load time expected (~180-240s)
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 180  # Video models need longest load time
-          periodSeconds: 30
+          initialDelaySeconds: 180  # Keep same - video models need longest time
+          periodSeconds: 15         # Reduced from 30 - check more frequently
           timeoutSeconds: 10
-          failureThreshold: 3
+          failureThreshold: 4       # Increased from 3 - 4×15=60s tolerance
 
         readinessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 180  # Video models need longest load time
-          periodSeconds: 10
+          initialDelaySeconds: 90   # Reduced from 180 - start checking earlier
+          periodSeconds: 5          # Reduced from 10 - catch ready state faster
           timeoutSeconds: 5
-          failureThreshold: 6
+          failureThreshold: 36      # Increased from 6 - 36×5=180s tolerance
 
         # Volume mounts
         volumeMounts:
