@@ -41,8 +41,6 @@ permissions:
 env:
   MCPSERVER_PATH: "kubernetes/apps/mcp/toolhive-gateway/app"
   REGISTRY_PATH: "kubernetes/apps/mcp/registry-data/registry.json"
-  # renovate: datasource=github-releases depName=aquasecurity/trivy
-  TRIVY_VERSION: "0.58.2"
   # Tool versions managed by mise (.mise.toml) - yq, thv installed via setup-mcp-tools action
 
 jobs:
@@ -776,7 +774,7 @@ jobs:
       - name: Run Trivy Scan (Docker images)
         id: trivy
         if: steps.image.outputs.image_type == 'docker'
-        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
         with:
           image-ref: ${{ steps.image.outputs.image }}
           format: "json"
@@ -1474,14 +1472,14 @@ jobs:
     name: Generate Catalog Entry
     needs: [preflight, validate, image-scan, build-container]
     # Run when MCPServers changed AND validate passed or was skipped (deletions only)
-    # Also requires security scan to pass (image-scan is now BLOCKING)
-    # build-container may be skipped if no builds needed - that's OK
+    # Security scan failures should NOT block catalog generation - the status check job
+    # gates merge independently. Catalog entries are needed for registry sync on push to main.
+    # build-container may be skipped or failed (due to scan failure) - that's OK for catalog
     if: |
       always() &&
       needs.preflight.outputs.mcpservers_changed == 'true' &&
       (needs.validate.result == 'success' || needs.validate.result == 'skipped') &&
-      (needs.image-scan.result == 'success' || needs.image-scan.result == 'skipped') &&
-      (needs.build-container.result == 'success' || needs.build-container.result == 'skipped')
+      !cancelled()
     runs-on: gha-runner-scale-set
     permissions:
       contents: write       # Required: Auto-commit registry.json changes to PR
@@ -1870,8 +1868,15 @@ jobs:
           echo ""
 
           ERRORS=0
+          WARNINGS=0
 
-          # Only require validation and catalog generation to pass if MCPServers changed
+          # Preflight must succeed for the pipeline to work at all
+          if [ "${{ needs.preflight.result }}" = "failure" ]; then
+            echo "::error::Preflight detection failed - cannot determine MCPServer changes"
+            ERRORS=$((ERRORS + 1))
+          fi
+
+          # Only require downstream jobs to pass if MCPServers changed
           if [ "${{ needs.preflight.outputs.mcpservers_changed }}" = "true" ]; then
             # Validate is required only when there are files to validate (not just deletions)
             # When validate is skipped (due to empty matrix from deletions), that's OK
@@ -1886,23 +1891,23 @@ jobs:
               ERRORS=$((ERRORS + 1))
             fi
 
-            # Security scan is now BLOCKING - HIGH/CRITICAL vulnerabilities must be fixed
+            # Security scan is BLOCKING - HIGH/CRITICAL vulnerabilities must be addressed
             if [ "${{ needs.image-scan.result }}" = "failure" ]; then
-              echo "::error::Security vulnerability scan FAILED - HIGH/CRITICAL vulnerabilities detected"
+              echo "::error::Security scan FAILED - HIGH/CRITICAL vulnerabilities detected in upstream image"
               echo ""
-              echo "This PR cannot be merged until security vulnerabilities are resolved:"
-              echo "  1. Review the security scan logs above"
-              echo "  2. Update dependencies to patched versions"
-              echo "  3. Re-push to trigger new scans"
+              echo "Options to resolve:"
+              echo "  1. Wait for the upstream maintainer to release a patched image"
+              echo "  2. Open an issue on the upstream repository"
+              echo "  3. Pin to an older version without known CVEs"
+              echo "  4. Add a security exemption with documented justification"
               ERRORS=$((ERRORS + 1))
             fi
 
-            # Build-container is required when PATH A (source-built) MCPServers are present
-            # Skipped state is OK (means no source-built containers to build)
+            # Build-container is required only for PATH A (source-built) MCPServers
+            # Skipped is OK (no source-built containers or scan failed for pre-built image)
             if [ "${{ needs.build-container.result }}" = "failure" ]; then
               echo "::error::Container build FAILED - unable to build MCP server container"
               echo ""
-              echo "This PR cannot be merged until the container build issue is resolved:"
               echo "  1. Review the build-container job logs above"
               echo "  2. Check the mcp-source specification is valid"
               echo "  3. Ensure the package exists and version is correct"
@@ -1920,22 +1925,23 @@ jobs:
           if [ "${{ needs.mcp-validate.result }}" = "failure" ]; then
             echo "::warning::MCP protocol validation failed - server may need external dependencies"
             echo "This is a warning only - the server may still work correctly in production"
+            WARNINGS=$((WARNINGS + 1))
           fi
 
           # Final result
           if [ "$ERRORS" -gt 0 ]; then
             echo ""
             echo "========================================"
-            echo "  MCP CATALOG SYNC FAILED ($ERRORS errors)"
+            echo "  MCP CATALOG SYNC FAILED ($ERRORS error(s), $WARNINGS warning(s))"
             echo "========================================"
             echo ""
-            echo "This PR is BLOCKED from merging until all errors are resolved."
+            echo "Review the errors above and check PR comments from homebot-0 for details."
             exit 1
           fi
 
           echo ""
           echo "========================================"
-          echo "  MCP CATALOG SYNC PASSED"
+          echo "  MCP CATALOG SYNC PASSED ($WARNINGS warning(s))"
           echo "========================================"
           echo ""
-          echo "All security checks passed. This PR is safe to merge."
+          echo "All required checks passed. This PR is safe to merge."
