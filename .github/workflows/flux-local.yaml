@@ -123,18 +123,163 @@ jobs:
             ${{ steps.diff.outputs.diff }}
             ```
 
+  # Validate Kubernetes manifests against CRD schemas
+  # This catches schema errors like invalid field names/nesting before merge
+  schema-validate:
+    name: CRD Schema Validation
+    needs: pre-job
+    runs-on: ubuntu-latest
+    if: ${{ needs.pre-job.outputs.any_changed == 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Setup kubeconform
+        run: |
+          # renovate: datasource=github-releases depName=yannh/kubeconform
+          KUBECONFORM_VERSION="v0.6.7"
+          curl -sL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Download ToolHive CRD schemas
+        run: |
+          mkdir -p /tmp/crds
+
+          # Download ToolHive CRDs from official repo
+          # renovate: datasource=github-releases depName=stacklok/toolhive
+          TOOLHIVE_REF="v0.7.2"
+          CRDS=(
+            "toolhive.stacklok.dev_mcpservers.yaml"
+            "toolhive.stacklok.dev_virtualmcpservers.yaml"
+            "toolhive.stacklok.dev_mcpgroups.yaml"
+            "toolhive.stacklok.dev_mcptoolconfigs.yaml"
+            "toolhive.stacklok.dev_mcpregistries.yaml"
+            "toolhive.stacklok.dev_mcpexternalauthconfigs.yaml"
+          )
+
+          for crd in "${CRDS[@]}"; do
+            echo "Downloading $crd..."
+            curl -sL "https://raw.githubusercontent.com/stacklok/toolhive/${TOOLHIVE_REF}/deploy/charts/operator-crds/files/crds/${crd}" \
+              -o "/tmp/crds/${crd}"
+          done
+
+          echo "Downloaded CRDs:"
+          ls -la /tmp/crds/
+
+      - name: Convert CRDs to JSON schemas
+        run: |
+          # Use python script to extract OpenAPI schema from CRDs
+          # This avoids the problematic openapi2jsonschema pip package
+          mkdir -p /tmp/schemas
+
+          pip install pyyaml
+
+          python3 << 'PYTHON_SCRIPT'
+          import yaml
+          import json
+          import os
+
+          crd_dir = "/tmp/crds"
+          schema_dir = "/tmp/schemas"
+
+          for filename in os.listdir(crd_dir):
+              if not filename.endswith('.yaml'):
+                  continue
+
+              filepath = os.path.join(crd_dir, filename)
+              print(f"Processing {filename}...")
+
+              with open(filepath, 'r') as f:
+                  crd = yaml.safe_load(f)
+
+              # Extract the OpenAPI schema from the CRD
+              group = crd['spec']['group']
+              for version in crd['spec']['versions']:
+                  version_name = version['name']
+                  kind = crd['spec']['names']['kind']
+                  schema = version.get('schema', {}).get('openAPIV3Schema', {})
+
+                  if not schema:
+                      print(f"  No schema found for {kind}")
+                      continue
+
+                  # Add required metadata for kubeconform
+                  schema['$schema'] = 'http://json-schema.org/draft-07/schema#'
+                  schema['x-kubernetes-group-version-kind'] = [{
+                      'group': group,
+                      'version': version_name,
+                      'kind': kind
+                  }]
+
+                  # Write JSON schema using kubeconform naming convention
+                  # Format: {Kind}_{group}_{version}.json (Kind is capitalized to match kubeconform {{ .ResourceKind }})
+                  output_file = os.path.join(schema_dir, f"{kind}_{group}_{version_name}.json")
+                  with open(output_file, 'w') as f:
+                      json.dump(schema, f, indent=2)
+
+                  print(f"  Created {output_file}")
+
+          print("Schema conversion complete")
+          PYTHON_SCRIPT
+
+          echo "Generated schemas:"
+          ls -la /tmp/schemas/
+
+      - name: Validate Kubernetes manifests
+        run: |
+          echo "Validating Kubernetes manifests against CRD schemas..."
+
+          ERRORS=0
+
+          # Find all YAML files that contain ToolHive resources
+          for file in $(find kubernetes/apps -name "*.yaml" \
+            ! -name "kustomization.yaml" \
+            ! -name "*.sops.yaml" \
+            ! -path "*/templates/*" \
+            -type f); do
+
+            # Check if file contains ToolHive resources
+            if grep -q "toolhive.stacklok.dev" "$file" 2>/dev/null; then
+              echo "Validating: $file"
+
+              # Use kubeconform with local CRD schemas
+              # Schema naming: {Kind}_{group}_{version}.json
+              if ! kubeconform \
+                -strict \
+                -ignore-missing-schemas \
+                -schema-location default \
+                -schema-location "/tmp/schemas/{{ .ResourceKind }}_{{ .Group }}_{{ .ResourceAPIVersion }}.json" \
+                "$file"; then
+                echo "::error file=$file::Schema validation failed"
+                ERRORS=$((ERRORS + 1))
+              fi
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::$ERRORS file(s) failed schema validation"
+            exit 1
+          fi
+
+          echo "All ToolHive manifests passed schema validation"
+
   flux-local-status:
     name: Flux Local Success
-    needs: ["test", "diff"]
+    needs: ["test", "diff", "schema-validate"]
     runs-on: ubuntu-latest
     if: ${{ always() }}
     steps:
-      # Only check test job - diff jobs are informational (PR comments only)
-      # Diff may fail due to flux-local bug #986 with CloudNative-PG charts
+      # Check test and schema-validate jobs - diff jobs are informational
       - name: Test job failed?
         if: ${{ needs.test.result == 'failure' }}
         run: exit 1
 
+      - name: Schema validation failed?
+        if: ${{ needs.schema-validate.result == 'failure' }}
+        run: |
+          echo "::error::CRD schema validation failed - check manifest field names and nesting"
+          exit 1
+
       - name: All critical jobs passed or skipped?
-        if: ${{ needs.test.result != 'failure' }}
-        run: echo "Test job passed or skipped" && echo "test=${{ needs.test.result }}, diff=${{ needs.diff.result }}"
+        if: ${{ needs.test.result != 'failure' && needs.schema-validate.result != 'failure' }}
+        run: echo "All jobs passed or skipped" && echo "test=${{ needs.test.result }}, diff=${{ needs.diff.result }}, schema-validate=${{ needs.schema-validate.result }}"

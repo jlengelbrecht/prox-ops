@@ -21,6 +21,11 @@ spec:
         # CRITICAL: Recreate strategy ensures GPU is released before new pod starts
         # This prevents GPU resource lock issues during upgrades
         strategy: Recreate
+        # DEPRECATED: Scaled to 0 - KServe migration complete (STORY-149)
+        # Open WebUI now uses LiteLLM -> KServe for inference
+        # Configuration retained for 30-day rollback window
+        # Safe to remove after 2026-02-25 if no issues
+        replicas: 0
         containers:
           app:
             image:

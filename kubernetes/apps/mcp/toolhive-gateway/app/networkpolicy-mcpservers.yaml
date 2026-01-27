@@ -1,0 +1,234 @@
+---
+# CiliumNetworkPolicy for ToolHive-managed MCPServer pods
+# Applies to all pods created by ToolHive operator for MCPServer resources
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-mcpservers
+  namespace: mcp
+spec:
+  # Match all ToolHive-managed MCP server pods
+  endpointSelector:
+    matchLabels:
+      toolhive: "true"
+
+  ingress:
+    # Allow from VirtualMCPServer gateway (pods labeled virtualmcpserver)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: virtualmcpserver
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow from ToolHive operator (for health checks)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: toolhive-operator
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow proxyrunner to reach backend StatefulSet on mcpPort
+    # Proxyrunner (app.kubernetes.io/name: mcpserver) → backend (toolhive: true) on mcpPort
+    # Port 3000 for stdio mode (n8n), Port 8080 for HTTP mode (graphiti with SERVER__PORT=8080)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: mcpserver
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Kubernetes API access (required for proxyrunner to create StatefulSets)
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "6443"
+              protocol: TCP
+
+    # Proxyrunner → backend StatefulSet (mcpPort)
+    # Allows proxyrunner to forward requests to the backend MCP server
+    # Port 3000 for stdio mode (n8n), Port 8080 for HTTP mode (graphiti with SERVER__PORT=8080)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            toolhive: "true"
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+
+    # graphiti-mcp → FalkorDB (database namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            app.kubernetes.io/name: falkordb
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # n8n-mcp → n8n API (tools namespace)
+    # Cilium evaluates at pod level, so use container port 5678 (not service port 80)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+            app.kubernetes.io/name: n8n
+      toPorts:
+        - ports:
+            - port: "5678"
+              protocol: TCP
+
+    # Allow HTTPS to external APIs (OpenAI for graphiti entity extraction)
+    # Note: Using toCIDRSet with except to block private ranges
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+    # Allow MCP servers to reach internal Envoy Gateway proxy
+    # Many homelab services (Proxmox, TrueNAS, etc.) are proxied via envoy-internal
+    # This enables MCP servers to access *.homelab0.org endpoints that route through Envoy
+    # Note: Cilium evaluates at pod level, so use container ports (10080/10443) not service ports (80/443)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: envoy
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "10443"
+              protocol: TCP
+            - port: "10080"
+              protocol: TCP
+---
+# Separate policy for unifi-mcp to access UniFi controller on private network
+# UniFi controllers typically run on homelab private networks (10.x, 192.168.x, etc.)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-unifi-mcp
+  namespace: mcp
+spec:
+  # Match only the unifi MCP server pods
+  # Note: ToolHive operator uses "app: <name>" not "app.kubernetes.io/name"
+  endpointSelector:
+    matchLabels:
+      toolhive: "true"
+      toolhive-name: unifi
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Allow unifi-mcp to reach UniFi controllers on private networks
+    # UniFi OS uses port 443, legacy controllers use port 8443
+    - toCIDRSet:
+        - cidr: 10.0.0.0/8
+        - cidr: 172.16.0.0/12
+        - cidr: 192.168.0.0/16
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "8443"
+              protocol: TCP
+---
+# Network policy for truenas-heimdall-mcp - additional ports for direct TrueNAS access
+# Note: Envoy Gateway access is provided by the base toolhive-mcpservers policy
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-truenas-heimdall-mcp
+  namespace: mcp
+spec:
+  # Match only the truenas-heimdall MCP server pods
+  endpointSelector:
+    matchLabels:
+      toolhive: "true"
+      toolhive-name: truenas-heimdall
+
+  egress:
+    # Allow direct access to TrueNAS Heimdall (fallback/alternative to proxy)
+    # Restricted to specific host IP for least-privilege access
+    # TrueNAS backend uses port 81 (HTTP), also allow standard HTTPS ports
+    - toCIDRSet:
+        - cidr: 10.20.66.11/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+            - port: "81"
+              protocol: TCP
+---
+# Network policy for truenas-baldar-mcp - additional ports for direct TrueNAS access
+# Note: Envoy Gateway access is provided by the base toolhive-mcpservers policy
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-truenas-baldar-mcp
+  namespace: mcp
+spec:
+  # Match only the truenas-baldar MCP server pods
+  endpointSelector:
+    matchLabels:
+      toolhive: "true"
+      toolhive-name: truenas-baldar
+
+  egress:
+    # Allow direct access to TrueNAS Baldar (fallback/alternative to proxy)
+    # Restricted to specific host IP for least-privilege access
+    # TrueNAS backend uses port 81 (HTTP), also allow standard HTTPS ports
+    - toCIDRSet:
+        - cidr: 10.20.66.15/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
+            - port: "81"
+              protocol: TCP

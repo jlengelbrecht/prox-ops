@@ -4,8 +4,12 @@ kind: Namespace
 metadata:
   name: mcp
   labels:
-    # Pod Security Standards - enforce restricted
-    pod-security.kubernetes.io/enforce: restricted
+    # Pod Security Standards - enforce baseline (downgraded from restricted)
+    # Reason: graphiti-mcp requires initContainer as root to copy uv binary from /root/.local/bin
+    # to a shared volume. Main containers still run as non-root (uid 1000).
+    # Security mitigated by: strict NetworkPolicy (only LiteLLM ingress), dropped capabilities,
+    # seccomp profiles, no privilege escalation. Upgrade to restricted when upstream fixes image.
+    pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/warn-version: latest

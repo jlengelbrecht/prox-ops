@@ -1,0 +1,20 @@
+---
+# ToolHive Cloud UI Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: toolhive-ui
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: toolhive-ui
+    app.kubernetes.io/component: ui
+    app.kubernetes.io/part-of: toolhive
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: toolhive-ui

@@ -1,0 +1,243 @@
+---
+# Model Pre-download Job for KServe Model Cache
+# Downloads RTX A5000 24GB VRAM compatible models from HuggingFace to shared cache PVC
+# Reduces InferenceService cold start from 2-5min to 15-30s
+#
+# Text-Only Models (vLLM):
+# - cognitivecomputations/Dolphin3.0-Llama3.1-8B (~16GB VRAM, ~16GB disk) - Uncensored chat
+# - Qwen/Qwen2.5-Coder-7B-Instruct (~14GB VRAM, ~15GB disk) - Official coder (censored)
+#
+# Multimodal Models (vLLM-Omni):
+# - Qwen/Qwen2.5-Omni-7B (~17GB VRAM, ~14GB disk) - Multimodal comprehension
+# - Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (~5-10GB VRAM, ~5GB disk) - Voice cloning
+# - black-forest-labs/FLUX.2-klein-9b-fp8 (~20GB VRAM FP8, ~18GB disk) - Image generation
+# - Wan-AI/Wan2.2-TI2V-5B-Diffusers (24GB w/offload, ~10GB disk) - Video generation
+# - stabilityai/stable-audio-open-1.0 (~?GB VRAM, ~8GB disk) - Audio generation
+#
+# Total download: ~85GB (7 models)
+# Total storage: 17% of 500Gi PVC capacity
+# Expected runtime: 45-60 minutes (depends on network bandwidth)
+#
+# IMPORTANT: Job Immutability
+# Kubernetes Jobs have immutable pod templates. To update models/command/image:
+# 1. Delete existing Job: kubectl delete job -n ai model-predownload
+# 2. Apply updated manifest (Flux will reconcile)
+# Alternatively, create versioned Jobs (model-predownload-v2, etc.)
+#
+# Usage:
+#   kubectl apply -f model-predownload-job.yaml
+#   kubectl logs -n ai job/model-predownload -f
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-predownload
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: model-predownload
+    app.kubernetes.io/component: cache-loader
+    app.kubernetes.io/part-of: kserve
+spec:
+  # Allow 3 retries in case of network failures
+  backoffLimit: 3
+  # NOTE: ttlSecondsAfterFinished is intentionally OMITTED
+  # Reason: Flux reconciles this Kustomization every 1h. If the Job is auto-deleted
+  # after TTL expiry, Flux will recreate it, causing wasteful 50GB re-downloads.
+  # Completed Job objects are small (just status) and safe to keep indefinitely.
+  # To re-run downloads, manually delete: kubectl delete job -n ai model-predownload
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: model-predownload
+        app.kubernetes.io/component: cache-loader
+    spec:
+      # Don't restart on failure - let backoffLimit handle retries
+      restartPolicy: Never
+
+      # Disable automatic service account token mounting (defense-in-depth)
+      # This Job doesn't need Kubernetes API access
+      automountServiceAccountToken: false
+
+      # Fix PVC permissions for non-root user (runAsUser: 1000)
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              # Set ownership of /models to user 1000 (huggingface-downloader container user)
+              chown -R 1000:1000 /models
+              echo "Permissions fixed: /models is now owned by user 1000"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+          securityContext:
+            # initContainer runs as root to fix permissions, then main container runs as user 1000
+            runAsUser: 0
+
+      containers:
+        - name: huggingface-downloader
+          # Using official Python 3.11 slim image
+          # We'll install huggingface-hub package for CLI access
+          image: python:3.11-slim
+
+          # Security hardening (defense-in-depth)
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # pip install requires write access to /tmp
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              echo "Installing huggingface-hub CLI..."
+              # Pin version for reproducibility (avoid breaking changes on retries)
+              pip install --no-cache-dir 'huggingface-hub[cli]>=0.27,<0.28'
+
+              # Add pip user install directory to PATH
+              export PATH="/tmp/.local/bin:$PATH"
+
+              echo "Starting model downloads to /models/"
+              echo "RTX A5000 24GB VRAM compatible models"
+              echo "Total size: ~85GB across 7 models"
+              echo ""
+
+              # Text-Only Models (vLLM)
+              echo "=== Text-Only Models (vLLM) ==="
+
+              # Download Dolphin3.0-Llama3.1-8B (~16GB VRAM)
+              echo "=== Downloading cognitivecomputations/Dolphin3.0-Llama3.1-8B (~16GB VRAM) ==="
+              huggingface-cli download \
+                cognitivecomputations/Dolphin3.0-Llama3.1-8B \
+                --local-dir /models/cognitivecomputations/Dolphin3.0-Llama3.1-8B \
+                --local-dir-use-symlinks False
+              echo "✓ Dolphin3.0-Llama3.1-8B downloaded successfully (uncensored chat)"
+              echo ""
+
+              # Download Qwen2.5-Coder-7B-Instruct (~14GB VRAM)
+              echo "=== Downloading Qwen/Qwen2.5-Coder-7B-Instruct (~14GB VRAM) ==="
+              huggingface-cli download \
+                Qwen/Qwen2.5-Coder-7B-Instruct \
+                --local-dir /models/Qwen/Qwen2.5-Coder-7B-Instruct \
+                --local-dir-use-symlinks False
+              echo "✓ Qwen2.5-Coder-7B-Instruct downloaded successfully (official coder, censored)"
+              echo ""
+
+              # Multimodal Models (vLLM-Omni)
+              echo "=== Multimodal Models (vLLM-Omni) ==="
+
+              # Download Qwen2.5-Omni-7B (~17GB VRAM)
+              echo "=== Downloading Qwen/Qwen2.5-Omni-7B (~17GB VRAM) ==="
+              huggingface-cli download \
+                Qwen/Qwen2.5-Omni-7B \
+                --local-dir /models/Qwen/Qwen2.5-Omni-7B \
+                --local-dir-use-symlinks False
+              echo "✓ Qwen2.5-Omni-7B downloaded successfully (multimodal comprehension)"
+              echo ""
+
+              # Download Qwen3-TTS-12Hz-1.7B-CustomVoice (~5-10GB VRAM)
+              echo "=== Downloading Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (~5-10GB VRAM) ==="
+              huggingface-cli download \
+                Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+                --local-dir /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+                --local-dir-use-symlinks False
+              echo "✓ Qwen3-TTS-12Hz-1.7B-CustomVoice downloaded successfully (voice cloning)"
+              echo ""
+
+              # Download FLUX.2-klein-9b-fp8 (~20GB VRAM FP8 quantized)
+              echo "=== Downloading black-forest-labs/FLUX.2-klein-9b-fp8 (~20GB VRAM FP8) ==="
+              huggingface-cli download \
+                black-forest-labs/FLUX.2-klein-9b-fp8 \
+                --local-dir /models/black-forest-labs/FLUX.2-klein-9b-fp8 \
+                --local-dir-use-symlinks False
+              echo "✓ FLUX.2-klein-9b-fp8 downloaded successfully (image generation, FP8 quantized)"
+              echo ""
+
+              # Download Wan2.2-TI2V-5B-Diffusers (24GB w/offload)
+              echo "=== Downloading Wan-AI/Wan2.2-TI2V-5B-Diffusers (24GB VRAM w/offload) ==="
+              huggingface-cli download \
+                Wan-AI/Wan2.2-TI2V-5B-Diffusers \
+                --local-dir /models/Wan-AI/Wan2.2-TI2V-5B-Diffusers \
+                --local-dir-use-symlinks False
+              echo "✓ Wan2.2-TI2V-5B-Diffusers downloaded successfully (video generation)"
+              echo ""
+
+              # Download Stable-Audio-Open-1.0 (~?GB VRAM)
+              echo "=== Downloading stabilityai/stable-audio-open-1.0 (~?GB VRAM) ==="
+              huggingface-cli download \
+                stabilityai/stable-audio-open-1.0 \
+                --local-dir /models/stabilityai/stable-audio-open-1.0 \
+                --local-dir-use-symlinks False
+              echo "✓ stable-audio-open-1.0 downloaded successfully (audio generation)"
+              echo ""
+
+              echo "=== All 7 models downloaded successfully ==="
+              echo "✅ Text-only (vLLM): Dolphin3.0-Llama3.1-8B, Qwen2.5-Coder-7B-Instruct"
+              echo "✅ Multimodal (vLLM-Omni): Qwen2.5-Omni-7B, Qwen3-TTS, FLUX.2-klein-fp8, Wan2.2-TI2V, stable-audio"
+              echo ""
+              echo "Model Coverage:"
+              echo "  - Chat (uncensored): Dolphin3.0-Llama3.1-8B"
+              echo "  - Coding (official): Qwen2.5-Coder-7B-Instruct"
+              echo "  - Voice Cloning: Qwen3-TTS-12Hz-1.7B-CustomVoice"
+              echo "  - Image Gen: FLUX.2-klein-9b-fp8 (FP8 quantized for 24GB VRAM)"
+              echo "  - Video Gen: Wan2.2-TI2V-5B-Diffusers"
+              echo "  - Audio Gen: stable-audio-open-1.0"
+              echo "  - Multimodal Input: Qwen2.5-Omni-7B"
+              echo ""
+              echo "Listing /models/ directory:"
+              du -sh /models/* 2>/dev/null || echo "No models found"
+
+              echo ""
+              echo "Model cache ready for KServe InferenceServices"
+              echo "All downloaded models fit within RTX A5000 24GB VRAM limit"
+              echo "Total storage used: ~85GB / 500Gi PVC (17% capacity)"
+              echo "Storage remaining: ~415GB for future models"
+
+          # Resource allocation
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+
+          # Mount the shared model cache PVC
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+
+          # Environment variables for HuggingFace CLI
+          env:
+            # HuggingFace API token (required for gated models like Llama-3.1-8B)
+            # Injected from 1Password via ExternalSecret
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: HF_TOKEN
+            # Set writable home directory for pip user installs
+            # Required because runAsUser: 1000 can't write to default home
+            - name: HOME
+              value: /tmp
+            # Cache directory for huggingface-hub
+            - name: HF_HOME
+              value: /models/.cache
+            # Disable HuggingFace telemetry
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+
+      # Volume definition
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache

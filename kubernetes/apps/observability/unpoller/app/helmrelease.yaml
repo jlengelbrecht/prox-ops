@@ -1,0 +1,121 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: unpoller
+  namespace: observability
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.0.1
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: observability
+      interval: 30m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    controllers:
+      unpoller:
+        containers:
+          app:
+            image:
+              repository: ghcr.io/unpoller/unpoller
+              # renovate: datasource=docker depName=ghcr.io/unpoller/unpoller
+              tag: v2.19.0
+            env:
+              # Prometheus exporter settings
+              UP_PROMETHEUS_DISABLE: "false"
+              UP_PROMETHEUS_HTTP_LISTEN: "0.0.0.0:9130"
+              # Disable other exporters
+              UP_INFLUXDB_DISABLE: "true"
+              UP_LOKI_DISABLE: "true"
+              # UniFi controller settings
+              UP_UNIFI_DYNAMIC: "false"
+              UP_UNIFI_DEFAULT_SAVE_SITES: "true"
+              UP_UNIFI_DEFAULT_SAVE_DPI: "true"
+              UP_UNIFI_DEFAULT_VERIFY_SSL: "false"
+              UP_UNIFI_DEFAULT_SAVE_IDS: "false"
+              UP_UNIFI_DEFAULT_SAVE_EVENTS: "false"
+              UP_UNIFI_DEFAULT_SAVE_ALARMS: "false"
+              UP_UNIFI_DEFAULT_SAVE_ANOMALIES: "false"
+              UP_UNIFI_DEFAULT_HASH_PII: "false"
+              UP_UNIFI_DEFAULT_SITES_0: "all"
+              # Poller settings
+              UP_POLLER_DEBUG: "false"
+              UP_POLLER_QUIET: "false"
+            envFrom:
+              - secretRef:
+                  name: unpoller-secret
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 9130
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: 9130
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 10m
+                memory: 64Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+    defaultPodOptions:
+      annotations:
+        secret.reloader.stakater.com/reload: unpoller-secret
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+    service:
+      app:
+        controller: unpoller
+        ports:
+          http:
+            port: 9130
+            protocol: TCP
+    serviceMonitor:
+      app:
+        serviceName: unpoller
+        endpoints:
+          - port: http
+            scheme: http
+            path: /metrics
+            interval: 30s
+            scrapeTimeout: 10s

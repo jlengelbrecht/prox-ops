@@ -20,6 +20,22 @@ spec:
       clusterIP: "10.43.0.10"
     replicaCount: 2
     servers:
+      # Split-horizon DNS for internal homelab0.org resolution
+      # Routes queries for homelab0.org to k8s-gateway for internal IPs
+      - zones:
+          - zone: homelab0.org
+            scheme: dns://
+        port: 53
+        plugins:
+          - name: forward
+            parameters: . 10.20.67.21
+          - name: cache
+            parameters: 30
+          - name: errors
+          - name: log
+            configBlock: |-
+              class error
+      # Default zone for all other queries
       - zones:
           - zone: .
             scheme: dns://

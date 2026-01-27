@@ -11,13 +11,7 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
-  # Note: 'wait: true' removed - it overrides healthChecks and uses default
-  # health checker which fails for cluster-scoped resources (Flux bug #5311)
+  wait: true
   timeout: 5m
-  # Explicit health check for cluster-scoped ClusterSecretStore resource
-  healthChecks:
-    - apiVersion: external-secrets.io/v1
-      kind: ClusterSecretStore
-      name: onepassword-connect
   dependsOn:
     - name: 1password-connect

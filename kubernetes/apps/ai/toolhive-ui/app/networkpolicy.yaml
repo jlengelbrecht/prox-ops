@@ -1,0 +1,77 @@
+---
+# CiliumNetworkPolicy for ToolHive Cloud UI
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-ui
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: toolhive-ui
+
+  ingress:
+    # Allow ingress from Envoy gateway (external web access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+
+    # Prometheus metrics scraping
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Egress to ToolHive Registry API (mcp namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: toolhive-registry
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Egress to envoy-internal gateway for Authentik OIDC flow
+    # toEndpoints for direct pod-to-pod communication
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP
+
+    # Egress to external HTTPS (LoadBalancer IPs for Authentik OIDC)
+    # Required because toEndpoints doesn't cover LoadBalancer traffic
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

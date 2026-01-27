@@ -1,0 +1,104 @@
+---
+# CiliumNetworkPolicy for Hermes-Jarvis InferenceService
+# Implements zero-trust network segmentation
+# STORY-150: Jarvis assistant model security hardening
+#
+# Security Posture:
+# - Ingress: ONLY from envoy-internal gateway (HTTPRoute traffic)
+# - Egress: DNS resolution only (model already cached, no internet needed)
+# - Default: DENY all other traffic
+#
+# Rationale:
+# - Prevents lateral movement if vLLM container compromised
+# - Hermes-3-Llama-3.1-8B pre-cached in model-cache PVC
+# - vLLM runs in offline mode (HF_HUB_OFFLINE=1), no internet access needed
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hermes-jarvis
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: hermes-jarvis
+    app.kubernetes.io/component: networkpolicy
+spec:
+  # Target KServe InferenceService pods
+  endpointSelector:
+    matchLabels:
+      serving.kserve.io/inferenceservice: hermes-jarvis
+
+  # Ingress Rules
+  ingress:
+    # Allow traffic from envoy-internal gateway (HTTPRoute ingress)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: envoy-gateway
+            app.kubernetes.io/component: envoy-gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow traffic from Kourier gateway (KServe internal ingress)
+    # Traffic path: LiteLLM → Kourier → queue-proxy → kserve-container
+    # Port 8080: kserve-container (vLLM API)
+    # Port 8012: queue-proxy sidecar (traffic forwarding)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kourier-system
+            app: 3scale-kourier-gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "8012"
+              protocol: TCP
+
+    # Allow Knative Serving activator (cold start requests)
+    # Port 8080: kserve-container (vLLM API)
+    # Port 8012: queue-proxy sidecar (activator probes and traffic forwarding)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: activator
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "8012"
+              protocol: TCP
+
+    # Allow Knative Serving autoscaler (metrics scraping)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: autoscaler
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow Prometheus scraping (observability)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  # Egress Rules
+  egress:
+    # Allow DNS resolution ONLY (required for internal cluster communication)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*"

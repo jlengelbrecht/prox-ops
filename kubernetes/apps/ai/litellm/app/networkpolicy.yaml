@@ -35,13 +35,26 @@ spec:
         - ports:
             - port: "11434"
               protocol: TCP
-    # Allow egress to LightRAG for RAG-enhanced chat (Ollama-compatible API)
+    # Allow egress to Kourier (KServe's Knative ingress gateway)
+    # KServe predictor services are ExternalName pointing to kourier-internal
+    # Traffic path: LiteLLM → Kourier → Activator → Predictor Pod
+    # kourier-internal service: port 80 -> targetPort 8081
     - toEndpoints:
         - matchLabels:
-            app.kubernetes.io/name: lightrag
+            io.kubernetes.pod.namespace: kourier-system
+            app: 3scale-kourier-gateway
       toPorts:
         - ports:
-            - port: "9621"
+            - port: "8081"
+              protocol: TCP
+    # Allow egress to Knative Serving activator (handles cold start buffering)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: activator
+      toPorts:
+        - ports:
+            - port: "8012"
               protocol: TCP
     # Allow egress to PostgreSQL for virtual keys and usage tracking
     - toEndpoints:
@@ -74,15 +87,26 @@ spec:
               protocol: TCP
             - port: "10443"
               protocol: TCP
-    # Allow egress to n8n-mcp server (mcp namespace)
-    # LiteLLM acts as the MCP gateway - sole entry point to MCP servers
+    # Allow egress to ToolHive VirtualMCPServer gateway (homelab-gateway)
+    # Routes to all ToolHive-managed MCP servers (n8n-mcp, etc.)
+    # Note: VirtualMCPServer pods use 'virtualmcpserver' as app.kubernetes.io/name
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: n8n-mcp
+            app.kubernetes.io/name: virtualmcpserver
       toPorts:
         - ports:
-            - port: "3000"
+            - port: "4483"
+              protocol: TCP
+    # Allow egress to graphiti-mcp server (standalone, not ToolHive-managed yet)
+    # Knowledge graph MCP for RAG operations (BookStack docs, runbooks)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: graphiti-mcp
+      toPorts:
+        - ports:
+            - port: "8000"
               protocol: TCP
     # Allow HTTPS egress for Prisma CLI download (first startup only)
     - toEntities:

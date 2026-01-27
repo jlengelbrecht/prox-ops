@@ -14,8 +14,6 @@ resources:
   - ./ollama/ks.yaml          # STORY-080: Ollama LLM backend
   - ./open-webui/storage/ks.yaml  # Storage with prune: false - MUST come before open-webui
   - ./open-webui/ks.yaml          # STORY-081: Chat UI
-  - ./qdrant/storage/ks.yaml      # Storage with prune: false - MUST come before qdrant
-  - ./qdrant/ks.yaml              # STORY-074: Vector DB for RAG
   #
   # Phase 2: API Layer
   - ./litellm-postgres/storage/ks.yaml  # PostgreSQL storage with prune: false
@@ -23,10 +21,16 @@ resources:
   - ./litellm/storage/ks.yaml  # Storage with prune: false - MUST come before litellm
   - ./litellm/ks.yaml          # STORY-075: OpenAI-compatible API gateway
   #
-  # Phase 2: Unified RAG
-  - ./lightrag/storage/ks.yaml  # Storage with prune: false - MUST come before lightrag
-  - ./lightrag/ks.yaml          # STORY-096: LightRAG unified RAG backend
-  #
   # Phase 3: Web Search & Crawling (STORY-085)
   - ./searxng/ks.yaml           # SearXNG meta-search engine
   - ./firecrawl/ks.yaml         # Firecrawl web crawler (depends on SearXNG)
+  #
+  # Phase 4: ToolHive MCP Platform (EPIC-029)
+  # Note: toolhive-registry moved to mcp namespace for MCPServer discovery
+  - ./toolhive-ui/ks.yaml         # STORY-029-3: Cloud UI (MCP management)
+  #
+  # Phase 5: KServe ML Inference Platform (EPIC-028)
+  # Scalable serverless AI inference with Knative + vLLM
+  # See: .claude/.ai-docs/epics/EPIC-028-scalable-ai-inference-platform.md
+  - ./model-cache/ks.yaml         # STORY-137: Shared model cache (500Gi CephFS RWX)
+  - ./kserve/ks.yaml              # STORY-136: KServe controller + CRDs

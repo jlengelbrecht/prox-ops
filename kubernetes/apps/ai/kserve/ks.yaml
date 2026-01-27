@@ -1,0 +1,32 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kserve
+  namespace: flux-system
+spec:
+  interval: 1h
+  path: ./kubernetes/apps/ai/kserve/app
+  prune: true
+  dependsOn:
+    # KServe requires Knative Serving for serverless deployment mode
+    - name: knative-serving
+      namespace: flux-system
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  timeout: 10m
+  healthChecks:
+    # Wait for KServe controller manager to be ready
+    # Note: Controller deploys in kserve namespace, manages InferenceServices cluster-wide
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: kserve-controller-manager
+      namespace: kserve
+    # Wait for KServe webhook service to be ready
+    - apiVersion: v1
+      kind: Service
+      name: kserve-webhook-server-service
+      namespace: kserve

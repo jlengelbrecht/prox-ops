@@ -1,0 +1,73 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # renovate: datasource=github-releases depName=kserve/kserve
+  # KServe CRDs and core components (controller, webhook)
+  # Version: v0.13.1 (latest stable)
+  # Note: Installing in serverless mode with Knative Serving integration
+  - https://github.com/kserve/kserve/releases/download/v0.13.1/kserve.yaml
+  # renovate: datasource=github-releases depName=kserve/kserve
+  # KServe cluster resources (ClusterServingRuntimes for various frameworks)
+  - https://github.com/kserve/kserve/releases/download/v0.13.1/kserve-cluster-resources.yaml
+  # Production InferenceServices
+  - ./qwen-coder-inferenceservice.yaml  # STORY-140: First vLLM text-only model
+  - ./qwen-coder-networkpolicy.yaml  # STORY-140: Zero-trust network segmentation
+  - ./dolphin-chat-inferenceservice.yaml  # STORY-142: Uncensored chat model
+  - ./dolphin-chat-networkpolicy.yaml  # STORY-142: Zero-trust network segmentation
+  - ./qwen-omni-inferenceservice.yaml  # STORY-142 Phase 2: First vLLM-Omni multimodal model
+  - ./qwen-omni-networkpolicy.yaml  # STORY-142 Phase 2: Zero-trust network segmentation
+  # qwen-tts: Runtime pip install workaround for missing onnxruntime
+  # See: https://github.com/vllm-project/vllm-omni/pull/909
+  - ./qwen-tts-inferenceservice.yaml  # STORY-142 Phase 3: TTS model (voice cloning)
+  - ./qwen-tts-networkpolicy.yaml  # STORY-142 Phase 3: Zero-trust network segmentation
+  - ./stable-audio-inferenceservice.yaml  # STORY-142 Phase 3: Audio generation
+  - ./stable-audio-networkpolicy.yaml  # STORY-142 Phase 3: Zero-trust network segmentation
+  - ./flux-klein-inferenceservice.yaml  # STORY-142 Phase 3: Image generation
+  - ./flux-klein-networkpolicy.yaml  # STORY-142 Phase 3: Zero-trust network segmentation
+  - ./wan-video-inferenceservice.yaml  # STORY-142 Phase 3: Video generation
+  - ./wan-video-networkpolicy.yaml  # STORY-142 Phase 3: Zero-trust network segmentation
+  - ./hermes-jarvis-inferenceservice.yaml  # STORY-150: Jarvis assistant (Hermes-3)
+  - ./hermes-jarvis-networkpolicy.yaml  # STORY-150: Zero-trust network segmentation
+
+# Note: KServe controller installs in kserve namespace by default
+# InferenceServices can be created in any namespace (e.g., ai)
+
+# Disable hash suffix for ConfigMaps so KServe can find them by name
+generatorOptions:
+  disableNameSuffixHash: true
+
+# Configure KServe for serverless (Knative) mode
+configMapGenerator:
+  - name: inferenceservice-config
+    namespace: kserve
+    behavior: merge
+    literals:
+      # Enable serverless deployment mode (uses Knative)
+      - deploy={"defaultDeploymentMode":"Serverless"}
+      # renovate: datasource=docker depName=kserve/storage-initializer
+      # Configure storage initializer for model downloads
+      # NOTE: storage-initializer image version should match KServe release version above
+      - storageInitializer={"image":"kserve/storage-initializer:v0.13.1","memoryRequest":"100Mi","memoryLimit":"1Gi","cpuRequest":"100m","cpuLimit":"1"}
+      # Configure ingress (uses Kourier from Knative, not Istio)
+      # Note: ingressGateway and ingressService are required by KServe validation even with disableIstioVirtualHost=true
+      # These values point to Kourier but are not actually used when disableIstioVirtualHost is enabled
+      - ingress={"ingressClassName":"kourier.ingress.networking.knative.dev","ingressDomain":"svc.cluster.local","domainTemplate":"{{.Name}}.{{.Namespace}}.svc.cluster.local","urlScheme":"http","disableIstioVirtualHost":true,"ingressGateway":"knative-serving/knative-ingress-gateway","ingressService":"kourier.kourier-system.svc.cluster.local"}
+
+patches:
+  # Add resource limits to controller manager
+  - target:
+      kind: Deployment
+      name: kserve-controller-manager
+      namespace: kserve
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
