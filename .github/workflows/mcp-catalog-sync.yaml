@@ -1897,10 +1897,17 @@ jobs:
             # Post-merge: security gate is informational only (code already merged)
             RISK_ACCEPTED="true"
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
-            PR_LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
+            # Fetch labels live from the API — event payload labels are stale on re-runs
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            PR_LABELS=$(curl -sf \
+              -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" \
+              | grep -o '"name":"[^"]*"' | sed 's/"name":"//;s/"//' | paste -sd ',' - || echo "")
+            echo "PR labels (live): $PR_LABELS"
             if echo ",$PR_LABELS," | grep -qF ",security-risk-accepted,"; then
               RISK_ACCEPTED="true"
-              echo "::warning::Security risk accepted via PR label on PR #${{ github.event.pull_request.number }}"
+              echo "::warning::Security risk accepted via PR label on PR #${PR_NUMBER}"
             fi
           fi
 
