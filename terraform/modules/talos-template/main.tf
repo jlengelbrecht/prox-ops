@@ -12,13 +12,15 @@ terraform {
 locals {
   # Talos image configuration
   # Download from factory.talos.dev using schematic ID
+  # CRITICAL: Include version in filename to prevent caching issues when upgrading
+  # Without version in filename, cached 1.12.0 image would be reused for 1.12.1 builds
   image_url      = "https://factory.talos.dev/image/${var.schematic_id}/v${var.talos_version}/nocloud-amd64.raw.xz"
-  image_filename = "${var.schematic_id}.raw.xz"
+  image_filename = "talos-${var.talos_version}-${var.schematic_id}.raw.xz"
   image_path     = "/tmp/talos-images/${local.image_filename}"
-  raw_image_path = "/tmp/talos-images/${var.schematic_id}.raw"
+  raw_image_path = "/tmp/talos-images/talos-${var.talos_version}-${var.schematic_id}.raw"
 
   # Template naming
-  template_desc  = "Talos ${var.talos_version} - Schematic: ${var.schematic_id}"
+  template_desc = "Talos ${var.talos_version} - Schematic: ${var.schematic_id}"
 }
 
 # Download and decompress Talos nocloud image
@@ -92,14 +94,16 @@ resource "null_resource" "create_template" {
   # Uses SCP with 3 retry attempts to handle transient network issues
   # during large file transfers (1.7GB Talos images)
   provisioner "local-exec" {
-    command = <<-EOT
+    # Use bash explicitly for brace expansion and better error handling
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
       set -e
 
-      echo "[Template Upload] Uploading ${var.schematic_id}.raw to ${var.proxmox_host}..."
+      echo "[Template Upload] Uploading talos-${var.talos_version}-${var.schematic_id}.raw to ${var.proxmox_host}..."
       echo "[Template Upload] File size: $(du -h ${local.raw_image_path} | cut -f1)"
 
       # Retry logic: 3 attempts with 10 second delays
-      for attempt in {1..3}; do
+      for attempt in 1 2 3; do
         echo "[Template Upload] Attempt $attempt of 3..."
 
         if scp -i ~/.ssh/proxmox_terraform \
@@ -108,7 +112,7 @@ resource "null_resource" "create_template" {
                -o ServerAliveInterval=30 \
                -o ServerAliveCountMax=3 \
                ${local.raw_image_path} \
-               ${var.proxmox_ssh_user}@${var.proxmox_host}:/var/lib/vz/template/talos/${var.schematic_id}.raw; then
+               ${var.proxmox_ssh_user}@${var.proxmox_host}:/var/lib/vz/template/talos/talos-${var.talos_version}-${var.schematic_id}.raw; then
           echo "[Template Upload] ✓ Upload successful on attempt $attempt"
           exit 0
         else
@@ -153,7 +157,8 @@ resource "null_resource" "create_template" {
 
       "echo '[Template Creation] Step 6: Importing OS disk...'",
       # Import the raw disk image (becomes unused0)
-      "qm importdisk ${var.template_vm_id} /var/lib/vz/template/talos/${var.schematic_id}.raw ${var.vm_storage_pool} --format raw",
+      # Uses versioned filename to prevent caching issues between Talos versions
+      "qm importdisk ${var.template_vm_id} /var/lib/vz/template/talos/talos-${var.talos_version}-${var.schematic_id}.raw ${var.vm_storage_pool} --format raw",
 
       "echo '[Template Creation] Step 7: Moving unused disk to scsi0...'",
       # Extract the full disk path from unused0 (e.g., vms-ceph:vm-9000-disk-4)

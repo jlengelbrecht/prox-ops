@@ -133,17 +133,101 @@ data:
           api_base: "http://ollama.ai.svc.cluster.local:11434"
 
       # =====================================================
-      # LightRAG Knowledge Graph RAG
-      # Ollama-compatible API that provides RAG-enhanced responses
-      # Uses knowledge graph + vector retrieval for context
-      # LightRAG internally calls LiteLLM (rag-model) for LLM completion
+      # KServe InferenceServices (vLLM/Custom)
+      # Scale-to-zero models on RTX A5000 (k8s-work-10)
+      # Note: Only ONE model can run at a time due to GPU contention
+      # Cold starts expected on first request after scale-down
       # =====================================================
-      - model_name: "lightrag"
+
+      # =====================================================
+      # STORY-150: Timeout optimization for cold starts
+      # Extended per-model timeouts to accommodate cold start delays
+      # Retries disabled globally via router_settings.num_retries: 0
+      # Actual cold start measured: ~100-420s depending on model
+      # =====================================================
+
+      - model_name: "qwen-coder"
         litellm_params:
-          model: "ollama_chat/lightrag:latest"
-          api_base: "http://lightrag.ai.svc.cluster.local:9621"
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Qwen/Qwen2.5-Coder-7B-Instruct"
+          api_base: "http://qwen-coder-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 180        # STORY-150: Increased from 120 for cold start
         model_info:
-          description: "LightRAG - Knowledge graph RAG with automatic context injection"
+          description: "KServe Qwen2.5-Coder-7B (~100s cold start)"
+
+      - model_name: "dolphin-chat"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/cognitivecomputations/Dolphin3.0-Llama3.1-8B"
+          api_base: "http://dolphin-chat-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 180        # STORY-150: Keep at 180 (actual cold start ~109s)
+        model_info:
+          description: "KServe Dolphin3.0 uncensored (~100s cold start)"
+
+      - model_name: "qwen-omni"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Qwen/Qwen2.5-Omni-7B"
+          api_base: "http://qwen-omni-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 300        # STORY-150: Keep at 300 for multimodal
+        model_info:
+          description: "KServe Qwen2.5-Omni multimodal (~150s cold start)"
+
+      - model_name: "qwen-tts"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+          api_base: "http://qwen-tts-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 420        # STORY-150: Increased from 360 for pip install overhead
+        model_info:
+          description: "KServe Qwen3-TTS voice cloning (~5min cold start) - may need custom endpoint"
+
+      # Note: Audio/Image/Video models may require custom API handling
+      # LiteLLM primarily routes to /v1/chat/completions - these models
+      # may expose different endpoints. Verify vLLM/KServe interface compatibility.
+      - model_name: "stable-audio"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/stabilityai/stable-audio-open-1.0"
+          api_base: "http://stable-audio-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 300        # STORY-150: Keep at 300 for diffusion model
+        model_info:
+          description: "KServe Stable Audio - music generation (~120s cold start)"
+
+      - model_name: "flux-klein"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/black-forest-labs/FLUX.2-klein-9b-fp8"
+          api_base: "http://flux-klein-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 360        # STORY-150: Increased from 300 for large model
+        model_info:
+          description: "KServe FLUX.2-klein image generation (~180s cold start)"
+
+      - model_name: "wan-video"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+          api_base: "http://wan-video-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 420        # STORY-150: Increased from 300 for video model
+        model_info:
+          description: "KServe Wan2.2 video generation (~240s cold start)"
+
+      - model_name: "hermes-jarvis"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/NousResearch/Hermes-3-Llama-3.1-8B"
+          api_base: "http://hermes-jarvis-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 180        # STORY-150: Similar to other 8B models (~97s cold start)
+        model_info:
+          description: "KServe Hermes-3 Jarvis assistant (~97s cold start, function calling enabled)"
 
     # Explicit fallback routing configuration
     # When primary model fails (timeout, rate limit, error), try fallback model
@@ -154,19 +238,55 @@ data:
         - gpt-4: ["gpt-4-ollama"]
         - gpt-3.5-turbo: ["gpt-3.5-turbo-ollama"]
         - rag-embedding: ["rag-embedding-ollama"]
-      # Retry failed requests before falling back
-      num_retries: 2
-      # Timeout before considering a request failed (seconds)
+      # STORY-150: Disable retries to prevent retry storms during KServe cold starts
+      # Per-model num_retries in litellm_params is NOT supported - only router_settings applies
+      # With 100-420s cold starts, retries would cascade into multiple concurrent requests
+      num_retries: 0
+      # Timeout for fallback routing decisions (not per-request timeout)
       timeout: 120
 
     general_settings:
       # Rate limiting
       max_parallel_requests: 50
-      # Request timeout (seconds)
-      request_timeout: 120
+      # STORY-150: Request timeout must accommodate longest cold start (wan-video: 420s)
+      # Per-model timeouts take precedence, but this is the fallback default
+      request_timeout: 420
 
     litellm_settings:
       # Drop unsupported params instead of erroring
       drop_params: true
       # Enable logging for audit
       set_verbose: false
+
+    # MCP Server Configuration
+    # LiteLLM acts as the MCP gateway - all MCP operations go through here
+    # Reference: https://docs.litellm.ai/docs/mcp
+    mcp_servers:
+      graphiti:
+        url: "http://graphiti-mcp.mcp.svc.cluster.local:8000/mcp"
+        transport: "http"
+        auth_type: "bearer_token"
+        auth_value: "os.environ/GRAPHITI_MCP_TOKEN"
+        description: "Homelab knowledge graph - BookStack docs, runbooks, infrastructure knowledge"
+        # Available tools: add_memory, search, get_status, get_episodes, clear_graph, etc.
+
+      n8n:
+        # ToolHive-managed n8n MCP server (via proxyrunner for auth/security)
+        url: "http://mcp-n8n-proxy.mcp.svc.cluster.local:8080/mcp"
+        transport: "http"
+        auth_type: "bearer_token"
+        auth_value: "os.environ/N8N_MCP_TOKEN"
+        description: "n8n workflow automation - execute workflows, manage nodes, automate tasks"
+        # Available tools: workflow execution, node management, automation triggers
+
+    # MCP Aliases for easier access
+    mcp_aliases:
+      # Graphiti aliases
+      kb: "graphiti"
+      memory: "graphiti"
+      rag: "graphiti"
+      knowledge: "graphiti"
+      # n8n aliases
+      workflow: "n8n"
+      automation: "n8n"
+      tasks: "n8n"

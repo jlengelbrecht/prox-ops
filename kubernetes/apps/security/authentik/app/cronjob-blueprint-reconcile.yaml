@@ -1,0 +1,159 @@
+---
+# CronJob for automated Authentik blueprint reconciliation
+# Runs every 15 minutes to apply ALL enabled blueprints, ensuring:
+# - ConfigMap changes are applied even if file watcher misses them
+# - Blueprint state is consistent after Authentik restarts
+# - Any failed blueprints are retried automatically
+#
+# Prerequisites:
+# 1. Create an API token in Authentik (Admin > System > Tokens)
+# 2. Store the token in 1Password under "authentik" with property "AUTHENTIK_API_TOKEN"
+# 3. The token needs permissions to read and apply blueprints
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: authentik-blueprint-reconcile
+  namespace: security
+  labels:
+    app.kubernetes.io/name: authentik-blueprint-reconcile
+    app.kubernetes.io/component: blueprint-reconciliation
+    app.kubernetes.io/part-of: authentik
+spec:
+  # Run every 15 minutes as a safety net
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600  # Clean up completed jobs after 1 hour
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: authentik-blueprint-reconcile
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 101
+            fsGroup: 101
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reconcile
+              # renovate: datasource=docker depName=curlimages/curl
+              image: curlimages/curl:8.11.1
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: AUTHENTIK_URL
+                  value: "http://authentik-server.security.svc.cluster.local"
+                - name: AUTHENTIK_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: authentik-secret
+                      key: AUTHENTIK_API_TOKEN
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+
+                  echo "=== Authentik Blueprint Reconciliation ==="
+                  echo "Time: $(date -Iseconds)"
+                  echo ""
+
+                  # Check if API token is set
+                  if [ -z "$AUTHENTIK_API_TOKEN" ]; then
+                    echo "ERROR: AUTHENTIK_API_TOKEN not set"
+                    echo "Please create an API token in Authentik and store in 1Password"
+                    exit 1
+                  fi
+
+                  # Wait for Authentik to be ready
+                  echo "Checking Authentik availability..."
+                  for i in $(seq 1 5); do
+                    if curl -sf --max-time 10 "${AUTHENTIK_URL}/-/health/ready/" > /dev/null 2>&1; then
+                      echo "Authentik is ready"
+                      break
+                    fi
+                    if [ $i -eq 5 ]; then
+                      echo "WARNING: Authentik not ready after 5 attempts, continuing anyway..."
+                    fi
+                    sleep 2
+                  done
+
+                  # Get list of all blueprint instances
+                  echo ""
+                  echo "Fetching blueprint instances..."
+                  BLUEPRINTS=$(curl -sf --max-time 30 \
+                    -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+                    -H "Content-Type: application/json" \
+                    "${AUTHENTIK_URL}/api/v3/managed/blueprints/" 2>&1) || {
+                    echo "ERROR: Failed to fetch blueprints"
+                    echo "Response: $BLUEPRINTS"
+                    exit 1
+                  }
+
+                  # Parse blueprint count
+                  COUNT=$(echo "$BLUEPRINTS" | grep -o '"count":[0-9]*' | cut -d: -f2)
+                  echo "Found $COUNT blueprint instance(s)"
+
+                  # Extract blueprint PKs and check status
+                  echo ""
+                  echo "Blueprint Status:"
+                  echo "----------------------------------------"
+
+                  # Parse results and apply each enabled blueprint
+                  echo "$BLUEPRINTS" | grep -o '"pk":"[^"]*"' | cut -d'"' -f4 | while read pk; do
+                    # Get blueprint details
+                    DETAIL=$(curl -sf --max-time 30 \
+                      -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+                      "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/" 2>/dev/null) || continue
+
+                    NAME=$(echo "$DETAIL" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4)
+                    STATUS=$(echo "$DETAIL" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+                    ENABLED=$(echo "$DETAIL" | grep -o '"enabled":[^,}]*' | cut -d: -f2)
+
+                    printf "  %-40s status=%-10s enabled=%s\n" "$NAME" "$STATUS" "$ENABLED"
+
+                    # Apply ALL enabled blueprints to ensure they're up-to-date
+                    # This forces Authentik to re-read the file and apply any changes
+                    if [ "$ENABLED" = "true" ]; then
+                      echo "    -> Applying blueprint..."
+                      APPLY_RESULT=$(curl -sf --max-time 60 -X POST \
+                        -H "Authorization: Bearer ${AUTHENTIK_API_TOKEN}" \
+                        -H "Content-Type: application/json" \
+                        "${AUTHENTIK_URL}/api/v3/managed/blueprints/${pk}/apply/" 2>&1) || {
+                        echo "    -> WARNING: Apply failed for $NAME"
+                        continue
+                      }
+                      echo "    -> Applied successfully"
+                    else
+                      echo "    -> Skipped (disabled)"
+                    fi
+                  done
+
+                  echo ""
+                  echo "----------------------------------------"
+                  echo "Blueprint reconciliation complete"
+                  echo ""
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+---
+# Manual trigger Job for immediate blueprint reconciliation
+# Usage: kubectl create job --from=cronjob/authentik-blueprint-reconcile manual-blueprint-reconcile -n security
+# Or: kubectl apply -f - <<< $(kubectl get cronjob authentik-blueprint-reconcile -n security -o yaml | sed 's/CronJob/Job/' | sed '/schedule:/d')

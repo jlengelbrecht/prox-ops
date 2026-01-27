@@ -1,0 +1,110 @@
+---
+# MCPServer for Graphiti Knowledge Graph
+# Using streamable-http transport since graphiti runs an HTTP MCP server
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: graphiti
+  namespace: mcp
+  annotations:
+    # Registry discovery annotations
+    toolhive.stacklok.dev/registry-export: "true"
+    toolhive.stacklok.dev/registry-url: "http://mcp-graphiti-proxy.mcp.svc.cluster.local:8080/mcp"
+    toolhive.stacklok.dev/registry-description: "Graphiti Knowledge Graph - Build and query temporally-aware knowledge graphs for AI agents."
+    # Catalog metadata for registry.json generation (used by CI/CD)
+    toolhive.stacklok.dev/catalog-title: "Graphiti MCP"
+    toolhive.stacklok.dev/catalog-tags: "knowledge-graph,rag,memory,ai-agents,graph-database,semantic-search,homelab,falkordb,temporal-data"
+    toolhive.stacklok.dev/catalog-tools: "add_memory,search_memory_facts,search_nodes,get_entity_edge,delete_entity_edge,get_episodes,delete_episode,clear_graph,get_status"
+    toolhive.stacklok.dev/repository-url: "https://github.com/getzep/graphiti"
+  labels:
+    app.kubernetes.io/name: graphiti
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  # renovate: datasource=docker depName=zepai/knowledge-graph-mcp
+  image: docker.io/zepai/knowledge-graph-mcp:1.0.1
+  # streamable-http transport - graphiti already runs HTTP server on port 8000
+  transport: streamable-http
+  # Proxy exposes the HTTP backend through the gateway
+  proxyMode: streamable-http
+  proxyPort: 8080
+  # Link to MCPGroup for VirtualMCPServer aggregation
+  groupRef: homelab-mcp
+  # Network permission profile (needs to reach FalkorDB in database namespace)
+  permissionProfile:
+    type: builtin
+    name: network
+  # Environment variables
+  env:
+    # Server port - graphiti uses pydantic-settings with nested delimiter __
+    # This makes graphiti listen on 8080 to match proxyrunner expectations
+    - name: SERVER__PORT
+      value: "8080"
+    # FalkorDB connection (database namespace)
+    - name: FALKORDB_URI
+      value: "redis://falkordb.database.svc.cluster.local:6379"
+    - name: FALKORDB_DATABASE
+      value: "graphiti"
+    # Graph namespace/group identifier
+    - name: GRAPHITI_GROUP_ID
+      value: "homelab"
+    # Concurrency limit for episode processing
+    - name: SEMAPHORE_LIMIT
+      value: "5"
+    # Disable embedded FalkorDB browser
+    - name: BROWSER
+      value: "0"
+    # uv cache directory (must be writable)
+    - name: UV_CACHE_DIR
+      value: "/cache/uv"
+    - name: XDG_CACHE_HOME
+      value: "/cache"
+  # Secrets from ExternalSecret
+  secrets:
+    - name: graphiti-mcp-secret
+      key: OPENAI_API_KEY
+      targetEnvName: OPENAI_API_KEY
+    - name: graphiti-mcp-secret
+      key: FALKORDB_PASSWORD
+      targetEnvName: FALKORDB_PASSWORD
+  # Resource limits (MCPServer CRD requires string values)
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+  # Pod customization
+  # Use pre-installed venv python directly instead of uv (avoids root init container)
+  podTemplateSpec:
+    metadata:
+      annotations:
+        secret.reloader.stakater.com/reload: "graphiti-mcp-secret"
+        security.homelab/purpose: "Knowledge graph MCP server for RAG operations"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          # Use the pre-installed venv python directly (no uv needed)
+          # The image has dependencies pre-installed in /app/mcp/.venv
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cd /app/mcp
+              exec /app/mcp/.venv/bin/python main.py
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL

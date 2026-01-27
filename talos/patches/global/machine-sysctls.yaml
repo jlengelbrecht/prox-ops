@@ -1,5 +1,10 @@
 machine:
   sysctls:
+    # Tetragon eBPF kprobe support - allows CAP_SYSLOG processes to resolve kernel symbols
+    # Required for TracingPolicies (container-escape-detection, k8s-credential-access, etc.)
+    # Value 1 = restrict to CAP_SYSLOG (Tetragon has this capability)
+    # Value 2 = hide all kernel pointers (breaks kprobes)
+    kernel.kptr_restrict: "1"
     fs.inotify.max_user_watches: "1048576"     # Watchdog
     fs.inotify.max_user_instances: "8192"      # Watchdog
     net.core.rmem_max: "7500000"               # Cloudflared | QUIC

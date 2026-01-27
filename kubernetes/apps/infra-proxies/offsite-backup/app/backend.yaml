@@ -1,0 +1,16 @@
+---
+# Backend for Proxmox Backup Server (offsite)
+# Uses insecureSkipVerify for self-signed PBS certificate
+# WARNING: This skips TLS verification - acceptable for internal homelab infrastructure
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: offsite-backup
+  namespace: infra-proxies
+spec:
+  endpoints:
+    - ip:
+        address: 10.30.66.9
+        port: 8007
+  tls:
+    insecureSkipVerify: true

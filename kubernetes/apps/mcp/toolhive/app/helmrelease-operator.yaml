@@ -1,0 +1,66 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: toolhive-operator
+  namespace: mcp
+spec:
+  dependsOn:
+    - name: toolhive-operator-crds
+      namespace: mcp
+  chart:
+    spec:
+      chart: toolhive-operator
+      # renovate: datasource=helm registryUrl=oci://ghcr.io/stacklok/toolhive
+      version: "0.5.25"
+      sourceRef:
+        kind: HelmRepository
+        name: toolhive
+        namespace: mcp
+  interval: 1h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    operator:
+      # Number of operator replicas
+      replicaCount: 1
+      # Resource requests and limits (prevents BestEffort QoS)
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+      # Feature flags - enable all controllers
+      features:
+        experimental: false
+        server: true
+        registry: true
+        virtualMCP: true
+      # RBAC scope - namespace-scoped to mcp namespace only
+      rbac:
+        scope: "namespace"
+        allowedNamespaces:
+          - "mcp"
+      # Pod security context (chart defaults are good, just ensure runAsNonRoot)
+      podSecurityContext:
+        runAsNonRoot: true
+      # Container security context (use chart defaults which are already secure)
+      containerSecurityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 1000
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      # Pod annotations for observability
+      podAnnotations:
+        security.homelab/purpose: "ToolHive MCP operator - manages MCPServer CRDs"

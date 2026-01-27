@@ -28,11 +28,11 @@ spec:
         - ports:
             - port: "5678"
               protocol: TCP
-    # From n8n-mcp server (MCP API access)
+    # From n8n-mcp server (ToolHive-managed MCP API access)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: n8n-mcp
+            toolhive-name: n8n
       toPorts:
         - ports:
             - port: "5678"
@@ -47,16 +47,6 @@ spec:
       toPorts:
         - ports:
             - port: "80"
-              protocol: TCP
-
-    # To LightRAG API (sync destination via LiteLLM)
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            app.kubernetes.io/name: lightrag
-      toPorts:
-        - ports:
-            - port: "9621"
               protocol: TCP
 
     # To LiteLLM (AI API gateway)

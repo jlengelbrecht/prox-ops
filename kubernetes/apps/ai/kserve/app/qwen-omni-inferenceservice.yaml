@@ -1,0 +1,196 @@
+---
+# KServe InferenceService: Qwen2.5-Omni-7B (vLLM-Omni Multimodal)
+# STORY-142 Phase 2: First vLLM-Omni model deployment
+# Model: Qwen/Qwen2.5-Omni-7B (~17GB VRAM, multimodal: text+audio+vision)
+# Framework: vLLM-Omni (multimodal fork) - DIFFERENT from vllm-openai!
+# GPU: RTX A5000 24GB (k8s-work-10 ONLY)
+#
+# Performance Characteristics (STORY-142b optimized):
+# - Cold start: ~120-150s (weight loading from NFS is bottleneck)
+# - Warm inference: ~100-200ms (multimodal processing)
+# - Scale-to-zero: 5 minutes idle timeout
+# - VRAM usage: ~17GB / 24GB available
+# - Single GPU: maxReplicas=1 enforced
+#
+# API Endpoints:
+# - /v1/chat/completions - Standard chat (text-only or multimodal)
+# - Use 'modalities' parameter: ["text"] or ["audio"] or ["text", "audio"]
+#
+# Usage:
+#   # Text-only chat
+#   kubectl run -it --rm test-omni --image=curlimages/curl --restart=Never -- \
+#     curl -X POST http://qwen-omni.ai.svc.cluster.local/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"/models/Qwen/Qwen2.5-Omni-7B","messages":[{"role":"user","content":"Hello"}],"modalities":["text"]}'
+#
+# Expected behavior:
+# - First request triggers cold start (pod 0->1, ~60-90s delay)
+# - Model loads multimodal components (Thinker + Talker)
+# - Subsequent requests: ~100-200ms
+# - After 5min idle, pod scales to 0 (GPU freed)
+#
+# GPU Contention Note:
+# - Only ONE InferenceService can run at a time (single RTX A5000)
+# - Scale down other models before testing qwen-omni
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen-omni
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen-omni
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: vllm-omni
+    model.type: multimodal
+    model.modality: text-audio-vision
+    model.size: 7b
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A5000 for multimodal inference"
+    security.homelab/network: "Internal only - ClusterIP service"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
+    maxReplicas: 1  # Single GPU workload - only 1 pod can run at a time
+
+    # CRITICAL: GPU and Node Targeting
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      gpu.nvidia.com/model: rtx-a5000
+
+    containers:
+      - name: vllm-omni
+        # renovate: datasource=docker depName=vllm/vllm-omni
+        image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
+
+        # vLLM-Omni requires explicit command (different from vllm-openai)
+        command:
+          - python
+          - -m
+          - vllm.entrypoints.openai.api_server
+
+        # vLLM-Omni server arguments
+        # Note: vLLM-Omni auto-detects multimodal models, no --omni flag needed
+        args:
+          # Model path (absolute path to cached model)
+          - --model=/models/Qwen/Qwen2.5-Omni-7B
+
+          # Load format optimization
+          - --load-format=safetensors
+
+          # Inference optimization
+          - --dtype=auto  # Use BF16 automatically
+          - --max-model-len=8192  # STORY-142b: Reduced from 32k to speed up KV cache init
+          - --gpu-memory-utilization=0.9  # Use 90% of VRAM
+
+          # Fast cold start optimization (skip compilation)
+          - --enforce-eager
+
+          # STORY-142b: Inference optimizations
+          - --enable-chunked-prefill  # Faster TTFT
+          - --enable-prefix-caching   # Faster on repeated prompts
+
+          # Server configuration
+          - --host=0.0.0.0
+          - --port=8080
+
+          # Disable telemetry
+          - --disable-log-stats
+          - --disable-log-requests
+
+        # Environment variables
+        env:
+          # HuggingFace token (optional)
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: huggingface-token
+                key: HF_TOKEN
+                optional: true
+
+          # Disable HuggingFace telemetry
+          - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # Enable offline mode (use cached model files only)
+          - name: HF_HUB_OFFLINE
+            value: "1"
+
+          # NVIDIA GPU visibility
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+
+          # Fix for non-root user compatibility
+          - name: HOME
+            value: "/tmp"
+
+        # Resource requirements (larger for multimodal)
+        resources:
+          requests:
+            cpu: 4
+            memory: 18Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 8
+            memory: 22Gi
+            nvidia.com/gpu: 1
+
+        # Health checks
+        ports:
+          - containerPort: 8080
+            name: http1
+            protocol: TCP
+
+        # STORY-150: Optimized probes for faster cold start detection
+        # Multimodal model - longer load time expected (~120-150s)
+        # Liveness must allow full cold start: 90 + (5-1)×15 = 150s total
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 90   # Keep same - multimodal needs longer
+          periodSeconds: 15         # Reduced from 30 - check more frequently
+          timeoutSeconds: 10
+          failureThreshold: 5       # 5th failure at ~150s total (covers ~120-150s startup)
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60   # Reduced from 90 - start checking earlier
+          periodSeconds: 5          # Reduced from 10 - catch ready state faster
+          timeoutSeconds: 5
+          failureThreshold: 24      # (24-1)×5=115s after initial delay (~175s total)
+
+        # Volume mounts
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: false
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+
+    # NVIDIA container runtime for GPU access
+    runtimeClassName: nvidia
+
+    # Security context (pod-level)
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    serviceAccountName: default
+
+    # Volumes
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache

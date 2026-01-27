@@ -232,7 +232,8 @@ tags = ["medium", "api"]
 [[rules]]
 id = "generic-password"
 description = "Generic Password Assignment"
-regex = '''(?i)(password|passwd|pwd|secret)[^\n]*[:=]\s*["']([^"'\s]{12,})["']'''
+# Use word boundaries to avoid matching secret.reloader.stakater.com
+regex = '''(?i)\b(password|passwd|pwd|secret)\b\s*[:=]\s*["']([^"'\s]{12,})["']'''
 keywords = ["password", "passwd", "pwd", "secret"]
 tags = ["medium", "credentials"]
 
@@ -453,6 +454,10 @@ regexes = [
     '''secretKeyRef:''',
     '''existingSecret:''',
     '''valueFrom:''',
+    # Stakater Reloader annotations (reference secret names, not values)
+    '''secret\.reloader\.stakater\.com/reload:''',
+    '''configmap\.reloader\.stakater\.com/reload:''',
+    '''reloader\.stakater\.com/auto:''',
     # GitHub Actions secret references
     '''\$\{\{\s*secrets\.[A-Z_]+\s*\}\}''',
     # Renovate datasource comments
@@ -477,4 +482,6 @@ stopwords = [
     "fake",
     "mock",
     "placeholder",
+    "reloader",
+    "stakater",
 ]

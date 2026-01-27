@@ -239,13 +239,13 @@ jobs:
     needs: [validate-inputs, validate-version-upgrade]
     timeout-minutes: 10
     steps:
-      - name: Setup cluster tools
-        run: |
-          echo "Verifying kubectl access..."
-          kubectl version --client
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-          echo "Verifying talosctl access..."
-          talosctl version --client
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
 
       - name: Check cluster health
         run: |
@@ -326,7 +326,7 @@ jobs:
       - name: Setup Node.js (required for Terraform action)
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -334,7 +334,7 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -352,46 +352,13 @@ jobs:
         working-directory: ./terraform
         run: terraform init
 
-      - name: Clear stale Terraform locks
-        working-directory: ./terraform
-        continue-on-error: true
-        env:
-          TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
-          TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
-        run: |
-          echo "Checking for stale Terraform state locks..."
-
-          # Try a terraform plan with short lock timeout to detect locks
-          # Capture both stdout and stderr to parse lock ID
-          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
-            echo "Lock detected. Output:"
-            echo "$LOCK_OUTPUT"
-
-            # Extract lock ID from error message (format: "ID: <uuid>")
-            # Use \K assertion for reliable regex across grep versions
-            LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
-
-            if [ -n "$LOCK_ID" ]; then
-              echo ""
-              echo "Found stale lock ID: $LOCK_ID"
-              echo "Attempting to force-unlock..."
-
-              if terraform force-unlock -force "$LOCK_ID"; then
-                echo "✓ Successfully cleared stale lock"
-              else
-                echo "✗ Failed to unlock (may require manual intervention)"
-                echo "  Manual command: terraform force-unlock -force $LOCK_ID"
-              fi
-            else
-              echo "Could not extract lock ID from error message"
-              echo "Lock may need to be cleared manually"
-            fi
-          else
-            echo "✓ No lock detected - state is accessible"
-          fi
-
-          # Ensure clean exit
-          exit 0
+      # S3-native lock clearing - runs immediately before terraform operations
+      - name: Clear stale Terraform locks (pre-plan)
+        uses: ./.github/actions/clear-terraform-lock
+        timeout-minutes: 1
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
 
       - name: Plan template changes
         working-directory: ./terraform
@@ -771,6 +738,16 @@ jobs:
           **Next**: Control plane and worker nodes will be upgraded sequentially
           EOF
 
+      # CRITICAL: Cleanup any stale locks left by this job on failure
+      - name: Cleanup Terraform locks on failure
+        if: failure()
+        uses: ./.github/actions/clear-terraform-lock
+        timeout-minutes: 2
+        with:
+          terraform_state_bucket: ${{ env.TERRAFORM_STATE_BUCKET }}
+          terraform_state_key: terraform.tfstate
+          force_clear: "true"
+
   # PHASE 2: CONTROL PLANE IN-PLACE UPGRADE
   # ==========================================================================
   upgrade-control-plane:
@@ -790,6 +767,14 @@ jobs:
       matrix:
         node: ${{ inputs.test_controllers == true && fromJSON('[{"name":"k8s-ctrl-3","ip":"10.20.67.3"}]') || fromJSON('[{"name":"k8s-ctrl-1","ip":"10.20.67.1"},{"name":"k8s-ctrl-2","ip":"10.20.67.2"},{"name":"k8s-ctrl-3","ip":"10.20.67.3"}]') }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
       - name: Pre-upgrade validation
         run: |
           echo "::group::Pre-upgrade validation for ${{ matrix.node.name }}"
@@ -811,10 +796,15 @@ jobs:
         run: |
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
 
+          # Controllers and workers require factory image with qemu-guest-agent
+          INSTALLER_IMAGE="factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515:v${{ inputs.new_version }}"
+          echo "Control plane node - using base factory image with qemu-guest-agent"
+
+          echo "Installer image: $INSTALLER_IMAGE"
           echo "Starting in-place upgrade..."
           talosctl upgrade \
             --nodes ${{ matrix.node.ip }} \
-            --image ghcr.io/siderolabs/installer:v${{ inputs.new_version }} \
+            --image "$INSTALLER_IMAGE" \
             --preserve \
             --wait \
             --timeout 10m
@@ -878,10 +868,19 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      max-parallel: ${{ inputs.worker_rollout_mode == 'safe' && 1 || inputs.worker_rollout_mode == 'standard' && 4 || inputs.worker_rollout_mode == 'aggressive' && 12 || 4 }}
+      # Simplified parallelism logic: aggressive=12, safe=1, default=4
+      max-parallel: ${{ inputs.worker_rollout_mode == 'aggressive' && 12 || inputs.worker_rollout_mode == 'safe' && 1 || 4 }}
       matrix:
         node: ${{ inputs.test_workers == true && fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false}]') || fromJSON('[{"name":"k8s-work-1","ip":"10.20.67.4","is_gpu":false},{"name":"k8s-work-2","ip":"10.20.67.5","is_gpu":false},{"name":"k8s-work-3","ip":"10.20.67.6","is_gpu":false},{"name":"k8s-work-4","ip":"10.20.67.7","is_gpu":true,"gpu_model":"rtx-a2000"},{"name":"k8s-work-5","ip":"10.20.67.8","is_gpu":false},{"name":"k8s-work-6","ip":"10.20.67.9","is_gpu":false},{"name":"k8s-work-7","ip":"10.20.67.10","is_gpu":false},{"name":"k8s-work-8","ip":"10.20.67.11","is_gpu":false},{"name":"k8s-work-9","ip":"10.20.67.12","is_gpu":false},{"name":"k8s-work-10","ip":"10.20.67.13","is_gpu":true,"gpu_model":"rtx-a5000"},{"name":"k8s-work-11","ip":"10.20.67.14","is_gpu":false},{"name":"k8s-work-12","ip":"10.20.67.15","is_gpu":false}]') }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
       - name: Pre-upgrade validation
         run: |
           echo "::group::Pre-upgrade validation for ${{ matrix.node.name }}"
@@ -907,10 +906,22 @@ jobs:
         run: |
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
 
+          # Select correct factory schematic based on node type
+          if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
+            # GPU schematic: qemu-guest-agent + NVIDIA extensions
+            INSTALLER_IMAGE="factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e:v${{ inputs.new_version }}"
+            echo "GPU node detected - using GPU factory image (qemu-guest-agent + NVIDIA)"
+          else
+            # Base schematic: qemu-guest-agent only
+            INSTALLER_IMAGE="factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515:v${{ inputs.new_version }}"
+            echo "Non-GPU node - using base factory image (qemu-guest-agent)"
+          fi
+
+          echo "Installer image: $INSTALLER_IMAGE"
           echo "Starting in-place upgrade..."
           talosctl upgrade \
             --nodes ${{ matrix.node.ip }} \
-            --image ghcr.io/siderolabs/installer:v${{ inputs.new_version }} \
+            --image "$INSTALLER_IMAGE" \
             --preserve \
             --wait \
             --timeout 10m
@@ -1012,6 +1023,14 @@ jobs:
     if: always()
     timeout-minutes: 10
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup cluster tools
+        uses: ./.github/actions/setup-cluster-tools
+        with:
+          talosconfig: ${{ secrets.TALOSCONFIG }}
+
       - name: Check all nodes upgraded
         run: |
           echo "::group::Verifying all nodes upgraded to v${{ inputs.new_version }}"
