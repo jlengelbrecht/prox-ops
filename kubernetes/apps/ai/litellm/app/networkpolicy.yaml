@@ -27,14 +27,6 @@ spec:
             - port: "4000"
               protocol: TCP
   egress:
-    # Allow egress to Ollama for LLM inference
-    - toEndpoints:
-        - matchLabels:
-            app.kubernetes.io/name: ollama
-      toPorts:
-        - ports:
-            - port: "11434"
-              protocol: TCP
     # Allow egress to Kourier (KServe's Knative ingress gateway)
     # KServe predictor services are ExternalName pointing to kourier-internal
     # Traffic path: LiteLLM → Kourier → Activator → Predictor Pod
