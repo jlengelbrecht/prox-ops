@@ -139,15 +139,22 @@ data:
       # Cold starts expected on first request after scale-down
       # =====================================================
 
+      # =====================================================
+      # STORY-150: Timeout optimization for cold starts
+      # Extended per-model timeouts to accommodate cold start delays
+      # Retries disabled globally via router_settings.num_retries: 0
+      # Actual cold start measured: ~100-420s depending on model
+      # =====================================================
+
       - model_name: "qwen-coder"
         litellm_params:
           # Note: vLLM exposes model as "/models/..." path, must match exactly
           model: "openai//models/Qwen/Qwen2.5-Coder-7B-Instruct"
           api_base: "http://qwen-coder-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
-          timeout: 120
+          timeout: 180        # STORY-150: Increased from 120 for cold start
         model_info:
-          description: "KServe Qwen2.5-Coder-7B (~60s cold start)"
+          description: "KServe Qwen2.5-Coder-7B (~100s cold start)"
 
       - model_name: "dolphin-chat"
         litellm_params:
@@ -155,9 +162,9 @@ data:
           model: "openai//models/cognitivecomputations/Dolphin3.0-Llama3.1-8B"
           api_base: "http://dolphin-chat-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
-          timeout: 180
+          timeout: 180        # STORY-150: Keep at 180 (actual cold start ~109s)
         model_info:
-          description: "KServe Dolphin3.0 uncensored (~30s cold start)"
+          description: "KServe Dolphin3.0 uncensored (~100s cold start)"
 
       - model_name: "qwen-omni"
         litellm_params:
@@ -165,9 +172,9 @@ data:
           model: "openai//models/Qwen/Qwen2.5-Omni-7B"
           api_base: "http://qwen-omni-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
-          timeout: 300
+          timeout: 300        # STORY-150: Keep at 300 for multimodal
         model_info:
-          description: "KServe Qwen2.5-Omni multimodal (~90s cold start)"
+          description: "KServe Qwen2.5-Omni multimodal (~150s cold start)"
 
       - model_name: "qwen-tts"
         litellm_params:
@@ -175,7 +182,7 @@ data:
           model: "openai//models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
           api_base: "http://qwen-tts-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
-          timeout: 360
+          timeout: 420        # STORY-150: Increased from 360 for pip install overhead
         model_info:
           description: "KServe Qwen3-TTS voice cloning (~5min cold start) - may need custom endpoint"
 
@@ -188,9 +195,9 @@ data:
           model: "openai//models/stabilityai/stable-audio-open-1.0"
           api_base: "http://stable-audio-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
-          timeout: 300
+          timeout: 300        # STORY-150: Keep at 300 for diffusion model
         model_info:
-          description: "KServe Stable Audio - music generation (may need custom endpoint)"
+          description: "KServe Stable Audio - music generation (~120s cold start)"
 
       - model_name: "flux-klein"
         litellm_params:
@@ -198,9 +205,9 @@ data:
           model: "openai//models/black-forest-labs/FLUX.2-klein-9b-fp8"
           api_base: "http://flux-klein-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
-          timeout: 300
+          timeout: 360        # STORY-150: Increased from 300 for large model
         model_info:
-          description: "KServe FLUX.2-klein image generation (may need custom endpoint)"
+          description: "KServe FLUX.2-klein image generation (~180s cold start)"
 
       - model_name: "wan-video"
         litellm_params:
@@ -208,9 +215,9 @@ data:
           model: "openai//models/Wan-AI/Wan2.2-TI2V-5B-Diffusers"
           api_base: "http://wan-video-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
-          timeout: 300
+          timeout: 420        # STORY-150: Increased from 300 for video model
         model_info:
-          description: "KServe Wan2.2 video generation (may need custom endpoint)"
+          description: "KServe Wan2.2 video generation (~240s cold start)"
 
     # Explicit fallback routing configuration
     # When primary model fails (timeout, rate limit, error), try fallback model
@@ -221,16 +228,19 @@ data:
         - gpt-4: ["gpt-4-ollama"]
         - gpt-3.5-turbo: ["gpt-3.5-turbo-ollama"]
         - rag-embedding: ["rag-embedding-ollama"]
-      # Retry failed requests before falling back
-      num_retries: 2
-      # Timeout before considering a request failed (seconds)
+      # STORY-150: Disable retries to prevent retry storms during KServe cold starts
+      # Per-model num_retries in litellm_params is NOT supported - only router_settings applies
+      # With 100-420s cold starts, retries would cascade into multiple concurrent requests
+      num_retries: 0
+      # Timeout for fallback routing decisions (not per-request timeout)
       timeout: 120
 
     general_settings:
       # Rate limiting
       max_parallel_requests: 50
-      # Request timeout (seconds)
-      request_timeout: 120
+      # STORY-150: Request timeout must accommodate longest cold start (wan-video: 420s)
+      # Per-model timeouts take precedence, but this is the fallback default
+      request_timeout: 420
 
     litellm_settings:
       # Drop unsupported params instead of erroring
