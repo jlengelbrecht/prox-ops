@@ -1910,7 +1910,7 @@ jobs:
             LABEL_BODY=$(echo "$LABEL_RESPONSE" | grep -v "HTTP_STATUS:")
             echo "API response status: $HTTP_STATUS"
             if [ "$HTTP_STATUS" = "200" ]; then
-              PR_LABELS=$(echo "$LABEL_BODY" | grep -o '"name":"[^"]*"' | sed 's/"name":"//;s/"//' | paste -sd ',' -)
+              PR_LABELS=$(echo "$LABEL_BODY" | grep -oP '"name"\s*:\s*"\K[^"]+' | paste -sd ',' -)
             else
               echo "::warning::Failed to fetch PR labels (HTTP $HTTP_STATUS), falling back to event payload"
               PR_LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
