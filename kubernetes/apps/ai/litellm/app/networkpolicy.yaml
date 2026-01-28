@@ -109,15 +109,7 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-    # STORY-059: Allow egress to Firecrawl API for web scraping
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: ai
-            app.kubernetes.io/name: firecrawl
-      toPorts:
-        - ports:
-            - port: "3002"
-              protocol: TCP
+    # Note: Firecrawl egress removed (STORY-062) - uses cloud API via external HTTPS
     # STORY-060: Allow egress to Valkey for response caching
     - toEndpoints:
         - matchLabels:
