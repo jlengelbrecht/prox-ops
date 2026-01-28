@@ -361,6 +361,27 @@ data:
             ^/wizard($|/.*)
             ^/image-proxy($|/.*)
             ^/cinema-posters($|/.*)
+      # Moltbot - Forward Auth (Control UI, internal only)
+      - model: authentik_providers_proxy.proxyprovider
+        id: proxy-moltbot
+        identifiers:
+          name: Moltbot
+        attrs:
+          name: Moltbot
+          mode: forward_single
+          external_host: https://moltbot.homelab0.org
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          property_mappings:
+            - !Context scope_proxy
+            - !Context scope_email
+            - !Context scope_profile
+            - !Context scope_openid
+            - !Context scope_entitlements
+          access_token_validity: hours=24
+          refresh_token_validity: days=30
+          intercept_header_auth: true
+          internal_host_ssl_validation: true
 
   # =============================================================
   # APPLICATIONS BLUEPRINT
@@ -446,6 +467,16 @@ data:
           group: Media
           policy_engine_mode: any
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Wizarr"]]
+      - model: authentik_core.application
+        id: app-moltbot
+        identifiers:
+          slug: moltbot
+        attrs:
+          name: Moltbot
+          slug: moltbot
+          group: AI
+          policy_engine_mode: any
+          provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Moltbot"]]
 
   # =============================================================
   # SOURCES BLUEPRINT
