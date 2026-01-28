@@ -178,12 +178,11 @@ data:
       # Reference: https://docs.litellm.ai/docs/proxy/caching
       # Known issue: https://github.com/BerriAI/litellm/issues/11243
       # =====================================================
+      # Connection via env vars: REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
+      # (os.environ/ syntax doesn't work in cache_params)
       cache: true
       cache_params:
         type: redis
-        host: os.environ/REDIS_HOST
-        port: os.environ/REDIS_PORT
-        password: os.environ/REDIS_PASSWORD
         # Cache key namespace prefix (prevents key collision, best practice)
         namespace: litellm
         # Cache TTL in seconds (1 hour default)
