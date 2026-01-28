@@ -145,6 +145,9 @@ data:
       # STORY-150: Request timeout must accommodate longest cold start (wan-video: 420s)
       # Per-model timeouts take precedence, but this is the fallback default
       request_timeout: 420
+      # STORY-059: Allow setting api_base for search tools via admin API
+      # Required to configure self-hosted SearXNG endpoint
+      allow_client_side_credentials: true
 
     litellm_settings:
       # Drop unsupported params instead of erroring
@@ -188,23 +191,16 @@ data:
 
     # =====================================================
     # STORY-059: Search Tools - Firecrawl & SearXNG
-    # Enables web search and scraping via self-hosted instances
-    # Creates /v1/search/* endpoints for LLM tool use
+    # NOTE: LiteLLM v1.81.0 loads search tools from DATABASE only, not config
+    # Tools must be added via UI (Search Tools page) or API:
+    #   POST /search_tools with search_tool.litellm_params.search_provider
     # Reference: https://docs.litellm.ai/docs/search/searxng
     # Reference: https://docs.litellm.ai/docs/search/firecrawl
+    #
+    # Configured tools (add via UI):
+    #   - searxng-search: provider=searxng, api_base=http://searxng.ai.svc.cluster.local:8080
+    #   - firecrawl-search: provider=firecrawl (uses Firecrawl.dev cloud via FIRECRAWL_API_KEY)
     # =====================================================
-    search_tools:
-      - search_tool_name: searxng-search
-        litellm_params:
-          search_provider: searxng
-          api_base: http://searxng.ai.svc.cluster.local:8080
-
-      - search_tool_name: firecrawl-search
-        litellm_params:
-          search_provider: firecrawl
-          # Uses Firecrawl.dev cloud API by default (paid service, use sparingly)
-          # Prefer SearXNG for regular searches
-          api_key: os.environ/FIRECRAWL_API_KEY
 
     # MCP Server Configuration
     # ToolHive homelab-gateway-internal provides scoped, unauthenticated
