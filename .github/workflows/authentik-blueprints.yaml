@@ -424,7 +424,7 @@ jobs:
             **Check the workflow logs for specific error details.**
 
   # Trigger immediate blueprint reconciliation after merge
-  # Uses self-hosted runner to access cluster network and Authentik API
+  # Uses self-hosted runner with public Authentik URL for API access
   reconcile-blueprints:
     name: Reconcile Blueprints
     runs-on: gha-runner-scale-set
@@ -440,7 +440,7 @@ jobs:
 
       - name: Check Authentik Health
         env:
-          AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
+          AUTHENTIK_URL: "https://authentik.homelab0.org"
         run: |
           echo "Checking Authentik availability..."
           for i in $(seq 1 10); do
@@ -456,7 +456,7 @@ jobs:
 
       - name: Reconcile All Blueprints
         env:
-          AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
+          AUTHENTIK_URL: "https://authentik.homelab0.org"
           AUTHENTIK_API_TOKEN: ${{ secrets.AUTHENTIK_API_TOKEN }}
         run: |
           set -euo pipefail
@@ -540,7 +540,7 @@ jobs:
 
       - name: Verify Blueprint Status
         env:
-          AUTHENTIK_URL: "http://authentik-server.security.svc.cluster.local"
+          AUTHENTIK_URL: "https://authentik.homelab0.org"
           AUTHENTIK_API_TOKEN: ${{ secrets.AUTHENTIK_API_TOKEN }}
         run: |
           echo ""
