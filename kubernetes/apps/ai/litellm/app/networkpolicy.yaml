@@ -100,6 +100,33 @@ spec:
         - ports:
             - port: "8000"
               protocol: TCP
+    # STORY-059: Allow egress to SearXNG for web search
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: searxng
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # STORY-059: Allow egress to Firecrawl API for web scraping
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: firecrawl
+      toPorts:
+        - ports:
+            - port: "3002"
+              protocol: TCP
+    # STORY-060: Allow egress to Valkey for response caching
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cache
+            app.kubernetes.io/name: valkey
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
     # Allow HTTPS egress for Prisma CLI download (first startup only)
     - toEntities:
         - world

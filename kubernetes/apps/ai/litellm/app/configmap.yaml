@@ -152,6 +152,59 @@ data:
       # Enable logging for audit
       set_verbose: false
 
+      # =====================================================
+      # STORY-058: Guardrails - Prompt Injection Protection
+      # Built-in detection using heuristics and similarity checks
+      # Blocks malicious prompts BEFORE they reach the LLM (returns 400)
+      # Reference: https://docs.litellm.ai/docs/proxy/guardrails/prompt_injection
+      # =====================================================
+      callbacks: ["detect_prompt_injection"]
+      prompt_injection_params:
+        # Pattern-based detection (regex against known attack patterns)
+        heuristics_check: true
+        # Vector similarity against known injection prompts
+        # Note: Uses OPENAI_API_KEY for embeddings (already configured in HelmRelease)
+        similarity_check: true
+        # LLM-based classification (disabled - adds latency and cost)
+        llm_api_check: false
+
+      # =====================================================
+      # STORY-060: Caching - Valkey (Redis-compatible) Integration
+      # Caches LLM responses to reduce API costs and latency
+      # Also enables rate limiting across LiteLLM instances
+      # Reference: https://docs.litellm.ai/docs/proxy/caching
+      # Known issue: https://github.com/BerriAI/litellm/issues/11243
+      # =====================================================
+      cache: true
+      cache_params:
+        type: redis
+        host: os.environ/REDIS_HOST
+        port: os.environ/REDIS_PORT
+        password: os.environ/REDIS_PASSWORD
+        # Cache key namespace prefix (prevents key collision, best practice)
+        namespace: litellm
+        # Cache TTL in seconds (1 hour default)
+        ttl: 3600
+
+    # =====================================================
+    # STORY-059: Search Tools - Firecrawl & SearXNG
+    # Enables web search and scraping via self-hosted instances
+    # Creates /v1/search/* endpoints for LLM tool use
+    # Reference: https://docs.litellm.ai/docs/search/searxng
+    # Reference: https://docs.litellm.ai/docs/search/firecrawl
+    # =====================================================
+    search_tools:
+      - search_tool_name: searxng-search
+        litellm_params:
+          search_provider: searxng
+          api_base: http://searxng.ai.svc.cluster.local:8080
+
+      - search_tool_name: firecrawl-search
+        litellm_params:
+          search_provider: firecrawl
+          api_base: http://firecrawl-api.ai.svc.cluster.local:3002
+          api_key: os.environ/FIRECRAWL_API_KEY
+
     # MCP Server Configuration
     # ToolHive homelab-gateway-internal provides scoped, unauthenticated
     # access to MCP servers (graphiti, n8n, etc.) for internal services.

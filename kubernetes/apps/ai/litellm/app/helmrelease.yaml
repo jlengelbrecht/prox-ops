@@ -56,7 +56,7 @@ spec:
       security.homelab/network: "Internal + external API via envoy-internal"
       security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
       # Restart pods when any ExternalSecret-backed secret is updated
-      secret.reloader.stakater.com/reload: "litellm-masterkey,litellm-oidc,litellm-openai,litellm-graphiti-mcp,litellm-n8n-mcp"
+      secret.reloader.stakater.com/reload: "litellm-masterkey,litellm-oidc,litellm-openai,litellm-graphiti-mcp,litellm-n8n-mcp,firecrawl-secrets,litellm-valkey"
 
     # Pod security context
     # Note: litellm-database image specifies USER as text "root" in Dockerfile,
@@ -185,3 +185,21 @@ spec:
           secretKeyRef:
             name: litellm-n8n-mcp
             key: token
+      # STORY-059: Firecrawl API key for search tools
+      # Used by search_tools.firecrawl-search in config.yaml
+      - name: FIRECRAWL_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: firecrawl-secrets
+            key: api-key
+      # STORY-060: Valkey/Redis configuration for response caching
+      # Used by litellm_settings.cache_params in config.yaml
+      - name: REDIS_HOST
+        value: "valkey.cache.svc.cluster.local"
+      - name: REDIS_PORT
+        value: "6379"
+      - name: REDIS_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: litellm-valkey
+            key: password
