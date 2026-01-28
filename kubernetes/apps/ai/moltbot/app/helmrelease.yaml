@@ -68,14 +68,19 @@ spec:
               # renovate: datasource=docker depName=ghcr.io/moltbot/clawdbot
               tag: "2026.1.24-1"
             command:
-              - node
-              - dist/entry.js
-              - gateway
-              - --port
-              - "18789"
-              - --bind
-              - lan
-              - --verbose
+              - /bin/sh
+              - -c
+              - |
+                node -e "
+                  const fs = require('fs');
+                  const f = process.env.CLAWDBOT_STATE_DIR + '/clawdbot.json';
+                  const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+                  c.gateway.auth = { mode: 'token', token: process.env.CLAWDBOT_GATEWAY_TOKEN };
+                  c.gateway.controlUi = { allowInsecureAuth: true };
+                  fs.writeFileSync(f, JSON.stringify(c, null, 2));
+                "
+                exec node dist/entry.js gateway \
+                  --port 18789 --bind lan --verbose
             env:
               TZ: America/New_York
               NODE_ENV: production
