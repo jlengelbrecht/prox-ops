@@ -44,14 +44,7 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-    # Allow egress to Firecrawl for web scraping/loading
-    - toEndpoints:
-        - matchLabels:
-            app.kubernetes.io/name: firecrawl
-      toPorts:
-        - ports:
-            - port: "3002"
-              protocol: TCP
+    # Note: Firecrawl removed (STORY-062) - scraping via LiteLLM cloud API
     # Allow DNS resolution
     - toEndpoints:
         - matchLabels:

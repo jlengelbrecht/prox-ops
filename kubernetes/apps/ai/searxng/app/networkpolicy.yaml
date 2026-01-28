@@ -1,6 +1,6 @@
 ---
-# SearXNG NetworkPolicy - Meta-search engine for Firecrawl
-# Allows search queries from Firecrawl and egress to search engines
+# SearXNG NetworkPolicy - Meta-search engine for AI services (LiteLLM, Open WebUI)
+# Provides web search capability via LiteLLM search tools
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -12,16 +12,7 @@ spec:
       app.kubernetes.io/name: searxng
 
   ingress:
-    # Allow from Firecrawl (search queries)
-    - fromEndpoints:
-        - matchLabels:
-            app.kubernetes.io/name: firecrawl
-      toPorts:
-        - ports:
-            - port: "8080"
-              protocol: TCP
-
-    # Allow from within AI namespace for testing/debugging
+    # Allow from within AI namespace (LiteLLM, Open WebUI, etc.)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
