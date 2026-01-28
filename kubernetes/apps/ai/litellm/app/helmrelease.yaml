@@ -56,7 +56,7 @@ spec:
       security.homelab/network: "Internal + external API via envoy-internal"
       security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
       # Restart pods when any ExternalSecret-backed secret is updated
-      secret.reloader.stakater.com/reload: "litellm-masterkey,litellm-oidc,litellm-openai,litellm-graphiti-mcp,litellm-n8n-mcp,firecrawl-secrets,litellm-valkey"
+      secret.reloader.stakater.com/reload: "litellm-masterkey,litellm-oidc,litellm-openai,litellm-graphiti-mcp,litellm-n8n-mcp,firecrawl-secrets,litellm-valkey,litellm-lakera"
 
     # Pod security context
     # Note: litellm-database image specifies USER as text "root" in Dockerfile,
@@ -203,3 +203,10 @@ spec:
           secretKeyRef:
             name: litellm-valkey
             key: password
+      # EPIC-022: Lakera AI API key for UI-managed guardrails
+      # Used for prompt injection detection via database-managed guardrails
+      - name: LAKERA_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-lakera
+            key: api-key
