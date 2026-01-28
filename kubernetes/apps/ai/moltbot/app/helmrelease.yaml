@@ -75,7 +75,7 @@ spec:
                   const fs = require('fs');
                   const f = process.env.CLAWDBOT_STATE_DIR + '/clawdbot.json';
                   const c = JSON.parse(fs.readFileSync(f, 'utf8'));
-                  c.gateway.auth = { mode: 'token', token: process.env.CLAWDBOT_GATEWAY_TOKEN };
+                  c.gateway.auth = { mode: 'none' };
                   c.gateway.controlUi = { allowInsecureAuth: true };
                   fs.writeFileSync(f, JSON.stringify(c, null, 2));
                 "
@@ -85,11 +85,6 @@ spec:
               TZ: America/New_York
               NODE_ENV: production
               CLAWDBOT_STATE_DIR: /data/state
-              CLAWDBOT_GATEWAY_TOKEN:
-                valueFrom:
-                  secretKeyRef:
-                    name: moltbot-secrets
-                    key: CLAWDBOT_GATEWAY_TOKEN
               LITELLM_VIRTUAL_KEY:
                 valueFrom:
                   secretKeyRef:
