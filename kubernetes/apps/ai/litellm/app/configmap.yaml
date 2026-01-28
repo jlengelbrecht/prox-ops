@@ -155,7 +155,7 @@ data:
       # =====================================================
       # STORY-058: Guardrails - Prompt Injection Protection
       # Built-in detection using heuristics and similarity checks
-      # Blocks malicious prompts BEFORE they reach the LLM
+      # Blocks malicious prompts BEFORE they reach the LLM (returns 400)
       # Reference: https://docs.litellm.ai/docs/proxy/guardrails/prompt_injection
       # =====================================================
       callbacks: ["detect_prompt_injection"]
@@ -163,11 +163,10 @@ data:
         # Pattern-based detection (regex against known attack patterns)
         heuristics_check: true
         # Vector similarity against known injection prompts
+        # Note: Uses OPENAI_API_KEY for embeddings (already configured in HelmRelease)
         similarity_check: true
         # LLM-based classification (disabled - adds latency and cost)
         llm_api_check: false
-        # Reject requests that match injection patterns
-        reject_as_response: true
 
       # =====================================================
       # STORY-060: Caching - Valkey (Redis-compatible) Integration
