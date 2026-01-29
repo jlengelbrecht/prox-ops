@@ -211,8 +211,9 @@ spec:
             name: litellm-lakera
             key: api-key
       # STORY-063: Anthropic OAuth token for Claude Max subscription
-      # Enables LiteLLM to authenticate with Anthropic API using OAuth
-      - name: ANTHROPIC_API_KEY
+      # Used via extra_headers in model config as Authorization: Bearer
+      # NOT set as ANTHROPIC_API_KEY to avoid x-api-key header (OAuth uses Bearer)
+      - name: ANTHROPIC_OAUTH_TOKEN
         valueFrom:
           secretKeyRef:
             name: litellm-anthropic
