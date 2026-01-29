@@ -42,30 +42,33 @@ data:
       # =====================================================
 
       # Default alias - points to Opus 4, can be changed without Moltbot redeploy
-      # STORY-063: OAuth token injected via custom callback (AnthropicOAuthCallback)
-      # Callback adds Authorization: Bearer header for Claude Max subscription
-      # Reference: https://github.com/BerriAI/litellm/issues/19618
+      # STORY-063: Uses OAuth token directly as api_key
+      # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
       - model_name: "claude-default"
         litellm_params:
           model: anthropic/claude-opus-4-20250514
+          api_key: "os.environ/ANTHROPIC_OAUTH_TOKEN"
         model_info:
           description: "Anthropic Claude default (currently Opus 4)"
 
       - model_name: "claude-opus"
         litellm_params:
           model: anthropic/claude-opus-4-20250514
+          api_key: "os.environ/ANTHROPIC_OAUTH_TOKEN"
         model_info:
           description: "Anthropic Claude Opus 4 (via Max subscription)"
 
       - model_name: "claude-sonnet"
         litellm_params:
           model: anthropic/claude-sonnet-4-20250514
+          api_key: "os.environ/ANTHROPIC_OAUTH_TOKEN"
         model_info:
           description: "Anthropic Claude Sonnet 4 (via Max subscription)"
 
       - model_name: "claude-3-5-sonnet"
         litellm_params:
           model: anthropic/claude-3-5-sonnet-20241022
+          api_key: "os.environ/ANTHROPIC_OAUTH_TOKEN"
         model_info:
           description: "Anthropic Claude 3.5 Sonnet (via Max subscription)"
 
@@ -239,11 +242,7 @@ data:
       drop_params: true
       # Enable logging for audit
       set_verbose: false
-      # STORY-063: Custom callback for Anthropic OAuth token injection
-      # Workaround for LiteLLM issue #19618 - OAuth tokens not forwarded
-      # Callback injects Authorization: Bearer header for Claude models
-      callbacks:
-        - anthropic_oauth_callback.anthropic_oauth_callback
+      # Note: Custom callback removed - using direct api_key in model config instead
 
       # =====================================================
       # STORY-060: Caching - Valkey (Redis-compatible) Integration
