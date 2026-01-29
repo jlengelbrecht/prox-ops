@@ -71,6 +71,12 @@ spec:
               - /bin/sh
               - -c
               - |
+                # Clean up stale lock files from previous runs/restarts
+                # Moltbot leaves .lock files behind when restarting via SIGUSR1
+                echo "Cleaning up stale lock files..."
+                find "$CLAWDBOT_STATE_DIR" -name "*.lock" -type f -delete 2>/dev/null || true
+
+                # Configure gateway auth
                 node -e "
                   const fs = require('fs');
                   const f = process.env.CLAWDBOT_STATE_DIR + '/clawdbot.json';
