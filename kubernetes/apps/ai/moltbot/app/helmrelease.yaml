@@ -100,6 +100,15 @@ spec:
                   secretKeyRef:
                     name: moltbot-secrets
                     key: ANTHROPIC_OAUTH_TOKEN
+              # STORY-063: Route Claude Code through LiteLLM for guardrails
+              # OAuth token forwarded via per-model forward_client_headers_to_llm_api
+              ANTHROPIC_BASE_URL:
+                value: "http://litellm.ai.svc.cluster.local:4000"
+              ANTHROPIC_MODEL:
+                value: "claude-default"
+              # x-litellm-api-key header for LiteLLM authentication/tracking
+              ANTHROPIC_CUSTOM_HEADERS:
+                value: "x-litellm-api-key: Bearer $(LITELLM_VIRTUAL_KEY)"
             probes:
               liveness:
                 enabled: true

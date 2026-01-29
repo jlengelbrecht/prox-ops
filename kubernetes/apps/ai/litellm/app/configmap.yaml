@@ -35,6 +35,38 @@ data:
           description: "OpenAI GPT-4o-mini (gpt-3.5-turbo compat)"
 
       # =====================================================
+      # Anthropic Claude Models (for Claude Code / Moltbot)
+      # Uses Claude Max subscription via OAuth token forwarding
+      # STORY-063: Per-model header forwarding configured in model_group_settings
+      # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
+      # =====================================================
+
+      # Default alias - points to Opus 4, can be changed without Moltbot redeploy
+      - model_name: "claude-default"
+        litellm_params:
+          model: anthropic/claude-opus-4-20250514
+        model_info:
+          description: "Anthropic Claude default (currently Opus 4)"
+
+      - model_name: "claude-opus"
+        litellm_params:
+          model: anthropic/claude-opus-4-20250514
+        model_info:
+          description: "Anthropic Claude Opus 4 (via Max subscription)"
+
+      - model_name: "claude-sonnet"
+        litellm_params:
+          model: anthropic/claude-sonnet-4-20250514
+        model_info:
+          description: "Anthropic Claude Sonnet 4 (via Max subscription)"
+
+      - model_name: "claude-3-5-sonnet"
+        litellm_params:
+          model: anthropic/claude-3-5-sonnet-20241022
+        model_info:
+          description: "Anthropic Claude 3.5 Sonnet (via Max subscription)"
+
+      # =====================================================
       # KServe InferenceServices (vLLM/Custom)
       # Scale-to-zero models on RTX A5000 (k8s-work-10)
       # Note: Only ONE model can run at a time due to GPU contention
@@ -138,6 +170,22 @@ data:
       num_retries: 0
       # Timeout for routing decisions (not per-request timeout)
       timeout: 120
+
+    # =====================================================
+    # STORY-063: Per-Model Header Forwarding for Claude Max
+    # Only Claude models forward client headers (OAuth token)
+    # OpenAI and KServe models are unaffected
+    # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
+    # =====================================================
+    model_group_settings:
+      claude-default:
+        forward_client_headers_to_llm_api: true
+      claude-opus:
+        forward_client_headers_to_llm_api: true
+      claude-sonnet:
+        forward_client_headers_to_llm_api: true
+      claude-3-5-sonnet:
+        forward_client_headers_to_llm_api: true
 
     # =====================================================
     # EPIC-022: Guardrails Configuration
