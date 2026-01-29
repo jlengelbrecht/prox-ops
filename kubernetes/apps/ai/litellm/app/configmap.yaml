@@ -227,6 +227,24 @@ data:
       # Required to configure self-hosted SearXNG endpoint
       allow_client_side_credentials: true
 
+      # =====================================================
+      # STORY-063: Anthropic Pass-Through for Claude Max OAuth
+      # Workaround for LiteLLM bug (Issue #19618) where Authorization
+      # header is stripped before forwarding to Anthropic.
+      # Pass-through with forward_headers: true preserves OAuth token.
+      # Reference: https://docs.litellm.ai/docs/pass_through/anthropic_completion
+      # =====================================================
+      pass_through_endpoints:
+        - path: "/anthropic"
+          target: "https://api.anthropic.com"
+          forward_headers: true
+          auth: true
+          guardrails:
+            lakera-guard:
+              request_fields: ["messages[*].content"]
+            openai-mod:
+              request_fields: ["messages[*].content"]
+
     litellm_settings:
       # Drop unsupported params instead of erroring
       drop_params: true
