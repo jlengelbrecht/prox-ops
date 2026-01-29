@@ -223,12 +223,12 @@ spec:
         value: "/app/custom_callbacks:${PYTHONPATH}"
 
     # STORY-063: Mount custom OAuth callback for Anthropic
-    extraVolumes:
+    volumes:
       - name: oauth-callback
         configMap:
           name: litellm-oauth-callback
 
-    extraVolumeMounts:
+    volumeMounts:
       - name: oauth-callback
         mountPath: /app/custom_callbacks
         readOnly: true
