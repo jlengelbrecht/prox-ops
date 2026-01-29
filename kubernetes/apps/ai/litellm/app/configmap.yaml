@@ -141,26 +141,32 @@ data:
 
     # =====================================================
     # EPIC-022: Guardrails Configuration
-    # UI-managed guardrails for prompt injection and content moderation
+    # Guardrails are managed via UI/database for on-the-fly changes
+    # Config here serves as bootstrap/fallback definition
+    # Primary management: LiteLLM UI > Guardrails page
     # Reference: https://docs.litellm.ai/docs/proxy/guardrails/quick_start
     # =====================================================
     guardrails:
       # Lakera AI - Prompt injection detection
       # Uses lakera_v2 API (not lakera_prompt_injection)
+      # default_on: true runs on ALL requests automatically
       # Reference: https://docs.litellm.ai/docs/proxy/guardrails/lakera_ai
       - guardrail_name: "lakera-guard"
         litellm_params:
           guardrail: lakera_v2
           mode: "during_call"
+          default_on: true
           api_key: os.environ/LAKERA_API_KEY
           api_base: "https://api.lakera.ai"
 
       # OpenAI Moderation - Content policy compliance (free)
+      # default_on: true runs on ALL requests automatically
       # Reference: https://docs.litellm.ai/docs/proxy/guardrails/openai_moderation
       - guardrail_name: "openai-mod"
         litellm_params:
           guardrail: openai_moderation
           mode: "pre_call"
+          default_on: true
           api_key: os.environ/OPENAI_API_KEY
 
     general_settings:
