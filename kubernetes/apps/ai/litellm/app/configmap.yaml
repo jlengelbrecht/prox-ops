@@ -41,36 +41,32 @@ data:
       # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
       # =====================================================
 
-      # Default alias - points to Opus 4, can be changed without Moltbot redeploy
-      # STORY-063: Uses OAuth token directly as api_key
-      # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
+      # Anthropic Claude Models - DISABLED (no API key configured)
+      # LiteLLM's x-api-key header is incompatible with Anthropic OAuth tokens.
+      # Set ANTHROPIC_API_KEY env var with a standard API key to enable.
       - model_name: "claude-default"
         litellm_params:
           model: anthropic/claude-opus-4-20250514
-          api_key: "os.environ/ANTHROPIC_OAUTH_TOKEN"
         model_info:
-          description: "Anthropic Claude default (currently Opus 4)"
+          description: "Anthropic Claude default - REQUIRES ANTHROPIC_API_KEY"
 
       - model_name: "claude-opus"
         litellm_params:
           model: anthropic/claude-opus-4-20250514
-          api_key: "os.environ/ANTHROPIC_OAUTH_TOKEN"
         model_info:
-          description: "Anthropic Claude Opus 4 (via Max subscription)"
+          description: "Anthropic Claude Opus 4 - REQUIRES ANTHROPIC_API_KEY"
 
       - model_name: "claude-sonnet"
         litellm_params:
           model: anthropic/claude-sonnet-4-20250514
-          api_key: "os.environ/ANTHROPIC_OAUTH_TOKEN"
         model_info:
-          description: "Anthropic Claude Sonnet 4 (via Max subscription)"
+          description: "Anthropic Claude Sonnet 4 - REQUIRES ANTHROPIC_API_KEY"
 
       - model_name: "claude-3-5-sonnet"
         litellm_params:
           model: anthropic/claude-3-5-sonnet-20241022
-          api_key: "os.environ/ANTHROPIC_OAUTH_TOKEN"
         model_info:
-          description: "Anthropic Claude 3.5 Sonnet (via Max subscription)"
+          description: "Anthropic Claude 3.5 Sonnet - REQUIRES ANTHROPIC_API_KEY"
 
       # =====================================================
       # KServe InferenceServices (vLLM/Custom)
