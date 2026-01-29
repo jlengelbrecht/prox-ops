@@ -139,6 +139,33 @@ data:
       # Timeout for routing decisions (not per-request timeout)
       timeout: 120
 
+    # =====================================================
+    # EPIC-022: Guardrails Configuration
+    # Guardrails MUST be defined here to register with runtime
+    # Settings are visible/tunable in UI, but types must be in config
+    # Reference: https://docs.litellm.ai/docs/proxy/guardrails
+    # =====================================================
+    guardrails:
+      # Lakera AI - Prompt injection detection (post_call checks input + output)
+      # Graceful degradation: fail_open=true allows requests if Lakera unavailable
+      - guardrail_name: "lakera-prompt-injection"
+        litellm_params:
+          guardrail: lakera_prompt_injection
+          mode: post_call
+          api_key: os.environ/LAKERA_API_KEY
+        guardrail_info:
+          fail_open: true
+
+      # OpenAI Moderation - Hate, harassment, violence detection (pre_call)
+      # Uses existing OPENAI_API_KEY, free tier included
+      - guardrail_name: "openai-moderation"
+        litellm_params:
+          guardrail: openai_moderation
+          mode: pre_call
+          api_key: os.environ/OPENAI_API_KEY
+        guardrail_info:
+          fail_open: true
+
     general_settings:
       # Rate limiting
       max_parallel_requests: 50
@@ -154,19 +181,6 @@ data:
       drop_params: true
       # Enable logging for audit
       set_verbose: false
-
-      # =====================================================
-      # EPIC-022: Guardrails Configuration
-      # All guardrails are now UI-managed via database (not config)
-      # Config-based guardrails don't appear in UI and can't be tuned
-      #
-      # Guardrails to add via UI after deployment:
-      # 1. Lakera AI (post_call) - Prompt injection detection
-      # 2. LiteLLM Content Filter (pre_call) - PII, credentials, harmful content
-      # 3. OpenAI Moderation (pre_call) - Hate, harassment, violence
-      #
-      # Reference: https://docs.litellm.ai/docs/proxy/guardrails
-      # =====================================================
 
       # =====================================================
       # STORY-060: Caching - Valkey (Redis-compatible) Integration
