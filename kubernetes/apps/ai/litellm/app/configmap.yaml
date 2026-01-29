@@ -218,6 +218,10 @@ data:
           api_key: os.environ/OPENAI_API_KEY
 
     general_settings:
+      # STORY-063: Forward client headers to LLM API for OAuth token
+      # Enables Claude Max subscription OAuth to pass through to Anthropic
+      # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
+      forward_client_headers_to_llm_api: true
       # Rate limiting
       max_parallel_requests: 50
       # STORY-150: Request timeout must accommodate longest cold start (wan-video: 420s)
@@ -226,24 +230,6 @@ data:
       # STORY-059: Allow setting api_base for search tools via admin API
       # Required to configure self-hosted SearXNG endpoint
       allow_client_side_credentials: true
-
-      # =====================================================
-      # STORY-063: Anthropic Pass-Through for Claude Max OAuth
-      # Workaround for LiteLLM bug (Issue #19618) where Authorization
-      # header is stripped before forwarding to Anthropic.
-      # Pass-through with forward_headers: true preserves OAuth token.
-      # Reference: https://docs.litellm.ai/docs/pass_through/anthropic_completion
-      # =====================================================
-      pass_through_endpoints:
-        - path: "/anthropic"
-          target: "https://api.anthropic.com"
-          forward_headers: true
-          auth: true
-          guardrails:
-            lakera-guard:
-              request_fields: ["messages[*].content"]
-            openai-mod:
-              request_fields: ["messages[*].content"]
 
     litellm_settings:
       # Drop unsupported params instead of erroring
