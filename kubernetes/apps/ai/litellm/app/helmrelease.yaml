@@ -218,11 +218,9 @@ spec:
           secretKeyRef:
             name: litellm-anthropic
             key: api-key
-      # STORY-063: Add custom callback directory to Python path
-      - name: PYTHONPATH
-        value: "/app/custom_callbacks:${PYTHONPATH}"
-
     # STORY-063: Mount custom OAuth callback for Anthropic
+    # LiteLLM loads custom callbacks from /etc/litellm/ (config directory)
+    # Uses subPath to mount single file without overwriting config.yaml
     volumes:
       - name: oauth-callback
         configMap:
@@ -230,5 +228,6 @@ spec:
 
     volumeMounts:
       - name: oauth-callback
-        mountPath: /app/custom_callbacks
+        mountPath: /etc/litellm/anthropic_oauth_callback.py
+        subPath: anthropic_oauth_callback.py
         readOnly: true
