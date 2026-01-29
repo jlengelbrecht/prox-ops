@@ -139,6 +139,30 @@ data:
       # Timeout for routing decisions (not per-request timeout)
       timeout: 120
 
+    # =====================================================
+    # EPIC-022: Guardrails Configuration
+    # UI-managed guardrails for prompt injection and content moderation
+    # Reference: https://docs.litellm.ai/docs/proxy/guardrails/quick_start
+    # =====================================================
+    guardrails:
+      # Lakera AI - Prompt injection detection
+      # Uses lakera_v2 API (not lakera_prompt_injection)
+      # Reference: https://docs.litellm.ai/docs/proxy/guardrails/lakera_ai
+      - guardrail_name: "lakera-guard"
+        litellm_params:
+          guardrail: lakera_v2
+          mode: "during_call"
+          api_key: os.environ/LAKERA_API_KEY
+          api_base: "https://api.lakera.ai"
+
+      # OpenAI Moderation - Content policy compliance (free)
+      # Reference: https://docs.litellm.ai/docs/proxy/guardrails/openai_moderation
+      - guardrail_name: "openai-mod"
+        litellm_params:
+          guardrail: openai_moderation
+          mode: "pre_call"
+          api_key: os.environ/OPENAI_API_KEY
+
     general_settings:
       # Rate limiting
       max_parallel_requests: 50
@@ -154,18 +178,6 @@ data:
       drop_params: true
       # Enable logging for audit
       set_verbose: false
-
-      # =====================================================
-      # EPIC-022: Guardrails - Prompt Injection Protection
-      # Using built-in detect_prompt_injection callback
-      # Note: This works but doesn't show in UI (config-based limitation)
-      # Reference: https://docs.litellm.ai/docs/proxy/guardrails/prompt_injection
-      # =====================================================
-      callbacks: ["detect_prompt_injection"]
-      prompt_injection_params:
-        heuristics_check: true
-        similarity_check: true
-        llm_api_check: false
 
       # =====================================================
       # STORY-060: Caching - Valkey (Redis-compatible) Integration
