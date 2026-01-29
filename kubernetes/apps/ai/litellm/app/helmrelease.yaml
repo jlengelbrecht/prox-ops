@@ -56,7 +56,7 @@ spec:
       security.homelab/network: "Internal + external API via envoy-internal"
       security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
       # Restart pods when any ExternalSecret-backed secret is updated
-      secret.reloader.stakater.com/reload: "litellm-masterkey,litellm-oidc,litellm-openai,litellm-graphiti-mcp,litellm-n8n-mcp,firecrawl-secrets,litellm-valkey,litellm-lakera,litellm-anthropic"
+      secret.reloader.stakater.com/reload: "litellm-masterkey,litellm-oidc,litellm-openai,litellm-graphiti-mcp,litellm-n8n-mcp,firecrawl-secrets,litellm-valkey,litellm-lakera"
 
     # Pod security context
     # Note: litellm-database image specifies USER as text "root" in Dockerfile,
@@ -210,11 +210,5 @@ spec:
           secretKeyRef:
             name: litellm-lakera
             key: api-key
-      # STORY-063: Anthropic OAuth token for Claude Max subscription
-      # Used directly as api_key in model config (os.environ/ANTHROPIC_OAUTH_TOKEN)
-      - name: ANTHROPIC_OAUTH_TOKEN
-        valueFrom:
-          secretKeyRef:
-            name: litellm-anthropic
-            key: api-key
-    # Note: Callback volume removed - using direct api_key in model config instead
+      # Note: Anthropic OAuth removed - incompatible with LiteLLM x-api-key header
+      # Set ANTHROPIC_API_KEY with standard API key to enable Claude models

@@ -95,25 +95,13 @@ spec:
                   secretKeyRef:
                     name: moltbot-secrets
                     key: LITELLM_VIRTUAL_KEY
+              # Direct Anthropic access via OAuth token (Claude Max subscription)
+              # LiteLLM routing removed - incompatible with OAuth Bearer auth
               ANTHROPIC_OAUTH_TOKEN:
                 valueFrom:
                   secretKeyRef:
                     name: moltbot-secrets
                     key: ANTHROPIC_OAUTH_TOKEN
-              # STORY-063: Route Claude Code through LiteLLM for guardrails
-              # OAuth token forwarded via general_settings.forward_client_headers_to_llm_api
-              # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
-              ANTHROPIC_BASE_URL:
-                value: "http://litellm.ai.svc.cluster.local:4000"
-              ANTHROPIC_MODEL:
-                value: "claude-default"
-              # x-litellm-api-key header for LiteLLM authentication/tracking
-              # Pre-composed in 1Password (K8s $(VAR) substitution doesn't work with secretKeyRef)
-              ANTHROPIC_CUSTOM_HEADERS:
-                valueFrom:
-                  secretKeyRef:
-                    name: moltbot-secrets
-                    key: ANTHROPIC_CUSTOM_HEADERS
             probes:
               liveness:
                 enabled: true
