@@ -107,8 +107,12 @@ spec:
               ANTHROPIC_MODEL:
                 value: "claude-default"
               # x-litellm-api-key header for LiteLLM authentication/tracking
+              # Pre-composed in 1Password (K8s $(VAR) substitution doesn't work with secretKeyRef)
               ANTHROPIC_CUSTOM_HEADERS:
-                value: "x-litellm-api-key: Bearer $(LITELLM_VIRTUAL_KEY)"
+                valueFrom:
+                  secretKeyRef:
+                    name: moltbot-secrets
+                    key: ANTHROPIC_CUSTOM_HEADERS
             probes:
               liveness:
                 enabled: true
