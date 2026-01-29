@@ -238,12 +238,8 @@ data:
         - path: "/anthropic"
           target: "https://api.anthropic.com"
           forward_headers: true
-          auth: true
-          guardrails:
-            lakera-guard:
-              request_fields: ["messages[*].content"]
-            openai-mod:
-              request_fields: ["messages[*].content"]
+          # Note: auth and guardrails on pass-through require LiteLLM Enterprise
+          # Security via internal network isolation (ClusterIP only)
 
     litellm_settings:
       # Drop unsupported params instead of erroring
