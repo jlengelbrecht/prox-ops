@@ -212,12 +212,17 @@ spec:
             key: api-key
       # STORY-063: Anthropic OAuth token for Claude Max subscription
       # Used by custom callback to inject Authorization: Bearer header
-      # NOT set as ANTHROPIC_API_KEY to avoid x-api-key header (OAuth uses Bearer)
       - name: ANTHROPIC_OAUTH_TOKEN
         valueFrom:
           secretKeyRef:
             name: litellm-anthropic
             key: api-key
+      # STORY-063: Placeholder API key to pass LiteLLM validation
+      # LiteLLM requires ANTHROPIC_API_KEY to be set, but OAuth Bearer header
+      # takes precedence. This placeholder passes validation; real auth via callback.
+      # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
+      - name: ANTHROPIC_API_KEY
+        value: "placeholder-oauth-via-callback"
     # STORY-063: Mount custom OAuth callback for Anthropic
     # LiteLLM loads custom callbacks from /etc/litellm/ (config directory)
     # Uses subPath to mount single file without overwriting config.yaml
