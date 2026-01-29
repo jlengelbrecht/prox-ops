@@ -101,11 +101,10 @@ spec:
                     name: moltbot-secrets
                     key: ANTHROPIC_OAUTH_TOKEN
               # STORY-063: Route Claude Code through LiteLLM for guardrails
-              # OAuth token forwarded via per-model forward_client_headers_to_llm_api
+              # Uses pass-through endpoint with forward_headers: true to preserve OAuth token
+              # Workaround for LiteLLM bug #19618 (clean_headers strips Authorization)
               ANTHROPIC_BASE_URL:
-                value: "http://litellm.ai.svc.cluster.local:4000"
-              ANTHROPIC_MODEL:
-                value: "claude-default"
+                value: "http://litellm.ai.svc.cluster.local:4000/anthropic"
               # x-litellm-api-key header for LiteLLM authentication/tracking
               # Pre-composed in 1Password (K8s $(VAR) substitution doesn't work with secretKeyRef)
               ANTHROPIC_CUSTOM_HEADERS:
