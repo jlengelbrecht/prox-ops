@@ -59,27 +59,34 @@ data:
             ],
         ) -> Optional[Union[Exception, str, dict]]:
             """
-            Inject OAuth token into extra_headers for Anthropic models.
-            Runs before the LLM API call is made.
+            Inject OAuth token for Anthropic models.
+            Sets api_key to OAuth token so LiteLLM sends it as x-api-key.
+            Also adds Authorization: Bearer header as fallback.
             """
+            print(f"AnthropicOAuthCallback: async_pre_call_hook called, model={data.get('model', 'unknown')}")
+
             if not self.oauth_token:
+                print("AnthropicOAuthCallback: No OAuth token, skipping")
                 return data
 
             model = data.get("model", "")
 
             # Only inject for Anthropic/Claude models
             if not self._is_anthropic_model(model):
+                print(f"AnthropicOAuthCallback: Not Anthropic model, skipping: {model}")
                 return data
 
-            # Initialize extra_headers if not present
+            # Set api_key to OAuth token - LiteLLM will send this as x-api-key
+            # Anthropic accepts OAuth tokens via x-api-key header as well
+            data["api_key"] = self.oauth_token
+
+            # Also add Authorization: Bearer header as backup
             if "extra_headers" not in data:
                 data["extra_headers"] = {}
-
-            # Add Authorization Bearer header with OAuth token
-            # This is the correct format for Anthropic OAuth (not x-api-key)
             data["extra_headers"]["Authorization"] = f"Bearer {self.oauth_token}"
 
             print(f"AnthropicOAuthCallback: Injected OAuth token for model {model}")
+            print(f"AnthropicOAuthCallback: api_key set, extra_headers={list(data.get('extra_headers', {}).keys())}")
             return data
 
 
