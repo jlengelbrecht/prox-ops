@@ -211,10 +211,24 @@ spec:
             name: litellm-lakera
             key: api-key
       # STORY-063: Anthropic OAuth token for Claude Max subscription
-      # Used via extra_headers in model config as Authorization: Bearer
+      # Used by custom callback to inject Authorization: Bearer header
       # NOT set as ANTHROPIC_API_KEY to avoid x-api-key header (OAuth uses Bearer)
       - name: ANTHROPIC_OAUTH_TOKEN
         valueFrom:
           secretKeyRef:
             name: litellm-anthropic
             key: api-key
+      # STORY-063: Add custom callback directory to Python path
+      - name: PYTHONPATH
+        value: "/app/custom_callbacks:${PYTHONPATH}"
+
+    # STORY-063: Mount custom OAuth callback for Anthropic
+    extraVolumes:
+      - name: oauth-callback
+        configMap:
+          name: litellm-oauth-callback
+
+    extraVolumeMounts:
+      - name: oauth-callback
+        mountPath: /app/custom_callbacks
+        readOnly: true
