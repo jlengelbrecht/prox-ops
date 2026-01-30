@@ -1,0 +1,163 @@
+---
+# STORY-030-3: Whisper Model Pre-download Job
+# Downloads OpenAI Whisper-medium model to shared cache PVC for voice calling
+#
+# Model: openai/whisper-medium (~769MB disk, ~1.4GB VRAM)
+# Purpose: Speech-to-Text for moltbot voice calling workflow
+#
+# Usage:
+#   kubectl apply -f whisper-download-job.yaml
+#   kubectl logs -n ai job/whisper-download -f
+#
+# After download, verify:
+#   kubectl exec -it deploy/litellm -n ai -- ls -la /models/openai/whisper-medium/
+#
+# Note: Job immutability - to re-run, delete first:
+#   kubectl delete job -n ai whisper-download
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: whisper-download
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: whisper-download
+    app.kubernetes.io/component: cache-loader
+    app.kubernetes.io/part-of: kserve
+    story: "030-3"
+spec:
+  # Allow 3 retries in case of network failures
+  backoffLimit: 3
+  # NOTE: ttlSecondsAfterFinished intentionally omitted (see model-predownload-job.yaml)
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: whisper-download
+        app.kubernetes.io/component: cache-loader
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+
+      # Fix PVC permissions for non-root user
+      # Note: initContainer MUST run as root (UID 0) to chown files - this is intentional
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /models/openai /models/.cache
+              chown -R 1000:1000 /models/openai /models/.cache
+              echo "Permissions fixed: /models/openai and /models/.cache owned by user 1000"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+          securityContext:
+            runAsUser: 0  # Required for chown operation
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+      containers:
+        - name: huggingface-downloader
+          image: python:3.11-slim
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              echo "Installing huggingface-hub CLI..."
+              pip install --no-cache-dir 'huggingface-hub[cli]>=0.27,<0.28'
+              export PATH="/tmp/.local/bin:$PATH"
+
+              echo ""
+              echo "=== STORY-030-3: Whisper Model Download ==="
+              echo "Downloading OpenAI Whisper-medium for voice calling (STT)"
+              echo ""
+
+              # Download Whisper-medium (~769MB)
+              echo "=== Downloading openai/whisper-medium (~769MB) ==="
+              huggingface-cli download \
+                openai/whisper-medium \
+                --local-dir /models/openai/whisper-medium \
+                --local-dir-use-symlinks False
+              echo "Download complete: openai/whisper-medium"
+              echo ""
+
+              # Verify download
+              echo "=== Verifying download ==="
+              ls -la /models/openai/whisper-medium/
+              du -sh /models/openai/whisper-medium/
+              echo ""
+
+              # Optional: Download whisper-large-v3 for higher accuracy
+              # Uncomment if A5000 fallback accuracy is needed
+              # echo "=== Downloading openai/whisper-large-v3 (~1.55GB) ==="
+              # huggingface-cli download \
+              #   openai/whisper-large-v3 \
+              #   --local-dir /models/openai/whisper-large-v3 \
+              #   --local-dir-use-symlinks False
+              # echo "Download complete: openai/whisper-large-v3"
+
+              echo "=== Whisper model download complete ==="
+              echo "Model: openai/whisper-medium"
+              echo "Location: /models/openai/whisper-medium/"
+              echo "VRAM: ~1.4GB (FP16)"
+              echo "Use case: Speech-to-text for voice calling"
+              echo ""
+              echo "Next steps:"
+              echo "  1. Verify model accessible from GPU nodes"
+              echo "  2. Deploy Whisper InferenceService (STORY-030-4)"
+
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 2Gi
+
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: HF_TOKEN
+                  optional: true  # Whisper is not gated
+            - name: HOME
+              value: /tmp
+            - name: HF_HOME
+              value: /models/.cache
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache
