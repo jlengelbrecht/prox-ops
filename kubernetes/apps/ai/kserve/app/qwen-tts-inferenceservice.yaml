@@ -6,7 +6,7 @@
 # GPU: RTX A5000 24GB (k8s-work-10 ONLY)
 #
 # Performance Characteristics:
-# - Cold start: ~4-5min (pip install onnxruntime-gpu ~2min + model load ~2min)
+# - Cold start: ~5-6min (apt-get sox ~1min + pip install ~1min + model load ~3min)
 # - Warm inference: ~50-100ms
 # - Scale-to-zero: 5 minutes idle timeout
 # - VRAM usage: ~5GB / 24GB available
@@ -62,16 +62,24 @@ spec:
         # renovate: datasource=docker depName=vllm/vllm-omni
         image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
 
-        # Install missing dependencies at runtime (onnxruntime, sox)
+        # Install missing dependencies at runtime (onnxruntime, sox Python + system binary)
         # Workaround for https://github.com/vllm-project/vllm-omni/pull/909
         # TODO: Remove after vLLM-Omni includes these dependencies in base image
         # Reference: https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/examples/online_serving/qwen3_tts/
+        # Note: Python sox package is a wrapper requiring system SoX binary (/usr/bin/sox)
+        #       APT::Sandbox::User=root bypasses container seccomp restrictions
         command:
           - /bin/bash
           - -c
           - |
             echo "Installing missing dependencies for Qwen3-TTS support..."
-            pip install --no-cache-dir onnxruntime sox 2>&1 | tail -10
+            echo "Step 1/3: Installing SoX system binary..."
+            apt-get -o APT::Sandbox::User=root update -qq 2>&1 | tail -5
+            apt-get -o APT::Sandbox::User=root install -y -qq sox libsox-fmt-all 2>&1 | tail -5
+            echo "Step 2/3: Installing Python packages..."
+            pip install --no-cache-dir onnxruntime sox 2>&1 | tail -5
+            echo "Step 3/3: Verifying SoX installation..."
+            which sox && sox --version | head -1
             echo "Starting vLLM-Omni server..."
             exec vllm-omni serve /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
               --stage-configs-path vllm_omni/model_executor/stage_configs/qwen3_tts.yaml \
@@ -131,26 +139,26 @@ spec:
             protocol: TCP
 
         # STORY-150: Optimized probes for faster cold start detection
-        # TTS model with pip install overhead - keep longer delays but improve frequency
-        # pip install (~2min) + model load (~2min) = ~4-5min expected
-        # Liveness must allow full cold start: 240 + (5-1)×15 = 300s total
+        # TTS model with apt + pip install overhead - keep longer delays but improve frequency
+        # apt-get sox (~1min) + pip install (~1min) + model load (~3min) = ~5-6min expected
+        # Liveness must allow full cold start: 300 + (5-1)×15 = 360s total
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 240  # Reduced from 300 - pip + load ~4min
-          periodSeconds: 15         # Reduced from 30 - check more frequently
+          initialDelaySeconds: 300  # Increased for apt-get + pip + load ~5min
+          periodSeconds: 15         # Check frequently
           timeoutSeconds: 10
-          failureThreshold: 5       # 5th failure at ~300s total (covers 4-5min startup)
+          failureThreshold: 5       # 5th failure at ~360s total (covers 5-6min startup)
 
         readinessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 180  # Reduced from 300 - start checking earlier
-          periodSeconds: 5          # Reduced from 10 - catch ready state faster
+          initialDelaySeconds: 240  # Start checking after apt + pip likely done
+          periodSeconds: 5          # Catch ready state faster
           timeoutSeconds: 5
-          failureThreshold: 36      # (36-1)×5=175s after initial delay (~355s total)
+          failureThreshold: 36      # (36-1)×5=175s after initial delay (~415s total)
 
         # Volume mounts
         volumeMounts:
