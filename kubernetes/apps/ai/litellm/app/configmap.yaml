@@ -165,6 +165,20 @@ data:
         model_info:
           description: "KServe Hermes-3 Jarvis assistant (~97s cold start, function calling enabled)"
 
+      # =====================================================
+      # STORY-030-4: Whisper STT for Voice Calling
+      # Speech-to-text model on RTX A2000 (k8s-work-4)
+      # OpenAI-compatible /v1/audio/transcriptions endpoint
+      # =====================================================
+      - model_name: "whisper-medium"
+        litellm_params:
+          model: "whisper-1"  # OpenAI-compatible model name
+          api_base: "http://whisper-medium-predictor.ai.svc.cluster.local"
+          api_key: "dummy"
+          timeout: 120        # Cold start ~30-60s + transcription time
+        model_info:
+          description: "KServe Whisper Medium STT (~30-60s cold start, voice calling)"
+
     router_settings:
       # STORY-150: Disable retries to prevent retry storms during KServe cold starts
       # Per-model num_retries in litellm_params is NOT supported - only router_settings applies
