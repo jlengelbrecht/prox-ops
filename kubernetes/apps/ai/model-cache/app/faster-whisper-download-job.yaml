@@ -1,0 +1,164 @@
+---
+# STORY-030-4: Faster-Whisper Model Pre-download Job (CTranslate2 format)
+# Downloads Systran/faster-whisper-medium for speaches (faster-whisper-server)
+#
+# Model: Systran/faster-whisper-medium (~1.5GB disk, ~1.4GB VRAM)
+# Purpose: CTranslate2 format Whisper for high-performance STT
+# Framework: speaches v0.6.0+ expects this model format
+#
+# NOTE: speaches uses HuggingFace Hub caching, NOT local-dir style downloads.
+# The model must be in /models/.cache/huggingface/hub/models--Systran--faster-whisper-medium/
+#
+# Usage:
+#   kubectl delete job -n ai faster-whisper-download  # Remove old job first
+#   kubectl apply -f faster-whisper-download-job.yaml
+#   kubectl logs -n ai job/faster-whisper-download -f
+#
+# After download, verify:
+#   kubectl exec -it -n ai deploy/litellm -- ls -la /models/.cache/huggingface/hub/
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: faster-whisper-download
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: faster-whisper-download
+    app.kubernetes.io/component: cache-loader
+    app.kubernetes.io/part-of: kserve
+    story: "030-4"
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: faster-whisper-download
+        app.kubernetes.io/component: cache-loader
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+
+      # Fix PVC permissions for non-root user
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /models/.cache/huggingface/hub
+              chown -R 1000:1000 /models/.cache
+              echo "Permissions fixed: /models/.cache owned by user 1000"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+      containers:
+        - name: huggingface-downloader
+          image: python:3.11-slim
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              echo "Installing huggingface-hub CLI..."
+              pip install --no-cache-dir 'huggingface-hub[cli]>=0.27,<0.28'
+              export PATH="/tmp/.local/bin:$PATH"
+
+              echo ""
+              echo "=== STORY-030-4: Faster-Whisper Model Download ==="
+              echo "Downloading Systran/faster-whisper-medium for speaches (CTranslate2 format)"
+              echo ""
+
+              # Download faster-whisper-medium (~1.5GB)
+              # Using huggingface-cli download which respects HF_HOME cache structure
+              echo "=== Downloading Systran/faster-whisper-medium (~1.5GB) ==="
+              huggingface-cli download \
+                Systran/faster-whisper-medium \
+                --cache-dir /models/.cache/huggingface/hub
+              echo "Download complete: Systran/faster-whisper-medium"
+              echo ""
+
+              # Verify download in HuggingFace cache format
+              echo "=== Verifying HuggingFace cache structure ==="
+              ls -la /models/.cache/huggingface/hub/
+              echo ""
+
+              # Check for the specific model directory
+              if [ -d "/models/.cache/huggingface/hub/models--Systran--faster-whisper-medium" ]; then
+                echo "Model cache directory found:"
+                ls -la /models/.cache/huggingface/hub/models--Systran--faster-whisper-medium/
+                du -sh /models/.cache/huggingface/hub/models--Systran--faster-whisper-medium/
+              else
+                echo "WARNING: Expected model directory not found!"
+                echo "Looking for model files..."
+                find /models/.cache -name "*.bin" -o -name "*.json" 2>/dev/null | head -20
+              fi
+              echo ""
+
+              echo "=== Faster-Whisper model download complete ==="
+              echo "Model: Systran/faster-whisper-medium"
+              echo "Format: CTranslate2 (optimized for faster-whisper / speaches)"
+              echo "Cache: /models/.cache/huggingface/hub/"
+              echo "VRAM: ~1.4GB (FP16)"
+              echo "Use case: High-performance speech-to-text for voice calling"
+              echo ""
+              echo "The speaches container can now load this model from cache"
+              echo "without requiring network access to HuggingFace."
+
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 2Gi
+
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: HF_TOKEN
+                  optional: true
+            - name: HOME
+              value: /tmp
+            - name: HF_HOME
+              value: /models/.cache
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache
