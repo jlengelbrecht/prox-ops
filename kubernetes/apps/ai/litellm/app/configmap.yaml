@@ -112,6 +112,12 @@ data:
         model_info:
           description: "KServe Qwen2.5-Omni multimodal (~150s cold start)"
 
+      # =====================================================
+      # EPIC-030: TTS Models (Text-to-Speech)
+      # Use /v1/audio/speech endpoint via mode: audio_speech
+      # qwen-tts: 11 preset voices (alloy, echo, fable, onyx, nova, shimmer, etc.)
+      # qwen-tts-base: Voice cloning with ref_audio parameter
+      # =====================================================
       - model_name: "qwen-tts"
         litellm_params:
           # Note: vLLM exposes model as "/models/..." path, must match exactly
@@ -120,7 +126,17 @@ data:
           api_key: "dummy"
           timeout: 420        # STORY-150: Increased from 360 for pip install overhead
         model_info:
-          description: "KServe Qwen3-TTS voice cloning (~5min cold start) - may need custom endpoint"
+          description: "KServe Qwen3-TTS preset voices (~5min cold start)"
+
+      - model_name: "qwen-tts-base"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+          api_base: "http://qwen-tts-base-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 420        # Same as qwen-tts for pip install overhead
+        model_info:
+          description: "KServe Qwen3-TTS-Base voice cloning with ref_audio (~5min cold start)"
 
       # Note: Audio/Image/Video models may require custom API handling
       # LiteLLM primarily routes to /v1/chat/completions - these models
@@ -176,6 +192,7 @@ data:
           api_base: "http://whisper-medium-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
           timeout: 120        # Cold start ~30-60s + transcription time
+          mode: audio_transcription  # EPIC-030: Route to /v1/audio/transcriptions endpoint
         model_info:
           description: "KServe Whisper Medium STT (~30-60s cold start, voice calling)"
 
