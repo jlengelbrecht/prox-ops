@@ -65,6 +65,7 @@ spec:
         # Install missing dependencies at runtime (onnxruntime-gpu, sox)
         # Workaround for https://github.com/vllm-project/vllm-omni/pull/909
         # TODO: Remove after vLLM-Omni includes these dependencies in base image
+        # Reference: https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/examples/online_serving/qwen3_tts/
         command:
           - /bin/bash
           - -c
@@ -72,15 +73,12 @@ spec:
             echo "Installing missing dependencies for Qwen3-TTS support..."
             pip install --no-cache-dir onnxruntime-gpu sox 2>&1 | tail -10
             echo "Starting vLLM-Omni server..."
-            exec vllm serve /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
-              --omni \
-              --load-format=safetensors \
-              --dtype=auto \
-              --max-model-len=4096 \
+            exec vllm-omni serve /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
+              --stage-configs-path vllm_omni/model_executor/stage_configs/qwen3_tts.yaml \
+              --trust-remote-code \
               --gpu-memory-utilization=0.25 \
               --enforce-eager \
-              --enable-chunked-prefill \
-              --enable-prefix-caching \
+              --omni \
               --host=0.0.0.0 \
               --port=8080 \
               --disable-log-stats \
