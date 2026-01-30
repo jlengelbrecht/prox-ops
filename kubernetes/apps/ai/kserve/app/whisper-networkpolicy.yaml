@@ -101,3 +101,15 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+
+    # Allow PyPI access for runtime dependency installation
+    # faster-whisper-server image builds/installs packages on startup
+    - toFQDNs:
+        - matchName: "pypi.org"
+        - matchPattern: "*.pypi.org"
+        - matchName: "files.pythonhosted.org"
+        - matchPattern: "*.pythonhosted.org"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
