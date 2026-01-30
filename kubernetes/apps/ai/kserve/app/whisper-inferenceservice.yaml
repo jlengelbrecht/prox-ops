@@ -2,7 +2,7 @@
 # KServe InferenceService: Whisper Medium (Speech-to-Text)
 # STORY-030-4: Deploy Whisper for voice calling STT
 # Model: openai/whisper-medium (~1.4GB VRAM, audio transcription)
-# Framework: faster-whisper (CTranslate2 optimized, OpenAI-compatible API)
+# Framework: speaches (formerly faster-whisper-server) with OpenAI-compatible API
 # GPU: RTX A2000 12GB (k8s-work-4) - uses time-slicing, can coexist with Plex
 #
 # Performance Characteristics:
@@ -19,7 +19,7 @@
 #   curl -X POST http://whisper-medium-predictor.ai.svc.cluster.local/v1/audio/transcriptions \
 #     -H "Content-Type: multipart/form-data" \
 #     -F file=@audio.mp3 \
-#     -F model=whisper-medium
+#     -F model=medium
 #
 # GPU Time-Slicing Note (STORY-030-1):
 # - A2000 has 3 virtual GPU slots (time-slicing enabled)
@@ -34,7 +34,7 @@ metadata:
     app.kubernetes.io/name: whisper-medium
     app.kubernetes.io/component: inference
     app.kubernetes.io/part-of: kserve
-    model.framework: faster-whisper
+    model.framework: speaches
     model.type: audio-transcription
     model.size: medium
   annotations:
@@ -53,32 +53,47 @@ spec:
       gpu.nvidia.com/model: rtx-a2000
 
     containers:
-      - name: faster-whisper
-        # faster-whisper-server: OpenAI-compatible Whisper API
+      - name: speaches
+        # speaches (formerly faster-whisper-server): OpenAI-compatible Whisper API
         # CTranslate2 backend provides 4x faster inference than original Whisper
+        # v0.6.0+ adds OpenAI-compatible /v1/audio/transcriptions endpoint
         # renovate: datasource=docker depName=fedirz/faster-whisper-server
-        image: fedirz/faster-whisper-server:0.5.0-cuda
+        image: fedirz/faster-whisper-server:0.6.0-rc.3-cuda
 
-        # Environment configuration (no args - image uses env vars)
+        # Environment configuration (uses WHISPER__ prefix for nested config)
+        # Reference: https://speaches.ai/configuration/
         env:
-          # Server binding
-          - name: WHISPER__HOST
+          # Server binding (uses uvicorn config in 0.6.0+)
+          - name: UVICORN_HOST
             value: "0.0.0.0"
 
-          - name: WHISPER__PORT
+          - name: UVICORN_PORT
             value: "8000"
 
-          # Model configuration
+          # Model configuration - preload medium model
           - name: WHISPER__MODEL
-            value: "medium"  # Uses built-in model download/cache
+            value: "medium"
 
           # Device configuration
           - name: WHISPER__INFERENCE_DEVICE
             value: "cuda"
 
-          # Compute type for GPU (float16 for efficiency)
+          # Compute type for GPU (float16 for efficiency on A2000)
           - name: WHISPER__COMPUTE_TYPE
             value: "float16"
+
+          # Disable Gradio UI (not needed for API-only use)
+          - name: ENABLE_UI
+            value: "false"
+
+          # Keep model loaded longer to reduce cold starts
+          # -1 = never unload, but we use 600s to allow scale-to-zero
+          - name: STT_MODEL_TTL
+            value: "600"
+
+          # Reduce log verbosity
+          - name: LOG_LEVEL
+            value: "info"
 
           # Cache directory for model files (consistent with other KServe services)
           - name: HF_HOME
