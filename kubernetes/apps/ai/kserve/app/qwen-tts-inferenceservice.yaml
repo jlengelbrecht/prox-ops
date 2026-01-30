@@ -62,7 +62,7 @@ spec:
         # renovate: datasource=docker depName=vllm/vllm-omni
         image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
 
-        # Install missing dependencies at runtime (onnxruntime-gpu, sox)
+        # Install missing dependencies at runtime (onnxruntime, sox)
         # Workaround for https://github.com/vllm-project/vllm-omni/pull/909
         # TODO: Remove after vLLM-Omni includes these dependencies in base image
         # Reference: https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/examples/online_serving/qwen3_tts/
@@ -71,7 +71,7 @@ spec:
           - -c
           - |
             echo "Installing missing dependencies for Qwen3-TTS support..."
-            pip install --no-cache-dir onnxruntime-gpu sox 2>&1 | tail -10
+            pip install --no-cache-dir onnxruntime sox 2>&1 | tail -10
             echo "Starting vLLM-Omni server..."
             exec vllm-omni serve /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
               --stage-configs-path vllm_omni/model_executor/stage_configs/qwen3_tts.yaml \
