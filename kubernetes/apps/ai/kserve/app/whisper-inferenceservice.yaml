@@ -111,9 +111,10 @@ spec:
           - name: PRELOAD_MODELS
             value: '["Systran/faster-whisper-medium"]'
 
-          # Cache directory for model files (consistent with other KServe services)
+          # Cache directory for model files
+          # Must match download job cache structure: /models/.cache/huggingface/hub/
           - name: HF_HOME
-            value: "/models/.cache"
+            value: "/models/.cache/huggingface"
 
           # Disable telemetry
           - name: HF_HUB_DISABLE_TELEMETRY
