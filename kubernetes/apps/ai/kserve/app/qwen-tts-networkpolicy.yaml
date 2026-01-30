@@ -5,7 +5,7 @@
 #
 # Security Posture:
 # - Ingress: ONLY from envoy-internal gateway (HTTPRoute traffic)
-# - Egress: DNS + PyPI (for runtime onnxruntime-gpu install workaround)
+# - Egress: DNS + PyPI + Ubuntu repos (for runtime dependency install workaround)
 # - Default: DENY all other traffic
 #
 # Rationale:
@@ -116,4 +116,20 @@ spec:
       toPorts:
         - ports:
             - port: "443"
+              protocol: TCP
+
+    # TEMPORARY: Allow Ubuntu archive access for sox system binary installation
+    # Container startup executes: apt-get install sox libsox-fmt-all
+    # The Python sox package requires the system SoX binary (/usr/bin/sox)
+    # vLLM-Omni Docker image doesn't include it despite sox being in pyproject.toml
+    # Workaround: apt-get -o APT::Sandbox::User=root install sox
+    # TODO: Remove after vLLM-Omni includes sox in base image
+    - toFQDNs:
+        - matchName: "archive.ubuntu.com"
+        - matchPattern: "*.archive.ubuntu.com"
+        - matchName: "security.ubuntu.com"
+        - matchPattern: "*.security.ubuntu.com"
+      toPorts:
+        - ports:
+            - port: "80"
               protocol: TCP
