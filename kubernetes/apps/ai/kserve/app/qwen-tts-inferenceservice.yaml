@@ -74,11 +74,10 @@ spec:
           - |
             echo "Installing missing dependencies for Qwen3-TTS support..."
             echo "Step 1/3: Installing SoX system binary..."
-            # Fix apt cache permissions (partial dir owned by _apt:700, not accessible when sandbox disabled)
-            # Use chmod instead of chown since chown -R can't read 700-mode dirs
-            chmod 755 /var/cache/apt/archives/partial
-            apt-get -o APT::Sandbox::User=root update -qq 2>&1 | tail -5
-            apt-get -o APT::Sandbox::User=root install -y -qq sox libsox-fmt-all 2>&1 | tail -5
+            # Use custom cache dir to avoid permission issues with _apt-owned /var/cache/apt/archives/partial
+            mkdir -p /tmp/apt-cache/partial
+            apt-get -o Dir::Cache::Archives=/tmp/apt-cache -o APT::Sandbox::User=root update -qq 2>&1 | tail -5
+            apt-get -o Dir::Cache::Archives=/tmp/apt-cache -o APT::Sandbox::User=root install -y -qq sox libsox-fmt-all 2>&1 | tail -5
             echo "Step 2/3: Installing Python packages..."
             pip install --no-cache-dir onnxruntime sox 2>&1 | tail -5
             echo "Step 3/3: Verifying SoX installation..."
@@ -170,16 +169,12 @@ spec:
             readOnly: false
 
         # Security context
-        # CAP_FOWNER required for chmod on apt cache (owned by _apt user)
-        # This is a temporary workaround until vLLM-Omni includes sox in base image
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false
           capabilities:
             drop:
               - ALL
-            add:
-              - FOWNER
 
     # NVIDIA container runtime for GPU access
     runtimeClassName: nvidia
