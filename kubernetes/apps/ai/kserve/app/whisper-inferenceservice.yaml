@@ -3,28 +3,28 @@
 # STORY-030-4: Deploy Whisper for voice calling STT
 # Model: openai/whisper-medium (~1.4GB VRAM, audio transcription)
 # Framework: faster-whisper (CTranslate2 optimized, OpenAI-compatible API)
-# GPU: RTX A2000 6GB (k8s-work-4) - leaves A5000 free for TTS/LLM
+# GPU: RTX A2000 12GB (k8s-work-4) - uses time-slicing, can coexist with Plex
 #
 # Performance Characteristics:
-# - Cold start: ~30-60s (model conversion + load)
+# - Cold start: ~30-60s (model download/conversion + load)
 # - Warm inference: ~1-3s for 10s audio clip
 # - Scale-to-zero: 5 minutes idle timeout
-# - VRAM usage: ~1.4GB / 6GB available on A2000
+# - VRAM usage: ~1.4GB baseline on A2000 (model + runtime)
 #
 # API Endpoints (OpenAI-compatible):
 # - POST /v1/audio/transcriptions - Transcribe audio to text
 # - POST /v1/audio/translations - Translate audio to English text
 #
 # Usage:
-#   curl -X POST http://whisper-medium.ai.svc.cluster.local/v1/audio/transcriptions \
+#   curl -X POST http://whisper-medium-predictor.ai.svc.cluster.local/v1/audio/transcriptions \
 #     -H "Content-Type: multipart/form-data" \
 #     -F file=@audio.mp3 \
 #     -F model=whisper-medium
 #
-# GPU Time-Slicing Note:
+# GPU Time-Slicing Note (STORY-030-1):
 # - A2000 has 3 virtual GPU slots (time-slicing enabled)
 # - Whisper uses 1 slot, Plex uses 1 slot, 1 slot spare
-# - Can coexist with Plex transcoding on same GPU
+# - Time-slicing shares GPU compute; VRAM is NOT isolated
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
@@ -78,9 +78,9 @@ spec:
           - name: WHISPER__COMPUTE_TYPE
             value: "float16"
 
-          # Cache directory for model files
+          # Cache directory for model files (consistent with other KServe services)
           - name: HF_HOME
-            value: "/cache"
+            value: "/models/.cache"
 
           # Disable telemetry
           - name: HF_HUB_DISABLE_TELEMETRY
@@ -129,9 +129,9 @@ spec:
 
         # Volume mounts
         volumeMounts:
-          # Cache for model files (persisted across restarts)
+          # Model cache (consistent with other KServe services)
           - name: model-cache
-            mountPath: /cache
+            mountPath: /models
           # Shared memory for faster inference
           - name: dshm
             mountPath: /dev/shm

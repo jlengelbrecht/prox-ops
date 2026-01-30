@@ -5,13 +5,14 @@
 #
 # Security Posture:
 # - Ingress: ONLY from Kourier/activator (KServe traffic) and Prometheus
-# - Egress: DNS + HuggingFace (for model download on first start)
+# - Egress: DNS + HuggingFace (for model download/conversion on cold starts)
 # - Default: DENY all other traffic
 #
 # Rationale:
 # - Prevents lateral movement if faster-whisper container compromised
-# - Model downloaded and cached in model-cache PVC after first start
-# - Subsequent starts use cached model (offline capable)
+# - faster-whisper downloads + converts model to CTranslate2 format
+# - Converted model cached in model-cache PVC for faster subsequent starts
+# - Note: HuggingFace egress required until model is cached
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -88,9 +89,9 @@ spec:
             dns:
               - matchPattern: "*"
 
-    # Allow HuggingFace Hub access for model download (first start only)
+    # Allow HuggingFace Hub access for model download and conversion
     # faster-whisper downloads and converts model to CTranslate2 format
-    # After initial download, model is cached in PVC
+    # Converted model is cached in PVC for faster subsequent cold starts
     - toFQDNs:
         - matchName: "huggingface.co"
         - matchPattern: "*.huggingface.co"
