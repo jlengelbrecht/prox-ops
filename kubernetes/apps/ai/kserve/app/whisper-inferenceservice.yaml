@@ -59,13 +59,15 @@ spec:
         # renovate: datasource=docker depName=fedirz/faster-whisper-server
         image: fedirz/faster-whisper-server:0.5.0-cuda
 
-        # Server arguments
-        args:
-          - --host=0.0.0.0
-          - --port=8000
-
-        # Environment configuration
+        # Environment configuration (no args - image uses env vars)
         env:
+          # Server binding
+          - name: WHISPER__HOST
+            value: "0.0.0.0"
+
+          - name: WHISPER__PORT
+            value: "8000"
+
           # Model configuration
           - name: WHISPER__MODEL
             value: "medium"  # Uses built-in model download/cache
