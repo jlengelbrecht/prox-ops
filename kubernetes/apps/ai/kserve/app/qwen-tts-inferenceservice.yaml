@@ -23,9 +23,10 @@
 #     -H "Content-Type: application/json" \
 #     -d '{"model":"/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice","messages":[{"role":"user","content":"Hello, how are you today?"}],"modalities":["audio"]}'
 #
-# GPU Contention Note:
-# - Only ONE InferenceService can run at a time (single RTX A5000)
-# - Scale down other models before testing qwen-tts
+# GPU Time-Slicing Note (STORY-030-1, STORY-030-6):
+# - GPU memory utilization capped at 0.25 (~6GB of 24GB)
+# - Can coexist with other small models via NVIDIA time-slicing
+# - Time-slicing provides 3 virtual GPU slots on A5000
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
@@ -74,7 +75,7 @@ spec:
               --load-format=safetensors \
               --dtype=auto \
               --max-model-len=4096 \
-              --gpu-memory-utilization=0.9 \
+              --gpu-memory-utilization=0.25 \
               --enforce-eager \
               --enable-chunked-prefill \
               --enable-prefix-caching \
