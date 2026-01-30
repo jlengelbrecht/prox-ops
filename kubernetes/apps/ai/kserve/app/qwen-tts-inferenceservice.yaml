@@ -170,12 +170,16 @@ spec:
             readOnly: false
 
         # Security context
+        # CAP_FOWNER required for chmod on apt cache (owned by _apt user)
+        # This is a temporary workaround until vLLM-Omni includes sox in base image
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false
           capabilities:
             drop:
               - ALL
+            add:
+              - FOWNER
 
     # NVIDIA container runtime for GPU access
     runtimeClassName: nvidia
