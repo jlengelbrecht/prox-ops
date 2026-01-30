@@ -37,6 +37,11 @@ spec:
       restartPolicy: Never
       automountServiceAccountToken: false
 
+      # Pod-level security context (defense-in-depth)
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
       # Fix PVC permissions for non-root user
       # Note: initContainer MUST run as root (UID 0) to chown files - this is intentional
       initContainers:
