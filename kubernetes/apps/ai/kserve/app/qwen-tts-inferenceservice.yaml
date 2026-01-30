@@ -25,8 +25,10 @@
 #
 # GPU Time-Slicing Note (STORY-030-1, STORY-030-6):
 # - GPU memory utilization capped at 0.25 (~6GB of 24GB)
-# - Can coexist with other small models via NVIDIA time-slicing
-# - Time-slicing provides 3 virtual GPU slots on A5000
+# - Time-slicing shares GPU compute; VRAM is NOT isolated
+# - Small models (TTS, Whisper, Stable-Audio) can coexist via time-slicing
+# - Large models (>12GB) run solo due to VRAM constraints (scale-to-zero when idle)
+# - All AI models pinned to k8s-work-10 (A5000) via nodeSelector
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:

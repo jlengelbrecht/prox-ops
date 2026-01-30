@@ -13,7 +13,11 @@
 # - This prevents OOM even with 3 time-slice replicas
 #
 # Note: Per-node replica counts would require more complex DaemonSet config.
-# The uniform approach is simpler and VRAM limits provide natural safety.
+# The uniform approach is simpler and safe because:
+# - All AI models are pinned to k8s-work-10 (A5000) via nodeSelector
+# - A2000 (k8s-work-4) only runs Plex, which is also pinned via nodeSelector
+# - No AI workloads can accidentally schedule to A2000
+# - Large models (>12GB) run solo; small models (TTS, Whisper) share via time-slicing
 apiVersion: v1
 kind: ConfigMap
 metadata:
