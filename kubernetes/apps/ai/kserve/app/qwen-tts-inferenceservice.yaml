@@ -74,8 +74,9 @@ spec:
           - |
             echo "Installing missing dependencies for Qwen3-TTS support..."
             echo "Step 1/3: Installing SoX system binary..."
-            # Fix apt cache permissions (partial dir owned by _apt, not accessible when sandbox disabled)
-            chown -R root:root /var/cache/apt/archives
+            # Fix apt cache permissions (partial dir owned by _apt:700, not accessible when sandbox disabled)
+            # Use chmod instead of chown since chown -R can't read 700-mode dirs
+            chmod 755 /var/cache/apt/archives/partial
             apt-get -o APT::Sandbox::User=root update -qq 2>&1 | tail -5
             apt-get -o APT::Sandbox::User=root install -y -qq sox libsox-fmt-all 2>&1 | tail -5
             echo "Step 2/3: Installing Python packages..."
