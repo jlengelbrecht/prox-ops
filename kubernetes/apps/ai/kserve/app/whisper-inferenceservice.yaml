@@ -6,11 +6,12 @@
 # GPU: RTX A2000 12GB (k8s-work-4) - uses time-slicing, can coexist with Plex
 #
 # Performance Characteristics:
-# - Cold start: ~60-90s (model preload via PRELOAD_MODELS at startup)
+# - Cold start: ~60-90s (model download + CTranslate2 conversion)
+# - Request timeout: 600s (allows for cold start + transcription)
 # - Warm inference: ~1-3s for 10s audio clip
 # - Scale-to-zero: 5 minutes idle timeout
 # - VRAM usage: ~1.4GB baseline on A2000 (model + runtime)
-# - First request: Fast (model already loaded at startup)
+# - First request: May load model on demand (PRELOAD_MODELS not working in 0.6.0-rc)
 #
 # API Endpoints (OpenAI-compatible):
 # - POST /v1/audio/transcriptions - Transcribe audio to text
@@ -42,11 +43,19 @@ metadata:
     serving.kserve.io/enable-prometheus-scraping: "true"
     security.homelab/gpu-required: "NVIDIA RTX A2000 for STT inference"
     security.homelab/network: "Internal only - ClusterIP service"
+    # Knative timeout configuration for model loading + transcription
+    # Default is 300s which times out during cold start model loading
+    # 600s allows: model download (60s) + conversion (30s) + transcription (variable)
+    serving.knative.dev/progress-deadline: "600s"
 spec:
   predictor:
     # Scale-to-zero configuration (Knative Serving)
     minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
     maxReplicas: 1  # Single instance - voice calling is sequential
+
+    # Request timeout: model loading (~90s) + transcription time
+    # Prevents 504 gateway timeout during cold starts
+    timeout: 600
 
     # Target A2000 GPU node (leaves A5000 for TTS and LLM)
     nodeSelector:
