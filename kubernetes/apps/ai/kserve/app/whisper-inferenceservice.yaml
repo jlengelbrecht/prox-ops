@@ -1,12 +1,12 @@
 ---
 # KServe InferenceService: Whisper Medium (Speech-to-Text)
 # STORY-030-4: Deploy Whisper for voice calling STT
-# Model: openai/whisper-medium (~1.4GB VRAM, audio transcription)
+# Model: Systran/faster-whisper-medium (~1.5GB disk, ~1.4GB VRAM)
 # Framework: speaches (formerly faster-whisper-server) with OpenAI-compatible API
 # GPU: RTX A2000 12GB (k8s-work-4) - uses time-slicing, can coexist with Plex
 #
 # Performance Characteristics:
-# - Cold start: ~60-90s (model download + CTranslate2 conversion)
+# - Cold start: ~30-60s (model loading from pre-downloaded cache)
 # - Request timeout: 600s (allows for cold start + transcription)
 # - Warm inference: ~1-3s for 10s audio clip
 # - Scale-to-zero: 5 minutes idle timeout
@@ -117,6 +117,11 @@ spec:
 
           # Disable telemetry
           - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # Force offline mode to use pre-downloaded model from cache
+          # Prevents API calls to HuggingFace which are blocked by NetworkPolicy
+          - name: HF_HUB_OFFLINE
             value: "1"
 
           # Fix for non-root user
