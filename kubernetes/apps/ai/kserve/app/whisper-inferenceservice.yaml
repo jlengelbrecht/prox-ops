@@ -1,0 +1,166 @@
+---
+# KServe InferenceService: Whisper Medium (Speech-to-Text)
+# STORY-030-4: Deploy Whisper for voice calling STT
+# Model: openai/whisper-medium (~1.4GB VRAM, audio transcription)
+# Framework: faster-whisper (CTranslate2 optimized, OpenAI-compatible API)
+# GPU: RTX A2000 12GB (k8s-work-4) - uses time-slicing, can coexist with Plex
+#
+# Performance Characteristics:
+# - Cold start: ~30-60s (model download/conversion + load)
+# - Warm inference: ~1-3s for 10s audio clip
+# - Scale-to-zero: 5 minutes idle timeout
+# - VRAM usage: ~1.4GB baseline on A2000 (model + runtime)
+#
+# API Endpoints (OpenAI-compatible):
+# - POST /v1/audio/transcriptions - Transcribe audio to text
+# - POST /v1/audio/translations - Translate audio to English text
+#
+# Usage:
+#   curl -X POST http://whisper-medium-predictor.ai.svc.cluster.local/v1/audio/transcriptions \
+#     -H "Content-Type: multipart/form-data" \
+#     -F file=@audio.mp3 \
+#     -F model=whisper-medium
+#
+# GPU Time-Slicing Note (STORY-030-1):
+# - A2000 has 3 virtual GPU slots (time-slicing enabled)
+# - Whisper uses 1 slot, Plex uses 1 slot, 1 slot spare
+# - Time-slicing shares GPU compute; VRAM is NOT isolated
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: whisper-medium
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: whisper-medium
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: faster-whisper
+    model.type: audio-transcription
+    model.size: medium
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A2000 for STT inference"
+    security.homelab/network: "Internal only - ClusterIP service"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
+    maxReplicas: 1  # Single instance - voice calling is sequential
+
+    # Target A2000 GPU node (leaves A5000 for TTS and LLM)
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-4
+      gpu.nvidia.com/model: rtx-a2000
+
+    containers:
+      - name: faster-whisper
+        # faster-whisper-server: OpenAI-compatible Whisper API
+        # CTranslate2 backend provides 4x faster inference than original Whisper
+        # renovate: datasource=docker depName=fedirz/faster-whisper-server
+        image: fedirz/faster-whisper-server:0.4.1-cuda12.4
+
+        # Server arguments
+        args:
+          - --host=0.0.0.0
+          - --port=8000
+
+        # Environment configuration
+        env:
+          # Model configuration
+          - name: WHISPER__MODEL
+            value: "medium"  # Uses built-in model download/cache
+
+          # Device configuration
+          - name: WHISPER__INFERENCE_DEVICE
+            value: "cuda"
+
+          # Compute type for GPU (float16 for efficiency)
+          - name: WHISPER__COMPUTE_TYPE
+            value: "float16"
+
+          # Cache directory for model files (consistent with other KServe services)
+          - name: HF_HOME
+            value: "/models/.cache"
+
+          # Disable telemetry
+          - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # Fix for non-root user
+          - name: HOME
+            value: "/tmp"
+
+        # Resource requirements (small model, efficient runtime)
+        resources:
+          requests:
+            cpu: 1
+            memory: 2Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 4
+            memory: 4Gi
+            nvidia.com/gpu: 1
+
+        # Health checks
+        ports:
+          - containerPort: 8000
+            name: http1
+            protocol: TCP
+
+        # Probes optimized for faster-whisper cold start
+        # Model download + CTranslate2 conversion on first start ~30-60s
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 10  # 30 + 10*10 = 130s max
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 20
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 20  # 20 + 5*20 = 120s max
+
+        # Volume mounts
+        volumeMounts:
+          # Model cache (consistent with other KServe services)
+          - name: model-cache
+            mountPath: /models
+          # Shared memory for faster inference
+          - name: dshm
+            mountPath: /dev/shm
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+
+    # NVIDIA container runtime for GPU access
+    runtimeClassName: nvidia
+
+    # Security context (pod-level)
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    serviceAccountName: default
+
+    # Volumes
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 1Gi

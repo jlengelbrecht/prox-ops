@@ -1,0 +1,103 @@
+---
+# CiliumNetworkPolicy for Whisper Medium InferenceService
+# Implements zero-trust network segmentation
+# STORY-030-4: Security hardening for voice calling STT
+#
+# Security Posture:
+# - Ingress: ONLY from Kourier/activator (KServe traffic) and Prometheus
+# - Egress: DNS + HuggingFace (for model download/conversion on cold starts)
+# - Default: DENY all other traffic
+#
+# Rationale:
+# - Prevents lateral movement if faster-whisper container compromised
+# - faster-whisper downloads + converts model to CTranslate2 format
+# - Converted model cached in model-cache PVC for faster subsequent starts
+# - Note: HuggingFace egress required until model is cached
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: whisper-medium
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: whisper-medium
+    app.kubernetes.io/component: networkpolicy
+spec:
+  # Target KServe InferenceService pods
+  endpointSelector:
+    matchLabels:
+      serving.kserve.io/inferenceservice: whisper-medium
+
+  # Ingress Rules
+  ingress:
+    # Allow traffic from Kourier gateway (KServe internal ingress)
+    # Traffic path: LiteLLM → Kourier → queue-proxy → kserve-container
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kourier-system
+            app: 3scale-kourier-gateway
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+            - port: "8012"
+              protocol: TCP
+
+    # Allow Knative Serving activator (cold start requests)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: activator
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+            - port: "8012"
+              protocol: TCP
+
+    # Allow Knative Serving autoscaler (metrics scraping)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: autoscaler
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+
+    # Allow Prometheus scraping (observability)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+
+  # Egress Rules
+  egress:
+    # Allow DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Allow HuggingFace Hub access for model download and conversion
+    # faster-whisper downloads and converts model to CTranslate2 format
+    # Converted model is cached in PVC for faster subsequent cold starts
+    - toFQDNs:
+        - matchName: "huggingface.co"
+        - matchPattern: "*.huggingface.co"
+        - matchName: "cdn-lfs.huggingface.co"
+        - matchPattern: "*.hf.co"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
