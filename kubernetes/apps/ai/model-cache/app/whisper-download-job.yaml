@@ -38,6 +38,7 @@ spec:
       automountServiceAccountToken: false
 
       # Fix PVC permissions for non-root user
+      # Note: initContainer MUST run as root (UID 0) to chown files - this is intentional
       initContainers:
         - name: fix-permissions
           image: busybox:1.37
@@ -45,14 +46,20 @@ spec:
             - sh
             - -c
             - |
-              mkdir -p /models/openai
-              chown -R 1000:1000 /models/openai
-              echo "Permissions fixed: /models/openai owned by user 1000"
+              mkdir -p /models/openai /models/.cache
+              chown -R 1000:1000 /models/openai /models/.cache
+              echo "Permissions fixed: /models/openai and /models/.cache owned by user 1000"
           volumeMounts:
             - name: model-cache
               mountPath: /models
           securityContext:
-            runAsUser: 0
+            runAsUser: 0  # Required for chown operation
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+            seccompProfile:
+              type: RuntimeDefault
           resources:
             requests:
               cpu: 10m
