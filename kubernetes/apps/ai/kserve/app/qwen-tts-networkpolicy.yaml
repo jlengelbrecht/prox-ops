@@ -104,13 +104,15 @@ spec:
               - matchPattern: "*"
 
     # TEMPORARY: Allow PyPI access for runtime dependency installation
-    # Container startup executes: pip install --no-cache-dir onnxruntime-gpu sox
+    # Container startup executes: pip install --no-cache-dir onnxruntime sox
     # Workaround for missing dependencies in vLLM-Omni Docker image
     # Track: https://github.com/vllm-project/vllm-omni/pull/909
     # TODO: Remove after vLLM-Omni includes these dependencies in base image
     - toFQDNs:
         - matchName: "pypi.org"
+        - matchPattern: "*.pypi.org"
         - matchName: "files.pythonhosted.org"
+        - matchPattern: "*.pythonhosted.org"
       toPorts:
         - ports:
             - port: "443"
