@@ -1,7 +1,15 @@
 ---
 # STORY-031-4: External HTTPRoute for Twilio Webhooks
-# Voice bridge must be accessible from Twilio for WebSocket connections
+# Voice bridge accessible from Twilio for WebSocket connections
 # Uses envoy-external for Cloudflare Tunnel access
+#
+# Security:
+# - /ws and /twiml: Twilio-only (signature validated in code)
+# - /health: Public (for monitoring)
+# - /api: NOT EXPOSED externally (removed for security)
+#
+# The /api endpoints require API key authentication and should only
+# be accessed internally or via port-forward for manual testing.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -18,6 +26,7 @@ spec:
     - voice-bridge.homelab0.org
   rules:
     # WebSocket endpoint for Twilio Media Streams
+    # Security: call_id is cryptographically random UUID
     - matches:
         - path:
             type: PathPrefix
@@ -26,6 +35,7 @@ spec:
         - name: voice-bridge
           port: 8080
     # TwiML webhook endpoint for inbound calls
+    # Security: Twilio signature validation in application code
     - matches:
         - path:
             type: PathPrefix
@@ -33,7 +43,7 @@ spec:
       backendRefs:
         - name: voice-bridge
           port: 8080
-    # Health check (optional external access for monitoring)
+    # Health check (public for external monitoring)
     - matches:
         - path:
             type: Exact
@@ -41,23 +51,5 @@ spec:
       backendRefs:
         - name: voice-bridge
           port: 8080
-    # API endpoints (call initiation, status)
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /api
-      backendRefs:
-        - name: voice-bridge
-          port: 8080
-      filters:
-        - type: ResponseHeaderModifier
-          responseHeaderModifier:
-            set:
-              - name: Strict-Transport-Security
-                value: "max-age=31536000; includeSubDomains"
-              - name: X-Frame-Options
-                value: "DENY"
-              - name: X-Content-Type-Options
-                value: "nosniff"
-              - name: Referrer-Policy
-                value: "strict-origin-when-cross-origin"
+    # NOTE: /api endpoints intentionally NOT exposed externally
+    # Access via: kubectl port-forward -n ai svc/voice-bridge 8080:8080
