@@ -1,0 +1,151 @@
+---
+# STORY-031-2: Voice Bridge Deployment
+# Pipecat-based voice bridge for AI phone calls via Twilio
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: voice-bridge
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      voice-bridge:
+        strategy: Recreate
+        
+        containers:
+          app:
+            image:
+              repository: dailyco/pipecat-base
+              # renovate: datasource=docker depName=dailyco/pipecat-base
+              tag: "0.1.13-py3.11"
+            command:
+              - /bin/sh
+              - -c
+              - |
+                echo "Installing voice-bridge dependencies..."
+                pip install --no-cache-dir -r /app/requirements.txt
+                echo "Starting voice-bridge server..."
+                exec python /app/server.py
+            env:
+              # Twilio credentials
+              TWILIO_ACCOUNT_SID:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-twilio
+                    key: TWILIO_ACCOUNT_SID
+              TWILIO_AUTH_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-twilio
+                    key: TWILIO_AUTH_TOKEN
+              TWILIO_PHONE_NUMBER:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-twilio
+                    key: TWILIO_PHONE_NUMBER
+              # LiteLLM configuration
+              LITELLM_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-litellm
+                    key: LITELLM_API_KEY
+              LITELLM_BASE_URL: "http://litellm.ai.svc.cluster.local:4000/v1"
+              # Voice bridge configuration
+              VOICE_BRIDGE_HOST: "voice-bridge.homelab0.org"
+              RECORDINGS_DIR: "/recordings"
+              # Python configuration
+              PYTHONUNBUFFERED: "1"
+              PYTHONDONTWRITEBYTECODE: "1"
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: &port 8080
+                  initialDelaySeconds: 120
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *port
+                  initialDelaySeconds: 90
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 6
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *port
+                  initialDelaySeconds: 30
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 30
+            resources:
+              requests:
+                cpu: 200m
+                memory: 512Mi
+              limits:
+                cpu: "2"
+                memory: 2Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      annotations:
+        secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm"
+      automountServiceAccountToken: false
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+
+    persistence:
+      # Application code from ConfigMap
+      app:
+        enabled: true
+        type: configMap
+        name: voice-bridge-app
+        globalMounts:
+          - path: /app
+      # Call recordings storage (STORY-031-3)
+      # recordings:
+      #   enabled: true
+      #   existingClaim: voice-bridge-recordings
+      #   globalMounts:
+      #     - path: /recordings
+
+    service:
+      app:
+        controller: voice-bridge
+        type: ClusterIP
+        ports:
+          http:
+            port: 8080
+            protocol: TCP
