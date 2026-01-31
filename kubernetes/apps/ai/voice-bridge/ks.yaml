@@ -12,10 +12,8 @@ spec:
     labels:
       app.kubernetes.io/name: *app
   dependsOn:
-    # Requires LiteLLM for AI gateway access
-    - name: litellm
-    # Requires KServe for Whisper/TTS models
-    - name: kserve
+    # Requires model-cache for shared AI models
+    - name: model-cache
   interval: 1h
   path: ./kubernetes/apps/ai/voice-bridge/app
   prune: true
