@@ -53,12 +53,14 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow HTTPS egress for Twilio API
-    # Required for: call initiation (api.twilio.com), media streams
-    # Note: Using toEntities: world because Twilio uses multiple domains/IPs
-    # Consider restricting to toFQDNs if stricter isolation needed
-    - toEntities:
-        - world
+    # Allow HTTPS egress for Twilio API only
+    # Security: Restrict to Twilio domains to prevent data exfiltration
+    # Required domains:
+    # - api.twilio.com - REST API for call control
+    # - *.twilio.com - various Twilio services (media, events, etc.)
+    - toFQDNs:
+        - matchName: "api.twilio.com"
+        - matchPattern: "*.twilio.com"
       toPorts:
         - ports:
             - port: "443"
