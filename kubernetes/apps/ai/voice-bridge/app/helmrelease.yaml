@@ -25,9 +25,10 @@ spec:
         containers:
           app:
             image:
-              repository: dailyco/pipecat-base
-              # renovate: datasource=docker depName=dailyco/pipecat-base
-              tag: "0.1.13-py3.11"
+              # Using official Python image (multi-arch) since dailyco/pipecat-base is arm64 only
+              repository: python
+              # renovate: datasource=docker depName=python
+              tag: "3.11-slim"
             command:
               - /bin/sh
               - -c
