@@ -1,0 +1,67 @@
+---
+# STORY-031-3: Call Recording Cleanup
+# Delete recordings older than 30 days to manage storage
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: voice-bridge-cleanup
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: voice-bridge
+    app.kubernetes.io/component: cleanup
+spec:
+  # Run daily at 3 AM
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          containers:
+            - name: cleanup
+              image: busybox:1.37
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  echo "Starting recording cleanup (30 day retention)..."
+                  
+                  # Find and delete files older than 30 days
+                  find /recordings -type f -mtime +30 -delete 2>/dev/null || true
+                  
+                  # Find and delete empty directories
+                  find /recordings -type d -empty -delete 2>/dev/null || true
+                  
+                  # Report remaining storage usage
+                  echo "Cleanup complete. Current storage usage:"
+                  du -sh /recordings 2>/dev/null || echo "No recordings directory"
+              volumeMounts:
+                - name: recordings
+                  mountPath: /recordings
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 1000
+                capabilities:
+                  drop:
+                    - ALL
+          volumes:
+            - name: recordings
+              persistentVolumeClaim:
+                claimName: voice-bridge-recordings
+          securityContext:
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault

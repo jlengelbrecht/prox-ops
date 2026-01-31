@@ -1,0 +1,21 @@
+---
+# STORY-031-3: Call Recording Storage
+# Persistent volume for storing call recordings and transcripts
+# Retention: 30 days (managed by cleanup-cronjob.yaml)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: voice-bridge-recordings
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: voice-bridge
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 50Gi
