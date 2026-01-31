@@ -31,7 +31,7 @@ data:
     from contextlib import asynccontextmanager
     
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import Response
     from pydantic import BaseModel
     from twilio.rest import Client as TwilioClient
     from twilio.twiml.voice_response import VoiceResponse, Connect
@@ -82,11 +82,19 @@ data:
         logger.info(f"LiteLLM Base URL: {LITELLM_BASE_URL}")
         logger.info(f"Twilio Phone: {TWILIO_PHONE_NUMBER}")
         
-        # Validate required environment variables
-        if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
-            logger.error("Missing Twilio credentials!")
+        # Validate required environment variables - fail fast if missing
+        missing_vars = []
+        if not TWILIO_ACCOUNT_SID:
+            missing_vars.append("TWILIO_ACCOUNT_SID")
+        if not TWILIO_AUTH_TOKEN:
+            missing_vars.append("TWILIO_AUTH_TOKEN")
+        if not TWILIO_PHONE_NUMBER:
+            missing_vars.append("TWILIO_PHONE_NUMBER")
         if not LITELLM_API_KEY:
-            logger.error("Missing LITELLM_API_KEY!")
+            missing_vars.append("LITELLM_API_KEY")
+
+        if missing_vars:
+            raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
         
         yield
         
@@ -151,19 +159,21 @@ data:
             # Twilio will stream audio to wss://voice-bridge.homelab0.org/ws/{call_id}
             ws_url = f"wss://{VOICE_BRIDGE_HOST}/ws/{call_id}"
             
-            # Create the call
-            call = client.calls.create(
+            # Create the call using asyncio.to_thread to avoid blocking event loop
+            twiml_content = f'''
+                <Response>
+                    <Connect>
+                        <Stream url="{ws_url}">
+                            <Parameter name="call_id" value="{call_id}"/>
+                        </Stream>
+                    </Connect>
+                </Response>
+            '''
+            call = await asyncio.to_thread(
+                client.calls.create,
                 to=request.to,
                 from_=from_number,
-                twiml=f'''
-                    <Response>
-                        <Connect>
-                            <Stream url="{ws_url}">
-                                <Parameter name="call_id" value="{call_id}"/>
-                            </Stream>
-                        </Connect>
-                    </Response>
-                '''
+                twiml=twiml_content
             )
             
             active_calls[call_id]["twilio_sid"] = call.sid
@@ -240,7 +250,7 @@ data:
         
         try:
             # Import Pipecat components here to avoid startup delays
-            from bot import create_pipeline, run_pipeline
+            from bot import run_pipeline
             
             # Create and run the Pipecat pipeline
             call_data = active_calls[call_id]
@@ -281,7 +291,7 @@ data:
         connect.stream(url=ws_url, name="voice-bridge")
         response.append(connect)
         
-        return JSONResponse(
+        return Response(
             content=str(response),
             media_type="application/xml"
         )
@@ -451,13 +461,14 @@ data:
         logger.info(f"Pipeline completed for call: {call_id}")
 
   # Requirements file for pip install
+  # Versions pinned for reproducibility (Renovate will update via configmap annotations)
   requirements.txt: |
     # Pipecat dependencies
-    pipecat-ai[openai,silero]>=0.0.48
+    pipecat-ai[openai,silero]==0.0.48
     # Server dependencies
-    fastapi>=0.109.0
-    uvicorn>=0.27.0
+    fastapi==0.115.0
+    uvicorn==0.32.0
     # Twilio SDK
-    twilio>=8.10.0
+    twilio==9.4.0
     # WebSocket support
-    websockets>=12.0
+    websockets==14.1
