@@ -135,6 +135,10 @@ spec:
       annotations:
         secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm,voice-bridge-api"
       automountServiceAccountToken: false
+      # Security: fsGroup ensures volumes are writable by non-root user (65532)
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
