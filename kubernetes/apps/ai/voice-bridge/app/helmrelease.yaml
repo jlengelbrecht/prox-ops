@@ -61,6 +61,12 @@ spec:
                     name: voice-bridge-litellm
                     key: LITELLM_API_KEY
               LITELLM_BASE_URL: "http://litellm.ai.svc.cluster.local:4000/v1"
+              # Security: API key for call initiation endpoint
+              VOICE_BRIDGE_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-api
+                    key: VOICE_BRIDGE_API_KEY
               # Voice bridge configuration
               VOICE_BRIDGE_HOST: "voice-bridge.homelab0.org"
               RECORDINGS_DIR: "/recordings"
@@ -119,7 +125,7 @@ spec:
 
     defaultPodOptions:
       annotations:
-        secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm"
+        secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm,voice-bridge-api"
       automountServiceAccountToken: false
       affinity:
         nodeAffinity:

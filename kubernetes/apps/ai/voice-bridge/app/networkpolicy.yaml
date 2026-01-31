@@ -1,6 +1,10 @@
 ---
 # STORY-031-4: Voice Bridge Network Policy
 # Controls ingress/egress for voice bridge service
+#
+# Security Architecture:
+# - Ingress: Only from envoy-external gateway and internal AI services
+# - Egress: Only to LiteLLM (AI), DNS, and Twilio API (HTTPS)
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -20,7 +24,7 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-    # Allow ingress from internal AI services (moltbot API calls)
+    # Allow ingress from internal AI services (moltbot API calls via port-forward)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
@@ -38,7 +42,7 @@ spec:
         - ports:
             - port: "4000"
               protocol: TCP
-    # Allow DNS resolution
+    # Allow DNS resolution (required for Twilio API hostname resolution)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kube-system
@@ -49,7 +53,10 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow HTTPS egress for Twilio API (initiating calls, media streams)
+    # Allow HTTPS egress for Twilio API
+    # Required for: call initiation (api.twilio.com), media streams
+    # Note: Using toEntities: world because Twilio uses multiple domains/IPs
+    # Consider restricting to toFQDNs if stricter isolation needed
     - toEntities:
         - world
       toPorts:

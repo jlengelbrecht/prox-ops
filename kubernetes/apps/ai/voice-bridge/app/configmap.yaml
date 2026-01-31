@@ -1,6 +1,7 @@
 ---
 # STORY-031-2: Voice Bridge Application Code
 # ConfigMap containing the Pipecat-based voice bridge Python application
+# Security hardened: Twilio signature validation + API key authentication
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,35 +12,49 @@ data:
   server.py: |
     """
     Voice Bridge Server - Connects Twilio phone calls to LiteLLM AI infrastructure
-    
+
     EPIC-031: Voice Calling Capability
-    
+
+    Security:
+    - Twilio webhook signature validation (X-Twilio-Signature)
+    - API key authentication for call initiation
+    - Phone number format validation (E.164)
+    - Request logging for audit trail
+
     Endpoints:
-    - POST /api/v1/calls - Initiate outbound call
-    - GET /api/v1/calls/{call_id} - Get call status
-    - GET /health - Health check
-    - WebSocket /ws - Twilio Media Streams handler
+    - POST /api/v1/calls - Initiate outbound call (REQUIRES API KEY)
+    - GET /api/v1/calls/{call_id} - Get call status (REQUIRES API KEY)
+    - GET /health - Health check (public)
+    - WebSocket /ws - Twilio Media Streams handler (Twilio only)
+    - POST /twiml/answer - Twilio webhook (signature validated)
     """
-    
+
     import os
+    import re
     import asyncio
     import uuid
-    import json
+    import time
     import logging
     from datetime import datetime
     from typing import Dict, Optional
     from contextlib import asynccontextmanager
-    
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+    from urllib.parse import urljoin
+
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Header, Depends
     from fastapi.responses import Response
-    from pydantic import BaseModel
+    from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+    from pydantic import BaseModel, field_validator
     from twilio.rest import Client as TwilioClient
     from twilio.twiml.voice_response import VoiceResponse, Connect
-    
+    from twilio.request_validator import RequestValidator
+
     # Configure logging
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     logger = logging.getLogger("voice-bridge")
-    
+
     # Environment configuration
     TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
     TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
@@ -48,19 +63,80 @@ data:
     LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "http://litellm.ai.svc.cluster.local:4000/v1")
     VOICE_BRIDGE_HOST = os.getenv("VOICE_BRIDGE_HOST", "voice-bridge.homelab0.org")
     RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/recordings")
-    
-    # In-memory call tracking (consider Redis for production scaling)
+
+    # Security: API key for internal endpoints
+    VOICE_BRIDGE_API_KEY = os.getenv("VOICE_BRIDGE_API_KEY")
+
+    # In-memory call tracking with TTL cleanup
     active_calls: Dict[str, dict] = {}
-    
-    
+    CALL_TTL_SECONDS = 86400  # 24 hours
+
+    # Security: HTTP Bearer authentication
+    security = HTTPBearer(auto_error=False)
+
+    # Security: Twilio request validator
+    twilio_validator: Optional[RequestValidator] = None
+
+
+    def verify_api_key(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> bool:
+        """Verify API key for protected endpoints"""
+        if not VOICE_BRIDGE_API_KEY:
+            logger.error("VOICE_BRIDGE_API_KEY not configured - rejecting all API requests")
+            raise HTTPException(status_code=503, detail="API authentication not configured")
+
+        if not credentials:
+            logger.warning("API request without credentials")
+            raise HTTPException(status_code=401, detail="Missing authorization header")
+
+        if credentials.credentials != VOICE_BRIDGE_API_KEY:
+            logger.warning("API request with invalid credentials")
+            raise HTTPException(status_code=403, detail="Invalid API key")
+
+        return True
+
+
+    async def validate_twilio_signature(request: Request, x_twilio_signature: Optional[str] = Header(None)) -> bool:
+        """Validate Twilio webhook signature"""
+        if not twilio_validator:
+            logger.error("Twilio validator not initialized")
+            raise HTTPException(status_code=503, detail="Twilio validation not configured")
+
+        if not x_twilio_signature:
+            logger.warning(f"Twilio request without signature from {request.client.host}")
+            raise HTTPException(status_code=403, detail="Missing X-Twilio-Signature header")
+
+        # Get the full URL as Twilio sees it
+        # Use the public hostname for validation (Twilio signs with the URL it called)
+        url = f"https://{VOICE_BRIDGE_HOST}{request.url.path}"
+
+        # Get form data for signature validation
+        form_data = await request.form()
+        params = {k: v for k, v in form_data.items()}
+
+        if not twilio_validator.validate(url, params, x_twilio_signature):
+            logger.warning(f"Invalid Twilio signature from {request.client.host}")
+            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+
+        logger.info(f"Twilio signature validated for {request.url.path}")
+        return True
+
+
     class CallRequest(BaseModel):
         """Request model for initiating a call"""
         to: str  # Phone number to call (+1xxxxxxxxxx)
         context: Optional[str] = "You are a helpful AI assistant."
         voice: Optional[str] = "alloy"  # Voice persona for TTS
         from_number: Optional[str] = None  # Override default Twilio number
-    
-    
+
+        @field_validator('to')
+        @classmethod
+        def validate_phone_number(cls, v: str) -> str:
+            """Validate E.164 phone number format"""
+            if not re.match(r'^\+[1-9]\d{1,14}$', v):
+                raise ValueError('Invalid phone number format. Use E.164 format: +1234567890')
+            return v
+
+
     class CallStatus(BaseModel):
         """Response model for call status"""
         call_id: str
@@ -73,15 +149,33 @@ data:
         recording_url: Optional[str] = None
         transcript: Optional[str] = None
         error: Optional[str] = None
-    
-    
+
+
+    async def cleanup_expired_calls():
+        """Background task to clean up expired call records"""
+        while True:
+            await asyncio.sleep(3600)  # Run every hour
+            now = time.time()
+            expired = [
+                cid for cid, call in active_calls.items()
+                if now - call.get("created_at", now) > CALL_TTL_SECONDS
+            ]
+            for cid in expired:
+                del active_calls[cid]
+            if expired:
+                logger.info(f"Cleaned up {len(expired)} expired call records")
+
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Application lifespan handler"""
+        global twilio_validator
+
         logger.info("Voice Bridge starting up...")
         logger.info(f"LiteLLM Base URL: {LITELLM_BASE_URL}")
         logger.info(f"Twilio Phone: {TWILIO_PHONE_NUMBER}")
-        
+        logger.info(f"API Key configured: {bool(VOICE_BRIDGE_API_KEY)}")
+
         # Validate required environment variables - fail fast if missing
         missing_vars = []
         if not TWILIO_ACCOUNT_SID:
@@ -92,39 +186,74 @@ data:
             missing_vars.append("TWILIO_PHONE_NUMBER")
         if not LITELLM_API_KEY:
             missing_vars.append("LITELLM_API_KEY")
+        if not VOICE_BRIDGE_API_KEY:
+            missing_vars.append("VOICE_BRIDGE_API_KEY")
 
         if missing_vars:
             raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
-        
+
+        # Initialize Twilio request validator
+        twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN)
+        logger.info("Twilio request validator initialized")
+
+        # Start background cleanup task
+        cleanup_task = asyncio.create_task(cleanup_expired_calls())
+
         yield
-        
+
+        # Cancel cleanup task on shutdown
+        cleanup_task.cancel()
         logger.info("Voice Bridge shutting down...")
-    
-    
+
+
     app = FastAPI(
         title="Voice Bridge",
         description="Pipecat-based voice bridge for AI phone calls",
         version="1.0.0",
         lifespan=lifespan
     )
-    
-    
+
+
+    # Request logging middleware
+    @app.middleware("http")
+    async def log_requests(request: Request, call_next):
+        """Log all requests for audit trail"""
+        start_time = time.time()
+
+        # Log request (exclude sensitive headers)
+        logger.info(
+            f"Request: {request.method} {request.url.path} "
+            f"from {request.client.host if request.client else 'unknown'}"
+        )
+
+        response = await call_next(request)
+
+        # Log response time
+        duration = time.time() - start_time
+        logger.info(f"Response: {response.status_code} in {duration:.3f}s")
+
+        return response
+
+
     @app.get("/health")
     async def health_check():
-        """Health check endpoint for Kubernetes probes"""
+        """Health check endpoint for Kubernetes probes (public)"""
         return {
             "status": "healthy",
             "service": "voice-bridge",
             "timestamp": datetime.utcnow().isoformat(),
             "active_calls": len(active_calls)
         }
-    
-    
+
+
     @app.post("/api/v1/calls", response_model=CallStatus)
-    async def initiate_call(request: CallRequest):
+    async def initiate_call(
+        request: CallRequest,
+        authenticated: bool = Depends(verify_api_key)
+    ):
         """
-        Initiate an outbound phone call
-        
+        Initiate an outbound phone call (REQUIRES API KEY)
+
         The call flow:
         1. Create Twilio call with TwiML pointing to our WebSocket
         2. Twilio connects and streams audio to our WebSocket
@@ -133,11 +262,11 @@ data:
         """
         if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]):
             raise HTTPException(status_code=503, detail="Twilio not configured")
-        
+
         call_id = str(uuid.uuid4())
         from_number = request.from_number or TWILIO_PHONE_NUMBER
-        
-        # Store call metadata
+
+        # Store call metadata with creation timestamp for TTL
         active_calls[call_id] = {
             "call_id": call_id,
             "to": request.to,
@@ -146,20 +275,19 @@ data:
             "voice": request.voice,
             "status": "pending",
             "started_at": datetime.utcnow().isoformat(),
+            "created_at": time.time(),
             "twilio_sid": None,
             "transcript": [],
             "error": None
         }
-        
+
         try:
             # Initialize Twilio client
             client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            
+
             # Create TwiML that connects to our WebSocket
-            # Twilio will stream audio to wss://voice-bridge.homelab0.org/ws/{call_id}
             ws_url = f"wss://{VOICE_BRIDGE_HOST}/ws/{call_id}"
-            
-            # Create the call using asyncio.to_thread to avoid blocking event loop
+
             twiml_content = f'''
                 <Response>
                     <Connect>
@@ -175,12 +303,12 @@ data:
                 from_=from_number,
                 twiml=twiml_content
             )
-            
+
             active_calls[call_id]["twilio_sid"] = call.sid
             active_calls[call_id]["status"] = "in_progress"
-            
+
             logger.info(f"Call initiated: {call_id} -> {request.to}")
-            
+
             return CallStatus(**{
                 "call_id": call_id,
                 "status": "in_progress",
@@ -188,29 +316,32 @@ data:
                 "from_number": from_number,
                 "started_at": active_calls[call_id]["started_at"]
             })
-            
+
         except Exception as e:
             logger.error(f"Failed to initiate call {call_id}: {e}")
             active_calls[call_id]["status"] = "failed"
             active_calls[call_id]["error"] = str(e)
             raise HTTPException(status_code=500, detail=str(e))
-    
-    
+
+
     @app.get("/api/v1/calls/{call_id}", response_model=CallStatus)
-    async def get_call_status(call_id: str):
-        """Get the status of a call"""
+    async def get_call_status(
+        call_id: str,
+        authenticated: bool = Depends(verify_api_key)
+    ):
+        """Get the status of a call (REQUIRES API KEY)"""
         if call_id not in active_calls:
             raise HTTPException(status_code=404, detail="Call not found")
-        
+
         call = active_calls[call_id]
-        
+
         # Calculate duration if call has ended
         duration = None
         if call.get("ended_at") and call.get("started_at"):
             start = datetime.fromisoformat(call["started_at"])
             end = datetime.fromisoformat(call["ended_at"])
             duration = int((end - start).total_seconds())
-        
+
         return CallStatus(
             call_id=call["call_id"],
             status=call["status"],
@@ -223,35 +354,39 @@ data:
             transcript="\n".join(call.get("transcript", [])) if call.get("transcript") else None,
             error=call.get("error")
         )
-    
-    
+
+
     @app.websocket("/ws/{call_id}")
     async def websocket_handler(websocket: WebSocket, call_id: str):
         """
         Handle Twilio Media Stream WebSocket connection
-        
-        This is where the magic happens:
-        1. Receive audio from Twilio (mulaw 8kHz)
-        2. Feed to Pipecat pipeline (STT -> LLM -> TTS)
-        3. Stream audio back to Twilio
+
+        Note: WebSocket connections from Twilio cannot be signature-validated
+        in the same way as HTTP requests. Security relies on:
+        1. The call_id being a cryptographically random UUID
+        2. NetworkPolicy restricting ingress sources
+        3. The call_id only being shared in signed TwiML responses
         """
         await websocket.accept()
         logger.info(f"WebSocket connected for call: {call_id}")
-        
+
         if call_id not in active_calls:
-            logger.warning(f"Unknown call_id: {call_id}")
-            # Create a new entry for inbound calls
+            logger.warning(f"Unknown call_id connecting: {call_id}")
+            # Create a new entry for inbound calls (via /twiml/answer)
             active_calls[call_id] = {
                 "call_id": call_id,
+                "to": "inbound",
+                "from_number": "unknown",
                 "status": "in_progress",
                 "started_at": datetime.utcnow().isoformat(),
+                "created_at": time.time(),
                 "transcript": []
             }
-        
+
         try:
             # Import Pipecat components here to avoid startup delays
             from bot import run_pipeline
-            
+
             # Create and run the Pipecat pipeline
             call_data = active_calls[call_id]
             await run_pipeline(
@@ -263,7 +398,7 @@ data:
                 litellm_api_key=LITELLM_API_KEY,
                 transcript_callback=lambda msg: active_calls[call_id]["transcript"].append(msg)
             )
-            
+
         except WebSocketDisconnect:
             logger.info(f"WebSocket disconnected for call: {call_id}")
         except Exception as e:
@@ -275,28 +410,47 @@ data:
                 active_calls[call_id]["status"] = "completed"
                 active_calls[call_id]["ended_at"] = datetime.utcnow().isoformat()
             logger.info(f"Call ended: {call_id}")
-    
-    
+
+
     @app.post("/twiml/answer")
-    async def twiml_answer():
+    async def twiml_answer(
+        request: Request,
+        x_twilio_signature: Optional[str] = Header(None)
+    ):
         """
-        TwiML endpoint for inbound calls
+        TwiML endpoint for inbound calls (TWILIO SIGNATURE VALIDATED)
         Returns TwiML that connects to our WebSocket
         """
+        # Validate Twilio signature
+        await validate_twilio_signature(request, x_twilio_signature)
+
         call_id = str(uuid.uuid4())
         ws_url = f"wss://{VOICE_BRIDGE_HOST}/ws/{call_id}"
-        
+
+        # Pre-register the call so WebSocket handler recognizes it
+        active_calls[call_id] = {
+            "call_id": call_id,
+            "to": "inbound",
+            "from_number": "twilio",
+            "status": "pending",
+            "started_at": datetime.utcnow().isoformat(),
+            "created_at": time.time(),
+            "transcript": []
+        }
+
         response = VoiceResponse()
         connect = Connect()
         connect.stream(url=ws_url, name="voice-bridge")
         response.append(connect)
-        
+
+        logger.info(f"TwiML answer generated for inbound call: {call_id}")
+
         return Response(
             content=str(response),
             media_type="application/xml"
         )
-    
-    
+
+
     if __name__ == "__main__":
         import uvicorn
         uvicorn.run(app, host="0.0.0.0", port=8080)
@@ -305,20 +459,20 @@ data:
   bot.py: |
     """
     Voice Bridge Bot - Pipecat pipeline for voice conversations
-    
+
     Audio Pipeline:
     - STT: Whisper via LiteLLM (whisper-medium model)
     - LLM: Claude via LiteLLM
     - TTS: Qwen-TTS via LiteLLM
-    
+
     Audio format: Twilio uses mulaw 8kHz, Pipecat handles conversion
     """
-    
+
     import os
     import asyncio
     import logging
     from typing import Callable, Optional
-    
+
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -330,10 +484,10 @@ data:
     from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport
     from pipecat.serializers.twilio import TwilioFrameSerializer
     from pipecat.vad.silero import SileroVADAnalyzer
-    
+
     logger = logging.getLogger("voice-bridge.bot")
-    
-    
+
+
     async def run_pipeline(
         websocket,
         call_id: str,
@@ -345,7 +499,7 @@ data:
     ):
         """
         Create and run the Pipecat voice pipeline
-        
+
         Args:
             websocket: FastAPI WebSocket connection
             call_id: Unique call identifier
@@ -356,13 +510,13 @@ data:
             transcript_callback: Callback for transcript updates
         """
         logger.info(f"Starting pipeline for call: {call_id}")
-        
+
         # Create Twilio frame serializer for audio format conversion
         # Twilio uses mulaw 8kHz, Pipecat handles the conversion
         serializer = TwilioFrameSerializer(
             stream_sid=call_id,  # Use call_id as stream identifier
         )
-        
+
         # Create transport with Silero VAD for voice activity detection
         transport = FastAPIWebsocketTransport(
             websocket=websocket,
@@ -373,7 +527,7 @@ data:
                 vad_analyzer=SileroVADAnalyzer(),
             )
         )
-        
+
         # STT Service - Whisper via LiteLLM
         # Uses the whisper-medium model configured in LiteLLM
         stt = OpenAISTTService(
@@ -381,7 +535,7 @@ data:
             base_url=litellm_base_url,
             model="whisper-medium",
         )
-        
+
         # LLM Service - Claude via LiteLLM
         # Uses claude-default which routes to Claude Opus
         llm = OpenAILLMService(
@@ -389,7 +543,7 @@ data:
             base_url=litellm_base_url,
             model="claude-default",
         )
-        
+
         # TTS Service - Qwen-TTS via LiteLLM
         # Uses qwen-tts model with specified voice
         tts = OpenAITTSService(
@@ -398,23 +552,23 @@ data:
             model="qwen-tts",
             voice=voice,
         )
-        
+
         # Create LLM context with system prompt
         messages = [
             {
                 "role": "system",
                 "content": f"""You are having a phone conversation. {context}
-                
+
     Keep your responses concise and conversational - this is a voice call, not text chat.
     Speak naturally as if talking on the phone. Avoid long monologues.
     If you don't understand something, ask for clarification.
     """
             }
         ]
-        
+
         context_obj = OpenAILLMContext(messages)
         context_aggregator = llm.create_context_aggregator(context_obj)
-        
+
         # Build the pipeline
         # Flow: transport input -> STT -> context -> LLM -> TTS -> transport output
         pipeline = Pipeline([
@@ -426,7 +580,7 @@ data:
             transport.output(),
             context_aggregator.assistant(),
         ])
-        
+
         # Create pipeline task with audio parameters
         task = PipelineTask(
             pipeline,
@@ -437,7 +591,7 @@ data:
                 audio_out_sample_rate=8000,
             )
         )
-        
+
         # Event handlers
         @transport.event_handler("on_client_connected")
         async def on_connected(transport, client):
@@ -448,16 +602,16 @@ data:
                 "content": "Hello! How can I help you today?"
             })
             await task.queue_frames([LLMMessagesFrame(messages)])
-        
+
         @transport.event_handler("on_client_disconnected")
         async def on_disconnected(transport, client):
             logger.info(f"Client disconnected: {call_id}")
             await task.queue_frames([EndFrame()])
-        
+
         # Run the pipeline
         runner = PipelineRunner()
         await runner.run(task)
-        
+
         logger.info(f"Pipeline completed for call: {call_id}")
 
   # Requirements file for pip install
