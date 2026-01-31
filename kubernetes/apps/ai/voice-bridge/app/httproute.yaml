@@ -1,15 +1,20 @@
 ---
-# STORY-031-4: External HTTPRoute for Twilio Webhooks
-# Voice bridge accessible from Twilio for WebSocket connections
+# STORY-031-4: External HTTPRoute for Twilio Media Streams
+# Voice bridge accessible from Twilio for OUTBOUND call audio streaming
 # Uses envoy-external for Cloudflare Tunnel access
 #
+# OUTBOUND-ONLY ARCHITECTURE:
+# - Moltbot → voice-bridge (internal) → Twilio API → Phone
+# - Twilio → voice-bridge /ws (external) → Audio streaming back
+#
 # Security:
-# - /ws and /twiml: Twilio-only (signature validated in code)
-# - /health: Public (for monitoring)
-# - /api: NOT EXPOSED externally (removed for security)
+# - /ws: Twilio Media Streams only (call_id is cryptographic UUID)
+# - /health: Public (for monitoring, no sensitive data)
+# - /api: NOT EXPOSED (internal service-to-service only)
+# - /twiml: NOT EXPOSED (only needed for inbound calls, which we don't use)
 #
 # The /api endpoints require API key authentication and should only
-# be accessed internally or via port-forward for manual testing.
+# be accessed internally via k8s service or port-forward for testing.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -25,8 +30,9 @@ spec:
   hostnames:
     - voice-bridge.homelab0.org
   rules:
-    # WebSocket endpoint for Twilio Media Streams
-    # Security: call_id is cryptographically random UUID
+    # WebSocket endpoint for Twilio Media Streams (OUTBOUND CALLS)
+    # When voice-bridge initiates a call, Twilio connects back here for audio
+    # Security: call_id is cryptographically random UUID (128-bit entropy)
     - matches:
         - path:
             type: PathPrefix
@@ -34,16 +40,8 @@ spec:
       backendRefs:
         - name: voice-bridge
           port: 8080
-    # TwiML webhook endpoint for inbound calls
-    # Security: Twilio signature validation in application code
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /twiml
-      backendRefs:
-        - name: voice-bridge
-          port: 8080
     # Health check (public for external monitoring)
+    # Returns: status, timestamp, active call count (no sensitive data)
     - matches:
         - path:
             type: Exact
@@ -51,5 +49,6 @@ spec:
       backendRefs:
         - name: voice-bridge
           port: 8080
-    # NOTE: /api endpoints intentionally NOT exposed externally
-    # Access via: kubectl port-forward -n ai svc/voice-bridge 8080:8080
+    # NOT EXPOSED (internal only):
+    # - /api/* - Call initiation (Moltbot calls via k8s service)
+    # - /twiml/* - Inbound call handling (not used, outbound only)
