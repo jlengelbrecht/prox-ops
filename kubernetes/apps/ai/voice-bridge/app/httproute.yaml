@@ -1,0 +1,63 @@
+---
+# STORY-031-4: External HTTPRoute for Twilio Webhooks
+# Voice bridge must be accessible from Twilio for WebSocket connections
+# Uses envoy-external for Cloudflare Tunnel access
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: voice-bridge-external
+  namespace: ai
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: voice-bridge.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-external
+      namespace: network
+      sectionName: https
+  hostnames:
+    - voice-bridge.homelab0.org
+  rules:
+    # WebSocket endpoint for Twilio Media Streams
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /ws
+      backendRefs:
+        - name: voice-bridge
+          port: 8080
+    # TwiML webhook endpoint for inbound calls
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /twiml
+      backendRefs:
+        - name: voice-bridge
+          port: 8080
+    # Health check (optional external access for monitoring)
+    - matches:
+        - path:
+            type: Exact
+            value: /health
+      backendRefs:
+        - name: voice-bridge
+          port: 8080
+    # API endpoints (call initiation, status)
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      backendRefs:
+        - name: voice-bridge
+          port: 8080
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
