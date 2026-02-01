@@ -33,8 +33,12 @@ spec:
               - /bin/sh
               - -c
               - |
+                set -euo pipefail
                 echo "Installing voice-bridge dependencies..."
-                pip install --user -r /app/requirements.txt
+                pip install --user -r /app/requirements.txt || {
+                  echo "ERROR: pip install failed, aborting startup"
+                  exit 1
+                }
                 echo "Starting voice-bridge server..."
                 export PATH="/.local/bin:$PATH"
                 exec python /app/server.py
