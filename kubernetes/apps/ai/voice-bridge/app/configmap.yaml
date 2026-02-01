@@ -514,9 +514,9 @@ data:
     from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
     from pipecat.services.openai import OpenAILLMService, OpenAITTSService
     from pipecat.services.ai_services import STTService
-    from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport
+    from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport, FastAPIWebsocketParams
     from pipecat.serializers.twilio import TwilioFrameSerializer
-    from pipecat.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
 
     logger = logging.getLogger("voice-bridge.bot")
 
@@ -614,11 +614,14 @@ data:
         # Create transport with Silero VAD for voice activity detection
         transport = FastAPIWebsocketTransport(
             websocket=websocket,
-            params=FastAPIWebsocketTransport.InputParams(
+            params=FastAPIWebsocketParams(
+                audio_in_enabled=True,
                 audio_in_sample_rate=8000,
+                audio_out_enabled=True,
                 audio_out_sample_rate=8000,
-                serializer=serializer,
+                vad_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(),
+                serializer=serializer,
             )
         )
 
