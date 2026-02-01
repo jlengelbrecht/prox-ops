@@ -702,17 +702,55 @@ data:
             await self.push_frame(frame, direction)
 
 
-    async def wait_for_twilio_start(websocket, timeout: float = 10.0) -> dict:
+    class WebSocketWrapper:
+        """Wrapper that captures initial messages and replays them to Pipecat.
+
+        This allows us to read the Twilio 'start' event to extract the streamSid
+        before Pipecat starts, then replay those messages when Pipecat reads.
+        """
+
+        def __init__(self, websocket):
+            self._websocket = websocket
+            self._buffered_messages: List[str] = []
+            self._buffer_index = 0
+
+        def buffer_message(self, message: str):
+            """Add a message to the replay buffer."""
+            self._buffered_messages.append(message)
+
+        async def receive_text(self) -> str:
+            """Return buffered messages first, then read from real WebSocket."""
+            if self._buffer_index < len(self._buffered_messages):
+                msg = self._buffered_messages[self._buffer_index]
+                self._buffer_index += 1
+                return msg
+            return await self._websocket.receive_text()
+
+        async def send_text(self, data: str):
+            """Pass through to real WebSocket."""
+            await self._websocket.send_text(data)
+
+        async def close(self, code: int = 1000, reason: str = ""):
+            """Pass through to real WebSocket."""
+            await self._websocket.close(code=code, reason=reason)
+
+        # Forward other attributes to the real websocket
+        def __getattr__(self, name):
+            return getattr(self._websocket, name)
+
+
+    async def wait_for_twilio_start(websocket, ws_wrapper, timeout: float = 10.0) -> dict:
         """Wait for Twilio's 'start' event and extract stream metadata.
 
         Twilio Media Streams sends a 'start' event containing:
         - streamSid: The Twilio stream SID (required for outbound audio)
         - callSid: The Twilio call SID
         - accountSid: The Twilio account SID
+
+        Messages are buffered in ws_wrapper to be replayed when Pipecat reads.
         """
         import asyncio
         try:
-            # Wait for the start event with timeout
             start_time = asyncio.get_event_loop().time()
             while True:
                 if asyncio.get_event_loop().time() - start_time > timeout:
@@ -720,6 +758,9 @@ data:
 
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=timeout)
                 data = json.loads(message)
+
+                # Buffer ALL messages for Pipecat to process later
+                ws_wrapper.buffer_message(message)
 
                 if data.get("event") == "start":
                     start_data = data.get("start", {})
@@ -730,7 +771,6 @@ data:
                         "stream_sid": stream_sid,
                         "call_sid": call_sid,
                         "account_sid": start_data.get("accountSid"),
-                        "raw_message": message  # Keep for re-injection
                     }
                 elif data.get("event") == "connected":
                     logger.info("Twilio connected event received, waiting for start...")
@@ -753,8 +793,12 @@ data:
     ):
         logger.info(f"Starting pipeline for call: {call_id}")
 
+        # Create WebSocket wrapper to buffer messages for replay
+        ws_wrapper = WebSocketWrapper(websocket)
+
         # Wait for Twilio's start event to get the real streamSid
-        twilio_start = await wait_for_twilio_start(websocket)
+        # Messages are buffered in ws_wrapper for Pipecat to replay
+        twilio_start = await wait_for_twilio_start(websocket, ws_wrapper)
         stream_sid = twilio_start["stream_sid"]
 
         if not stream_sid:
@@ -766,8 +810,9 @@ data:
         # Initialize serializer with Twilio's actual streamSid (critical for audio output)
         serializer = TwilioFrameSerializer(stream_sid=stream_sid)
 
+        # Use the wrapper so Pipecat receives the buffered messages first
         transport = FastAPIWebsocketTransport(
-            websocket=websocket,
+            websocket=ws_wrapper,
             params=FastAPIWebsocketParams(
                 audio_in_enabled=True,
                 audio_in_sample_rate=8000,
