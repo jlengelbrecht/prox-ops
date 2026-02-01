@@ -21,6 +21,8 @@ configMapGenerator:
     literals:
       - enable-scale-to-zero=true
       - scale-to-zero-grace-period=5m
+      # Minimum time pod stays alive after last request (critical for cold-start models)
+      - scale-to-zero-pod-retention-period=5m
       - stable-window=60s
       - target-burst-capacity=200
       - max-scale-up-rate=1000.0
