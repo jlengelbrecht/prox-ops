@@ -638,6 +638,13 @@ data:
             self._voice = voice
             self._client = httpx.AsyncClient(timeout=30.0)
 
+        def _resample_audio(self, audio: bytes, from_rate: int, to_rate: int) -> bytes:
+            """Resample audio from one sample rate to another."""
+            import audioop
+            # Convert from from_rate to to_rate (e.g., 24000 -> 8000)
+            resampled, _ = audioop.ratecv(audio, 2, 1, from_rate, to_rate, None)
+            return resampled
+
         async def synthesize(self, text: str) -> bytes:
             try:
                 response = await self._client.post(
@@ -646,7 +653,11 @@ data:
                     json={"model": self._model, "input": text, "voice": self._voice, "response_format": "pcm"},
                 )
                 response.raise_for_status()
-                return response.content
+                # qwen-tts outputs 24kHz but Twilio needs 8kHz - resample
+                audio_24k = response.content
+                audio_8k = self._resample_audio(audio_24k, 24000, 8000)
+                logger.info(f"TTS audio: {len(audio_24k)} bytes @ 24kHz -> {len(audio_8k)} bytes @ 8kHz")
+                return audio_8k
             except Exception as e:
                 logger.error(f"TTS error: {e}")
                 return b""
