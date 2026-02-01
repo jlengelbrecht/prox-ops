@@ -169,25 +169,26 @@ spec:
           - path: /recordings
       # Security: tmpfs volumes for read-only root filesystem
       # Size limits prevent memory exhaustion from unbounded tmpfs growth
+      # Note: pip packages (scipy, numpy, onnxruntime) require ~600MB total
       tmp:
         enabled: true
         type: emptyDir
         medium: Memory
-        sizeLimit: 64Mi
+        sizeLimit: 128Mi
         globalMounts:
           - path: /tmp
       pip-cache:
         enabled: true
         type: emptyDir
         medium: Memory
-        sizeLimit: 256Mi
+        sizeLimit: 512Mi
         globalMounts:
           - path: /.cache
       pip-local:
         enabled: true
         type: emptyDir
         medium: Memory
-        sizeLimit: 256Mi
+        sizeLimit: 768Mi
         globalMounts:
           - path: /.local
 
