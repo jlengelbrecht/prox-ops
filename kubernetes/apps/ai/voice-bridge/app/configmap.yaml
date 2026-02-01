@@ -702,6 +702,46 @@ data:
             await self.push_frame(frame, direction)
 
 
+    async def wait_for_twilio_start(websocket, timeout: float = 10.0) -> dict:
+        """Wait for Twilio's 'start' event and extract stream metadata.
+
+        Twilio Media Streams sends a 'start' event containing:
+        - streamSid: The Twilio stream SID (required for outbound audio)
+        - callSid: The Twilio call SID
+        - accountSid: The Twilio account SID
+        """
+        import asyncio
+        try:
+            # Wait for the start event with timeout
+            start_time = asyncio.get_event_loop().time()
+            while True:
+                if asyncio.get_event_loop().time() - start_time > timeout:
+                    raise TimeoutError("Timeout waiting for Twilio start event")
+
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=timeout)
+                data = json.loads(message)
+
+                if data.get("event") == "start":
+                    start_data = data.get("start", {})
+                    stream_sid = start_data.get("streamSid")
+                    call_sid = start_data.get("callSid")
+                    logger.info(f"Twilio start event received - streamSid: {stream_sid}, callSid: {call_sid}")
+                    return {
+                        "stream_sid": stream_sid,
+                        "call_sid": call_sid,
+                        "account_sid": start_data.get("accountSid"),
+                        "raw_message": message  # Keep for re-injection
+                    }
+                elif data.get("event") == "connected":
+                    logger.info("Twilio connected event received, waiting for start...")
+                    continue
+                else:
+                    logger.debug(f"Ignoring pre-start event: {data.get('event')}")
+        except Exception as e:
+            logger.error(f"Error waiting for Twilio start: {e}")
+            raise
+
+
     async def run_pipeline(
         websocket,
         call_id: str,
@@ -713,7 +753,18 @@ data:
     ):
         logger.info(f"Starting pipeline for call: {call_id}")
 
-        serializer = TwilioFrameSerializer(stream_sid=call_id)
+        # Wait for Twilio's start event to get the real streamSid
+        twilio_start = await wait_for_twilio_start(websocket)
+        stream_sid = twilio_start["stream_sid"]
+
+        if not stream_sid:
+            logger.error("No streamSid received from Twilio")
+            return
+
+        logger.info(f"Using Twilio streamSid: {stream_sid}")
+
+        # Initialize serializer with Twilio's actual streamSid (critical for audio output)
+        serializer = TwilioFrameSerializer(stream_sid=stream_sid)
 
         transport = FastAPIWebsocketTransport(
             websocket=websocket,
