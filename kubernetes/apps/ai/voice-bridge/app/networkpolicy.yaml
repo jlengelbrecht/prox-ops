@@ -53,12 +53,22 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow HTTPS egress for Twilio API
-    # Required for: call initiation (api.twilio.com), media streams
-    # Note: Using toEntities: world because Twilio uses multiple domains/IPs
-    # Consider restricting to toFQDNs if stricter isolation needed
-    - toEntities:
-        - world
+    # Allow HTTPS egress for Twilio API and PyPI (pip install at startup)
+    # Security: Restricted to specific domains to prevent data exfiltration
+    # Required domains:
+    # - api.twilio.com - REST API for call control
+    # - *.twilio.com - various Twilio services (media, events, etc.)
+    # - pypi.org, files.pythonhosted.org - pip install dependencies at startup
+    #
+    # TODO(EPIC-031): Tighten egress rules once stable:
+    # - Replace *.twilio.com wildcard with explicit list of required subdomains
+    # - Consider custom Docker image with pre-installed deps to remove PyPI egress
+    # - Monitor logs to identify exact Twilio subdomains used
+    - toFQDNs:
+        - matchName: "api.twilio.com"
+        - matchPattern: "*.twilio.com"
+        - matchName: "pypi.org"
+        - matchName: "files.pythonhosted.org"
       toPorts:
         - ports:
             - port: "443"

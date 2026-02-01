@@ -48,6 +48,9 @@ data:
     from twilio.rest import Client as TwilioClient
     from twilio.twiml.voice_response import VoiceResponse, Connect
     from twilio.request_validator import RequestValidator
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
 
     # Configure logging
     logging.basicConfig(
@@ -78,6 +81,14 @@ data:
     # Security: Twilio request validator
     twilio_validator: Optional[RequestValidator] = None
 
+    # Security: Rate limiter (prevents DoS attacks)
+    limiter = Limiter(key_func=get_remote_address)
+
+    # Security: WebSocket connection limits (prevents resource exhaustion)
+    MAX_CONCURRENT_WEBSOCKETS = 50
+    active_websocket_count = 0
+    websocket_count_lock = asyncio.Lock()
+
 
     def verify_api_key(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> bool:
         """Verify API key for protected endpoints"""
@@ -107,9 +118,11 @@ data:
             logger.warning(f"Twilio request without signature from {request.client.host}")
             raise HTTPException(status_code=403, detail="Missing X-Twilio-Signature header")
 
-        # Get the full URL as Twilio sees it
-        # Use the public hostname for validation (Twilio signs with the URL it called)
+        # Get the full URL as Twilio sees it (including query params)
+        # Twilio signs the complete URL it called, so we must reconstruct it exactly
         url = f"https://{VOICE_BRIDGE_HOST}{request.url.path}"
+        if request.url.query:
+            url += f"?{request.url.query}"
 
         # Get form data for signature validation
         form_data = await request.form()
@@ -215,6 +228,10 @@ data:
         lifespan=lifespan
     )
 
+    # Security: Register rate limiter
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
     # Request logging middleware
     @app.middleware("http")
@@ -249,8 +266,10 @@ data:
 
 
     @app.post("/api/v1/calls", response_model=CallStatus)
+    @limiter.limit("10/minute")
     async def initiate_call(
-        request: CallRequest,
+        request: Request,
+        call_request: CallRequest,
         authenticated: bool = Depends(verify_api_key)
     ):
         """
@@ -266,15 +285,15 @@ data:
             raise HTTPException(status_code=503, detail="Twilio not configured")
 
         call_id = str(uuid.uuid4())
-        from_number = request.from_number or TWILIO_PHONE_NUMBER
+        from_number = call_request.from_number or TWILIO_PHONE_NUMBER
 
         # Store call metadata with creation timestamp for TTL
         active_calls[call_id] = {
             "call_id": call_id,
-            "to": request.to,
+            "to": call_request.to,
             "from_number": from_number,
-            "context": request.context,
-            "voice": request.voice,
+            "context": call_request.context,
+            "voice": call_request.voice,
             "status": "pending",
             "started_at": datetime.utcnow().isoformat(),
             "created_at": time.time(),
@@ -301,7 +320,7 @@ data:
             '''
             call = await asyncio.to_thread(
                 client.calls.create,
-                to=request.to,
+                to=call_request.to,
                 from_=from_number,
                 twiml=twiml_content
             )
@@ -309,25 +328,28 @@ data:
             active_calls[call_id]["twilio_sid"] = call.sid
             active_calls[call_id]["status"] = "in_progress"
 
-            logger.info(f"Call initiated: {call_id} -> {request.to}")
+            logger.info(f"Call initiated: {call_id} -> {call_request.to}")
 
             return CallStatus(**{
                 "call_id": call_id,
                 "status": "in_progress",
-                "to": request.to,
+                "to": call_request.to,
                 "from_number": from_number,
                 "started_at": active_calls[call_id]["started_at"]
             })
 
         except Exception as e:
-            logger.error(f"Failed to initiate call {call_id}: {e}")
+            logger.error(f"Failed to initiate call {call_id}: {e}", exc_info=True)
             active_calls[call_id]["status"] = "failed"
-            active_calls[call_id]["error"] = str(e)
-            raise HTTPException(status_code=500, detail=str(e))
+            active_calls[call_id]["error"] = str(e)  # Stored internally for debugging
+            # Security: Don't expose internal error details to clients
+            raise HTTPException(status_code=500, detail="Failed to initiate call")
 
 
     @app.get("/api/v1/calls/{call_id}", response_model=CallStatus)
+    @limiter.limit("30/minute")
     async def get_call_status(
+        request: Request,
         call_id: str,
         authenticated: bool = Depends(verify_api_key)
     ):
@@ -369,23 +391,27 @@ data:
         2. NetworkPolicy restricting ingress sources
         3. The call_id only being shared in signed TwiML responses
         """
-        await websocket.accept()
-        logger.info(f"WebSocket connected for call: {call_id}")
+        global active_websocket_count
 
-        if call_id not in active_calls:
-            logger.warning(f"Unknown call_id connecting: {call_id}")
-            # Create a new entry for inbound calls (via /twiml/answer)
-            active_calls[call_id] = {
-                "call_id": call_id,
-                "to": "inbound",
-                "from_number": "unknown",
-                "status": "in_progress",
-                "started_at": datetime.utcnow().isoformat(),
-                "created_at": time.time(),
-                "transcript": []
-            }
+        # Security: Enforce connection limits to prevent resource exhaustion
+        async with websocket_count_lock:
+            if active_websocket_count >= MAX_CONCURRENT_WEBSOCKETS:
+                logger.warning(f"WebSocket connection rejected - at capacity ({MAX_CONCURRENT_WEBSOCKETS})")
+                await websocket.close(code=1008, reason="Server at capacity")
+                return
+            active_websocket_count += 1
 
         try:
+            # Security: Reject unknown call_ids instead of auto-creating
+            # Valid call_ids come from /api/v1/calls or /twiml/answer
+            if call_id not in active_calls:
+                logger.warning(f"Unknown call_id rejected: {call_id}")
+                await websocket.close(code=1008, reason="Invalid call ID")
+                return
+
+            await websocket.accept()
+            logger.info(f"WebSocket connected for call: {call_id} (active: {active_websocket_count})")
+
             # Import Pipecat components here to avoid startup delays
             from bot import run_pipeline
 
@@ -408,13 +434,18 @@ data:
             if call_id in active_calls:
                 active_calls[call_id]["error"] = str(e)
         finally:
+            # Security: Always decrement connection count
+            async with websocket_count_lock:
+                active_websocket_count -= 1
+
             if call_id in active_calls:
                 active_calls[call_id]["status"] = "completed"
                 active_calls[call_id]["ended_at"] = datetime.utcnow().isoformat()
-            logger.info(f"Call ended: {call_id}")
+            logger.info(f"Call ended: {call_id} (active: {active_websocket_count})")
 
 
     @app.post("/twiml/answer")
+    @limiter.limit("60/minute")
     async def twiml_answer(
         request: Request,
         x_twilio_signature: Optional[str] = Header(None)
@@ -626,3 +657,5 @@ data:
     uvicorn==0.32.0
     # Twilio SDK
     twilio==9.4.0
+    # Security: Rate limiting
+    slowapi==0.1.9

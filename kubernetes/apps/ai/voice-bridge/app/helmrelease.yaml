@@ -33,9 +33,14 @@ spec:
               - /bin/sh
               - -c
               - |
+                set -eu
                 echo "Installing voice-bridge dependencies..."
-                pip install --no-cache-dir -r /app/requirements.txt
+                pip install --user -r /app/requirements.txt || {
+                  echo "ERROR: pip install failed, aborting startup"
+                  exit 1
+                }
                 echo "Starting voice-bridge server..."
+                export PATH="/.local/bin:$PATH"
                 exec python /app/server.py
             env:
               # Twilio credentials
@@ -73,6 +78,10 @@ spec:
               # Python configuration
               PYTHONUNBUFFERED: "1"
               PYTHONDONTWRITEBYTECODE: "1"
+              # Security: Configure pip for non-root user with read-only rootfs
+              PIP_CACHE_DIR: "/.cache/pip"
+              PIP_USER: "1"
+              PYTHONUSERBASE: "/.local"
             probes:
               liveness:
                 enabled: true
@@ -116,7 +125,10 @@ spec:
                 memory: 2Gi
             securityContext:
               allowPrivilegeEscalation: false
-              readOnlyRootFilesystem: false
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
               capabilities:
                 drop:
                   - ALL
@@ -127,6 +139,10 @@ spec:
       annotations:
         secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm,voice-bridge-api"
       automountServiceAccountToken: false
+      # Security: fsGroup ensures volumes are writable by non-root user (65532)
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -149,6 +165,25 @@ spec:
         existingClaim: voice-bridge-recordings
         globalMounts:
           - path: /recordings
+      # Security: tmpfs volumes for read-only root filesystem
+      tmp:
+        enabled: true
+        type: emptyDir
+        medium: Memory
+        globalMounts:
+          - path: /tmp
+      pip-cache:
+        enabled: true
+        type: emptyDir
+        medium: Memory
+        globalMounts:
+          - path: /.cache
+      pip-local:
+        enabled: true
+        type: emptyDir
+        medium: Memory
+        globalMounts:
+          - path: /.local
 
     service:
       app:
