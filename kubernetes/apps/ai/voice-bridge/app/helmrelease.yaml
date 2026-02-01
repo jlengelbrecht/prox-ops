@@ -168,13 +168,10 @@ spec:
         globalMounts:
           - path: /recordings
       # Security: emptyDir volumes for read-only root filesystem
-      # /tmp uses Memory (tmpfs) for small temp files
-      # pip dirs use disk (ephemeral storage) - ML packages need ~1.5GB
+      # All use disk (ephemeral storage) - ML packages need ~1.5GB during install
       tmp:
         enabled: true
         type: emptyDir
-        medium: Memory
-        sizeLimit: 128Mi
         globalMounts:
           - path: /tmp
       pip-cache:
