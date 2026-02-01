@@ -489,6 +489,7 @@ data:
         uvicorn.run(app, host="0.0.0.0", port=8080)
 
   # Pipecat pipeline - STT -> LLM -> TTS using LiteLLM
+  # Uses custom services with direct httpx calls to avoid OpenAI SDK version conflicts
   bot.py: |
     """
     Voice Bridge Bot - Pipecat pipeline for voice conversations
@@ -498,22 +499,27 @@ data:
     - LLM: Claude via LiteLLM
     - TTS: Qwen-TTS via LiteLLM
 
+    All services use direct httpx calls to LiteLLM to bypass Pipecat's
+    OpenAI SDK which has version compatibility issues with httpx.
+
     Audio format: Twilio uses mulaw 8kHz, Pipecat handles conversion
     """
 
     import io
+    import json
     import asyncio
     import logging
-    from typing import Callable, Optional
+    from typing import Callable, Optional, List, Dict
 
     import httpx
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
-    from pipecat.frames.frames import EndFrame, LLMMessagesFrame, TranscriptionFrame, AudioRawFrame
-    from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-    from pipecat.services.openai import OpenAILLMService, OpenAITTSService
-    from pipecat.services.ai_services import STTService
+    from pipecat.frames.frames import (
+        EndFrame, Frame, TextFrame, TranscriptionFrame, AudioRawFrame,
+        TTSStartedFrame, TTSStoppedFrame, TTSAudioRawFrame, StartFrame
+    )
+    from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
     from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport, FastAPIWebsocketParams
     from pipecat.serializers.twilio import TwilioFrameSerializer
     from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -521,11 +527,8 @@ data:
     logger = logging.getLogger("voice-bridge.bot")
 
 
-    class LiteLLMSTTService(STTService):
-        """
-        Custom STT service that uses LiteLLM's OpenAI-compatible transcription endpoint.
-        LiteLLM routes to KServe Whisper for actual transcription.
-        """
+    class LiteLLMSTTService(FrameProcessor):
+        """Custom STT using direct httpx to LiteLLM/Whisper."""
 
         def __init__(self, api_key: str, base_url: str, model: str = "whisper-medium"):
             super().__init__()
@@ -536,19 +539,16 @@ data:
             self._audio_buffer = io.BytesIO()
 
         async def run_stt(self, audio: bytes) -> str:
-            """Send audio to LiteLLM/Whisper and return transcription"""
             try:
-                # Create WAV file in memory (Whisper expects audio file format)
                 import wave
                 wav_buffer = io.BytesIO()
                 with wave.open(wav_buffer, "wb") as wav:
                     wav.setnchannels(1)
-                    wav.setsampwidth(2)  # 16-bit
-                    wav.setframerate(8000)  # Twilio uses 8kHz
+                    wav.setsampwidth(2)
+                    wav.setframerate(8000)
                     wav.writeframes(audio)
                 wav_buffer.seek(0)
 
-                # Call LiteLLM transcription endpoint
                 response = await self._client.post(
                     f"{self._base_url}/audio/transcriptions",
                     headers={"Authorization": f"Bearer {self._api_key}"},
@@ -556,30 +556,139 @@ data:
                     data={"model": self._model},
                 )
                 response.raise_for_status()
-                result = response.json()
-                return result.get("text", "")
+                return response.json().get("text", "")
             except Exception as e:
                 logger.error(f"STT error: {e}")
                 return ""
 
-        async def process_frame(self, frame, direction):
-            """Process incoming audio frames"""
+        async def process_frame(self, frame: Frame, direction: FrameDirection):
             await super().process_frame(frame, direction)
 
             if isinstance(frame, AudioRawFrame):
-                # Accumulate audio for VAD-triggered transcription
                 self._audio_buffer.write(frame.audio)
-            elif hasattr(frame, "name") and "vad_stop" in str(type(frame).__name__).lower():
-                # VAD detected end of speech - transcribe
+            elif "UserStoppedSpeaking" in type(frame).__name__:
                 audio_data = self._audio_buffer.getvalue()
-                if len(audio_data) > 1600:  # Minimum audio length (100ms at 8kHz 16-bit)
+                if len(audio_data) > 1600:
                     text = await self.run_stt(audio_data)
                     if text.strip():
-                        await self.push_frame(TranscriptionFrame(text=text, user_id="caller", timestamp=""))
+                        logger.info(f"STT: {text}")
+                        await self.push_frame(TranscriptionFrame(text=text, user_id="", timestamp=""))
                 self._audio_buffer = io.BytesIO()
+            else:
+                await self.push_frame(frame, direction)
 
         async def cleanup(self):
             await self._client.aclose()
+
+
+    class LiteLLMLLMService(FrameProcessor):
+        """Custom LLM using direct httpx to LiteLLM/Claude."""
+
+        def __init__(self, api_key: str, base_url: str, model: str, context: str):
+            super().__init__()
+            self._api_key = api_key
+            self._base_url = base_url.rstrip("/")
+            self._model = model
+            self._client = httpx.AsyncClient(timeout=60.0)
+            self._messages: List[Dict[str, str]] = [
+                {"role": "system", "content": f"""You are having a phone conversation. {context}
+    Keep responses concise and conversational - this is a voice call.
+    Speak naturally. Avoid long monologues. Ask for clarification if needed."""}
+            ]
+
+        async def generate(self, user_text: str) -> str:
+            try:
+                self._messages.append({"role": "user", "content": user_text})
+                response = await self._client.post(
+                    f"{self._base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
+                    json={"model": self._model, "messages": self._messages, "max_tokens": 150},
+                )
+                response.raise_for_status()
+                content = response.json()["choices"][0]["message"]["content"]
+                self._messages.append({"role": "assistant", "content": content})
+                return content
+            except Exception as e:
+                logger.error(f"LLM error: {e}")
+                return "I'm having trouble. Could you repeat that?"
+
+        async def process_frame(self, frame: Frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, TranscriptionFrame) and frame.text.strip():
+                logger.info(f"LLM input: {frame.text}")
+                response = await self.generate(frame.text)
+                logger.info(f"LLM output: {response}")
+                await self.push_frame(TextFrame(text=response))
+            else:
+                await self.push_frame(frame, direction)
+
+        async def cleanup(self):
+            await self._client.aclose()
+
+
+    class LiteLLMTTSService(FrameProcessor):
+        """Custom TTS using direct httpx to LiteLLM/Qwen-TTS."""
+
+        def __init__(self, api_key: str, base_url: str, model: str, voice: str):
+            super().__init__()
+            self._api_key = api_key
+            self._base_url = base_url.rstrip("/")
+            self._model = model
+            self._voice = voice
+            self._client = httpx.AsyncClient(timeout=30.0)
+
+        async def synthesize(self, text: str) -> bytes:
+            try:
+                response = await self._client.post(
+                    f"{self._base_url}/audio/speech",
+                    headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
+                    json={"model": self._model, "input": text, "voice": self._voice, "response_format": "pcm"},
+                )
+                response.raise_for_status()
+                return response.content
+            except Exception as e:
+                logger.error(f"TTS error: {e}")
+                return b""
+
+        async def process_frame(self, frame: Frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, TextFrame) and frame.text.strip():
+                logger.info(f"TTS: {frame.text}")
+                await self.push_frame(TTSStartedFrame())
+                audio = await self.synthesize(frame.text)
+                if audio:
+                    chunk_size = 640  # 40ms at 8kHz 16-bit mono
+                    for i in range(0, len(audio), chunk_size):
+                        await self.push_frame(TTSAudioRawFrame(
+                            audio=audio[i:i+chunk_size], sample_rate=8000, num_channels=1
+                        ))
+                await self.push_frame(TTSStoppedFrame())
+            else:
+                await self.push_frame(frame, direction)
+
+        async def cleanup(self):
+            await self._client.aclose()
+
+
+    class InitialGreeting(FrameProcessor):
+        """Sends initial greeting when call connects."""
+
+        def __init__(self, greeting: str):
+            super().__init__()
+            self._greeting = greeting
+            self._sent = False
+
+        async def process_frame(self, frame: Frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, StartFrame) and not self._sent:
+                self._sent = True
+                logger.info(f"Sending greeting: {self._greeting}")
+                await self.push_frame(TextFrame(text=self._greeting))
+
+            await self.push_frame(frame, direction)
 
 
     async def run_pipeline(
@@ -591,27 +700,10 @@ data:
         litellm_api_key: str,
         transcript_callback: Optional[Callable[[str], None]] = None
     ):
-        """
-        Create and run the Pipecat voice pipeline
-
-        Args:
-            websocket: FastAPI WebSocket connection
-            call_id: Unique call identifier
-            context: System prompt for the LLM
-            voice: Voice persona for TTS
-            litellm_base_url: LiteLLM API base URL
-            litellm_api_key: LiteLLM API key
-            transcript_callback: Callback for transcript updates
-        """
         logger.info(f"Starting pipeline for call: {call_id}")
 
-        # Create Twilio frame serializer for audio format conversion
-        # Twilio uses mulaw 8kHz, Pipecat handles the conversion
-        serializer = TwilioFrameSerializer(
-            stream_sid=call_id,  # Use call_id as stream identifier
-        )
+        serializer = TwilioFrameSerializer(stream_sid=call_id)
 
-        # Create transport with Silero VAD for voice activity detection
         transport = FastAPIWebsocketTransport(
             websocket=websocket,
             params=FastAPIWebsocketParams(
@@ -625,87 +717,35 @@ data:
             )
         )
 
-        # STT Service - Custom LiteLLM adapter for Whisper
-        # Routes through LiteLLM to KServe Whisper-medium
-        stt = LiteLLMSTTService(
-            api_key=litellm_api_key,
-            base_url=litellm_base_url,
-            model="whisper-medium",
-        )
+        stt = LiteLLMSTTService(api_key=litellm_api_key, base_url=litellm_base_url, model="whisper-medium")
+        llm = LiteLLMLLMService(api_key=litellm_api_key, base_url=litellm_base_url, model="claude-default", context=context)
+        tts = LiteLLMTTSService(api_key=litellm_api_key, base_url=litellm_base_url, model="qwen-tts", voice=voice)
+        greeting = InitialGreeting("Hello! How can I help you today?")
 
-        # LLM Service - Claude via LiteLLM
-        # Uses claude-default which routes to Claude Opus
-        llm = OpenAILLMService(
-            api_key=litellm_api_key,
-            base_url=litellm_base_url,
-            model="claude-default",
-        )
-
-        # TTS Service - Qwen-TTS via LiteLLM
-        # Uses qwen-tts model with specified voice
-        tts = OpenAITTSService(
-            api_key=litellm_api_key,
-            base_url=litellm_base_url,
-            model="qwen-tts",
-            voice=voice,
-        )
-
-        # Create LLM context with system prompt
-        messages = [
-            {
-                "role": "system",
-                "content": f"""You are having a phone conversation. {context}
-
-    Keep your responses concise and conversational - this is a voice call, not text chat.
-    Speak naturally as if talking on the phone. Avoid long monologues.
-    If you don't understand something, ask for clarification.
-    """
-            }
-        ]
-
-        context_obj = OpenAILLMContext(messages)
-        context_aggregator = llm.create_context_aggregator(context_obj)
-
-        # Build the pipeline
-        # Flow: transport input -> STT -> context -> LLM -> TTS -> transport output
         pipeline = Pipeline([
             transport.input(),
             stt,
-            context_aggregator.user(),
             llm,
             tts,
+            greeting,
             transport.output(),
-            context_aggregator.assistant(),
         ])
 
-        # Create pipeline task with audio parameters
         task = PipelineTask(
             pipeline,
-            params=PipelineParams(
-                allow_interruptions=True,
-                enable_metrics=True,
-                audio_in_sample_rate=8000,
-                audio_out_sample_rate=8000,
-            )
+            params=PipelineParams(allow_interruptions=True, enable_metrics=True)
         )
 
-        # Event handlers
         @transport.event_handler("on_client_connected")
         async def on_connected(transport, client):
             logger.info(f"Client connected: {call_id}")
-            # Send initial greeting
-            messages.append({
-                "role": "assistant",
-                "content": "Hello! How can I help you today?"
-            })
-            await task.queue_frames([LLMMessagesFrame(messages)])
+            await task.queue_frame(StartFrame())
 
         @transport.event_handler("on_client_disconnected")
         async def on_disconnected(transport, client):
             logger.info(f"Client disconnected: {call_id}")
-            await task.queue_frames([EndFrame()])
+            await task.queue_frame(EndFrame())
 
-        # Run the pipeline
         runner = PipelineRunner()
         await runner.run(task)
 
