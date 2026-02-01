@@ -501,24 +501,85 @@ data:
     Audio format: Twilio uses mulaw 8kHz, Pipecat handles conversion
     """
 
-    import os
+    import io
     import asyncio
     import logging
     from typing import Callable, Optional
 
+    import httpx
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
-    from pipecat.frames.frames import EndFrame, LLMMessagesFrame
+    from pipecat.frames.frames import EndFrame, LLMMessagesFrame, TranscriptionFrame, AudioRawFrame
     from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
-    from pipecat.services.openai.llm import OpenAILLMService
-    from pipecat.services.openai.stt import OpenAISTTService
-    from pipecat.services.openai.tts import OpenAITTSService
+    from pipecat.services.openai import OpenAILLMService, OpenAITTSService
+    from pipecat.services.ai_services import STTService
     from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport
     from pipecat.serializers.twilio import TwilioFrameSerializer
     from pipecat.vad.silero import SileroVADAnalyzer
 
     logger = logging.getLogger("voice-bridge.bot")
+
+
+    class LiteLLMSTTService(STTService):
+        """
+        Custom STT service that uses LiteLLM's OpenAI-compatible transcription endpoint.
+        LiteLLM routes to KServe Whisper for actual transcription.
+        """
+
+        def __init__(self, api_key: str, base_url: str, model: str = "whisper-medium"):
+            super().__init__()
+            self._api_key = api_key
+            self._base_url = base_url.rstrip("/")
+            self._model = model
+            self._client = httpx.AsyncClient(timeout=30.0)
+            self._audio_buffer = io.BytesIO()
+
+        async def run_stt(self, audio: bytes) -> str:
+            """Send audio to LiteLLM/Whisper and return transcription"""
+            try:
+                # Create WAV file in memory (Whisper expects audio file format)
+                import wave
+                wav_buffer = io.BytesIO()
+                with wave.open(wav_buffer, "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)  # 16-bit
+                    wav.setframerate(8000)  # Twilio uses 8kHz
+                    wav.writeframes(audio)
+                wav_buffer.seek(0)
+
+                # Call LiteLLM transcription endpoint
+                response = await self._client.post(
+                    f"{self._base_url}/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    files={"file": ("audio.wav", wav_buffer, "audio/wav")},
+                    data={"model": self._model},
+                )
+                response.raise_for_status()
+                result = response.json()
+                return result.get("text", "")
+            except Exception as e:
+                logger.error(f"STT error: {e}")
+                return ""
+
+        async def process_frame(self, frame, direction):
+            """Process incoming audio frames"""
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, AudioRawFrame):
+                # Accumulate audio for VAD-triggered transcription
+                self._audio_buffer.write(frame.audio)
+            elif hasattr(frame, "name") and "vad_stop" in str(type(frame).__name__).lower():
+                # VAD detected end of speech - transcribe
+                audio_data = self._audio_buffer.getvalue()
+                if len(audio_data) > 1600:  # Minimum audio length (100ms at 8kHz 16-bit)
+                    text = await self.run_stt(audio_data)
+                    if text.strip():
+                        await self.push_frame(TranscriptionFrame(text=text, user_id="caller", timestamp=""))
+                self._audio_buffer = io.BytesIO()
+
+        async def cleanup(self):
+            await self._client.aclose()
 
 
     async def run_pipeline(
@@ -561,9 +622,9 @@ data:
             )
         )
 
-        # STT Service - Whisper via LiteLLM
-        # Uses the whisper-medium model configured in LiteLLM
-        stt = OpenAISTTService(
+        # STT Service - Custom LiteLLM adapter for Whisper
+        # Routes through LiteLLM to KServe Whisper-medium
+        stt = LiteLLMSTTService(
             api_key=litellm_api_key,
             base_url=litellm_base_url,
             model="whisper-medium",
