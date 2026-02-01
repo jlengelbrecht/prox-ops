@@ -120,9 +120,11 @@ spec:
               requests:
                 cpu: 200m
                 memory: 512Mi
+                ephemeral-storage: 100Mi
               limits:
                 cpu: "2"
                 memory: 2Gi
+                ephemeral-storage: 500Mi
             securityContext:
               allowPrivilegeEscalation: false
               readOnlyRootFilesystem: true
@@ -166,22 +168,26 @@ spec:
         globalMounts:
           - path: /recordings
       # Security: tmpfs volumes for read-only root filesystem
+      # Size limits prevent memory exhaustion from unbounded tmpfs growth
       tmp:
         enabled: true
         type: emptyDir
         medium: Memory
+        sizeLimit: 64Mi
         globalMounts:
           - path: /tmp
       pip-cache:
         enabled: true
         type: emptyDir
         medium: Memory
+        sizeLimit: 256Mi
         globalMounts:
           - path: /.cache
       pip-local:
         enabled: true
         type: emptyDir
         medium: Memory
+        sizeLimit: 256Mi
         globalMounts:
           - path: /.local
 

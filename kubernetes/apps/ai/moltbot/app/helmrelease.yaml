@@ -108,6 +108,14 @@ spec:
                   secretKeyRef:
                     name: moltbot-secrets
                     key: ANTHROPIC_OAUTH_TOKEN
+              # EPIC-031: Voice Bridge API key for initiating outbound calls
+              VOICE_BRIDGE_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: moltbot-secrets
+                    key: VOICE_BRIDGE_API_KEY
+              # EPIC-031: Voice Bridge internal service URL
+              VOICE_BRIDGE_URL: "http://voice-bridge.ai.svc.cluster.local:8080"
             probes:
               liveness:
                 enabled: true
