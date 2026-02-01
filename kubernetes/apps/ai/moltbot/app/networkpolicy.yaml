@@ -28,6 +28,15 @@ spec:
         - ports:
             - port: "4000"
               protocol: TCP
+    # EPIC-031: Allow egress to voice-bridge for outbound call initiation
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: voice-bridge
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     # Allow DNS resolution
     - toEndpoints:
         - matchLabels:
