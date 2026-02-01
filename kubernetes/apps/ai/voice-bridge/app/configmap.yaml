@@ -739,7 +739,7 @@ data:
         @transport.event_handler("on_client_connected")
         async def on_connected(transport, client):
             logger.info(f"Client connected: {call_id}")
-            await task.queue_frame(StartFrame())
+            # Pipeline task automatically sends StartFrame - no manual queuing needed
 
         @transport.event_handler("on_client_disconnected")
         async def on_disconnected(transport, client):
