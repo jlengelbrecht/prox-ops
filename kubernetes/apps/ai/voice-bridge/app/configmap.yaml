@@ -722,12 +722,13 @@ data:
         tts = LiteLLMTTSService(api_key=litellm_api_key, base_url=litellm_base_url, model="qwen-tts", voice=voice)
         greeting = InitialGreeting("Hello! How can I help you today?")
 
+        # Pipeline order: greeting before TTS so TextFrame becomes audio
         pipeline = Pipeline([
             transport.input(),
             stt,
             llm,
-            tts,
             greeting,
+            tts,
             transport.output(),
         ])
 
