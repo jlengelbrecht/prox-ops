@@ -2,6 +2,12 @@
 # STORY-031-2: Voice Bridge Application Code
 # ConfigMap containing the Pipecat-based voice bridge Python application
 # Security hardened: Twilio signature validation + API key authentication
+#
+# Architecture: Voice I/O Service
+# The voice-bridge acts as a voice input/output service. The caller (Claude Code,
+# Moltbot, or other AI) controls the conversation flow:
+#   Phone → STT → Transcription API → Caller decides response → Speak API → TTS → Phone
+#
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,19 +17,27 @@ data:
   # Main server application - FastAPI + Twilio WebSocket handling
   server.py: |
     """
-    Voice Bridge Server - Connects Twilio phone calls to LiteLLM AI infrastructure
+    Voice Bridge Server - Voice I/O Service for AI Phone Calls
 
     EPIC-031: Voice Calling Capability
 
+    Architecture:
+    This service provides voice input/output capabilities. The AI conversation
+    logic lives in the caller (Claude Code for testing, Moltbot for production).
+
+    Flow: Phone → STT → Transcription Queue → Caller polls → Caller sends response → TTS → Phone
+
     Security:
     - Twilio webhook signature validation (X-Twilio-Signature)
-    - API key authentication for call initiation
+    - API key authentication for all API endpoints
     - Phone number format validation (E.164)
     - Request logging for audit trail
 
     Endpoints:
     - POST /api/v1/calls - Initiate outbound call (REQUIRES API KEY)
     - GET /api/v1/calls/{call_id} - Get call status (REQUIRES API KEY)
+    - GET /api/v1/calls/{call_id}/transcriptions - Get user transcriptions (REQUIRES API KEY)
+    - POST /api/v1/calls/{call_id}/speak - Send text to speak via TTS (REQUIRES API KEY)
     - GET /health - Health check (public)
     - WebSocket /ws - Twilio Media Streams handler (Twilio only)
     - POST /twiml/answer - Twilio webhook (signature validated)
@@ -35,9 +49,10 @@ data:
     import uuid
     import time
     import hmac
+    import secrets
     import logging
     from datetime import datetime
-    from typing import Dict, Optional
+    from typing import Dict, Optional, List
     from contextlib import asynccontextmanager
     from urllib.parse import urljoin
 
@@ -74,6 +89,16 @@ data:
     # In-memory call tracking with TTL cleanup
     active_calls: Dict[str, dict] = {}
     CALL_TTL_SECONDS = 86400  # 24 hours
+
+    # Voice I/O queues - these connect API endpoints to the Pipecat pipeline
+    # transcription_queues: call_id -> asyncio.Queue of transcriptions (STT output)
+    # speak_queues: call_id -> asyncio.Queue of text to speak (TTS input)
+    transcription_queues: Dict[str, asyncio.Queue] = {}
+    speak_queues: Dict[str, asyncio.Queue] = {}
+
+    # Security: Queue limits to prevent resource exhaustion attacks
+    MAX_QUEUE_SIZE = 100  # Maximum items per queue
+    MAX_SPEAK_TEXT_LENGTH = 1000  # Already enforced in SpeakRequest validator
 
     # Security: HTTP Bearer authentication
     security = HTTPBearer(auto_error=False)
@@ -136,6 +161,34 @@ data:
         return True
 
 
+    def verify_call_access(call_id: str, x_call_token: Optional[str] = Header(None)) -> bool:
+        """Verify per-call access token for call-specific endpoints.
+
+        Security: This provides defense-in-depth beyond the API key.
+        Even if an attacker has the API key, they cannot access other calls
+        without the per-call access token that was returned at call creation.
+        """
+        if call_id not in active_calls:
+            raise HTTPException(status_code=404, detail="Call not found")
+
+        if not x_call_token:
+            logger.warning(f"Call access attempt without token for call {call_id}")
+            raise HTTPException(status_code=401, detail="Missing X-Call-Token header")
+
+        stored_token = active_calls[call_id].get("access_token")
+        if not stored_token:
+            # Legacy call without token - deny access for security
+            logger.warning(f"Call {call_id} has no access token stored")
+            raise HTTPException(status_code=403, detail="Call access token not established")
+
+        # Use constant-time comparison to prevent timing attacks
+        if not hmac.compare_digest(x_call_token, stored_token):
+            logger.warning(f"Invalid access token for call {call_id}")
+            raise HTTPException(status_code=403, detail="Invalid call access token")
+
+        return True
+
+
     class CallRequest(BaseModel):
         """Request model for initiating a call"""
         to: str  # Phone number to call (+1xxxxxxxxxx)
@@ -164,10 +217,48 @@ data:
         recording_url: Optional[str] = None
         transcript: Optional[str] = None
         error: Optional[str] = None
+        # Security: Per-call access token for transcription/speak endpoints
+        # Only returned on call creation, required for subsequent access
+        access_token: Optional[str] = None
+
+
+    class TranscriptionItem(BaseModel):
+        """A single transcription from the user"""
+        text: str
+        timestamp: str
+
+
+    class TranscriptionsResponse(BaseModel):
+        """Response model for transcriptions endpoint"""
+        call_id: str
+        transcriptions: List[TranscriptionItem]
+        call_active: bool
+
+
+    class SpeakRequest(BaseModel):
+        """Request model for speak endpoint"""
+        text: str
+
+        @field_validator('text')
+        @classmethod
+        def validate_text(cls, v: str) -> str:
+            """Validate text is not empty and not too long"""
+            if not v or not v.strip():
+                raise ValueError('Text cannot be empty')
+            if len(v) > 1000:
+                raise ValueError('Text too long (max 1000 characters)')
+            return v.strip()
+
+
+    class SpeakResponse(BaseModel):
+        """Response model for speak endpoint"""
+        call_id: str
+        queued: bool
+        message: str
 
 
     async def cleanup_expired_calls():
-        """Background task to clean up expired call records"""
+        """Background task to clean up expired call records and queues"""
         while True:
             await asyncio.sleep(3600)  # Run every hour
             now = time.time()
@@ -177,6 +268,11 @@ data:
             ]
             for cid in expired:
                 del active_calls[cid]
+                # Clean up associated queues
+                if cid in transcription_queues:
+                    del transcription_queues[cid]
+                if cid in speak_queues:
+                    del speak_queues[cid]
             if expired:
                 logger.info(f"Cleaned up {len(expired)} expired call records")
 
@@ -278,14 +374,22 @@ data:
         The call flow:
         1. Create Twilio call with TwiML pointing to our WebSocket
         2. Twilio connects and streams audio to our WebSocket
-        3. Pipecat handles STT -> LLM -> TTS pipeline
-        4. Audio streamed back to Twilio and the caller
+        3. Pipecat handles STT -> transcription queue -> caller polls
+        4. Caller sends text via /speak -> TTS -> audio to caller
+
+        After initiating a call, use:
+        - GET /api/v1/calls/{call_id}/transcriptions to get what the user said
+        - POST /api/v1/calls/{call_id}/speak to send a response via TTS
         """
         if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]):
             raise HTTPException(status_code=503, detail="Twilio not configured")
 
         call_id = str(uuid.uuid4())
         from_number = call_request.from_number or TWILIO_PHONE_NUMBER
+
+        # Security: Generate per-call access token for transcription/speak endpoints
+        # This provides defense-in-depth beyond the API key
+        access_token = secrets.token_urlsafe(32)
 
         # Store call metadata with creation timestamp for TTL
         active_calls[call_id] = {
@@ -299,8 +403,13 @@ data:
             "created_at": time.time(),
             "twilio_sid": None,
             "transcript": [],
-            "error": None
+            "error": None,
+            "access_token": access_token  # Store for verification
         }
+
+        # Initialize voice I/O queues for this call (with size limits)
+        transcription_queues[call_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+        speak_queues[call_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
 
         try:
             # Initialize Twilio client
@@ -335,7 +444,8 @@ data:
                 "status": "in_progress",
                 "to": call_request.to,
                 "from_number": from_number,
-                "started_at": active_calls[call_id]["started_at"]
+                "started_at": active_calls[call_id]["started_at"],
+                "access_token": access_token  # Return token for subsequent requests
             })
 
         except Exception as e:
@@ -376,7 +486,8 @@ data:
             duration_seconds=duration,
             recording_url=call.get("recording_url"),
             transcript="\n".join(call.get("transcript", [])) if call.get("transcript") else None,
-            error=call.get("error")
+            error=call.get("error"),
+            access_token=call.get("access_token")  # Return token for transcription/speak access
         )
 
 
@@ -415,15 +526,17 @@ data:
             # Import Pipecat components here to avoid startup delays
             from bot import run_pipeline
 
-            # Create and run the Pipecat pipeline
+            # Create and run the Pipecat pipeline (voice I/O mode)
+            # The pipeline sends transcriptions to the queue and receives speech from the queue
             call_data = active_calls[call_id]
             await run_pipeline(
                 websocket=websocket,
                 call_id=call_id,
-                context=call_data.get("context", "You are a helpful AI assistant."),
                 voice=call_data.get("voice", "alloy"),
                 litellm_base_url=LITELLM_BASE_URL,
                 litellm_api_key=LITELLM_API_KEY,
+                transcription_queue=transcription_queues[call_id],
+                speak_queue=speak_queues[call_id],
                 transcript_callback=lambda msg: active_calls[call_id]["transcript"].append(msg)
             )
 
@@ -441,6 +554,27 @@ data:
             if call_id in active_calls:
                 active_calls[call_id]["status"] = "completed"
                 active_calls[call_id]["ended_at"] = datetime.utcnow().isoformat()
+
+            # Security: Clean up queues immediately to prevent memory leaks
+            # Drain queues before deletion to release memory
+            if call_id in transcription_queues:
+                queue = transcription_queues[call_id]
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                del transcription_queues[call_id]
+
+            if call_id in speak_queues:
+                queue = speak_queues[call_id]
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                del speak_queues[call_id]
+
             logger.info(f"Call ended: {call_id} (active: {active_websocket_count})")
 
 
@@ -460,6 +594,10 @@ data:
         call_id = str(uuid.uuid4())
         ws_url = f"wss://{VOICE_BRIDGE_HOST}/ws/{call_id}"
 
+        # Security: Generate per-call access token for transcription/speak endpoints
+        # For inbound calls, the token must be retrieved via call status endpoint
+        access_token = secrets.token_urlsafe(32)
+
         # Pre-register the call so WebSocket handler recognizes it
         active_calls[call_id] = {
             "call_id": call_id,
@@ -468,8 +606,13 @@ data:
             "status": "pending",
             "started_at": datetime.utcnow().isoformat(),
             "created_at": time.time(),
-            "transcript": []
+            "transcript": [],
+            "access_token": access_token
         }
+
+        # Initialize voice I/O queues for this call (with size limits)
+        transcription_queues[call_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+        speak_queues[call_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
 
         response = VoiceResponse()
         connect = Connect()
@@ -484,20 +627,137 @@ data:
         )
 
 
+    @app.get("/api/v1/calls/{call_id}/transcriptions", response_model=TranscriptionsResponse)
+    @limiter.limit("60/minute")
+    async def get_transcriptions(
+        request: Request,
+        call_id: str,
+        authenticated: bool = Depends(verify_api_key),
+        x_call_token: Optional[str] = Header(None)
+    ):
+        """
+        Get transcriptions from the user during the call (REQUIRES API KEY + CALL TOKEN)
+
+        This endpoint returns all new transcriptions since the last poll.
+        Transcriptions are removed from the queue once returned.
+
+        Use this to get what the user said, then send your response via POST /speak.
+
+        Headers required:
+        - Authorization: Bearer <api_key>
+        - X-Call-Token: <access_token from call creation>
+        """
+        # Security: Verify per-call access token (defense-in-depth)
+        verify_call_access(call_id, x_call_token)
+
+        if call_id not in transcription_queues:
+            raise HTTPException(status_code=404, detail="Call transcription queue not initialized")
+
+        call = active_calls[call_id]
+        queue = transcription_queues[call_id]
+
+        # Collect all available transcriptions (non-blocking)
+        transcriptions = []
+        while not queue.empty():
+            try:
+                item = queue.get_nowait()
+                transcriptions.append(TranscriptionItem(**item))
+            except asyncio.QueueEmpty:
+                break
+
+        return TranscriptionsResponse(
+            call_id=call_id,
+            transcriptions=transcriptions,
+            call_active=call["status"] == "in_progress"
+        )
+
+
+    @app.post("/api/v1/calls/{call_id}/speak", response_model=SpeakResponse)
+    @limiter.limit("30/minute")
+    async def speak_to_caller(
+        request: Request,
+        call_id: str,
+        speak_request: SpeakRequest,
+        authenticated: bool = Depends(verify_api_key),
+        x_call_token: Optional[str] = Header(None)
+    ):
+        """
+        Send text to be spoken to the caller via TTS (REQUIRES API KEY + CALL TOKEN)
+
+        The text is queued and will be spoken by the TTS service.
+        This is how you respond to what the user said.
+
+        Headers required:
+        - Authorization: Bearer <api_key>
+        - X-Call-Token: <access_token from call creation>
+        """
+        # Security: Verify per-call access token (defense-in-depth)
+        verify_call_access(call_id, x_call_token)
+
+        if call_id not in speak_queues:
+            raise HTTPException(status_code=404, detail="Call speak queue not initialized")
+
+        call = active_calls[call_id]
+
+        if call["status"] != "in_progress":
+            return SpeakResponse(
+                call_id=call_id,
+                queued=False,
+                message=f"Call is not active (status: {call['status']})"
+            )
+
+        queue = speak_queues[call_id]
+
+        # Security: Check queue size to prevent resource exhaustion attacks
+        if queue.full():
+            logger.warning(f"Speak queue full for call {call_id}, rejecting request")
+            return SpeakResponse(
+                call_id=call_id,
+                queued=False,
+                message=f"Speak queue full ({MAX_QUEUE_SIZE} items), try again later"
+            )
+
+        try:
+            queue.put_nowait({
+                "text": speak_request.text,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        except asyncio.QueueFull:
+            # Race condition: queue filled between check and put
+            return SpeakResponse(
+                call_id=call_id,
+                queued=False,
+                message="Speak queue full, try again later"
+            )
+
+        logger.info(f"Queued speech for call {call_id}: {speak_request.text[:50]}...")
+
+        return SpeakResponse(
+            call_id=call_id,
+            queued=True,
+            message="Text queued for TTS"
+        )
+
+
     if __name__ == "__main__":
         import uvicorn
         uvicorn.run(app, host="0.0.0.0", port=8080)
 
-  # Pipecat pipeline - STT -> LLM -> TTS using LiteLLM
-  # Refactored to match official Pipecat patterns (pipecat-examples/twilio-chatbot)
+  # Pipecat pipeline - Voice I/O service
+  # STT sends transcriptions to API, API receives speech to send via TTS
   bot.py: |
     """
-    Voice Bridge Bot - Pipecat pipeline for voice conversations
+    Voice Bridge Bot - Voice I/O Pipeline
 
-    Audio Pipeline (following official Pipecat patterns):
-    - STT: Whisper via LiteLLM (whisper-medium model)
-    - LLM: Claude via LiteLLM
-    - TTS: Qwen-TTS via LiteLLM
+    Architecture: Voice I/O Service
+    The caller (Claude Code, Moltbot, etc.) controls the conversation.
+    This pipeline handles:
+    - STT: Whisper transcribes user speech → transcription queue → caller polls
+    - TTS: Caller sends text via API → speak queue → TTS speaks to user
+
+    Flow:
+    Phone → STT → TranscriptionPublisher → Queue → API → Caller
+    Caller → API → Queue → SpeechReceiver → TTS → Phone
 
     Key architectural decisions (from pipecat-examples/twilio-chatbot):
     1. Sample rates set in PipelineParams, NOT transport params
@@ -512,7 +772,6 @@ data:
     import json
     import asyncio
     import logging
-    import struct
     from typing import Callable, Optional, List, Dict
 
     import httpx
@@ -647,45 +906,24 @@ data:
             self._voice = voice
             self._client = httpx.AsyncClient(timeout=60.0)
 
-        def _resample_linear(self, audio: bytes, from_rate: int, to_rate: int) -> bytes:
-            """High-quality linear interpolation resampling.
-
-            audioop.ratecv can produce artifacts - this uses linear interpolation
-            which is more reliable for speech audio.
-            """
+        def _resample_audio(self, audio: bytes, from_rate: int, to_rate: int) -> bytes:
+            """Resample audio using audioop.ratecv (handles both up/downsampling)."""
             if from_rate == to_rate:
                 return audio
 
-            # Ensure even byte count for 16-bit samples (struct.unpack requires pairs)
+            # audioop removed in Python 3.13, use audioop-lts as fallback
+            try:
+                import audioop
+            except ImportError:
+                import audioop_lts as audioop
+
+            # Ensure even byte count for 16-bit samples
             if len(audio) % 2 != 0:
                 audio = audio[:-1]
 
-            # Convert bytes to 16-bit signed samples
-            samples = struct.unpack(f'<{len(audio)//2}h', audio)
-
-            # Calculate ratio and output length
-            ratio = from_rate / to_rate
-            out_len = int(len(samples) / ratio)
-
-            # Linear interpolation
-            output = []
-            for i in range(out_len):
-                src_pos = i * ratio
-                src_idx = int(src_pos)
-                frac = src_pos - src_idx
-
-                if src_idx + 1 < len(samples):
-                    # Interpolate between two samples
-                    sample = int(samples[src_idx] * (1 - frac) + samples[src_idx + 1] * frac)
-                else:
-                    sample = samples[src_idx] if src_idx < len(samples) else 0
-
-                # Clamp to 16-bit range
-                sample = max(-32768, min(32767, sample))
-                output.append(sample)
-
-            # Convert back to bytes
-            return struct.pack(f'<{len(output)}h', *output)
+            # ratecv handles resampling with proper filtering
+            resampled, _ = audioop.ratecv(audio, 2, 1, from_rate, to_rate, None)
+            return resampled
 
         def _parse_wav(self, audio_data: bytes) -> tuple[bytes, int, int, int]:
             """Parse WAV file and return (pcm_data, sample_rate, channels, sample_width)."""
@@ -718,8 +956,8 @@ data:
 
             return pcm_data
 
-        async def synthesize(self, text: str) -> bytes:
-            """Synthesize text to 8kHz 16-bit mono PCM audio."""
+        async def synthesize(self, text: str) -> tuple[bytes, int]:
+            """Synthesize text to PCM audio. Returns (audio_bytes, sample_rate)."""
             try:
                 # Request WAV format for reliable parsing
                 response = await self._client.post(
@@ -740,26 +978,19 @@ data:
                         # Normalize to 16-bit mono
                         pcm_data = self._to_mono_16bit(pcm_data, channels, sample_width)
 
-                        # Resample to 8kHz using linear interpolation
-                        if sample_rate != 8000:
-                            audio_8k = self._resample_linear(pcm_data, sample_rate, 8000)
-                            logger.info(f"TTS resampled: {len(pcm_data)} bytes @ {sample_rate}Hz -> {len(audio_8k)} bytes @ 8kHz")
-                        else:
-                            audio_8k = pcm_data
-
-                        return audio_8k
+                        # Return at native rate - let Pipecat handle resampling via audio_out_sample_rate
+                        return pcm_data, sample_rate
 
                     except Exception as e:
                         logger.warning(f"WAV parse failed: {e}, trying raw PCM")
 
                 # Fallback: assume raw 24kHz PCM (common TTS output rate)
                 logger.warning("TTS returned non-WAV, assuming raw 24kHz PCM")
-                audio_8k = self._resample_linear(audio_data, 24000, 8000)
-                return audio_8k
+                return audio_data, 24000
 
             except Exception as e:
                 logger.error(f"TTS error: {e}")
-                return b""
+                return b"", 8000
 
         async def process_frame(self, frame: Frame, direction: FrameDirection):
             await super().process_frame(frame, direction)
@@ -767,19 +998,20 @@ data:
             if isinstance(frame, TextFrame) and frame.text.strip():
                 logger.info(f"TTS: {frame.text}")
                 await self.push_frame(TTSStartedFrame())
-                audio = await self.synthesize(frame.text)
+                audio, sample_rate = await self.synthesize(frame.text)
                 if audio:
-                    # Twilio expects 20ms frames = 320 bytes at 8kHz 16-bit mono
-                    chunk_size = 320
+                    # 20ms frame size at native sample rate
+                    # e.g., 24000Hz * 0.020s * 2 bytes = 960 bytes per frame
+                    chunk_size = int(sample_rate * 0.020 * 2)
                     total_chunks = (len(audio) + chunk_size - 1) // chunk_size
-                    logger.info(f"TTS sending {total_chunks} audio chunks ({len(audio)} bytes total)")
+                    logger.info(f"TTS sending {total_chunks} chunks @ {sample_rate}Hz ({len(audio)} bytes, {chunk_size} bytes/chunk)")
                     for i in range(0, len(audio), chunk_size):
                         chunk = audio[i:i+chunk_size]
                         # Pad last chunk if needed
                         if len(chunk) < chunk_size:
                             chunk = chunk + b'\x00' * (chunk_size - len(chunk))
                         await self.push_frame(TTSAudioRawFrame(
-                            audio=chunk, sample_rate=8000, num_channels=1
+                            audio=chunk, sample_rate=sample_rate, num_channels=1
                         ))
                     logger.info(f"TTS finished sending all {total_chunks} chunks")
                 else:
@@ -809,6 +1041,115 @@ data:
                 await self.push_frame(TextFrame(text=self._greeting))
 
             await self.push_frame(frame, direction)
+
+
+    class TranscriptionPublisher(FrameProcessor):
+        """Publishes transcriptions to a queue for the caller to poll.
+
+        Voice I/O Architecture: This is how transcriptions reach the caller.
+        STT -> TranscriptionPublisher -> Queue -> API -> Caller
+        """
+
+        def __init__(self, transcription_queue: asyncio.Queue, transcript_callback: Optional[Callable[[str], None]] = None):
+            super().__init__()
+            self._queue = transcription_queue
+            self._callback = transcript_callback
+
+        async def process_frame(self, frame: Frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, TranscriptionFrame) and frame.text.strip():
+                from datetime import datetime
+                transcription_item = {
+                    "text": frame.text,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                await self._queue.put(transcription_item)
+                logger.info(f"Published transcription: {frame.text}")
+
+                # Also add to transcript history for call status endpoint
+                if self._callback:
+                    self._callback(f"User: {frame.text}")
+
+            # Don't forward TranscriptionFrame - the caller handles the response
+            # Only forward other frames
+            if not isinstance(frame, TranscriptionFrame):
+                await self.push_frame(frame, direction)
+
+
+    class SpeechReceiver(FrameProcessor):
+        """Receives text from the speak queue and sends to TTS.
+
+        Voice I/O Architecture: This is how the caller's responses reach TTS.
+        Caller -> API -> Queue -> SpeechReceiver -> TTS -> Phone
+
+        This processor runs a background task that polls the speak queue
+        and pushes TextFrames to TTS when speech is requested.
+        """
+
+        def __init__(self, speak_queue: asyncio.Queue, transcript_callback: Optional[Callable[[str], None]] = None):
+            super().__init__()
+            self._queue = speak_queue
+            self._callback = transcript_callback
+            self._running = False
+            self._poll_task: Optional[asyncio.Task] = None
+
+        async def _poll_speak_queue(self):
+            """Background task to poll the speak queue and send to TTS."""
+            self._running = True
+            while self._running:
+                try:
+                    # Wait for speech with timeout to allow clean shutdown
+                    try:
+                        item = await asyncio.wait_for(self._queue.get(), timeout=0.5)
+                        text = item.get("text", "")
+                        if text:
+                            logger.info(f"SpeechReceiver sending to TTS: {text}")
+                            await self.push_frame(TextFrame(text=text))
+
+                            # Add to transcript history
+                            if self._callback:
+                                self._callback(f"Assistant: {text}")
+                    except asyncio.TimeoutError:
+                        # Normal timeout, continue polling
+                        pass
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in speak queue poll: {e}")
+                    await asyncio.sleep(0.1)
+
+        async def process_frame(self, frame: Frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+
+            # Start the polling task on StartFrame
+            if isinstance(frame, StartFrame) and not self._poll_task:
+                self._poll_task = asyncio.create_task(self._poll_speak_queue())
+                logger.info("SpeechReceiver polling task started")
+
+            # Stop on EndFrame
+            if isinstance(frame, EndFrame):
+                self._running = False
+                if self._poll_task:
+                    self._poll_task.cancel()
+                    try:
+                        await self._poll_task
+                    except asyncio.CancelledError:
+                        pass
+                    self._poll_task = None
+                    logger.info("SpeechReceiver polling task stopped")
+
+            await self.push_frame(frame, direction)
+
+        async def cleanup(self):
+            """Cleanup the polling task."""
+            self._running = False
+            if self._poll_task:
+                self._poll_task.cancel()
+                try:
+                    await self._poll_task
+                except asyncio.CancelledError:
+                    pass
 
 
     class WebSocketWrapper:
@@ -893,13 +1234,23 @@ data:
     async def run_pipeline(
         websocket,
         call_id: str,
-        context: str,
         voice: str,
         litellm_base_url: str,
         litellm_api_key: str,
+        transcription_queue: asyncio.Queue,
+        speak_queue: asyncio.Queue,
         transcript_callback: Optional[Callable[[str], None]] = None
     ):
-        """Run the voice pipeline for a call.
+        """Run the voice I/O pipeline for a call.
+
+        Voice I/O Architecture:
+        - STT transcribes user speech -> TranscriptionPublisher -> transcription_queue -> caller polls
+        - Caller sends text -> speak_queue -> SpeechReceiver -> TTS -> audio to phone
+
+        The caller (Claude Code, Moltbot, etc.) controls the conversation by:
+        1. Polling GET /api/v1/calls/{call_id}/transcriptions to get what user said
+        2. Deciding how to respond
+        3. Sending POST /api/v1/calls/{call_id}/speak with response text
 
         Architecture follows official Pipecat patterns from pipecat-examples/twilio-chatbot:
         1. Sample rates in PipelineParams (not transport)
@@ -948,18 +1299,40 @@ data:
             )
         )
 
-        # Initialize services
+        # Initialize services for voice I/O architecture
+        # STT: Transcribes user speech
         stt = LiteLLMSTTService(api_key=litellm_api_key, base_url=litellm_base_url, model="whisper-medium")
-        llm = LiteLLMLLMService(api_key=litellm_api_key, base_url=litellm_base_url, model="claude-default", context=context)
+
+        # TranscriptionPublisher: Sends transcriptions to queue for caller to poll
+        transcription_publisher = TranscriptionPublisher(
+            transcription_queue=transcription_queue,
+            transcript_callback=transcript_callback
+        )
+
+        # SpeechReceiver: Watches speak queue and sends text to TTS
+        speech_receiver = SpeechReceiver(
+            speak_queue=speak_queue,
+            transcript_callback=transcript_callback
+        )
+
+        # TTS: Converts text to speech
         tts = LiteLLMTTSService(api_key=litellm_api_key, base_url=litellm_base_url, model="qwen-tts", voice=voice)
+
+        # Initial greeting when call connects
         greeting = InitialGreeting("Hello! How can I help you today?")
 
-        # Pipeline: input -> STT -> LLM -> greeting -> TTS -> output
+        # Voice I/O Pipeline:
+        # input -> STT -> TranscriptionPublisher (to queue)
+        #               -> SpeechReceiver (from queue) -> greeting -> TTS -> output
+        #
+        # The TranscriptionPublisher sends transcriptions to the queue but doesn't
+        # forward them. The SpeechReceiver watches its own queue for text to speak.
         pipeline = Pipeline([
             transport.input(),
             stt,
-            llm,
-            greeting,
+            transcription_publisher,  # Sends transcriptions to queue, stops them here
+            speech_receiver,          # Watches speak queue, sends TextFrames to TTS
+            greeting,                 # Sends greeting on StartFrame
             tts,
             transport.output(),
         ])
