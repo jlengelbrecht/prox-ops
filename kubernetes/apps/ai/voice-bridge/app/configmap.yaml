@@ -523,6 +523,7 @@ data:
     from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport, FastAPIWebsocketParams
     from pipecat.serializers.twilio import TwilioFrameSerializer
     from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.vad_analyzer import VADParams
 
     logger = logging.getLogger("voice-bridge.bot")
 
@@ -636,27 +637,76 @@ data:
             self._base_url = base_url.rstrip("/")
             self._model = model
             self._voice = voice
-            self._client = httpx.AsyncClient(timeout=30.0)
+            self._client = httpx.AsyncClient(timeout=60.0)  # Increased for cold start
 
         def _resample_audio(self, audio: bytes, from_rate: int, to_rate: int) -> bytes:
             """Resample audio from one sample rate to another."""
             import audioop
-            # Convert from from_rate to to_rate (e.g., 24000 -> 8000)
+            # Convert from from_rate to to_rate (e.g., 12000 -> 8000)
             resampled, _ = audioop.ratecv(audio, 2, 1, from_rate, to_rate, None)
             return resampled
 
+        def _convert_to_pcm(self, audio_data: bytes, content_type: str) -> tuple[bytes, int]:
+            """Convert audio to PCM format, return (pcm_bytes, sample_rate).
+
+            Normalizes audio to 16-bit mono for consistent resampling.
+            """
+            import wave
+            import audioop
+
+            def normalize_pcm(pcm_data: bytes, channels: int, sampwidth: int) -> bytes:
+                """Normalize PCM to 16-bit mono for resampling compatibility."""
+                # Convert to mono if stereo
+                if channels > 1:
+                    pcm_data = audioop.tomono(pcm_data, sampwidth, 0.5, 0.5)
+                # Convert to 16-bit if different sample width
+                if sampwidth != 2:
+                    pcm_data = audioop.lin2lin(pcm_data, sampwidth, 2)
+                return pcm_data
+
+            # Check if it's WAV format (by content-type or magic bytes)
+            is_wav = content_type == "audio/wav" or audio_data[:4] == b'RIFF'
+
+            if is_wav:
+                try:
+                    wav_buffer = io.BytesIO(audio_data)
+                    with wave.open(wav_buffer, "rb") as wav:
+                        sample_rate = wav.getframerate()
+                        channels = wav.getnchannels()
+                        sampwidth = wav.getsampwidth()
+                        pcm_data = wav.readframes(wav.getnframes())
+                    # Normalize to 16-bit mono for resampling
+                    pcm_data = normalize_pcm(pcm_data, channels, sampwidth)
+                    return pcm_data, sample_rate
+                except Exception as e:
+                    logger.warning(f"Failed to parse WAV: {e}")
+                    # Fall through to raw PCM assumption
+
+            # Raw PCM or failed WAV parse - assume 12kHz 16-bit mono (Qwen3-TTS-12Hz model)
+            logger.info("Treating as raw PCM at 12kHz (Qwen3-TTS-12Hz model)")
+            return audio_data, 12000
+
         async def synthesize(self, text: str) -> bytes:
             try:
+                # Request WAV format for reliable parsing
                 response = await self._client.post(
                     f"{self._base_url}/audio/speech",
                     headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
-                    json={"model": self._model, "input": text, "voice": self._voice, "response_format": "pcm"},
+                    json={"model": self._model, "input": text, "voice": self._voice, "response_format": "wav"},
                 )
                 response.raise_for_status()
-                # qwen-tts outputs 24kHz but Twilio needs 8kHz - resample
-                audio_24k = response.content
-                audio_8k = self._resample_audio(audio_24k, 24000, 8000)
-                logger.info(f"TTS audio: {len(audio_24k)} bytes @ 24kHz -> {len(audio_8k)} bytes @ 8kHz")
+
+                content_type = response.headers.get("content-type", "audio/wav")
+                pcm_data, sample_rate = self._convert_to_pcm(response.content, content_type)
+
+                # Resample to 8kHz for Twilio
+                if sample_rate != 8000:
+                    audio_8k = self._resample_audio(pcm_data, sample_rate, 8000)
+                    logger.info(f"TTS audio: {len(pcm_data)} bytes @ {sample_rate}Hz -> {len(audio_8k)} bytes @ 8kHz")
+                else:
+                    audio_8k = pcm_data
+                    logger.info(f"TTS audio: {len(audio_8k)} bytes @ 8kHz (no resample needed)")
+
                 return audio_8k
             except Exception as e:
                 logger.error(f"TTS error: {e}")
@@ -811,6 +861,14 @@ data:
         serializer = TwilioFrameSerializer(stream_sid=stream_sid)
 
         # Use the wrapper so Pipecat receives the buffered messages first
+        # CRITICAL: vad_audio_passthrough=True ensures audio flows to STT
+        # VAD params tuned for phone calls (less sensitive to brief noise)
+        vad_params = VADParams(
+            confidence=0.7,     # Speech detection confidence threshold
+            start_secs=0.4,     # Increased from 0.2 - requires 0.4s of speech to trigger
+            stop_secs=0.8,      # 0.8s silence before "stopped speaking"
+            min_volume=0.5,     # Slightly lower threshold for phone audio
+        )
         transport = FastAPIWebsocketTransport(
             websocket=ws_wrapper,
             params=FastAPIWebsocketParams(
@@ -819,7 +877,8 @@ data:
                 audio_out_enabled=True,
                 audio_out_sample_rate=8000,
                 vad_enabled=True,
-                vad_analyzer=SileroVADAnalyzer(),
+                vad_audio_passthrough=True,  # CRITICAL: Pass audio to STT pipeline
+                vad_analyzer=SileroVADAnalyzer(sample_rate=8000, params=vad_params),
                 serializer=serializer,
             )
         )
