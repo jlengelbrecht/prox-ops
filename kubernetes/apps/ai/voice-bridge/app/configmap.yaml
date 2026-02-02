@@ -656,6 +656,10 @@ data:
             if from_rate == to_rate:
                 return audio
 
+            # Ensure even byte count for 16-bit samples (struct.unpack requires pairs)
+            if len(audio) % 2 != 0:
+                audio = audio[:-1]
+
             # Convert bytes to 16-bit signed samples
             samples = struct.unpack(f'<{len(audio)//2}h', audio)
 
@@ -698,7 +702,11 @@ data:
 
         def _to_mono_16bit(self, pcm_data: bytes, channels: int, sample_width: int) -> bytes:
             """Convert PCM to 16-bit mono."""
-            import audioop
+            # audioop removed in Python 3.13, use audioop-lts as fallback
+            try:
+                import audioop
+            except ImportError:
+                import audioop_lts as audioop
 
             # Convert to mono if stereo
             if channels > 1:
@@ -994,4 +1002,7 @@ data:
     twilio==9.4.0
     # Security: Rate limiting
     slowapi==0.1.9
+    # Audio processing: audioop-lts for Python 3.13+ compatibility
+    # (audioop removed from stdlib in 3.13, audioop-lts is the official backport)
+    audioop-lts>=0.2.1
     # Note: FastAPI 0.128.0+ includes fix for CVE-2024-47874 (DoS via multipart)
