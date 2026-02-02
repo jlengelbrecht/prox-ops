@@ -647,35 +647,44 @@ data:
             return resampled
 
         def _convert_to_pcm(self, audio_data: bytes, content_type: str) -> tuple[bytes, int]:
-            """Convert audio to PCM format, return (pcm_bytes, sample_rate)."""
-            import wave
+            """Convert audio to PCM format, return (pcm_bytes, sample_rate).
 
-            # If it's WAV format, extract PCM directly
-            if content_type == "audio/wav" or audio_data[:4] == b'RIFF':
+            Normalizes audio to 16-bit mono for consistent resampling.
+            """
+            import wave
+            import audioop
+
+            def normalize_pcm(pcm_data: bytes, channels: int, sampwidth: int) -> bytes:
+                """Normalize PCM to 16-bit mono for resampling compatibility."""
+                # Convert to mono if stereo
+                if channels > 1:
+                    pcm_data = audioop.tomono(pcm_data, sampwidth, 0.5, 0.5)
+                # Convert to 16-bit if different sample width
+                if sampwidth != 2:
+                    pcm_data = audioop.lin2lin(pcm_data, sampwidth, 2)
+                return pcm_data
+
+            # Check if it's WAV format (by content-type or magic bytes)
+            is_wav = content_type == "audio/wav" or audio_data[:4] == b'RIFF'
+
+            if is_wav:
                 try:
                     wav_buffer = io.BytesIO(audio_data)
                     with wave.open(wav_buffer, "rb") as wav:
                         sample_rate = wav.getframerate()
+                        channels = wav.getnchannels()
+                        sampwidth = wav.getsampwidth()
                         pcm_data = wav.readframes(wav.getnframes())
+                    # Normalize to 16-bit mono for resampling
+                    pcm_data = normalize_pcm(pcm_data, channels, sampwidth)
                     return pcm_data, sample_rate
                 except Exception as e:
                     logger.warning(f"Failed to parse WAV: {e}")
+                    # Fall through to raw PCM assumption
 
-            # If it looks like raw PCM (no header), assume 12kHz from Qwen3-TTS-12Hz model
-            if content_type == "audio/pcm" or len(audio_data) > 0 and audio_data[:4] != b'RIFF':
-                logger.info("Assuming raw PCM at 12kHz (Qwen3-TTS-12Hz model)")
-                return audio_data, 12000
-
-            # Fallback: try to treat as WAV anyway
-            try:
-                wav_buffer = io.BytesIO(audio_data)
-                with wave.open(wav_buffer, "rb") as wav:
-                    sample_rate = wav.getframerate()
-                    pcm_data = wav.readframes(wav.getnframes())
-                return pcm_data, sample_rate
-            except Exception as e:
-                logger.error(f"Failed to parse audio: {e}, assuming 12kHz PCM")
-                return audio_data, 12000
+            # Raw PCM or failed WAV parse - assume 12kHz 16-bit mono (Qwen3-TTS-12Hz model)
+            logger.info("Treating as raw PCM at 12kHz (Qwen3-TTS-12Hz model)")
+            return audio_data, 12000
 
         async def synthesize(self, text: str) -> bytes:
             try:
