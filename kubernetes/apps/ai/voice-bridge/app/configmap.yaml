@@ -721,10 +721,16 @@ data:
                 audio = await self.synthesize(frame.text)
                 if audio:
                     chunk_size = 640  # 40ms at 8kHz 16-bit mono
+                    total_chunks = (len(audio) + chunk_size - 1) // chunk_size
+                    logger.info(f"TTS sending {total_chunks} audio chunks ({len(audio)} bytes total)")
                     for i in range(0, len(audio), chunk_size):
+                        chunk = audio[i:i+chunk_size]
                         await self.push_frame(TTSAudioRawFrame(
-                            audio=audio[i:i+chunk_size], sample_rate=8000, num_channels=1
+                            audio=chunk, sample_rate=8000, num_channels=1
                         ))
+                    logger.info(f"TTS finished sending all {total_chunks} chunks")
+                else:
+                    logger.warning("TTS synthesize returned empty audio!")
                 await self.push_frame(TTSStoppedFrame())
             else:
                 await self.push_frame(frame, direction)
@@ -900,7 +906,9 @@ data:
 
         task = PipelineTask(
             pipeline,
-            params=PipelineParams(allow_interruptions=True, enable_metrics=True)
+            # TURN-BASED MODE: Disable interruptions so AI speaks fully before listening
+            # This prevents user's "hello" from cancelling the greeting
+            params=PipelineParams(allow_interruptions=False, enable_metrics=True)
         )
 
         @transport.event_handler("on_client_connected")
