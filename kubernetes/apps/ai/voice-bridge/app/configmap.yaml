@@ -720,7 +720,7 @@ data:
                 await self.push_frame(TTSStartedFrame())
                 audio = await self.synthesize(frame.text)
                 if audio:
-                    chunk_size = 640  # 40ms at 8kHz 16-bit mono
+                    chunk_size = 320  # 20ms at 8kHz 16-bit mono (Twilio Media Streams spec)
                     total_chunks = (len(audio) + chunk_size - 1) // chunk_size
                     logger.info(f"TTS sending {total_chunks} audio chunks ({len(audio)} bytes total)")
                     for i in range(0, len(audio), chunk_size):
