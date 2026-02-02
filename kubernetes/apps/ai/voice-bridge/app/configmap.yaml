@@ -149,9 +149,14 @@ data:
         if request.url.query:
             url += f"?{request.url.query}"
 
-        # Get form data for signature validation
-        form_data = await request.form()
-        params = {k: v for k, v in form_data.items()}
+        try:
+            # Get form data for signature validation
+            form_data = await request.form()
+            params = {k: v for k, v in form_data.items()}
+        except Exception as e:
+            # Security: Don't leak internal errors - return 403
+            logger.error(f"Failed to parse form data for signature validation: {e}")
+            raise HTTPException(status_code=403, detail="Invalid request format")
 
         if not twilio_validator.validate(url, params, x_twilio_signature):
             logger.warning(f"Invalid Twilio signature from {request.client.host}")
@@ -1371,6 +1376,8 @@ data:
     # Server dependencies
     fastapi==0.128.0
     uvicorn==0.32.0
+    # Form parsing (CRITICAL: Required for Twilio signature validation)
+    python-multipart==0.0.17
     # Twilio SDK
     twilio==9.4.0
     # Security: Rate limiting
