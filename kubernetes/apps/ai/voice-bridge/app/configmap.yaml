@@ -489,18 +489,21 @@ data:
         uvicorn.run(app, host="0.0.0.0", port=8080)
 
   # Pipecat pipeline - STT -> LLM -> TTS using LiteLLM
-  # Uses custom services with direct httpx calls to avoid OpenAI SDK version conflicts
+  # Refactored to match official Pipecat patterns (pipecat-examples/twilio-chatbot)
   bot.py: |
     """
     Voice Bridge Bot - Pipecat pipeline for voice conversations
 
-    Audio Pipeline:
+    Audio Pipeline (following official Pipecat patterns):
     - STT: Whisper via LiteLLM (whisper-medium model)
     - LLM: Claude via LiteLLM
     - TTS: Qwen-TTS via LiteLLM
 
-    All services use direct httpx calls to LiteLLM to bypass Pipecat's
-    OpenAI SDK which has version compatibility issues with httpx.
+    Key architectural decisions (from pipecat-examples/twilio-chatbot):
+    1. Sample rates set in PipelineParams, NOT transport params
+    2. Transport params kept simple: audio enabled + serializer + add_wav_header=False
+    3. VAD handled via SileroVADAnalyzer in transport
+    4. Let Pipecat handle audio format conversion where possible
 
     Audio format: Twilio uses mulaw 8kHz, Pipecat handles conversion
     """
@@ -509,6 +512,7 @@ data:
     import json
     import asyncio
     import logging
+    import struct
     from typing import Callable, Optional, List, Dict
 
     import httpx
@@ -629,7 +633,11 @@ data:
 
 
     class LiteLLMTTSService(FrameProcessor):
-        """Custom TTS using direct httpx to LiteLLM/Qwen-TTS."""
+        """Custom TTS using direct httpx to LiteLLM/Qwen-TTS.
+
+        Uses high-quality linear interpolation resampling instead of audioop.ratecv
+        to avoid audio corruption issues (the "YO" bug).
+        """
 
         def __init__(self, api_key: str, base_url: str, model: str, voice: str):
             super().__init__()
@@ -637,56 +645,73 @@ data:
             self._base_url = base_url.rstrip("/")
             self._model = model
             self._voice = voice
-            self._client = httpx.AsyncClient(timeout=60.0)  # Increased for cold start
+            self._client = httpx.AsyncClient(timeout=60.0)
 
-        def _resample_audio(self, audio: bytes, from_rate: int, to_rate: int) -> bytes:
-            """Resample audio from one sample rate to another."""
-            import audioop
-            # Convert from from_rate to to_rate (e.g., 12000 -> 8000)
-            resampled, _ = audioop.ratecv(audio, 2, 1, from_rate, to_rate, None)
-            return resampled
+        def _resample_linear(self, audio: bytes, from_rate: int, to_rate: int) -> bytes:
+            """High-quality linear interpolation resampling.
 
-        def _convert_to_pcm(self, audio_data: bytes, content_type: str) -> tuple[bytes, int]:
-            """Convert audio to PCM format, return (pcm_bytes, sample_rate).
-
-            Normalizes audio to 16-bit mono for consistent resampling.
+            audioop.ratecv can produce artifacts - this uses linear interpolation
+            which is more reliable for speech audio.
             """
+            if from_rate == to_rate:
+                return audio
+
+            # Convert bytes to 16-bit signed samples
+            samples = struct.unpack(f'<{len(audio)//2}h', audio)
+
+            # Calculate ratio and output length
+            ratio = from_rate / to_rate
+            out_len = int(len(samples) / ratio)
+
+            # Linear interpolation
+            output = []
+            for i in range(out_len):
+                src_pos = i * ratio
+                src_idx = int(src_pos)
+                frac = src_pos - src_idx
+
+                if src_idx + 1 < len(samples):
+                    # Interpolate between two samples
+                    sample = int(samples[src_idx] * (1 - frac) + samples[src_idx + 1] * frac)
+                else:
+                    sample = samples[src_idx] if src_idx < len(samples) else 0
+
+                # Clamp to 16-bit range
+                sample = max(-32768, min(32767, sample))
+                output.append(sample)
+
+            # Convert back to bytes
+            return struct.pack(f'<{len(output)}h', *output)
+
+        def _parse_wav(self, audio_data: bytes) -> tuple[bytes, int, int, int]:
+            """Parse WAV file and return (pcm_data, sample_rate, channels, sample_width)."""
             import wave
+
+            wav_buffer = io.BytesIO(audio_data)
+            with wave.open(wav_buffer, "rb") as wav:
+                sample_rate = wav.getframerate()
+                channels = wav.getnchannels()
+                sample_width = wav.getsampwidth()
+                pcm_data = wav.readframes(wav.getnframes())
+
+            return pcm_data, sample_rate, channels, sample_width
+
+        def _to_mono_16bit(self, pcm_data: bytes, channels: int, sample_width: int) -> bytes:
+            """Convert PCM to 16-bit mono."""
             import audioop
 
-            def normalize_pcm(pcm_data: bytes, channels: int, sampwidth: int) -> bytes:
-                """Normalize PCM to 16-bit mono for resampling compatibility."""
-                # Convert to mono if stereo
-                if channels > 1:
-                    pcm_data = audioop.tomono(pcm_data, sampwidth, 0.5, 0.5)
-                # Convert to 16-bit if different sample width
-                if sampwidth != 2:
-                    pcm_data = audioop.lin2lin(pcm_data, sampwidth, 2)
-                return pcm_data
+            # Convert to mono if stereo
+            if channels > 1:
+                pcm_data = audioop.tomono(pcm_data, sample_width, 0.5, 0.5)
 
-            # Check if it's WAV format (by content-type or magic bytes)
-            is_wav = content_type == "audio/wav" or audio_data[:4] == b'RIFF'
+            # Convert to 16-bit if different sample width
+            if sample_width != 2:
+                pcm_data = audioop.lin2lin(pcm_data, sample_width, 2)
 
-            if is_wav:
-                try:
-                    wav_buffer = io.BytesIO(audio_data)
-                    with wave.open(wav_buffer, "rb") as wav:
-                        sample_rate = wav.getframerate()
-                        channels = wav.getnchannels()
-                        sampwidth = wav.getsampwidth()
-                        pcm_data = wav.readframes(wav.getnframes())
-                    # Normalize to 16-bit mono for resampling
-                    pcm_data = normalize_pcm(pcm_data, channels, sampwidth)
-                    return pcm_data, sample_rate
-                except Exception as e:
-                    logger.warning(f"Failed to parse WAV: {e}")
-                    # Fall through to raw PCM assumption
-
-            # Raw PCM or failed WAV parse - assume 12kHz 16-bit mono (Qwen3-TTS-12Hz model)
-            logger.info("Treating as raw PCM at 12kHz (Qwen3-TTS-12Hz model)")
-            return audio_data, 12000
+            return pcm_data
 
         async def synthesize(self, text: str) -> bytes:
+            """Synthesize text to 8kHz 16-bit mono PCM audio."""
             try:
                 # Request WAV format for reliable parsing
                 response = await self._client.post(
@@ -696,18 +721,34 @@ data:
                 )
                 response.raise_for_status()
 
-                content_type = response.headers.get("content-type", "audio/wav")
-                pcm_data, sample_rate = self._convert_to_pcm(response.content, content_type)
+                audio_data = response.content
 
-                # Resample to 8kHz for Twilio
-                if sample_rate != 8000:
-                    audio_8k = self._resample_audio(pcm_data, sample_rate, 8000)
-                    logger.info(f"TTS audio: {len(pcm_data)} bytes @ {sample_rate}Hz -> {len(audio_8k)} bytes @ 8kHz")
-                else:
-                    audio_8k = pcm_data
-                    logger.info(f"TTS audio: {len(audio_8k)} bytes @ 8kHz (no resample needed)")
+                # Check for WAV format
+                if audio_data[:4] == b'RIFF':
+                    try:
+                        pcm_data, sample_rate, channels, sample_width = self._parse_wav(audio_data)
+                        logger.info(f"TTS WAV: {sample_rate}Hz, {channels}ch, {sample_width*8}bit, {len(pcm_data)} bytes")
 
+                        # Normalize to 16-bit mono
+                        pcm_data = self._to_mono_16bit(pcm_data, channels, sample_width)
+
+                        # Resample to 8kHz using linear interpolation
+                        if sample_rate != 8000:
+                            audio_8k = self._resample_linear(pcm_data, sample_rate, 8000)
+                            logger.info(f"TTS resampled: {len(pcm_data)} bytes @ {sample_rate}Hz -> {len(audio_8k)} bytes @ 8kHz")
+                        else:
+                            audio_8k = pcm_data
+
+                        return audio_8k
+
+                    except Exception as e:
+                        logger.warning(f"WAV parse failed: {e}, trying raw PCM")
+
+                # Fallback: assume raw 24kHz PCM (common TTS output rate)
+                logger.warning("TTS returned non-WAV, assuming raw 24kHz PCM")
+                audio_8k = self._resample_linear(audio_data, 24000, 8000)
                 return audio_8k
+
             except Exception as e:
                 logger.error(f"TTS error: {e}")
                 return b""
@@ -720,11 +761,15 @@ data:
                 await self.push_frame(TTSStartedFrame())
                 audio = await self.synthesize(frame.text)
                 if audio:
-                    chunk_size = 320  # 20ms at 8kHz 16-bit mono (Twilio Media Streams spec)
+                    # Twilio expects 20ms frames = 320 bytes at 8kHz 16-bit mono
+                    chunk_size = 320
                     total_chunks = (len(audio) + chunk_size - 1) // chunk_size
                     logger.info(f"TTS sending {total_chunks} audio chunks ({len(audio)} bytes total)")
                     for i in range(0, len(audio), chunk_size):
                         chunk = audio[i:i+chunk_size]
+                        # Pad last chunk if needed
+                        if len(chunk) < chunk_size:
+                            chunk = chunk + b'\x00' * (chunk_size - len(chunk))
                         await self.push_frame(TTSAudioRawFrame(
                             audio=chunk, sample_rate=8000, num_channels=1
                         ))
@@ -805,7 +850,6 @@ data:
 
         Messages are buffered in ws_wrapper to be replayed when Pipecat reads.
         """
-        import asyncio
         try:
             start_time = asyncio.get_event_loop().time()
             while True:
@@ -847,13 +891,19 @@ data:
         litellm_api_key: str,
         transcript_callback: Optional[Callable[[str], None]] = None
     ):
+        """Run the voice pipeline for a call.
+
+        Architecture follows official Pipecat patterns from pipecat-examples/twilio-chatbot:
+        1. Sample rates in PipelineParams (not transport)
+        2. Simple transport params: audio enabled + serializer + add_wav_header=False
+        3. VAD in transport with vad_audio_passthrough=True
+        """
         logger.info(f"Starting pipeline for call: {call_id}")
 
         # Create WebSocket wrapper to buffer messages for replay
         ws_wrapper = WebSocketWrapper(websocket)
 
         # Wait for Twilio's start event to get the real streamSid
-        # Messages are buffered in ws_wrapper for Pipecat to replay
         twilio_start = await wait_for_twilio_start(websocket, ws_wrapper)
         stream_sid = twilio_start["stream_sid"]
 
@@ -863,38 +913,40 @@ data:
 
         logger.info(f"Using Twilio streamSid: {stream_sid}")
 
-        # Initialize serializer with Twilio's actual streamSid (critical for audio output)
+        # Initialize serializer with Twilio's actual streamSid
         serializer = TwilioFrameSerializer(stream_sid=stream_sid)
 
-        # Use the wrapper so Pipecat receives the buffered messages first
-        # CRITICAL: vad_audio_passthrough=True ensures audio flows to STT
-        # VAD params tuned for phone calls (less sensitive to brief noise)
+        # VAD params tuned for phone calls
         vad_params = VADParams(
-            confidence=0.7,     # Speech detection confidence threshold
-            start_secs=0.4,     # Increased from 0.2 - requires 0.4s of speech to trigger
-            stop_secs=0.8,      # 0.8s silence before "stopped speaking"
-            min_volume=0.5,     # Slightly lower threshold for phone audio
+            confidence=0.7,
+            start_secs=0.4,
+            stop_secs=0.8,
+            min_volume=0.5,
         )
+
+        # Transport setup following official pattern:
+        # - Simple params: audio enabled, serializer, add_wav_header=False
+        # - VAD with audio passthrough so audio reaches STT
         transport = FastAPIWebsocketTransport(
             websocket=ws_wrapper,
             params=FastAPIWebsocketParams(
                 audio_in_enabled=True,
-                audio_in_sample_rate=8000,
                 audio_out_enabled=True,
-                audio_out_sample_rate=8000,
+                add_wav_header=False,  # Critical: Twilio expects raw audio, not WAV
                 vad_enabled=True,
-                vad_audio_passthrough=True,  # CRITICAL: Pass audio to STT pipeline
+                vad_audio_passthrough=True,  # Critical: Pass audio to STT pipeline
                 vad_analyzer=SileroVADAnalyzer(sample_rate=8000, params=vad_params),
                 serializer=serializer,
             )
         )
 
+        # Initialize services
         stt = LiteLLMSTTService(api_key=litellm_api_key, base_url=litellm_base_url, model="whisper-medium")
         llm = LiteLLMLLMService(api_key=litellm_api_key, base_url=litellm_base_url, model="claude-default", context=context)
         tts = LiteLLMTTSService(api_key=litellm_api_key, base_url=litellm_base_url, model="qwen-tts", voice=voice)
         greeting = InitialGreeting("Hello! How can I help you today?")
 
-        # Pipeline order: greeting before TTS so TextFrame becomes audio
+        # Pipeline: input -> STT -> LLM -> greeting -> TTS -> output
         pipeline = Pipeline([
             transport.input(),
             stt,
@@ -904,17 +956,21 @@ data:
             transport.output(),
         ])
 
+        # PipelineParams with sample rates (official pattern)
+        # Turn-based mode: allow_interruptions=False prevents user noise from cancelling greeting
         task = PipelineTask(
             pipeline,
-            # TURN-BASED MODE: Disable interruptions so AI speaks fully before listening
-            # This prevents user's "hello" from cancelling the greeting
-            params=PipelineParams(allow_interruptions=False, enable_metrics=True)
+            params=PipelineParams(
+                audio_in_sample_rate=8000,   # Twilio input rate
+                audio_out_sample_rate=8000,  # Twilio output rate
+                allow_interruptions=False,   # Turn-based: AI speaks fully before listening
+                enable_metrics=True,
+            )
         )
 
         @transport.event_handler("on_client_connected")
         async def on_connected(transport, client):
             logger.info(f"Client connected: {call_id}")
-            # Pipeline task automatically sends StartFrame - no manual queuing needed
 
         @transport.event_handler("on_client_disconnected")
         async def on_disconnected(transport, client):
