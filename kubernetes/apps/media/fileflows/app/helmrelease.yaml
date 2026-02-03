@@ -63,11 +63,16 @@ spec:
                 memory: 8Gi
                 nvidia.com/gpu: 1
             securityContext:
-              allowPrivilegeEscalation: false
+              # FileFlows requires privilege escalation for su to drop to PUID
+              allowPrivilegeEscalation: true
               readOnlyRootFilesystem: false
               capabilities:
                 drop:
                   - ALL
+                add:
+                  - CHOWN   # Required: chown -R /app /temp
+                  - SETUID  # Required: useradd, su privilege dropping
+                  - SETGID  # Required: groupadd, usermod -aG
     defaultPodOptions:
       automountServiceAccountToken: false
       runtimeClassName: nvidia
@@ -94,10 +99,13 @@ spec:
                       - k8s-work-10
       annotations:
         security.homelab/gpu-required: "NVIDIA GPU for hardware transcoding"
+        security.homelab/root-exception: "FileFlows requires root for user creation and GPU setup, drops to PUID after init"
+        security.homelab/mitigations: "CiliumNetworkPolicy egress restrictions, Tetragon monitoring"
       securityContext:
-        runAsUser: 1000
-        runAsGroup: 1000
-        runAsNonRoot: true
+        # FileFlows init requires root, then drops to PUID via su
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
         fsGroup: 1000
         fsGroupChangePolicy: OnRootMismatch
         supplementalGroups:
