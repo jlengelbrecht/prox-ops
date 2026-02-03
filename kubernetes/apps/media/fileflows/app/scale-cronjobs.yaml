@@ -1,5 +1,5 @@
 ---
-# Scale FileFlows deployment to 1 at 01:00 EST (06:00 UTC)
+# Scale FileFlows deployment to 1 at 01:00 local time
 # This starts the transcoding window
 apiVersion: batch/v1
 kind: CronJob
@@ -7,7 +7,8 @@ metadata:
   name: fileflows-scale-up
   namespace: media
 spec:
-  schedule: "0 6 * * *"  # 01:00 EST = 06:00 UTC
+  schedule: "0 1 * * *"
+  timeZone: "America/New_York"
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   concurrencyPolicy: Forbid
@@ -52,7 +53,7 @@ spec:
                   cpu: 100m
                   memory: 64Mi
 ---
-# Scale FileFlows deployment to 0 at 06:00 EST (11:00 UTC)
+# Scale FileFlows deployment to 0 at 06:00 local time
 # This ends the transcoding window and frees GPU for Plex/Whisper
 apiVersion: batch/v1
 kind: CronJob
@@ -60,7 +61,8 @@ metadata:
   name: fileflows-scale-down
   namespace: media
 spec:
-  schedule: "0 11 * * *"  # 06:00 EST = 11:00 UTC
+  schedule: "0 6 * * *"
+  timeZone: "America/New_York"
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   concurrencyPolicy: Forbid
