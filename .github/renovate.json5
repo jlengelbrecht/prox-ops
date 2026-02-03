@@ -759,13 +759,14 @@
       ],
     },
     {
-      description: 'FileFlows stable releases only (YY.MM calendar versioning)',
+      description: 'FileFlows modded releases (FFmpeg pre-installed, YY.MM calendar versioning)',
       matchDatasources: [
         'docker',
       ],
-      // Matches: 26.01, 25.12, 24.11 (YY.MM format)
-      // Excludes: stable, latest, develop, preview, modded-*
-      versioning: 'regex:^(?<major>\\d{2})\\.(?<minor>\\d{2})$',
+      // Matches: modded-26.01, modded-25.12, modded-24.11 (modded-YY.MM format)
+      // Excludes: 26.01 (base), stable, latest, develop, preview
+      // Using modded images because FFmpeg is pre-installed (Docker Mods require elevated security)
+      versioning: 'regex:^modded-(?<major>\\d{2})\\.(?<minor>\\d{2})$',
       matchPackageNames: [
         'revenz/fileflows',
       ],
