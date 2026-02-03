@@ -65,17 +65,19 @@ spec:
         # renovate: datasource=docker depName=vllm/vllm-omni
         image: vllm/vllm-omni:v0.14.0  # vLLM-Omni for multimodal models (stable release)
 
-        # vLLM-Omni requires explicit command (different from vllm-openai)
+        # vLLM-Omni requires vllm serve with --omni flag for audio output
         command:
-          - python
-          - -m
-          - vllm.entrypoints.openai.api_server
+          - vllm
+          - serve
 
         # vLLM-Omni server arguments
-        # Note: vLLM-Omni auto-detects multimodal models, no --omni flag needed
+        # CRITICAL: --omni flag required for audio/TTS output (STORY-031-7)
         args:
           # Model path (absolute path to cached model)
-          - --model=/models/Qwen/Qwen2.5-Omni-7B
+          - /models/Qwen/Qwen2.5-Omni-7B
+
+          # Enable omni-modal support (required for audio output)
+          - --omni
 
           # Load format optimization
           - --load-format=safetensors
@@ -126,15 +128,16 @@ spec:
           - name: HOME
             value: "/tmp"
 
-        # Resource requirements (larger for multimodal)
+        # Resource requirements (larger for multimodal + audio processing)
+        # STORY-031-7: Increased memory for audio output (OOM fix)
         resources:
           requests:
             cpu: 4
-            memory: 18Gi
+            memory: 20Gi
             nvidia.com/gpu: 1
           limits:
             cpu: 8
-            memory: 22Gi
+            memory: 28Gi
             nvidia.com/gpu: 1
 
         # Health checks
