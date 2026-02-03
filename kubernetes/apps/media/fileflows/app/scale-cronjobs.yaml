@@ -37,7 +37,7 @@ spec:
                 - /bin/sh
                 - -c
                 - |
-                  kubectl scale deployment fileflows-fileflows -n media --replicas=1
+                  kubectl scale deployment fileflows -n media --replicas=1
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
@@ -90,7 +90,7 @@ spec:
                 - /bin/sh
                 - -c
                 - |
-                  kubectl scale deployment fileflows-fileflows -n media --replicas=0
+                  kubectl scale deployment fileflows -n media --replicas=0
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
@@ -123,7 +123,7 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "deployments/scale"]
     verbs: ["get", "patch", "update"]
-    resourceNames: ["fileflows-fileflows"]
+    resourceNames: ["fileflows"]
 ---
 # RoleBinding to grant ServiceAccount the scaling role
 apiVersion: rbac.authorization.k8s.io/v1
