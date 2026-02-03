@@ -1,0 +1,38 @@
+---
+# PROTECTED: These PVCs are in a separate Kustomization with prune: false
+# to prevent accidental data loss during Flux reconciliation
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fileflows-config
+  namespace: media
+  labels:
+    app.kubernetes.io/name: fileflows
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fileflows-temp
+  namespace: media
+  labels:
+    app.kubernetes.io/name: fileflows
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 100Gi
