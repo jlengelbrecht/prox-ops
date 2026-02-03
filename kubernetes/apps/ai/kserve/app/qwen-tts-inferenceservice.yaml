@@ -1,5 +1,13 @@
 ---
 # KServe InferenceService: Qwen3-TTS (Text-to-Speech with Custom Voice)
+#
+# ⚠️ DEPRECATED (2026-02-03): This service is now a BACKUP only.
+# Primary TTS should use qwen-omni (vllm-omni v0.14.0) via /v1/chat/completions with modalities: ["audio"].
+# See STORY-031-7 for details on the switch to vllm-omni v0.14.0 stable.
+#
+# This custom container (qwen-tts-api) is kept as a fallback option if vllm-omni
+# has issues with TTS generation. To reactivate, route LiteLLM to this service.
+#
 # STORY-142 Phase 3: First TTS model deployment
 # Model: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (~5GB VRAM, audio generation)
 # Framework: qwen-tts-api (custom OpenAI-compatible wrapper using qwen-tts package)
@@ -32,8 +40,9 @@
 # - Large models (>12GB) run solo due to VRAM constraints (scale-to-zero when idle)
 # - All AI models pinned to k8s-work-10 (A5000) via nodeSelector
 #
-# Note: This container replaces vLLM-Omni due to v0.14.0rc1 bugs.
-# When vLLM-Omni v0.14.0 stable is released to Docker Hub, can revert if desired.
+# History:
+# - Originally created as workaround for vLLM-Omni v0.14.0rc1 bugs
+# - Deprecated 2026-02-03 when vLLM-Omni v0.14.0 stable released to Docker Hub
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
