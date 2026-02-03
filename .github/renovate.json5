@@ -231,6 +231,7 @@
         '/notifiarr/',
         '/huntarr/',
         '/cleanuparr/',
+        '/fileflows/',
       ],
     },
     {
@@ -755,6 +756,18 @@
       matchPackageNames: [
         'ghcr.io/berriai/litellm-database',
         'ghcr.io/berriai/litellm',
+      ],
+    },
+    {
+      description: 'FileFlows stable releases only (YY.MM calendar versioning)',
+      matchDatasources: [
+        'docker',
+      ],
+      // Matches: 26.01, 25.12, 24.11 (YY.MM format)
+      // Excludes: stable, latest, develop, preview, modded-*
+      versioning: 'regex:^(?<major>\\d{2})\\.(?<minor>\\d{2})$',
+      matchPackageNames: [
+        'revenz/fileflows',
       ],
     },
     {
