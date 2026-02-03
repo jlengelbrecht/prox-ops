@@ -18,7 +18,6 @@ spec:
   values:
     controllers:
       fileflows:
-        replicas: 0  # Start scaled down; CronJob scales up at 01:00 EST
         strategy: Recreate
         containers:
           app:
@@ -95,7 +94,6 @@ spec:
                       - k8s-work-10
       annotations:
         security.homelab/gpu-required: "NVIDIA GPU for hardware transcoding"
-        security.homelab/scheduled: "Only runs 01:00-06:00 EST via CronJob scaling"
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
