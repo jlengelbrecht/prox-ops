@@ -150,12 +150,11 @@ data:
         if not VOICE_BRIDGE_API_KEY:
             logger.error("VOICE_BRIDGE_API_KEY not configured")
             raise HTTPException(status_code=503, detail="API authentication not configured")
-        if not credentials:
-            logger.warning("API request without credentials")
-            raise HTTPException(status_code=401, detail="Missing authorization header")
-        if not hmac.compare_digest(credentials.credentials, VOICE_BRIDGE_API_KEY):
-            logger.warning("API request with invalid credentials")
-            raise HTTPException(status_code=403, detail="Invalid API key")
+        # Always perform constant-time comparison (prevents timing leaks)
+        provided_key = credentials.credentials if credentials else ""
+        if not hmac.compare_digest(provided_key, VOICE_BRIDGE_API_KEY):
+            logger.warning("Authentication failed")
+            raise HTTPException(status_code=401, detail="Unauthorized")
         return True
 
 
@@ -240,20 +239,29 @@ data:
         description="ConversationRelay voice bridge for AI phone calls",
         version="2.0.0",
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
     @app.middleware("http")
-    async def log_requests(request: Request, call_next):
-        """Log all HTTP requests for audit trail."""
+    async def add_security_headers(request: Request, call_next):
+        """Add security headers and log requests."""
         start = time.time()
         logger.info(
             f"Request: {request.method} {request.url.path} "
             f"from {request.client.host if request.client else 'unknown'}"
         )
         response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        if "server" in response.headers:
+            del response.headers["server"]
         logger.info(f"Response: {response.status_code} in {time.time() - start:.3f}s")
         return response
 
@@ -314,7 +322,6 @@ data:
             "service": "voice-bridge",
             "mode": "conversation-relay",
             "timestamp": datetime.utcnow().isoformat(),
-            "active_calls": len(active_calls),
         }
 
 
@@ -686,7 +693,7 @@ data:
 
     if __name__ == "__main__":
         import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8080)
+        uvicorn.run(app, host="0.0.0.0", port=8080, server_header=False)
 
   # Dependencies (much lighter than Pipecat - no PyTorch/ML packages)
   requirements.txt: |
