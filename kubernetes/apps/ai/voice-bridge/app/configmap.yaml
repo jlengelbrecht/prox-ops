@@ -17,6 +17,10 @@
 #   7. Twilio plays custom TTS audio to caller
 #   8. Fallback: Twilio built-in TTS via {"type": "text"} if qwen-tts unavailable
 #
+# Deployment: Single-replica (strategy: Recreate). Audio files and call state
+# are pod-local (/tmp/audio + in-memory dict). Multi-replica would require
+# shared storage (PVC/S3) and centralized state (Redis).
+#
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -264,9 +268,11 @@ data:
         voice: Optional[str] = None
         from_number: Optional[str] = None
 
-        @field_validator('to')
+        @field_validator('to', 'from_number')
         @classmethod
-        def validate_phone(cls, v: str) -> str:
+        def validate_phone(cls, v: Optional[str]) -> Optional[str]:
+            if v is None:
+                return v
             if not re.match(r'^\+[1-9]\d{1,14}$', v):
                 raise ValueError('Invalid phone number. Use E.164 format: +1234567890')
             return v
