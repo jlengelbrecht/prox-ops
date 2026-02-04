@@ -38,9 +38,10 @@ spec:
               - /bin/sh
               - -c
               - |
-                # Disable CSRF middleware that has a bug consuming POST body data,
-                # breaking scan form submissions. Safe: internal-only, no auth sessions.
-                sed -i "s/'CSRF_ENABLED': True/'CSRF_ENABLED': False/" /home/spiderfoot/spiderfoot/security_middleware.py
+                # Disable fork's CherryPy security tool — its _validate_request_data()
+                # consumes POST body via request.body.read() without restoring it,
+                # breaking all form submissions. Safe: internal-only, no auth sessions.
+                sed -i "s/'tools.spiderfoot_security.on': True/'tools.spiderfoot_security.on': False/" /home/spiderfoot/spiderfoot/security_middleware.py
                 exec python sf.py --both -l 0.0.0.0:5001 --api-listen 0.0.0.0:8001
             env:
               TZ: America/New_York
