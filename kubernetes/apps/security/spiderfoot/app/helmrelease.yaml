@@ -36,9 +36,6 @@ spec:
               tag: v5.3.3
             env:
               TZ: America/New_York
-              SPIDERFOOT_DATA: /home/spiderfoot/data
-              SPIDERFOOT_LOGS: /home/spiderfoot/data/logs
-              SPIDERFOOT_CACHE: /home/spiderfoot/data/cache
             probes:
               liveness:
                 enabled: true
@@ -78,10 +75,10 @@ spec:
 
     defaultPodOptions:
       securityContext:
-        runAsUser: 1000
-        runAsGroup: 1000
+        runAsUser: 101
+        runAsGroup: 101
         runAsNonRoot: true
-        fsGroup: 1000
+        fsGroup: 101
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
@@ -91,7 +88,7 @@ spec:
         enabled: true
         existingClaim: spiderfoot-data
         globalMounts:
-          - path: /home/spiderfoot/data
+          - path: /home/spiderfoot
 
     service:
       app:
