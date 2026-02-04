@@ -120,8 +120,8 @@ data:
       # =====================================================
       - model_name: "qwen-tts"
         litellm_params:
-          # Custom qwen-tts-api container (OpenAI-compatible /v1/audio/speech)
-          model: "tts-1"  # OpenAI-compatible model name
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
           api_base: "http://qwen-tts-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
           timeout: 300        # STORY-142: Reduced from 420 (no pip install, ~3min cold start)
