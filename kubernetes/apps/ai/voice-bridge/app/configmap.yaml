@@ -720,6 +720,7 @@ data:
             }))
             if remainder_tts_task:
                 remainder_tts_task.cancel()
+                await asyncio.gather(remainder_tts_task, return_exceptions=True)
             return full_response
 
         # Wait for remainder TTS and send as second play
