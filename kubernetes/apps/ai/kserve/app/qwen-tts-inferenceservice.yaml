@@ -1,48 +1,39 @@
 ---
 # KServe InferenceService: Qwen3-TTS (Text-to-Speech with Custom Voice)
-#
-# ✅ PRIMARY TTS SERVICE (2026-02-03): This is the working TTS implementation.
-# vllm-omni v0.14.0 audio output requires --omni flag; testing in progress.
-# See STORY-031-7 for migration status.
-#
-# This custom container (qwen-tts-api) provides OpenAI-compatible /v1/audio/speech API.
-# Verified working: generates 164KB WAV audio successfully.
-#
 # STORY-142 Phase 3: First TTS model deployment
 # Model: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (~5GB VRAM, audio generation)
-# Framework: qwen-tts-api (custom OpenAI-compatible wrapper using qwen-tts package)
+# Framework: vLLM-Omni (multimodal fork) with --omni flag
 # GPU: RTX A5000 24GB (k8s-work-10 ONLY)
 #
 # Performance Characteristics:
-# - Cold start: ~3min (model load only, all deps baked into container)
+# - Cold start: ~60-90s (smaller model than Omni-7B)
 # - Warm inference: ~50-100ms
 # - Scale-to-zero: 5 minutes idle timeout
-# - VRAM usage: ~5GB / 24GB available
+# - VRAM usage: ~5GB / 24GB available (gpu_memory_utilization: 0.1 in stage config)
 # - Single GPU: maxReplicas=1 enforced
 #
-# API Endpoints (OpenAI-compatible):
-# - POST /v1/audio/speech - Generate speech from text
-# - GET /health - Health check
-# - GET /v1/models - List models
-# - GET /v1/voices - List available voices
+# API Endpoints:
+# - /v1/chat/completions - TTS generation via chat interface
+# - Use 'modalities' parameter: ["audio"] for speech output
 #
 # Usage:
 #   # Generate speech from text
 #   kubectl run -it --rm test-tts --image=curlimages/curl --restart=Never -- \
-#     curl -X POST http://qwen-tts.ai.svc.cluster.local/v1/audio/speech \
+#     curl -X POST http://qwen-tts.ai.svc.cluster.local/v1/chat/completions \
 #     -H "Content-Type: application/json" \
-#     -d '{"model":"qwen-tts","input":"Hello, how are you today?","voice":"alloy","response_format":"wav"}'
+#     -d '{"model":"/models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice","messages":[{"role":"user","content":"Hello, how are you today?"}],"modalities":["audio"]}'
 #
 # GPU Time-Slicing Note (STORY-030-1, STORY-030-6):
-# - GPU memory utilization capped at 0.25 (~6GB of 24GB)
+# - GPU memory utilization capped at 0.1 (~2.4GB of 24GB) via built-in stage config
 # - Time-slicing shares GPU compute; VRAM is NOT isolated
 # - Small models (TTS, Whisper, Stable-Audio) can coexist via time-slicing
 # - Large models (>12GB) run solo due to VRAM constraints (scale-to-zero when idle)
 # - All AI models pinned to k8s-work-10 (A5000) via nodeSelector
 #
 # History:
-# - Originally created as workaround for vLLM-Omni v0.14.0rc1 bugs
-# - 2026-02-03: Confirmed working, remains PRIMARY until vllm-omni --omni flag tested
+# - Originally used vllm-omni v0.14.0rc1 (had tensor serialization bugs)
+# - Switched to custom qwen-tts-api container as workaround
+# - 2026-02-03: Switched back to vllm-omni v0.14.0 stable (bugs fixed, deps baked in)
 apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
@@ -52,7 +43,7 @@ metadata:
     app.kubernetes.io/name: qwen-tts
     app.kubernetes.io/component: inference
     app.kubernetes.io/part-of: kserve
-    model.framework: qwen-tts-api
+    model.framework: vllm-omni
     model.type: tts
     model.modality: text-audio
     model.size: 1.7b
@@ -72,11 +63,40 @@ spec:
       gpu.nvidia.com/model: rtx-a5000
 
     containers:
-      - name: qwen-tts-api
-        # Custom OpenAI-compatible TTS API using qwen-tts package
-        # Built locally, pushed to GHCR - replaces broken vLLM-Omni v0.14.0rc1
-        # Source: Built from qwen-tts Python package + FastAPI wrapper
-        image: ghcr.io/jlengelbrecht/qwen-tts-api:v1.0.1
+      - name: vllm-omni
+        # renovate: datasource=docker depName=vllm/vllm-omni
+        image: vllm/vllm-omni:v0.14.0  # v0.14.0 fixes tensor serialization bugs from rc1
+
+        # vLLM-Omni uses 'vllm serve --omni' for TTS models
+        command:
+          - vllm
+          - serve
+
+        # vLLM-Omni server arguments
+        args:
+          # Model path (absolute path to cached model)
+          - /models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+
+          # Enable Omni mode for TTS models (loads qwen3_tts stage config)
+          - --omni
+
+          # Load format optimization
+          - --load-format=safetensors
+
+          # Inference optimization
+          - --dtype=auto  # Use BF16 automatically
+          - --max-model-len=4096  # TTS typically uses shorter context
+
+          # Fast cold start optimization (skip compilation)
+          - --enforce-eager
+
+          # Server configuration
+          - --host=0.0.0.0
+          - --port=8080
+
+          # Disable telemetry
+          - --disable-log-stats
+          - --disable-log-requests
 
         # Environment variables
         env:
@@ -121,25 +141,24 @@ spec:
             name: http1
             protocol: TCP
 
-        # Probes optimized for qwen-tts-api container (all deps baked in)
-        # No apt-get/pip at runtime - just model load (~2-3min expected)
+        # Probes for vllm-omni TTS model (~60-90s cold start)
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 180  # Model load ~2-3min
+          initialDelaySeconds: 60   # Smaller model loads faster
           periodSeconds: 15
           timeoutSeconds: 10
-          failureThreshold: 5
+          failureThreshold: 5       # 5th failure at ~120s total
 
         readinessProbe:
           httpGet:
             path: /health
             port: 8080
-          initialDelaySeconds: 120  # Start checking after ~2min
+          initialDelaySeconds: 45   # Start checking after ~45s
           periodSeconds: 5
           timeoutSeconds: 5
-          failureThreshold: 30      # (30-1)×5=145s after initial delay (~265s total)
+          failureThreshold: 24      # (24-1)×5=115s after initial delay (~160s total)
 
         # Volume mounts
         volumeMounts:
