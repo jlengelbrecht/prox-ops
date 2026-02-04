@@ -13,8 +13,9 @@
 # - Single GPU: maxReplicas=1 enforced
 #
 # API Endpoints:
-# - /v1/chat/completions - Standard chat (text-only or multimodal)
-# - Use 'modalities' parameter: ["text"] or ["audio"] or ["text", "audio"]
+# - /v1/chat/completions - Standard chat (text-only or multimodal input)
+# - Use 'modalities' parameter: ["text"] for text output
+# - For TTS audio output, use the qwen-tts InferenceService instead
 #
 # Usage:
 #   # Text-only chat
@@ -25,7 +26,7 @@
 #
 # Expected behavior:
 # - First request triggers cold start (pod 0->1, ~60-90s delay)
-# - Model loads multimodal components (Thinker + Talker)
+# - Model loads multimodal components (Thinker for text+vision)
 # - Subsequent requests: ~100-200ms
 # - After 5min idle, pod scales to 0 (GPU freed)
 #
@@ -65,19 +66,17 @@ spec:
         # renovate: datasource=docker depName=vllm/vllm-omni
         image: vllm/vllm-omni:v0.14.0  # vLLM-Omni for multimodal models (stable release)
 
-        # vLLM-Omni requires vllm serve with --omni flag for audio output
+        # vLLM-Omni requires explicit command (different from vllm-openai)
         command:
-          - vllm
-          - serve
+          - python
+          - -m
+          - vllm.entrypoints.openai.api_server
 
         # vLLM-Omni server arguments
-        # CRITICAL: --omni flag required for audio/TTS output (STORY-031-7)
+        # Note: vLLM-Omni auto-detects multimodal models, no --omni flag needed
         args:
           # Model path (absolute path to cached model)
-          - /models/Qwen/Qwen2.5-Omni-7B
-
-          # Enable omni-modal support (required for audio output)
-          - --omni
+          - --model=/models/Qwen/Qwen2.5-Omni-7B
 
           # Load format optimization
           - --load-format=safetensors
@@ -128,16 +127,15 @@ spec:
           - name: HOME
             value: "/tmp"
 
-        # Resource requirements (larger for multimodal + audio processing)
-        # STORY-031-7: Increased memory for audio output (OOM fix)
+        # Resource requirements (larger for multimodal)
         resources:
           requests:
             cpu: 4
-            memory: 20Gi
+            memory: 18Gi
             nvidia.com/gpu: 1
           limits:
             cpu: 8
-            memory: 28Gi
+            memory: 22Gi
             nvidia.com/gpu: 1
 
         # Health checks
