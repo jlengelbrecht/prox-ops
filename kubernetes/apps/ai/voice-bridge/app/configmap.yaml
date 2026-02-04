@@ -471,10 +471,12 @@ data:
         if not str(resolved).startswith(str(AUDIO_DIR.resolve())):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
-        try:
-            return FileResponse(resolved, media_type="audio/wav")
-        except (FileNotFoundError, RuntimeError):
+        # Check existence before FileResponse (raises during ASGI streaming,
+        # not construction, so try/except around it doesn't work)
+        if not resolved.is_file():
             raise HTTPException(status_code=404, detail="Audio file not found")
+
+        return FileResponse(resolved, media_type="audio/wav")
 
 
     # --- LLM and TTS ---
