@@ -5,7 +5,8 @@
 # Architecture (ConversationRelay):
 # - Ingress: Envoy external gateway (Twilio ConversationRelay WS + Play Media)
 #            + internal AI services (moltbot call initiation)
-# - Egress: LiteLLM (LLM + TTS), DNS, Twilio REST API, PyPI (pip install)
+# - Egress: Moltbot (LLM via clawdbot gateway), LiteLLM (TTS), DNS,
+#            Twilio REST API, PyPI (pip install)
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -35,7 +36,16 @@ spec:
             - port: "8080"
               protocol: TCP
   egress:
-    # LiteLLM: LLM (Claude) and TTS (qwen-tts) via AI gateway
+    # Moltbot clawdbot gateway: LLM (Claude) via Anthropic OAuth
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: moltbot
+      toPorts:
+        - ports:
+            - port: "18789"
+              protocol: TCP
+    # LiteLLM: TTS (qwen-tts) via AI gateway
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai

@@ -18,6 +18,16 @@ spec:
         - ports:
             - port: "18789"
               protocol: TCP
+    # EPIC-031: Allow ingress from voice-bridge for LLM routing
+    # Voice-bridge sends /v1/chat/completions to clawdbot gateway for Claude access
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: voice-bridge
+      toPorts:
+        - ports:
+            - port: "18789"
+              protocol: TCP
   egress:
     # Allow egress to LiteLLM API gateway for local model inference
     - toEndpoints:

@@ -4,14 +4,15 @@
 #
 # Architecture:
 #   Twilio ConversationRelay handles STT natively (Deepgram/Google).
-#   Voice-bridge handles LLM (Claude via LiteLLM) and TTS (Qwen3-TTS via LiteLLM).
+#   Voice-bridge routes LLM (Claude) through moltbot clawdbot gateway (OAuth)
+#   and TTS (Qwen3-TTS) through LiteLLM.
 #   TTS audio served as WAV files via /audio endpoint for Twilio Play Media.
 #
 # Flow:
 #   1. POST /api/v1/calls/outbound -> Twilio initiates call
 #   2. Person answers -> ConversationRelay connects WebSocket -> setup message
 #   3. Person speaks -> Twilio STT -> prompt message with voicePrompt
-#   4. Voice-bridge -> Claude (LiteLLM) -> response text
+#   4. Voice-bridge -> Claude (moltbot clawdbot gateway /v1/chat/completions) -> response text
 #   5. Voice-bridge -> Qwen3-TTS (LiteLLM /v1/audio/speech) -> WAV file
 #   6. Voice-bridge -> {"type": "play", "source": "https://host/audio/{id}.wav"}
 #   7. Twilio plays custom TTS audio to caller
@@ -87,16 +88,23 @@ data:
     TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
     TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
     TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
-    LITELLM_API_KEY = os.getenv("LITELLM_API_KEY")
-    LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "http://litellm.ai.svc.cluster.local:4000/v1")
     VOICE_BRIDGE_HOST = os.getenv("VOICE_BRIDGE_HOST", "voice-bridge.homelab0.org")
     VOICE_BRIDGE_API_KEY = os.getenv("VOICE_BRIDGE_API_KEY")
+
+    # LLM configuration (moltbot clawdbot gateway - Claude via Anthropic OAuth)
+    LLM_API_KEY = os.getenv("LLM_API_KEY")
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://moltbot.ai.svc.cluster.local:18789/v1")
+    LLM_MODEL = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-20250514")
+    LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+
+    # TTS configuration (LiteLLM - Qwen3-TTS via vllm-omni)
+    LITELLM_API_KEY = os.getenv("LITELLM_API_KEY")
+    LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "http://litellm.ai.svc.cluster.local:4000/v1")
     TTS_MODEL = os.getenv("TTS_MODEL", "qwen-tts")
     TTS_DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "ryan")
-    LLM_MODEL = os.getenv("LLM_MODEL", "claude-sonnet")
-    AUDIO_DIR = pathlib.Path(os.getenv("AUDIO_DIR", "/tmp/audio"))
     TTS_TIMEOUT = float(os.getenv("TTS_TIMEOUT", "30"))
-    LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+
+    AUDIO_DIR = pathlib.Path(os.getenv("AUDIO_DIR", "/tmp/audio"))
 
     # Constants
     AUDIO_EXPIRY_SECONDS = 300  # 5 minutes
@@ -203,7 +211,7 @@ data:
         # Validate required environment variables
         missing = []
         for var in ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER",
-                     "LITELLM_API_KEY", "VOICE_BRIDGE_API_KEY"]:
+                     "LLM_API_KEY", "LITELLM_API_KEY", "VOICE_BRIDGE_API_KEY"]:
             if not os.getenv(var):
                 missing.append(var)
         if missing:
@@ -220,9 +228,8 @@ data:
         audio_task = asyncio.create_task(cleanup_audio_files())
         calls_task = asyncio.create_task(cleanup_expired_calls())
 
-        logger.info(f"LiteLLM: {LITELLM_BASE_URL}")
-        logger.info(f"TTS model: {TTS_MODEL}, default voice: {TTS_DEFAULT_VOICE}")
-        logger.info(f"LLM model: {LLM_MODEL}")
+        logger.info(f"LLM: {LLM_BASE_URL} (model: {LLM_MODEL})")
+        logger.info(f"TTS: {LITELLM_BASE_URL} (model: {TTS_MODEL}, voice: {TTS_DEFAULT_VOICE})")
         logger.info(f"Audio dir: {AUDIO_DIR}")
 
         yield
@@ -489,12 +496,12 @@ data:
     # --- LLM and TTS ---
 
     async def generate_llm_response(messages: list) -> str:
-        """Send conversation to Claude via LiteLLM."""
+        """Send conversation to Claude via moltbot clawdbot gateway."""
         try:
             resp = await llm_client.post(
-                f"{LITELLM_BASE_URL}/chat/completions",
+                f"{LLM_BASE_URL}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {LITELLM_API_KEY}",
+                    "Authorization": f"Bearer {LLM_API_KEY}",
                     "Content-Type": "application/json",
                 },
                 json={

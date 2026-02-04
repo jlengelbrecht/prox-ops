@@ -58,7 +58,16 @@ spec:
                   secretKeyRef:
                     name: voice-bridge-twilio
                     key: TWILIO_PHONE_NUMBER
-              # LiteLLM configuration
+              # LLM configuration (moltbot clawdbot gateway - Claude via Anthropic OAuth)
+              LLM_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-llm
+                    key: LLM_API_KEY
+              LLM_BASE_URL: "http://moltbot.ai.svc.cluster.local:18789/v1"
+              LLM_MODEL: "anthropic/claude-sonnet-4-20250514"
+              LLM_TIMEOUT: "60"
+              # TTS configuration (LiteLLM - Qwen3-TTS via vllm-omni)
               LITELLM_API_KEY:
                 valueFrom:
                   secretKeyRef:
@@ -74,13 +83,11 @@ spec:
               # Voice bridge configuration
               VOICE_BRIDGE_HOST: "voice-bridge.homelab0.org"
               RECORDINGS_DIR: "/recordings"
-              # ConversationRelay: TTS and LLM model configuration
+              # ConversationRelay: TTS model configuration
               TTS_MODEL: "qwen-tts"
               TTS_DEFAULT_VOICE: "ryan"
-              LLM_MODEL: "claude-sonnet"
-              AUDIO_DIR: "/tmp/audio"
               TTS_TIMEOUT: "30"
-              LLM_TIMEOUT: "60"
+              AUDIO_DIR: "/tmp/audio"
               # Python configuration
               PYTHONUNBUFFERED: "1"
               PYTHONDONTWRITEBYTECODE: "1"
@@ -145,7 +152,7 @@ spec:
 
     defaultPodOptions:
       annotations:
-        secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm,voice-bridge-api"
+        secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm,voice-bridge-api,voice-bridge-llm"
       automountServiceAccountToken: false
       # Security: fsGroup ensures volumes are writable by non-root user (65532)
       securityContext:
