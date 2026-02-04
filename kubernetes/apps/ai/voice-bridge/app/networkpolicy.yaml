@@ -65,20 +65,12 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Twilio REST API (call initiation + call termination fallback)
-    - toFQDNs:
-        - matchName: "api.twilio.com"
-        - matchPattern: "*.twilio.com"
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP
-    # PyPI (pip install at startup)
-    - toFQDNs:
-        - matchName: "pypi.org"
-        - matchPattern: "*.pypi.org"
-        - matchName: "files.pythonhosted.org"
-        - matchPattern: "*.pythonhosted.org"
+    # HTTPS egress: Twilio REST API + PyPI (pip install at startup)
+    # Note: toFQDNs rules require Cilium DNS proxy redirect which is not
+    # functioning with external-envoy-proxy + transparent DNS mode (v1.18.3).
+    # Using toEntities:world on 443 (matches moltbot pattern) until resolved.
+    - toEntities:
+        - world
       toPorts:
         - ports:
             - port: "443"
