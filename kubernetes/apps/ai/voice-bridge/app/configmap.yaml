@@ -1,12 +1,21 @@
 ---
-# STORY-031-2: Voice Bridge Application Code
-# ConfigMap containing the Pipecat-based voice bridge Python application
-# Security hardened: Twilio signature validation + API key authentication
+# STORY-031-8: Voice Bridge - ConversationRelay + Play Media
+# Replaces Pipecat Media Streams (~1400 lines) with ConversationRelay (~250 lines)
 #
-# Architecture: Voice I/O Service
-# The voice-bridge acts as a voice input/output service. The caller (Claude Code,
-# Moltbot, or other AI) controls the conversation flow:
-#   Phone → STT → Transcription API → Caller decides response → Speak API → TTS → Phone
+# Architecture:
+#   Twilio ConversationRelay handles STT natively (Deepgram/Google).
+#   Voice-bridge handles LLM (Claude via LiteLLM) and TTS (Qwen3-TTS via LiteLLM).
+#   TTS audio served as WAV files via /audio endpoint for Twilio Play Media.
+#
+# Flow:
+#   1. POST /api/v1/calls/outbound -> Twilio initiates call
+#   2. Person answers -> ConversationRelay connects WebSocket -> setup message
+#   3. Person speaks -> Twilio STT -> prompt message with voicePrompt
+#   4. Voice-bridge -> Claude (LiteLLM) -> response text
+#   5. Voice-bridge -> Qwen3-TTS (LiteLLM /v1/audio/speech) -> WAV file
+#   6. Voice-bridge -> {"type": "play", "source": "https://host/audio/{id}.wav"}
+#   7. Twilio plays custom TTS audio to caller
+#   8. Fallback: Twilio built-in TTS via {"type": "text"} if qwen-tts unavailable
 #
 apiVersion: v1
 kind: ConfigMap
@@ -14,33 +23,26 @@ metadata:
   name: voice-bridge-app
   namespace: ai
 data:
-  # Main server application - FastAPI + Twilio WebSocket handling
   server.py: |
     """
-    Voice Bridge Server - Voice I/O Service for AI Phone Calls
+    Voice Bridge Server - ConversationRelay + Play Media
 
-    EPIC-031: Voice Calling Capability
-
-    Architecture:
-    This service provides voice input/output capabilities. The AI conversation
-    logic lives in the caller (Claude Code for testing, Moltbot for production).
-
-    Flow: Phone → STT → Transcription Queue → Caller polls → Caller sends response → TTS → Phone
-
-    Security:
-    - Twilio webhook signature validation (X-Twilio-Signature)
-    - API key authentication for all API endpoints
-    - Phone number format validation (E.164)
-    - Request logging for audit trail
+    EPIC-031 / STORY-031-8: Twilio ConversationRelay implementation
 
     Endpoints:
-    - POST /api/v1/calls - Initiate outbound call (REQUIRES API KEY)
-    - GET /api/v1/calls/{call_id} - Get call status (REQUIRES API KEY)
-    - GET /api/v1/calls/{call_id}/transcriptions - Get user transcriptions (REQUIRES API KEY)
-    - POST /api/v1/calls/{call_id}/speak - Send text to speak via TTS (REQUIRES API KEY)
-    - GET /health - Health check (public)
-    - WebSocket /ws - Twilio Media Streams handler (Twilio only)
-    - POST /twiml/answer - Twilio webhook (signature validated)
+      POST /api/v1/calls/outbound    - Initiate outbound call (API key auth)
+      GET  /api/v1/calls/{call_id}   - Call status (API key auth)
+      POST /api/v1/calls/{call_id}/end - End active call (API key auth)
+      WS   /ws/{call_id}             - ConversationRelay WebSocket (Twilio only)
+      GET  /audio/{file_id}.wav      - Serve TTS audio (Twilio Play Media)
+      GET  /health                   - Health check (public)
+
+    Security:
+      - API key authentication (Bearer token) for /api endpoints
+      - Rate limiting on all endpoints
+      - WebSocket connection limits
+      - UUID validation on audio file paths (path traversal protection)
+      - Constant-time API key comparison (timing attack protection)
     """
 
     import os
@@ -49,25 +51,28 @@ data:
     import uuid
     import time
     import hmac
-    import secrets
+    import json
     import logging
+    import pathlib
+    from html import escape as html_escape
     from datetime import datetime
-    from typing import Dict, Optional, List
+    from typing import Dict, Optional
     from contextlib import asynccontextmanager
-    from urllib.parse import urljoin
 
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Header, Depends
-    from fastapi.responses import Response
+    from fastapi import (
+        FastAPI, WebSocket, WebSocketDisconnect, HTTPException,
+        Request, Depends
+    )
+    from fastapi.responses import FileResponse
     from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
     from pydantic import BaseModel, field_validator
     from twilio.rest import Client as TwilioClient
-    from twilio.twiml.voice_response import VoiceResponse, Connect
-    from twilio.request_validator import RequestValidator
     from slowapi import Limiter, _rate_limit_exceeded_handler
     from slowapi.util import get_remote_address
     from slowapi.errors import RateLimitExceeded
+    import httpx
 
-    # Configure logging
+    # Logging
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -81,383 +86,271 @@ data:
     LITELLM_API_KEY = os.getenv("LITELLM_API_KEY")
     LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "http://litellm.ai.svc.cluster.local:4000/v1")
     VOICE_BRIDGE_HOST = os.getenv("VOICE_BRIDGE_HOST", "voice-bridge.homelab0.org")
-    RECORDINGS_DIR = os.getenv("RECORDINGS_DIR", "/recordings")
-
-    # Security: API key for internal endpoints
     VOICE_BRIDGE_API_KEY = os.getenv("VOICE_BRIDGE_API_KEY")
+    TTS_MODEL = os.getenv("TTS_MODEL", "qwen-tts")
+    TTS_DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "ryan")
+    LLM_MODEL = os.getenv("LLM_MODEL", "claude-sonnet")
+    AUDIO_DIR = pathlib.Path(os.getenv("AUDIO_DIR", "/tmp/audio"))
+    TTS_TIMEOUT = float(os.getenv("TTS_TIMEOUT", "30"))
+    LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
 
-    # In-memory call tracking with TTL cleanup
-    active_calls: Dict[str, dict] = {}
+    # Constants
+    AUDIO_EXPIRY_SECONDS = 300  # 5 minutes
     CALL_TTL_SECONDS = 86400  # 24 hours
-
-    # Voice I/O queues - these connect API endpoints to the Pipecat pipeline
-    # transcription_queues: call_id -> asyncio.Queue of transcriptions (STT output)
-    # speak_queues: call_id -> asyncio.Queue of text to speak (TTS input)
-    transcription_queues: Dict[str, asyncio.Queue] = {}
-    speak_queues: Dict[str, asyncio.Queue] = {}
-
-    # Security: Queue limits to prevent resource exhaustion attacks
-    MAX_QUEUE_SIZE = 100  # Maximum items per queue
-    MAX_SPEAK_TEXT_LENGTH = 1000  # Already enforced in SpeakRequest validator
-
-    # Security: HTTP Bearer authentication
-    security = HTTPBearer(auto_error=False)
-
-    # Security: Twilio request validator
-    twilio_validator: Optional[RequestValidator] = None
-
-    # Security: Rate limiter (prevents DoS attacks)
-    limiter = Limiter(key_func=get_remote_address)
-
-    # Security: WebSocket connection limits (prevents resource exhaustion)
     MAX_CONCURRENT_WEBSOCKETS = 50
+    MAX_AUDIO_SIZE = 10 * 1024 * 1024  # 10MB max audio file size
+
+    # In-memory state
+    active_calls: Dict[str, dict] = {}
+    active_websockets: Dict[str, WebSocket] = {}
+
+    # Security
+    security = HTTPBearer(auto_error=False)
+    limiter = Limiter(key_func=get_remote_address)
     active_websocket_count = 0
     websocket_count_lock = asyncio.Lock()
 
+    # Shared HTTP clients (initialized in lifespan)
+    llm_client: Optional[httpx.AsyncClient] = None
+    tts_client: Optional[httpx.AsyncClient] = None
 
-    def verify_api_key(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> bool:
-        """Verify API key for protected endpoints"""
+    # UUID validation pattern (prevents path traversal)
+    UUID_PATTERN = re.compile(
+        r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+    )
+
+
+    def verify_api_key(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+    ) -> bool:
+        """Verify API key for protected endpoints."""
         if not VOICE_BRIDGE_API_KEY:
-            logger.error("VOICE_BRIDGE_API_KEY not configured - rejecting all API requests")
+            logger.error("VOICE_BRIDGE_API_KEY not configured")
             raise HTTPException(status_code=503, detail="API authentication not configured")
-
         if not credentials:
             logger.warning("API request without credentials")
             raise HTTPException(status_code=401, detail="Missing authorization header")
-
-        # Use constant-time comparison to prevent timing attacks
         if not hmac.compare_digest(credentials.credentials, VOICE_BRIDGE_API_KEY):
             logger.warning("API request with invalid credentials")
             raise HTTPException(status_code=403, detail="Invalid API key")
-
         return True
 
 
-    async def validate_twilio_signature(request: Request, x_twilio_signature: Optional[str] = Header(None)) -> bool:
-        """Validate Twilio webhook signature"""
-        if not twilio_validator:
-            logger.error("Twilio validator not initialized")
-            raise HTTPException(status_code=503, detail="Twilio validation not configured")
-
-        if not x_twilio_signature:
-            logger.warning(f"Twilio request without signature from {request.client.host}")
-            raise HTTPException(status_code=403, detail="Missing X-Twilio-Signature header")
-
-        # Get the full URL as Twilio sees it (including query params)
-        # Twilio signs the complete URL it called, so we must reconstruct it exactly
-        url = f"https://{VOICE_BRIDGE_HOST}{request.url.path}"
-        if request.url.query:
-            url += f"?{request.url.query}"
-
-        try:
-            # Get form data for signature validation
-            form_data = await request.form()
-            params = {k: v for k, v in form_data.items()}
-        except Exception as e:
-            # Security: Don't leak internal errors - return 403
-            logger.error(f"Failed to parse form data for signature validation: {e}")
-            raise HTTPException(status_code=403, detail="Invalid request format")
-
-        if not twilio_validator.validate(url, params, x_twilio_signature):
-            logger.warning(f"Invalid Twilio signature from {request.client.host}")
-            raise HTTPException(status_code=403, detail="Invalid Twilio signature")
-
-        logger.info(f"Twilio signature validated for {request.url.path}")
-        return True
-
-
-    def verify_call_access(call_id: str, x_call_token: Optional[str] = Header(None)) -> bool:
-        """Verify per-call access token for call-specific endpoints.
-
-        Security: This provides defense-in-depth beyond the API key.
-        Even if an attacker has the API key, they cannot access other calls
-        without the per-call access token that was returned at call creation.
-        """
-        if call_id not in active_calls:
-            raise HTTPException(status_code=404, detail="Call not found")
-
-        if not x_call_token:
-            logger.warning(f"Call access attempt without token for call {call_id}")
-            raise HTTPException(status_code=401, detail="Missing X-Call-Token header")
-
-        stored_token = active_calls[call_id].get("access_token")
-        if not stored_token:
-            # Legacy call without token - deny access for security
-            logger.warning(f"Call {call_id} has no access token stored")
-            raise HTTPException(status_code=403, detail="Call access token not established")
-
-        # Use constant-time comparison to prevent timing attacks
-        if not hmac.compare_digest(x_call_token, stored_token):
-            logger.warning(f"Invalid access token for call {call_id}")
-            raise HTTPException(status_code=403, detail="Invalid call access token")
-
-        return True
-
-
-    class CallRequest(BaseModel):
-        """Request model for initiating a call"""
-        to: str  # Phone number to call (+1xxxxxxxxxx)
-        context: Optional[str] = "You are a helpful AI assistant."
-        voice: Optional[str] = "alloy"  # Voice persona for TTS
-        from_number: Optional[str] = None  # Override default Twilio number
-
-        @field_validator('to')
-        @classmethod
-        def validate_phone_number(cls, v: str) -> str:
-            """Validate E.164 phone number format"""
-            if not re.match(r'^\+[1-9]\d{1,14}$', v):
-                raise ValueError('Invalid phone number format. Use E.164 format: +1234567890')
-            return v
-
-
-    class CallStatus(BaseModel):
-        """Response model for call status"""
-        call_id: str
-        status: str  # pending, in_progress, completed, failed
-        to: str
-        from_number: str
-        started_at: Optional[str] = None
-        ended_at: Optional[str] = None
-        duration_seconds: Optional[int] = None
-        recording_url: Optional[str] = None
-        transcript: Optional[str] = None
-        error: Optional[str] = None
-        # Security: Per-call access token for transcription/speak endpoints
-        # Only returned on call creation, required for subsequent access
-        access_token: Optional[str] = None
-
-
-    class TranscriptionItem(BaseModel):
-        """A single transcription from the user"""
-        text: str
-        timestamp: str
-
-
-    class TranscriptionsResponse(BaseModel):
-        """Response model for transcriptions endpoint"""
-        call_id: str
-        transcriptions: List[TranscriptionItem]
-        call_active: bool
-
-
-    class SpeakRequest(BaseModel):
-        """Request model for speak endpoint"""
-        text: str
-
-        @field_validator('text')
-        @classmethod
-        def validate_text(cls, v: str) -> str:
-            """Validate text is not empty and not too long"""
-            if not v or not v.strip():
-                raise ValueError('Text cannot be empty')
-            if len(v) > 1000:
-                raise ValueError('Text too long (max 1000 characters)')
-            return v.strip()
-
-
-    class SpeakResponse(BaseModel):
-        """Response model for speak endpoint"""
-        call_id: str
-        queued: bool
-        message: str
+    async def cleanup_audio_files():
+        """Background task: delete expired audio files every 60 seconds."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                if not AUDIO_DIR.exists():
+                    continue
+                now = time.time()
+                count = 0
+                for f in AUDIO_DIR.iterdir():
+                    if f.is_file() and (now - f.stat().st_mtime) > AUDIO_EXPIRY_SECONDS:
+                        f.unlink()
+                        count += 1
+                if count:
+                    logger.info(f"Cleaned up {count} expired audio files")
+            except Exception as e:
+                logger.error(f"Audio cleanup error: {e}")
 
 
     async def cleanup_expired_calls():
-        """Background task to clean up expired call records and queues"""
+        """Background task: clean up expired call records every hour."""
         while True:
-            await asyncio.sleep(3600)  # Run every hour
+            await asyncio.sleep(3600)
             now = time.time()
             expired = [
-                cid for cid, call in active_calls.items()
-                if now - call.get("created_at", now) > CALL_TTL_SECONDS
+                cid for cid, c in active_calls.items()
+                if now - c.get("created_at", now) > CALL_TTL_SECONDS
             ]
             for cid in expired:
                 del active_calls[cid]
-                # Clean up associated queues
-                if cid in transcription_queues:
-                    del transcription_queues[cid]
-                if cid in speak_queues:
-                    del speak_queues[cid]
+                active_websockets.pop(cid, None)
             if expired:
                 logger.info(f"Cleaned up {len(expired)} expired call records")
 
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        """Application lifespan handler"""
-        global twilio_validator
+        """Application lifespan handler."""
+        global llm_client, tts_client
 
-        logger.info("Voice Bridge starting up...")
-        logger.info(f"LiteLLM Base URL: {LITELLM_BASE_URL}")
-        logger.info(f"Twilio Phone: {TWILIO_PHONE_NUMBER}")
-        logger.info(f"API Key configured: {bool(VOICE_BRIDGE_API_KEY)}")
+        logger.info("Voice Bridge starting (ConversationRelay mode)...")
 
-        # Validate required environment variables - fail fast if missing
-        missing_vars = []
-        if not TWILIO_ACCOUNT_SID:
-            missing_vars.append("TWILIO_ACCOUNT_SID")
-        if not TWILIO_AUTH_TOKEN:
-            missing_vars.append("TWILIO_AUTH_TOKEN")
-        if not TWILIO_PHONE_NUMBER:
-            missing_vars.append("TWILIO_PHONE_NUMBER")
-        if not LITELLM_API_KEY:
-            missing_vars.append("LITELLM_API_KEY")
-        if not VOICE_BRIDGE_API_KEY:
-            missing_vars.append("VOICE_BRIDGE_API_KEY")
+        # Validate required environment variables
+        missing = []
+        for var in ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER",
+                     "LITELLM_API_KEY", "VOICE_BRIDGE_API_KEY"]:
+            if not os.getenv(var):
+                missing.append(var)
+        if missing:
+            raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-        if missing_vars:
-            raise RuntimeError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        # Create audio directory
+        AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Initialize Twilio request validator
-        twilio_validator = RequestValidator(TWILIO_AUTH_TOKEN)
-        logger.info("Twilio request validator initialized")
+        # Initialize shared HTTP clients
+        llm_client = httpx.AsyncClient(timeout=LLM_TIMEOUT)
+        tts_client = httpx.AsyncClient(timeout=TTS_TIMEOUT)
 
-        # Start background cleanup task
-        cleanup_task = asyncio.create_task(cleanup_expired_calls())
+        # Start background tasks
+        audio_task = asyncio.create_task(cleanup_audio_files())
+        calls_task = asyncio.create_task(cleanup_expired_calls())
+
+        logger.info(f"LiteLLM: {LITELLM_BASE_URL}")
+        logger.info(f"TTS model: {TTS_MODEL}, default voice: {TTS_DEFAULT_VOICE}")
+        logger.info(f"LLM model: {LLM_MODEL}")
+        logger.info(f"Audio dir: {AUDIO_DIR}")
 
         yield
 
-        # Cancel cleanup task on shutdown
-        cleanup_task.cancel()
+        audio_task.cancel()
+        calls_task.cancel()
+        await llm_client.aclose()
+        await tts_client.aclose()
         logger.info("Voice Bridge shutting down...")
 
 
     app = FastAPI(
         title="Voice Bridge",
-        description="Pipecat-based voice bridge for AI phone calls",
-        version="1.0.0",
-        lifespan=lifespan
+        description="ConversationRelay voice bridge for AI phone calls",
+        version="2.0.0",
+        lifespan=lifespan,
     )
-
-    # Security: Register rate limiter
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
-    # Request logging middleware
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
-        """Log all requests for audit trail"""
-        start_time = time.time()
-
-        # Log request (exclude sensitive headers)
+        """Log all HTTP requests for audit trail."""
+        start = time.time()
         logger.info(
             f"Request: {request.method} {request.url.path} "
             f"from {request.client.host if request.client else 'unknown'}"
         )
-
         response = await call_next(request)
-
-        # Log response time
-        duration = time.time() - start_time
-        logger.info(f"Response: {response.status_code} in {duration:.3f}s")
-
+        logger.info(f"Response: {response.status_code} in {time.time() - start:.3f}s")
         return response
 
 
+    # --- Request/Response Models ---
+
+    class OutboundCallRequest(BaseModel):
+        """Request model for initiating an outbound call."""
+        to: str
+        context: Optional[str] = "You are a helpful AI assistant on a phone call."
+        greeting: Optional[str] = "Hello, this is Moltbot. How can I help you today?"
+        voice: Optional[str] = None
+        from_number: Optional[str] = None
+
+        @field_validator('to')
+        @classmethod
+        def validate_phone(cls, v: str) -> str:
+            if not re.match(r'^\+[1-9]\d{1,14}$', v):
+                raise ValueError('Invalid phone number. Use E.164 format: +1234567890')
+            return v
+
+        @field_validator('greeting')
+        @classmethod
+        def validate_greeting(cls, v: Optional[str]) -> Optional[str]:
+            if v and len(v) > 500:
+                raise ValueError('Greeting too long (max 500 characters)')
+            return v
+
+
+    class CallStatus(BaseModel):
+        """Response model for call status."""
+        call_id: str
+        status: str
+        to: str
+        from_number: str
+        started_at: Optional[str] = None
+        ended_at: Optional[str] = None
+        duration_seconds: Optional[int] = None
+        error: Optional[str] = None
+
+
+    # --- Endpoints ---
+
     @app.get("/health")
-    async def health_check():
-        """Health check endpoint for Kubernetes probes (public)"""
+    async def health():
+        """Health check endpoint (public)."""
         return {
             "status": "healthy",
             "service": "voice-bridge",
+            "mode": "conversation-relay",
             "timestamp": datetime.utcnow().isoformat(),
-            "active_calls": len(active_calls)
+            "active_calls": len(active_calls),
         }
 
 
-    @app.post("/api/v1/calls", response_model=CallStatus)
+    @app.post("/api/v1/calls/outbound", response_model=CallStatus)
     @limiter.limit("10/minute")
-    async def initiate_call(
+    async def initiate_outbound_call(
         request: Request,
-        call_request: CallRequest,
-        authenticated: bool = Depends(verify_api_key)
+        call_request: OutboundCallRequest,
+        authenticated: bool = Depends(verify_api_key),
     ):
-        """
-        Initiate an outbound phone call (REQUIRES API KEY)
-
-        The call flow:
-        1. Create Twilio call with TwiML pointing to our WebSocket
-        2. Twilio connects and streams audio to our WebSocket
-        3. Pipecat handles STT -> transcription queue -> caller polls
-        4. Caller sends text via /speak -> TTS -> audio to caller
-
-        After initiating a call, use:
-        - GET /api/v1/calls/{call_id}/transcriptions to get what the user said
-        - POST /api/v1/calls/{call_id}/speak to send a response via TTS
-        """
-        if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN]):
-            raise HTTPException(status_code=503, detail="Twilio not configured")
-
+        """Initiate an outbound phone call via Twilio ConversationRelay."""
         call_id = str(uuid.uuid4())
         from_number = call_request.from_number or TWILIO_PHONE_NUMBER
+        voice = call_request.voice or TTS_DEFAULT_VOICE
 
-        # Security: Generate per-call access token for transcription/speak endpoints
-        # This provides defense-in-depth beyond the API key
-        access_token = secrets.token_urlsafe(32)
-
-        # Store call metadata with creation timestamp for TTL
         active_calls[call_id] = {
             "call_id": call_id,
             "to": call_request.to,
             "from_number": from_number,
             "context": call_request.context,
-            "voice": call_request.voice,
+            "greeting": call_request.greeting,
+            "voice": voice,
             "status": "pending",
             "started_at": datetime.utcnow().isoformat(),
             "created_at": time.time(),
             "twilio_sid": None,
-            "transcript": [],
             "error": None,
-            "access_token": access_token  # Store for verification
         }
 
-        # Initialize voice I/O queues for this call (with size limits)
-        transcription_queues[call_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
-        speak_queues[call_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
-
         try:
-            # Initialize Twilio client
             client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
-            # Create TwiML that connects to our WebSocket
             ws_url = f"wss://{VOICE_BRIDGE_HOST}/ws/{call_id}"
+            safe_greeting = html_escape(call_request.greeting or "")
 
-            twiml_content = f'''
-                <Response>
-                    <Connect>
-                        <Stream url="{ws_url}">
-                            <Parameter name="call_id" value="{call_id}"/>
-                        </Stream>
-                    </Connect>
-                </Response>
-            '''
+            # ConversationRelay TwiML (replaces Media Streams <Stream>)
+            # welcomeGreeting uses Twilio built-in TTS for instant playback
+            # dtmfDetection enables keypad input events
+            twiml = (
+                '<Response><Connect>'
+                f'<ConversationRelay url="{ws_url}" '
+                f'welcomeGreeting="{safe_greeting}" '
+                'dtmfDetection="true" />'
+                '</Connect></Response>'
+            )
+
             call = await asyncio.to_thread(
                 client.calls.create,
                 to=call_request.to,
                 from_=from_number,
-                twiml=twiml_content
+                twiml=twiml,
             )
 
             active_calls[call_id]["twilio_sid"] = call.sid
             active_calls[call_id]["status"] = "in_progress"
+            logger.info(f"Call initiated: {call_id} -> {call_request.to} (SID: {call.sid})")
 
-            logger.info(f"Call initiated: {call_id} -> {call_request.to}")
-
-            return CallStatus(**{
-                "call_id": call_id,
-                "status": "in_progress",
-                "to": call_request.to,
-                "from_number": from_number,
-                "started_at": active_calls[call_id]["started_at"],
-                "access_token": access_token  # Return token for subsequent requests
-            })
+            return CallStatus(
+                call_id=call_id,
+                status="in_progress",
+                to=call_request.to,
+                from_number=from_number,
+                started_at=active_calls[call_id]["started_at"],
+            )
 
         except Exception as e:
-            logger.error(f"Failed to initiate call {call_id}: {e}", exc_info=True)
+            logger.error(f"Failed to initiate call {call_id}: {e}")
             active_calls[call_id]["status"] = "failed"
-            active_calls[call_id]["error"] = str(e)  # Stored internally for debugging
-            # Security: Don't expose internal error details to clients
+            active_calls[call_id]["error"] = str(e)
             raise HTTPException(status_code=500, detail="Failed to initiate call")
 
 
@@ -466,15 +359,13 @@ data:
     async def get_call_status(
         request: Request,
         call_id: str,
-        authenticated: bool = Depends(verify_api_key)
+        authenticated: bool = Depends(verify_api_key),
     ):
-        """Get the status of a call (REQUIRES API KEY)"""
+        """Get the status of a call."""
         if call_id not in active_calls:
             raise HTTPException(status_code=404, detail="Call not found")
 
         call = active_calls[call_id]
-
-        # Calculate duration if call has ended
         duration = None
         if call.get("ended_at") and call.get("started_at"):
             start = datetime.fromisoformat(call["started_at"])
@@ -489,900 +380,272 @@ data:
             started_at=call.get("started_at"),
             ended_at=call.get("ended_at"),
             duration_seconds=duration,
-            recording_url=call.get("recording_url"),
-            transcript="\n".join(call.get("transcript", [])) if call.get("transcript") else None,
             error=call.get("error"),
-            access_token=call.get("access_token")  # Return token for transcription/speak access
         )
 
 
-    @app.websocket("/ws/{call_id}")
-    async def websocket_handler(websocket: WebSocket, call_id: str):
-        """
-        Handle Twilio Media Stream WebSocket connection
+    @app.post("/api/v1/calls/{call_id}/end")
+    @limiter.limit("10/minute")
+    async def end_call(
+        request: Request,
+        call_id: str,
+        authenticated: bool = Depends(verify_api_key),
+    ):
+        """End an active call."""
+        if call_id not in active_calls:
+            raise HTTPException(status_code=404, detail="Call not found")
 
-        Note: WebSocket connections from Twilio cannot be signature-validated
-        in the same way as HTTP requests. Security relies on:
-        1. The call_id being a cryptographically random UUID
-        2. NetworkPolicy restricting ingress sources
-        3. The call_id only being shared in signed TwiML responses
+        # Send end message to ConversationRelay WebSocket
+        ws = active_websockets.get(call_id)
+        if ws:
+            try:
+                await ws.send_text(json.dumps({"type": "end"}))
+            except Exception:
+                pass
+
+        active_calls[call_id]["status"] = "completed"
+        active_calls[call_id]["ended_at"] = datetime.utcnow().isoformat()
+        return {"call_id": call_id, "status": "ended"}
+
+
+    @app.get("/audio/{file_id}.wav")
+    @limiter.limit("60/minute")
+    async def serve_audio(request: Request, file_id: str):
+        """Serve TTS audio files for Twilio Play Media.
+
+        Security: UUID format validation prevents path traversal attacks.
+        Files expire after 5 minutes via background cleanup.
+        """
+        if not UUID_PATTERN.match(file_id):
+            raise HTTPException(status_code=400, detail="Invalid file ID")
+
+        file_path = AUDIO_DIR / f"{file_id}.wav"
+        resolved = file_path.resolve()
+
+        # Verify path is within audio directory
+        if not str(resolved).startswith(str(AUDIO_DIR.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        if not resolved.exists():
+            raise HTTPException(status_code=404, detail="Audio file not found")
+
+        return FileResponse(resolved, media_type="audio/wav")
+
+
+    # --- LLM and TTS ---
+
+    async def generate_llm_response(messages: list) -> str:
+        """Send conversation to Claude via LiteLLM."""
+        try:
+            resp = await llm_client.post(
+                f"{LITELLM_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {LITELLM_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": LLM_MODEL,
+                    "messages": messages,
+                    "max_tokens": 300,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"LLM error: {e}")
+            return "I'm sorry, I'm having trouble right now. Could you say that again?"
+
+
+    async def generate_tts_audio(text: str, voice: str) -> Optional[str]:
+        """Generate TTS audio via LiteLLM and save to file.
+
+        Returns file_id if successful, None if TTS fails (triggers Twilio fallback).
+        """
+        try:
+            resp = await tts_client.post(
+                f"{LITELLM_BASE_URL}/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {LITELLM_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": TTS_MODEL,
+                    "input": text,
+                    "voice": voice,
+                    "response_format": "wav",
+                },
+            )
+            resp.raise_for_status()
+            audio_data = resp.content
+
+            if len(audio_data) < 100:
+                logger.warning(f"TTS returned small audio: {len(audio_data)} bytes")
+                return None
+            if len(audio_data) > MAX_AUDIO_SIZE:
+                logger.warning(f"TTS returned oversized audio: {len(audio_data)} bytes")
+                return None
+
+            file_id = str(uuid.uuid4())
+            file_path = AUDIO_DIR / f"{file_id}.wav"
+            file_path.write_bytes(audio_data)
+            logger.info(f"TTS audio: {file_id}.wav ({len(audio_data)} bytes)")
+            return file_id
+
+        except httpx.TimeoutException:
+            logger.warning(f"TTS timeout after {TTS_TIMEOUT}s (model may be cold starting)")
+            return None
+        except Exception as e:
+            logger.error(f"TTS error: {e}")
+            return None
+
+
+    # --- ConversationRelay WebSocket ---
+
+    @app.websocket("/ws/{call_id}")
+    async def conversation_relay_handler(websocket: WebSocket, call_id: str):
+        """Handle Twilio ConversationRelay WebSocket session.
+
+        Message types from Twilio:
+          setup     - Session initialized (contains callSid, from, to)
+          prompt    - User finished speaking (contains voicePrompt text)
+          interrupt - User interrupted playback
+          dtmf      - Keypad digit pressed
+          error     - Session error
+
+        Messages to Twilio:
+          play - Play audio from URL (custom TTS)
+          text - Speak text via Twilio TTS (fallback)
+          end  - End conversation
         """
         global active_websocket_count
 
-        # Security: Enforce connection limits to prevent resource exhaustion
+        # Security: Enforce connection limits
         async with websocket_count_lock:
             if active_websocket_count >= MAX_CONCURRENT_WEBSOCKETS:
-                logger.warning(f"WebSocket connection rejected - at capacity ({MAX_CONCURRENT_WEBSOCKETS})")
+                logger.warning(f"WebSocket rejected - at capacity ({MAX_CONCURRENT_WEBSOCKETS})")
                 await websocket.close(code=1008, reason="Server at capacity")
                 return
             active_websocket_count += 1
 
         try:
-            # Security: Reject unknown call_ids instead of auto-creating
-            # Valid call_ids come from /api/v1/calls or /twiml/answer
+            # Security: Reject unknown call_ids
             if call_id not in active_calls:
                 logger.warning(f"Unknown call_id rejected: {call_id}")
                 await websocket.close(code=1008, reason="Invalid call ID")
                 return
 
             await websocket.accept()
-            logger.info(f"WebSocket connected for call: {call_id} (active: {active_websocket_count})")
+            active_websockets[call_id] = websocket
+            call = active_calls[call_id]
+            voice = call.get("voice", TTS_DEFAULT_VOICE)
 
-            # Import Pipecat components here to avoid startup delays
-            from bot import run_pipeline
+            # Initialize conversation history with system prompt
+            messages = [
+                {"role": "system", "content": (
+                    f"{call.get('context', 'You are a helpful AI assistant.')}\n"
+                    "Keep responses concise and conversational - this is a phone call. "
+                    "Speak naturally. Avoid long monologues. Ask for clarification if needed."
+                )}
+            ]
 
-            # Create and run the Pipecat pipeline (voice I/O mode)
-            # The pipeline sends transcriptions to the queue and receives speech from the queue
-            call_data = active_calls[call_id]
-            await run_pipeline(
-                websocket=websocket,
-                call_id=call_id,
-                voice=call_data.get("voice", "alloy"),
-                litellm_base_url=LITELLM_BASE_URL,
-                litellm_api_key=LITELLM_API_KEY,
-                transcription_queue=transcription_queues[call_id],
-                speak_queue=speak_queues[call_id],
-                transcript_callback=lambda msg: active_calls[call_id]["transcript"].append(msg)
-            )
+            logger.info(f"ConversationRelay connected: {call_id}")
+
+            while True:
+                raw = await websocket.receive_text()
+                msg = json.loads(raw)
+                msg_type = msg.get("type")
+
+                if msg_type == "setup":
+                    twilio_sid = msg.get("callSid")
+                    logger.info(
+                        f"Setup: call_id={call_id}, callSid={twilio_sid}, "
+                        f"from={msg.get('from')}, to={msg.get('to')}"
+                    )
+                    if twilio_sid:
+                        call["twilio_sid"] = twilio_sid
+                    call["status"] = "in_progress"
+
+                elif msg_type == "prompt":
+                    user_text = msg.get("voicePrompt", "").strip()
+                    if not user_text:
+                        continue
+
+                    logger.info(f"User ({call_id}): {user_text}")
+
+                    # Get LLM response from Claude
+                    messages.append({"role": "user", "content": user_text})
+                    response_text = await generate_llm_response(messages)
+                    messages.append({"role": "assistant", "content": response_text})
+                    logger.info(f"Assistant ({call_id}): {response_text}")
+
+                    # Try custom TTS via qwen-tts, fall back to Twilio TTS
+                    file_id = await generate_tts_audio(response_text, voice)
+                    if file_id:
+                        audio_url = f"https://{VOICE_BRIDGE_HOST}/audio/{file_id}.wav"
+                        await websocket.send_text(json.dumps({
+                            "type": "play",
+                            "source": audio_url,
+                            "interruptible": True,
+                        }))
+                        logger.info(f"Play Media: {audio_url}")
+                    else:
+                        # Fallback: Twilio built-in TTS
+                        logger.warning(f"TTS unavailable, using Twilio TTS for {call_id}")
+                        await websocket.send_text(json.dumps({
+                            "type": "text",
+                            "token": response_text,
+                            "last": True,
+                        }))
+
+                elif msg_type == "interrupt":
+                    utterance = msg.get("utteranceUntilInterrupt", "")
+                    duration = msg.get("durationUntilInterruptMs", 0)
+                    logger.info(
+                        f"Interrupt ({call_id}): after {duration}ms, "
+                        f"spoken so far: '{utterance}'"
+                    )
+
+                elif msg_type == "dtmf":
+                    digit = msg.get("digit", "")
+                    logger.info(f"DTMF ({call_id}): {digit}")
+
+                elif msg_type == "error":
+                    desc = msg.get("description", "Unknown error")
+                    logger.error(f"ConversationRelay error ({call_id}): {desc}")
+
+                else:
+                    logger.debug(f"Unknown message type ({call_id}): {msg_type}")
 
         except WebSocketDisconnect:
-            logger.info(f"WebSocket disconnected for call: {call_id}")
+            logger.info(f"WebSocket disconnected: {call_id}")
         except Exception as e:
-            logger.error(f"Error in WebSocket handler for {call_id}: {e}")
+            logger.error(f"WebSocket error ({call_id}): {e}")
             if call_id in active_calls:
                 active_calls[call_id]["error"] = str(e)
         finally:
-            # Security: Always decrement connection count
             async with websocket_count_lock:
                 active_websocket_count -= 1
-
+            active_websockets.pop(call_id, None)
             if call_id in active_calls:
                 active_calls[call_id]["status"] = "completed"
                 active_calls[call_id]["ended_at"] = datetime.utcnow().isoformat()
-
-            # Security: Clean up queues immediately to prevent memory leaks
-            # Drain queues before deletion to release memory
-            if call_id in transcription_queues:
-                queue = transcription_queues[call_id]
-                while not queue.empty():
-                    try:
-                        queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                del transcription_queues[call_id]
-
-            if call_id in speak_queues:
-                queue = speak_queues[call_id]
-                while not queue.empty():
-                    try:
-                        queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                del speak_queues[call_id]
-
-            logger.info(f"Call ended: {call_id} (active: {active_websocket_count})")
-
-
-    @app.post("/twiml/answer")
-    @limiter.limit("60/minute")
-    async def twiml_answer(
-        request: Request,
-        x_twilio_signature: Optional[str] = Header(None)
-    ):
-        """
-        TwiML endpoint for inbound calls (TWILIO SIGNATURE VALIDATED)
-        Returns TwiML that connects to our WebSocket
-        """
-        # Validate Twilio signature
-        await validate_twilio_signature(request, x_twilio_signature)
-
-        call_id = str(uuid.uuid4())
-        ws_url = f"wss://{VOICE_BRIDGE_HOST}/ws/{call_id}"
-
-        # Security: Generate per-call access token for transcription/speak endpoints
-        # For inbound calls, the token must be retrieved via call status endpoint
-        access_token = secrets.token_urlsafe(32)
-
-        # Pre-register the call so WebSocket handler recognizes it
-        active_calls[call_id] = {
-            "call_id": call_id,
-            "to": "inbound",
-            "from_number": "twilio",
-            "status": "pending",
-            "started_at": datetime.utcnow().isoformat(),
-            "created_at": time.time(),
-            "transcript": [],
-            "access_token": access_token
-        }
-
-        # Initialize voice I/O queues for this call (with size limits)
-        transcription_queues[call_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
-        speak_queues[call_id] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
-
-        response = VoiceResponse()
-        connect = Connect()
-        connect.stream(url=ws_url, name="voice-bridge")
-        response.append(connect)
-
-        logger.info(f"TwiML answer generated for inbound call: {call_id}")
-
-        return Response(
-            content=str(response),
-            media_type="application/xml"
-        )
-
-
-    @app.get("/api/v1/calls/{call_id}/transcriptions", response_model=TranscriptionsResponse)
-    @limiter.limit("60/minute")
-    async def get_transcriptions(
-        request: Request,
-        call_id: str,
-        authenticated: bool = Depends(verify_api_key),
-        x_call_token: Optional[str] = Header(None)
-    ):
-        """
-        Get transcriptions from the user during the call (REQUIRES API KEY + CALL TOKEN)
-
-        This endpoint returns all new transcriptions since the last poll.
-        Transcriptions are removed from the queue once returned.
-
-        Use this to get what the user said, then send your response via POST /speak.
-
-        Headers required:
-        - Authorization: Bearer <api_key>
-        - X-Call-Token: <access_token from call creation>
-        """
-        # Security: Verify per-call access token (defense-in-depth)
-        verify_call_access(call_id, x_call_token)
-
-        if call_id not in transcription_queues:
-            raise HTTPException(status_code=404, detail="Call transcription queue not initialized")
-
-        call = active_calls[call_id]
-        queue = transcription_queues[call_id]
-
-        # Collect all available transcriptions (non-blocking)
-        transcriptions = []
-        while not queue.empty():
-            try:
-                item = queue.get_nowait()
-                transcriptions.append(TranscriptionItem(**item))
-            except asyncio.QueueEmpty:
-                break
-
-        return TranscriptionsResponse(
-            call_id=call_id,
-            transcriptions=transcriptions,
-            call_active=call["status"] == "in_progress"
-        )
-
-
-    @app.post("/api/v1/calls/{call_id}/speak", response_model=SpeakResponse)
-    @limiter.limit("30/minute")
-    async def speak_to_caller(
-        request: Request,
-        call_id: str,
-        speak_request: SpeakRequest,
-        authenticated: bool = Depends(verify_api_key),
-        x_call_token: Optional[str] = Header(None)
-    ):
-        """
-        Send text to be spoken to the caller via TTS (REQUIRES API KEY + CALL TOKEN)
-
-        The text is queued and will be spoken by the TTS service.
-        This is how you respond to what the user said.
-
-        Headers required:
-        - Authorization: Bearer <api_key>
-        - X-Call-Token: <access_token from call creation>
-        """
-        # Security: Verify per-call access token (defense-in-depth)
-        verify_call_access(call_id, x_call_token)
-
-        if call_id not in speak_queues:
-            raise HTTPException(status_code=404, detail="Call speak queue not initialized")
-
-        call = active_calls[call_id]
-
-        if call["status"] != "in_progress":
-            return SpeakResponse(
-                call_id=call_id,
-                queued=False,
-                message=f"Call is not active (status: {call['status']})"
-            )
-
-        queue = speak_queues[call_id]
-
-        # Security: Check queue size to prevent resource exhaustion attacks
-        if queue.full():
-            logger.warning(f"Speak queue full for call {call_id}, rejecting request")
-            return SpeakResponse(
-                call_id=call_id,
-                queued=False,
-                message=f"Speak queue full ({MAX_QUEUE_SIZE} items), try again later"
-            )
-
-        try:
-            queue.put_nowait({
-                "text": speak_request.text,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-        except asyncio.QueueFull:
-            # Race condition: queue filled between check and put
-            return SpeakResponse(
-                call_id=call_id,
-                queued=False,
-                message="Speak queue full, try again later"
-            )
-
-        logger.info(f"Queued speech for call {call_id}: {speak_request.text[:50]}...")
-
-        return SpeakResponse(
-            call_id=call_id,
-            queued=True,
-            message="Text queued for TTS"
-        )
+            logger.info(f"Call ended: {call_id}")
 
 
     if __name__ == "__main__":
         import uvicorn
         uvicorn.run(app, host="0.0.0.0", port=8080)
 
-  # Pipecat pipeline - Voice I/O service
-  # STT sends transcriptions to API, API receives speech to send via TTS
-  bot.py: |
-    """
-    Voice Bridge Bot - Voice I/O Pipeline
-
-    Architecture: Voice I/O Service
-    The caller (Claude Code, Moltbot, etc.) controls the conversation.
-    This pipeline handles:
-    - STT: Whisper transcribes user speech → transcription queue → caller polls
-    - TTS: Caller sends text via API → speak queue → TTS speaks to user
-
-    Flow:
-    Phone → STT → TranscriptionPublisher → Queue → API → Caller
-    Caller → API → Queue → SpeechReceiver → TTS → Phone
-
-    Key architectural decisions (from pipecat-examples/twilio-chatbot):
-    1. Sample rates set in PipelineParams, NOT transport params
-    2. Transport params kept simple: audio enabled + serializer + add_wav_header=False
-    3. VAD handled via SileroVADAnalyzer in transport
-    4. Let Pipecat handle audio format conversion where possible
-
-    Audio format: Twilio uses mulaw 8kHz, Pipecat handles conversion
-    """
-
-    import io
-    import json
-    import asyncio
-    import logging
-    from typing import Callable, Optional, List, Dict
-
-    import httpx
-    from pipecat.pipeline.pipeline import Pipeline
-    from pipecat.pipeline.runner import PipelineRunner
-    from pipecat.pipeline.task import PipelineParams, PipelineTask
-    from pipecat.frames.frames import (
-        EndFrame, Frame, TextFrame, TranscriptionFrame, AudioRawFrame,
-        TTSStartedFrame, TTSStoppedFrame, TTSAudioRawFrame, StartFrame
-    )
-    from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-    from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketTransport, FastAPIWebsocketParams
-    from pipecat.serializers.twilio import TwilioFrameSerializer
-    from pipecat.audio.vad.silero import SileroVADAnalyzer
-    from pipecat.audio.vad.vad_analyzer import VADParams
-
-    logger = logging.getLogger("voice-bridge.bot")
-
-
-    class LiteLLMSTTService(FrameProcessor):
-        """Custom STT using direct httpx to LiteLLM/Whisper."""
-
-        def __init__(self, api_key: str, base_url: str, model: str = "whisper-medium"):
-            super().__init__()
-            self._api_key = api_key
-            self._base_url = base_url.rstrip("/")
-            self._model = model
-            self._client = httpx.AsyncClient(timeout=30.0)
-            self._audio_buffer = io.BytesIO()
-
-        async def run_stt(self, audio: bytes) -> str:
-            try:
-                import wave
-                wav_buffer = io.BytesIO()
-                with wave.open(wav_buffer, "wb") as wav:
-                    wav.setnchannels(1)
-                    wav.setsampwidth(2)
-                    wav.setframerate(8000)
-                    wav.writeframes(audio)
-                wav_buffer.seek(0)
-
-                response = await self._client.post(
-                    f"{self._base_url}/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {self._api_key}"},
-                    files={"file": ("audio.wav", wav_buffer, "audio/wav")},
-                    data={"model": self._model},
-                )
-                response.raise_for_status()
-                return response.json().get("text", "")
-            except Exception as e:
-                logger.error(f"STT error: {e}")
-                return ""
-
-        async def process_frame(self, frame: Frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-
-            if isinstance(frame, AudioRawFrame):
-                self._audio_buffer.write(frame.audio)
-            elif "UserStoppedSpeaking" in type(frame).__name__:
-                audio_data = self._audio_buffer.getvalue()
-                if len(audio_data) > 1600:
-                    text = await self.run_stt(audio_data)
-                    if text.strip():
-                        logger.info(f"STT: {text}")
-                        await self.push_frame(TranscriptionFrame(text=text, user_id="", timestamp=""))
-                self._audio_buffer = io.BytesIO()
-            else:
-                await self.push_frame(frame, direction)
-
-        async def cleanup(self):
-            await self._client.aclose()
-
-
-    class LiteLLMLLMService(FrameProcessor):
-        """Custom LLM using direct httpx to LiteLLM/Claude."""
-
-        def __init__(self, api_key: str, base_url: str, model: str, context: str):
-            super().__init__()
-            self._api_key = api_key
-            self._base_url = base_url.rstrip("/")
-            self._model = model
-            self._client = httpx.AsyncClient(timeout=60.0)
-            self._messages: List[Dict[str, str]] = [
-                {"role": "system", "content": f"""You are having a phone conversation. {context}
-    Keep responses concise and conversational - this is a voice call.
-    Speak naturally. Avoid long monologues. Ask for clarification if needed."""}
-            ]
-
-        async def generate(self, user_text: str) -> str:
-            try:
-                self._messages.append({"role": "user", "content": user_text})
-                response = await self._client.post(
-                    f"{self._base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
-                    json={"model": self._model, "messages": self._messages, "max_tokens": 150},
-                )
-                response.raise_for_status()
-                content = response.json()["choices"][0]["message"]["content"]
-                self._messages.append({"role": "assistant", "content": content})
-                return content
-            except Exception as e:
-                logger.error(f"LLM error: {e}")
-                return "I'm having trouble. Could you repeat that?"
-
-        async def process_frame(self, frame: Frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-
-            if isinstance(frame, TranscriptionFrame) and frame.text.strip():
-                logger.info(f"LLM input: {frame.text}")
-                response = await self.generate(frame.text)
-                logger.info(f"LLM output: {response}")
-                await self.push_frame(TextFrame(text=response))
-            else:
-                await self.push_frame(frame, direction)
-
-        async def cleanup(self):
-            await self._client.aclose()
-
-
-    class LiteLLMTTSService(FrameProcessor):
-        """Custom TTS using direct httpx to LiteLLM/Qwen-TTS.
-
-        Uses high-quality linear interpolation resampling instead of audioop.ratecv
-        to avoid audio corruption issues (the "YO" bug).
-        """
-
-        def __init__(self, api_key: str, base_url: str, model: str, voice: str):
-            super().__init__()
-            self._api_key = api_key
-            self._base_url = base_url.rstrip("/")
-            self._model = model
-            self._voice = voice
-            self._client = httpx.AsyncClient(timeout=60.0)
-
-        def _resample_audio(self, audio: bytes, from_rate: int, to_rate: int) -> bytes:
-            """Resample audio using audioop.ratecv (handles both up/downsampling)."""
-            if from_rate == to_rate:
-                return audio
-
-            # audioop removed in Python 3.13, use audioop-lts as fallback
-            try:
-                import audioop
-            except ImportError:
-                import audioop_lts as audioop
-
-            # Ensure even byte count for 16-bit samples
-            if len(audio) % 2 != 0:
-                audio = audio[:-1]
-
-            # ratecv handles resampling with proper filtering
-            resampled, _ = audioop.ratecv(audio, 2, 1, from_rate, to_rate, None)
-            return resampled
-
-        def _parse_wav(self, audio_data: bytes) -> tuple[bytes, int, int, int]:
-            """Parse WAV file and return (pcm_data, sample_rate, channels, sample_width)."""
-            import wave
-
-            wav_buffer = io.BytesIO(audio_data)
-            with wave.open(wav_buffer, "rb") as wav:
-                sample_rate = wav.getframerate()
-                channels = wav.getnchannels()
-                sample_width = wav.getsampwidth()
-                pcm_data = wav.readframes(wav.getnframes())
-
-            return pcm_data, sample_rate, channels, sample_width
-
-        def _to_mono_16bit(self, pcm_data: bytes, channels: int, sample_width: int) -> bytes:
-            """Convert PCM to 16-bit mono."""
-            # audioop removed in Python 3.13, use audioop-lts as fallback
-            try:
-                import audioop
-            except ImportError:
-                import audioop_lts as audioop
-
-            # Convert to mono if stereo
-            if channels > 1:
-                pcm_data = audioop.tomono(pcm_data, sample_width, 0.5, 0.5)
-
-            # Convert to 16-bit if different sample width
-            if sample_width != 2:
-                pcm_data = audioop.lin2lin(pcm_data, sample_width, 2)
-
-            return pcm_data
-
-        async def synthesize(self, text: str) -> tuple[bytes, int]:
-            """Synthesize text to PCM audio. Returns (audio_bytes, sample_rate)."""
-            try:
-                # Request WAV format for reliable parsing
-                response = await self._client.post(
-                    f"{self._base_url}/audio/speech",
-                    headers={"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"},
-                    json={"model": self._model, "input": text, "voice": self._voice, "response_format": "wav"},
-                )
-                response.raise_for_status()
-
-                audio_data = response.content
-
-                # Check for WAV format
-                if audio_data[:4] == b'RIFF':
-                    try:
-                        pcm_data, sample_rate, channels, sample_width = self._parse_wav(audio_data)
-                        logger.info(f"TTS WAV: {sample_rate}Hz, {channels}ch, {sample_width*8}bit, {len(pcm_data)} bytes")
-
-                        # Normalize to 16-bit mono
-                        pcm_data = self._to_mono_16bit(pcm_data, channels, sample_width)
-
-                        # Return at native rate - let Pipecat handle resampling via audio_out_sample_rate
-                        return pcm_data, sample_rate
-
-                    except Exception as e:
-                        logger.warning(f"WAV parse failed: {e}, trying raw PCM")
-
-                # Fallback: assume raw 24kHz PCM (common TTS output rate)
-                logger.warning("TTS returned non-WAV, assuming raw 24kHz PCM")
-                return audio_data, 24000
-
-            except Exception as e:
-                logger.error(f"TTS error: {e}")
-                return b"", 8000
-
-        async def process_frame(self, frame: Frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-
-            if isinstance(frame, TextFrame) and frame.text.strip():
-                logger.info(f"TTS: {frame.text}")
-                await self.push_frame(TTSStartedFrame())
-                audio, sample_rate = await self.synthesize(frame.text)
-                if audio:
-                    # 20ms frame size at native sample rate
-                    # e.g., 24000Hz * 0.020s * 2 bytes = 960 bytes per frame
-                    chunk_size = int(sample_rate * 0.020 * 2)
-                    total_chunks = (len(audio) + chunk_size - 1) // chunk_size
-                    logger.info(f"TTS sending {total_chunks} chunks @ {sample_rate}Hz ({len(audio)} bytes, {chunk_size} bytes/chunk)")
-                    for i in range(0, len(audio), chunk_size):
-                        chunk = audio[i:i+chunk_size]
-                        # Pad last chunk if needed
-                        if len(chunk) < chunk_size:
-                            chunk = chunk + b'\x00' * (chunk_size - len(chunk))
-                        await self.push_frame(TTSAudioRawFrame(
-                            audio=chunk, sample_rate=sample_rate, num_channels=1
-                        ))
-                    logger.info(f"TTS finished sending all {total_chunks} chunks")
-                else:
-                    logger.warning("TTS synthesize returned empty audio!")
-                await self.push_frame(TTSStoppedFrame())
-            else:
-                await self.push_frame(frame, direction)
-
-        async def cleanup(self):
-            await self._client.aclose()
-
-
-    class InitialGreeting(FrameProcessor):
-        """Sends initial greeting when call connects."""
-
-        def __init__(self, greeting: str):
-            super().__init__()
-            self._greeting = greeting
-            self._sent = False
-
-        async def process_frame(self, frame: Frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-
-            if isinstance(frame, StartFrame) and not self._sent:
-                self._sent = True
-                logger.info(f"Sending greeting: {self._greeting}")
-                await self.push_frame(TextFrame(text=self._greeting))
-
-            await self.push_frame(frame, direction)
-
-
-    class TranscriptionPublisher(FrameProcessor):
-        """Publishes transcriptions to a queue for the caller to poll.
-
-        Voice I/O Architecture: This is how transcriptions reach the caller.
-        STT -> TranscriptionPublisher -> Queue -> API -> Caller
-        """
-
-        def __init__(self, transcription_queue: asyncio.Queue, transcript_callback: Optional[Callable[[str], None]] = None):
-            super().__init__()
-            self._queue = transcription_queue
-            self._callback = transcript_callback
-
-        async def process_frame(self, frame: Frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-
-            if isinstance(frame, TranscriptionFrame) and frame.text.strip():
-                from datetime import datetime
-                transcription_item = {
-                    "text": frame.text,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-                await self._queue.put(transcription_item)
-                logger.info(f"Published transcription: {frame.text}")
-
-                # Also add to transcript history for call status endpoint
-                if self._callback:
-                    self._callback(f"User: {frame.text}")
-
-            # Don't forward TranscriptionFrame - the caller handles the response
-            # Only forward other frames
-            if not isinstance(frame, TranscriptionFrame):
-                await self.push_frame(frame, direction)
-
-
-    class SpeechReceiver(FrameProcessor):
-        """Receives text from the speak queue and sends to TTS.
-
-        Voice I/O Architecture: This is how the caller's responses reach TTS.
-        Caller -> API -> Queue -> SpeechReceiver -> TTS -> Phone
-
-        This processor runs a background task that polls the speak queue
-        and pushes TextFrames to TTS when speech is requested.
-        """
-
-        def __init__(self, speak_queue: asyncio.Queue, transcript_callback: Optional[Callable[[str], None]] = None):
-            super().__init__()
-            self._queue = speak_queue
-            self._callback = transcript_callback
-            self._running = False
-            self._poll_task: Optional[asyncio.Task] = None
-
-        async def _poll_speak_queue(self):
-            """Background task to poll the speak queue and send to TTS."""
-            self._running = True
-            while self._running:
-                try:
-                    # Wait for speech with timeout to allow clean shutdown
-                    try:
-                        item = await asyncio.wait_for(self._queue.get(), timeout=0.5)
-                        text = item.get("text", "")
-                        if text:
-                            logger.info(f"SpeechReceiver sending to TTS: {text}")
-                            await self.push_frame(TextFrame(text=text))
-
-                            # Add to transcript history
-                            if self._callback:
-                                self._callback(f"Assistant: {text}")
-                    except asyncio.TimeoutError:
-                        # Normal timeout, continue polling
-                        pass
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error(f"Error in speak queue poll: {e}")
-                    await asyncio.sleep(0.1)
-
-        async def process_frame(self, frame: Frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-
-            # Start the polling task on StartFrame
-            if isinstance(frame, StartFrame) and not self._poll_task:
-                self._poll_task = asyncio.create_task(self._poll_speak_queue())
-                logger.info("SpeechReceiver polling task started")
-
-            # Stop on EndFrame
-            if isinstance(frame, EndFrame):
-                self._running = False
-                if self._poll_task:
-                    self._poll_task.cancel()
-                    try:
-                        await self._poll_task
-                    except asyncio.CancelledError:
-                        pass
-                    self._poll_task = None
-                    logger.info("SpeechReceiver polling task stopped")
-
-            await self.push_frame(frame, direction)
-
-        async def cleanup(self):
-            """Cleanup the polling task."""
-            self._running = False
-            if self._poll_task:
-                self._poll_task.cancel()
-                try:
-                    await self._poll_task
-                except asyncio.CancelledError:
-                    pass
-
-
-    class WebSocketWrapper:
-        """Wrapper that captures initial messages and replays them to Pipecat.
-
-        This allows us to read the Twilio 'start' event to extract the streamSid
-        before Pipecat starts, then replay those messages when Pipecat reads.
-        """
-
-        def __init__(self, websocket):
-            self._websocket = websocket
-            self._buffered_messages: List[str] = []
-            self._buffer_index = 0
-
-        def buffer_message(self, message: str):
-            """Add a message to the replay buffer."""
-            self._buffered_messages.append(message)
-
-        async def receive_text(self) -> str:
-            """Return buffered messages first, then read from real WebSocket."""
-            if self._buffer_index < len(self._buffered_messages):
-                msg = self._buffered_messages[self._buffer_index]
-                self._buffer_index += 1
-                return msg
-            return await self._websocket.receive_text()
-
-        async def send_text(self, data: str):
-            """Pass through to real WebSocket."""
-            await self._websocket.send_text(data)
-
-        async def close(self, code: int = 1000, reason: str = ""):
-            """Pass through to real WebSocket."""
-            await self._websocket.close(code=code, reason=reason)
-
-        # Forward other attributes to the real websocket
-        def __getattr__(self, name):
-            return getattr(self._websocket, name)
-
-
-    async def wait_for_twilio_start(websocket, ws_wrapper, timeout: float = 10.0) -> dict:
-        """Wait for Twilio's 'start' event and extract stream metadata.
-
-        Twilio Media Streams sends a 'start' event containing:
-        - streamSid: The Twilio stream SID (required for outbound audio)
-        - callSid: The Twilio call SID
-        - accountSid: The Twilio account SID
-
-        Messages are buffered in ws_wrapper to be replayed when Pipecat reads.
-        """
-        try:
-            start_time = asyncio.get_event_loop().time()
-            while True:
-                if asyncio.get_event_loop().time() - start_time > timeout:
-                    raise TimeoutError("Timeout waiting for Twilio start event")
-
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=timeout)
-                data = json.loads(message)
-
-                # Buffer ALL messages for Pipecat to process later
-                ws_wrapper.buffer_message(message)
-
-                if data.get("event") == "start":
-                    start_data = data.get("start", {})
-                    stream_sid = start_data.get("streamSid")
-                    call_sid = start_data.get("callSid")
-                    logger.info(f"Twilio start event received - streamSid: {stream_sid}, callSid: {call_sid}")
-                    return {
-                        "stream_sid": stream_sid,
-                        "call_sid": call_sid,
-                        "account_sid": start_data.get("accountSid"),
-                    }
-                elif data.get("event") == "connected":
-                    logger.info("Twilio connected event received, waiting for start...")
-                    continue
-                else:
-                    logger.debug(f"Ignoring pre-start event: {data.get('event')}")
-        except Exception as e:
-            logger.error(f"Error waiting for Twilio start: {e}")
-            raise
-
-
-    async def run_pipeline(
-        websocket,
-        call_id: str,
-        voice: str,
-        litellm_base_url: str,
-        litellm_api_key: str,
-        transcription_queue: asyncio.Queue,
-        speak_queue: asyncio.Queue,
-        transcript_callback: Optional[Callable[[str], None]] = None
-    ):
-        """Run the voice I/O pipeline for a call.
-
-        Voice I/O Architecture:
-        - STT transcribes user speech -> TranscriptionPublisher -> transcription_queue -> caller polls
-        - Caller sends text -> speak_queue -> SpeechReceiver -> TTS -> audio to phone
-
-        The caller (Claude Code, Moltbot, etc.) controls the conversation by:
-        1. Polling GET /api/v1/calls/{call_id}/transcriptions to get what user said
-        2. Deciding how to respond
-        3. Sending POST /api/v1/calls/{call_id}/speak with response text
-
-        Architecture follows official Pipecat patterns from pipecat-examples/twilio-chatbot:
-        1. Sample rates in PipelineParams (not transport)
-        2. Simple transport params: audio enabled + serializer + add_wav_header=False
-        3. VAD in transport with vad_audio_passthrough=True
-        """
-        logger.info(f"Starting pipeline for call: {call_id}")
-
-        # Create WebSocket wrapper to buffer messages for replay
-        ws_wrapper = WebSocketWrapper(websocket)
-
-        # Wait for Twilio's start event to get the real streamSid
-        twilio_start = await wait_for_twilio_start(websocket, ws_wrapper)
-        stream_sid = twilio_start["stream_sid"]
-
-        if not stream_sid:
-            logger.error("No streamSid received from Twilio")
-            return
-
-        logger.info(f"Using Twilio streamSid: {stream_sid}")
-
-        # Initialize serializer with Twilio's actual streamSid
-        serializer = TwilioFrameSerializer(stream_sid=stream_sid)
-
-        # VAD params tuned for phone calls
-        vad_params = VADParams(
-            confidence=0.7,
-            start_secs=0.4,
-            stop_secs=0.8,
-            min_volume=0.5,
-        )
-
-        # Transport setup following official pattern:
-        # - Simple params: audio enabled, serializer, add_wav_header=False
-        # - VAD with audio passthrough so audio reaches STT
-        transport = FastAPIWebsocketTransport(
-            websocket=ws_wrapper,
-            params=FastAPIWebsocketParams(
-                audio_in_enabled=True,
-                audio_out_enabled=True,
-                add_wav_header=False,  # Critical: Twilio expects raw audio, not WAV
-                vad_enabled=True,
-                vad_audio_passthrough=True,  # Critical: Pass audio to STT pipeline
-                vad_analyzer=SileroVADAnalyzer(sample_rate=8000, params=vad_params),
-                serializer=serializer,
-            )
-        )
-
-        # Initialize services for voice I/O architecture
-        # STT: Transcribes user speech
-        stt = LiteLLMSTTService(api_key=litellm_api_key, base_url=litellm_base_url, model="whisper-medium")
-
-        # TranscriptionPublisher: Sends transcriptions to queue for caller to poll
-        transcription_publisher = TranscriptionPublisher(
-            transcription_queue=transcription_queue,
-            transcript_callback=transcript_callback
-        )
-
-        # SpeechReceiver: Watches speak queue and sends text to TTS
-        speech_receiver = SpeechReceiver(
-            speak_queue=speak_queue,
-            transcript_callback=transcript_callback
-        )
-
-        # TTS: Converts text to speech
-        tts = LiteLLMTTSService(api_key=litellm_api_key, base_url=litellm_base_url, model="qwen-tts", voice=voice)
-
-        # Initial greeting when call connects
-        greeting = InitialGreeting("Hello! How can I help you today?")
-
-        # Voice I/O Pipeline:
-        # input -> STT -> TranscriptionPublisher (to queue)
-        #               -> SpeechReceiver (from queue) -> greeting -> TTS -> output
-        #
-        # The TranscriptionPublisher sends transcriptions to the queue but doesn't
-        # forward them. The SpeechReceiver watches its own queue for text to speak.
-        pipeline = Pipeline([
-            transport.input(),
-            stt,
-            transcription_publisher,  # Sends transcriptions to queue, stops them here
-            speech_receiver,          # Watches speak queue, sends TextFrames to TTS
-            greeting,                 # Sends greeting on StartFrame
-            tts,
-            transport.output(),
-        ])
-
-        # PipelineParams with sample rates (official pattern)
-        # Turn-based mode: allow_interruptions=False prevents user noise from cancelling greeting
-        task = PipelineTask(
-            pipeline,
-            params=PipelineParams(
-                audio_in_sample_rate=8000,   # Twilio input rate
-                audio_out_sample_rate=8000,  # Twilio output rate
-                allow_interruptions=False,   # Turn-based: AI speaks fully before listening
-                enable_metrics=True,
-            )
-        )
-
-        @transport.event_handler("on_client_connected")
-        async def on_connected(transport, client):
-            logger.info(f"Client connected: {call_id}")
-
-        @transport.event_handler("on_client_disconnected")
-        async def on_disconnected(transport, client):
-            logger.info(f"Client disconnected: {call_id}")
-            await task.queue_frame(EndFrame())
-
-        runner = PipelineRunner()
-        await runner.run(task)
-
-        logger.info(f"Pipeline completed for call: {call_id}")
-
-  # Requirements file for pip install
-  # Versions pinned for reproducibility (Renovate will update via configmap annotations)
+  # Dependencies (much lighter than Pipecat - no PyTorch/ML packages)
   requirements.txt: |
-    # Pipecat dependencies (includes websockets~=13.1)
-    pipecat-ai[openai,silero]==0.0.48
-    # Server dependencies
+    # Server framework
     fastapi==0.128.0
     uvicorn==0.32.0
-    # Form parsing (CRITICAL: Required for Twilio signature validation)
+    # HTTP client for LiteLLM API calls
+    httpx==0.27.2
+    # Form parsing (FastAPI dependency)
     python-multipart==0.0.17
-    # Twilio SDK
+    # Twilio SDK (REST API client for call initiation)
     twilio==9.4.0
     # Security: Rate limiting
     slowapi==0.1.9
-    # Note: audioop-lts will be needed when upgrading to Python 3.13+
-    # (audioop removed from stdlib in 3.13, code has try/except fallback)
-    # Current image uses Python 3.11 where stdlib audioop is available
-    # Note: FastAPI 0.128.0+ includes fix for CVE-2024-47874 (DoS via multipart)
