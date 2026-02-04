@@ -34,6 +34,14 @@ spec:
               repository: ghcr.io/poppopjmp/spiderfoot
               # renovate: datasource=docker depName=ghcr.io/poppopjmp/spiderfoot
               tag: v5.3.3
+            command:
+              - /bin/sh
+              - -c
+              - |
+                # Disable CSRF middleware that has a bug consuming POST body data,
+                # breaking scan form submissions. Safe: internal-only, no auth sessions.
+                sed -i "s/'CSRF_ENABLED': True/'CSRF_ENABLED': False/" /home/spiderfoot/spiderfoot/security_middleware.py
+                exec python sf.py --both -l 0.0.0.0:5001 --api-listen 0.0.0.0:8001
             env:
               TZ: America/New_York
             probes:
