@@ -99,6 +99,7 @@ data:
     CALL_TTL_SECONDS = 86400  # 24 hours
     MAX_CONCURRENT_WEBSOCKETS = 50
     MAX_AUDIO_SIZE = 10 * 1024 * 1024  # 10MB max audio file size
+    MAX_CONVERSATION_MESSAGES = 50  # Sliding window (system prompt preserved)
 
     # In-memory state
     active_calls: Dict[str, dict] = {}
@@ -106,13 +107,31 @@ data:
 
     # Security
     security = HTTPBearer(auto_error=False)
-    limiter = Limiter(key_func=get_remote_address)
+
+
+    def _rate_limit_key(request: Request) -> str:
+        """Extract client IP from X-Forwarded-For (set by Envoy/Cloudflare) for rate limiting.
+        Falls back to direct remote address if header is missing."""
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            # First IP in chain is the original client
+            return xff.split(",")[0].strip()
+        return get_remote_address(request)
+
+
+    limiter = Limiter(key_func=_rate_limit_key)
     active_websocket_count = 0
     websocket_count_lock = asyncio.Lock()
 
     # Shared HTTP clients (initialized in lifespan)
     llm_client: Optional[httpx.AsyncClient] = None
     tts_client: Optional[httpx.AsyncClient] = None
+
+    def _redact_phone(number: str) -> str:
+        """Redact phone number to last 4 digits for logging."""
+        if number and len(number) > 4:
+            return f"***{number[-4:]}"
+        return "***"
 
     # UUID validation pattern (prevents path traversal)
     UUID_PATTERN = re.compile(
@@ -337,7 +356,7 @@ data:
 
             active_calls[call_id]["twilio_sid"] = call.sid
             active_calls[call_id]["status"] = "in_progress"
-            logger.info(f"Call initiated: {call_id} -> {call_request.to} (SID: {call.sid})")
+            logger.info(f"Call initiated: {call_id} -> {_redact_phone(call_request.to)} (SID: {call.sid})")
 
             return CallStatus(
                 call_id=call_id,
@@ -397,11 +416,24 @@ data:
 
         # Send end message to ConversationRelay WebSocket
         ws = active_websockets.get(call_id)
+        ws_ok = False
         if ws:
             try:
                 await ws.send_text(json.dumps({"type": "end"}))
-            except Exception:
-                pass
+                ws_ok = True
+            except Exception as e:
+                logger.warning(f"WS end failed for {call_id}: {e}")
+
+        # Fallback: terminate via Twilio REST API if WebSocket delivery failed
+        if not ws_ok:
+            sid = active_calls[call_id].get("twilio_sid")
+            if sid:
+                try:
+                    client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                    await asyncio.to_thread(client.calls(sid).update, status="completed")
+                    logger.info(f"Call {call_id} terminated via Twilio REST API (SID: {sid})")
+                except Exception as e:
+                    logger.error(f"Twilio REST fallback failed for {call_id}: {e}")
 
         active_calls[call_id]["status"] = "completed"
         active_calls[call_id]["ended_at"] = datetime.utcnow().isoformat()
@@ -426,10 +458,10 @@ data:
         if not str(resolved).startswith(str(AUDIO_DIR.resolve())):
             raise HTTPException(status_code=400, detail="Invalid file path")
 
-        if not resolved.exists():
+        try:
+            return FileResponse(resolved, media_type="audio/wav")
+        except (FileNotFoundError, RuntimeError):
             raise HTTPException(status_code=404, detail="Audio file not found")
-
-        return FileResponse(resolved, media_type="audio/wav")
 
 
     # --- LLM and TTS ---
@@ -559,7 +591,8 @@ data:
                     twilio_sid = msg.get("callSid")
                     logger.info(
                         f"Setup: call_id={call_id}, callSid={twilio_sid}, "
-                        f"from={msg.get('from')}, to={msg.get('to')}"
+                        f"from={_redact_phone(msg.get('from', ''))}, "
+                        f"to={_redact_phone(msg.get('to', ''))}"
                     )
                     if twilio_sid:
                         call["twilio_sid"] = twilio_sid
@@ -576,6 +609,10 @@ data:
                     messages.append({"role": "user", "content": user_text})
                     response_text = await generate_llm_response(messages)
                     messages.append({"role": "assistant", "content": response_text})
+
+                    # Sliding window: keep system prompt + recent messages
+                    if len(messages) > MAX_CONVERSATION_MESSAGES:
+                        messages = [messages[0]] + messages[-(MAX_CONVERSATION_MESSAGES - 1):]
                     logger.info(f"Assistant ({call_id}): {response_text}")
 
                     # Try custom TTS via qwen-tts, fall back to Twilio TTS
