@@ -1,0 +1,103 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: spiderfoot
+  namespace: security
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: security
+  interval: 1h
+  timeout: 10m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+  values:
+    controllers:
+      spiderfoot:
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/poppopjmp/spiderfoot
+              # renovate: datasource=docker depName=ghcr.io/poppopjmp/spiderfoot
+              tag: v5.3.3
+            env:
+              TZ: America/New_York
+              SPIDERFOOT_DATA: /home/spiderfoot/data
+              SPIDERFOOT_LOGS: /home/spiderfoot/data/logs
+              SPIDERFOOT_CACHE: /home/spiderfoot/data/cache
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: &port 5001
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: *port
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+    persistence:
+      data:
+        enabled: true
+        existingClaim: spiderfoot-data
+        globalMounts:
+          - path: /home/spiderfoot/data
+
+    service:
+      app:
+        controller: spiderfoot
+        type: ClusterIP
+        ports:
+          http:
+            port: *port
+            protocol: TCP
