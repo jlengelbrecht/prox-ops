@@ -1,6 +1,6 @@
 ---
-# STORY-031-2: Voice Bridge Deployment
-# Pipecat-based voice bridge for AI phone calls via Twilio
+# STORY-031-8: Voice Bridge Deployment (ConversationRelay)
+# Twilio ConversationRelay voice bridge for AI phone calls
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -25,7 +25,6 @@ spec:
         containers:
           app:
             image:
-              # Using official Python image (multi-arch) since dailyco/pipecat-base is arm64 only
               repository: python
               # renovate: datasource=docker depName=python
               tag: "3.11-slim"
@@ -75,6 +74,13 @@ spec:
               # Voice bridge configuration
               VOICE_BRIDGE_HOST: "voice-bridge.homelab0.org"
               RECORDINGS_DIR: "/recordings"
+              # ConversationRelay: TTS and LLM model configuration
+              TTS_MODEL: "qwen-tts"
+              TTS_DEFAULT_VOICE: "ryan"
+              LLM_MODEL: "claude-sonnet"
+              AUDIO_DIR: "/tmp/audio"
+              TTS_TIMEOUT: "30"
+              LLM_TIMEOUT: "60"
               # Python configuration
               PYTHONUNBUFFERED: "1"
               PYTHONDONTWRITEBYTECODE: "1"
@@ -90,8 +96,8 @@ spec:
                   httpGet:
                     path: /health
                     port: &port 8080
-                  initialDelaySeconds: 120
-                  periodSeconds: 30
+                  initialDelaySeconds: 30
+                  periodSeconds: 15
                   timeoutSeconds: 5
                   failureThreshold: 3
               readiness:
@@ -101,8 +107,8 @@ spec:
                   httpGet:
                     path: /health
                     port: *port
-                  initialDelaySeconds: 90
-                  periodSeconds: 10
+                  initialDelaySeconds: 20
+                  periodSeconds: 5
                   timeoutSeconds: 5
                   failureThreshold: 6
               startup:
@@ -112,19 +118,19 @@ spec:
                   httpGet:
                     path: /health
                     port: *port
-                  initialDelaySeconds: 30
-                  periodSeconds: 10
+                  initialDelaySeconds: 15
+                  periodSeconds: 5
                   timeoutSeconds: 5
-                  failureThreshold: 30
+                  failureThreshold: 24
             resources:
               requests:
-                cpu: 200m
-                memory: 512Mi
-                ephemeral-storage: 512Mi
+                cpu: 100m
+                memory: 256Mi
+                ephemeral-storage: 256Mi
               limits:
-                cpu: "2"
-                memory: 2Gi
-                ephemeral-storage: 2Gi
+                cpu: "1"
+                memory: 512Mi
+                ephemeral-storage: 1Gi
             securityContext:
               allowPrivilegeEscalation: false
               readOnlyRootFilesystem: true
