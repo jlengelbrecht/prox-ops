@@ -113,6 +113,15 @@ data:
     MAX_AUDIO_SIZE = 10 * 1024 * 1024  # 10MB max audio file size
     MAX_CONVERSATION_MESSAGES = 50  # Sliding window (system prompt preserved)
 
+    # Streaming LLM configuration
+    LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "150"))
+    LLM_STREAM_ENABLED = os.getenv("LLM_STREAM_ENABLED", "true").lower() == "true"
+
+    # Sentence boundary detection for TTS chunking
+    SENTENCE_BOUNDARY = re.compile(r'[.!?](?:\s|$)')
+    MIN_FIRST_CHUNK_CHARS = 20   # Don't split on boundaries before this
+    MAX_FIRST_CHUNK_CHARS = 120  # Force split even without boundary after this
+
     # In-memory state
     active_calls: Dict[str, dict] = {}
     active_websockets: Dict[str, WebSocket] = {}
@@ -228,7 +237,8 @@ data:
         audio_task = asyncio.create_task(cleanup_audio_files())
         calls_task = asyncio.create_task(cleanup_expired_calls())
 
-        logger.info(f"LLM: {LLM_BASE_URL} (model: {LLM_MODEL})")
+        logger.info(f"LLM: {LLM_BASE_URL} (model: {LLM_MODEL}, max_tokens: {LLM_MAX_TOKENS})")
+        logger.info(f"LLM streaming: {'enabled' if LLM_STREAM_ENABLED else 'disabled'}")
         logger.info(f"TTS: {LITELLM_BASE_URL} (model: {TTS_MODEL}, voice: {TTS_DEFAULT_VOICE})")
         logger.info(f"Audio dir: {AUDIO_DIR}")
 
@@ -496,7 +506,7 @@ data:
     # --- LLM and TTS ---
 
     async def generate_llm_response(messages: list) -> str:
-        """Send conversation to Claude via moltbot clawdbot gateway."""
+        """Send conversation to Claude via moltbot clawdbot gateway (non-streaming fallback)."""
         try:
             resp = await llm_client.post(
                 f"{LLM_BASE_URL}/chat/completions",
@@ -507,7 +517,7 @@ data:
                 json={
                     "model": LLM_MODEL,
                     "messages": messages,
-                    "max_tokens": 300,
+                    "max_tokens": LLM_MAX_TOKENS,
                 },
             )
             resp.raise_for_status()
@@ -560,6 +570,205 @@ data:
             return None
 
 
+    # --- Streaming LLM + Chunked TTS ---
+
+    def find_first_chunk_boundary(text: str) -> Optional[int]:
+        """Find the best position to split text into first chunk and remainder.
+
+        Returns the index (exclusive) for the first chunk, or None if no good
+        boundary found yet. Looks for sentence-ending punctuation (.!?) after
+        MIN_FIRST_CHUNK_CHARS. Forces a word-boundary split at MAX_FIRST_CHUNK_CHARS.
+        """
+        if len(text) < MIN_FIRST_CHUNK_CHARS:
+            return None
+
+        for match in SENTENCE_BOUNDARY.finditer(text):
+            pos = match.end()
+            if pos >= MIN_FIRST_CHUNK_CHARS:
+                return pos
+
+        if len(text) >= MAX_FIRST_CHUNK_CHARS:
+            split_at = text.rfind(' ', MIN_FIRST_CHUNK_CHARS, MAX_FIRST_CHUNK_CHARS)
+            if split_at > MIN_FIRST_CHUNK_CHARS:
+                return split_at + 1
+            return MAX_FIRST_CHUNK_CHARS
+
+        return None
+
+
+    async def stream_llm_response(messages: list) -> tuple:
+        """Stream LLM response via SSE and split into first chunk + remainder.
+
+        Returns (first_chunk, remainder) where remainder is None if the response
+        is a single chunk. Falls back to non-streaming on any error.
+        """
+        try:
+            buffer = ""
+            first_chunk = None
+
+            async with llm_client.stream(
+                "POST",
+                f"{LLM_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {LLM_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": LLM_MODEL,
+                    "messages": messages,
+                    "max_tokens": LLM_MAX_TOKENS,
+                    "stream": True,
+                },
+            ) as resp:
+                resp.raise_for_status()
+
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk.get("choices", [])
+                    if not choices:
+                        continue
+                    token = choices[0].get("delta", {}).get("content")
+                    if token is None:
+                        continue
+
+                    buffer += token
+
+                    if first_chunk is None:
+                        boundary = find_first_chunk_boundary(buffer)
+                        if boundary is not None:
+                            first_chunk = buffer[:boundary].strip()
+                            buffer = buffer[boundary:]
+
+            if first_chunk is None:
+                text = buffer.strip()
+                if not text:
+                    return ("I'm sorry, I didn't catch that. Could you repeat?", None)
+                return (text, None)
+
+            remainder = buffer.strip() if buffer.strip() else None
+            return (first_chunk, remainder)
+
+        except Exception as e:
+            logger.warning(f"LLM streaming failed ({e}), falling back to non-streaming")
+            text = await generate_llm_response(messages)
+            return (text, None)
+
+
+    async def stream_llm_and_respond(
+        websocket: WebSocket,
+        messages: list,
+        voice: str,
+        call_id: str,
+    ) -> str:
+        """Stream LLM, generate TTS per chunk, and send play messages.
+
+        Orchestrates the pipelined flow:
+        1. Stream LLM tokens, detecting first sentence boundary
+        2. Fire TTS for first chunk immediately
+        3. Fire TTS for remainder in parallel (if any)
+        4. Send play message for first chunk as soon as TTS completes
+        5. Send play message for remainder when its TTS completes
+
+        Returns the full assistant response text (for conversation history).
+        """
+        if not LLM_STREAM_ENABLED:
+            response_text = await generate_llm_response(messages)
+            await _send_tts_play(websocket, response_text, voice, call_id)
+            return response_text
+
+        first_chunk, remainder = await stream_llm_response(messages)
+        full_response = first_chunk + (" " + remainder if remainder else "")
+
+        logger.info(
+            f"LLM chunks ({call_id}): first={len(first_chunk)} chars"
+            + (f", remainder={len(remainder)} chars" if remainder else "")
+        )
+
+        # Start TTS for first chunk
+        first_tts_task = asyncio.create_task(generate_tts_audio(first_chunk, voice))
+
+        # Start TTS for remainder in parallel
+        remainder_tts_task = None
+        if remainder:
+            remainder_tts_task = asyncio.create_task(generate_tts_audio(remainder, voice))
+
+        # Wait for first chunk TTS and send immediately
+        first_file_id = await first_tts_task
+        if first_file_id:
+            audio_url = f"https://{VOICE_BRIDGE_HOST}/audio/{first_file_id}.wav"
+            await websocket.send_text(json.dumps({
+                "type": "play",
+                "source": audio_url,
+                "interruptible": True,
+            }))
+            logger.info(f"Play first chunk ({call_id}): {audio_url}")
+        else:
+            # TTS failed for first chunk - Twilio TTS fallback for entire response
+            logger.warning(f"TTS failed for first chunk ({call_id}), using Twilio TTS")
+            await websocket.send_text(json.dumps({
+                "type": "text",
+                "token": full_response,
+                "last": True,
+            }))
+            if remainder_tts_task:
+                remainder_tts_task.cancel()
+            return full_response
+
+        # Wait for remainder TTS and send as second play
+        if remainder_tts_task:
+            remainder_file_id = await remainder_tts_task
+            if remainder_file_id:
+                audio_url = f"https://{VOICE_BRIDGE_HOST}/audio/{remainder_file_id}.wav"
+                await websocket.send_text(json.dumps({
+                    "type": "play",
+                    "source": audio_url,
+                    "interruptible": True,
+                }))
+                logger.info(f"Play remainder ({call_id}): {audio_url}")
+            else:
+                logger.warning(f"TTS failed for remainder ({call_id}), using Twilio TTS")
+                await websocket.send_text(json.dumps({
+                    "type": "text",
+                    "token": remainder,
+                    "last": True,
+                }))
+
+        return full_response
+
+
+    async def _send_tts_play(
+        websocket: WebSocket,
+        text: str,
+        voice: str,
+        call_id: str,
+    ) -> None:
+        """Generate TTS and send a single play message (non-streaming path)."""
+        file_id = await generate_tts_audio(text, voice)
+        if file_id:
+            audio_url = f"https://{VOICE_BRIDGE_HOST}/audio/{file_id}.wav"
+            await websocket.send_text(json.dumps({
+                "type": "play",
+                "source": audio_url,
+                "interruptible": True,
+            }))
+            logger.info(f"Play Media ({call_id}): {audio_url}")
+        else:
+            logger.warning(f"TTS unavailable, using Twilio TTS for {call_id}")
+            await websocket.send_text(json.dumps({
+                "type": "text",
+                "token": text,
+                "last": True,
+            }))
+
+
     # --- ConversationRelay WebSocket ---
 
     @app.websocket("/ws/{call_id}")
@@ -604,8 +813,9 @@ data:
             messages = [
                 {"role": "system", "content": (
                     f"{call.get('context', 'You are a helpful AI assistant.')}\n"
-                    "Keep responses concise and conversational - this is a phone call. "
-                    "Speak naturally. Avoid long monologues. Ask for clarification if needed."
+                    "Respond in 1-2 short sentences. This is a phone call - be brief "
+                    "and natural. Never use lists, markdown, or formatting. "
+                    "Ask for clarification if needed."
                 )}
             ]
 
@@ -634,34 +844,17 @@ data:
 
                     logger.info(f"User ({call_id}): {user_text}")
 
-                    # Get LLM response from Claude
+                    # Stream LLM response and generate TTS in parallel chunks
                     messages.append({"role": "user", "content": user_text})
-                    response_text = await generate_llm_response(messages)
+                    response_text = await stream_llm_and_respond(
+                        websocket, messages, voice, call_id,
+                    )
                     messages.append({"role": "assistant", "content": response_text})
 
                     # Sliding window: keep system prompt + recent messages
                     if len(messages) > MAX_CONVERSATION_MESSAGES:
                         messages = [messages[0]] + messages[-(MAX_CONVERSATION_MESSAGES - 1):]
                     logger.info(f"Assistant ({call_id}): {response_text}")
-
-                    # Try custom TTS via qwen-tts, fall back to Twilio TTS
-                    file_id = await generate_tts_audio(response_text, voice)
-                    if file_id:
-                        audio_url = f"https://{VOICE_BRIDGE_HOST}/audio/{file_id}.wav"
-                        await websocket.send_text(json.dumps({
-                            "type": "play",
-                            "source": audio_url,
-                            "interruptible": True,
-                        }))
-                        logger.info(f"Play Media: {audio_url}")
-                    else:
-                        # Fallback: Twilio built-in TTS
-                        logger.warning(f"TTS unavailable, using Twilio TTS for {call_id}")
-                        await websocket.send_text(json.dumps({
-                            "type": "text",
-                            "token": response_text,
-                            "last": True,
-                        }))
 
                 elif msg_type == "interrupt":
                     utterance = msg.get("utteranceUntilInterrupt", "")
