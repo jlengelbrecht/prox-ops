@@ -1,10 +1,11 @@
 ---
-# STORY-031-4: Voice Bridge Network Policy
+# STORY-031-9: Voice Bridge Network Policy (ConversationRelay)
 # Controls ingress/egress for voice bridge service
 #
-# Security Architecture:
-# - Ingress: Only from envoy-external gateway and internal AI services
-# - Egress: Only to LiteLLM (AI), DNS, and Twilio API (HTTPS)
+# Architecture (ConversationRelay):
+# - Ingress: Envoy external gateway (Twilio ConversationRelay WS + Play Media)
+#            + internal AI services (moltbot call initiation)
+# - Egress: LiteLLM (LLM + TTS), DNS, Twilio REST API, PyPI (pip install)
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -15,7 +16,8 @@ spec:
     matchLabels:
       app.kubernetes.io/name: voice-bridge
   ingress:
-    # Allow ingress from Envoy external gateway (Twilio webhooks via Cloudflare)
+    # Envoy external gateway: Twilio ConversationRelay WebSocket (/ws)
+    # and Play Media audio fetch (/audio) via Cloudflare Tunnel
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
@@ -24,7 +26,7 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-    # Allow ingress from internal AI services (moltbot API calls via port-forward)
+    # Internal AI services: moltbot call initiation via /api endpoints
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
@@ -33,7 +35,7 @@ spec:
             - port: "8080"
               protocol: TCP
   egress:
-    # Allow egress to LiteLLM for STT/LLM/TTS via AI gateway
+    # LiteLLM: LLM (Claude) and TTS (qwen-tts) via AI gateway
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
@@ -42,7 +44,7 @@ spec:
         - ports:
             - port: "4000"
               protocol: TCP
-    # Allow DNS resolution (required for Twilio API hostname resolution)
+    # DNS resolution (required for FQDN policy and Twilio API)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kube-system
@@ -53,11 +55,20 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow HTTPS egress for Twilio API and PyPI (pip install at startup)
-    # TEMPORARY: Using toEntities world due to Cilium FQDN caching issues
-    # TODO(EPIC-031): Revert to toFQDNs once Cilium FQDN is debugged
-    - toEntities:
-        - world
+    # Twilio REST API (call initiation + call termination fallback)
+    - toFQDNs:
+        - matchName: "api.twilio.com"
+        - matchPattern: "*.twilio.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # PyPI (pip install at startup)
+    - toFQDNs:
+        - matchName: "pypi.org"
+        - matchPattern: "*.pypi.org"
+        - matchName: "files.pythonhosted.org"
+        - matchPattern: "*.pythonhosted.org"
       toPorts:
         - ports:
             - port: "443"
