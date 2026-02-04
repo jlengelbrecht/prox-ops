@@ -277,6 +277,13 @@ data:
                 raise ValueError('Invalid phone number. Use E.164 format: +1234567890')
             return v
 
+        @field_validator('context')
+        @classmethod
+        def validate_context(cls, v: Optional[str]) -> Optional[str]:
+            if v and len(v) > 2000:
+                raise ValueError('Context too long (max 2000 characters)')
+            return v
+
         @field_validator('greeting')
         @classmethod
         def validate_greeting(cls, v: Optional[str]) -> Optional[str]:
