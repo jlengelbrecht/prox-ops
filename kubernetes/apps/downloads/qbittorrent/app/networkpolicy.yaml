@@ -38,6 +38,15 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
+    # Allow from Cleanuparr (download queue management)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: cleanuparr
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
     # Allow Prometheus metrics scraping (qbittorrent-exporter sidecar)
     - fromEndpoints:
         - matchLabels:
