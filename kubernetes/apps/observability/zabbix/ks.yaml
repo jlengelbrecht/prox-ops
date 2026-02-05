@@ -1,0 +1,26 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: zabbix
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: external-secrets-operator
+    - name: kube-prometheus-stack
+    - name: postgres-cluster
+  interval: 1h
+  path: ./kubernetes/apps/observability/zabbix/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: observability
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: zabbix
+      namespace: observability
+  wait: false
+  timeout: 15m

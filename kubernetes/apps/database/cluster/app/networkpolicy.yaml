@@ -48,6 +48,15 @@ spec:
             - port: "5432"
               protocol: TCP
 
+    # From observability namespace (Zabbix)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
     # Internal database namespace traffic (operator, pooler, etc.)
     # Ports: 5432=PostgreSQL, 8000=status (operator health checks), 9187=metrics
     - fromEndpoints:
