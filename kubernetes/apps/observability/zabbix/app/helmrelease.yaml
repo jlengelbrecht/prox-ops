@@ -9,6 +9,7 @@ spec:
   chart:
     spec:
       chart: zabbix
+      # renovate: datasource=helm registryUrl=https://zabbix-community.github.io/helm-zabbix
       version: 7.0.12
       sourceRef:
         kind: HelmRepository
@@ -23,6 +24,7 @@ spec:
     remediation:
       retries: 3
   values:
+    # renovate: datasource=docker depName=zabbix/zabbix-server-pgsql versioning=regex:^ubuntu-(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
     zabbixImageTag: ubuntu-7.0.16
 
     # ============================================================
@@ -79,6 +81,7 @@ spec:
       # SNMP traps receiver sidecar
       extraContainers:
         - name: snmptraps
+          # renovate: datasource=docker depName=zabbix/zabbix-snmptraps versioning=regex:^ubuntu-(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
           image: zabbix/zabbix-snmptraps:ubuntu-7.0.16
           ports:
             - containerPort: 1162
