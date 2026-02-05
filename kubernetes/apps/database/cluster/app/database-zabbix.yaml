@@ -1,0 +1,14 @@
+---
+# Zabbix Database - managed by CloudNative-PG Database CRD
+# This declaratively creates the database on the shared postgres cluster
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: zabbix
+  namespace: database
+spec:
+  name: zabbix
+  owner: zabbix
+  cluster:
+    name: postgres
+  ensure: present
