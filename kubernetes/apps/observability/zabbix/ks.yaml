@@ -8,7 +8,8 @@ spec:
   dependsOn:
     - name: external-secrets-operator
     - name: kube-prometheus-stack
-    - name: postgres-cluster
+    # Note: postgres-cluster Kustomization not tracked by Flux
+    # CNPG cluster already deployed and healthy in database namespace
   interval: 1h
   path: ./kubernetes/apps/observability/zabbix/app
   prune: true
