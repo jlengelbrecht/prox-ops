@@ -1,0 +1,196 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: moltbot
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      moltbot:
+        strategy: Recreate
+        initContainers:
+          onboard:
+            image:
+              repository: ghcr.io/moltbot/clawdbot
+              # renovate: datasource=docker depName=ghcr.io/moltbot/clawdbot
+              tag: "2026.1.24-1"
+            command:
+              - /bin/sh
+              - -c
+              - |
+                if [ -f "$CLAWDBOT_STATE_DIR/clawdbot.json" ]; then
+                  echo "Config already exists, skipping onboard"
+                  exit 0
+                fi
+                exec node dist/entry.js onboard \
+                  --non-interactive --accept-risk \
+                  --flow quickstart --mode local \
+                  --auth-choice skip --skip-daemon \
+                  --skip-channels --skip-skills \
+                  --skip-health --skip-ui \
+                  --gateway-bind lan --gateway-auth token \
+                  --gateway-port 18789
+            env:
+              CLAWDBOT_STATE_DIR: /data/state
+              CLAWDBOT_GATEWAY_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: moltbot-secrets
+                    key: CLAWDBOT_GATEWAY_TOKEN
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: "1"
+                memory: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+        containers:
+          app:
+            image:
+              repository: ghcr.io/moltbot/clawdbot
+              # renovate: datasource=docker depName=ghcr.io/moltbot/clawdbot
+              tag: "2026.1.24-1"
+            command:
+              - /bin/sh
+              - -c
+              - |
+                # Clean up stale lock files from previous runs/restarts
+                # Moltbot leaves .lock files behind when restarting via SIGUSR1
+                echo "Cleaning up stale lock files..."
+                find "$CLAWDBOT_STATE_DIR" -name "*.lock" -type f -delete 2>/dev/null || true
+
+                # Configure gateway auth and enable OpenAI-compatible API
+                node -e "
+                  const fs = require('fs');
+                  const f = process.env.CLAWDBOT_STATE_DIR + '/clawdbot.json';
+                  const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+                  c.gateway.auth = { mode: 'token', token: process.env.CLAWDBOT_GATEWAY_TOKEN };
+                  c.gateway.controlUi = { allowInsecureAuth: true };
+                  // EPIC-031: Enable OpenAI-compatible chat completions for voice-bridge LLM routing
+                  c.gateway.http = c.gateway.http || {};
+                  c.gateway.http.endpoints = c.gateway.http.endpoints || {};
+                  c.gateway.http.endpoints.chatCompletions = { enabled: true };
+                  fs.writeFileSync(f, JSON.stringify(c, null, 2));
+                "
+                exec node dist/entry.js gateway \
+                  --port 18789 --bind lan --verbose
+            env:
+              TZ: America/New_York
+              NODE_ENV: production
+              CLAWDBOT_STATE_DIR: /data/state
+              CLAWDBOT_GATEWAY_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: moltbot-secrets
+                    key: CLAWDBOT_GATEWAY_TOKEN
+              LITELLM_VIRTUAL_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: moltbot-secrets
+                    key: LITELLM_VIRTUAL_KEY
+              # Direct Anthropic access via OAuth token (Claude Max subscription)
+              # LiteLLM routing removed - incompatible with OAuth Bearer auth
+              ANTHROPIC_OAUTH_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: moltbot-secrets
+                    key: ANTHROPIC_OAUTH_TOKEN
+              # EPIC-031: Voice Bridge API key for initiating outbound calls
+              VOICE_BRIDGE_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: moltbot-secrets
+                    key: VOICE_BRIDGE_API_KEY
+              # EPIC-031: Voice Bridge internal service URL
+              VOICE_BRIDGE_URL: "http://voice-bridge.ai.svc.cluster.local:8080"
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: &port 18789
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: *port
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  tcpSocket:
+                    port: *port
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                  failureThreshold: 30
+            resources:
+              requests:
+                cpu: 200m
+                memory: 512Mi
+              limits:
+                cpu: "2"
+                memory: 2Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      annotations:
+        secret.reloader.stakater.com/reload: "moltbot-secrets"
+      automountServiceAccountToken: false
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+
+    persistence:
+      data:
+        enabled: true
+        existingClaim: moltbot-data
+        globalMounts:
+          - path: /data/state
+            subPath: state
+          - path: /root/clawd
+            subPath: workspace
+    service:
+      app:
+        controller: moltbot
+        type: ClusterIP
+        ports:
+          gateway:
+            port: 18789
+            protocol: TCP

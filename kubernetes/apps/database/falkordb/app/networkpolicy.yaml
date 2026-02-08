@@ -1,0 +1,38 @@
+---
+# FalkorDB NetworkPolicy - Strict security for graph database
+# Only Graphiti MCP server can access FalkorDB
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: falkordb
+  namespace: database
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: falkordb
+
+  ingress:
+    # ONLY allow ingress from Graphiti MCP backend (ToolHive-managed in mcp namespace)
+    # This is the sole consumer of the graph database
+    # ToolHive creates pods with toolhive-name label, not app.kubernetes.io/name
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            toolhive-name: graphiti
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+  egress:
+    # Allow DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

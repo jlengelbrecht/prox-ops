@@ -187,9 +187,53 @@ spec:
                     name: TraceID
                     url: "$${__value.raw}"
 
-      # Dashboard providers - disabled, using sidecar instead
-      # All dashboards are discovered via sidecar from ConfigMaps with label grafana_dashboard: "1"
-      dashboardProviders: {}
+      # Dashboard providers for external dashboards (gnetId)
+      dashboardProviders:
+        dashboardproviders.yaml:
+          apiVersion: 1
+          providers:
+            - name: 'unpoller'
+              orgId: 1
+              folder: 'UniFi'
+              type: file
+              disableDeletion: false
+              editable: true
+              options:
+                path: /var/lib/grafana/dashboards/unpoller
+
+      # UnPoller dashboards from grafana.com
+      dashboards:
+        unpoller:
+          unpoller-client-dpi:
+            gnetId: 11310
+            revision: 9
+            datasource: Prometheus
+          unpoller-sites:
+            gnetId: 11311
+            revision: 5
+            datasource: Prometheus
+          unpoller-usw:
+            gnetId: 11312
+            revision: 9
+            datasource: Prometheus
+          unpoller-usg:
+            gnetId: 11313
+            revision: 9
+            datasource: Prometheus
+          unpoller-uap:
+            gnetId: 11314
+            revision: 10
+            datasource: Prometheus
+          unpoller-clients:
+            gnetId: 11315
+            revision: 9
+            datasource: Prometheus
+          unpoller-network-sites:
+            gnetId: 22143
+            revision: 2
+            datasource: Prometheus
+          # PDU dashboard uses ConfigMap (dashboards/unpoller-pdu-dashboard.yaml)
+          # due to datasource variable format incompatibility with gnetId provisioning
 
       # Sidecar for dashboard discovery
       sidecar:

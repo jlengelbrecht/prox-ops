@@ -1,0 +1,182 @@
+---
+# KServe InferenceService: Stable Audio Open 1.0 (Audio Generation)
+# STORY-142 Phase 3: Audio generation model
+# Model: stabilityai/stable-audio-open-1.0 (~8GB VRAM, audio diffusion)
+# Framework: vLLM-Omni (multimodal fork)
+# GPU: RTX A5000 24GB (k8s-work-10 ONLY)
+#
+# Performance Characteristics:
+# - Cold start: ~90-120s (diffusion model loading)
+# - Warm inference: ~5-30s (varies by audio length)
+# - Scale-to-zero: 5 minutes idle timeout
+# - VRAM usage: ~8GB / 24GB available
+# - Single GPU: maxReplicas=1 enforced
+#
+# API Endpoints:
+# - /v1/audio/generations - Audio generation endpoint
+#
+# Usage:
+#   # Generate audio from text prompt
+#   kubectl run -it --rm test-audio --image=curlimages/curl --restart=Never -- \
+#     curl -X POST http://stable-audio.ai.svc.cluster.local/v1/audio/generations \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"/models/stabilityai/stable-audio-open-1.0","prompt":"A peaceful piano melody","duration":10}'
+#
+# GPU Contention Note:
+# - Only ONE InferenceService can run at a time (single RTX A5000)
+# - Scale down other models before testing stable-audio
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: stable-audio
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: stable-audio
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: vllm-omni
+    model.type: audio-diffusion
+    model.modality: text-audio
+    model.size: 1b
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A5000 for audio generation"
+    security.homelab/network: "Internal only - ClusterIP service"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
+    maxReplicas: 1  # Single GPU workload - only 1 pod can run at a time
+
+    # CRITICAL: GPU and Node Targeting
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      gpu.nvidia.com/model: rtx-a5000
+
+    containers:
+      - name: vllm-omni
+        # renovate: datasource=docker depName=vllm/vllm-omni
+        image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
+
+        # vLLM-Omni uses 'vllm serve --omni' for diffusion/audio models
+        command:
+          - vllm
+          - serve
+
+        # vLLM-Omni server arguments
+        args:
+          # Model path (absolute path to cached model)
+          - /models/stabilityai/stable-audio-open-1.0
+
+          # Enable Omni mode for diffusion/audio models
+          - --omni
+
+          # Inference optimization
+          - --dtype=auto  # Use BF16 automatically
+          - --gpu-memory-utilization=0.9  # Use 90% of VRAM
+
+          # Fast cold start optimization (skip compilation)
+          - --enforce-eager
+
+          # Server configuration
+          - --host=0.0.0.0
+          - --port=8080
+
+          # Disable telemetry
+          - --disable-log-stats
+          - --disable-log-requests
+
+        # Environment variables
+        env:
+          # HuggingFace token (optional)
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: huggingface-token
+                key: HF_TOKEN
+                optional: true
+
+          # Disable HuggingFace telemetry
+          - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # Enable offline mode (use cached model files only)
+          - name: HF_HUB_OFFLINE
+            value: "1"
+
+          # NVIDIA GPU visibility
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+
+          # Fix for non-root user compatibility
+          - name: HOME
+            value: "/tmp"
+
+        # Resource requirements for audio diffusion
+        resources:
+          requests:
+            cpu: 2
+            memory: 12Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 4
+            memory: 16Gi
+            nvidia.com/gpu: 1
+
+        # Health checks
+        ports:
+          - containerPort: 8080
+            name: http1
+            protocol: TCP
+
+        # STORY-150: Optimized probes for faster cold start detection
+        # Audio diffusion model - moderate load time expected (~90-120s)
+        # Liveness must allow full cold start: 90 + (4-1)×15 = 135s total
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 90   # Keep same - diffusion models need time
+          periodSeconds: 15         # Reduced from 30 - check more frequently
+          timeoutSeconds: 10
+          failureThreshold: 4       # 4th failure at ~135s total (covers ~90-120s startup)
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 45   # Reduced from 90 - start checking earlier
+          periodSeconds: 5          # Reduced from 10 - catch ready state faster
+          timeoutSeconds: 5
+          failureThreshold: 20      # (20-1)×5=95s after initial delay (~140s total)
+
+        # Volume mounts
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: false
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+
+    # NVIDIA container runtime for GPU access
+    runtimeClassName: nvidia
+
+    # Security context (pod-level)
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    serviceAccountName: default
+
+    # Volumes
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache

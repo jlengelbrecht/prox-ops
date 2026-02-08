@@ -62,13 +62,20 @@ spec:
       # Declarative role management - each app gets a dedicated user
       # Passwords managed via ExternalSecrets from 1Password
       # See: https://cloudnative-pg.io/documentation/current/declarative_role_management/
+      # Note: firecrawl role removed (STORY-062) - using Firecrawl.dev cloud API
       roles:
-        - name: firecrawl
+        - name: toolhive
           ensure: present
           login: true
           createdb: false
           passwordSecret:
-            name: firecrawl-db-credentials
+            name: toolhive-db-credentials
+        - name: zabbix
+          ensure: present
+          login: true
+          createdb: false
+          passwordSecret:
+            name: zabbix-db-credentials
 
     # Backups - disabled until S3 storage is available
     # When MinIO/S3 is ready, enable and configure:

@@ -1,0 +1,78 @@
+---
+# STORY-031-9: Voice Bridge Network Policy (ConversationRelay)
+# Controls ingress/egress for voice bridge service
+#
+# Architecture (ConversationRelay):
+# - Ingress: Envoy external gateway (Twilio ConversationRelay WS + Play Media)
+#            + internal AI services (moltbot call initiation)
+# - Egress: Moltbot (LLM via clawdbot gateway), LiteLLM (TTS), DNS,
+#            Twilio REST API, PyPI (pip install)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: voice-bridge
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: voice-bridge
+  ingress:
+    # Envoy external gateway: Twilio ConversationRelay WebSocket (/ws)
+    # and Play Media audio fetch (/audio) via Cloudflare Tunnel
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-external
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Internal AI services: moltbot call initiation via /api endpoints
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Moltbot clawdbot gateway: LLM (Claude) via Anthropic OAuth
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: moltbot
+      toPorts:
+        - ports:
+            - port: "18789"
+              protocol: TCP
+    # LiteLLM: TTS (qwen-tts) via AI gateway
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
+    # DNS resolution (required for FQDN policy and Twilio API)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # HTTPS egress: Twilio REST API + PyPI (pip install at startup)
+    # TODO: Revert to toFQDNs when Cilium DNS proxy redirect is fixed.
+    # Cilium 1.18.3 with external-envoy-proxy + transparent DNS mode does not
+    # apply DNS proxy redirects to endpoints, leaving FQDN cache empty.
+    # Using toEntities:world on 443 (matches moltbot pattern) as workaround.
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

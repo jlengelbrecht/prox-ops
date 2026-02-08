@@ -1,0 +1,61 @@
+---
+# STORY-031-8: External HTTPRoute for Twilio ConversationRelay
+# Voice bridge accessible from Twilio for OUTBOUND call audio streaming
+# Uses envoy-external for Cloudflare Tunnel access
+#
+# OUTBOUND-ONLY ARCHITECTURE:
+# - Moltbot -> voice-bridge (internal) -> Twilio API -> Phone
+# - Twilio -> voice-bridge /ws (external) -> ConversationRelay WebSocket
+# - Twilio -> voice-bridge /audio (external) -> Play Media audio files
+#
+# Security:
+# - /ws: Twilio ConversationRelay only (call_id is cryptographic UUID)
+# - /audio: Twilio Play Media only (file_id is cryptographic UUID, 5min expiry)
+# - /health: Public (for monitoring, no sensitive data)
+# - /api: NOT EXPOSED (internal service-to-service only)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: voice-bridge-external
+  namespace: ai
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: voice-bridge.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-external
+      namespace: network
+      sectionName: https
+  hostnames:
+    - voice-bridge.homelab0.org
+  rules:
+    # WebSocket endpoint for Twilio ConversationRelay (OUTBOUND CALLS)
+    # When voice-bridge initiates a call, Twilio connects back here
+    # Security: call_id is cryptographically random UUID (128-bit entropy)
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /ws
+      backendRefs:
+        - name: voice-bridge
+          port: 8080
+    # Audio files for Twilio Play Media (TTS output)
+    # ConversationRelay sends {"type": "play", "source": "https://host/audio/{id}.wav"}
+    # Security: file_id is cryptographic UUID, files expire after 5 minutes
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /audio
+      backendRefs:
+        - name: voice-bridge
+          port: 8080
+    # Health check (public for external monitoring)
+    # Returns: status, timestamp, active call count (no sensitive data)
+    - matches:
+        - path:
+            type: Exact
+            value: /health
+      backendRefs:
+        - name: voice-bridge
+          port: 8080
+    # NOT EXPOSED (internal only):
+    # - /api/* - Call initiation (Moltbot calls via k8s service)

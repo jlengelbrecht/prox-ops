@@ -1,0 +1,36 @@
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: fileflows
+  namespace: media
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: fileflows.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - "fileflows.homelab0.org"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            add:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains; preload"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-XSS-Protection
+                value: "1; mode=block"
+      backendRefs:
+        - name: fileflows
+          port: 5000
+          weight: 1

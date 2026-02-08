@@ -1,0 +1,46 @@
+---
+# Qdrant NetworkPolicy - Vector database access control
+# Allows access from AI workloads and MCP servers
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: qdrant
+  namespace: database
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: qdrant
+
+  ingress:
+    # Allow from Open WebUI (RAG integration) - ai namespace
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: open-webui
+      toPorts:
+        - ports:
+            - port: "6333"
+              protocol: TCP
+
+    # Allow from Graphiti MCP (GraphRAG vector storage) - mcp namespace
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: graphiti-mcp
+      toPorts:
+        - ports:
+            - port: "6333"
+              protocol: TCP
+
+  egress:
+    # Allow DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

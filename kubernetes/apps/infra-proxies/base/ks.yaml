@@ -1,0 +1,21 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infra-proxies-base
+  namespace: flux-system
+spec:
+  targetNamespace: infra-proxies
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: infra-proxies-base
+  path: ./kubernetes/apps/infra-proxies/base/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m

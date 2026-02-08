@@ -27,25 +27,10 @@ spec:
         - ports:
             - port: "4000"
               protocol: TCP
-    # Allow egress to Ollama for LLM inference (legacy/direct)
+    # Allow egress to Qdrant for vector database (RAG) - in database namespace
     - toEndpoints:
         - matchLabels:
-            app.kubernetes.io/name: ollama
-      toPorts:
-        - ports:
-            - port: "11434"
-              protocol: TCP
-    # Allow egress to LightRAG for RAG context queries (Filter Function)
-    - toEndpoints:
-        - matchLabels:
-            app.kubernetes.io/name: lightrag
-      toPorts:
-        - ports:
-            - port: "9621"
-              protocol: TCP
-    # Allow egress to Qdrant for vector database (RAG)
-    - toEndpoints:
-        - matchLabels:
+            io.kubernetes.pod.namespace: database
             app.kubernetes.io/name: qdrant
       toPorts:
         - ports:
@@ -59,14 +44,7 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-    # Allow egress to Firecrawl for web scraping/loading
-    - toEndpoints:
-        - matchLabels:
-            app.kubernetes.io/name: firecrawl
-      toPorts:
-        - ports:
-            - port: "3002"
-              protocol: TCP
+    # Note: Firecrawl removed (STORY-062) - scraping via LiteLLM cloud API
     # Allow DNS resolution
     - toEndpoints:
         - matchLabels:
@@ -78,8 +56,7 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # Allow HTTPS egress for model downloads via Ollama (if pulling from UI)
-    # and for future OIDC authentication
+    # Allow HTTPS egress for OIDC authentication
     - toEntities:
         - world
       toPorts:

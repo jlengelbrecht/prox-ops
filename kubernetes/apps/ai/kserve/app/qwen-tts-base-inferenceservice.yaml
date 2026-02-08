@@ -1,0 +1,202 @@
+---
+# KServe InferenceService: Qwen3-TTS-Base (Voice Cloning with Reference Audio)
+# EPIC-030: Voice AI Platform - Voice cloning capability
+# Model: Qwen/Qwen3-TTS-12Hz-1.7B-Base (~5GB VRAM, voice cloning)
+# Framework: vLLM-Omni (multimodal fork)
+# GPU: RTX A5000 24GB (k8s-work-10 ONLY)
+#
+# Key Difference from CustomVoice:
+# - Base model accepts ref_audio parameter for voice cloning
+# - CustomVoice has 11 preset voices built-in
+# - Base model creates custom voices from audio samples
+#
+# Performance Characteristics:
+# - Cold start: ~5-6min (apt-get sox ~1min + pip install ~1min + model load ~3min)
+# - Warm inference: ~50-100ms
+# - Scale-to-zero: 5 minutes idle timeout
+# - VRAM usage: ~5GB / 24GB available
+# - Single GPU: maxReplicas=1 enforced
+#
+# API Endpoints:
+# - /v1/audio/speech - Voice cloning with ref_audio parameter
+#
+# Voice Cloning Usage:
+#   curl -X POST http://qwen-tts-base.ai.svc.cluster.local/v1/audio/speech \
+#     -H "Content-Type: application/json" \
+#     -d '{
+#       "model": "/models/Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+#       "input": "Hello, this is my cloned voice!",
+#       "voice": "custom",
+#       "ref_audio": "<base64-encoded-wav-sample>",
+#       "response_format": "wav"
+#     }'
+#
+# GPU Time-Slicing Note (STORY-030-1, STORY-030-6):
+# - GPU memory utilization capped at 0.25 (~6GB of 24GB)
+# - Time-slicing shares GPU compute; VRAM is NOT isolated
+# - Small models (TTS, Whisper, Stable-Audio) can coexist via time-slicing
+# - All AI models pinned to k8s-work-10 (A5000) via nodeSelector
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen-tts-base
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen-tts-base
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: vllm-omni
+    model.type: tts
+    model.modality: text-audio
+    model.size: 1.7b
+    model.capability: voice-cloning
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A5000 for TTS inference"
+    security.homelab/network: "Internal only - ClusterIP service"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
+    maxReplicas: 1  # Single GPU workload - only 1 pod can run at a time
+
+    # CRITICAL: GPU and Node Targeting
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      gpu.nvidia.com/model: rtx-a5000
+
+    containers:
+      - name: vllm-omni
+        # renovate: datasource=docker depName=vllm/vllm-omni
+        image: vllm/vllm-omni:v0.14.0rc1  # vLLM-Omni for multimodal models
+
+        # Install missing dependencies at runtime (onnxruntime, sox Python + system binary)
+        # Workaround for https://github.com/vllm-project/vllm-omni/pull/909
+        # TODO: Remove after vLLM-Omni includes these dependencies in base image
+        # Reference: https://docs.vllm.ai/projects/vllm-omni/en/latest/user_guide/examples/online_serving/qwen3_tts/
+        # Note: Python sox package is a wrapper requiring system SoX binary (/usr/bin/sox)
+        #       APT::Sandbox::User=root bypasses container seccomp restrictions
+        command:
+          - /bin/bash
+          - -c
+          - |
+            echo "Installing missing dependencies for Qwen3-TTS-Base support..."
+            echo "Step 1/3: Installing SoX system binary..."
+            # Use custom cache dir to avoid permission issues with _apt-owned /var/cache/apt/archives/partial
+            mkdir -p /tmp/apt-cache/partial
+            apt-get -o Dir::Cache::Archives=/tmp/apt-cache -o APT::Sandbox::User=root update -qq 2>&1 | tail -5
+            apt-get -o Dir::Cache::Archives=/tmp/apt-cache -o APT::Sandbox::User=root install -y -qq sox libsox-fmt-all 2>&1 | tail -5
+            echo "Step 2/3: Installing Python packages..."
+            pip install --no-cache-dir onnxruntime sox 2>&1 | tail -5
+            echo "Step 3/3: Verifying SoX installation..."
+            which sox && sox --version | head -1
+            echo "Starting vLLM-Omni server (Base model for voice cloning)..."
+            exec vllm-omni serve /models/Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+              --stage-configs-path vllm_omni/model_executor/stage_configs/qwen3_tts.yaml \
+              --trust-remote-code \
+              --gpu-memory-utilization=0.25 \
+              --enforce-eager \
+              --omni \
+              --host=0.0.0.0 \
+              --port=8080 \
+              --disable-log-stats \
+              --disable-log-requests
+
+        # No args needed - all in command above
+        args: []
+
+        # Environment variables
+        env:
+          # HuggingFace token (optional)
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: huggingface-token
+                key: HF_TOKEN
+                optional: true
+
+          # Disable HuggingFace telemetry
+          - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # Enable offline mode (use cached model files only)
+          - name: HF_HUB_OFFLINE
+            value: "1"
+
+          # NVIDIA GPU visibility
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+
+          # Fix for non-root user compatibility
+          - name: HOME
+            value: "/tmp"
+
+        # Resource requirements (smaller for TTS model)
+        resources:
+          requests:
+            cpu: 2
+            memory: 8Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 4
+            memory: 12Gi
+            nvidia.com/gpu: 1
+
+        # Health checks
+        ports:
+          - containerPort: 8080
+            name: http1
+            protocol: TCP
+
+        # Optimized probes for faster cold start detection
+        # TTS model with apt + pip install overhead - keep longer delays but improve frequency
+        # apt-get sox (~1min) + pip install (~1min) + model load (~3min) = ~5-6min expected
+        # Liveness must allow full cold start: 300 + (5-1)×15 = 360s total
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 300  # Increased for apt-get + pip + load ~5min
+          periodSeconds: 15         # Check frequently
+          timeoutSeconds: 10
+          failureThreshold: 5       # 5th failure at ~360s total (covers 5-6min startup)
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 240  # Start checking after apt + pip likely done
+          periodSeconds: 5          # Catch ready state faster
+          timeoutSeconds: 5
+          failureThreshold: 36      # (36-1)×5=175s after initial delay (~415s total)
+
+        # Volume mounts
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: false
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+
+    # NVIDIA container runtime for GPU access
+    runtimeClassName: nvidia
+
+    # Security context (pod-level)
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    serviceAccountName: default
+
+    # Volumes
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache

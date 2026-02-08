@@ -1,0 +1,107 @@
+---
+# qBittorrent NetworkPolicy - Strict isolation with VPN sidecar
+# Ensures ALL traffic goes through VPN - kill switch at K8s network layer
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: qbittorrent-isolation
+  namespace: downloads
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: qbittorrent
+  ingress:
+    # Allow from envoy-internal Gateway (internal HTTPS access to web UI)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow from Sonarr (torrent management)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: sonarr
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow from Radarr (torrent management)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: radarr
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow from Cleanuparr (download queue management)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: cleanuparr
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow Prometheus metrics scraping (qbittorrent-exporter sidecar)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8090"
+              protocol: TCP
+    # Allow Prometheus metrics scraping (vpn-exporter sidecar)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8001"
+              protocol: TCP
+    # Allow from Uptime Kuma (health monitoring)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: uptime-kuma
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Allow from Homepage dashboard (widget API access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+            app.kubernetes.io/name: homepage
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Allow DNS queries (required for internal K8s service resolution)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Allow ONLY VPN tunnel traffic - true CNI-layer kill switch
+    # All BitTorrent/HTTP/HTTPS traffic MUST go through gluetun's tun0 interface
+    # If gluetun fails, this policy blocks all internet access (defense-in-depth)
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            # WireGuard VPN traffic (Surfshark)
+            - port: "51820"
+              protocol: UDP

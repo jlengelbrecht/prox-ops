@@ -1,0 +1,25 @@
+---
+# LoadBalancer service for SNMP trap reception
+# Dell iDRAC and UniFi devices send SNMP traps to this IP (UDP 162)
+apiVersion: v1
+kind: Service
+metadata:
+  name: zabbix-snmptraps
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: zabbix
+    app.kubernetes.io/component: snmptraps
+  annotations:
+    io.cilium/lb-ipam-ips: "10.20.67.26"
+spec:
+  type: LoadBalancer
+  ports:
+    - name: snmp-trap
+      port: 162
+      targetPort: 1162
+      protocol: UDP
+  # Selector matches labels from zabbix-community helm chart
+  selector:
+    app.kubernetes.io/name: zabbix
+    app.kubernetes.io/instance: zabbix
+    app.kubernetes.io/component: server

@@ -23,6 +23,12 @@ spec:
     remediation:
       retries: 3
   values:
+    # STORY-030-1: GPU Time-Slicing Configuration
+    # References ConfigMap with time-slicing settings (3 replicas per GPU)
+    config:
+      name: nvidia-device-plugin-config
+      default: config.yaml
+
     # CRITICAL: Use nvidia runtime to inject NVIDIA libraries
     runtimeClassName: nvidia
 
@@ -59,6 +65,7 @@ spec:
         cpu: 50m
         memory: 100Mi
       limits:
+        cpu: 100m
         memory: 200Mi
 
     # Priority class for critical system pods

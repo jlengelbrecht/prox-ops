@@ -1,0 +1,138 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: fileflows
+  namespace: media
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: media
+  interval: 1h
+  values:
+    controllers:
+      fileflows:
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: revenz/fileflows
+              # renovate: datasource=docker depName=revenz/fileflows
+              tag: "modded-26.01"
+            env:
+              TZ: America/New_York
+              # FileFlows runs as user/group 1000 by default
+              PUID: "1000"
+              PGID: "1000"
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: 5000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: 5000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 10
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 1000m
+                memory: 2Gi
+                nvidia.com/gpu: 1
+              limits:
+                cpu: 4000m
+                memory: 8Gi
+                nvidia.com/gpu: 1
+            securityContext:
+              # FileFlows requires privilege escalation for su to drop to PUID
+              allowPrivilegeEscalation: true
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  - CHOWN   # Required: chown -R /app /temp
+                  - SETUID  # Required: useradd, su privilege dropping
+                  - SETGID  # Required: groupadd, usermod -aG
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      runtimeClassName: nvidia
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      affinity:
+        nodeAffinity:
+          # Primary: RTX A2000 on k8s-work-4
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - k8s-work-4
+            # Failover: RTX A5000 on k8s-work-10
+            - weight: 50
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - k8s-work-10
+      annotations:
+        security.homelab/gpu-required: "NVIDIA GPU for hardware transcoding"
+        security.homelab/root-exception: "FileFlows requires root for user creation and GPU setup, drops to PUID after init"
+        security.homelab/mitigations: "CiliumNetworkPolicy egress restrictions, Tetragon monitoring"
+      securityContext:
+        # FileFlows init requires root, then drops to PUID via su
+        runAsUser: 0
+        runAsGroup: 0
+        runAsNonRoot: false
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        supplementalGroups:
+          - 1000  # ubuntu group for NFS media access
+        seccompProfile:
+          type: RuntimeDefault
+    persistence:
+      config:
+        enabled: true
+        existingClaim: fileflows-config
+        globalMounts:
+          - path: /app/Data
+      temp:
+        enabled: true
+        existingClaim: fileflows-temp
+        globalMounts:
+          - path: /temp
+      media:
+        enabled: true
+        existingClaim: plex-media
+        globalMounts:
+          - path: /media
+    service:
+      app:
+        controller: fileflows
+        type: ClusterIP
+        ports:
+          http:
+            port: 5000
+            protocol: TCP

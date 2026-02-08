@@ -1,0 +1,23 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: toolhive-registry
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: toolhive
+      namespace: flux-system
+    - name: postgres-cluster
+      namespace: database
+    - name: external-secrets-operator
+      namespace: flux-system
+  interval: 1h
+  path: ./kubernetes/apps/mcp/toolhive-registry/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: mcp
+  wait: true

@@ -1,0 +1,145 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: zabbix
+  namespace: observability
+spec:
+  interval: 1h
+  chart:
+    spec:
+      chart: zabbix
+      # renovate: datasource=helm registryUrl=https://zabbix-community.github.io/helm-zabbix
+      version: 7.0.12
+      sourceRef:
+        kind: HelmRepository
+        name: zabbix-community
+        namespace: observability
+      interval: 1h
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    # renovate: datasource=docker depName=zabbix/zabbix-server-pgsql versioning=regex:^ubuntu-(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
+    zabbixImageTag: ubuntu-7.0.16
+
+    # ============================================================
+    # PostgreSQL - DISABLED (using shared CNPG cluster)
+    # Database managed via Database CRD in database namespace
+    # ============================================================
+    postgresql:
+      enabled: false
+
+    # ============================================================
+    # Database Access - Connect to shared CNPG cluster
+    # Credentials from ExternalSecret in observability namespace
+    # ============================================================
+    postgresAccess:
+      existingSecretName: zabbix-db-secret
+      secretHostKey: host
+      secretPortKey: port
+      secretUserKey: user
+      secretPasswordKey: password
+      secretDBKey: dbname
+
+    # ============================================================
+    # Zabbix Server
+    # ============================================================
+    zabbixServer:
+      enabled: true
+      replicaCount: 1
+      # Stakater Reloader: restart pod when database credentials change
+      podAnnotations:
+        secret.reloader.stakater.com/reload: "zabbix-db-secret"
+      resources:
+        requests:
+          cpu: 250m
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 2Gi
+      service:
+        type: ClusterIP
+        port: 10051
+      # Enable SNMP trapper to read trap file from shared volume
+      extraEnv:
+        - name: ZBX_STARTSNMPTRAPPER
+          value: "1"
+        - name: ZBX_SNMPTRAPERFILE
+          value: "/var/lib/zabbix/snmptraps/snmptraps.log"
+      # Shared volume for SNMP traps between server and snmptrapd sidecar
+      extraVolumeMounts:
+        - name: snmptraps
+          mountPath: /var/lib/zabbix/snmptraps
+      extraVolumes:
+        - name: snmptraps
+          emptyDir: {}
+      # SNMP traps receiver sidecar
+      extraContainers:
+        - name: snmptraps
+          # renovate: datasource=docker depName=zabbix/zabbix-snmptraps versioning=regex:^ubuntu-(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
+          image: zabbix/zabbix-snmptraps:ubuntu-7.0.16
+          ports:
+            - containerPort: 1162
+              protocol: UDP
+              name: snmp-trap
+          volumeMounts:
+            - name: snmptraps
+              mountPath: /var/lib/zabbix/snmptraps
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+
+    # ============================================================
+    # Zabbix Web Frontend
+    # ============================================================
+    zabbixWeb:
+      enabled: true
+      replicaCount: 1
+      # Stakater Reloader: restart pod when database credentials change
+      podAnnotations:
+        secret.reloader.stakater.com/reload: "zabbix-db-secret"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      service:
+        type: ClusterIP
+        port: 80
+
+    # ============================================================
+    # Zabbix Web Service (report generation)
+    # ============================================================
+    zabbixWebService:
+      enabled: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi
+
+    # ============================================================
+    # Zabbix Agent (monitor Zabbix server itself)
+    # ============================================================
+    zabbixAgent:
+      enabled: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi

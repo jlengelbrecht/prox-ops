@@ -1,0 +1,86 @@
+---
+# MCPServer for n8n Workflow Automation
+# Using stdio transport - no AUTH_TOKEN required, proxyrunner handles protocol translation
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: n8n
+  namespace: mcp
+  annotations:
+    # Registry discovery annotations
+    toolhive.stacklok.dev/registry-export: "true"
+    # Route through proxyrunner for auth, audit, and security features
+    toolhive.stacklok.dev/registry-url: "http://mcp-n8n-proxy.mcp.svc.cluster.local:8080/mcp"
+    toolhive.stacklok.dev/registry-description: "n8n Workflow Automation - AI assistant integration for comprehensive n8n workflow management."
+    # Catalog metadata for registry.json generation (used by CI/CD)
+    toolhive.stacklok.dev/catalog-title: "n8n MCP"
+    toolhive.stacklok.dev/catalog-tags: "automation,workflows,n8n,homelab,productivity,integration,webhooks,templates"
+    toolhive.stacklok.dev/catalog-tools: "workflow_execute,workflow_list,workflow_get,workflow_create,workflow_update,workflow_delete,workflow_activate,workflow_deactivate,node_list,node_get,node_search,credential_list,credential_get,webhook_list,webhook_create,template_list,template_search,execution_list,execution_get,documentation_search"
+    toolhive.stacklok.dev/repository-url: "https://github.com/czlonkowski/n8n-mcp"
+  labels:
+    app.kubernetes.io/name: n8n
+    app.kubernetes.io/component: mcp-server
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  # renovate: datasource=docker depName=ghcr.io/czlonkowski/n8n-mcp
+  image: ghcr.io/czlonkowski/n8n-mcp:2.33.5
+  # stdio transport - proxyrunner attaches to container stdin/stdout
+  # No AUTH_TOKEN needed, bypasses headerInjection bug (#3111)
+  transport: stdio
+  # Proxy exposes stdio as streamable-http for HTTP clients
+  proxyMode: streamable-http
+  proxyPort: 8080
+  # Link to MCPGroup for VirtualMCPServer aggregation
+  groupRef: homelab-mcp
+  # No externalAuthConfigRef needed - stdio doesn't require backend auth
+  # Network permission profile (needs to reach n8n in tools namespace)
+  permissionProfile:
+    type: builtin
+    name: network
+  # Environment variables (non-secret)
+  # Note: MCP_MODE defaults to stdio, no need to set it
+  env:
+    - name: LOG_LEVEL
+      value: "error"
+    - name: DISABLE_CONSOLE_OUTPUT
+      value: "true"
+    - name: N8N_MCP_TELEMETRY_DISABLED
+      value: "true"
+    - name: N8N_API_URL
+      value: "http://n8n.tools.svc.cluster.local:80"
+  # Secrets from ExternalSecret - only N8N_API_KEY needed for n8n API access
+  # AUTH_TOKEN not required in stdio mode
+  secrets:
+    - name: n8n-mcp-secrets
+      key: n8n-api-key
+      targetEnvName: N8N_API_KEY
+  # Resource limits
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Pod customization for security context
+  podTemplateSpec:
+    metadata:
+      annotations:
+        secret.reloader.stakater.com/reload: "n8n-mcp-secrets"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mcp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

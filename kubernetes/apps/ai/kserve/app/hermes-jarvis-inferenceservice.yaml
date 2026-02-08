@@ -1,0 +1,183 @@
+---
+# KServe InferenceService: Hermes-3-Llama-3.1-8B (Jarvis Assistant)
+# STORY-150: Primary assistant model for Jarvis-like experience
+# Model: NousResearch/Hermes-3-Llama-3.1-8B (~16GB VRAM)
+# Framework: vLLM (regular) - optimized for function calling and assistant use
+# GPU: RTX A5000 24GB (k8s-work-10 ONLY)
+#
+# WHY HERMES-3 FOR JARVIS:
+# - Explicitly trained for assistant/agent use cases (NousResearch)
+# - Native function calling support (essential for Home Assistant integration)
+# - Structured JSON output for reliable tool responses
+# - Natural conversational flow with helpful personality
+# - Based on Llama 3.1 (battle-tested foundation)
+#
+# Performance Characteristics:
+# - Cold start: ~97s (with Run:ai Streamer optimization)
+# - Warm inference: ~50-80ms (eager mode)
+# - Scale-to-zero: 5 minutes idle timeout
+# - VRAM usage: ~16GB / 24GB available
+# - Single GPU: maxReplicas=1 enforced
+#
+# FUTURE: Sleep Mode Support
+# vLLM supports sleep mode (--enable-sleep-mode) which offloads model to CPU RAM
+# when idle, enabling ~6s wake times instead of 97s cold starts.
+# Requires orchestration to call /sleep and /wake_up endpoints.
+# TODO: Add sleep mode controller when 4x A5000 cluster is deployed.
+#
+# Usage:
+#   kubectl run -it --rm test-hermes --image=curlimages/curl --restart=Never -- \
+#     curl -X POST http://hermes-jarvis.ai.svc.cluster.local/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"/models/NousResearch/Hermes-3-Llama-3.1-8B","messages":[{"role":"user","content":"Hello Jarvis"}]}'
+#
+# Function Calling Example:
+#   curl -X POST http://hermes-jarvis.ai.svc.cluster.local/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"/models/NousResearch/Hermes-3-Llama-3.1-8B",
+#          "messages":[{"role":"user","content":"Turn on the living room lights"}],
+#          "tools":[{"type":"function","function":{"name":"set_light_state","parameters":{"type":"object","properties":{"room":{"type":"string"},"state":{"type":"string"}}}}}]}'
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: hermes-jarvis
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: hermes-jarvis
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: vllm
+    model.type: assistant
+    model.size: 8b
+    model.role: jarvis-primary
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A5000 for LLM inference"
+    security.homelab/network: "Internal only - ClusterIP service"
+    homelab/jarvis-primary: "true"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    # NOTE: For faster wake times (~6s), set minReplicas: 1 and enable sleep mode
+    # Current: scale-to-zero for GPU sharing with other models
+    minReplicas: 0
+    maxReplicas: 1
+
+    # CRITICAL: GPU and Node Targeting
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      gpu.nvidia.com/model: rtx-a5000
+
+    containers:
+      - name: vllm
+        # renovate: datasource=docker depName=vllm/vllm-openai
+        image: vllm/vllm-openai:v0.11.0
+
+        # vLLM server arguments
+        args:
+          # Model path
+          - --model=/models/NousResearch/Hermes-3-Llama-3.1-8B
+
+          # Run:ai Streamer for faster model loading (~55s vs ~100s)
+          - --load-format=runai_streamer
+          - '--model-loader-extra-config={"concurrency":16}'
+
+          # Inference optimization
+          - --dtype=auto
+          - --max-model-len=8192
+          - --gpu-memory-utilization=0.9
+
+          # Fast cold start (skip torch.compile)
+          - --enforce-eager
+
+          # Inference optimizations
+          - --enable-chunked-prefill
+          - --enable-prefix-caching
+
+          # Enable tool/function calling (Hermes-3 native support)
+          - --enable-auto-tool-choice
+          - --tool-call-parser=hermes
+
+          # Server configuration
+          - --host=0.0.0.0
+          - --port=8080
+
+          # Disable telemetry
+          - --disable-log-stats
+          - --disable-log-requests
+
+        env:
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: huggingface-token
+                key: HF_TOKEN
+                optional: true
+          - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+          - name: HF_HUB_OFFLINE
+            value: "1"
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+          - name: HOME
+            value: "/tmp"
+
+        resources:
+          requests:
+            cpu: 4
+            memory: 16Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 8
+            memory: 20Gi
+            nvidia.com/gpu: 1
+
+        ports:
+          - containerPort: 8080
+            name: http1
+            protocol: TCP
+
+        # Optimized probes for ~97s cold start
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 5
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 20
+
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: false
+
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+
+    runtimeClassName: nvidia
+
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    serviceAccountName: default
+
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache

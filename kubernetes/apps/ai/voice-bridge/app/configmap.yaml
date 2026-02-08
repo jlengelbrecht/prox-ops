@@ -1,0 +1,913 @@
+---
+# STORY-031-8: Voice Bridge - ConversationRelay + Play Media
+# Replaces Pipecat Media Streams (~1400 lines) with ConversationRelay (~250 lines)
+#
+# Architecture:
+#   Twilio ConversationRelay handles STT natively (Deepgram/Google).
+#   Voice-bridge routes LLM (Claude) through moltbot clawdbot gateway (OAuth)
+#   and TTS (Qwen3-TTS) through LiteLLM.
+#   TTS audio served as WAV files via /audio endpoint for Twilio Play Media.
+#
+# Flow:
+#   1. POST /api/v1/calls/outbound -> Twilio initiates call
+#   2. Person answers -> ConversationRelay connects WebSocket -> setup message
+#   3. Person speaks -> Twilio STT -> prompt message with voicePrompt
+#   4. Voice-bridge -> Claude (moltbot clawdbot gateway /v1/chat/completions) -> response text
+#   5. Voice-bridge -> Qwen3-TTS (LiteLLM /v1/audio/speech) -> WAV file
+#   6. Voice-bridge -> {"type": "play", "source": "https://host/audio/{id}.wav"}
+#   7. Twilio plays custom TTS audio to caller
+#   8. Fallback: Twilio built-in TTS via {"type": "text"} if qwen-tts unavailable
+#
+# Deployment: Single-replica (strategy: Recreate). Audio files and call state
+# are pod-local (/tmp/audio + in-memory dict). Multi-replica would require
+# shared storage (PVC/S3) and centralized state (Redis).
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: voice-bridge-app
+  namespace: ai
+data:
+  server.py: |
+    """
+    Voice Bridge Server - ConversationRelay + Play Media
+
+    EPIC-031 / STORY-031-8: Twilio ConversationRelay implementation
+
+    Endpoints:
+      POST /api/v1/calls/outbound    - Initiate outbound call (API key auth)
+      GET  /api/v1/calls/{call_id}   - Call status (API key auth)
+      POST /api/v1/calls/{call_id}/end - End active call (API key auth)
+      WS   /ws/{call_id}             - ConversationRelay WebSocket (Twilio only)
+      GET  /audio/{file_id}.wav      - Serve TTS audio (Twilio Play Media)
+      GET  /health                   - Health check (public)
+
+    Security:
+      - API key authentication (Bearer token) for /api endpoints
+      - Rate limiting on all endpoints
+      - WebSocket connection limits
+      - UUID validation on audio file paths (path traversal protection)
+      - Constant-time API key comparison (timing attack protection)
+    """
+
+    import os
+    import re
+    import asyncio
+    import uuid
+    import time
+    import hmac
+    import json
+    import logging
+    import pathlib
+    from html import escape as html_escape
+    from datetime import datetime
+    from typing import Dict, Optional
+    from contextlib import asynccontextmanager
+
+    from fastapi import (
+        FastAPI, WebSocket, WebSocketDisconnect, HTTPException,
+        Request, Depends
+    )
+    from fastapi.responses import FileResponse
+    from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+    from pydantic import BaseModel, field_validator
+    from twilio.rest import Client as TwilioClient
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    import httpx
+
+    # Logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger("voice-bridge")
+
+    # Environment configuration
+    TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+    TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+    TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
+    VOICE_BRIDGE_HOST = os.getenv("VOICE_BRIDGE_HOST", "voice-bridge.homelab0.org")
+    VOICE_BRIDGE_API_KEY = os.getenv("VOICE_BRIDGE_API_KEY")
+
+    # LLM configuration (moltbot clawdbot gateway - Claude via Anthropic OAuth)
+    LLM_API_KEY = os.getenv("LLM_API_KEY")
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://moltbot.ai.svc.cluster.local:18789/v1")
+    LLM_MODEL = os.getenv("LLM_MODEL", "moltbot:main")
+    LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+
+    # TTS configuration (LiteLLM - Qwen3-TTS via vllm-omni)
+    LITELLM_API_KEY = os.getenv("LITELLM_API_KEY")
+    LITELLM_BASE_URL = os.getenv("LITELLM_BASE_URL", "http://litellm.ai.svc.cluster.local:4000/v1")
+    TTS_MODEL = os.getenv("TTS_MODEL", "qwen-tts")
+    TTS_DEFAULT_VOICE = os.getenv("TTS_DEFAULT_VOICE", "ryan")
+    TTS_TIMEOUT = float(os.getenv("TTS_TIMEOUT", "30"))
+
+    AUDIO_DIR = pathlib.Path(os.getenv("AUDIO_DIR", "/tmp/audio"))
+
+    # Constants
+    AUDIO_EXPIRY_SECONDS = 300  # 5 minutes
+    CALL_TTL_SECONDS = 86400  # 24 hours
+    MAX_CONCURRENT_WEBSOCKETS = 50
+    MAX_AUDIO_SIZE = 10 * 1024 * 1024  # 10MB max audio file size
+    MAX_CONVERSATION_MESSAGES = 50  # Sliding window (system prompt preserved)
+
+    # Streaming LLM configuration
+    LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "150"))
+    LLM_STREAM_ENABLED = os.getenv("LLM_STREAM_ENABLED", "true").lower() == "true"
+
+    # Sentence boundary detection for TTS chunking
+    SENTENCE_BOUNDARY = re.compile(r'[.!?](?:\s|$)')
+    MIN_FIRST_CHUNK_CHARS = 20   # Don't split on boundaries before this
+    MAX_FIRST_CHUNK_CHARS = 120  # Force split even without boundary after this
+
+    # In-memory state
+    active_calls: Dict[str, dict] = {}
+    active_websockets: Dict[str, WebSocket] = {}
+
+    # Security
+    security = HTTPBearer(auto_error=False)
+
+
+    def _rate_limit_key(request: Request) -> str:
+        """Extract client IP from X-Forwarded-For (set by Envoy/Cloudflare) for rate limiting.
+        Falls back to direct remote address if header is missing."""
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            # First IP in chain is the original client
+            return xff.split(",")[0].strip()
+        return get_remote_address(request)
+
+
+    limiter = Limiter(key_func=_rate_limit_key)
+    active_websocket_count = 0
+    websocket_count_lock = asyncio.Lock()
+
+    # Shared HTTP clients (initialized in lifespan)
+    llm_client: Optional[httpx.AsyncClient] = None
+    tts_client: Optional[httpx.AsyncClient] = None
+
+    def _redact_phone(number: str) -> str:
+        """Redact phone number to last 4 digits for logging."""
+        if number and len(number) > 4:
+            return f"***{number[-4:]}"
+        return "***"
+
+    # UUID validation pattern (prevents path traversal)
+    UUID_PATTERN = re.compile(
+        r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+    )
+
+
+    def verify_api_key(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+    ) -> bool:
+        """Verify API key for protected endpoints."""
+        if not VOICE_BRIDGE_API_KEY:
+            logger.error("VOICE_BRIDGE_API_KEY not configured")
+            raise HTTPException(status_code=503, detail="API authentication not configured")
+        # Always perform constant-time comparison (prevents timing leaks)
+        provided_key = credentials.credentials if credentials else ""
+        if not hmac.compare_digest(provided_key, VOICE_BRIDGE_API_KEY):
+            logger.warning("Authentication failed")
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        return True
+
+
+    async def cleanup_audio_files():
+        """Background task: delete expired audio files every 60 seconds."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                if not AUDIO_DIR.exists():
+                    continue
+                now = time.time()
+                count = 0
+                for f in AUDIO_DIR.iterdir():
+                    if f.is_file() and (now - f.stat().st_mtime) > AUDIO_EXPIRY_SECONDS:
+                        f.unlink()
+                        count += 1
+                if count:
+                    logger.info(f"Cleaned up {count} expired audio files")
+            except Exception as e:
+                logger.error(f"Audio cleanup error: {e}")
+
+
+    async def cleanup_expired_calls():
+        """Background task: clean up expired call records every hour."""
+        while True:
+            await asyncio.sleep(3600)
+            now = time.time()
+            expired = [
+                cid for cid, c in active_calls.items()
+                if now - c.get("created_at", now) > CALL_TTL_SECONDS
+            ]
+            for cid in expired:
+                del active_calls[cid]
+                active_websockets.pop(cid, None)
+            if expired:
+                logger.info(f"Cleaned up {len(expired)} expired call records")
+
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Application lifespan handler."""
+        global llm_client, tts_client
+
+        logger.info("Voice Bridge starting (ConversationRelay mode)...")
+
+        # Validate required environment variables
+        missing = []
+        for var in ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER",
+                     "LLM_API_KEY", "LITELLM_API_KEY", "VOICE_BRIDGE_API_KEY"]:
+            if not os.getenv(var):
+                missing.append(var)
+        if missing:
+            raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
+
+        # Create audio directory
+        AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Initialize shared HTTP clients
+        llm_client = httpx.AsyncClient(timeout=LLM_TIMEOUT)
+        tts_client = httpx.AsyncClient(timeout=TTS_TIMEOUT)
+
+        # Start background tasks
+        audio_task = asyncio.create_task(cleanup_audio_files())
+        calls_task = asyncio.create_task(cleanup_expired_calls())
+
+        logger.info(f"LLM: {LLM_BASE_URL} (model: {LLM_MODEL}, max_tokens: {LLM_MAX_TOKENS})")
+        logger.info(f"LLM streaming: {'enabled' if LLM_STREAM_ENABLED else 'disabled'}")
+        logger.info(f"TTS: {LITELLM_BASE_URL} (model: {TTS_MODEL}, voice: {TTS_DEFAULT_VOICE})")
+        logger.info(f"Audio dir: {AUDIO_DIR}")
+
+        yield
+
+        audio_task.cancel()
+        calls_task.cancel()
+        await llm_client.aclose()
+        await tts_client.aclose()
+        logger.info("Voice Bridge shutting down...")
+
+
+    app = FastAPI(
+        title="Voice Bridge",
+        description="ConversationRelay voice bridge for AI phone calls",
+        version="2.0.0",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        """Add security headers and log requests."""
+        start = time.time()
+        logger.info(
+            f"Request: {request.method} {request.url.path} "
+            f"from {request.client.host if request.client else 'unknown'}"
+        )
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        if "server" in response.headers:
+            del response.headers["server"]
+        logger.info(f"Response: {response.status_code} in {time.time() - start:.3f}s")
+        return response
+
+
+    # --- Request/Response Models ---
+
+    class OutboundCallRequest(BaseModel):
+        """Request model for initiating an outbound call."""
+        to: str
+        context: Optional[str] = "You are a helpful AI assistant on a phone call."
+        greeting: Optional[str] = "Hello, this is Moltbot. How can I help you today?"
+        voice: Optional[str] = None
+        from_number: Optional[str] = None
+
+        @field_validator('to', 'from_number')
+        @classmethod
+        def validate_phone(cls, v: Optional[str]) -> Optional[str]:
+            if v is None:
+                return v
+            if not re.match(r'^\+[1-9]\d{1,14}$', v):
+                raise ValueError('Invalid phone number. Use E.164 format: +1234567890')
+            return v
+
+        @field_validator('context')
+        @classmethod
+        def validate_context(cls, v: Optional[str]) -> Optional[str]:
+            if v and len(v) > 2000:
+                raise ValueError('Context too long (max 2000 characters)')
+            return v
+
+        @field_validator('greeting')
+        @classmethod
+        def validate_greeting(cls, v: Optional[str]) -> Optional[str]:
+            if v and len(v) > 500:
+                raise ValueError('Greeting too long (max 500 characters)')
+            return v
+
+
+    class CallStatus(BaseModel):
+        """Response model for call status."""
+        call_id: str
+        status: str
+        to: str
+        from_number: str
+        started_at: Optional[str] = None
+        ended_at: Optional[str] = None
+        duration_seconds: Optional[int] = None
+        error: Optional[str] = None
+
+
+    # --- Endpoints ---
+
+    @app.get("/health")
+    async def health():
+        """Health check endpoint (public)."""
+        return {
+            "status": "healthy",
+            "service": "voice-bridge",
+            "mode": "conversation-relay",
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+
+    @app.post("/api/v1/calls/outbound", response_model=CallStatus)
+    @limiter.limit("10/minute")
+    async def initiate_outbound_call(
+        request: Request,
+        call_request: OutboundCallRequest,
+        authenticated: bool = Depends(verify_api_key),
+    ):
+        """Initiate an outbound phone call via Twilio ConversationRelay."""
+        call_id = str(uuid.uuid4())
+        from_number = call_request.from_number or TWILIO_PHONE_NUMBER
+        voice = call_request.voice or TTS_DEFAULT_VOICE
+
+        active_calls[call_id] = {
+            "call_id": call_id,
+            "to": call_request.to,
+            "from_number": from_number,
+            "context": call_request.context,
+            "greeting": call_request.greeting,
+            "voice": voice,
+            "status": "pending",
+            "started_at": datetime.utcnow().isoformat(),
+            "created_at": time.time(),
+            "twilio_sid": None,
+            "error": None,
+        }
+
+        try:
+            client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            ws_url = f"wss://{VOICE_BRIDGE_HOST}/ws/{call_id}"
+            safe_greeting = html_escape(call_request.greeting or "")
+
+            # ConversationRelay TwiML (replaces Media Streams <Stream>)
+            # welcomeGreeting uses Twilio built-in TTS for instant playback
+            # dtmfDetection enables keypad input events
+            twiml = (
+                '<Response><Connect>'
+                f'<ConversationRelay url="{ws_url}" '
+                f'welcomeGreeting="{safe_greeting}" '
+                'dtmfDetection="true" />'
+                '</Connect></Response>'
+            )
+
+            call = await asyncio.to_thread(
+                client.calls.create,
+                to=call_request.to,
+                from_=from_number,
+                twiml=twiml,
+            )
+
+            active_calls[call_id]["twilio_sid"] = call.sid
+            active_calls[call_id]["status"] = "in_progress"
+            logger.info(f"Call initiated: {call_id} -> {_redact_phone(call_request.to)} (SID: {call.sid})")
+
+            return CallStatus(
+                call_id=call_id,
+                status="in_progress",
+                to=call_request.to,
+                from_number=from_number,
+                started_at=active_calls[call_id]["started_at"],
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to initiate call {call_id}: {e}")
+            active_calls[call_id]["status"] = "failed"
+            active_calls[call_id]["error"] = str(e)
+            raise HTTPException(status_code=500, detail="Failed to initiate call")
+
+
+    @app.get("/api/v1/calls/{call_id}", response_model=CallStatus)
+    @limiter.limit("30/minute")
+    async def get_call_status(
+        request: Request,
+        call_id: str,
+        authenticated: bool = Depends(verify_api_key),
+    ):
+        """Get the status of a call."""
+        if call_id not in active_calls:
+            raise HTTPException(status_code=404, detail="Call not found")
+
+        call = active_calls[call_id]
+        duration = None
+        if call.get("ended_at") and call.get("started_at"):
+            start = datetime.fromisoformat(call["started_at"])
+            end = datetime.fromisoformat(call["ended_at"])
+            duration = int((end - start).total_seconds())
+
+        return CallStatus(
+            call_id=call["call_id"],
+            status=call["status"],
+            to=call["to"],
+            from_number=call["from_number"],
+            started_at=call.get("started_at"),
+            ended_at=call.get("ended_at"),
+            duration_seconds=duration,
+            error=call.get("error"),
+        )
+
+
+    @app.post("/api/v1/calls/{call_id}/end")
+    @limiter.limit("10/minute")
+    async def end_call(
+        request: Request,
+        call_id: str,
+        authenticated: bool = Depends(verify_api_key),
+    ):
+        """End an active call."""
+        if call_id not in active_calls:
+            raise HTTPException(status_code=404, detail="Call not found")
+
+        # Send end message to ConversationRelay WebSocket
+        ws = active_websockets.get(call_id)
+        ws_ok = False
+        if ws:
+            try:
+                await ws.send_text(json.dumps({"type": "end"}))
+                ws_ok = True
+            except Exception as e:
+                logger.warning(f"WS end failed for {call_id}: {e}")
+
+        # Fallback: terminate via Twilio REST API if WebSocket delivery failed
+        if not ws_ok:
+            sid = active_calls[call_id].get("twilio_sid")
+            if sid:
+                try:
+                    client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                    await asyncio.to_thread(client.calls(sid).update, status="completed")
+                    logger.info(f"Call {call_id} terminated via Twilio REST API (SID: {sid})")
+                except Exception as e:
+                    logger.error(f"Twilio REST fallback failed for {call_id}: {e}")
+
+        active_calls[call_id]["status"] = "completed"
+        active_calls[call_id]["ended_at"] = datetime.utcnow().isoformat()
+        return {"call_id": call_id, "status": "ended"}
+
+
+    @app.get("/audio/{file_id}.wav")
+    @limiter.limit("60/minute")
+    async def serve_audio(request: Request, file_id: str):
+        """Serve TTS audio files for Twilio Play Media.
+
+        Security: UUID format validation prevents path traversal attacks.
+        Files expire after 5 minutes via background cleanup.
+        """
+        if not UUID_PATTERN.match(file_id):
+            raise HTTPException(status_code=400, detail="Invalid file ID")
+
+        file_path = AUDIO_DIR / f"{file_id}.wav"
+        resolved = file_path.resolve()
+
+        # Verify path is within audio directory
+        if not str(resolved).startswith(str(AUDIO_DIR.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+
+        # Check existence before FileResponse (raises during ASGI streaming,
+        # not construction, so try/except around it doesn't work)
+        if not resolved.is_file():
+            raise HTTPException(status_code=404, detail="Audio file not found")
+
+        return FileResponse(resolved, media_type="audio/wav")
+
+
+    # --- LLM and TTS ---
+
+    async def generate_llm_response(messages: list) -> str:
+        """Send conversation to Claude via moltbot clawdbot gateway (non-streaming fallback)."""
+        try:
+            resp = await llm_client.post(
+                f"{LLM_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {LLM_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": LLM_MODEL,
+                    "messages": messages,
+                    "max_tokens": LLM_MAX_TOKENS,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error(f"LLM error: {e}")
+            return "I'm sorry, I'm having trouble right now. Could you say that again?"
+
+
+    async def generate_tts_audio(text: str, voice: str) -> Optional[str]:
+        """Generate TTS audio via LiteLLM and save to file.
+
+        Returns file_id if successful, None if TTS fails (triggers Twilio fallback).
+        """
+        try:
+            resp = await tts_client.post(
+                f"{LITELLM_BASE_URL}/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {LITELLM_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": TTS_MODEL,
+                    "input": text,
+                    "voice": voice,
+                    "response_format": "wav",
+                },
+            )
+            resp.raise_for_status()
+            audio_data = resp.content
+
+            if len(audio_data) < 100:
+                logger.warning(f"TTS returned small audio: {len(audio_data)} bytes")
+                return None
+            if len(audio_data) > MAX_AUDIO_SIZE:
+                logger.warning(f"TTS returned oversized audio: {len(audio_data)} bytes")
+                return None
+
+            file_id = str(uuid.uuid4())
+            file_path = AUDIO_DIR / f"{file_id}.wav"
+            file_path.write_bytes(audio_data)
+            logger.info(f"TTS audio: {file_id}.wav ({len(audio_data)} bytes)")
+            return file_id
+
+        except httpx.TimeoutException:
+            logger.warning(f"TTS timeout after {TTS_TIMEOUT}s (model may be cold starting)")
+            return None
+        except Exception as e:
+            logger.error(f"TTS error: {e}")
+            return None
+
+
+    # --- Streaming LLM + Chunked TTS ---
+
+    def find_first_chunk_boundary(text: str) -> Optional[int]:
+        """Find the best position to split text into first chunk and remainder.
+
+        Returns the index (exclusive) for the first chunk, or None if no good
+        boundary found yet. Looks for sentence-ending punctuation (.!?) after
+        MIN_FIRST_CHUNK_CHARS. Forces a word-boundary split at MAX_FIRST_CHUNK_CHARS.
+        """
+        if len(text) < MIN_FIRST_CHUNK_CHARS:
+            return None
+
+        for match in SENTENCE_BOUNDARY.finditer(text):
+            pos = match.end()
+            if pos >= MIN_FIRST_CHUNK_CHARS:
+                return pos
+
+        if len(text) >= MAX_FIRST_CHUNK_CHARS:
+            split_at = text.rfind(' ', MIN_FIRST_CHUNK_CHARS, MAX_FIRST_CHUNK_CHARS)
+            if split_at > MIN_FIRST_CHUNK_CHARS:
+                return split_at + 1
+            return MAX_FIRST_CHUNK_CHARS
+
+        return None
+
+
+    async def stream_llm_response(messages: list) -> tuple:
+        """Stream LLM response via SSE and split into first chunk + remainder.
+
+        Returns (first_chunk, remainder) where remainder is None if the response
+        is a single chunk. Falls back to non-streaming on any error.
+        """
+        try:
+            buffer = ""
+            first_chunk = None
+
+            async with llm_client.stream(
+                "POST",
+                f"{LLM_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {LLM_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": LLM_MODEL,
+                    "messages": messages,
+                    "max_tokens": LLM_MAX_TOKENS,
+                    "stream": True,
+                },
+            ) as resp:
+                resp.raise_for_status()
+
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk.get("choices", [])
+                    if not choices:
+                        continue
+                    token = choices[0].get("delta", {}).get("content")
+                    if token is None:
+                        continue
+
+                    buffer += token
+
+                    if first_chunk is None:
+                        boundary = find_first_chunk_boundary(buffer)
+                        if boundary is not None:
+                            first_chunk = buffer[:boundary].strip()
+                            buffer = buffer[boundary:]
+
+            if first_chunk is None:
+                text = buffer.strip()
+                if not text:
+                    return ("I'm sorry, I didn't catch that. Could you repeat?", None)
+                return (text, None)
+
+            remainder = buffer.strip() if buffer.strip() else None
+            return (first_chunk, remainder)
+
+        except Exception as e:
+            logger.warning(f"LLM streaming failed ({e}), falling back to non-streaming")
+            text = await generate_llm_response(messages)
+            return (text, None)
+
+
+    async def stream_llm_and_respond(
+        websocket: WebSocket,
+        messages: list,
+        voice: str,
+        call_id: str,
+    ) -> str:
+        """Stream LLM, generate TTS per chunk, and send play messages.
+
+        Orchestrates the pipelined flow:
+        1. Stream LLM tokens, detecting first sentence boundary
+        2. Fire TTS for first chunk immediately
+        3. Fire TTS for remainder in parallel (if any)
+        4. Send play message for first chunk as soon as TTS completes
+        5. Send play message for remainder when its TTS completes
+
+        Returns the full assistant response text (for conversation history).
+        """
+        if not LLM_STREAM_ENABLED:
+            response_text = await generate_llm_response(messages)
+            await _send_tts_play(websocket, response_text, voice, call_id)
+            return response_text
+
+        first_chunk, remainder = await stream_llm_response(messages)
+        full_response = first_chunk + (" " + remainder if remainder else "")
+
+        logger.info(
+            f"LLM chunks ({call_id}): first={len(first_chunk)} chars"
+            + (f", remainder={len(remainder)} chars" if remainder else "")
+        )
+
+        # Start TTS for first chunk
+        first_tts_task = asyncio.create_task(generate_tts_audio(first_chunk, voice))
+
+        # Start TTS for remainder in parallel
+        remainder_tts_task = None
+        if remainder:
+            remainder_tts_task = asyncio.create_task(generate_tts_audio(remainder, voice))
+
+        # Wait for first chunk TTS and send immediately
+        first_file_id = await first_tts_task
+        if first_file_id:
+            audio_url = f"https://{VOICE_BRIDGE_HOST}/audio/{first_file_id}.wav"
+            await websocket.send_text(json.dumps({
+                "type": "play",
+                "source": audio_url,
+                "interruptible": True,
+            }))
+            logger.info(f"Play first chunk ({call_id}): {audio_url}")
+        else:
+            # TTS failed for first chunk - Twilio TTS fallback for entire response
+            logger.warning(f"TTS failed for first chunk ({call_id}), using Twilio TTS")
+            await websocket.send_text(json.dumps({
+                "type": "text",
+                "token": full_response,
+                "last": True,
+            }))
+            if remainder_tts_task:
+                remainder_tts_task.cancel()
+                await asyncio.gather(remainder_tts_task, return_exceptions=True)
+            return full_response
+
+        # Wait for remainder TTS and send as second play
+        if remainder_tts_task:
+            remainder_file_id = await remainder_tts_task
+            if remainder_file_id:
+                audio_url = f"https://{VOICE_BRIDGE_HOST}/audio/{remainder_file_id}.wav"
+                await websocket.send_text(json.dumps({
+                    "type": "play",
+                    "source": audio_url,
+                    "interruptible": True,
+                }))
+                logger.info(f"Play remainder ({call_id}): {audio_url}")
+            else:
+                logger.warning(f"TTS failed for remainder ({call_id}), using Twilio TTS")
+                await websocket.send_text(json.dumps({
+                    "type": "text",
+                    "token": remainder,
+                    "last": True,
+                }))
+
+        return full_response
+
+
+    async def _send_tts_play(
+        websocket: WebSocket,
+        text: str,
+        voice: str,
+        call_id: str,
+    ) -> None:
+        """Generate TTS and send a single play message (non-streaming path)."""
+        file_id = await generate_tts_audio(text, voice)
+        if file_id:
+            audio_url = f"https://{VOICE_BRIDGE_HOST}/audio/{file_id}.wav"
+            await websocket.send_text(json.dumps({
+                "type": "play",
+                "source": audio_url,
+                "interruptible": True,
+            }))
+            logger.info(f"Play Media ({call_id}): {audio_url}")
+        else:
+            logger.warning(f"TTS unavailable, using Twilio TTS for {call_id}")
+            await websocket.send_text(json.dumps({
+                "type": "text",
+                "token": text,
+                "last": True,
+            }))
+
+
+    # --- ConversationRelay WebSocket ---
+
+    @app.websocket("/ws/{call_id}")
+    async def conversation_relay_handler(websocket: WebSocket, call_id: str):
+        """Handle Twilio ConversationRelay WebSocket session.
+
+        Message types from Twilio:
+          setup     - Session initialized (contains callSid, from, to)
+          prompt    - User finished speaking (contains voicePrompt text)
+          interrupt - User interrupted playback
+          dtmf      - Keypad digit pressed
+          error     - Session error
+
+        Messages to Twilio:
+          play - Play audio from URL (custom TTS)
+          text - Speak text via Twilio TTS (fallback)
+          end  - End conversation
+        """
+        global active_websocket_count
+
+        # Security: Enforce connection limits
+        async with websocket_count_lock:
+            if active_websocket_count >= MAX_CONCURRENT_WEBSOCKETS:
+                logger.warning(f"WebSocket rejected - at capacity ({MAX_CONCURRENT_WEBSOCKETS})")
+                await websocket.close(code=1008, reason="Server at capacity")
+                return
+            active_websocket_count += 1
+
+        try:
+            # Security: Reject unknown call_ids
+            if call_id not in active_calls:
+                logger.warning(f"Unknown call_id rejected: {call_id}")
+                await websocket.close(code=1008, reason="Invalid call ID")
+                return
+
+            await websocket.accept()
+            active_websockets[call_id] = websocket
+            call = active_calls[call_id]
+            voice = call.get("voice", TTS_DEFAULT_VOICE)
+
+            # Initialize conversation history with system prompt
+            messages = [
+                {"role": "system", "content": (
+                    f"{call.get('context', 'You are a helpful AI assistant.')}\n"
+                    "Respond in 1-2 short sentences. This is a phone call - be brief "
+                    "and natural. Never use lists, markdown, or formatting. "
+                    "Ask for clarification if needed."
+                )}
+            ]
+
+            logger.info(f"ConversationRelay connected: {call_id}")
+
+            while True:
+                raw = await websocket.receive_text()
+                msg = json.loads(raw)
+                msg_type = msg.get("type")
+
+                if msg_type == "setup":
+                    twilio_sid = msg.get("callSid")
+                    logger.info(
+                        f"Setup: call_id={call_id}, callSid={twilio_sid}, "
+                        f"from={_redact_phone(msg.get('from', ''))}, "
+                        f"to={_redact_phone(msg.get('to', ''))}"
+                    )
+                    if twilio_sid:
+                        call["twilio_sid"] = twilio_sid
+                    call["status"] = "in_progress"
+
+                elif msg_type == "prompt":
+                    user_text = msg.get("voicePrompt", "").strip()
+                    if not user_text:
+                        continue
+
+                    logger.info(f"User ({call_id}): {user_text}")
+
+                    # Stream LLM response and generate TTS in parallel chunks
+                    messages.append({"role": "user", "content": user_text})
+                    response_text = await stream_llm_and_respond(
+                        websocket, messages, voice, call_id,
+                    )
+                    messages.append({"role": "assistant", "content": response_text})
+
+                    # Sliding window: keep system prompt + recent messages
+                    if len(messages) > MAX_CONVERSATION_MESSAGES:
+                        messages = [messages[0]] + messages[-(MAX_CONVERSATION_MESSAGES - 1):]
+                    logger.info(f"Assistant ({call_id}): {response_text}")
+
+                elif msg_type == "interrupt":
+                    utterance = msg.get("utteranceUntilInterrupt", "")
+                    duration = msg.get("durationUntilInterruptMs", 0)
+                    logger.info(
+                        f"Interrupt ({call_id}): after {duration}ms, "
+                        f"spoken so far: '{utterance}'"
+                    )
+
+                elif msg_type == "dtmf":
+                    digit = msg.get("digit", "")
+                    logger.info(f"DTMF ({call_id}): {digit}")
+
+                elif msg_type == "error":
+                    desc = msg.get("description", "Unknown error")
+                    logger.error(f"ConversationRelay error ({call_id}): {desc}")
+
+                else:
+                    logger.debug(f"Unknown message type ({call_id}): {msg_type}")
+
+        except WebSocketDisconnect:
+            logger.info(f"WebSocket disconnected: {call_id}")
+        except Exception as e:
+            logger.error(f"WebSocket error ({call_id}): {e}")
+            if call_id in active_calls:
+                active_calls[call_id]["error"] = str(e)
+        finally:
+            async with websocket_count_lock:
+                active_websocket_count -= 1
+            active_websockets.pop(call_id, None)
+            if call_id in active_calls:
+                active_calls[call_id]["status"] = "completed"
+                active_calls[call_id]["ended_at"] = datetime.utcnow().isoformat()
+            logger.info(f"Call ended: {call_id}")
+
+
+    if __name__ == "__main__":
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8080, server_header=False)
+
+  # Dependencies (much lighter than Pipecat - no PyTorch/ML packages)
+  requirements.txt: |
+    # Server framework
+    fastapi==0.128.0
+    uvicorn==0.32.0
+    # WebSocket support (required for Twilio ConversationRelay)
+    websockets==14.2
+    # HTTP client for LiteLLM API calls
+    httpx==0.27.2
+    # Form parsing (FastAPI dependency)
+    python-multipart==0.0.17
+    # Twilio SDK (REST API client for call initiation)
+    twilio==9.4.0
+    # Security: Rate limiting
+    slowapi==0.1.9

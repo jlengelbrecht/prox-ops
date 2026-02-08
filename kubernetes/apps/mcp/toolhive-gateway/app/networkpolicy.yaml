@@ -1,0 +1,110 @@
+---
+# CiliumNetworkPolicy for ToolHive Gateway (VirtualMCPServer proxy)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: toolhive-gateway
+  namespace: mcp
+spec:
+  # VirtualMCPServer pods use 'virtualmcpserver' as app.kubernetes.io/name
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: virtualmcpserver
+
+  ingress:
+    # Allow from Envoy gateway (external access via OIDC-authenticated endpoint)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "4483"
+              protocol: TCP
+
+    # Allow from LiteLLM (internal MCP client - uses anonymous gateway)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4483"
+              protocol: TCP
+
+    # Allow from ToolHive Registry (for discovery) - registry is in mcp namespace
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: toolhive-registry
+      toPorts:
+        - ports:
+            - port: "4483"
+              protocol: TCP
+
+    # Prometheus metrics scraping
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "4483"
+              protocol: TCP
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Egress to Authentik for OIDC/JWKS token validation
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: security
+            app.kubernetes.io/name: authentik
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+
+    # Egress to envoy-internal gateway for Authentik OIDC validation (external URL)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP
+
+    # Egress to n8n-mcp proxyrunner (ToolHive MCPServer creates pods with mcpserver label)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: mcpserver
+            toolhive-name: n8n
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Egress to graphiti-mcp proxyrunner (ToolHive MCPServer creates pods with mcpserver label)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: mcp
+            app.kubernetes.io/name: mcpserver
+            toolhive-name: graphiti
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

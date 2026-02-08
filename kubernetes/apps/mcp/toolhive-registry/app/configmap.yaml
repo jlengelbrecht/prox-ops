@@ -1,0 +1,34 @@
+---
+# ToolHive Registry Server Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: toolhive-registry-config
+  namespace: mcp
+data:
+  config.yaml: |
+    # Registry Server Configuration
+    registryName: homelab
+
+    # Registry sources
+    # Using Git source for rich metadata (display names, icons, tags, descriptions)
+    # Kubernetes discovery disabled to avoid duplicate entries
+    registries:
+      # Homelab curated catalog - rich metadata from prox-ops repo
+      # Using upstream (MCP Registry API) format for clean names and full metadata
+      - name: homelab
+        format: upstream
+        git:
+          repository: https://github.com/jlengelbrecht/prox-ops.git
+          branch: main
+          path: kubernetes/apps/mcp/registry-data/registry.json
+        syncPolicy:
+          interval: 10m
+
+    # Authentication - start with anonymous, add OIDC later
+    # TODO: Configure OIDC with Authentik in future story
+    auth:
+      mode: anonymous
+
+    # Database configuration - uses environment variable
+    # DATABASE_URL is injected from secret

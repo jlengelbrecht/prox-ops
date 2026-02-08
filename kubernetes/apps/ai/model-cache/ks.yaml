@@ -1,0 +1,19 @@
+---
+# CRITICAL: prune: false prevents Flux from deleting PVC during reconciliation
+# This protects cached AI models from accidental deletion during cattle upgrades
+# Model cache is shared across all vLLM-Omni InferenceServices for fast cold starts
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: model-cache
+  namespace: flux-system
+spec:
+  interval: 1h
+  path: ./kubernetes/apps/ai/model-cache/app
+  prune: false  # NEVER prune storage - prevents cached model data loss
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: ai
+  wait: true

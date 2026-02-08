@@ -23,10 +23,15 @@ spec:
             image:
               repository: ghcr.io/open-webui/open-webui
               # renovate: datasource=docker depName=ghcr.io/open-webui/open-webui
-              tag: v0.6.41
+              tag: 0.7.2
             env:
-              # Ollama backend connection
-              OLLAMA_BASE_URL: "http://ollama.ai.svc.cluster.local:11434"
+              # LiteLLM API gateway - provides access to KServe models + OpenAI fallback
+              OPENAI_API_BASE_URL: "http://litellm.ai.svc.cluster.local:4000/v1"
+              OPENAI_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: litellm-masterkey
+                    key: masterkey
               # Authentication settings
               WEBUI_AUTH: "true"
               # Disable local signup - use OIDC instead
@@ -52,9 +57,9 @@ spec:
               SCARF_NO_ANALYTICS: "true"
               DO_NOT_TRACK: "true"
               ANONYMIZED_TELEMETRY: "false"
-              # Qdrant Vector Database for RAG
+              # Qdrant Vector Database for RAG (in database namespace)
               VECTOR_DB: "qdrant"
-              QDRANT_URI: "http://qdrant.ai.svc.cluster.local:6333"
+              QDRANT_URI: "http://qdrant.database.svc.cluster.local:6333"
               ENABLE_QDRANT_MULTITENANCY_MODE: "true"
               # Qdrant API key from existing secret
               QDRANT_API_KEY:
@@ -105,7 +110,7 @@ spec:
     defaultPodOptions:
       annotations:
         # Stakater Reloader: restart pod when secrets change
-        secret.reloader.stakater.com/reload: "open-webui-secrets,qdrant-secret"
+        secret.reloader.stakater.com/reload: "open-webui-secrets,qdrant-secret,litellm-masterkey"
       automountServiceAccountToken: false
       securityContext:
         runAsUser: 1000
