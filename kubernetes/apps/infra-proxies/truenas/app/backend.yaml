@@ -1,0 +1,26 @@
+---
+# Backend for TrueNAS Heimdall
+# HTTP backend (no TLS to backend)
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: truenas-heimdall
+  namespace: infra-proxies
+spec:
+  endpoints:
+    - ip:
+        address: 10.20.66.11
+        port: 81
+---
+# Backend for TrueNAS Baldar
+# HTTP backend (no TLS to backend)
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: truenas-baldar
+  namespace: infra-proxies
+spec:
+  endpoints:
+    - ip:
+        address: 10.20.66.15
+        port: 81

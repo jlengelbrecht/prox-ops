@@ -1,0 +1,211 @@
+---
+# STORY-031-8: Voice Bridge Deployment (ConversationRelay)
+# Twilio ConversationRelay voice bridge for AI phone calls
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: voice-bridge
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      voice-bridge:
+        strategy: Recreate
+        
+        containers:
+          app:
+            image:
+              repository: python
+              # renovate: datasource=docker depName=python
+              tag: "3.11-slim"
+            command:
+              - /bin/sh
+              - -c
+              - |
+                set -eu
+                echo "Installing voice-bridge dependencies..."
+                pip install --user -r /app/requirements.txt || {
+                  echo "ERROR: pip install failed, aborting startup"
+                  exit 1
+                }
+                echo "Starting voice-bridge server..."
+                export PATH="/.local/bin:$PATH"
+                exec python /app/server.py
+            env:
+              # Twilio credentials
+              TWILIO_ACCOUNT_SID:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-twilio
+                    key: TWILIO_ACCOUNT_SID
+              TWILIO_AUTH_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-twilio
+                    key: TWILIO_AUTH_TOKEN
+              TWILIO_PHONE_NUMBER:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-twilio
+                    key: TWILIO_PHONE_NUMBER
+              # LLM configuration (moltbot clawdbot gateway - Claude via Anthropic OAuth)
+              LLM_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-llm
+                    key: LLM_API_KEY
+              LLM_BASE_URL: "http://moltbot.ai.svc.cluster.local:18789/v1"
+              LLM_MODEL: "moltbot:main"
+              LLM_TIMEOUT: "60"
+              # Streaming LLM: sentence-level chunking for lower latency
+              LLM_MAX_TOKENS: "150"
+              LLM_STREAM_ENABLED: "true"
+              # TTS configuration (LiteLLM - Qwen3-TTS via vllm-omni)
+              LITELLM_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-litellm
+                    key: LITELLM_API_KEY
+              LITELLM_BASE_URL: "http://litellm.ai.svc.cluster.local:4000/v1"
+              # Security: API key for call initiation endpoint
+              VOICE_BRIDGE_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: voice-bridge-api
+                    key: VOICE_BRIDGE_API_KEY
+              # Voice bridge configuration
+              VOICE_BRIDGE_HOST: "voice-bridge.homelab0.org"
+              RECORDINGS_DIR: "/recordings"
+              # ConversationRelay: TTS model configuration
+              TTS_MODEL: "qwen-tts"
+              TTS_DEFAULT_VOICE: "ryan"
+              TTS_TIMEOUT: "120"
+              AUDIO_DIR: "/tmp/audio"
+              # Python configuration
+              PYTHONUNBUFFERED: "1"
+              PYTHONDONTWRITEBYTECODE: "1"
+              # Security: Configure pip for non-root user with read-only rootfs
+              PIP_CACHE_DIR: "/.cache/pip"
+              PIP_USER: "1"
+              PYTHONUSERBASE: "/.local"
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: &port 8080
+                  initialDelaySeconds: 30
+                  periodSeconds: 15
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *port
+                  initialDelaySeconds: 20
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                  failureThreshold: 6
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *port
+                  initialDelaySeconds: 15
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                  failureThreshold: 24
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+                ephemeral-storage: 256Mi
+              limits:
+                cpu: "1"
+                memory: 512Mi
+                ephemeral-storage: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              capabilities:
+                drop:
+                  - ALL
+              seccompProfile:
+                type: RuntimeDefault
+
+    defaultPodOptions:
+      annotations:
+        secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm,voice-bridge-api,voice-bridge-llm"
+      automountServiceAccountToken: false
+      # Security: fsGroup ensures volumes are writable by non-root user (65532)
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+
+    persistence:
+      # Application code from ConfigMap
+      app:
+        enabled: true
+        type: configMap
+        name: voice-bridge-app
+        globalMounts:
+          - path: /app
+      # STORY-031-3: Call recordings storage
+      recordings:
+        enabled: true
+        existingClaim: voice-bridge-recordings
+        globalMounts:
+          - path: /recordings
+      # Security: emptyDir volumes for read-only root filesystem
+      # All use disk (ephemeral storage) - ML packages need ~1.5GB during install
+      tmp:
+        enabled: true
+        type: emptyDir
+        globalMounts:
+          - path: /tmp
+      pip-cache:
+        enabled: true
+        type: emptyDir
+        globalMounts:
+          - path: /.cache
+      pip-local:
+        enabled: true
+        type: emptyDir
+        globalMounts:
+          - path: /.local
+
+    service:
+      app:
+        controller: voice-bridge
+        type: ClusterIP
+        ports:
+          http:
+            port: 8080
+            protocol: TCP

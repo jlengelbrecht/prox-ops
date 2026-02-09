@@ -1,0 +1,207 @@
+---
+# KServe InferenceService: Qwen2.5-Coder-7B-Instruct (vLLM Text-Only)
+# STORY-140: First production InferenceService deployment
+# Model: Qwen/Qwen2.5-Coder-7B-Instruct (~14GB VRAM, official coding model)
+# Framework: vLLM (regular, NOT vLLM-Omni) for text-only autoregressive models
+# GPU: RTX A5000 24GB (k8s-work-10 ONLY, NOT Plex rtx-a2000 node)
+#
+# Performance Characteristics (STORY-141b optimized, STORY-150 measured):
+# - Cold start: ~100s (STORY-150 measured; bottleneck is CephFS model loading)
+# - Warm inference: ~50-80ms (eager mode, slightly slower than compiled)
+# - Cached prompt: ~0.6s TTFT (prefix caching enabled)
+# - Scale-to-zero: 5 minutes idle timeout
+# - VRAM usage: ~14GB / 24GB available
+# - Offline mode: HF_HUB_OFFLINE=1 (no internet access, uses cached files only)
+# - Single GPU: maxReplicas=1 enforced (only 1 RTX A5000 available)
+#
+# Usage:
+#   # Test via curl (cold start)
+#   kubectl run -it --rm test-curl --image=curlimages/curl --restart=Never -- \
+#     curl -X POST http://qwen-coder.ai.svc.cluster.local/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"Qwen/Qwen2.5-Coder-7B-Instruct","messages":[{"role":"user","content":"Write a Python function to reverse a string"}]}'
+#
+#   # Watch pod scaling
+#   kubectl get pods -n ai -w | grep qwen-coder
+#
+# Expected behavior:
+# - First request triggers cold start (pod 0→1, ~100s delay - CephFS bottleneck)
+# - Model loads from /models/Qwen/Qwen2.5-Coder-7B-Instruct (safetensors format)
+# - Subsequent requests: ~50-80ms (eager mode inference)
+# - Repeated prompts: ~0.6s TTFT (prefix caching enabled)
+# - After 5min idle, pod scales to 0 (GPU freed for other workloads)
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen-coder
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen-coder
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: vllm
+    model.type: text-only
+    model.size: 7b
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A5000 for LLM inference"
+    security.homelab/network: "Internal only - ClusterIP service"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
+    maxReplicas: 1  # Single GPU workload - only 1 pod can run at a time
+
+    # Scaling behavior (inherited from Knative Serving global config)
+    # - scale-to-zero-grace-period: 5m (from knative-serving ConfigMap)
+    # - stable-window: 60s (stabilization before scaling)
+    # - Activator holds requests during cold start
+
+    # CRITICAL: GPU and Node Targeting
+    # Target ONLY k8s-work-10 (RTX A5000 24GB)
+    # Do NOT schedule on Plex node (rtx-a2000 reserved for transcoding)
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      gpu.nvidia.com/model: rtx-a5000
+
+    # Custom container approach (no ClusterServingRuntime needed)
+    # Using official vLLM OpenAI-compatible image
+    containers:
+      - name: vllm
+        # renovate: datasource=docker depName=vllm/vllm-openai
+        image: vllm/vllm-openai:v0.11.0  # STORY-141b: Upgraded from v0.7.3 to test fastsafetensors
+
+        # vLLM server arguments
+        args:
+          # Model path (absolute path to cached model)
+          # In offline mode, must use full path to model directory
+          - --model=/models/Qwen/Qwen2.5-Coder-7B-Instruct
+
+          # STORY-150: Run:ai Streamer for faster model loading
+          # Streams weights directly to GPU at ~280 MiB/s (vs ~150 MiB/s safetensors)
+          # Saves ~12s on cold start (97s vs 109s baseline)
+          - --load-format=runai_streamer
+          - '--model-loader-extra-config={"concurrency":16}'
+
+          # Inference optimization
+          - --dtype=auto  # Use FP16/BF16 automatically
+          - --max-model-len=8192  # Context window (8k tokens)
+          - --gpu-memory-utilization=0.9  # Use 90% of VRAM efficiently
+
+          # STORY-141b: Fast cold start optimization
+          # --enforce-eager skips torch.compile (~27s) and CUDA graph capture (~8s)
+          # Trade-off: ~60s cold start vs ~98s, but slightly slower inference latency
+          - --enforce-eager
+
+          # STORY-141: Inference optimizations
+          - --enable-chunked-prefill  # 20-40% faster TTFT
+          - --enable-prefix-caching  # 85% faster on repeated prompts
+
+          # Server configuration
+          - --host=0.0.0.0
+          - --port=8080
+
+          # Disable telemetry
+          - --disable-log-stats
+          - --disable-log-requests
+
+        # Environment variables
+        env:
+          # HuggingFace token (for gated models, not needed for Qwen2.5-Coder but good practice)
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: huggingface-token
+                key: HF_TOKEN
+                optional: true  # Don't fail if secret missing (Qwen is public)
+
+          # Disable HuggingFace telemetry
+          - name: HF_HUB_DISABLE_TELEMETRY
+            value: "1"
+
+          # Enable offline mode (use cached model files only, no HuggingFace access)
+          # Prevents vLLM from calling hf_list_repo_files during initialization
+          - name: HF_HUB_OFFLINE
+            value: "1"
+
+          # NVIDIA GPU visibility
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+
+          # STORY-141b: Fix for vLLM v0.11.0 non-root user compatibility
+          # Prevents getpwuid() errors when running without /etc/passwd entry
+          - name: HOME
+            value: "/tmp"
+
+        # Resource requirements
+        resources:
+          requests:
+            cpu: 4
+            memory: 14Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 8  # Reduced from 14 (vLLM is GPU-bound, not CPU-bound)
+            memory: 20Gi
+            nvidia.com/gpu: 1
+
+        # Health checks
+        ports:
+          - containerPort: 8080
+            name: http1  # Knative requires port name to be 'http1' or 'h2c'
+            protocol: TCP
+
+        # STORY-150: Optimized probes for faster cold start detection
+        # Model loads in ~100s from CephFS (STORY-150 measured)
+        # Liveness must allow full cold start: 60 + (5-1)×15 = 120s total
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60   # Keep same - don't kill pod during model load
+          periodSeconds: 15         # Reduced from 30 - check more frequently
+          timeoutSeconds: 10
+          failureThreshold: 5       # 5th failure at ~120s total (covers ~100s startup)
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30   # Reduced from 60 - start checking earlier
+          periodSeconds: 5          # Reduced from 10 - catch ready state faster
+          timeoutSeconds: 5
+          failureThreshold: 20      # (20-1)×5=95s after initial delay (~125s total)
+
+        # Volume mounts
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: false  # vLLM may write cache metadata
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # vLLM needs writable /tmp
+          capabilities:
+            drop:
+              - ALL
+
+    # NVIDIA container runtime for GPU access
+    runtimeClassName: nvidia
+
+    # Security context (pod-level)
+    # STORY-141b: vLLM v0.11.0 requires running as container's default user
+    # The image doesn't have UID 1000 in /etc/passwd, causing getpwuid() errors
+    # Keeping fsGroup for PVC volume permissions
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    # Disable service account token mounting
+    serviceAccountName: default
+
+    # Volumes
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache

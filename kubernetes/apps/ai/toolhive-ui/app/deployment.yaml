@@ -1,0 +1,111 @@
+---
+# ToolHive Cloud UI Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: toolhive-ui
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: toolhive-ui
+    app.kubernetes.io/component: ui
+    app.kubernetes.io/part-of: toolhive
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: toolhive-ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: toolhive-ui
+        app.kubernetes.io/component: ui
+        app.kubernetes.io/part-of: toolhive
+      annotations:
+        secret.reloader.stakater.com/reload: "toolhive-ui-secrets"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: ui
+          # renovate: datasource=docker registryUrl=ghcr.io
+          image: ghcr.io/stacklok/toolhive-cloud-ui:v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            # OIDC Configuration (Authentik via internal gateway)
+            # Uses external URL for browser-based OAuth redirects
+            - name: OIDC_ISSUER_URL
+              value: "https://authentik.homelab0.org/application/o/toolhive/"
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-ui-secrets
+                  key: OIDC_CLIENT_ID
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-ui-secrets
+                  key: OIDC_CLIENT_SECRET
+            - name: OIDC_PROVIDER_ID
+              value: "authentik"
+            # Application Configuration
+            - name: BETTER_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: toolhive-ui-secrets
+                  key: BETTER_AUTH_SECRET
+            - name: BETTER_AUTH_URL
+              value: "https://mcp.homelab0.org"
+            # Backend API (ToolHive Registry - deployed in mcp namespace)
+            - name: API_BASE_URL
+              value: "http://toolhive-registry.mcp.svc.cluster.local:8080"
+            # Trust internal origins
+            - name: TRUSTED_ORIGINS
+              value: "https://mcp.homelab0.org,https://authentik.homelab0.org"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /.cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}

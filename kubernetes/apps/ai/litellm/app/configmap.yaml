@@ -7,166 +7,307 @@ metadata:
 data:
   config.yaml: |
     # LiteLLM Proxy Configuration
-    # Provides OpenAI-compatible API gateway with explicit fallback routing
+    # Provides OpenAI-compatible API gateway for OpenAI and KServe models
     #
     # AUTHENTICATION: Required via LITELLM_MASTER_KEY environment variable
     # All API requests must include: Authorization: Bearer <master-key>
     # Master key stored in 1Password and injected via ExternalSecret
     #
-    # FALLBACK ROUTING (EXPLICIT):
-    # Fallbacks are configured via router_settings.fallbacks, NOT duplicate model_names.
-    # Duplicate model_names = load balancing (random distribution)
-    # router_settings.fallbacks = explicit fallback chain (primary -> fallback on failure)
-    #
-    # Reference: https://docs.litellm.ai/docs/routing#fallbacks
+    # Reference: https://docs.litellm.ai/docs/routing
 
     model_list:
       # =====================================================
-      # RAG Model with Explicit Fallback
-      # Used by LightRAG for entity extraction and queries
-      # Primary: OpenAI gpt-4o-mini (fast, cheap)
-      # Fallback: Ollama qwen2.5:32b (local GPU)
-      # =====================================================
-      - model_name: "rag-model"
-        litellm_params:
-          model: "gpt-4o-mini"
-          api_key: "os.environ/OPENAI_API_KEY"
-        model_info:
-          description: "OpenAI GPT-4o-mini - primary for RAG (fallback: rag-model-ollama)"
-
-      - model_name: "rag-model-ollama"
-        litellm_params:
-          model: "ollama_chat/qwen2.5:32b-instruct-q4_K_M"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
-        model_info:
-          description: "Ollama Qwen2.5 32B - local GPU fallback for RAG"
-
-      # =====================================================
-      # GPT-4 Compatible with Explicit Fallback
-      # Primary: OpenAI gpt-4o-mini
-      # Fallback: Ollama qwen2.5-coder:14b
+      # OpenAI Models
+      # Proxied via LiteLLM for unified API access
       # =====================================================
       - model_name: "gpt-4"
         litellm_params:
           model: "gpt-4o-mini"
           api_key: "os.environ/OPENAI_API_KEY"
         model_info:
-          description: "OpenAI GPT-4o-mini - primary (fallback: gpt-4-ollama)"
+          description: "OpenAI GPT-4o-mini"
 
-      - model_name: "gpt-4-ollama"
-        litellm_params:
-          model: "ollama_chat/qwen2.5-coder:14b"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
-        model_info:
-          description: "Ollama Qwen2.5-coder 14B - local fallback for GPT-4"
-
-      # =====================================================
-      # GPT-3.5 Compatible with Explicit Fallback
-      # Primary: OpenAI gpt-4o-mini
-      # Fallback: Ollama llama3.2:3b
-      # =====================================================
       - model_name: "gpt-3.5-turbo"
         litellm_params:
           model: "gpt-4o-mini"
           api_key: "os.environ/OPENAI_API_KEY"
         model_info:
-          description: "OpenAI GPT-4o-mini - primary (fallback: gpt-3.5-turbo-ollama)"
+          description: "OpenAI GPT-4o-mini (gpt-3.5-turbo compat)"
 
-      - model_name: "gpt-3.5-turbo-ollama"
+      # =====================================================
+      # Anthropic Claude Models (for Claude Code / Moltbot)
+      # Uses Claude Max subscription via OAuth token forwarding
+      # STORY-063: Per-model header forwarding configured in model_group_settings
+      # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
+      # =====================================================
+
+      # Anthropic Claude Models - DISABLED (no API key configured)
+      # LiteLLM's x-api-key header is incompatible with Anthropic OAuth tokens.
+      # Set ANTHROPIC_API_KEY env var with a standard API key to enable.
+      - model_name: "claude-default"
         litellm_params:
-          model: "ollama_chat/llama3.2:3b"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
+          model: anthropic/claude-opus-4-20250514
         model_info:
-          description: "Ollama Llama3.2 3B - local fallback for GPT-3.5"
+          description: "Anthropic Claude default - REQUIRES ANTHROPIC_API_KEY"
 
-      # =====================================================
-      # Embeddings with Explicit Fallback (1024 dimensions)
-      # Primary: OpenAI text-embedding-3-small (with dimensions=1024)
-      # Fallback: Ollama mxbai-embed-large (native 1024 dimensions)
-      # Both output identical 1024d vectors for Qdrant compatibility
-      # =====================================================
-      - model_name: "rag-embedding"
+      - model_name: "claude-opus"
         litellm_params:
-          model: "text-embedding-3-small"
-          api_key: "os.environ/OPENAI_API_KEY"
-          dimensions: 1024
+          model: anthropic/claude-opus-4-20250514
         model_info:
-          description: "OpenAI text-embedding-3-small (1024d) - primary for RAG embeddings"
+          description: "Anthropic Claude Opus 4 - REQUIRES ANTHROPIC_API_KEY"
 
-      - model_name: "rag-embedding-ollama"
+      - model_name: "claude-sonnet"
         litellm_params:
-          model: "ollama/mxbai-embed-large"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
+          model: anthropic/claude-sonnet-4-20250514
         model_info:
-          description: "Ollama mxbai-embed-large (1024d) - local fallback for embeddings"
+          description: "Anthropic Claude Sonnet 4 - REQUIRES ANTHROPIC_API_KEY"
 
-      # OpenAI ada-002 compatibility alias (routes to same 1024d embedding)
-      - model_name: "text-embedding-ada-002"
+      - model_name: "claude-3-5-sonnet"
         litellm_params:
-          model: "text-embedding-3-small"
-          api_key: "os.environ/OPENAI_API_KEY"
-          dimensions: 1024
-
-      # =====================================================
-      # Native Ollama Model Names (local-only, no fallback)
-      # For direct access to specific local models
-      # =====================================================
-      - model_name: "qwen2.5-coder:14b"
-        litellm_params:
-          model: "ollama_chat/qwen2.5-coder:14b"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
-
-      - model_name: "llama3.2:3b"
-        litellm_params:
-          model: "ollama_chat/llama3.2:3b"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
-
-      - model_name: "nomic-embed-text"
-        litellm_params:
-          model: "ollama/nomic-embed-text:latest"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
-
-      # Direct access to local 32B model (no external fallback)
-      - model_name: "qwen2.5:32b-instruct-q4_K_M"
-        litellm_params:
-          model: "ollama_chat/qwen2.5:32b-instruct-q4_K_M"
-          api_base: "http://ollama.ai.svc.cluster.local:11434"
-
-      # =====================================================
-      # LightRAG Knowledge Graph RAG
-      # Ollama-compatible API that provides RAG-enhanced responses
-      # Uses knowledge graph + vector retrieval for context
-      # LightRAG internally calls LiteLLM (rag-model) for LLM completion
-      # =====================================================
-      - model_name: "lightrag"
-        litellm_params:
-          model: "ollama_chat/lightrag:latest"
-          api_base: "http://lightrag.ai.svc.cluster.local:9621"
+          model: anthropic/claude-3-5-sonnet-20241022
         model_info:
-          description: "LightRAG - Knowledge graph RAG with automatic context injection"
+          description: "Anthropic Claude 3.5 Sonnet - REQUIRES ANTHROPIC_API_KEY"
 
-    # Explicit fallback routing configuration
-    # When primary model fails (timeout, rate limit, error), try fallback model
-    # Reference: https://docs.litellm.ai/docs/routing#fallbacks
+      # =====================================================
+      # KServe InferenceServices (vLLM/Custom)
+      # Scale-to-zero models on RTX A5000 (k8s-work-10)
+      # Note: Only ONE model can run at a time due to GPU contention
+      # Cold starts expected on first request after scale-down
+      # =====================================================
+
+      # =====================================================
+      # STORY-150: Timeout optimization for cold starts
+      # Extended per-model timeouts to accommodate cold start delays
+      # Retries disabled globally via router_settings.num_retries: 0
+      # Actual cold start measured: ~100-420s depending on model
+      # =====================================================
+
+      - model_name: "qwen-coder"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Qwen/Qwen2.5-Coder-7B-Instruct"
+          api_base: "http://qwen-coder-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 180        # STORY-150: Increased from 120 for cold start
+        model_info:
+          description: "KServe Qwen2.5-Coder-7B (~100s cold start)"
+
+      - model_name: "dolphin-chat"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/cognitivecomputations/Dolphin3.0-Llama3.1-8B"
+          api_base: "http://dolphin-chat-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 180        # STORY-150: Keep at 180 (actual cold start ~109s)
+        model_info:
+          description: "KServe Dolphin3.0 uncensored (~100s cold start)"
+
+      - model_name: "qwen-omni"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Qwen/Qwen2.5-Omni-7B"
+          api_base: "http://qwen-omni-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 300        # STORY-150: Keep at 300 for multimodal
+        model_info:
+          description: "KServe Qwen2.5-Omni multimodal (~150s cold start)"
+
+      # =====================================================
+      # EPIC-030: TTS Models (Text-to-Speech)
+      # Use /v1/audio/speech endpoint via mode: audio_speech
+      # qwen-tts: 11 preset voices (alloy, echo, fable, onyx, nova, shimmer, etc.)
+      # qwen-tts-base: Voice cloning with ref_audio parameter
+      # =====================================================
+      - model_name: "qwen-tts"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+          api_base: "http://qwen-tts-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 300        # STORY-142: Reduced from 420 (no pip install, ~3min cold start)
+          mode: audio_speech  # STORY-031: Route to /v1/audio/speech endpoint
+        model_info:
+          description: "KServe Qwen3-TTS custom container (~3min cold start)"
+
+      - model_name: "qwen-tts-base"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+          api_base: "http://qwen-tts-base-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 420        # Same as qwen-tts for pip install overhead
+        model_info:
+          description: "KServe Qwen3-TTS-Base voice cloning with ref_audio (~5min cold start)"
+
+      # Note: Audio/Image/Video models may require custom API handling
+      # LiteLLM primarily routes to /v1/chat/completions - these models
+      # may expose different endpoints. Verify vLLM/KServe interface compatibility.
+      - model_name: "stable-audio"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/stabilityai/stable-audio-open-1.0"
+          api_base: "http://stable-audio-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 300        # STORY-150: Keep at 300 for diffusion model
+        model_info:
+          description: "KServe Stable Audio - music generation (~120s cold start)"
+
+      - model_name: "flux-klein"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/black-forest-labs/FLUX.2-klein-9b-fp8"
+          api_base: "http://flux-klein-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 360        # STORY-150: Increased from 300 for large model
+        model_info:
+          description: "KServe FLUX.2-klein image generation (~180s cold start)"
+
+      - model_name: "wan-video"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+          api_base: "http://wan-video-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 420        # STORY-150: Increased from 300 for video model
+        model_info:
+          description: "KServe Wan2.2 video generation (~240s cold start)"
+
+      - model_name: "hermes-jarvis"
+        litellm_params:
+          # Note: vLLM exposes model as "/models/..." path, must match exactly
+          model: "openai//models/NousResearch/Hermes-3-Llama-3.1-8B"
+          api_base: "http://hermes-jarvis-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 180        # STORY-150: Similar to other 8B models (~97s cold start)
+        model_info:
+          description: "KServe Hermes-3 Jarvis assistant (~97s cold start, function calling enabled)"
+
+      # =====================================================
+      # STORY-030-4: Whisper STT for Voice Calling
+      # Speech-to-text model on RTX A2000 (k8s-work-4)
+      # OpenAI-compatible /v1/audio/transcriptions endpoint
+      # =====================================================
+      - model_name: "whisper-medium"
+        litellm_params:
+          model: "whisper-1"  # OpenAI-compatible model name
+          api_base: "http://whisper-medium-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 120        # Cold start ~30-60s + transcription time
+          mode: audio_transcription  # EPIC-030: Route to /v1/audio/transcriptions endpoint
+        model_info:
+          description: "KServe Whisper Medium STT (~30-60s cold start, voice calling)"
+
     router_settings:
-      fallbacks:
-        - rag-model: ["rag-model-ollama"]
-        - gpt-4: ["gpt-4-ollama"]
-        - gpt-3.5-turbo: ["gpt-3.5-turbo-ollama"]
-        - rag-embedding: ["rag-embedding-ollama"]
-      # Retry failed requests before falling back
-      num_retries: 2
-      # Timeout before considering a request failed (seconds)
+      # STORY-150: Disable retries to prevent retry storms during KServe cold starts
+      # Per-model num_retries in litellm_params is NOT supported - only router_settings applies
+      # With 100-420s cold starts, retries would cascade into multiple concurrent requests
+      num_retries: 0
+      # Timeout for routing decisions (not per-request timeout)
       timeout: 120
 
+    # =====================================================
+    # STORY-063: Per-Model Header Forwarding for Claude Max
+    # Only Claude models forward client headers (OAuth token)
+    # OpenAI and KServe models are unaffected
+    # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
+    # =====================================================
+    model_group_settings:
+      claude-default:
+        forward_client_headers_to_llm_api: true
+      claude-opus:
+        forward_client_headers_to_llm_api: true
+      claude-sonnet:
+        forward_client_headers_to_llm_api: true
+      claude-3-5-sonnet:
+        forward_client_headers_to_llm_api: true
+
+    # =====================================================
+    # EPIC-022: Guardrails Configuration
+    # Guardrails are managed via UI/database for on-the-fly changes
+    # Config here serves as bootstrap/fallback definition
+    # Primary management: LiteLLM UI > Guardrails page
+    # Reference: https://docs.litellm.ai/docs/proxy/guardrails/quick_start
+    # =====================================================
+    guardrails:
+      # Lakera AI - Prompt injection detection
+      # Uses lakera_v2 API (not lakera_prompt_injection)
+      # default_on: true runs on ALL requests automatically
+      # Reference: https://docs.litellm.ai/docs/proxy/guardrails/lakera_ai
+      - guardrail_name: "lakera-guard"
+        litellm_params:
+          guardrail: lakera_v2
+          mode: "during_call"
+          default_on: true
+          api_key: os.environ/LAKERA_API_KEY
+          api_base: "https://api.lakera.ai"
+
+      # OpenAI Moderation - Content policy compliance (free)
+      # default_on: true runs on ALL requests automatically
+      # Reference: https://docs.litellm.ai/docs/proxy/guardrails/openai_moderation
+      - guardrail_name: "openai-mod"
+        litellm_params:
+          guardrail: openai_moderation
+          mode: "pre_call"
+          default_on: true
+          api_key: os.environ/OPENAI_API_KEY
+
     general_settings:
+      # STORY-063: Forward client headers to LLM API for OAuth token
+      # Enables Claude Max subscription OAuth to pass through to Anthropic
+      # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
+      forward_client_headers_to_llm_api: true
       # Rate limiting
       max_parallel_requests: 50
-      # Request timeout (seconds)
-      request_timeout: 120
+      # STORY-150: Request timeout must accommodate longest cold start (wan-video: 420s)
+      # Per-model timeouts take precedence, but this is the fallback default
+      request_timeout: 420
+      # STORY-059: Allow setting api_base for search tools via admin API
+      # Required to configure self-hosted SearXNG endpoint
+      allow_client_side_credentials: true
 
     litellm_settings:
       # Drop unsupported params instead of erroring
       drop_params: true
       # Enable logging for audit
       set_verbose: false
+      # Note: Custom callback removed - using direct api_key in model config instead
+
+      # =====================================================
+      # STORY-060: Caching - Valkey (Redis-compatible) Integration
+      # Caches LLM responses to reduce API costs and latency
+      # Also enables rate limiting across LiteLLM instances
+      # Reference: https://docs.litellm.ai/docs/proxy/caching
+      # Known issue: https://github.com/BerriAI/litellm/issues/11243
+      # =====================================================
+      # Connection via env vars: REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
+      # (os.environ/ syntax doesn't work in cache_params)
+      cache: true
+      cache_params:
+        type: redis
+        # Cache key namespace prefix (prevents key collision, best practice)
+        namespace: litellm
+        # Cache TTL in seconds (1 hour default)
+        ttl: 3600
+
+    # =====================================================
+    # STORY-059: Search Tools - Firecrawl & SearXNG
+    # NOTE: LiteLLM v1.81.0 loads search tools from DATABASE only, not config
+    # Tools must be added via UI (Search Tools page) or API:
+    #   POST /search_tools with search_tool.litellm_params.search_provider
+    # Reference: https://docs.litellm.ai/docs/search/searxng
+    # Reference: https://docs.litellm.ai/docs/search/firecrawl
+    #
+    # Configured tools (add via UI):
+    #   - searxng-search: provider=searxng, api_base=http://searxng.ai.svc.cluster.local:8080
+    #   - firecrawl-search: provider=firecrawl (uses Firecrawl.dev cloud via FIRECRAWL_API_KEY)
+    # =====================================================
+
+    # MCP Server Configuration
+    # ToolHive homelab-gateway-internal provides scoped, unauthenticated
+    # access to MCP servers (graphiti, n8n, etc.) for internal services.
+    # Reference: https://docs.litellm.ai/docs/mcp
+    mcp_servers:
+      homelab:
+        url: "http://vmcp-homelab-gateway-internal.mcp.svc.cluster.local:4483/mcp"
+        transport: "http"
+        description: "ToolHive homelab gateway (internal, unauthenticated) - graphiti, n8n, and other scoped MCP tools"

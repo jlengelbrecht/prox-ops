@@ -1,0 +1,71 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # renovate: datasource=github-releases depName=knative/serving
+  # Knative Serving Core (includes CRDs, namespace, and deployments)
+  - https://github.com/knative/serving/releases/download/knative-v1.15.2/serving-core.yaml
+  # renovate: datasource=github-releases depName=knative/net-kourier
+  # Kourier networking layer (lightweight alternative to Istio)
+  - https://github.com/knative/net-kourier/releases/download/knative-v1.15.1/kourier.yaml
+
+# Disable hash suffix for ConfigMaps so Knative can find them
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: config-autoscaler
+    namespace: knative-serving
+    behavior: merge
+    literals:
+      - enable-scale-to-zero=true
+      - scale-to-zero-grace-period=5m
+      # Minimum time pod stays alive after last request (critical for cold-start models)
+      - scale-to-zero-pod-retention-period=5m
+      - stable-window=60s
+      - target-burst-capacity=200
+      - max-scale-up-rate=1000.0
+      - max-scale-down-rate=2.0
+      - activator-capacity=100.0
+      - allow-zero-initial-scale=true
+      - initial-scale=0
+      - min-scale=0
+      - max-scale=10
+  - name: config-network
+    namespace: knative-serving
+    behavior: merge
+    literals:
+      - ingress-class=kourier.ingress.networking.knative.dev
+      - domain-template={{.Name}}.{{.Namespace}}.svc.cluster.local
+      - enable-tag-header-based-routing=true
+  - name: config-features
+    namespace: knative-serving
+    behavior: merge
+    literals:
+      # Enable PVC support for KServe InferenceServices with model cache
+      - kubernetes.podspec-persistent-volume-claim=enabled
+      - kubernetes.podspec-persistent-volume-write=enabled
+      # Enable GPU node targeting for KServe InferenceServices
+      - kubernetes.podspec-nodeselector=enabled
+      # Enable NVIDIA container runtime for GPU access
+      - kubernetes.podspec-runtimeclassname=enabled
+      # Enable pod security context for non-root execution
+      - kubernetes.podspec-securitycontext=enabled
+      # Enable volume support for EmptyDir (default enabled, explicit for clarity)
+      - kubernetes.podspec-volumes-emptydir=enabled
+      # Enable capabilities.add in container security context (EPIC-030: qwen-tts sox install)
+      # Required for CAP_FOWNER to chmod apt cache during runtime dependency installation
+      - kubernetes.containerspec-addcapabilities=enabled
+
+patches:
+  # Patch Kourier service to use Cilium LoadBalancer with specific IP
+  # IP must be within default pool range: 10.20.66.0/23
+  - target:
+      kind: Service
+      name: kourier
+      namespace: kourier-system
+    patch: |-
+      - op: add
+        path: /metadata/annotations/lbipam.cilium.io~1ips
+        value: "10.20.67.150"

@@ -1,0 +1,138 @@
+---
+# VirtualMCPServer aggregating homelab MCP servers
+# Provides a unified endpoint for all MCP tools
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: homelab-gateway
+  namespace: mcp
+  labels:
+    app.kubernetes.io/name: homelab-gateway
+    app.kubernetes.io/component: mcp-gateway
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  config:
+    groupRef: homelab-mcp
+    aggregation:
+      # Prefix tool names with workload identifier to avoid conflicts
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+    audit:
+      enabled: true
+      includeRequestData: false
+      includeResponseData: false
+    # Operational settings for health checks and timeouts
+    operational:
+      # Longer timeouts for TrueNAS backends (stdio transport + external API calls)
+      timeouts:
+        default: 30s
+        perWorkload:
+          truenas-baldar: 60s
+          truenas-heimdall: 60s
+      # More lenient health check settings for slow backends
+      # NOTE: partialFailureMode omitted due to ToolHive bug - CRD wants "best_effort" but binary wants "bestEffort"
+      failureHandling:
+        healthCheckInterval: 60s
+        unhealthyThreshold: 5
+  # OIDC authentication via Authentik for external clients (thv CLI, Claude Code, etc.)
+  incomingAuth:
+    type: oidc
+    oidcConfig:
+      type: inline
+      inline:
+        # Authentik OIDC issuer for the MCP Gateway application
+        issuer: "https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/"
+        # Client ID must match the OAuth2 provider client_id in Authentik
+        clientId: "toolhive-mcp-gateway"
+        # Audience claim expected in JWT tokens
+        audience: "toolhive-mcp-gateway"
+        # Allow JWKS endpoint on private IP (internal Authentik access)
+        jwksAllowPrivateIP: true
+        # Scopes to advertise in well-known endpoint
+        # Note: 'mcp' scope requires Authentik scope mapping with aud claim
+        scopes:
+          - openid
+          - profile
+          - email
+          - offline_access
+          - mcp
+    # Cedar authorization policies for fine-grained access control
+    # Restricts unifi tools to admin user only
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          # Allow admin user access to ALL tools including unifi
+          - |
+            permit(
+              principal,
+              action == Action::"call_tool",
+              resource
+            ) when {
+              principal.claim_email == "jlengelbrecht96@gmail.com"
+            };
+          # Allow all authenticated users access to non-unifi tools only
+          - |
+            permit(
+              principal,
+              action == Action::"call_tool",
+              resource
+            ) when {
+              !resource.name like "unifi_*"
+            };
+          # Deny unifi tools to non-admin users (explicit deny for safety)
+          - |
+            forbid(
+              principal,
+              action == Action::"call_tool",
+              resource
+            ) when {
+              resource.name like "unifi_*" &&
+              principal.claim_email != "jlengelbrecht96@gmail.com"
+            };
+---
+# VirtualMCPServer for internal/anonymous access (LiteLLM, internal services)
+# This provides an unauthenticated endpoint for trusted internal cluster traffic
+# EXCLUDES sensitive tools (unifi) - only graphiti and n8n available
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: homelab-gateway-internal
+  namespace: mcp
+  labels:
+    app.kubernetes.io/name: homelab-gateway-internal
+    app.kubernetes.io/component: mcp-gateway
+    app.kubernetes.io/part-of: toolhive-gateway
+spec:
+  config:
+    groupRef: homelab-mcp
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+      # Tool filtering: exclude unifi from internal gateway
+      # LiteLLM and internal services should NOT have access to network management
+      # Note: VirtualMCPServer uses allow-list pattern - empty filter = no tools exposed
+      # By not listing unifi workload at all, its tools are excluded from aggregation
+      tools:
+        - workload: graphiti
+          # Include all graphiti tools (no filter = all tools)
+        - workload: n8n
+          # Include all n8n tools (no filter = all tools)
+        # unifi workload intentionally omitted - not exposed to internal gateway
+    audit:
+      enabled: true
+      includeRequestData: false
+      includeResponseData: false
+    # Operational settings for health checks and timeouts
+    # NOTE: partialFailureMode omitted due to ToolHive bug - CRD wants "best_effort" but binary wants "bestEffort"
+    operational:
+      timeouts:
+        default: 30s
+      failureHandling:
+        healthCheckInterval: 60s
+        unhealthyThreshold: 5
+  # Anonymous auth for internal cluster services (LiteLLM, etc.)
+  incomingAuth:
+    type: anonymous

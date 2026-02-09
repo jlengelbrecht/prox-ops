@@ -1,0 +1,28 @@
+---
+# FileFlows Privilege Escalation Monitoring
+# Monitors sudo usage and DockerMods directory writes
+# LOGGING ONLY - Alerts on suspicious activity
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: fileflows-privilege-monitor
+  namespace: media
+spec:
+  # Monitor sudo executions (should only happen during DockerMods)
+  kprobes:
+    - call: "sys_execve"
+      syscall: true
+      args:
+        - index: 0
+          type: "string"
+      selectors:
+        - matchBinaries:
+            - operator: "In"
+              values:
+                - "/usr/bin/sudo"
+                - "/bin/su"
+          matchNamespaces:
+            - namespace: media
+              operator: In
+          matchActions:
+            - action: Post  # LOGGING ONLY - alerts to Tetragon logs

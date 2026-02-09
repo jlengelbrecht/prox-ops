@@ -1,0 +1,24 @@
+---
+# BackendTrafficPolicy for Proxmox Valhalla
+# Extended timeouts for noVNC console WebSocket connections
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: proxmox-valhalla
+  namespace: infra-proxies
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: proxmox-valhalla
+  timeout:
+    http:
+      # No request timeout - WebSocket sessions can run indefinitely
+      requestTimeout: 0s
+      # Connection idle timeout for WebSocket (1 hour)
+      connectionIdleTimeout: 3600s
+  # TCP keepalive to maintain WebSocket connections
+  tcpKeepalive:
+    probes: 3
+    idleTime: 60s
+    interval: 30s

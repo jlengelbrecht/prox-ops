@@ -1,0 +1,135 @@
+---
+# CiliumNetworkPolicy for Qwen-TTS-Base InferenceService
+# Implements zero-trust network segmentation
+# EPIC-030: Voice AI Platform - Voice cloning capability
+#
+# Security Posture:
+# - Ingress: ONLY from envoy-internal gateway (HTTPRoute traffic)
+# - Egress: DNS + PyPI + Ubuntu repos (for runtime dependency install workaround)
+# - Default: DENY all other traffic
+#
+# Rationale:
+# - Prevents lateral movement if vLLM-Omni container compromised
+# - Qwen3-TTS-Base model pre-cached in model-cache PVC
+# - vLLM-Omni runs in offline mode (HF_HUB_OFFLINE=1), no internet access needed
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: qwen-tts-base
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen-tts-base
+    app.kubernetes.io/component: networkpolicy
+spec:
+  # Target KServe InferenceService pods
+  endpointSelector:
+    matchLabels:
+      serving.kserve.io/inferenceservice: qwen-tts-base
+
+  # Ingress Rules
+  ingress:
+    # Allow traffic from envoy-internal gateway (HTTPRoute ingress)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: envoy-gateway
+            app.kubernetes.io/component: envoy-gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow traffic from Kourier gateway (KServe internal ingress)
+    # Traffic path: LiteLLM → Kourier → queue-proxy → kserve-container
+    # Port 8080: kserve-container (vLLM API)
+    # Port 8012: queue-proxy sidecar (traffic forwarding)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kourier-system
+            app: 3scale-kourier-gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "8012"
+              protocol: TCP
+
+    # Allow Knative Serving activator (cold start requests)
+    # Port 8080: kserve-container (vLLM API)
+    # Port 8012: queue-proxy sidecar (activator probes and traffic forwarding)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: activator
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "8012"
+              protocol: TCP
+
+    # Allow Knative Serving autoscaler (metrics scraping)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: autoscaler
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow Prometheus scraping (observability)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  # Egress Rules
+  egress:
+    # Allow DNS resolution (required for internal cluster communication AND PyPI lookups)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # TEMPORARY: Allow PyPI access for runtime dependency installation
+    # Container startup executes: pip install --no-cache-dir onnxruntime sox
+    # Workaround for missing dependencies in vLLM-Omni Docker image
+    # Track: https://github.com/vllm-project/vllm-omni/pull/909
+    # TODO: Remove after vLLM-Omni includes these dependencies in base image
+    - toFQDNs:
+        - matchName: "pypi.org"
+        - matchPattern: "*.pypi.org"
+        - matchName: "files.pythonhosted.org"
+        - matchPattern: "*.pythonhosted.org"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+    # TEMPORARY: Allow Ubuntu archive access for sox system binary installation
+    # Container startup executes: apt-get install sox libsox-fmt-all
+    # The Python sox package requires the system SoX binary (/usr/bin/sox)
+    # vLLM-Omni Docker image doesn't include it despite sox being in pyproject.toml
+    # Workaround: apt-get -o APT::Sandbox::User=root install sox
+    # TODO: Remove after vLLM-Omni includes sox in base image
+    - toFQDNs:
+        - matchName: "archive.ubuntu.com"
+        - matchPattern: "*.archive.ubuntu.com"
+        - matchName: "security.ubuntu.com"
+        - matchPattern: "*.security.ubuntu.com"
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP

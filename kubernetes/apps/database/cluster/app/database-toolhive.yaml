@@ -1,0 +1,14 @@
+---
+# ToolHive Database - managed by CloudNative-PG Database CRD
+# This declaratively creates the database on the shared postgres cluster
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: toolhive
+  namespace: database
+spec:
+  name: toolhive
+  owner: toolhive
+  cluster:
+    name: postgres
+  ensure: present

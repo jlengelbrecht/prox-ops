@@ -1,0 +1,16 @@
+---
+# Backend for Proxmox Valhalla cluster
+# Uses insecureSkipVerify for self-signed Proxmox certificate
+# WARNING: This skips TLS verification - acceptable for internal homelab infrastructure
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: proxmox-valhalla
+  namespace: infra-proxies
+spec:
+  endpoints:
+    - ip:
+        address: 10.20.66.8
+        port: 8006
+  tls:
+    insecureSkipVerify: true

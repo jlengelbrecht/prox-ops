@@ -1,0 +1,41 @@
+---
+# STORY-030-1: GPU Time-Slicing Configuration
+# Allows multiple pods to share GPU resources via NVIDIA time-slicing
+#
+# Configuration:
+# - All GPUs: 3 replicas (nvidia.com/gpu capacity = 3)
+# - A5000 (24GB): 3 replicas allows 1 large model + 2 small models
+# - A2000 (12GB): 3 replicas but VRAM limits in vLLM prevent oversubscription
+#
+# VRAM safety mechanism:
+# - Models use --gpu-memory-utilization flag to cap actual VRAM usage
+# - Example: Qwen-TTS (5GB) with 0.25 utilization = ~6GB allocated
+# - This prevents OOM even with 3 time-slice replicas
+#
+# Note: Per-node replica counts would require more complex DaemonSet config.
+# The uniform approach is simpler and safe because:
+# - All AI models are pinned to k8s-work-10 (A5000) via nodeSelector
+# - A2000 (k8s-work-4) only runs Plex, which is also pinned via nodeSelector
+# - No AI workloads can accidentally schedule to A2000
+# - Large models (>12GB) run solo; small models (TTS, Whisper) share via time-slicing
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nvidia-device-plugin-config
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: nvidia-device-plugin-config
+    app.kubernetes.io/component: gpu-time-slicing
+    app.kubernetes.io/part-of: nvidia-device-plugin
+data:
+  config.yaml: |
+    version: v1
+    flags:
+      migStrategy: none
+    sharing:
+      timeSlicing:
+        renameByDefault: false
+        failRequestsGreaterThanOne: true
+        resources:
+          - name: nvidia.com/gpu
+            replicas: 3
