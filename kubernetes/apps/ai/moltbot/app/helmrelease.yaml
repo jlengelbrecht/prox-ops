@@ -20,20 +20,39 @@ spec:
       moltbot:
         strategy: Recreate
         initContainers:
-          onboard:
+          fix-permissions:
             image:
-              repository: ghcr.io/moltbot/clawdbot
-              # renovate: datasource=docker depName=ghcr.io/moltbot/clawdbot
-              tag: "2026.1.24-1"
+              repository: busybox
+              tag: latest
             command:
               - /bin/sh
               - -c
               - |
-                if [ -f "$CLAWDBOT_STATE_DIR/clawdbot.json" ]; then
+                # Fix ownership from previous root-based deployment
+                if [ "$(stat -c %u /data/state 2>/dev/null)" = "0" ]; then
+                  echo "Fixing permissions on /data/state..."
+                  chown -R 1000:1000 /data/state
+                fi
+                if [ "$(stat -c %u /root/clawd 2>/dev/null)" = "0" ]; then
+                  echo "Fixing permissions on /root/clawd..."
+                  chown -R 1000:1000 /root/clawd
+                fi
+            securityContext:
+              runAsUser: 0
+          onboard:
+            image:
+              repository: ghcr.io/openclaw/openclaw
+              # renovate: datasource=docker depName=ghcr.io/openclaw/openclaw
+              tag: main
+            command:
+              - /bin/sh
+              - -c
+              - |
+                if [ -f "$OPENCLAW_STATE_DIR/openclaw.json" ] || [ -f "$OPENCLAW_STATE_DIR/clawdbot.json" ]; then
                   echo "Config already exists, skipping onboard"
                   exit 0
                 fi
-                exec node dist/entry.js onboard \
+                exec node openclaw.mjs onboard \
                   --non-interactive --accept-risk \
                   --flow quickstart --mode local \
                   --auth-choice skip --skip-daemon \
@@ -42,12 +61,12 @@ spec:
                   --gateway-bind lan --gateway-auth token \
                   --gateway-port 18789
             env:
-              CLAWDBOT_STATE_DIR: /data/state
-              CLAWDBOT_GATEWAY_TOKEN:
+              OPENCLAW_STATE_DIR: /data/state
+              OPENCLAW_GATEWAY_TOKEN:
                 valueFrom:
                   secretKeyRef:
                     name: moltbot-secrets
-                    key: CLAWDBOT_GATEWAY_TOKEN
+                    key: OPENCLAW_GATEWAY_TOKEN
             resources:
               requests:
                 cpu: 100m
@@ -64,24 +83,25 @@ spec:
         containers:
           app:
             image:
-              repository: ghcr.io/moltbot/clawdbot
-              # renovate: datasource=docker depName=ghcr.io/moltbot/clawdbot
-              tag: "2026.1.24-1"
+              repository: ghcr.io/openclaw/openclaw
+              # renovate: datasource=docker depName=ghcr.io/openclaw/openclaw
+              tag: main
             command:
               - /bin/sh
               - -c
               - |
                 # Clean up stale lock files from previous runs/restarts
-                # Moltbot leaves .lock files behind when restarting via SIGUSR1
                 echo "Cleaning up stale lock files..."
-                find "$CLAWDBOT_STATE_DIR" -name "*.lock" -type f -delete 2>/dev/null || true
+                find "$OPENCLAW_STATE_DIR" -name "*.lock" -type f -delete 2>/dev/null || true
 
                 # Configure gateway auth and enable OpenAI-compatible API
+                # Support both legacy (clawdbot.json) and new (openclaw.json) config names
                 node -e "
                   const fs = require('fs');
-                  const f = process.env.CLAWDBOT_STATE_DIR + '/clawdbot.json';
+                  const dir = process.env.OPENCLAW_STATE_DIR;
+                  const f = fs.existsSync(dir + '/openclaw.json') ? dir + '/openclaw.json' : dir + '/clawdbot.json';
                   const c = JSON.parse(fs.readFileSync(f, 'utf8'));
-                  c.gateway.auth = { mode: 'token', token: process.env.CLAWDBOT_GATEWAY_TOKEN };
+                  c.gateway.auth = { mode: 'token', token: process.env.OPENCLAW_GATEWAY_TOKEN };
                   c.gateway.controlUi = { allowInsecureAuth: true };
                   // EPIC-031: Enable OpenAI-compatible chat completions for voice-bridge LLM routing
                   c.gateway.http = c.gateway.http || {};
@@ -89,17 +109,17 @@ spec:
                   c.gateway.http.endpoints.chatCompletions = { enabled: true };
                   fs.writeFileSync(f, JSON.stringify(c, null, 2));
                 "
-                exec node dist/entry.js gateway \
+                exec node openclaw.mjs gateway \
                   --port 18789 --bind lan --verbose
             env:
               TZ: America/New_York
               NODE_ENV: production
-              CLAWDBOT_STATE_DIR: /data/state
-              CLAWDBOT_GATEWAY_TOKEN:
+              OPENCLAW_STATE_DIR: /data/state
+              OPENCLAW_GATEWAY_TOKEN:
                 valueFrom:
                   secretKeyRef:
                     name: moltbot-secrets
-                    key: CLAWDBOT_GATEWAY_TOKEN
+                    key: OPENCLAW_GATEWAY_TOKEN
               LITELLM_VIRTUAL_KEY:
                 valueFrom:
                   secretKeyRef:
@@ -169,6 +189,8 @@ spec:
       annotations:
         secret.reloader.stakater.com/reload: "moltbot-secrets"
       automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
