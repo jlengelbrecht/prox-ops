@@ -94,6 +94,9 @@ spec:
                 echo "Cleaning up stale lock files..."
                 find "$OPENCLAW_STATE_DIR" -name "*.lock" -type f -delete 2>/dev/null || true
 
+                # Run doctor to auto-migrate legacy config (clawdbot.json -> openclaw.json)
+                node openclaw.mjs doctor --fix 2>&1 || true
+
                 # Configure gateway auth and enable OpenAI-compatible API
                 # Support both legacy (clawdbot.json) and new (openclaw.json) config names
                 node -e "
