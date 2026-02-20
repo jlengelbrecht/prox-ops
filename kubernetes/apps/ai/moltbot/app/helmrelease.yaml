@@ -94,25 +94,36 @@ spec:
                 echo "Cleaning up stale lock files..."
                 find "$OPENCLAW_STATE_DIR" -name "*.lock" -type f -delete 2>/dev/null || true
 
-                # Run doctor to auto-migrate legacy config (clawdbot.json -> openclaw.json)
-                node openclaw.mjs doctor --fix 2>&1 || true
-
-                # Configure gateway auth and enable OpenAI-compatible API
+                # Configure gateway auth, enable OpenAI-compatible API, and fix stale URLs
                 # Support both legacy (clawdbot.json) and new (openclaw.json) config names
                 node -e "
                   const fs = require('fs');
                   const dir = process.env.OPENCLAW_STATE_DIR;
                   const f = fs.existsSync(dir + '/openclaw.json') ? dir + '/openclaw.json' : dir + '/clawdbot.json';
                   const c = JSON.parse(fs.readFileSync(f, 'utf8'));
+                  c.gateway = c.gateway || {};
                   c.gateway.auth = { mode: 'token', token: process.env.OPENCLAW_GATEWAY_TOKEN };
                   c.gateway.controlUi = { allowInsecureAuth: true };
+                  c.gateway.bind = 'lan';
+                  c.gateway.port = 18789;
+                  // Allow insecure transport for in-cluster communication
+                  c.gateway.transport = c.gateway.transport || {};
+                  c.gateway.transport.insecure = true;
+                  // Remove stale gateway URL from previous pod IP
+                  delete c.gateway.url;
                   // EPIC-031: Enable OpenAI-compatible chat completions for voice-bridge LLM routing
                   c.gateway.http = c.gateway.http || {};
                   c.gateway.http.endpoints = c.gateway.http.endpoints || {};
                   c.gateway.http.endpoints.chatCompletions = { enabled: true };
+                  // Apply doctor migrations inline
+                  if (c.channels && c.channels.discord && c.channels.discord.dm && c.channels.discord.dm.policy) {
+                    c.channels.discord.dmPolicy = c.channels.discord.dm.policy;
+                    delete c.channels.discord.dm;
+                  }
                   fs.writeFileSync(f, JSON.stringify(c, null, 2));
                 "
                 exec node openclaw.mjs gateway \
+                  --allow-unconfigured \
                   --port 18789 --bind lan --verbose
             env:
               TZ: America/New_York
