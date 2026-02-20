@@ -361,15 +361,15 @@ data:
             ^/wizard($|/.*)
             ^/image-proxy($|/.*)
             ^/cinema-posters($|/.*)
-      # Moltbot - Forward Auth (Control UI, internal only)
+      # OpenClaw - Forward Auth (Control UI, internal only)
       - model: authentik_providers_proxy.proxyprovider
-        id: proxy-moltbot
+        id: proxy-openclaw
         identifiers:
           name: Moltbot
         attrs:
-          name: Moltbot
+          name: OpenClaw
           mode: forward_single
-          external_host: https://moltbot.homelab0.org
+          external_host: https://openclaw.homelab0.org
           authorization_flow: !Context authorization_flow
           invalidation_flow: !Context invalidation_flow
           property_mappings:
@@ -468,12 +468,12 @@ data:
           policy_engine_mode: any
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Wizarr"]]
       - model: authentik_core.application
-        id: app-moltbot
+        id: app-openclaw
         identifiers:
           slug: moltbot
         attrs:
-          name: Moltbot
-          slug: moltbot
+          name: OpenClaw
+          slug: openclaw
           group: AI
           policy_engine_mode: any
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Moltbot"]]
