@@ -50,7 +50,7 @@ jobs:
 
     steps:
       - name: Checkout PR
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           fetch-depth: 2  # Need HEAD and HEAD^1 for diff
 
@@ -65,9 +65,9 @@ jobs:
 
           # Check if Talos VERSION was actually modified (not just any change to these files)
           TALOS_FILES_CHANGED=false
-          if git diff HEAD^1 HEAD -- terraform/variables.tf terraform/terraform.tfvars | grep -qE '^\+.*talos_version'; then
+          if git diff HEAD^1 HEAD -- terraform/variables.tf terraform/terraform.tfvars | grep -qE '^\+[^#]*talos_version\s*='; then
             TALOS_FILES_CHANGED=true
-          elif git diff HEAD^1 HEAD -- talos/talenv.yaml | grep -qE '^\+.*talosVersion'; then
+          elif git diff HEAD^1 HEAD -- talos/talenv.yaml | grep -qE '^\+[^#]*talosVersion\s*:'; then
             TALOS_FILES_CHANGED=true
           fi
 
@@ -576,7 +576,7 @@ jobs:
       - name: Build detailed comment body
         if: steps.is-talos-pr.outputs.is_talos_pr == 'true'
         id: build-comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         env:
           ADVISORIES: ${{ steps.security-advisories.outputs.advisories }}
           ISSUES: ${{ steps.github-issues.outputs.issues }}
