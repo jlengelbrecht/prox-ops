@@ -102,17 +102,11 @@ spec:
                   const f = fs.existsSync(dir + '/openclaw.json') ? dir + '/openclaw.json' : dir + '/clawdbot.json';
                   const c = JSON.parse(fs.readFileSync(f, 'utf8'));
                   c.gateway = c.gateway || {};
-                  // trusted-proxy: Envoy/Authentik handles authentication at ingress.
-                  // Gateway trusts connections from the pod CIDR and reads user identity
-                  // from the X-authentik-username header forwarded by the SecurityPolicy.
-                  c.gateway.trustedProxies = ['10.42.0.0/16'];
-                  c.gateway.auth = {
-                    mode: 'trusted-proxy',
-                    trustedProxy: { userHeader: 'x-authentik-username' },
-                  };
-                  // dangerouslyDisableDeviceAuth: device pairing is incompatible with reverse
-                  // proxies (Envoy normalizes client IPs). Authentik forward auth compensates.
-                  c.gateway.controlUi = { enabled: true, dangerouslyDisableDeviceAuth: true };
+                  // auth.mode: none - gateway auth disabled; Authentik forward auth at the
+                  // Envoy ingress handles all authentication. CiliumNetworkPolicy restricts
+                  // port 18789 ingress to Envoy and voice-bridge pods only.
+                  c.gateway.auth = { mode: 'none' };
+                  c.gateway.controlUi = { enabled: true };
                   c.gateway.bind = 'lan';
                   c.gateway.port = 18789;
                   // Remove stale gateway URL from previous pod IP
