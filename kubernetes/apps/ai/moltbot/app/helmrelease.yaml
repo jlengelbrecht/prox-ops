@@ -106,11 +106,10 @@ spec:
                   c.gateway.controlUi = { allowInsecureAuth: true };
                   c.gateway.bind = 'lan';
                   c.gateway.port = 18789;
-                  // Allow insecure transport for in-cluster communication
-                  c.gateway.transport = c.gateway.transport || {};
-                  c.gateway.transport.insecure = true;
                   // Remove stale gateway URL from previous pod IP
                   delete c.gateway.url;
+                  // Remove any unknown keys that cause config validation failures
+                  delete c.gateway.transport;
                   // EPIC-031: Enable OpenAI-compatible chat completions for voice-bridge LLM routing
                   c.gateway.http = c.gateway.http || {};
                   c.gateway.http.endpoints = c.gateway.http.endpoints || {};
