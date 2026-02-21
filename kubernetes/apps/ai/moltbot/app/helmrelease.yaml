@@ -113,7 +113,9 @@ spec:
                       requiredHeaders: ['x-authentik-uid'],
                     },
                   };
-                  c.gateway.controlUi = { enabled: true };
+                  // dangerouslyDisableDeviceAuth: device pairing is incompatible with reverse
+                  // proxies (Envoy normalizes client IPs). Authentik forward auth compensates.
+                  c.gateway.controlUi = { enabled: true, dangerouslyDisableDeviceAuth: true };
                   c.gateway.bind = 'lan';
                   c.gateway.port = 18789;
                   // Remove stale gateway URL from previous pod IP
