@@ -112,7 +112,6 @@ spec:
                       userHeader: 'x-authentik-username',
                       requiredHeaders: ['x-authentik-uid'],
                     },
-                    skipDevicePairingForTrustedProxy: true
                   };
                   c.gateway.controlUi = { enabled: true };
                   c.gateway.bind = 'lan';
@@ -121,6 +120,7 @@ spec:
                   delete c.gateway.url;
                   // Remove any unknown keys that cause config validation failures
                   delete c.gateway.transport;
+                  delete c.gateway.auth.skipDevicePairingForTrustedProxy;
                   // EPIC-031: Enable OpenAI-compatible chat completions for voice-bridge LLM routing
                   c.gateway.http = c.gateway.http || {};
                   c.gateway.http.endpoints = c.gateway.http.endpoints || {};
