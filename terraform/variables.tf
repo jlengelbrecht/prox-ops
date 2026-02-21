@@ -46,15 +46,15 @@ variable "talos_version" {
 }
 
 variable "talos_schematic_base" {
-  description = "Talos factory schematic ID for base nodes (controllers + regular workers). Extensions: QEMU Guest Agent only"
+  description = "Talos factory schematic ID for base nodes (controllers + regular workers). Extensions: QEMU Guest Agent + net.ifnames=0"
   type        = string
-  default     = "ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515"
+  default     = "f683308f6e49ec36d715bd41c90d800910552d8cbc015c8363ec350594535fa1"
 }
 
 variable "talos_schematic_gpu" {
-  description = "Talos factory schematic ID for GPU worker nodes. Extensions: QEMU Guest Agent + NVIDIA drivers + NVIDIA Container Toolkit"
+  description = "Talos factory schematic ID for GPU worker nodes. Extensions: QEMU Guest Agent + NVIDIA drivers + NVIDIA Container Toolkit + net.ifnames=0"
   type        = string
-  default     = "990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e"
+  default     = "26a847a67a3a6575fdcb3a9a45d6f1add29827e0f549955806b532d590004982"
 }
 
 # VM Template Configuration

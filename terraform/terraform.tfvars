@@ -49,10 +49,10 @@ talos_version = "1.12.4"
 # Talos Factory Schematics (SECURE BOOT ENABLED)
 # Generated at: https://factory.talos.dev/
 #
-# Base schematic: QEMU Guest Agent only (for controllers + regular workers)
-# GPU schematic: QEMU Guest Agent + NVIDIA drivers + NVIDIA Container Toolkit (for GPU workers only)
-talos_schematic_base = "ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515"
-talos_schematic_gpu  = "990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e"
+# Base schematic: QEMU Guest Agent + net.ifnames=0 (for controllers + regular workers)
+# GPU schematic: QEMU Guest Agent + NVIDIA drivers + NVIDIA Container Toolkit + net.ifnames=0 (for GPU workers only)
+talos_schematic_base = "f683308f6e49ec36d715bd41c90d800910552d8cbc015c8363ec350594535fa1"
+talos_schematic_gpu  = "26a847a67a3a6575fdcb3a9a45d6f1add29827e0f549955806b532d590004982"
 
 # -----------------------------------------------------------------------------
 # Template ID Scheme
