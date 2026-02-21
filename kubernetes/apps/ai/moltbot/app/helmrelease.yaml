@@ -113,8 +113,6 @@ spec:
                   // dangerouslyDisableDeviceAuth: device pairing is incompatible with reverse
                   // proxies (Envoy normalizes client IPs). Authentik forward auth compensates.
                   c.gateway.controlUi = { enabled: true, dangerouslyDisableDeviceAuth: true };
-                  // Clean up requiredHeaders that may block WebSocket upgrades
-                  if (c.gateway.auth.trustedProxy) delete c.gateway.auth.trustedProxy.requiredHeaders;
                   c.gateway.bind = 'lan';
                   c.gateway.port = 18789;
                   // Remove stale gateway URL from previous pod IP
