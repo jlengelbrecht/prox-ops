@@ -102,11 +102,19 @@ spec:
                   const f = fs.existsSync(dir + '/openclaw.json') ? dir + '/openclaw.json' : dir + '/clawdbot.json';
                   const c = JSON.parse(fs.readFileSync(f, 'utf8'));
                   c.gateway = c.gateway || {};
-                  c.gateway.auth = { mode: 'token', token: process.env.OPENCLAW_GATEWAY_TOKEN };
-                  // dangerouslyDisableDeviceAuth: Envoy/Authentik normalizes client IPs, breaking
-                  // device identity pairing (WS 1008). Token auth + Authentik forward auth compensate.
-                  // allowInsecureAuth: gateway is HTTP-only inside the cluster; TLS terminates at ingress.
-                  c.gateway.controlUi = { allowInsecureAuth: true, dangerouslyDisableDeviceAuth: true };
+                  // trusted-proxy: Envoy/Authentik handles authentication at ingress.
+                  // Gateway trusts connections from the pod CIDR and reads user identity
+                  // from the X-authentik-username header forwarded by the SecurityPolicy.
+                  c.gateway.trustedProxies = ['10.42.0.0/16'];
+                  c.gateway.auth = {
+                    mode: 'trusted-proxy',
+                    trustedProxy: {
+                      userHeader: 'x-authentik-username',
+                      requiredHeaders: ['x-authentik-uid'],
+                    },
+                    skipDevicePairingForTrustedProxy: true
+                  };
+                  c.gateway.controlUi = { enabled: true };
                   c.gateway.bind = 'lan';
                   c.gateway.port = 18789;
                   // Remove stale gateway URL from previous pod IP
