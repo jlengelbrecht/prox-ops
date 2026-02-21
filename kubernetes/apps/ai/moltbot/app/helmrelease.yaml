@@ -103,7 +103,7 @@ spec:
                   const c = JSON.parse(fs.readFileSync(f, 'utf8'));
                   c.gateway = c.gateway || {};
                   c.gateway.auth = { mode: 'token', token: process.env.OPENCLAW_GATEWAY_TOKEN };
-                  c.gateway.controlUi = { allowInsecureAuth: true };
+                  c.gateway.controlUi = { allowInsecureAuth: true, dangerouslyDisableDeviceAuth: true };
                   c.gateway.bind = 'lan';
                   c.gateway.port = 18789;
                   // Remove stale gateway URL from previous pod IP
