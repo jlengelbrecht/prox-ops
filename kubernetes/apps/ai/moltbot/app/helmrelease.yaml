@@ -108,14 +108,13 @@ spec:
                   c.gateway.trustedProxies = ['10.42.0.0/16'];
                   c.gateway.auth = {
                     mode: 'trusted-proxy',
-                    trustedProxy: {
-                      userHeader: 'x-authentik-username',
-                      requiredHeaders: ['x-authentik-uid'],
-                    },
+                    trustedProxy: { userHeader: 'x-authentik-username' },
                   };
                   // dangerouslyDisableDeviceAuth: device pairing is incompatible with reverse
                   // proxies (Envoy normalizes client IPs). Authentik forward auth compensates.
                   c.gateway.controlUi = { enabled: true, dangerouslyDisableDeviceAuth: true };
+                  // Clean up requiredHeaders that may block WebSocket upgrades
+                  if (c.gateway.auth.trustedProxy) delete c.gateway.auth.trustedProxy.requiredHeaders;
                   c.gateway.bind = 'lan';
                   c.gateway.port = 18789;
                   // Remove stale gateway URL from previous pod IP
