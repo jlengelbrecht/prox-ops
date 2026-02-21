@@ -102,11 +102,14 @@ spec:
                   const f = fs.existsSync(dir + '/openclaw.json') ? dir + '/openclaw.json' : dir + '/clawdbot.json';
                   const c = JSON.parse(fs.readFileSync(f, 'utf8'));
                   c.gateway = c.gateway || {};
-                  // auth.mode: none - gateway auth disabled; Authentik forward auth at the
-                  // Envoy ingress handles all authentication. CiliumNetworkPolicy restricts
-                  // port 18789 ingress to Envoy and voice-bridge pods only.
-                  c.gateway.auth = { mode: 'none' };
-                  c.gateway.controlUi = { enabled: true };
+                  // Token auth with insecure flags for reverse proxy compatibility.
+                  // Authentik forward auth handles user authentication at the Envoy ingress.
+                  // allowInsecureAuth: HTTP-only inside cluster, TLS terminates at ingress.
+                  // dangerouslyDisableDeviceAuth: device pairing breaks behind reverse proxies.
+                  c.gateway.auth = { mode: 'token', token: process.env.OPENCLAW_GATEWAY_TOKEN };
+                  c.gateway.controlUi = { enabled: true, allowInsecureAuth: true, dangerouslyDisableDeviceAuth: true };
+                  // Clean up stale trusted-proxy config from previous deployments
+                  delete c.gateway.trustedProxies;
                   c.gateway.bind = 'lan';
                   c.gateway.port = 18789;
                   // Remove stale gateway URL from previous pod IP
