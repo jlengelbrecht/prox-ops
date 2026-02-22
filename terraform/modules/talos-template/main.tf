@@ -86,11 +86,11 @@ resource "null_resource" "create_template" {
       "echo '[Template Creation] Step 1: Cleaning up existing template if present...'",
       "qm destroy ${var.template_vm_id} || true",
       "mkdir -p /var/lib/vz/template/talos",
-      # Remove ALL old .raw images to prevent local disk from filling up
-      # Images are versioned (e.g., talos-1.12.1-<schematic>.raw) and accumulate across upgrades
-      # After qm importdisk copies data to Ceph, the local .raw file is no longer needed
-      "echo '[Template Creation] Cleaning old Talos images from local storage...'",
-      "find /var/lib/vz/template/talos/ -name '*.raw' -type f -exec rm -v {} + 2>/dev/null || true",
+      # Remove old .raw images for THIS schematic to prevent local disk from filling up
+      # Scoped to current schematic_id to avoid race conditions when Terraform
+      # parallelizes base + gpu template builds on the same Proxmox host
+      "echo '[Template Creation] Cleaning old Talos images for schematic ${var.schematic_id}...'",
+      "find /var/lib/vz/template/talos/ -name 'talos-*-${var.schematic_id}.raw' -type f -exec rm -v {} + 2>/dev/null || true",
       "echo '[Template Creation] Local disk after cleanup:' && df -h /var/lib/vz/ | tail -1",
       "echo '[Template Creation] Step 1: Complete'",
     ]
