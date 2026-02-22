@@ -86,6 +86,12 @@ resource "null_resource" "create_template" {
       "echo '[Template Creation] Step 1: Cleaning up existing template if present...'",
       "qm destroy ${var.template_vm_id} || true",
       "mkdir -p /var/lib/vz/template/talos",
+      # Remove old .raw images for THIS schematic to prevent local disk from filling up
+      # Scoped to current schematic_id to avoid race conditions when Terraform
+      # parallelizes base + gpu template builds on the same Proxmox host
+      "echo '[Template Creation] Cleaning old Talos images for schematic ${var.schematic_id}...'",
+      "find /var/lib/vz/template/talos/ -name 'talos-*-${var.schematic_id}.raw' -type f -exec rm -v {} + 2>/dev/null || true",
+      "echo '[Template Creation] Local disk after cleanup:' && df -h /var/lib/vz/ | tail -1",
       "echo '[Template Creation] Step 1: Complete'",
     ]
   }
@@ -159,6 +165,11 @@ resource "null_resource" "create_template" {
       # Import the raw disk image (becomes unused0)
       # Uses versioned filename to prevent caching issues between Talos versions
       "qm importdisk ${var.template_vm_id} /var/lib/vz/template/talos/talos-${var.talos_version}-${var.schematic_id}.raw ${var.vm_storage_pool} --format raw",
+
+      # Remove the uploaded .raw file after import - data is now in Ceph storage
+      # This prevents ~4GB per image from accumulating on the local disk
+      "echo '[Template Creation] Step 6b: Removing local .raw after import to Ceph...'",
+      "rm -f /var/lib/vz/template/talos/talos-${var.talos_version}-${var.schematic_id}.raw",
 
       "echo '[Template Creation] Step 7: Moving unused disk to scsi0...'",
       # Extract the full disk path from unused0 (e.g., vms-ceph:vm-9000-disk-4)
