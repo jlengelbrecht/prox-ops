@@ -2,7 +2,7 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: huntarr
+  name: newtarr
   namespace: media
 spec:
   chart:
@@ -17,16 +17,21 @@ spec:
   interval: 1h
   values:
     controllers:
-      huntarr:
+      newtarr:
         strategy: Recreate
         containers:
           app:
             image:
-              repository: docker.io/huntarr/huntarr
-              # renovate: datasource=docker depName=docker.io/huntarr/huntarr
-              tag: 8.2.25
+              repository: ghcr.io/elfhosted/newtarr
+              # renovate: datasource=docker depName=ghcr.io/elfhosted/newtarr
+              tag: rolling@sha256:6abafe8ee23c96e3c9e298b5f9ef8313f1d231546b794900d4da36caa22912f0
             env:
               TZ: America/New_York
+              SECRET_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: newtarr-secret
+                    key: SECRET_KEY
             probes:
               liveness:
                 enabled: true
@@ -89,7 +94,7 @@ spec:
 
     service:
       app:
-        controller: huntarr
+        controller: newtarr
         type: ClusterIP
         ports:
           http:

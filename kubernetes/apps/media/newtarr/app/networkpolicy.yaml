@@ -1,15 +1,15 @@
 ---
-# Huntarr NetworkPolicy - Automated media hunting
+# Newtarr NetworkPolicy - Automated media hunting (ElfHosted fork)
 # Searches for missing/upgraded media via Sonarr/Radarr APIs
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: huntarr-isolation
+  name: newtarr-isolation
   namespace: media
 spec:
   endpointSelector:
     matchLabels:
-      app.kubernetes.io/name: huntarr
+      app.kubernetes.io/name: newtarr
   ingress:
     # Allow from envoy-internal Gateway (internal HTTPS access)
     - fromEndpoints:
@@ -23,8 +23,12 @@ spec:
     # Allow Prometheus metrics scraping
     - fromEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: monitoring
+            io.kubernetes.pod.namespace: observability
             app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9705"
+              protocol: TCP
     # Allow from Uptime Kuma (health monitoring)
     - fromEndpoints:
         - matchLabels:
@@ -63,13 +67,4 @@ spec:
       toPorts:
         - ports:
             - port: "7878"
-              protocol: TCP
-    # Allow egress to Prowlarr (indexer searches)
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: media
-            app.kubernetes.io/name: prowlarr
-      toPorts:
-        - ports:
-            - port: "9696"
               protocol: TCP
