@@ -1,7 +1,7 @@
 ---
 # Comprehensive Media Stack Dashboard
-# Monitors Plex, Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd, Cleanuparr, Huntarr, Maintainerr, Wizarr
-# Note: Cleanuparr, Huntarr, Maintainerr, and Wizarr show pod status only (no Prometheus metrics available)
+# Monitors Plex, Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd, Cleanuparr, Newtarr, Maintainerr, Wizarr
+# Note: Cleanuparr, Newtarr, Maintainerr, and Wizarr show pod status only (no Prometheus metrics available)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -27,7 +27,7 @@ data:
           }
         ]
       },
-      "description": "Comprehensive media stack monitoring - Plex, *arr apps, downloaders, automation tools, VPN status. Note: Cleanuparr, Huntarr, Maintainerr, Wizarr show pod status only (no metrics exporters available).",
+      "description": "Comprehensive media stack monitoring - Plex, *arr apps, downloaders, automation tools, VPN status. Note: Cleanuparr, Newtarr, Maintainerr, Wizarr show pod status only (no metrics exporters available).",
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,
@@ -189,7 +189,7 @@ data:
         },
         {
           "datasource": "Prometheus",
-          "description": "Huntarr pod status",
+          "description": "Newtarr pod status",
           "fieldConfig": {
             "defaults": {
               "color": {"mode": "thresholds"},
@@ -203,8 +203,8 @@ data:
           "gridPos": {"h": 3, "w": 4, "x": 4, "y": 4},
           "id": 8,
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"huntarr.*\",phase=\"Running\"})", "legendFormat": "Huntarr", "refId": "A"}],
-          "title": "Huntarr",
+          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"newtarr.*\",phase=\"Running\"})", "legendFormat": "Newtarr", "refId": "A"}],
+          "title": "Newtarr",
           "type": "stat"
         },
         {
@@ -794,7 +794,7 @@ data:
       ],
       "refresh": "1m",
       "schemaVersion": 38,
-      "tags": ["media", "plex", "sonarr", "radarr", "prowlarr", "qbittorrent", "sabnzbd", "cleanuparr", "huntarr", "maintainerr", "wizarr", "vpn"],
+      "tags": ["media", "plex", "sonarr", "radarr", "prowlarr", "qbittorrent", "sabnzbd", "cleanuparr", "newtarr", "maintainerr", "wizarr", "vpn"],
       "templating": {"list": []},
       "time": {"from": "now-6h", "to": "now"},
       "timepicker": {},
