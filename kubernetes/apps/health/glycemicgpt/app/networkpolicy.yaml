@@ -36,6 +36,15 @@ spec:
             - port: "3000"
               protocol: TCP
 
+    # Intra-deployment: API -> Sidecar (separate controller pods)
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: glycemicgpt
+      toPorts:
+        - ports:
+            - port: "3456"
+              protocol: TCP
+
   egress:
     # API -> CNPG PostgreSQL (health namespace, same cluster)
     - toEndpoints:

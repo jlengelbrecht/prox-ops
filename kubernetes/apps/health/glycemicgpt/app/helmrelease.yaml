@@ -27,16 +27,16 @@ spec:
               # renovate: datasource=docker depName=ghcr.io/glycemicgpt/glycemicgpt-api
               tag: latest
             env:
-              # Database (CNPG cluster in health namespace)
+              # Database (CNPG auto-generated app secret for owner role)
               POSTGRES_USER:
                 valueFrom:
                   secretKeyRef:
-                    name: glycemicgpt-db-superuser
+                    name: glycemicgpt-db-app
                     key: username
               POSTGRES_PASSWORD:
                 valueFrom:
                   secretKeyRef:
-                    name: glycemicgpt-db-superuser
+                    name: glycemicgpt-db-app
                     key: password
               POSTGRES_DB: glycemicgpt
               POSTGRES_HOST: glycemicgpt-db-rw.health.svc.cluster.local
@@ -241,7 +241,7 @@ spec:
 
     defaultPodOptions:
       annotations:
-        secret.reloader.stakater.com/reload: "glycemicgpt-secrets,glycemicgpt-valkey,glycemicgpt-db-superuser"
+        secret.reloader.stakater.com/reload: "glycemicgpt-secrets,glycemicgpt-valkey,glycemicgpt-db-app"
         security.homelab/network: "Medical health platform - restricted access"
       automountServiceAccountToken: false
       securityContext:
