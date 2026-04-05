@@ -1,0 +1,293 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: glycemicgpt
+  namespace: health
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s
+        namespace: health
+  interval: 1h
+  values:
+    controllers:
+      # FastAPI backend - core API server
+      api:
+        strategy: Recreate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/glycemicgpt/glycemicgpt-api
+              # renovate: datasource=docker depName=ghcr.io/glycemicgpt/glycemicgpt-api
+              tag: latest
+            env:
+              # Database (CNPG auto-generated app secret for owner role)
+              POSTGRES_USER:
+                valueFrom:
+                  secretKeyRef:
+                    name: glycemicgpt-db-app
+                    key: username
+              POSTGRES_PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: glycemicgpt-db-app
+                    key: password
+              POSTGRES_DB: glycemicgpt
+              POSTGRES_HOST: glycemicgpt-db-rw.health.svc.cluster.local
+              POSTGRES_PORT: "5432"
+              # Valkey (cross-namespace, Redis-compatible) - db 2 to isolate from other apps
+              REDIS_PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: glycemicgpt-valkey
+                    key: password
+              REDIS_HOST: valkey.cache.svc.cluster.local
+              REDIS_PORT: "6379"
+              # AI configuration - route through LiteLLM for centralized key management
+              AI_PROVIDER: claude
+              AI_SIDECAR_URL: http://glycemicgpt-sidecar:3456
+              # CORS - lock to our domain
+              CORS_ORIGINS: '["https://glycemicgpt.${SECRET_DOMAIN}"]'
+              # Security
+              ALLOW_PRIVATE_AI_URLS: "true"
+              TRUSTED_PROXY_CIDRS: "10.0.0.0/8"
+              # Logging
+              LOG_FORMAT: json
+              LOG_LEVEL: INFO
+              SERVICE_NAME: glycemicgpt-api
+              # Session configuration
+              SESSION_EXPIRE_HOURS: "24"
+              ACCESS_TOKEN_EXPIRE_MINUTES: "60"
+              REFRESH_TOKEN_EXPIRE_DAYS: "30"
+              # Data sync (disabled by default - configure device credentials first)
+              DEXCOM_SYNC_ENABLED: "false"
+              TANDEM_SYNC_ENABLED: "false"
+              # Alerts
+              ALERT_CHECK_ENABLED: "true"
+              ALERT_CHECK_INTERVAL_MINUTES: "5"
+              ESCALATION_CHECK_ENABLED: "true"
+              ESCALATION_CHECK_INTERVAL_MINUTES: "1"
+              # Backup
+              BACKUP_ENABLED: "true"
+              BACKUP_SCHEDULE: "0 2 * * *"
+              BACKUP_PATH: /backups
+              BACKUP_RETENTION_DAYS: "7"
+              # Device limits
+              MAX_DEVICES_PER_USER: "10"
+              # Research pipeline
+              RESEARCH_PIPELINE_ENABLED: "true"
+              RESEARCH_PIPELINE_INTERVAL_HOURS: "168"
+            envFrom:
+              - secretRef:
+                  name: glycemicgpt-secrets
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health/live
+                    port: &apiPort 8000
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health/ready
+                    port: *apiPort
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
+                  timeoutSeconds: 3
+                  failureThreshold: 3
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health/live
+                    port: *apiPort
+                  initialDelaySeconds: 5
+                  periodSeconds: 5
+                  timeoutSeconds: 5
+                  failureThreshold: 30
+            resources:
+              requests:
+                cpu: 250m
+                memory: 512Mi
+              limits:
+                cpu: 2
+                memory: 2Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+      # Next.js frontend - web UI
+      web:
+        strategy: RollingUpdate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/glycemicgpt/glycemicgpt-web
+              # renovate: datasource=docker depName=ghcr.io/glycemicgpt/glycemicgpt-web
+              tag: latest
+            env:
+              API_URL: http://glycemicgpt-api:8000
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: &webPort 3000
+                  initialDelaySeconds: 10
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: *webPort
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                  timeoutSeconds: 3
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 1
+                memory: 1Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+      # AI sidecar - LLM proxy for multi-provider support
+      sidecar:
+        strategy: RollingUpdate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/glycemicgpt/glycemicgpt-sidecar
+              # renovate: datasource=docker depName=ghcr.io/glycemicgpt/glycemicgpt-sidecar
+              tag: latest
+            env:
+              SIDECAR_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: glycemicgpt-secrets
+                    key: SIDECAR_API_KEY
+              ANTHROPIC_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: glycemicgpt-secrets
+                    key: ANTHROPIC_API_KEY
+            probes:
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: &sidecarPort 3456
+                  initialDelaySeconds: 10
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /health
+                    port: *sidecarPort
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                  timeoutSeconds: 3
+                  failureThreshold: 3
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      annotations:
+        secret.reloader.stakater.com/reload: "glycemicgpt-secrets,glycemicgpt-valkey,glycemicgpt-db-app"
+        security.homelab/network: "Medical health platform - restricted access"
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+
+    persistence:
+      embeddings-cache:
+        enabled: true
+        existingClaim: glycemicgpt-embeddings-cache
+        advancedMounts:
+          api:
+            app:
+              - path: /app/.cache/fastembed
+      backups:
+        enabled: true
+        existingClaim: glycemicgpt-backups
+        advancedMounts:
+          api:
+            app:
+              - path: /backups
+
+    service:
+      api:
+        controller: api
+        type: ClusterIP
+        ports:
+          http:
+            port: 8000
+            protocol: TCP
+      web:
+        controller: web
+        type: ClusterIP
+        ports:
+          http:
+            port: 3000
+            protocol: TCP
+      sidecar:
+        controller: sidecar
+        type: ClusterIP
+        ports:
+          http:
+            port: 3456
+            protocol: TCP
