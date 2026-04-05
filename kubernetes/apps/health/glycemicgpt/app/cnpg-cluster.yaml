@@ -1,0 +1,45 @@
+---
+# Standalone CloudNativePG Cluster for GlycemicGPT
+# Separate from the shared postgres cluster in database namespace for:
+# - Medical data isolation
+# - pgvector extension support (embeddings for RAG)
+# - Independent backup/lifecycle management
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: glycemicgpt-db
+  namespace: health
+spec:
+  instances: 1
+
+  # renovate: datasource=docker depName=ghcr.io/cloudnative-pg/postgresql
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.8
+
+  bootstrap:
+    initdb:
+      database: glycemicgpt
+      owner: glycemicgpt
+      postInitSQL:
+        - CREATE EXTENSION IF NOT EXISTS vector;
+
+  superuserSecret:
+    name: glycemicgpt-db-superuser
+
+  storage:
+    size: 10Gi
+    storageClass: ceph-block
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  monitoring:
+    enabled: false
+
+  postgresql:
+    shared_preload_libraries:
+      - vector

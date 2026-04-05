@@ -1,0 +1,16 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: glycemicgpt-storage
+  namespace: flux-system
+spec:
+  interval: 1h
+  path: ./kubernetes/apps/health/glycemicgpt/storage
+  prune: false
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: health
+  wait: true

@@ -1,0 +1,77 @@
+---
+# GlycemicGPT NetworkPolicy - medical data requires strict isolation
+# Three controllers (api, web, sidecar) with distinct access patterns
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: glycemicgpt
+  namespace: health
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: glycemicgpt
+
+  ingress:
+    # From envoy-external gateway (Cloudflare tunnel access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-external
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+            - port: "3000"
+              protocol: TCP
+
+    # From envoy-internal gateway (internal homelab access)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+            - port: "3000"
+              protocol: TCP
+
+  egress:
+    # API -> CNPG PostgreSQL (health namespace, same cluster)
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/cluster: glycemicgpt-db
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # API -> Valkey cache (cache namespace)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cache
+            app.kubernetes.io/name: valkey
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # External HTTPS for AI provider APIs (Anthropic, OpenAI) and OIDC
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
