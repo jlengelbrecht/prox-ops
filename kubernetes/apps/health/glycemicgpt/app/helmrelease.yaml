@@ -66,6 +66,11 @@ spec:
               # AI configuration - route through LiteLLM for centralized key management
               AI_PROVIDER: claude
               AI_SIDECAR_URL: http://glycemicgpt-sidecar:3456
+              AI_SIDECAR_API_KEY:
+                valueFrom:
+                  secretKeyRef:
+                    name: glycemicgpt-secrets
+                    key: SIDECAR_API_KEY
               # CORS - lock to our domain
               CORS_ORIGINS: '["https://glycemicgpt.${SECRET_DOMAIN}"]'
               # Security
