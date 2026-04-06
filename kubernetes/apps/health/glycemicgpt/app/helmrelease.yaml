@@ -30,8 +30,10 @@ spec:
               - /bin/sh
               - -c
               - |
-                ENCODED_PASS=$(python3 -c "import os,urllib.parse; print(urllib.parse.quote(os.environ['PGPASSWORD'], safe=''))")
-                export DATABASE_URL="postgresql+asyncpg://$${PGUSER}:$${ENCODED_PASS}@$${PGHOST}:$${PGPORT}/$${PGDATABASE}"
+                ENCODED_PGPASS=$(python3 -c "import os,urllib.parse; print(urllib.parse.quote(os.environ['PGPASSWORD'], safe=''))")
+                export DATABASE_URL="postgresql+asyncpg://$${PGUSER}:$${ENCODED_PGPASS}@$${PGHOST}:$${PGPORT}/$${PGDATABASE}"
+                ENCODED_REDISPASS=$(python3 -c "import os,urllib.parse; print(urllib.parse.quote(os.environ['REDIS_PASSWORD'], safe=''))")
+                export REDIS_URL="redis://:$${ENCODED_REDISPASS}@$${REDIS_HOST}:$${REDIS_PORT}/2"
                 exec ./scripts/start.sh
             env:
               # Database - individual vars used to construct DATABASE_URL at runtime
