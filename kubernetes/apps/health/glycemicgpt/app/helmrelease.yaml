@@ -26,21 +26,29 @@ spec:
               repository: ghcr.io/glycemicgpt/glycemicgpt-api
               # renovate: datasource=docker depName=ghcr.io/glycemicgpt/glycemicgpt-api
               tag: 0.3.1
+            command:
+              - /bin/sh
+              - -c
+              - |
+                ENCODED_PASS=$(python3 -c "import os,urllib.parse; print(urllib.parse.quote(os.environ['PGPASSWORD'], safe=''))")
+                export DATABASE_URL="postgresql+asyncpg://${PGUSER}:${ENCODED_PASS}@${PGHOST}:${PGPORT}/${PGDATABASE}"
+                exec ./scripts/start.sh
             env:
-              # Database (CNPG auto-generated app secret for owner role)
-              POSTGRES_USER:
+              # Database - individual vars used to construct DATABASE_URL at runtime
+              # (app requires postgresql+asyncpg:// scheme, CNPG uri lacks +asyncpg driver)
+              PGHOST: glycemicgpt-db-rw.health.svc.cluster.local
+              PGPORT: "5432"
+              PGDATABASE: glycemicgpt
+              PGUSER:
                 valueFrom:
                   secretKeyRef:
                     name: glycemicgpt-db-app
                     key: username
-              POSTGRES_PASSWORD:
+              PGPASSWORD:
                 valueFrom:
                   secretKeyRef:
                     name: glycemicgpt-db-app
                     key: password
-              POSTGRES_DB: glycemicgpt
-              POSTGRES_HOST: glycemicgpt-db-rw.health.svc.cluster.local
-              POSTGRES_PORT: "5432"
               # Valkey (cross-namespace, Redis-compatible) - db 2 to isolate from other apps
               REDIS_PASSWORD:
                 valueFrom:
