@@ -36,6 +36,8 @@ spec:
                 export REDIS_URL="redis://:$${ENCODED_REDISPASS}@$${REDIS_HOST}:$${REDIS_PORT}/2"
                 exec ./scripts/start.sh
             env:
+              # Writable home for libs that cache to $HOME/.config (tconnectsync, huggingface)
+              HOME: /tmp
               # Database - individual vars used to construct DATABASE_URL at runtime
               # (app requires postgresql+asyncpg:// scheme, CNPG uri lacks +asyncpg driver)
               PGHOST: glycemicgpt-db-rw.health.svc.cluster.local
