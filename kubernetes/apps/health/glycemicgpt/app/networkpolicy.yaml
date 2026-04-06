@@ -1,6 +1,7 @@
 ---
 # GlycemicGPT NetworkPolicy - medical data requires strict isolation
-# Three controllers (api, web, sidecar) with distinct access patterns
+# Per-controller policies enforce least-privilege network access
+# Web: internal only | API: DB + cache + medical APIs | Sidecar: AI providers
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -36,30 +37,60 @@ spec:
             - port: "3000"
               protocol: TCP
 
-    # Intra-deployment traffic (Web -> API, API -> Sidecar)
+    # Web -> API only (web frontend calls API backend)
     - fromEndpoints:
         - matchLabels:
             app.kubernetes.io/name: glycemicgpt
+            app.kubernetes.io/controller: web
       toPorts:
         - ports:
             - port: "8000"
               protocol: TCP
+
+    # API -> Sidecar only (API calls AI sidecar for inference)
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: glycemicgpt
+            app.kubernetes.io/controller: api
+      toPorts:
+        - ports:
             - port: "3456"
               protocol: TCP
 
   egress:
-    # Intra-deployment: Web -> API, API -> Sidecar
+    # DNS resolution (all controllers)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Web -> API only
     - toEndpoints:
         - matchLabels:
             app.kubernetes.io/name: glycemicgpt
+            app.kubernetes.io/controller: api
       toPorts:
         - ports:
             - port: "8000"
               protocol: TCP
+
+    # API -> Sidecar
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: glycemicgpt
+            app.kubernetes.io/controller: sidecar
+      toPorts:
+        - ports:
             - port: "3456"
               protocol: TCP
 
-    # API -> CNPG PostgreSQL (health namespace, same cluster)
+    # API -> CNPG PostgreSQL
     - toEndpoints:
         - matchLabels:
             cnpg.io/cluster: glycemicgpt-db
@@ -78,21 +109,23 @@ spec:
             - port: "6379"
               protocol: TCP
 
-    # DNS resolution
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
+    # API -> External medical device APIs (Dexcom, Tandem) and model downloads
+    - toFQDNs:
+        - matchName: share2.dexcom.com
+        - matchName: shareous1.dexcom.com
+        - matchName: share.dexcom.jp
+        - matchName: tdcservices.tandemdiabetes.com
+        - matchName: tdcservices.eu.tandemdiabetes.com
+        - matchName: huggingface.co
       toPorts:
         - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
+            - port: "443"
               protocol: TCP
 
-    # External HTTPS for AI provider APIs (Anthropic, OpenAI) and OIDC
-    - toEntities:
-        - world
+    # Sidecar -> AI provider APIs
+    - toFQDNs:
+        - matchName: api.anthropic.com
+        - matchName: api.openai.com
       toPorts:
         - ports:
             - port: "443"
