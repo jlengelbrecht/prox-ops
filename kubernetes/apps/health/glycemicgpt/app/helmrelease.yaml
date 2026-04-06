@@ -32,10 +32,14 @@ spec:
               - |
                 ENCODED_PGPASS=$(python3 -c "import os,urllib.parse; print(urllib.parse.quote(os.environ['PGPASSWORD'], safe=''))")
                 export DATABASE_URL="postgresql+asyncpg://$${PGUSER}:$${ENCODED_PGPASS}@$${PGHOST}:$${PGPORT}/$${PGDATABASE}"
+                unset PGPASSWORD ENCODED_PGPASS
                 ENCODED_REDISPASS=$(python3 -c "import os,urllib.parse; print(urllib.parse.quote(os.environ['REDIS_PASSWORD'], safe=''))")
                 export REDIS_URL="redis://:$${ENCODED_REDISPASS}@$${REDIS_HOST}:$${REDIS_PORT}/2"
+                unset REDIS_PASSWORD ENCODED_REDISPASS
                 exec ./scripts/start.sh
             env:
+              # Writable home for UID 1000 - persists on glycemicgpt-config PVC
+              HOME: /home/appuser
               # Database - individual vars used to construct DATABASE_URL at runtime
               # (app requires postgresql+asyncpg:// scheme, CNPG uri lacks +asyncpg driver)
               PGHOST: glycemicgpt-db-rw.health.svc.cluster.local
@@ -66,7 +70,7 @@ spec:
               CORS_ORIGINS: '["https://glycemicgpt.${SECRET_DOMAIN}"]'
               # Security
               ALLOW_PRIVATE_AI_URLS: "true"
-              TRUSTED_PROXY_CIDRS: "10.0.0.0/8"
+              TRUSTED_PROXY_CIDRS: "10.42.0.0/16"
               # Logging
               LOG_FORMAT: json
               LOG_LEVEL: INFO
@@ -139,7 +143,7 @@ spec:
                 memory: 2Gi
             securityContext:
               allowPrivilegeEscalation: false
-              readOnlyRootFilesystem: false
+              readOnlyRootFilesystem: true
               capabilities:
                 drop:
                   - ALL
@@ -187,7 +191,7 @@ spec:
                 memory: 1Gi
             securityContext:
               allowPrivilegeEscalation: false
-              readOnlyRootFilesystem: false
+              readOnlyRootFilesystem: true
               capabilities:
                 drop:
                   - ALL
@@ -239,7 +243,7 @@ spec:
                 memory: 512Mi
             securityContext:
               allowPrivilegeEscalation: false
-              readOnlyRootFilesystem: false
+              readOnlyRootFilesystem: true
               capabilities:
                 drop:
                   - ALL
@@ -259,6 +263,14 @@ spec:
           type: RuntimeDefault
 
     persistence:
+      # Writable home directory for API (tconnectsync credentials, huggingface config)
+      config:
+        enabled: true
+        existingClaim: glycemicgpt-config
+        advancedMounts:
+          api:
+            app:
+              - path: /home/appuser
       embeddings-cache:
         enabled: true
         existingClaim: glycemicgpt-embeddings-cache
@@ -273,6 +285,34 @@ spec:
           api:
             app:
               - path: /backups
+      # Ephemeral writable dirs for readOnlyRootFilesystem
+      tmp-api:
+        enabled: true
+        type: emptyDir
+        medium: Memory
+        sizeLimit: 256Mi
+        advancedMounts:
+          api:
+            app:
+              - path: /tmp
+      tmp-web:
+        enabled: true
+        type: emptyDir
+        medium: Memory
+        sizeLimit: 128Mi
+        advancedMounts:
+          web:
+            app:
+              - path: /tmp
+      tmp-sidecar:
+        enabled: true
+        type: emptyDir
+        medium: Memory
+        sizeLimit: 128Mi
+        advancedMounts:
+          sidecar:
+            app:
+              - path: /tmp
 
     service:
       api:
