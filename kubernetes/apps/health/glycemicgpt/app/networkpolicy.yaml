@@ -109,25 +109,11 @@ spec:
             - port: "6379"
               protocol: TCP
 
-    # API -> External medical device APIs (Dexcom, Tandem) and model downloads
-    - toFQDNs:
-        - matchName: share2.dexcom.com
-        - matchName: shareous1.dexcom.com
-        - matchName: share.dexcom.jp
-        - matchName: tdcservices.tandemdiabetes.com
-        - matchName: tdcservices.eu.tandemdiabetes.com
-        - matchName: huggingface.co
-        - matchPattern: "*.huggingface.co"
-        - matchPattern: "*.hf.co"
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP
-
-    # Sidecar -> AI provider APIs
-    - toFQDNs:
-        - matchName: api.anthropic.com
-        - matchName: api.openai.com
+    # External HTTPS (Dexcom, Tandem, HuggingFace, AI providers)
+    # Note: FQDN-based rules caused connectivity issues due to Cilium DNS proxy
+    # timing with CDN endpoints. Using entity-based rule restricted to port 443.
+    - toEntities:
+        - world
       toPorts:
         - ports:
             - port: "443"
