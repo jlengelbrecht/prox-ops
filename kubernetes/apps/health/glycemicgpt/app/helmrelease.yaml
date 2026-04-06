@@ -294,8 +294,7 @@ spec:
       tmp-api:
         enabled: true
         type: emptyDir
-        medium: Memory
-        sizeLimit: 256Mi
+        sizeLimit: 512Mi
         advancedMounts:
           api:
             app:
@@ -326,6 +325,16 @@ spec:
           sidecar:
             app:
               - path: /tmp
+      # Sidecar writable home for Claude/Codex OAuth token storage
+      # Uses emptyDir (tokens lost on restart) since RWO PVC can't share across nodes
+      sidecar-home:
+        enabled: true
+        type: emptyDir
+        sizeLimit: 64Mi
+        advancedMounts:
+          sidecar:
+            app:
+              - path: /home/sidecar
 
     service:
       api:
