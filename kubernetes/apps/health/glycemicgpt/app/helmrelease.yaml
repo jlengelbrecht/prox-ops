@@ -31,7 +31,7 @@ spec:
               - -c
               - |
                 ENCODED_PASS=$(python3 -c "import os,urllib.parse; print(urllib.parse.quote(os.environ['PGPASSWORD'], safe=''))")
-                export DATABASE_URL="postgresql+asyncpg://${PGUSER}:${ENCODED_PASS}@${PGHOST}:${PGPORT}/${PGDATABASE}"
+                export DATABASE_URL="postgresql+asyncpg://$${PGUSER}:$${ENCODED_PASS}@$${PGHOST}:$${PGPORT}/$${PGDATABASE}"
                 exec ./scripts/start.sh
             env:
               # Database - individual vars used to construct DATABASE_URL at runtime
