@@ -147,6 +147,20 @@ spec:
                   http2Origin: true
                   originServerName: glycemicgpt.${SECRET_DOMAIN}
 
+              # GlycemicGPT Discord bot (dashboard + OAuth callbacks for /verify)
+              - hostname: "discord.glycemicgpt.org"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: discord.glycemicgpt.org
+
+              # GlycemicGPT verify vanity URL (302s to discord.glycemicgpt.org/verify)
+              - hostname: "verify.glycemicgpt.org"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: verify.glycemicgpt.org
+
               # NOTE: Apps NOT routed through Cloudflare tunnel:
               # - Plex (DMZ): UDM SE port forward for high bandwidth streaming
               # - Home Assistant (IoT): Internal-only access via cluster DNS
