@@ -154,7 +154,8 @@ spec:
                   http2Origin: true
                   originServerName: discord.glycemicgpt.org
 
-              # GlycemicGPT verify vanity URL (302s to discord.glycemicgpt.org/verify)
+              # GlycemicGPT verify vanity URL (tunnel entry only; any redirect
+              # to discord.glycemicgpt.org/verify is handled by the app HTTPRoute)
               - hostname: "verify.glycemicgpt.org"
                 service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
                 originRequest:
