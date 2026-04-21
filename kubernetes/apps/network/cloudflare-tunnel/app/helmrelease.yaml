@@ -119,6 +119,14 @@ spec:
                   http2Origin: true
                   originServerName: authentik.${SECRET_DOMAIN}
 
+              # Authentik on glycemicgpt.org (same backend; Host header triggers
+              # the glycemicgpt-branded flow/logo via Authentik brand matching)
+              - hostname: "authentik.glycemicgpt.org"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: authentik.glycemicgpt.org
+
               # Media Status (Uptime Kuma public status page)
               - hostname: "media-status.${SECRET_DOMAIN}"
                 service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
