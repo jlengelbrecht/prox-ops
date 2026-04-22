@@ -4,6 +4,10 @@
 # bot repo). Anything secret (tokens, PATs, Fernet keys, DB creds) comes
 # from the ExternalSecrets instead — keep this file free of credentials.
 #
+# Source-of-truth lives in the bot repo at config/config.yml; this is the
+# deployed copy. Keep the two in sync when the schema (YamlConfig class in
+# the bot's config.py) changes.
+#
 # Stakater Reloader rolls the pod when this ConfigMap changes.
 apiVersion: v1
 kind: ConfigMap
@@ -12,13 +16,167 @@ metadata:
   namespace: tools
 data:
   config.yml: |
-    # TODO: populate from the bot repo's config schema.
-    # Fields the bot expects at minimum — update once you've confirmed
-    # against glycemicgpt_bot/config.py:
-    #
-    # discord:
-    #   guild_id: <your-server-id>
-    #   mod_role_ids: []
-    # features:
-    #   tickets: true
-    #   moderation: true
+    # GlycemicGPT Bot Config
+    # Non-sensitive tunables. Secrets live in env vars (ExternalSecrets).
+
+    Guild:
+      # The live GlycemicGPT server ID — keep this as a string to avoid YAML int overflow.
+      ID: "1492605462728806482"
+      # Owners / admins who can bypass protections entirely.
+      # Populate with Discord user IDs. Consider moving to env if disclosure concerns grow.
+      OwnerOverrideIDs: []
+
+    ModLog:
+      # Channel name in Discord (resolved at startup) — not an ID.
+      ChannelName: "mod-log"
+
+    # ---------------------------------------------------------------------------
+    # Protection modules
+    # ---------------------------------------------------------------------------
+
+    AntiNuke:
+      Enabled: true
+      # User IDs whose destructive actions are never counted. Role-based
+      # bypass is driven by the ``protection.bypass`` capability — assign
+      # it to any permission role from the Permissions admin page.
+      WhitelistedUserIDs: []
+      Default:
+        Tiers:
+          Tier1:
+            Protection:
+              duration: "10m"        # rolling window for counters
+              kickThreshold: 3
+              banThreshold: 3
+              channelDeleteThreshold: 2
+              roleDeleteThreshold: 2
+            Actions:
+              notifyUserIDs: []      # populate with owner discord IDs
+              removeRole: true       # strip ManageGuild roles from the offender
+              mute: true             # 10-minute timeout
+              ban: false
+            Log:
+              Title: "Anti-Nuke Tier 1"
+              Color: "#FFA500"
+          Tier2:
+            Protection:
+              duration: "10m"
+              kickThreshold: 5
+              banThreshold: 5
+              channelDeleteThreshold: 4
+              roleDeleteThreshold: 4
+            Actions:
+              notifyUserIDs: []
+              removeRole: true
+              mute: true
+              ban: true
+            Log:
+              Title: "Anti-Nuke Tier 2"
+              Color: "#E74C3C"
+
+    AntiSpam:
+      Enabled: true
+      MsgLimit: 5
+      TimeWindowSeconds: 5
+      TimeoutSeconds: 600
+      # Role bypass → ``protection.bypass`` capability (Permissions admin).
+      WhitelistedChannelNames: []
+      DMUser: true
+      DMMessage: "You were muted for {seconds}s for spamming in {guild}. Please slow down."
+
+    AntiMassMention:
+      Enabled: true
+      Threshold: 5                   # > this many user mentions in one message → trigger
+      TimeoutSeconds: 600
+      # Role bypass → ``protection.bypass`` capability.
+      DMUser: true
+      DMMessage: "You were muted for {seconds}s for mass-mentioning in {guild}."
+
+    AntiHoist:
+      Enabled: true
+      EnableOnUserJoin: true
+      EnableOnUserUpdate: true
+      DisallowedLeadingChars: "!\"#$%&'()*+,-./"
+      DefaultDisplayName: "Member"
+      # Role bypass → ``protection.bypass`` capability.
+
+    AntiRaid:
+      Enabled: true
+      MinAccountAgeDays: 7           # kick accounts younger than this
+      Kick: true
+      DMUser: true
+      DMMessage: |
+        Sorry, GlycemicGPT requires Discord accounts at least {days} days old to join.
+        Your account was created {created_at}. Please try again later.
+
+    ContentFilter:
+      Enabled: true
+      Blacklist:
+        # Patterns: literal strings, wildcard (*), or regex (prefix with "regex:").
+        Patterns:
+          - "regex:(?i)\\bcashapp\\s+me\\b"
+          - "regex:(?i)\\bfree\\s+nitro\\b"
+        Whitelist: []
+      AntiInvite:
+        Enabled: true
+        # Allow invites to these specific guild IDs (empty = no exceptions).
+        AllowedGuildIDs: []
+      # Role bypass → ``protection.bypass`` capability.
+      BypassChannelNames: []
+
+    Welcome:
+      Enabled: true
+      DMTemplate: |
+        **Welcome to GlycemicGPT!**
+
+        We're an open-source, self-hosted diabetes management platform. Some quick links:
+
+        - Website: https://glycemicgpt.org
+        - GitHub: https://github.com/GlycemicGPT/GlycemicGPT
+        - Need help? Open a ticket in #get-help
+
+        If you're a contributor to any GlycemicGPT repo, run `/verify` in any channel
+        to link your GitHub and get your **Contributor** / **Maintainer** / **Sponsor** role.
+
+    # ---------------------------------------------------------------------------
+    # GitHub Linked Roles (Phase 2)
+    # ---------------------------------------------------------------------------
+
+    LinkedRoles:
+      Enabled: true
+      GitHubOrg: "GlycemicGPT"
+      CoreContributorPRs: 5
+      RefreshIntervalHours: 24
+      # Optional: restrict maintainer check to specific repos.
+      # If omitted, ALL repos in the org are considered.
+      # MaintainerRepos: ["GlycemicGPT/GlycemicGPT"]
+
+    # ---------------------------------------------------------------------------
+    # Web dashboard — access is driven by the RBAC tables populated by the
+    # onboarding wizard (see the Permissions admin page). No role-name YAML.
+    # ---------------------------------------------------------------------------
+
+    Dashboard:
+      Enabled: true
+      SessionTTLHours: 24
+
+    # ---------------------------------------------------------------------------
+    # Slash commands
+    # ---------------------------------------------------------------------------
+
+    Commands:
+      Docs:
+        URL: "https://glycemicgpt.org"
+      Quickstart:
+        URL: "https://github.com/GlycemicGPT/GlycemicGPT#getting-started"
+      GitHub:
+        URL: "https://github.com/GlycemicGPT"
+      # /issue <number> pulls from this repo by default (users can be given an override).
+      IssueDefaultRepo: "GlycemicGPT/GlycemicGPT"
+
+    Tickets:
+      Enabled: true
+      OpenCategoryName: "Tickets"
+      ArchiveCategoryName: "Archived Tickets"
+      # Staff membership is resolved via the ``tickets.handle`` capability.
+      AutoDeleteAfterHours: 0
+      ChannelNameTemplate: "ticket-{number:04d}-{username}"
