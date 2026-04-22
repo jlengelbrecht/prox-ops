@@ -117,6 +117,18 @@ spec:
           http:
             port: *port
     persistence:
+      # Non-secret runtime config. Mounted as a single file via subPath so
+      # the container's /app/config/ dir stays writable for any sibling
+      # files the bot may create. Reloader rolls the pod when the
+      # ConfigMap changes.
+      config:
+        enabled: true
+        type: configMap
+        name: glycemicgpt-bot-config
+        globalMounts:
+          - path: /app/config/config.yml
+            subPath: config.yml
+            readOnly: true
       # Writable working dir for any runtime-local state. The bot's
       # persistent data (tickets, moderation log, sessions) all live in
       # Postgres — this PVC is here for log/tmp spooling and future

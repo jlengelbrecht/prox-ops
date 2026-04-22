@@ -1,0 +1,24 @@
+---
+# Non-secret runtime config for the Discord bot. The bot loads this from
+# /app/config/config.yml at startup (see glycemicgpt_bot/config.py in the
+# bot repo). Anything secret (tokens, PATs, Fernet keys, DB creds) comes
+# from the ExternalSecrets instead — keep this file free of credentials.
+#
+# Stakater Reloader rolls the pod when this ConfigMap changes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: glycemicgpt-bot-config
+  namespace: tools
+data:
+  config.yml: |
+    # TODO: populate from the bot repo's config schema.
+    # Fields the bot expects at minimum — update once you've confirmed
+    # against glycemicgpt_bot/config.py:
+    #
+    # discord:
+    #   guild_id: <your-server-id>
+    #   mod_role_ids: []
+    # features:
+    #   tickets: true
+    #   moderation: true
