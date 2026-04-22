@@ -1,0 +1,70 @@
+---
+# Dedicated HTTPRoute for Discord + GitHub OAuth callback paths. Kept
+# separate from the catch-all HTTPRoute so (a) Gateway API's path-match
+# precedence guarantees these paths reach the bot directly, and (b) when
+# the Authentik forward-auth SecurityPolicy lands in the follow-up PR,
+# it'll target only the catch-all route — this one stays unauthenticated
+# so Discord/GitHub can complete redirects with their short-lived `code`.
+# The bot's own state-cookie + HMAC validation gates these endpoints at
+# the application layer.
+#
+# Security headers are duplicated from httproute.yaml because Gateway API
+# filters do not inherit across HTTPRoutes — each route applies only its
+# own filter block. Keep the two lists in sync.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: glycemicgpt-bot-oauth
+  namespace: tools
+spec:
+  parentRefs:
+    - name: envoy-external
+      namespace: network
+      sectionName: https
+  hostnames:
+    - "discord.glycemicgpt.org"
+  rules:
+    # Dashboard login callback — Discord OAuth returns to /dashboard/oauth/callback.
+    - matches:
+        - path:
+            type: Exact
+            value: /dashboard/oauth/callback
+      backendRefs:
+        - name: glycemicgpt-bot
+          port: 8080
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+              - name: Permissions-Policy
+                value: "geolocation=(), microphone=(), camera=(), payment=()"
+    # /verify flow callbacks — Discord + GitHub both land under /linked-role/*.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /linked-role/
+      backendRefs:
+        - name: glycemicgpt-bot
+          port: 8080
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+              - name: Permissions-Policy
+                value: "geolocation=(), microphone=(), camera=(), payment=()"

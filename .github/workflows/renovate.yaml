@@ -57,6 +57,16 @@ jobs:
         uses: renovatebot/github-action@v44.0.2
         env:
           RENOVATE_REPOSITORIES: ${{ github.repository }}
+          # Docker registry auth for private GHCR images.
+          # Classic PAT with read:packages scope on the GlycemicGPT org;
+          # used by Renovate's Docker datasource to discover new tags for
+          # ghcr.io/glycemicgpt/* private images. `password` (not `token`)
+          # is required — GHCR's v2 API needs HTTP Basic, and Renovate picks
+          # `token` first when both are set. `hostType: docker` prevents
+          # the auto-provisioned GitHub App rule from shadowing this one.
+          # See: renovatebot/renovate#25134, #29218.
+          RENOVATE_HOST_RULES: >-
+            [{"matchHost":"ghcr.io","hostType":"docker","username":"jlengelbrecht","password":"${{ secrets.GHCR_READ_PAT }}"}]
         with:
           configurationFile: .github/renovate.json5
           token: "${{ steps.app-token.outputs.token }}"

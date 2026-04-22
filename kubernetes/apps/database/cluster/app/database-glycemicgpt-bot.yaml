@@ -1,0 +1,15 @@
+---
+# GlycemicGPT Discord bot database — declaratively managed on the shared
+# postgres cluster. Owner role is created by the Cluster's managed roles
+# block; this CR just creates the database with that role as owner.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: glycemicgpt-bot
+  namespace: database
+spec:
+  name: glycemicgpt_bot
+  owner: glycemicgpt_bot
+  cluster:
+    name: postgres
+  ensure: present
