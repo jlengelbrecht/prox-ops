@@ -25,6 +25,10 @@ spec:
         pod:
           imagePullSecrets:
             - name: glycemicgpt-bot-ghcr
+          # The bot has zero need for the Kubernetes API. Declining the
+          # token strips the most obvious lateral-movement path if the
+          # container is ever compromised.
+          automountServiceAccountToken: false
           securityContext:
             runAsUser: 10001
             runAsGroup: 10001
@@ -104,6 +108,7 @@ spec:
                 cpu: 50m
                 memory: 256Mi
               limits:
+                cpu: 1000m
                 memory: 1Gi
     service:
       app:

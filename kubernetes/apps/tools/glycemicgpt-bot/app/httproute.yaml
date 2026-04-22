@@ -20,10 +20,25 @@ spec:
   hostnames:
     - "discord.glycemicgpt.org"
   rules:
+    # Explicit allow-list. Anything outside this set (FastAPI's /docs,
+    # /redoc, /openapi.json, or any accidentally-unauth'd endpoint)
+    # returns 404 at the gateway. Add routes here as the app grows.
     - matches:
         - path:
-            type: PathPrefix
+            type: Exact
             value: /
+        - path:
+            type: PathPrefix
+            value: /verify
+        - path:
+            type: PathPrefix
+            value: /dashboard
+        - path:
+            type: PathPrefix
+            value: /static
+        - path:
+            type: PathPrefix
+            value: /assets
       backendRefs:
         - name: glycemicgpt-bot
           port: 8080
@@ -39,5 +54,7 @@ spec:
                 value: "nosniff"
               - name: Referrer-Policy
                 value: "strict-origin-when-cross-origin"
+              - name: Content-Security-Policy
+                value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://cdn.discordapp.com; connect-src 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
               - name: Permissions-Policy
                 value: "geolocation=(), microphone=(), camera=(), payment=()"
