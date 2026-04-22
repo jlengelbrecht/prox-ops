@@ -1,0 +1,43 @@
+---
+# Catch-all HTTPRoute for the bot dashboard. The bot's own Discord-OAuth
+# session layer gates access to dashboard routes internally; Authentik
+# forward-auth will be layered on in a follow-up PR once the Discord-role
+# policy gate is properly architected.
+# More-specific OAuth routes live in httproute-oauth.yaml and win by
+# Gateway API longest-prefix-match.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: glycemicgpt-bot
+  namespace: tools
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: discord.glycemicgpt.org
+spec:
+  parentRefs:
+    - name: envoy-external
+      namespace: network
+      sectionName: https
+  hostnames:
+    - "discord.glycemicgpt.org"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: glycemicgpt-bot
+          port: 8080
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+              - name: Permissions-Policy
+                value: "geolocation=(), microphone=(), camera=(), payment=()"

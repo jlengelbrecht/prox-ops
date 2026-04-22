@@ -1,0 +1,60 @@
+---
+# Default-deny egress + ingress, allow only what the bot actually needs:
+# - ingress from envoy-external (only the gateway reaches the pod)
+# - egress to postgres (database ns)
+# - egress to kube-dns and to the Kubernetes API (discord.py needs no API access,
+#   but Flux/cogs may reach cluster API in future cogs — omit for now)
+# - egress to world:443 for Discord gateway, GitHub/Discord OAuth token endpoints,
+#   GHCR pulls (though pulls happen at node level, not pod)
+# NOTE: Authentik ext_authz egress will be re-added in the Authentik forward-auth
+# follow-up PR.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: glycemicgpt-bot
+  namespace: tools
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: glycemicgpt-bot
+
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-external
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # Postgres (shared CNPG cluster)
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # Outbound 443 for Discord gateway, GitHub/Discord OAuth APIs
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
