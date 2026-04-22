@@ -1,8 +1,10 @@
 ---
 # GlycemicGPT Discord bot — FastAPI + discord.py service.
-# Serves /dashboard (mod cockpit, Authentik-protected), /linked-role/* and
-# /dashboard/oauth/callback (OAuth callbacks, Authentik-exempt), and /verify
-# (Discord Linked Roles entrypoint). Pulls a private image from GHCR.
+# Serves /dashboard (mod cockpit, gated by the bot's own Discord-OAuth
+# session layer — Authentik forward-auth will land in a follow-up PR),
+# /linked-role/* and /dashboard/oauth/callback (Discord/GitHub OAuth
+# callbacks), and /verify (Discord Linked Roles entrypoint).
+# Pulls a private image from GHCR.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
