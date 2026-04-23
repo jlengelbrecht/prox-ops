@@ -18,7 +18,13 @@ spec:
   values:
     controllers:
       glycemicgpt-bot:
-        strategy: RollingUpdate
+        # Single replica backed by a ReadWriteOnce Ceph RBD volume. A
+        # RollingUpdate schedules the new pod before terminating the old,
+        # which deadlocks at FailedAttachVolume whenever the two land on
+        # different nodes (force-detach is ~6min). Recreate tears down
+        # the old pod first, yielding a short (~30s) downtime window per
+        # deploy but eliminating the Multi-Attach stall.
+        strategy: Recreate
         annotations:
           # Roll pod when the runtime env bundle or DB creds change.
           reloader.stakater.com/auto: "true"
