@@ -229,7 +229,7 @@
         '/qbittorrent/',
         '/sabnzbd/',
         '/notifiarr/',
-        '/huntarr/',
+        '/newtarr/',
         '/cleanuparr/',
         '/fileflows/',
       ],
@@ -360,6 +360,7 @@
         '/lightrag/',
         '/qdrant/',
         '/openclaw/',
+        '/glycemicgpt/',
       ],
     },
     {
@@ -563,6 +564,7 @@
         '/lightrag/',
         '/qdrant/',
         '/openclaw/',
+        '/glycemicgpt/',
       ],
     },
     {
@@ -787,6 +789,29 @@
         'ghcr.io/openclaw/openclaw',
       ],
       pinDigests: true,
+    },
+    {
+      description: 'Pin digest for newtarr (floating rolling tag, no semver releases)',
+      matchDatasources: [
+        'docker',
+      ],
+      matchPackageNames: [
+        'ghcr.io/elfhosted/newtarr',
+      ],
+      pinDigests: true,
+    },
+    {
+      description: 'GlycemicGPT semver releases (v-prefixed or bare)',
+      matchDatasources: [
+        'docker',
+      ],
+      matchPackageNames: [
+        'ghcr.io/glycemicgpt/glycemicgpt-api',
+        'ghcr.io/glycemicgpt/glycemicgpt-web',
+        'ghcr.io/glycemicgpt/glycemicgpt-sidecar',
+        'ghcr.io/glycemicgpt/discord-bot',
+      ],
+      extractVersion: '^v?(?<version>.*)$',
     },
     {
       description: 'Flag images using :latest for pinning',

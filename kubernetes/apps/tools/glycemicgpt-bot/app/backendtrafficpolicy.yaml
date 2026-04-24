@@ -1,0 +1,46 @@
+---
+# Envoy Gateway local rate limit — per-proxy-instance token bucket, no
+# external rate-limit-service required. This is a crude global limit
+# (all clients share the bucket on each envoy replica), but it blunts
+# credential-stuffing and naive DDoS against a self-built public web UI
+# while we wait for Authentik forward-auth to land in front.
+#
+# Main dashboard: 300 req/min covers normal browsing with comfortable
+# headroom. OAuth callback: 60 req/min — these paths take a short-lived
+# `code` and validate server-side, so a tighter cap is fine and makes
+# callback abuse visibly slow.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: glycemicgpt-bot
+  namespace: tools
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: glycemicgpt-bot
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit:
+            requests: 300
+            unit: Minute
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: glycemicgpt-bot-oauth
+  namespace: tools
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: glycemicgpt-bot-oauth
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit:
+            requests: 60
+            unit: Minute

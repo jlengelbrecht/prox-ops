@@ -1,24 +1,26 @@
 ---
+# Authentik outpost route - handles login/callback flow for forward auth
+# NO SecurityPolicy on this route (would create auth loop)
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: authentik-external
-  namespace: security
+  name: glycemicgpt-outpost
+  namespace: health
 spec:
   parentRefs:
     - name: envoy-external
       namespace: network
       sectionName: https
   hostnames:
-    - authentik.homelab0.org
-    - authentik.glycemicgpt.org
+    - "glycemicgpt.${SECRET_DOMAIN}"
   rules:
     - matches:
         - path:
             type: PathPrefix
-            value: /
+            value: /outpost.goauthentik.io/
       backendRefs:
         - name: authentik-server
+          namespace: security
           port: 80
       filters:
         - type: ResponseHeaderModifier
@@ -27,8 +29,6 @@ spec:
               - name: Strict-Transport-Security
                 value: "max-age=31536000; includeSubDomains"
               - name: X-Frame-Options
-                value: "SAMEORIGIN"
+                value: "DENY"
               - name: X-Content-Type-Options
                 value: "nosniff"
-              - name: Referrer-Policy
-                value: "strict-origin-when-cross-origin"

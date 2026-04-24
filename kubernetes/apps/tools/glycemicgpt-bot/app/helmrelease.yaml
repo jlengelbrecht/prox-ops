@@ -1,0 +1,154 @@
+---
+# GlycemicGPT Discord bot — FastAPI + discord.py service.
+# Serves /dashboard (mod cockpit, gated by the bot's own Discord-OAuth
+# session layer — Authentik forward-auth will land in a follow-up PR),
+# /linked-role/* and /dashboard/oauth/callback (Discord/GitHub OAuth
+# callbacks), and /verify (Discord Linked Roles entrypoint).
+# Pulls a private image from GHCR.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: glycemicgpt-bot
+  namespace: tools
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: glycemicgpt-bot
+  interval: 1h
+  values:
+    controllers:
+      glycemicgpt-bot:
+        # Single replica backed by a ReadWriteOnce Ceph RBD volume. A
+        # RollingUpdate schedules the new pod before terminating the old,
+        # which deadlocks at FailedAttachVolume whenever the two land on
+        # different nodes (force-detach is ~6min). Recreate tears down
+        # the old pod first, yielding a short (~30s) downtime window per
+        # deploy but eliminating the Multi-Attach stall.
+        strategy: Recreate
+        annotations:
+          # Roll pod when the runtime env bundle or DB creds change.
+          reloader.stakater.com/auto: "true"
+        pod:
+          imagePullSecrets:
+            - name: glycemicgpt-bot-ghcr
+          # The bot has zero need for the Kubernetes API. Declining the
+          # token strips the most obvious lateral-movement path if the
+          # container is ever compromised.
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            fsGroup: 10001
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        containers:
+          app:
+            image:
+              repository: ghcr.io/glycemicgpt/discord-bot
+              # renovate: datasource=docker depName=ghcr.io/glycemicgpt/discord-bot
+              tag: 0.22.0
+            env:
+              PUBLIC_BASE_URL: https://discord.glycemicgpt.org
+              DB_HOST: postgres-rw.database.svc.cluster.local
+              DB_PORT: "5432"
+              DB_NAME: glycemicgpt_bot
+              # The bot reads these and assembles DATABASE_URL at startup
+              # (see scripts/entrypoint.sh in the bot repo).
+              DB_USER:
+                valueFrom:
+                  secretKeyRef:
+                    name: glycemicgpt-bot-db
+                    key: username
+              DB_PASSWORD:
+                valueFrom:
+                  secretKeyRef:
+                    name: glycemicgpt-bot-db
+                    key: password
+            envFrom:
+              - secretRef:
+                  name: glycemicgpt-bot-secrets
+            probes:
+              liveness: &probes
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: &port 8080
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                <<: *probes
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: *port
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 3
+                  failureThreshold: 3
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: *port
+                  # Alembic migrations run before the web server binds,
+                  # so startup probe needs slack on first boot.
+                  initialDelaySeconds: 10
+                  periodSeconds: 5
+                  timeoutSeconds: 3
+                  failureThreshold: 60
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 50m
+                memory: 256Mi
+              limits:
+                cpu: 1000m
+                memory: 1Gi
+    service:
+      app:
+        controller: glycemicgpt-bot
+        ports:
+          http:
+            port: *port
+    persistence:
+      # Non-secret runtime config. Mounted as a single file via subPath so
+      # the container's /app/config/ dir stays writable for any sibling
+      # files the bot may create. Reloader rolls the pod when the
+      # ConfigMap changes.
+      config:
+        enabled: true
+        type: configMap
+        name: glycemicgpt-bot-config
+        globalMounts:
+          - path: /app/config/config.yml
+            subPath: config.yml
+            readOnly: true
+      # Writable working dir for any runtime-local state. The bot's
+      # persistent data (tickets, moderation log, sessions) all live in
+      # Postgres — this PVC is here for log/tmp spooling and future
+      # file-based features. 2Gi is plenty.
+      data:
+        enabled: true
+        type: persistentVolumeClaim
+        storageClass: ceph-block
+        accessMode: ReadWriteOnce
+        size: 2Gi
+        globalMounts:
+          - path: /app/data
+      # Scratch tmp because readOnlyRootFilesystem is true.
+      tmp:
+        type: emptyDir
+        globalMounts:
+          - path: /tmp
