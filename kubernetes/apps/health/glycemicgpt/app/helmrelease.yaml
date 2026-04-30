@@ -84,8 +84,10 @@ spec:
               SESSION_EXPIRE_HOURS: "24"
               ACCESS_TOKEN_EXPIRE_MINUTES: "60"
               REFRESH_TOKEN_EXPIRE_DAYS: "30"
-              # Data sync (disabled by default - configure device credentials first)
-              DEXCOM_SYNC_ENABLED: "false"
+              # Data sync - Dexcom Share polling runs server-side; Tandem pump events
+              # are uploaded by the mobile client via /api/integrations/pump/push,
+              # so server-side Tandem sync stays off to avoid racing the mobile uploader.
+              DEXCOM_SYNC_ENABLED: "true"
               TANDEM_SYNC_ENABLED: "false"
               # Alerts
               ALERT_CHECK_ENABLED: "true"
