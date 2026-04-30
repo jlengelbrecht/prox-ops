@@ -19,6 +19,11 @@ spec:
     controllers:
       # FastAPI backend - core API server
       api:
+        # Singleton: the in-process APScheduler runs the Dexcom Share poll
+        # and Tandem Cloud Upload jobs. Multiple replicas would duplicate
+        # polls (DB unique constraint absorbs duplicates, but Dexcom Share
+        # rate-limits would not). Pin to 1 alongside the Recreate strategy.
+        replicas: 1
         strategy: Recreate
         containers:
           app:
