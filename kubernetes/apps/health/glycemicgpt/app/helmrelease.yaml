@@ -19,9 +19,9 @@ spec:
     controllers:
       # FastAPI backend - core API server
       api:
-        # Singleton: the in-process APScheduler runs the Dexcom Share poll
+        # Singleton: the in-process APScheduler runs the Dexcom poll
         # and Tandem Cloud Upload jobs. Multiple replicas would duplicate
-        # polls (DB unique constraint absorbs duplicates, but Dexcom Share
+        # polls (DB unique constraint absorbs duplicates, but Dexcom
         # rate-limits would not). Pin to 1 alongside the Recreate strategy.
         replicas: 1
         strategy: Recreate
@@ -89,7 +89,7 @@ spec:
               SESSION_EXPIRE_HOURS: "24"
               ACCESS_TOKEN_EXPIRE_MINUTES: "60"
               REFRESH_TOKEN_EXPIRE_DAYS: "30"
-              # Data sync - Dexcom Share polling runs server-side; Tandem pump events
+              # Data sync - Dexcom polling runs server-side; Tandem pump events
               # are uploaded by the mobile client via /api/integrations/pump/push,
               # so server-side Tandem sync stays off to avoid racing the mobile uploader.
               DEXCOM_SYNC_ENABLED: "true"
