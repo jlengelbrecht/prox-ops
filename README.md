@@ -1,6 +1,6 @@
 <div align="center">
 
-### 🚀 &nbsp; Prox-Ops &nbsp; 🏠
+# 🚀 &nbsp; Prox-Ops &nbsp; 🏠
 
 _A production-grade Kubernetes homelab on Proxmox — Talos Linux, Flux GitOps, Cilium, Rook-Ceph, and GPU-accelerated AI._
 
@@ -223,7 +223,7 @@ GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Fa
 
 ## 📁 Repository Layout
 
-```
+```text
 prox-ops/
 ├── kubernetes/
 │   ├── apps/                # GitOps-managed workloads (one dir per namespace)
@@ -316,7 +316,7 @@ Every change to a workload is a pull request:
 3. Merge to `main` → Flux reconciles within ~30 seconds.
 4. Renovate keeps Helm charts, container images, and Talos versions current via automated PRs.
 
-Direct `kubectl apply` is reserved for read-only inspection and emergency rollback.
+Direct `kubectl` against the cluster is limited to read-only inspection (`get`, `describe`, `logs`); the only state-mutating operation that bypasses Git is an emergency rollback, and only with explicit approval.
 
 ## 🙏 Credits
 
