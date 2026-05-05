@@ -2,6 +2,12 @@
 
 <img src=".github/assets/header.gif" alt="Prox-Ops" width="500"/>
 
+</div>
+
+---
+
+<div align="center">
+
 _Production-grade Kubernetes homelab — Proxmox VE • Talos Linux • Flux GitOps • Cilium • Rook-Ceph • GPU-accelerated AI._
 
 </div>
