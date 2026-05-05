@@ -2,7 +2,35 @@
 
 # 🚀 &nbsp; Prox-Ops &nbsp; 🏠
 
-_A production-grade Kubernetes homelab on Proxmox — Talos Linux, Flux GitOps, Cilium, Rook-Ceph, and GPU-accelerated AI._
+_Production-grade Kubernetes homelab — Proxmox VE • Talos Linux • Flux GitOps • Cilium • Rook-Ceph • GPU-accelerated AI._
+
+</div>
+
+<div align="center">
+
+[![Talos Latest](https://img.shields.io/github/v/release/siderolabs/talos?label=Talos%20Latest&logo=talos&logoColor=white&color=blue&style=for-the-badge)](https://github.com/siderolabs/talos/releases)
+[![Talos Pinned](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/talos/talenv.yaml&query=$.talosVersion&label=Talos%20Pinned&logo=talos&logoColor=white&color=blue&style=for-the-badge)](./talos/talenv.yaml)
+[![Kubernetes Latest](https://img.shields.io/github/v/release/siderolabs/kubelet?label=K8s%20Latest&logo=kubernetes&logoColor=white&color=blue&style=for-the-badge)](https://github.com/siderolabs/kubelet/releases)
+[![Kubernetes Pinned](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/talos/talenv.yaml&query=$.kubernetesVersion&label=K8s%20Pinned&logo=kubernetes&logoColor=white&color=blue&style=for-the-badge)](./talos/talenv.yaml)
+
+</div>
+
+<div align="center">
+
+[![Flux Local](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/flux-local.yaml?branch=main&label=flux-local&logo=flux&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/flux-local.yaml)
+[![Security Gate](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/security-gate.yaml?branch=main&label=security&logo=github&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/security-gate.yaml)
+[![Release](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/release.yaml?branch=main&label=release&logo=github&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/release.yaml)
+[![Renovate](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/renovate.yaml?branch=main&label=renovate&logo=renovatebot&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/renovate.yaml)
+[![Cattle Upgrade](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/upgrade-cattle.yaml?branch=main&label=cattle&logo=talos&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/upgrade-cattle.yaml)
+[![Pets Upgrade](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/upgrade-pets.yaml?branch=main&label=pets&logo=talos&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/upgrade-pets.yaml)
+
+</div>
+
+<div align="center">
+
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](#-license)
+[![Last Commit](https://img.shields.io/github/last-commit/jlengelbrecht/prox-ops/main?style=flat-square&logo=github)](https://github.com/jlengelbrecht/prox-ops/commits/main)
+[![Top Language](https://img.shields.io/github/languages/top/jlengelbrecht/prox-ops?style=flat-square&logo=github)](https://github.com/jlengelbrecht/prox-ops)
 
 </div>
 
@@ -10,98 +38,67 @@ _A production-grade Kubernetes homelab on Proxmox — Talos Linux, Flux GitOps, 
 
 ## 📖 Overview
 
-Prox-Ops is the complete infrastructure-as-code definition for a 15-node Kubernetes cluster running on a four-host Proxmox VE cluster. It is the operational backbone of a homelab that runs media services, home automation, observability tooling, and a self-hosted AI/RAG stack on consumer GPUs.
+Prox-Ops is the complete infrastructure-as-code definition for a 15-node Kubernetes cluster running on a four-host Proxmox VE cluster. It runs media services, home automation, observability tooling, and a self-hosted AI/RAG stack on consumer GPUs — all reconciled from this repository by Flux.
 
-The repository's design goals are:
+The design goals are:
 
 - **Reproducibility** — every node, network, and workload is declared in Git. The cluster can be rebuilt from a clean Proxmox install.
 - **Cattle, not pets** — Talos nodes are immutable and replaced rather than patched. Image Factory schematics are the single source of truth for kernel args and drivers.
-- **GitOps end-to-end** — Flux v2 reconciles every workload from this repository. Direct `kubectl apply` is reserved for emergency rollback only.
+- **GitOps end-to-end** — Flux v2 reconciles every workload from `main`. Direct cluster mutation is reserved for emergency rollback.
 - **Encrypted by default** — secrets live in Git as SOPS+age ciphertext, fed into the cluster via External Secrets Operator + 1Password Connect.
 
-## 🧱 Stack at a Glance
+## ✨ Features
 
-| Layer | Technology | Notes |
-| --- | --- | --- |
-| Hypervisor | **Proxmox VE 8.x** | 4 hosts: `baldar`, `heimdall`, `odin`, `thor` |
-| Node OS | **Talos Linux v1.12.4** | UKI/SDBoot, Image Factory schematics |
-| Kubernetes | **v1.34.1** | 3 control-plane + 12 workers (HA via VIP) |
-| GitOps | **Flux v2** | Reconciles `kubernetes/apps` from `main` |
-| CNI (primary) | **Cilium** | kube-proxy replacement, L2 LoadBalancer |
-| CNI (secondary) | **Multus** | Per-pod VLAN attachments (DMZ, IoT) |
-| Ingress | **Envoy Gateway** | Internal + external HTTP routes |
-| Storage | **Rook-Ceph** (external) | Talks to Proxmox-managed Ceph |
-| External access | **Cloudflare Tunnel** | No inbound ports on the WAN |
-| Internal DNS | **k8s-gateway** | LAN-resolvable cluster hostnames |
-| External DNS | **external-dns** | Cloudflare zone automation |
-| Secrets | **SOPS + age**, **External Secrets + 1Password** | Encrypted-at-rest, fetched at deploy time |
-| GPU runtime | **NVIDIA device plugin + DCGM** | Time-slicing on RTX A5000, A2000 |
-| Image cache | **Spegel** | Peer-to-peer OCI mirror |
+- **Talos Linux** on every Kubernetes node — immutable, API-driven, no SSH
+- **Cilium** as the only CNI — kube-proxy replacement, L2 LoadBalancer, network policy
+- **Multus** for VLAN-attached pods — DMZ workloads and home-automation pods get their own L2 segments via macvlan
+- **Rook-Ceph** consuming an external Proxmox-managed Ceph cluster for both block (RBD) and shared (CephFS) storage
+- **Envoy Gateway** as the in-cluster ingress, fronted by **Cloudflare Tunnel** for WAN access (zero open inbound ports)
+- **Renovate** keeps Helm charts, container images, and Talos versions current — versions ship to the cluster via PRs, not direct `talosctl upgrade`
+- **NVIDIA RTX A5000 + A2000** for AI inference; GPU drivers are baked into a dedicated Image Factory schematic so non-GPU nodes stay lean
+- **CodeRabbit + Gitleaks + GitGuardian + Flux local validation** on every PR
+- **Self-hosted GitHub Actions runners** (`gha-runner-scale-set`) for CI
 
-## 🖥️ Hardware
+## 🔧 Hardware
 
 ### Proxmox Hosts
 
-| Host | Role |
-| --- | --- |
-| `baldar` | Compute — runs `k8s-ctrl-1`, `k8s-work-1..3` |
-| `heimdall` | Compute + GPU passthrough — runs `k8s-ctrl-2`, `k8s-work-4` (RTX A2000), `k8s-work-5..6` |
-| `odin` | Compute — runs `k8s-ctrl-3`, `k8s-work-7..9` |
-| `thor` | Compute + GPU passthrough — runs `k8s-work-10` (RTX A5000), `k8s-work-11..12` |
+| Host | Model | CPU | Threads | RAM | Role |
+| --- | --- | --- | --- | --- | --- |
+| **baldar** | Dell PowerEdge R730xd | 2× Xeon E5-2697 v3 @ 2.60 GHz | 56 | 128 GB | Compute |
+| **heimdall** | Dell PowerEdge R730xd | 2× Xeon E5-2697 v3 @ 2.60 GHz | 56 | 256 GB | Compute + GPU passthrough |
+| **odin** | Dell PowerEdge R740xd | 2× Xeon Gold 6148 @ 2.40 GHz | 80 | 128 GB | Compute |
+| **thor** | Dell PowerEdge R740xd | 2× Xeon Gold 6148 @ 2.40 GHz | 80 | 256 GB | Compute + GPU passthrough |
 
-### Kubernetes Nodes
+### Kubernetes VM Layout
 
-The cluster runs 3 control-plane nodes (`k8s-ctrl-1..3`) and 12 worker nodes (`k8s-work-1..12`) on `10.20.67.0/24`. The Kubernetes API is served on a VIP at `10.20.67.20:6443`.
+Each Proxmox host runs a slice of the cluster. The mapping is intentionally symmetric so any single host can be evacuated for maintenance without losing quorum.
 
-### GPU Resources
-
-| Node | GPU | VRAM | Primary Use |
+| Host | Control plane | Workers | GPU |
 | --- | --- | --- | --- |
-| `k8s-work-4` | NVIDIA RTX A2000 | 12 GB | Lightweight inference, embeddings |
-| `k8s-work-10` | NVIDIA RTX A5000 | 24 GB | Ollama, LiteLLM, voice models |
+| `baldar` | `k8s-ctrl-1` | `k8s-work-1`, `k8s-work-2`, `k8s-work-3` | — |
+| `heimdall` | `k8s-ctrl-2` | `k8s-work-4`, `k8s-work-5`, `k8s-work-6` | NVIDIA RTX A2000 → `k8s-work-4` |
+| `odin` | `k8s-ctrl-3` | `k8s-work-7`, `k8s-work-8`, `k8s-work-9` | — |
+| `thor` | — | `k8s-work-10`, `k8s-work-11`, `k8s-work-12` | NVIDIA RTX A5000 → `k8s-work-10` |
 
-GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Factory schematic — only the GPU nodes use it. All other workers run the lean base schematic.
+GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Factory schematic — only GPU workers use it. All other nodes run the lean base schematic.
 
-## 🌐 Network
+## 🌐 Networking
 
-### VLANs
-
-| VLAN | Purpose | Subnet | Gateway |
-| --- | --- | --- | --- |
-| native | Cluster nodes | `10.20.66.0/23` | `10.20.66.1` |
-| 81 | DMZ — public-facing pods (macvlan via Multus) | `10.20.81.0/24` | `10.20.81.1` |
-| 62 | IoT — Home Assistant + smart devices | `10.20.62.0/23` | `10.20.62.1` |
-
-### Cluster CIDRs
-
-| Range | Purpose |
-| --- | --- |
-| `10.42.0.0/16` | Pod network |
-| `10.43.0.0/16` | Service network |
-
-### Named Service IPs
-
-| Service | IP | Type |
-| --- | --- | --- |
-| Kubernetes API | `10.20.67.20` | Talos VIP |
-| `k8s-gateway` (internal DNS) | `10.20.67.21` | Cilium LB |
-| Envoy Gateway (internal) | `10.20.67.22` | Cilium LB |
-| Envoy Gateway (external / Cloudflare Tunnel) | `10.20.67.23` | Cilium LB |
-
-### LoadBalancer Pools
-
-| Pool | Range |
-| --- | --- |
-| Native | `10.20.66.0/23` (services pull from here by default) |
-| DMZ (VLAN 81) | `10.20.81.100`–`10.20.81.150` |
-| IoT (VLAN 62) | `10.20.62.100`–`10.20.62.150` |
+- **CNI** — Cilium replaces kube-proxy and handles L2 LoadBalancer announcement onto the home LAN.
+- **Secondary CNI** — Multus attaches pods to additional VLANs via macvlan when a workload needs an externally-routable address (DMZ services, IoT integrations).
+- **Internal DNS** — `k8s-gateway` answers cluster service hostnames on the LAN; UniFi forwards selected zones to it.
+- **External DNS** — `external-dns` reconciles a Cloudflare zone for public records.
+- **Ingress** — Envoy Gateway (Gateway API) provides both internal (LAN) and external (WAN-via-Cloudflare-Tunnel) listeners.
+- **WAN access** — every public service is reached through a Cloudflare Tunnel; the homelab has no inbound ports open.
+- **Service mesh / observability** — Cilium Hubble for flow visibility; Prometheus + Loki for metrics and logs.
 
 ## 📦 Applications
 
 <details>
-<summary><b>Click to expand the full inventory</b></summary>
+<summary><b>Click to expand the full per-namespace inventory</b></summary>
 
-### Core Infrastructure (`kube-system`)
+### Core (`kube-system`)
 
 | App | Purpose |
 | --- | --- |
@@ -196,7 +193,7 @@ GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Fa
 
 | App | Purpose |
 | --- | --- |
-| Home Assistant | Home automation platform on VLAN 62 |
+| Home Assistant | Home automation platform on a dedicated VLAN |
 
 ### Health (`health`)
 
@@ -237,7 +234,7 @@ prox-ops/
 │   │   ├── github-actions/  # ARC self-hosted runners
 │   │   ├── health/          # GlycemicGPT
 │   │   ├── infra-proxies/   # Internal proxies for Proxmox, TrueNAS, etc.
-│   │   ├── iot/             # Home Assistant (VLAN 62)
+│   │   ├── iot/             # Home Assistant
 │   │   ├── kube-system/     # Cilium, Multus, GPU plugins, Tetragon, ...
 │   │   ├── mcp/             # ToolHive MCP platform
 │   │   ├── media/           # Plex + arr stack + Uptime Kuma
@@ -274,8 +271,8 @@ flux check
 task reconcile
 
 # Talos
-talosctl --nodes 10.20.67.1 dashboard
-talosctl --nodes 10.20.67.1 dmesg --follow
+talosctl --nodes <node> dashboard
+talosctl --nodes <node> dmesg --follow
 
 # Logs
 flux logs --follow
@@ -296,7 +293,7 @@ task --list
 
 ## 🚀 Bootstrapping a New Cluster
 
-This repo is opinionated to a specific homelab, but the bootstrap flow is the same one documented by [`onedr0p/cluster-template`](https://github.com/onedr0p/cluster-template) — the project this layout was originally derived from. At a high level:
+The bootstrap flow follows the [`onedr0p/cluster-template`](https://github.com/onedr0p/cluster-template) pattern this layout was originally derived from. At a high level:
 
 1. **Provision Proxmox** with a Ceph cluster reachable from your Talos VMs.
 2. **Generate Talos VMs** via `terraform/` (creates Image Factory templates and clones VMs from them).
@@ -305,7 +302,7 @@ This repo is opinionated to a specific homelab, but the bootstrap flow is the sa
 5. **Bootstrap apps**: `task bootstrap:apps` — installs Flux and seeds the cluster from this repository.
 6. **Verify**: `kubectl get nodes`, `cilium status`, `flux check`.
 
-Per-node specifics (MACs, install disks, schematic IDs) are kept in `nodes.yaml`, which is intentionally **not** committed — see `.gitignore` for the local-only files you'll need to populate.
+Per-node specifics (MACs, install disks, schematic IDs, addresses) are kept in `nodes.yaml`, which is intentionally **not** committed — see `.gitignore` for the local-only files you'll need to populate.
 
 ## 🔄 GitOps Workflow
 
@@ -321,11 +318,11 @@ Direct `kubectl` against the cluster is limited to read-only inspection (`get`, 
 ## 🙏 Credits
 
 - Cluster layout, Renovate configuration, and Taskfile patterns are adapted from [`onedr0p/cluster-template`](https://github.com/onedr0p/cluster-template).
+- README structure inspired by [`onedr0p/home-ops`](https://github.com/onedr0p/home-ops).
 - Talos image schematics are produced via the [Sidero Image Factory](https://factory.talos.dev/).
-- Inspiration for the README structure: [`onedr0p/home-ops`](https://github.com/onedr0p/home-ops).
 
 External documentation: [Talos](https://www.talos.dev/) · [Kubernetes](https://kubernetes.io/) · [Flux](https://fluxcd.io/) · [Cilium](https://docs.cilium.io/) · [Rook](https://rook.io/) · [Multus](https://github.com/k8snetworkplumbingwg/multus-cni) · [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) · [SOPS](https://github.com/getsops/sops) · [1Password Connect](https://developer.1password.com/docs/connect/).
 
 ## 📜 License
 
-This repository is published under the MIT License — the same terms as the upstream [`onedr0p/cluster-template`](https://github.com/onedr0p/cluster-template) it was derived from.
+Published under the MIT License — the same terms as the upstream [`onedr0p/cluster-template`](https://github.com/onedr0p/cluster-template) it was derived from.
