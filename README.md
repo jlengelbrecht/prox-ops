@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/.github/assets/header.svg" alt="Prox-Ops" width="500"/>
+<img src="https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/.github/assets/header.gif" alt="Prox-Ops" width="500"/>
 
 # Prox-Ops
 
