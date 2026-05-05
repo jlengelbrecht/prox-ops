@@ -1,418 +1,334 @@
-# Prox-Ops - Kubernetes Homelab on Proxmox
+<div align="center">
 
-A production-grade Kubernetes homelab cluster running on Proxmox with Talos Linux, Flux GitOps, multi-VLAN networking, and Ceph storage integration.
+<img src=".github/assets/header.gif" alt="Prox-Ops" width="500"/>
 
-## Overview
-
-This repository contains the complete infrastructure-as-code for a highly available Kubernetes cluster with:
-
-- **High Availability**: 3-node control plane with Talos Linux
-- **Advanced Networking**: Cilium CNI with Multus for multi-VLAN support (DMZ, IoT)
-- **Persistent Storage**: Rook-Ceph integration with Proxmox Ceph cluster
-- **GitOps**: Flux v2 for declarative cluster and application management
-- **Security**: SOPS encryption, network policies, RBAC
-- **External Access**: Cloudflare Tunnel for secure external connectivity
-
-## Architecture
-
-### Infrastructure
-
-```
-Proxmox Cluster
-├── Control Plane Nodes: 3 VMs (10.20.67.1-3)
-├── Worker Nodes: 12 VMs (10.20.67.4-15)
-├── Ceph Storage Cluster: Managed via Proxmox
-└── Network: 10.20.67.0/24 (main) + VLAN 81 (DMZ) + VLAN 62 (IoT)
-```
-
-### Technology Stack
-
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| **Operating System** | Talos Linux 1.11.3 | Immutable, API-driven Kubernetes OS |
-| **Container Runtime** | containerd | Built into Talos |
-| **CNI (Primary)** | Cilium | Pod networking, LoadBalancer, observability |
-| **CNI (Secondary)** | Multus | Multi-network (VLAN) support |
-| **GitOps** | Flux v2 | Continuous deployment from Git |
-| **Storage** | Rook-Ceph | Persistent storage via Proxmox Ceph |
-| **Ingress** | Envoy Gateway | Traffic routing and TLS termination |
-| **External Access** | Cloudflare Tunnel | Secure external connectivity |
-| **Secrets** | SOPS + Age | Encrypted secrets in Git |
-| **DNS (Internal)** | k8s-gateway | Internal DNS for services |
-| **DNS (External)** | external-dns | Cloudflare DNS automation |
-
-## Network Architecture
-
-```
-┌─────────────────────────────────────────────────────┐
-│  Kubernetes Cluster (10.20.67.0/24)                 │
-│                                                      │
-│  ┌───────────────────────────────────────────────┐  │
-│  │  Standard Pods                                │  │
-│  │  - eth0: Cilium network (10.42.0.0/16)       │  │
-│  │  - Default: All cluster services             │  │
-│  └───────────────────────────────────────────────┘  │
-│                                                      │
-│  ┌───────────────────────────────────────────────┐  │
-│  │  DMZ Pods (Public-Facing)                     │  │
-│  │  - eth0: Cilium (cluster communication)      │  │
-│  │  - net1: VLAN 81 (external access)           │  │
-│  └───────────────────────────────────────────────┘  │
-│                                                      │
-│  ┌───────────────────────────────────────────────┐  │
-│  │  IoT Pods (Home Automation)                   │  │
-│  │  - eth0: Cilium (cluster communication)      │  │
-│  │  - net1: VLAN 62 (IoT devices)               │  │
-│  └───────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
-```
-
-## Storage Architecture
-
-```
-Kubernetes Cluster (Rook-Ceph CSI)
-           │
-           │ Ceph Protocol
-           ▼
-Proxmox Ceph Cluster (External)
-  ├── RBD Pool: kubernetes-rbd (Block storage)
-  └── CephFS: kubernetes-cephfs (Shared storage)
-```
-
-## Repository Structure
-
-```
-prox-ops/
-├── kubernetes/
-│   ├── apps/                     # Application deployments
-│   │   ├── cert-manager/         # TLS certificates
-│   │   ├── flux-system/          # Flux operator
-│   │   ├── kube-system/          # Core system components
-│   │   │   ├── cilium/           # Primary CNI
-│   │   │   ├── multus/           # Multi-network CNI
-│   │   │   ├── coredns/          # DNS
-│   │   │   └── ...
-│   │   ├── network/              # Networking components
-│   │   ├── rook-ceph/            # Storage orchestration
-│   │   ├── dmz/                  # DMZ VLAN workloads
-│   │   └── iot/                  # IoT VLAN workloads
-│   ├── components/               # Shared components
-│   └── flux/                     # Flux configuration
-├── talos/                        # Talos configuration
-│   ├── patches/                  # Talos patches
-│   │   ├── global/               # All nodes
-│   │   ├── controller/           # Controllers only
-│   │   └── worker/               # Workers only
-│   ├── talconfig.yaml            # Talhelper config
-│   └── talsecret.sops.yaml       # Encrypted secrets
-├── bootstrap/                    # Pre-Flux bootstrap
-├── .github/workflows/            # CI/CD pipelines
-├── cluster.yaml                  # Cluster configuration
-├── nodes.yaml                    # Node definitions
-├── Taskfile.yaml                 # Task automation
-└── .mise.toml                    # Developer environment
-```
-
-## Quick Start
-
-### Prerequisites
-
-- 15 Talos Linux VMs running on Proxmox (10.20.67.1-15)
-- Proxmox Ceph cluster configured
-- Cloudflare account with domain
-- CachyOS workstation (or Linux with Nix)
-
-### Installation (90 minutes)
-
-**Detailed guides available**:
-- [QUICKSTART.md](./QUICKSTART.md) - Fast-track guide (experienced users)
-- [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) - Comprehensive step-by-step guide
-- [DEPENDENCIES.md](./DEPENDENCIES.md) - Tool installation guide
-
-**Quick summary**:
-
-```bash
-# 1. Install dependencies (5 min)
-nix profile install nixpkgs#mise
-eval "$(mise activate bash)"
-cd /home/devbox/repos/jlengelbrecht/prox-ops/
-mise trust && pip install pipx && mise install
-
-# 2. Initialize repository (10 min)
-task init
-
-# 3. Discover node information (30 min)
-nmap -Pn -n -p 50000 10.20.67.0/24
-# For each node: talosctl disks/links --nodes <ip> --insecure
-
-# 4. Create Talos schematic at https://factory.talos.dev/ (5 min)
-
-# 5. Configure cluster (20 min)
-# Edit cluster.yaml and nodes.yaml
-task configure
-
-# 6. Create Cloudflare tunnel (10 min)
-cloudflared tunnel login
-cloudflared tunnel create --credentials-file cloudflare-tunnel.json kubernetes
-
-# 7. Commit and bootstrap (30 min)
-git add -A && git commit -m "chore: initial configuration" && git push
-task bootstrap:talos
-git add -A && git commit -m "chore: add encrypted secrets" && git push
-task bootstrap:apps
-
-# 8. Verify cluster (5 min)
-kubectl get nodes
-cilium status
-flux check
-```
-
-## Advanced Features
-
-### Multi-VLAN Networking
-
-Deploy workloads to specific VLANs for network isolation:
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: dmz-app
-  annotations:
-    k8s.v1.cni.cncf.io/networks: dmz-vlan81  # Attach to DMZ VLAN
-spec:
-  containers:
-  - name: app
-    image: nginx
-```
-
-See [VLAN_SETUP.md](./VLAN_SETUP.md) for detailed configuration.
-
-### Persistent Storage
-
-Request storage from Proxmox Ceph cluster:
-
-```yaml
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: my-data
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: rook-ceph-block
-  resources:
-    requests:
-      storage: 10Gi
-```
-
-See [STORAGE_SETUP.md](./STORAGE_SETUP.md) for Rook-Ceph configuration.
-
-### GitOps Application Deployment
-
-Add applications by committing Kubernetes manifests:
-
-```bash
-# 1. Create app structure
-mkdir -p kubernetes/apps/myapp/myapp/app
-
-# 2. Add Flux Kustomization (ks.yaml)
-# 3. Add HelmRelease or manifests
-# 4. Commit and push
-
-git add kubernetes/apps/myapp/
-git commit -m "feat: add myapp"
-git push
-
-# 5. Flux automatically deploys
-task reconcile
-```
-
-## Included Applications
-
-After bootstrap, the following are deployed:
-
-**Core Infrastructure**:
-- Cilium (CNI, LoadBalancer, NetworkPolicy)
-- CoreDNS (Cluster DNS)
-- Metrics Server (Resource metrics)
-- Spegel (Local OCI mirror)
-- Reloader (ConfigMap/Secret auto-reload)
-
-**Certificates**:
-- cert-manager (TLS certificate management)
-- ClusterIssuers for Let's Encrypt
-
-**Networking**:
-- Envoy Gateway (Ingress controller)
-- k8s-gateway (Internal DNS)
-- external-dns (Cloudflare DNS automation)
-- Cloudflare Tunnel (External access)
-
-**GitOps**:
-- Flux Operator (Flux management)
-- Flux Instance (Git synchronization)
-
-## Customization
-
-### Add New Application
-
-1. Create directory: `kubernetes/apps/<namespace>/<app>/app/`
-2. Add manifests (HelmRelease, Deployment, etc.)
-3. Create Flux Kustomization: `kubernetes/apps/<namespace>/<app>/ks.yaml`
-4. Update namespace kustomization: `kubernetes/apps/<namespace>/kustomization.yaml`
-5. Commit and push
-
-### Add Monitoring Stack
-
-See [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md#task-3-set-up-monitoring) for Prometheus, Grafana, and Loki setup.
-
-### Configure Backups
-
-Deploy Velero for cluster and volume backups. See storage guide for details.
-
-## Maintenance
-
-### Update Cluster
-
-```bash
-# Update Flux
-flux install --export > kubernetes/flux/install.yaml
-git commit -am "chore: update flux" && git push
-
-# Update Talos
-talosctl upgrade --nodes <nodes> --image <new-image>
-
-# Update applications (via Renovate PR)
-# Merge Renovate PRs to update Helm charts and images
-```
-
-### Troubleshooting
-
-**Nodes not Ready**:
-```bash
-kubectl describe node <node>
-kubectl logs -n kube-system -l app.kubernetes.io/name=cilium
-```
-
-**Flux not syncing**:
-```bash
-flux logs --follow
-flux reconcile source git flux-system
-```
-
-**Storage issues**:
-```bash
-kubectl logs -n rook-ceph -l app=csi-rbdplugin
-kubectl describe pvc <pvc-name>
-```
-
-See [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md#appendix-b-troubleshooting-guide) for comprehensive troubleshooting.
-
-## Network Allocations
-
-| Purpose | IP/Range | Type |
-|---------|----------|------|
-| Control Nodes | 10.20.67.1-3 | Static |
-| Worker Nodes | 10.20.67.4-15 | Static |
-| Kubernetes API | 10.20.67.10 | VIP |
-| K8s Gateway (DNS) | 10.20.67.20 | LoadBalancer |
-| Internal Gateway | 10.20.67.21 | LoadBalancer |
-| External Gateway | 10.20.67.22 | LoadBalancer |
-| Service IPs | 10.20.67.23-99 | LoadBalancer Pool |
-| DHCP Pool (Optional) | 10.20.67.100-200 | Dynamic |
-| Pod Network | 10.42.0.0/16 | CIDR |
-| Service Network | 10.43.0.0/16 | CIDR |
-
-## Security
-
-- **Secrets**: All secrets encrypted with SOPS using Age encryption
-- **Network Policies**: Namespace isolation via NetworkPolicies
-- **RBAC**: Least-privilege access controls
-- **Pod Security**: Pod Security Standards enforced per namespace
-- **TLS**: Automated TLS certificates via cert-manager
-- **External Access**: Secured via Cloudflare Tunnel (no open ports)
-
-## Backup Strategy
-
-1. **Git Repository**: All configurations in version control
-2. **SOPS Age Key**: Backed up securely offline (required to decrypt secrets)
-3. **Talos Config**: `talosconfig` backed up (required to manage nodes)
-4. **Kubeconfig**: Generated from cluster (recoverable)
-5. **Volume Snapshots**: CSI snapshots for persistent volumes
-6. **Velero**: Full cluster backups (optional, to be deployed)
-
-## Documentation
-
-- [QUICKSTART.md](./QUICKSTART.md) - Fast setup guide (90 minutes)
-- [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) - Comprehensive guide with architecture details
-- [DEPENDENCIES.md](./DEPENDENCIES.md) - Tool installation and troubleshooting
-- [VLAN_SETUP.md](./VLAN_SETUP.md) - Multi-VLAN networking configuration
-- [STORAGE_SETUP.md](./STORAGE_SETUP.md) - Rook-Ceph and Proxmox integration
-
-## Useful Commands
-
-```bash
-# Task automation
-task --list                    # List all tasks
-task reconcile                 # Force Flux sync
-
-# Cluster status
-kubectl get nodes              # Node status
-kubectl get pods -A            # All pods
-cilium status                  # Cilium health
-flux check                     # Flux status
-
-# Talos
-talosctl dashboard             # Node dashboard
-talosctl dmesg --follow        # System logs
-
-# Logs
-flux logs --follow             # Flux logs
-kubectl logs -n <ns> <pod>     # Pod logs
-```
-
-## Credits and References
-
-This cluster is based on the excellent [onedr0p/cluster-template](https://github.com/onedr0p/cluster-template) architecture, adapted for:
-- Multi-VLAN networking (DMZ/IoT separation)
-- Proxmox Ceph integration
-- Custom homelab requirements
-
-**External Documentation**:
-- [Talos Linux](https://www.talos.dev/)
-- [Flux](https://fluxcd.io/)
-- [Cilium](https://docs.cilium.io/)
-- [Rook](https://rook.io/)
-- [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni)
-
-## License
-
-This repository: MIT License
-
-Template based on [onedr0p/cluster-template](https://github.com/onedr0p/cluster-template) which is also MIT licensed.
-
-## Support
-
-For issues and questions:
-1. Check [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) troubleshooting section
-2. Review Flux/Talos/Cilium logs
-3. Consult official documentation for respective tools
-4. Open an issue in this repository
-
-## Project Status
-
-- [x] Base cluster deployment (Talos, Kubernetes, Flux)
-- [x] Core networking (Cilium)
-- [x] Certificate management (cert-manager)
-- [x] External access (Cloudflare Tunnel)
-- [ ] Multi-VLAN networking (Multus) - Documentation ready, pending deployment
-- [ ] Storage (Rook-Ceph) - Documentation ready, pending deployment
-- [ ] Monitoring (Prometheus, Grafana, Loki) - Planned
-- [ ] Backups (Velero) - Planned
-- [ ] CI/CD pipelines - Planned
+</div>
 
 ---
 
-**Built with**: Talos Linux • Kubernetes • Flux • Cilium • Rook • Proxmox
-# Webhook Test - Thu Nov  6 20:17:03 EST 2025
+<div align="center">
+
+_Production-grade Kubernetes homelab — Proxmox VE • Talos Linux • Flux GitOps • Cilium • Rook-Ceph • GPU-accelerated AI._
+
+</div>
+
+<div align="center">
+
+[![Talos Latest](https://img.shields.io/github/v/release/siderolabs/talos?label=Talos%20Latest&logo=talos&logoColor=white&color=blue&style=for-the-badge)](https://github.com/siderolabs/talos/releases)
+[![Talos Pinned](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/talos/talenv.yaml&query=$.talosVersion&label=Talos%20Pinned&logo=talos&logoColor=white&color=blue&style=for-the-badge)](./talos/talenv.yaml)
+[![Kubernetes Latest](https://img.shields.io/github/v/release/siderolabs/kubelet?label=K8s%20Latest&logo=kubernetes&logoColor=white&color=blue&style=for-the-badge)](https://github.com/siderolabs/kubelet/releases)
+[![Kubernetes Pinned](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/talos/talenv.yaml&query=$.kubernetesVersion&label=K8s%20Pinned&logo=kubernetes&logoColor=white&color=blue&style=for-the-badge)](./talos/talenv.yaml)
+
+</div>
+
+<div align="center">
+
+[![Flux Local](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/flux-local.yaml?branch=main&label=flux-local&logo=flux&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/flux-local.yaml)
+[![Security Gate](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/security-gate.yaml?branch=main&label=security&logo=github&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/security-gate.yaml)
+[![Release](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/release.yaml?branch=main&label=release&logo=github&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/release.yaml)
+[![Renovate](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/renovate.yaml?branch=main&label=renovate&logo=renovatebot&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/renovate.yaml)
+[![Cattle Upgrade](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/upgrade-cattle.yaml?branch=main&label=cattle&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxjaXJjbGUgY3g9IjEyLjUiIGN5PSI4LjUiIHI9IjIuNSIvPjxwYXRoIGQ9Ik0xMi41IDJhNi41IDYuNSAwIDAgMC02LjIyIDQuNmMtMS4xIDMuMTMtLjc4IDMuOS0zLjE4IDYuMDhBMyAzIDAgMCAwIDUgMThjNCAwIDguNC0xLjggMTEuNC00LjNBNi41IDYuNSAwIDAgMCAxMi41IDJaIi8%2BPHBhdGggZD0ibTE4LjUgNiAyLjE5IDQuNWE2LjQ4IDYuNDggMCAwIDEgLjMxIDIgNi40OSA2LjQ5IDAgMCAxLTIuNiA1LjJDMTUuNCAyMC4yIDExIDIyIDcgMjJhMyAzIDAgMCAxLTIuNjgtMS42NkwyLjQgMTYuNSIvPjwvc3ZnPgo%3D&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/upgrade-cattle.yaml)
+[![Pets Upgrade](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/upgrade-pets.yaml?branch=main&label=pets&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPjxwYXRoIGQ9Ik0xMS4yNSAxNi4yNWgxLjVMMTIgMTd6Ii8%2BPHBhdGggZD0iTTE2IDE0di41Ii8%2BPHBhdGggZD0iTTQuNDIgMTEuMjQ3QTEzLjE1MiAxMy4xNTIgMCAwIDAgNCAxNC41NTZDNCAxOC43MjggNy41ODIgMjEgMTIgMjFzOC0yLjI3MiA4LTYuNDQ0YzAtMS4wNjEtLjE2Mi0yLjItLjQ5My0zLjMwOW0tOS4yNDMtNi4wODJBOC44MDEgOC44MDEgMCAwIDEgMTIgNWMuNzggMCAxLjUuMTA4IDIuMTYxLjMwNiIvPjxwYXRoIGQ9Ik04IDE0di41Ii8%2BPHBhdGggZD0iTTguNSA4LjVjLS4zODQgMS4wNS0xLjA4MyAyLjAyOC0yLjM0NCAyLjUtMS45MzEuNzIyLTMuNTc2LS4yOTctMy42NTYtMS0uMTEzLS45OTQgMS4xNzctNi41MyA0LTcgMS45MjMtLjMyMSAzLjY1MS44NDUgMy42NTEgMi4yMzVBNy40OTcgNy40OTcgMCAwIDEgMTQgNS4yNzdjMC0xLjM5IDEuODQ0LTIuNTk4IDMuNzY3LTIuMjc3IDIuODIzLjQ3IDQuMTEzIDYuMDA2IDQgNy0uMDguNzAzLTEuNzI1IDEuNzIyLTMuNjU2IDEtMS4yNjEtLjQ3Mi0xLjg1NS0xLjQ1LTIuMjM5LTIuNSIvPjwvc3ZnPgo%3D&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/upgrade-pets.yaml)
+
+</div>
+
+<div align="center">
+
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](#-license)
+[![Last Commit](https://img.shields.io/github/last-commit/jlengelbrecht/prox-ops/main?style=flat-square&logo=github)](https://github.com/jlengelbrecht/prox-ops/commits/main)
+[![Top Language](https://img.shields.io/github/languages/top/jlengelbrecht/prox-ops?style=flat-square&logo=github)](https://github.com/jlengelbrecht/prox-ops)
+
+</div>
+
+---
+
+## 📖 Overview
+
+Prox-Ops is the complete infrastructure-as-code definition for a 15-node Kubernetes cluster running on a four-host Proxmox VE cluster. It runs media services, home automation, observability tooling, and a self-hosted AI/RAG stack on consumer GPUs — all reconciled from this repository by Flux.
+
+The design goals are:
+
+- **Reproducibility** — every node, network, and workload is declared in Git. The cluster can be rebuilt from a clean Proxmox install.
+- **Cattle, not pets** — Talos nodes are immutable and replaced rather than patched. Image Factory schematics are the single source of truth for kernel args and drivers.
+- **GitOps end-to-end** — Flux v2 reconciles every workload from `main`. Direct cluster mutation is reserved for emergency rollback.
+- **Encrypted by default** — secrets live in Git as SOPS+age ciphertext, fed into the cluster via External Secrets Operator + 1Password Connect.
+
+## ✨ Features
+
+- **Talos Linux** on every Kubernetes node — immutable, API-driven, no SSH
+- **Cilium** as the only CNI — kube-proxy replacement, L2 LoadBalancer, network policy
+- **Multus** for VLAN-attached pods — DMZ workloads and home-automation pods get their own L2 segments via macvlan
+- **Rook-Ceph** consuming an external Proxmox-managed Ceph cluster for both block (RBD) and shared (CephFS) storage
+- **Envoy Gateway** as the in-cluster ingress, fronted by **Cloudflare Tunnel** for WAN access (zero open inbound ports)
+- **Renovate** keeps Helm charts, container images, and Talos versions current — versions ship to the cluster via PRs, not direct `talosctl upgrade`
+- **NVIDIA RTX A5000 + A2000** for AI inference; GPU drivers are baked into a dedicated Image Factory schematic so non-GPU nodes stay lean
+- **CodeRabbit + Gitleaks + GitGuardian + Flux local validation** on every PR
+- **Self-hosted GitHub Actions runners** (`gha-runner-scale-set`) for CI
+
+## 🔧 Hardware
+
+### Proxmox Hosts
+
+| Host | Model | CPU | Threads | RAM | Role |
+| --- | --- | --- | --- | --- | --- |
+| **baldar** | Dell PowerEdge R730xd | 2× Xeon E5-2697 v3 @ 2.60 GHz | 56 | 128 GB | Compute |
+| **heimdall** | Dell PowerEdge R730xd | 2× Xeon E5-2697 v3 @ 2.60 GHz | 56 | 256 GB | Compute + GPU passthrough |
+| **odin** | Dell PowerEdge R740xd | 2× Xeon Gold 6148 @ 2.40 GHz | 80 | 128 GB | Compute |
+| **thor** | Dell PowerEdge R740xd | 2× Xeon Gold 6148 @ 2.40 GHz | 80 | 256 GB | Compute + GPU passthrough |
+
+### Kubernetes VM Layout
+
+Each Proxmox host runs a slice of the cluster. The mapping is intentionally symmetric so any single host can be evacuated for maintenance without losing quorum.
+
+| Host | Control plane | Workers | GPU |
+| --- | --- | --- | --- |
+| `baldar` | `k8s-ctrl-1` | `k8s-work-1`, `k8s-work-2`, `k8s-work-3` | — |
+| `heimdall` | `k8s-ctrl-2` | `k8s-work-4`, `k8s-work-5`, `k8s-work-6` | NVIDIA RTX A2000 → `k8s-work-4` |
+| `odin` | `k8s-ctrl-3` | `k8s-work-7`, `k8s-work-8`, `k8s-work-9` | — |
+| `thor` | — | `k8s-work-10`, `k8s-work-11`, `k8s-work-12` | NVIDIA RTX A5000 → `k8s-work-10` |
+
+GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Factory schematic — only GPU workers use it. All other nodes run the lean base schematic.
+
+## 🌐 Networking
+
+- **CNI** — Cilium replaces kube-proxy and handles L2 LoadBalancer announcement onto the home LAN.
+- **Secondary CNI** — Multus attaches pods to additional VLANs via macvlan when a workload needs an externally-routable address (DMZ services, IoT integrations).
+- **Internal DNS** — `k8s-gateway` answers cluster service hostnames on the LAN; UniFi forwards selected zones to it.
+- **External DNS** — `external-dns` reconciles a Cloudflare zone for public records.
+- **Ingress** — Envoy Gateway (Gateway API) provides both internal (LAN) and external (WAN-via-Cloudflare-Tunnel) listeners.
+- **WAN access** — every public service is reached through a Cloudflare Tunnel; the homelab has no inbound ports open.
+- **Service mesh / observability** — Cilium Hubble for flow visibility; Prometheus + Loki for metrics and logs.
+
+## 📦 Applications
+
+<details>
+<summary><b>Click to expand the full per-namespace inventory</b></summary>
+
+### Core (`kube-system`)
+
+| App | Purpose |
+| --- | --- |
+| Cilium | CNI, kube-proxy replacement, L2 LB, network policy |
+| Multus | Secondary CNI for VLAN-attached pods |
+| CoreDNS | Cluster DNS |
+| Metrics Server | Resource metrics for HPA / `kubectl top` |
+| Reloader | Automatic rollout on ConfigMap/Secret change |
+| Spegel | In-cluster peer-to-peer OCI registry mirror |
+| NVIDIA device plugin + DCGM exporter | GPU scheduling and metrics |
+| Knative Serving | Serverless runtime (used by KServe) |
+| Tetragon (+ cluster policies) | eBPF runtime security |
+
+### GitOps & Secrets
+
+| App | Purpose |
+| --- | --- |
+| Flux Operator + Flux Instance | GitOps controller |
+| External Secrets Operator | Pulls secrets from external stores |
+| 1Password Connect | Backing store for ExternalSecrets |
+| `cert-manager` | TLS certificate issuance (Let's Encrypt) |
+
+### Networking (`network`)
+
+| App | Purpose |
+| --- | --- |
+| Envoy Gateway (operator + config) | Gateway API ingress |
+| Cloudflare Tunnel | External access without open ports |
+| Cloudflare DNS / external-dns | Cloudflare zone automation |
+| `k8s-gateway` | Internal DNS for cluster services |
+| UniFi DNS integration | LAN DNS sync |
+| WireGuard gateway | Site-to-site / egress tunnel |
+| Network attachments | DMZ + IoT VLAN definitions for Multus |
+
+### Storage (`rook-ceph`)
+
+| App | Purpose |
+| --- | --- |
+| Rook-Ceph operator | CSI driver lifecycle |
+| Rook-Ceph cluster (external) | RBD + CephFS storage classes backed by Proxmox Ceph |
+
+### Observability (`observability`)
+
+| App | Purpose |
+| --- | --- |
+| kube-prometheus-stack | Prometheus, Alertmanager, Grafana, exporters |
+| Loki | Log aggregation |
+| UnPoller | UniFi controller metrics → Prometheus |
+| Zabbix | Long-running infrastructure monitoring |
+
+### Security (`security`, `security-system`)
+
+| App | Purpose |
+| --- | --- |
+| Authentik | SSO / OIDC identity provider |
+| Tetragon policies (in `media`) | Runtime security policies for media stack |
+
+### AI & RAG (`ai`, `database`, `mcp`)
+
+| App | Purpose |
+| --- | --- |
+| Open WebUI | Chat interface |
+| LiteLLM (+ Postgres) | OpenAI-compatible LLM gateway |
+| KServe | Model serving runtime |
+| Model cache | Shared model artifact cache |
+| moltbot (OpenClaw) | Claude Code agent runner |
+| SearXNG | Search backend for RAG |
+| Voice bridge | Voice I/O front-end |
+| Qdrant | Vector database |
+| FalkorDB | Graph database (Graphiti backend) |
+| CloudNative-PG | PostgreSQL operator + cluster |
+| Valkey | Redis-compatible cache |
+| ToolHive (+ UI, gateway, registry) | MCP server runtime |
+
+### Media (`media`, `downloads`)
+
+| App | Purpose |
+| --- | --- |
+| Plex | Media server |
+| Sonarr / Radarr / Prowlarr | TV, movies, indexer management |
+| Overseerr | Media request portal |
+| Tautulli | Plex analytics |
+| Maintainerr / Cleanuparr | Library hygiene |
+| FileFlows | Transcoding orchestration |
+| Notifiarr | Notification fan-out |
+| Newtarr / Wizarr | Arr companions |
+| Bookstack | Self-hosted wiki |
+| Uptime Kuma | Service monitoring + public status page |
+| qBittorrent / SABnzbd | Torrent + Usenet clients (VPN-isolated) |
+
+### Home Automation (`iot`)
+
+| App | Purpose |
+| --- | --- |
+| Home Assistant | Home automation platform on a dedicated VLAN |
+
+### Health (`health`)
+
+| App | Purpose |
+| --- | --- |
+| GlycemicGPT | Personal Dexcom + GPT integration |
+
+### Tools (`tools`, `infra-proxies`)
+
+| App | Purpose |
+| --- | --- |
+| Homepage | Dashboard for cluster services |
+| n8n | Workflow automation |
+| GlycemicGPT Discord bot | Notifications front-end |
+| Infra proxies (Proxmox, TrueNAS, offsite-backup) | Internal-only proxies for upstream gear |
+
+### CI/CD (`github-actions`)
+
+| App | Purpose |
+| --- | --- |
+| GitHub Actions runner scale set + controller | Self-hosted Actions runners |
+
+</details>
+
+## 📁 Repository Layout
+
+```text
+prox-ops/
+├── kubernetes/
+│   ├── apps/                # GitOps-managed workloads (one dir per namespace)
+│   │   ├── ai/              # Open WebUI, LiteLLM, KServe, MCP, ...
+│   │   ├── cache/           # Valkey
+│   │   ├── cert-manager/    # cert-manager operator + ClusterIssuers
+│   │   ├── database/        # CNPG, Qdrant, FalkorDB
+│   │   ├── downloads/       # qBittorrent, SABnzbd
+│   │   ├── external-secrets/
+│   │   ├── flux-system/     # Flux operator + instance
+│   │   ├── github-actions/  # ARC self-hosted runners
+│   │   ├── health/          # GlycemicGPT
+│   │   ├── infra-proxies/   # Internal proxies for Proxmox, TrueNAS, etc.
+│   │   ├── iot/             # Home Assistant
+│   │   ├── kube-system/     # Cilium, Multus, GPU plugins, Tetragon, ...
+│   │   ├── mcp/             # ToolHive MCP platform
+│   │   ├── media/           # Plex + arr stack + Uptime Kuma
+│   │   ├── network/         # Envoy, Cloudflare Tunnel, k8s-gateway
+│   │   ├── observability/   # Prometheus, Loki, Grafana, UnPoller, Zabbix
+│   │   ├── rook-ceph/       # External Ceph CSI
+│   │   ├── security/        # Authentik
+│   │   └── tools/           # Homepage, n8n
+│   ├── components/          # Shared Kustomize components
+│   └── flux/                # Flux bootstrap + cluster Kustomization
+├── talos/
+│   ├── patches/             # Per-role and per-node Talos config patches
+│   ├── talconfig.yaml       # talhelper input
+│   ├── talenv.yaml          # Talos + Kubernetes versions (Renovate-managed)
+│   └── talsecret.sops.yaml  # Encrypted Talos secrets
+├── terraform/               # Proxmox VM templates + node provisioning
+├── bootstrap/               # Pre-Flux bootstrap manifests
+├── scripts/                 # Operational helpers
+├── .taskfiles/, Taskfile.yaml  # Task automation
+├── .github/                 # Actions workflows, Renovate, CodeRabbit
+└── .mise.toml               # Tool version pinning
+```
+
+## 🛠️ Day-to-Day
+
+```bash
+# Cluster status
+kubectl get nodes
+kubectl get pods -A
+cilium status
+flux check
+
+# Force a Flux reconciliation
+task reconcile
+
+# Talos
+talosctl --nodes <node> dashboard
+talosctl --nodes <node> dmesg --follow
+
+# Logs
+flux logs --follow
+kubectl logs -n <namespace> <pod>
+
+# List all available Tasks
+task --list
+```
+
+## 🔐 Security Posture
+
+- All secrets committed to Git are encrypted with [SOPS](https://github.com/getsops/sops) using age. Plaintext secret values never reach `main`.
+- Runtime secrets are fetched from 1Password via the External Secrets Operator + 1Password Connect — application manifests reference `existingSecret`, never literals.
+- WAN ingress is exclusively via Cloudflare Tunnel; the homelab has no inbound ports open to the internet.
+- Authentik provides SSO for internal services. cert-manager issues TLS for everything via Let's Encrypt.
+- Tetragon enforces eBPF-based runtime policies on sensitive namespaces.
+- The repository is public; pushes are gated by Gitleaks, GitGuardian, Flux local validation, and a mandatory pre-push security review.
+
+## 🚀 Bootstrapping a New Cluster
+
+The bootstrap flow follows the [`onedr0p/cluster-template`](https://github.com/onedr0p/cluster-template) pattern this layout was originally derived from. At a high level:
+
+1. **Provision Proxmox** with a Ceph cluster reachable from your Talos VMs.
+2. **Generate Talos VMs** via `terraform/` (creates Image Factory templates and clones VMs from them).
+3. **Render Talos configs** with `task configure` (uses `talconfig.yaml` + `talenv.yaml` + `nodes.yaml`).
+4. **Bootstrap Talos**: `task bootstrap:talos`.
+5. **Bootstrap apps**: `task bootstrap:apps` — installs Flux and seeds the cluster from this repository.
+6. **Verify**: `kubectl get nodes`, `cilium status`, `flux check`.
+
+Per-node specifics (MACs, install disks, schematic IDs, addresses) are kept in `nodes.yaml`, which is intentionally **not** committed — see `.gitignore` for the local-only files you'll need to populate.
+
+## 🔄 GitOps Workflow
+
+Every change to a workload is a pull request:
+
+1. Edit YAML under `kubernetes/`.
+2. Open a PR — CI runs Flux local validation, secret scanning, and CodeRabbit review.
+3. Merge to `main` → Flux reconciles within ~30 seconds.
+4. Renovate keeps Helm charts, container images, and Talos versions current via automated PRs.
+
+Direct `kubectl` against the cluster is limited to read-only inspection (`get`, `describe`, `logs`); the only state-mutating operation that bypasses Git is an emergency rollback, and only with explicit approval.
+
+## 🙏 Credits
+
+- Cluster layout, Renovate configuration, and Taskfile patterns are adapted from [`onedr0p/cluster-template`](https://github.com/onedr0p/cluster-template).
+- README structure inspired by [`onedr0p/home-ops`](https://github.com/onedr0p/home-ops).
+- Talos image schematics are produced via the [Sidero Image Factory](https://factory.talos.dev/).
+
+External documentation: [Talos](https://www.talos.dev/) · [Kubernetes](https://kubernetes.io/) · [Flux](https://fluxcd.io/) · [Cilium](https://docs.cilium.io/) · [Rook](https://rook.io/) · [Multus](https://github.com/k8snetworkplumbingwg/multus-cni) · [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) · [SOPS](https://github.com/getsops/sops) · [1Password Connect](https://developer.1password.com/docs/connect/).
+
+## 📜 License
+
+Published under the MIT License — the same terms as the upstream [`onedr0p/cluster-template`](https://github.com/onedr0p/cluster-template) it was derived from.
