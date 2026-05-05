@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🚀 &nbsp; Prox-Ops &nbsp; 🏠
+<img src="https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/.github/assets/header.svg" alt="Prox-Ops" width="500"/>
+
+# Prox-Ops
 
 _Production-grade Kubernetes homelab — Proxmox VE • Talos Linux • Flux GitOps • Cilium • Rook-Ceph • GPU-accelerated AI._
 
