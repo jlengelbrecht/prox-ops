@@ -2864,7 +2864,7 @@ jobs:
 
       - name: Validate GPU functionality
         if: matrix.is_gpu == true
-        timeout-minutes: 8
+        timeout-minutes: 9
         run: |
           echo "::group::Validating GPU for ${{ matrix.node }}"
 
@@ -2872,7 +2872,7 @@ jobs:
           # Increased timeout for GPU nodes that may have longer initialization
           echo "Waiting for NVIDIA device plugin to register GPU..."
           RETRY_COUNT=0
-          MAX_RETRIES=36  # 36 * 10s = 6 minutes
+          MAX_RETRIES=42  # 42 * 10s = 7 minutes (GPU nodes boot ~5 min)
 
           while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
             if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
@@ -2903,12 +2903,14 @@ jobs:
             exit 1
           fi
 
-          # Verify GPU count
+          # Verify GPU count. Time-slicing advertises multiple virtual GPUs per
+          # physical card (e.g. 3), so accept any positive count rather than
+          # requiring exactly 1.
           GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
-          echo "GPU count: $GPU_COUNT"
+          echo "Allocatable nvidia.com/gpu: ${GPU_COUNT:-0}"
 
-          if [[ "$GPU_COUNT" != "1" ]]; then
-            echo "::error::Expected 1 GPU, found $GPU_COUNT"
+          if [[ -z "$GPU_COUNT" || "$GPU_COUNT" -lt 1 ]]; then
+            echo "::error::GPU advertised but allocatable count is not positive ($GPU_COUNT)"
             exit 1
           fi
 
