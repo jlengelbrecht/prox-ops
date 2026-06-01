@@ -1,2 +1,25 @@
-- op: remove
-  path: /cluster/apiServer/admissionControl
+# Disable PodSecurity admission enforcement (cluster-wide permissive).
+# Rationale: privileged workloads (rook-ceph, multus, tetragon, nvidia device
+# plugin) require host access. Previously done via JSON6902 `op: remove`, but
+# talhelper v3 rejects JSON6902 on multi-document machine configs
+# ("JSON6902 patches are not supported for multi-document machine configuration").
+# Strategic-merge `enforce: privileged` is the supported equivalent and matches
+# the live cluster behavior (controllers currently run with no admissionControl).
+cluster:
+  apiServer:
+    admissionControl:
+      - name: PodSecurity
+        configuration:
+          apiVersion: pod-security.admission.config.k8s.io/v1alpha1
+          kind: PodSecurityConfiguration
+          defaults:
+            enforce: privileged
+            enforce-version: latest
+            audit: privileged
+            audit-version: latest
+            warn: privileged
+            warn-version: latest
+          exemptions:
+            namespaces: []
+            runtimeClasses: []
+            usernames: []

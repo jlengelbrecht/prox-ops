@@ -7,22 +7,12 @@ machine:
       - name: nvidia_modeset
   sysctls:
     net.core.bpf_jit_harden: "1"  # NVIDIA GPU requirement
-  files:
-    - content: |
-        [plugins]
-          [plugins."io.containerd.cri.v1.runtime"]
-            [plugins."io.containerd.cri.v1.runtime".containerd]
-              [plugins."io.containerd.cri.v1.runtime".containerd.runtimes]
-                [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia]
-                  privileged_without_host_devices = false
-                  runtime_engine = ""
-                  runtime_root = ""
-                  runtime_type = "io.containerd.runc.v2"
-
-                  [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia.options]
-                    BinaryName = "/usr/local/bin/nvidia-container-runtime"
-      path: /etc/cri/conf.d/20-customization.part
-      op: create
+  # No machine.files drop-in for the nvidia containerd runtime: the
+  # nvidia-container-toolkit system extension already registers it via
+  # /etc/cri/conf.d/10-nvidia-container-runtime.part (verified on work-4/work-10 —
+  # the active cri.toml sources the nvidia runtime from that extension file). A
+  # manual /etc/cri drop-in is redundant, and writing under /etc fails the
+  # writeUserFiles task on a fresh cattle cold boot (Talos 1.11+ read-only fs).
   nodeLabels:
     nvidia.com/gpu.present: "true"
     gpu.nvidia.com/model: "rtx-a5000"
