@@ -993,7 +993,11 @@ jobs:
           # on the node and the GPU label is set, the OS upgrade itself succeeded, so
           # warn rather than failing the whole upgrade over a slow device plugin.
           echo "::warning::nvidia.com/gpu not allocatable after $((MAX_RETRIES * 10))s; checking node-level NVIDIA state..."
-          EXT_PRESENT=$(talosctl -n ${{ matrix.node.ip }} get extensions -o json 2>/dev/null | grep -ci nvidia || echo 0)
+          # grep -c prints the count but exits 1 on zero matches; `|| true`
+          # swallows that exit without appending a second value (using `|| echo 0`
+          # would produce "0\n0" and break the numeric comparison below).
+          EXT_PRESENT=$(talosctl -n ${{ matrix.node.ip }} get extensions -o json 2>/dev/null | grep -ci nvidia || true)
+          EXT_PRESENT="${EXT_PRESENT:-0}"
           LABEL_PRESENT=$(kubectl get node ${{ matrix.node.name }} -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null || echo "")
           echo "NVIDIA extensions present: $EXT_PRESENT | gpu.present label: ${LABEL_PRESENT:-<none>}"
           kubectl get pods -n nvidia-device-plugin -o wide 2>/dev/null | grep "${{ matrix.node.name }}" || echo "no device-plugin pod on node yet"
