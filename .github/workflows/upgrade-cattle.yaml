@@ -564,7 +564,10 @@ jobs:
 
       - name: Execute template rebuild
         working-directory: ./terraform
-        timeout-minutes: 20
+        # 8 templates rebuilt in 4 batches; each uploads an ~866M raw image to a
+        # Proxmox host and imports it into Ceph. Observed >20 min in practice
+        # (run 26735551452 timed out), so allow generous headroom.
+        timeout-minutes: 45
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
