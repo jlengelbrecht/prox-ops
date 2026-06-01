@@ -250,21 +250,25 @@ jobs:
           # Create provider cache directory (prevents GitHub rate limiting)
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-          # Retry terraform init up to 3 times (GitHub occasionally rate-limits provider downloads)
-          for attempt in 1 2 3; do
-            echo "::group::Terraform init attempt $attempt"
-            if terraform init; then
+          # Retry terraform init up to 3 times with exponential backoff.
+          # -upgrade=false prevents accidental provider upgrades and speeds up
+          # init when providers are already cached in TF_PLUGIN_CACHE_DIR.
+          MAX_ATTEMPTS=3
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "::group::Terraform init attempt $attempt/$MAX_ATTEMPTS"
+            if terraform init -upgrade=false; then
               echo "::endgroup::"
-              echo "✅ Terraform initialized successfully"
+              echo "✅ Terraform initialized successfully on attempt $attempt"
               exit 0
             fi
             echo "::endgroup::"
-            if [[ $attempt -lt 3 ]]; then
-              echo "⚠️ terraform init failed, retrying in 30 seconds..."
-              sleep 30
+            if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
+              WAIT_TIME=$(( 30 * attempt ))
+              echo "⚠️ terraform init failed, retrying in ${WAIT_TIME}s (attempt $attempt/$MAX_ATTEMPTS)..."
+              sleep "$WAIT_TIME"
             fi
           done
-          echo "::error::terraform init failed after 3 attempts"
+          echo "::error::terraform init failed after $MAX_ATTEMPTS attempts"
           exit 1
 
       # Taint all template resources to force rebuild when checkbox is checked
@@ -799,21 +803,25 @@ jobs:
           # Create provider cache directory (prevents GitHub rate limiting)
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-          # Retry terraform init up to 3 times (GitHub occasionally rate-limits provider downloads)
-          for attempt in 1 2 3; do
-            echo "::group::Terraform init attempt $attempt"
-            if terraform init; then
+          # Retry terraform init up to 3 times with exponential backoff.
+          # -upgrade=false prevents accidental provider upgrades and speeds up
+          # init when providers are already cached in TF_PLUGIN_CACHE_DIR.
+          MAX_ATTEMPTS=3
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "::group::Terraform init attempt $attempt/$MAX_ATTEMPTS"
+            if terraform init -upgrade=false; then
               echo "::endgroup::"
-              echo "✅ Terraform initialized successfully"
+              echo "✅ Terraform initialized successfully on attempt $attempt"
               exit 0
             fi
             echo "::endgroup::"
-            if [[ $attempt -lt 3 ]]; then
-              echo "⚠️ terraform init failed, retrying in 30 seconds..."
-              sleep 30
+            if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
+              WAIT_TIME=$(( 30 * attempt ))
+              echo "⚠️ terraform init failed, retrying in ${WAIT_TIME}s (attempt $attempt/$MAX_ATTEMPTS)..."
+              sleep "$WAIT_TIME"
             fi
           done
-          echo "::error::terraform init failed after 3 attempts"
+          echo "::error::terraform init failed after $MAX_ATTEMPTS attempts"
           exit 1
 
       - name: Validate etcd quorum health
@@ -1823,21 +1831,25 @@ jobs:
           # Create provider cache directory (prevents GitHub rate limiting)
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-          # Retry terraform init up to 3 times (GitHub occasionally rate-limits provider downloads)
-          for attempt in 1 2 3; do
-            echo "::group::Terraform init attempt $attempt"
-            if terraform init; then
+          # Retry terraform init up to 3 times with exponential backoff.
+          # -upgrade=false prevents accidental provider upgrades and speeds up
+          # init when providers are already cached in TF_PLUGIN_CACHE_DIR.
+          MAX_ATTEMPTS=3
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "::group::Terraform init attempt $attempt/$MAX_ATTEMPTS"
+            if terraform init -upgrade=false; then
               echo "::endgroup::"
-              echo "✅ Terraform initialized successfully"
+              echo "✅ Terraform initialized successfully on attempt $attempt"
               exit 0
             fi
             echo "::endgroup::"
-            if [[ $attempt -lt 3 ]]; then
-              echo "⚠️ terraform init failed, retrying in 30 seconds..."
-              sleep 30
+            if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
+              WAIT_TIME=$(( 30 * attempt ))
+              echo "⚠️ terraform init failed, retrying in ${WAIT_TIME}s (attempt $attempt/$MAX_ATTEMPTS)..."
+              sleep "$WAIT_TIME"
             fi
           done
-          echo "::error::terraform init failed after 3 attempts"
+          echo "::error::terraform init failed after $MAX_ATTEMPTS attempts"
           exit 1
 
       - name: Pre-drain health check
