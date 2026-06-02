@@ -19,10 +19,16 @@
     'configErrorIssue',
   ],
   configWarningReuseIssue: false,
-  rebaseWhen: 'conflicted',
+  rebaseWhen: 'behind-base-branch',
   schedule: [
     'every weekend',
   ],
+  automergeSchedule: [
+    'at any time',
+  ],
+  prConcurrentLimit: 5,
+  prHourlyLimit: 2,
+  branchConcurrentLimit: 10,
   platformAutomerge: true,
   'pre-commit': {
     enabled: true,
@@ -618,6 +624,16 @@
       matchPackageNames: [
         '/ghcr.io/siderolabs/talos/',
         '/ghcr.io/siderolabs/installer/',
+      ],
+    },
+    {
+      description: 'Disable kubelet image tracking (owned by Talos; version must match schematic)',
+      matchDatasources: [
+        'docker',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        '/ghcr.io/siderolabs/kubelet/',
       ],
     },
     {

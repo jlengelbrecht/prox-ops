@@ -1,0 +1,30 @@
+# .coderabbit.yaml
+# Stop CodeRabbit from auto-reviewing Renovate dependency-bump PRs.
+#
+# Mechanism: two complementary exclusions so neither alone is a single point
+# of failure:
+#   1. ignore_usernames: ['renovate[bot]'] — skips any PR whose author is the
+#      Renovate GitHub App. This is the primary gate; it fires regardless of
+#      what labels are present on the PR.
+#   2. labels: ['!renovate'] — additionally skips any PR that carries the
+#      'renovate' label (added by the renovate.json5 `labels` config). Acts
+#      as a fallback if Renovate ever runs under a different bot identity.
+#
+# Why this approach instead of path/branch filters:
+#   - Renovate PRs modify files across many paths (kubernetes/, .github/, etc.)
+#     so path_filters would require exhaustive enumeration.
+#   - Branch name patterns ("renovate/*") would also work but CodeRabbit's
+#     base_branches field filters *target* branches, not source branches.
+#   - Author + label exclusion is the mechanism CodeRabbit explicitly documents
+#     for dependency-bot exemptions and is stable across schema versions.
+#
+# Result: CodeRabbit will never submit CHANGES_REQUESTED (or any review) on
+# Renovate PRs, eliminating the BLOCKED mergeStateStatus that was preventing
+# 16+ PRs from auto-merging.
+reviews:
+  auto_review:
+    enabled: true
+    ignore_usernames:
+      - renovate[bot]
+    labels:
+      - "!renovate"
