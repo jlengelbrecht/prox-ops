@@ -11,7 +11,7 @@
   ],
   dependencyDashboard: true,
   dependencyDashboardTitle: '🤖 Renovate Dashboard 🤖',
-  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates run every weekend. Check a box to run immediately.\n\n---\n',
+  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates flow continuously, rate-limited (max 5 open PRs, 2 new/hour) with per-package soak windows. Check a box to run immediately.\n\n---\n',
   dependencyDashboardFooter: '\n---\n\n📚 **Documentation:** [Renovate Docs](https://docs.renovatebot.com/) | ⚙️ **Config:** `.github/renovate.json5`',
   suppressNotifications: [
     'prEditedNotification',
@@ -20,8 +20,11 @@
   ],
   configWarningReuseIssue: false,
   rebaseWhen: 'behind-base-branch',
+  // Continuous (rate-limited) instead of weekend-only: throttling is handled by
+  // prConcurrentLimit/prHourlyLimit + per-package minimumReleaseAge soaks, so PRs
+  // flow as updates release rather than batching weekly (keeps the cluster current).
   schedule: [
-    'every weekend',
+    'at any time',
   ],
   automergeSchedule: [
     'at any time',
