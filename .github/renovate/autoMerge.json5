@@ -253,7 +253,7 @@
       "automergeType": "pr",
       "matchUpdateTypes": ["patch"],
       "minimumReleaseAge": "3 days",
-      "matchPackageNames": ["/actions-runner/"]
+      "matchPackageNames": ["/actions-runner/", "/gha-runner/"]
     },
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -352,19 +352,10 @@
         "/qdrant/"
       ]
     },
-    {
-      "description": "Auto-merge Talos PETS upgrades (patch versions in talenv.yaml, 1 day wait)",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/siderolabs/installer"],
-      "matchFileNames": ["talos/talenv.yaml"],
-      "matchUpdateTypes": ["patch"],
-      "automerge": true,
-      "automergeType": "pr",
-      "minimumReleaseAge": "1 day",
-      "prBodyNotes": [
-        "**Talos PETS**: Patch version will be auto-merged after 1-day stabilization. In-place upgrade via talosctl."
-      ]
-    },
+    // NOTE: Talos talenv.yaml (ghcr.io/siderolabs/installer) updates are disabled in
+    // renovate.json5 ("Disable Talos updates (managed via Terraform)"), so talenv-based
+    // rules would be dead. Talos auto-updates flow via terraform/variables.tf (below);
+    // keeping talenv.yaml in sync is the upgrade workflow's job (EPIC-033 STORY-033-3).
     {
       "description": "Auto-merge Talos PETS upgrades (patch versions in Terraform, 1 day wait)",
       "matchDatasources": ["github-releases"],
@@ -376,17 +367,6 @@
       "minimumReleaseAge": "1 day",
       "prBodyNotes": [
         "**Talos PETS**: Patch version will be auto-merged after 1-day stabilization. In-place upgrade via talosctl."
-      ]
-    },
-    {
-      "description": "Require manual review for Talos CATTLE upgrades (major/minor in talenv.yaml)",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/siderolabs/installer"],
-      "matchFileNames": ["talos/talenv.yaml"],
-      "matchUpdateTypes": ["major", "minor"],
-      "automerge": false,
-      "prBodyNotes": [
-        "**Talos CATTLE**: Major/minor version requires manual approval. Full VM rebuild via Terraform."
       ]
     },
     {

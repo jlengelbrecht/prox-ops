@@ -837,6 +837,28 @@
       matchCurrentVersion: 'latest',
       enabled: false,
     },
+    {
+      // MUST be the last packageRule. Renovate uses the last matching
+      // minimumReleaseAge value; the root "Wait N days" rules above otherwise
+      // shorten the critical-infra PATCH auto-merge soak (cert-manager &
+      // external-secrets to 1d, cilium & cloudnative-pg to 3d). This re-asserts
+      // the intended 5-day soak for the Tier-2b patch automerge in autoMerge.json5.
+      description: 'Enforce 5-day soak for auto-merged critical-infra patch updates',
+      matchDatasources: [
+        'docker',
+        'helm',
+      ],
+      matchUpdateTypes: [
+        'patch',
+      ],
+      matchPackageNames: [
+        '/cert-manager/',
+        '/cilium/',
+        '/external-secrets/',
+        '/cloudnative-pg/',
+      ],
+      minimumReleaseAge: '5 days',
+    },
   ],
   ignorePaths: [
     '**/*.sops.*',
