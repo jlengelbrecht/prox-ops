@@ -223,6 +223,18 @@
       ]
     },
     {
+      "description": "Auto-merge glycemicgpt (owner-maintained app) digest/patch/minor updates (1 day soak)",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["digest", "patch", "minor"],
+      "minimumReleaseAge": "1 day",
+      // Scope to the trusted GHCR namespace only (ghcr.io/glycemicgpt/*: discord-bot,
+      // glycemicgpt-api/-web/-sidecar). A bare "/glycemicgpt/" substring would also
+      // auto-merge a like-named image in any other namespace.
+      "matchPackageNames": ["/^ghcr\\.io\\/glycemicgpt\\/.+/"]
+    },
+    {
       "description": "Auto-merge GitHub Actions patch and minor updates (1 day wait; SHA-pinned by helpers:pinGitHubActionDigests)",
       "matchManagers": ["github-actions"],
       "automerge": true,
