@@ -90,7 +90,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GITHUB_TOKEN: ""   # blank it for this step so Claude can't read it from the env
         run: |
-          set -uo pipefail
+          set +e   # default shell is `bash -e`; turn OFF errexit so a non-zero claude
+                   # exit can't kill the script before we capture its error + usage
           npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code
           echo "claude version: $(claude --version 2>/dev/null || echo unknown)"
           PROMPT=$(cat <<'EOF'
@@ -121,14 +122,18 @@ jobs:
           claude -p "$PROMPT" --allowedTools "Read" --output-format json > claude-out.json 2> claude-err.txt
           rc=$?
           echo "claude exit: $rc"
-          if [ ! -s claude-out.json ]; then echo "::warning::no claude JSON output"; tail -40 claude-err.txt 2>/dev/null || true; fi
+          echo "--- claude stderr (tail) ---"; tail -40 claude-err.txt 2>/dev/null
+          echo "--- claude stdout (first 600 bytes) ---"; head -c 600 claude-out.json 2>/dev/null; echo
           # Extract verdict text + record token usage to the job summary
-          jq -r '.result // empty' claude-out.json > triage-verdict.md 2>/dev/null || true
-          [ -s triage-verdict.md ] || { echo "(no verdict produced — see logs)"; tail -20 claude-err.txt 2>/dev/null; } > triage-verdict.md
+          jq -r '.result // empty' claude-out.json > triage-verdict.md 2>/dev/null
+          if [ ! -s triage-verdict.md ]; then
+            { echo "_Claude produced no verdict (exit ${rc}). Diagnostic tail:_"; echo '```'; tail -20 claude-err.txt 2>/dev/null; echo '```'; } > triage-verdict.md
+          fi
           {
-            echo "### Claude token usage"
+            echo "### Claude token usage (claude exit ${rc})"
             jq -r '"- input_tokens: \(.usage.input_tokens // "?")\n- output_tokens: \(.usage.output_tokens // "?")\n- cache_read_tokens: \(.usage.cache_read_input_tokens // 0)\n- cost_usd: \(.total_cost_usd // "?")\n- turns: \(.num_turns // "?")\n- duration_ms: \(.duration_ms // "?")"' claude-out.json 2>/dev/null || echo "- (usage unavailable)"
           } >> "$GITHUB_STEP_SUMMARY"
+          exit 0   # triage is best-effort; never fail the workflow on a triage hiccup
 
       - name: Publish verdict (job summary always; Discord if configured)
         if: always()
