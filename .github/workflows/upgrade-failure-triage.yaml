@@ -94,6 +94,11 @@ jobs:
                    # exit can't kill the script before we capture its error + usage
           npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code
           echo "claude version: $(claude --version 2>/dev/null || echo unknown)"
+          # Strip any stray whitespace/newline the GitHub secret may carry; otherwise the
+          # token becomes an invalid HTTP header value ("Header has invalid value") and auth
+          # is rejected at the handshake. The OAuth token contains no internal whitespace.
+          CLAUDE_CODE_OAUTH_TOKEN="$(printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN:-}" | tr -d '[:space:]')"
+          export CLAUDE_CODE_OAUTH_TOKEN
           PROMPT=$(cat <<'EOF'
           A Talos upgrade workflow run FAILED and you are triaging it.
 
