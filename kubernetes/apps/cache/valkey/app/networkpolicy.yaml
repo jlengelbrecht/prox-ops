@@ -48,6 +48,15 @@ spec:
             - port: "6379"
               protocol: TCP
 
+    # From health namespace (GlycemicGPT session/cache)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: health
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
   egress:
     # DNS resolution
     - toEndpoints:

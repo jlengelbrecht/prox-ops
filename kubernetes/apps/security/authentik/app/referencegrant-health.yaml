@@ -1,0 +1,22 @@
+---
+# ReferenceGrant allows health namespace resources to reference Authentik service:
+# - SecurityPolicy: for forward auth (extAuth) validation
+# - HTTPRoute: for /outpost.goauthentik.io/* paths (login/callback flow)
+# Required by: GlycemicGPT, and future health namespace apps needing Authentik auth
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-health-namespace-extauth
+  namespace: security
+spec:
+  from:
+    - group: gateway.envoyproxy.io
+      kind: SecurityPolicy
+      namespace: health
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: health
+  to:
+    - group: ""
+      kind: Service
+      name: authentik-server

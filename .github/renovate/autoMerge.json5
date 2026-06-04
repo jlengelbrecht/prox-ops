@@ -37,7 +37,9 @@
         "ghcr.io/k8snetworkplumbingwg/multus-cni",
         "ghcr.io/kashalls/external-dns-unifi-webhook",
         // Media sidecars
-        "ghcr.io/onedr0p/exportarr"
+        "ghcr.io/onedr0p/exportarr",
+        // Digest-pinned (no semver)
+        "ghcr.io/elfhosted/newtarr"
       ]
     },
     {
@@ -60,9 +62,9 @@
       "automergeType": "pr",
       "matchUpdateTypes": ["patch"],
       "minimumReleaseAge": "3 days",
-      "matchPackagePatterns": [
-        "lscr.io/linuxserver/.*",
-        "ghcr.io/linuxserver/.*"
+      "matchPackageNames": [
+        "/lscr.io/linuxserver/.*/",
+        "/ghcr.io/linuxserver/.*/"
       ]
     },
     {
@@ -86,7 +88,6 @@
         "ghcr.io/maintainerr/maintainerr",
         "ghcr.io/wizarrrr/wizarr",
         "golift/notifiarr",
-        "docker.io/huntarr/huntarr",
         "sctx/overseerr",
         "ghcr.io/onedr0p/exportarr",
         "ghcr.io/gethomepage/homepage"
@@ -108,75 +109,276 @@
     },
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // TIER 3: REQUIRE MANUAL REVIEW - Critical infrastructure
-    // These rules MUST come after automerge rules to override them
+    // GLOBAL SAFETY NET
+    // All minor and major updates are manual unless a later rule opts them in.
+    // Placed HERE so that later opt-in rules (Tier 2b/2c/2d) can override it
+    // for specific packages, while the Tier-3 force-manual rules then re-block
+    // critical/stateful packages.
     // ═══════════════════════════════════════════════════════════════════════════
     {
-      "description": "Require manual review for critical CNI/storage infrastructure",
-      "matchDatasources": ["docker", "helm"],
-      "automerge": false,
-      "matchPackagePatterns": [
-        "cilium",
-        "rook",
-        "ceph",
-        "kube-prometheus-stack",
-        "envoy-gateway",
-        "nvidia"
-      ]
+      "description": "Require manual review for major and minor updates (global safety net)",
+      "matchUpdateTypes": ["major", "minor"],
+      "automerge": false
     },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 2b: CRITICAL INFRA PATCH (5-day soak)
+    // cert-manager, cilium, external-secrets, cloudnative-pg: patch-only
+    // automerge with 5-day soak. Minor + major remain manual via Tier-3.
+    // Note: envoy-gateway and kube-prometheus-stack are NOT here — owner
+    // decision: no automerge at all for those (fully manual via Tier-3).
+    // ═══════════════════════════════════════════════════════════════════════════
     {
-      "description": "Require manual review for security components",
+      "description": "Auto-merge critical infra PATCH updates (5 day soak) — cert-manager, cilium, external-secrets, cloudnative-pg",
       "matchDatasources": ["docker", "helm"],
-      "automerge": false,
-      "matchPackagePatterns": [
-        "authentik",
-        "goauthentik"
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "5 days",
+      "matchPackageNames": [
+        "/cert-manager/",
+        "/cilium/",
+        "/external-secrets/",
+        "/cloudnative-pg/"
       ]
     },
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // TIER 4: SPECIAL HANDLING - AI apps, Talos
+    // TIER 2c: APP-TEMPLATE (bjw-s) — patch + minor automerge
+    // Chart is a scaffold only; its version does not change running container
+    // images. Minor bumps add optional new features (safe after 5d soak).
     // ═══════════════════════════════════════════════════════════════════════════
     {
-      "description": "Require manual review for AI apps (rapidly evolving)",
+      "description": "Auto-merge app-template (bjw-s) patch updates (3 day soak)",
+      "matchDatasources": ["helm"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "3 days",
+      "matchPackageNames": ["app-template"]
+    },
+    {
+      "description": "Auto-merge app-template (bjw-s) minor updates (5 day soak)",
+      "matchDatasources": ["helm"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["minor"],
+      "minimumReleaseAge": "5 days",
+      "matchPackageNames": ["app-template"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 2d: STATELESS APP MINOR AUTOMERGE (5-day soak)
+    // LinuxServer/*arr apps, media utilities, cloudflared, Home Assistant
+    // patches, GitHub Actions, CLI tools (mise), Terraform providers, ARC runners.
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Auto-merge LinuxServer.io media app minor updates (5 day wait)",
       "matchDatasources": ["docker"],
-      "automerge": false,
-      "matchPackagePatterns": [
-        "lightrag",
-        "litellm",
-        "open-webui",
-        "ollama",
-        "qdrant"
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["minor"],
+      "minimumReleaseAge": "5 days",
+      "matchPackageNames": [
+        "/lscr.io/linuxserver/.*/",
+        "/ghcr.io/linuxserver/.*/"
       ]
     },
     {
-      "description": "Auto-merge Talos PETS upgrades (patch versions, 1 day wait)",
-      "matchLabels": ["talos-update/pets"],
+      "description": "Auto-merge media utility app minor updates (5 day wait)",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["minor"],
+      "minimumReleaseAge": "5 days",
+      "matchPackageNames": [
+        "ghcr.io/cleanuparr/cleanuparr",
+        "ghcr.io/maintainerr/maintainerr",
+        "ghcr.io/wizarrrr/wizarr",
+        "golift/notifiarr",
+        "sctx/overseerr",
+        "ghcr.io/onedr0p/exportarr",
+        "ghcr.io/gethomepage/homepage"
+      ]
+    },
+    {
+      "description": "Auto-merge Home Assistant patch updates (3 day wait)",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "3 days",
+      "matchPackageNames": ["ghcr.io/home-assistant/home-assistant"]
+    },
+    {
+      "description": "Auto-merge cloudflared patch updates (3 day wait)",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "3 days",
+      "matchPackageNames": [
+        "docker.io/cloudflare/cloudflared",
+        "cloudflare/cloudflared"
+      ]
+    },
+    {
+      "description": "Auto-merge GitHub Actions patch and minor updates (1 day wait; SHA-pinned by helpers:pinGitHubActionDigests)",
+      "matchManagers": ["github-actions"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch", "minor"],
+      "minimumReleaseAge": "1 day"
+    },
+    {
+      "description": "Auto-merge CLI tools patch and minor updates (1 day wait; mise-managed, no cluster impact until used)",
+      "matchManagers": ["mise"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch", "minor"],
+      "minimumReleaseAge": "1 day"
+    },
+    {
+      "description": "Auto-merge Terraform provider patch and minor updates (1 day wait; no cluster impact until apply)",
+      "matchDatasources": ["terraform-provider"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch", "minor"],
+      "minimumReleaseAge": "1 day"
+    },
+    {
+      "description": "Auto-merge ARC runner chart patch updates (3 day wait; ephemeral runners, stateless)",
+      "matchDatasources": ["helm"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "3 days",
+      "matchPackageNames": ["/actions-runner/", "/gha-runner/"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 3: REQUIRE MANUAL REVIEW — Critical infrastructure + stateful apps
+    //
+    // MUST come AFTER all automerge opt-in rules so they take final precedence.
+    // These enforce automerge: false for ALL update types (digest/patch/minor/major)
+    // for the named packages, overriding any earlier tier that may have matched.
+    //
+    // MUST-PRESERVE safety decisions (owner-specified, no automerge any type):
+    //
+    //   rook / ceph         — OSD corruption / PG rebalancing risk; maintenance
+    //                         window required for any update
+    //   authentik           — SSO gatekeeper; broken update locks out all web UIs
+    //   nvidia              — kernel/schematic coupling; must align with Talos
+    //   nvidia-device-plugin — same coupling as nvidia driver images
+    //
+    // Additional manual-only for minor + major (patch allowed via Tier-2b):
+    //   kube-prometheus-stack — CRD migrations; bundled multi-component (no patch
+    //                           automerge either per owner decision)
+    //   envoy-gateway         — ingress plane; fully manual per owner decision
+    //   cert-manager          — patch OK (Tier-2b); minor/major manual
+    //   cilium                — patch OK (Tier-2b); minor/major manual
+    //   external-secrets      — patch OK (Tier-2b); minor/major manual
+    //   cloudnative-pg        — patch OK (Tier-2b); minor/major manual
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "FULLY MANUAL: rook-ceph and Ceph — no automerge for any update type (data integrity risk, OSD corruption risk)",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchPackageNames": [
+        "/rook/",
+        "/ceph/"
+      ]
+    },
+    {
+      "description": "FULLY MANUAL: authentik and goauthentik — no automerge for any update type (SSO lockout risk)",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchPackageNames": [
+        "/authentik/",
+        "/goauthentik/"
+      ]
+    },
+    {
+      "description": "FULLY MANUAL: NVIDIA — no automerge for any update type (Talos kernel/schematic coupling)",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchPackageNames": [
+        "/nvidia/",
+        "/nvidia-device-plugin/"
+      ]
+    },
+    {
+      "description": "FULLY MANUAL: kube-prometheus-stack — no automerge for any update type (CRD migrations, multi-component bundle)",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchPackageNames": [
+        "kube-prometheus-stack"
+      ]
+    },
+    {
+      "description": "FULLY MANUAL: envoy-gateway — no automerge for any update type (ingress plane, owner decision overrides Tier-2b)",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchPackageNames": [
+        "/envoy-gateway/",
+        "/envoyproxy/"
+      ]
+    },
+    {
+      "description": "Require manual review for critical-infra minor and major (cert-manager, cilium, external-secrets, cloudnative-pg)",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchUpdateTypes": ["minor", "major"],
+      "matchPackageNames": [
+        "/cert-manager/",
+        "/cilium/",
+        "/external-secrets/",
+        "/cloudnative-pg/"
+      ]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 4: SPECIAL HANDLING — AI apps, Talos
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Require manual review for AI apps (rapidly evolving, stateful DBs)",
+      "matchDatasources": ["docker"],
+      "automerge": false,
+      "matchPackageNames": [
+        "/lightrag/",
+        "/litellm/",
+        "/open-webui/",
+        "/ollama/",
+        "/qdrant/"
+      ]
+    },
+    // NOTE: Talos talenv.yaml (ghcr.io/siderolabs/installer) updates are disabled in
+    // renovate.json5 ("Disable Talos updates (managed via Terraform)"), so talenv-based
+    // rules would be dead. Talos auto-updates flow via terraform/variables.tf (below);
+    // keeping talenv.yaml in sync is the upgrade workflow's job (EPIC-033 STORY-033-3).
+    {
+      "description": "Auto-merge Talos PETS upgrades (patch versions in Terraform, 1 day wait)",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["siderolabs/talos"],
+      "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
       "matchUpdateTypes": ["patch"],
       "automerge": true,
       "automergeType": "pr",
       "minimumReleaseAge": "1 day",
       "prBodyNotes": [
-        "🐾 **Talos PETS**: Patch version will be auto-merged after 1-day stabilization. In-place upgrade via talosctl."
+        "**Talos PETS**: Patch version will be auto-merged after 1-day stabilization. In-place upgrade via talosctl."
       ]
     },
     {
-      "description": "Require manual review for Talos CATTLE upgrades (major/minor)",
-      "matchLabels": ["talos-update/cattle"],
+      "description": "Require manual review for Talos CATTLE upgrades (major/minor in Terraform)",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["siderolabs/talos"],
+      "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
+      "matchUpdateTypes": ["major", "minor"],
       "automerge": false,
       "prBodyNotes": [
-        "🐄 **Talos CATTLE**: Major/minor version requires manual approval. Full VM rebuild via Terraform."
+        "**Talos CATTLE**: Major/minor version requires manual approval. Full VM rebuild via Terraform."
       ]
-    },
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // GLOBAL SAFETY NET - Must be LAST rule
-    // Ensures minor/major updates always require review
-    // ═══════════════════════════════════════════════════════════════════════════
-    {
-      "description": "Require manual review for major and minor updates",
-      "matchUpdateTypes": ["major", "minor"],
-      "automerge": false
     }
   ]
 }

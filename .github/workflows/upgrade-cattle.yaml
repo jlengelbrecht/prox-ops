@@ -250,21 +250,25 @@ jobs:
           # Create provider cache directory (prevents GitHub rate limiting)
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-          # Retry terraform init up to 3 times (GitHub occasionally rate-limits provider downloads)
-          for attempt in 1 2 3; do
-            echo "::group::Terraform init attempt $attempt"
-            if terraform init; then
+          # Retry terraform init up to 3 times with exponential backoff.
+          # -upgrade=false prevents accidental provider upgrades and speeds up
+          # init when providers are already cached in TF_PLUGIN_CACHE_DIR.
+          MAX_ATTEMPTS=3
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "::group::Terraform init attempt $attempt/$MAX_ATTEMPTS"
+            if terraform init -upgrade=false; then
               echo "::endgroup::"
-              echo "✅ Terraform initialized successfully"
+              echo "✅ Terraform initialized successfully on attempt $attempt"
               exit 0
             fi
             echo "::endgroup::"
-            if [[ $attempt -lt 3 ]]; then
-              echo "⚠️ terraform init failed, retrying in 30 seconds..."
-              sleep 30
+            if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
+              WAIT_TIME=$(( 30 * attempt ))
+              echo "⚠️ terraform init failed, retrying in ${WAIT_TIME}s (attempt $attempt/$MAX_ATTEMPTS)..."
+              sleep "$WAIT_TIME"
             fi
           done
-          echo "::error::terraform init failed after 3 attempts"
+          echo "::error::terraform init failed after $MAX_ATTEMPTS attempts"
           exit 1
 
       # Taint all template resources to force rebuild when checkbox is checked
@@ -560,7 +564,10 @@ jobs:
 
       - name: Execute template rebuild
         working-directory: ./terraform
-        timeout-minutes: 20
+        # 8 templates rebuilt in 4 batches; each uploads an ~866M raw image to a
+        # Proxmox host and imports it into Ceph. Observed >20 min in practice
+        # (run 26735551452 timed out), so allow generous headroom.
+        timeout-minutes: 45
         env:
           TF_VAR_proxmox_username: ${{ secrets.PROXMOX_USERNAME }}
           TF_VAR_proxmox_password: ${{ secrets.PROXMOX_PASSWORD }}
@@ -799,21 +806,25 @@ jobs:
           # Create provider cache directory (prevents GitHub rate limiting)
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-          # Retry terraform init up to 3 times (GitHub occasionally rate-limits provider downloads)
-          for attempt in 1 2 3; do
-            echo "::group::Terraform init attempt $attempt"
-            if terraform init; then
+          # Retry terraform init up to 3 times with exponential backoff.
+          # -upgrade=false prevents accidental provider upgrades and speeds up
+          # init when providers are already cached in TF_PLUGIN_CACHE_DIR.
+          MAX_ATTEMPTS=3
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "::group::Terraform init attempt $attempt/$MAX_ATTEMPTS"
+            if terraform init -upgrade=false; then
               echo "::endgroup::"
-              echo "✅ Terraform initialized successfully"
+              echo "✅ Terraform initialized successfully on attempt $attempt"
               exit 0
             fi
             echo "::endgroup::"
-            if [[ $attempt -lt 3 ]]; then
-              echo "⚠️ terraform init failed, retrying in 30 seconds..."
-              sleep 30
+            if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
+              WAIT_TIME=$(( 30 * attempt ))
+              echo "⚠️ terraform init failed, retrying in ${WAIT_TIME}s (attempt $attempt/$MAX_ATTEMPTS)..."
+              sleep "$WAIT_TIME"
             fi
           done
-          echo "::error::terraform init failed after 3 attempts"
+          echo "::error::terraform init failed after $MAX_ATTEMPTS attempts"
           exit 1
 
       - name: Validate etcd quorum health
@@ -1823,21 +1834,25 @@ jobs:
           # Create provider cache directory (prevents GitHub rate limiting)
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
-          # Retry terraform init up to 3 times (GitHub occasionally rate-limits provider downloads)
-          for attempt in 1 2 3; do
-            echo "::group::Terraform init attempt $attempt"
-            if terraform init; then
+          # Retry terraform init up to 3 times with exponential backoff.
+          # -upgrade=false prevents accidental provider upgrades and speeds up
+          # init when providers are already cached in TF_PLUGIN_CACHE_DIR.
+          MAX_ATTEMPTS=3
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "::group::Terraform init attempt $attempt/$MAX_ATTEMPTS"
+            if terraform init -upgrade=false; then
               echo "::endgroup::"
-              echo "✅ Terraform initialized successfully"
+              echo "✅ Terraform initialized successfully on attempt $attempt"
               exit 0
             fi
             echo "::endgroup::"
-            if [[ $attempt -lt 3 ]]; then
-              echo "⚠️ terraform init failed, retrying in 30 seconds..."
-              sleep 30
+            if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
+              WAIT_TIME=$(( 30 * attempt ))
+              echo "⚠️ terraform init failed, retrying in ${WAIT_TIME}s (attempt $attempt/$MAX_ATTEMPTS)..."
+              sleep "$WAIT_TIME"
             fi
           done
-          echo "::error::terraform init failed after 3 attempts"
+          echo "::error::terraform init failed after $MAX_ATTEMPTS attempts"
           exit 1
 
       - name: Pre-drain health check
@@ -2864,7 +2879,7 @@ jobs:
 
       - name: Validate GPU functionality
         if: matrix.is_gpu == true
-        timeout-minutes: 8
+        timeout-minutes: 9
         run: |
           echo "::group::Validating GPU for ${{ matrix.node }}"
 
@@ -2872,7 +2887,7 @@ jobs:
           # Increased timeout for GPU nodes that may have longer initialization
           echo "Waiting for NVIDIA device plugin to register GPU..."
           RETRY_COUNT=0
-          MAX_RETRIES=36  # 36 * 10s = 6 minutes
+          MAX_RETRIES=42  # 42 * 10s = 7 minutes (GPU nodes boot ~5 min)
 
           while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
             if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
@@ -2903,12 +2918,14 @@ jobs:
             exit 1
           fi
 
-          # Verify GPU count
+          # Verify GPU count. Time-slicing advertises multiple virtual GPUs per
+          # physical card (e.g. 3), so accept any positive count rather than
+          # requiring exactly 1.
           GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
-          echo "GPU count: $GPU_COUNT"
+          echo "Allocatable nvidia.com/gpu: ${GPU_COUNT:-0}"
 
-          if [[ "$GPU_COUNT" != "1" ]]; then
-            echo "::error::Expected 1 GPU, found $GPU_COUNT"
+          if [[ -z "$GPU_COUNT" || "$GPU_COUNT" -lt 1 ]]; then
+            echo "::error::GPU advertised but allocatable count is not positive ($GPU_COUNT)"
             exit 1
           fi
 

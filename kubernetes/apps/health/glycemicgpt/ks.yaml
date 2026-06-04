@@ -1,0 +1,27 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: glycemicgpt
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: glycemicgpt-storage
+      namespace: health
+    - name: external-secrets-operator
+      namespace: flux-system
+    - name: cloudnative-pg-operator
+      namespace: database
+  interval: 1h
+  path: ./kubernetes/apps/health/glycemicgpt/app
+  postBuild:
+    substituteFrom:
+      - name: cluster-secrets
+        kind: Secret
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: health
+  wait: false

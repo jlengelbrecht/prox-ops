@@ -53,7 +53,7 @@ runs:
 
         echo "  terraform: $(terraform version 2>/dev/null | head -1 || echo 'version check failed')"
         echo "  kubectl:   $(kubectl version --client -o json 2>/dev/null | jq -r '.clientVersion.gitVersion' || kubectl version --client 2>&1 | head -1)"
-        echo "  talosctl:  $(talosctl version --client --short 2>/dev/null | grep Tag | awk '{print $2}' || echo 'version check failed')"
+        echo "  talosctl:  $(talosctl version --client 2>/dev/null | grep Tag | awk '{print $2}' || echo 'version check failed')"
         echo "  flux:      $(flux version --client 2>/dev/null | head -1 || echo 'not available')"
         echo "  helm:      $(helm version --short 2>/dev/null || echo 'not available')"
         echo "  kustomize: $(kustomize version 2>/dev/null || echo 'not available')"
@@ -102,9 +102,11 @@ runs:
           exit 1
         fi
 
-        # Verify kubeconfig is valid
+        # Verify kubeconfig is valid (do NOT print it — minify view leaks the API
+        # server URL + cluster CA to the public Actions log on a public repo)
         echo "Verifying kubeconfig..."
-        kubectl config view --minify
+        kubectl config view --minify -o jsonpath='{.clusters[0].name}' >/dev/null 2>&1 \
+          && echo "kubeconfig valid" || echo "WARNING: kubeconfig minify check failed"
 
         # Verify cluster connectivity
         echo "Testing cluster API connectivity..."

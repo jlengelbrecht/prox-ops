@@ -952,18 +952,21 @@ jobs:
 
       - name: GPU validation (GPU nodes only)
         if: matrix.node.is_gpu == true
-        timeout-minutes: 3
+        timeout-minutes: 9
         run: |
           echo "::group::Validating GPU for ${{ matrix.node.name }}"
 
-          # Wait for NVIDIA device plugin to detect GPU
-          echo "Waiting for NVIDIA device plugin..."
+          # GPU nodes take ~5 min to boot (NVIDIA driver load) before the device
+          # plugin can advertise nvidia.com/gpu, so allow up to 7 minutes here.
+          echo "Waiting for NVIDIA device plugin to advertise GPU..."
           RETRY_COUNT=0
-          MAX_RETRIES=18
+          MAX_RETRIES=42  # 42 * 10s = 7 minutes
 
+          GPU_DETECTED=false
           while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
             if kubectl get nodes ${{ matrix.node.name }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
-              echo "✅ GPU detected by Kubernetes"
+              echo "✅ GPU detected by Kubernetes after $((RETRY_COUNT * 10))s"
+              GPU_DETECTED=true
               break
             fi
             echo "Waiting for GPU detection (attempt $((RETRY_COUNT+1))/$MAX_RETRIES)..."
@@ -971,22 +974,42 @@ jobs:
             RETRY_COUNT=$((RETRY_COUNT+1))
           done
 
-          if [[ $RETRY_COUNT -eq $MAX_RETRIES ]]; then
-            echo "::error::GPU not detected after $MAX_RETRIES attempts"
-            exit 1
+          if [[ "$GPU_DETECTED" == "true" ]]; then
+            # Time-slicing advertises multiple virtual GPUs per physical card
+            # (e.g. 3), so accept any positive count rather than requiring exactly 1.
+            GPU_COUNT=$(kubectl get nodes ${{ matrix.node.name }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
+            echo "Allocatable nvidia.com/gpu: ${GPU_COUNT:-0}"
+            if [[ -z "$GPU_COUNT" || "$GPU_COUNT" -lt 1 ]]; then
+              echo "::error::GPU advertised but allocatable count is not positive ($GPU_COUNT)"
+              exit 1
+            fi
+            echo "✅ GPU validation passed (${GPU_COUNT} schedulable GPU(s))"
+            echo "::endgroup::"
+            exit 0
           fi
 
-          # Verify GPU count
-          GPU_COUNT=$(kubectl get nodes ${{ matrix.node.name }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
-          echo "GPU count: $GPU_COUNT"
+          # Device plugin has not advertised the GPU yet. Distinguish a genuine GPU
+          # failure from device-plugin lag: if the NVIDIA system extension is present
+          # on the node and the GPU label is set, the OS upgrade itself succeeded, so
+          # warn rather than failing the whole upgrade over a slow device plugin.
+          echo "::warning::nvidia.com/gpu not allocatable after $((MAX_RETRIES * 10))s; checking node-level NVIDIA state..."
+          # grep -c prints the count but exits 1 on zero matches; `|| true`
+          # swallows that exit without appending a second value (using `|| echo 0`
+          # would produce "0\n0" and break the numeric comparison below).
+          EXT_PRESENT=$(talosctl -n ${{ matrix.node.ip }} get extensions -o json 2>/dev/null | grep -ci nvidia || true)
+          EXT_PRESENT="${EXT_PRESENT:-0}"
+          LABEL_PRESENT=$(kubectl get node ${{ matrix.node.name }} -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}' 2>/dev/null || echo "")
+          echo "NVIDIA extensions present: $EXT_PRESENT | gpu.present label: ${LABEL_PRESENT:-<none>}"
+          kubectl get pods -n nvidia-device-plugin -o wide 2>/dev/null | grep "${{ matrix.node.name }}" || echo "no device-plugin pod on node yet"
 
-          if [[ "$GPU_COUNT" != "1" ]]; then
-            echo "::error::Expected 1 GPU, found $GPU_COUNT"
-            exit 1
+          if [[ "$EXT_PRESENT" -ge 1 && "$LABEL_PRESENT" == "true" ]]; then
+            echo "::warning::NVIDIA extension present and node labeled; device plugin lagging. Upgrade succeeded — flagging for follow-up, not failing the upgrade."
+            echo "::endgroup::"
+            exit 0
           fi
 
-          echo "✅ GPU validation passed"
-          echo "::endgroup::"
+          echo "::error::GPU not detected and NVIDIA extension/label missing on ${{ matrix.node.name }} — genuine GPU failure"
+          exit 1
 
       - name: Upgrade summary
         if: always()

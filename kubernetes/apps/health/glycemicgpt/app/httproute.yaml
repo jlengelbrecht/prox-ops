@@ -1,0 +1,41 @@
+---
+# WebUI route - protected by Authentik forward auth (SecurityPolicy attached)
+# External access via Cloudflare tunnel -> envoy-external
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: glycemicgpt
+  namespace: health
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: glycemicgpt.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-external
+      namespace: network
+      sectionName: https
+  hostnames:
+    - "glycemicgpt.${SECRET_DOMAIN}"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: glycemicgpt-web
+          port: 3000
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+              - name: Content-Security-Policy
+                value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+              - name: Permissions-Policy
+                value: "geolocation=(), microphone=(), camera=(), payment=()"

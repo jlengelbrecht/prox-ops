@@ -1,0 +1,60 @@
+---
+# Catch-all HTTPRoute for the bot dashboard. The bot's own Discord-OAuth
+# session layer gates access to dashboard routes internally; Authentik
+# forward-auth will be layered on in a follow-up PR once the Discord-role
+# policy gate is properly architected.
+# More-specific OAuth routes live in httproute-oauth.yaml and win by
+# Gateway API longest-prefix-match.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: glycemicgpt-bot
+  namespace: tools
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: discord.glycemicgpt.org
+spec:
+  parentRefs:
+    - name: envoy-external
+      namespace: network
+      sectionName: https
+  hostnames:
+    - "discord.glycemicgpt.org"
+  rules:
+    # Explicit allow-list. Anything outside this set (FastAPI's /docs,
+    # /redoc, /openapi.json, or any accidentally-unauth'd endpoint)
+    # returns 404 at the gateway. Add routes here as the app grows.
+    - matches:
+        - path:
+            type: Exact
+            value: /
+        - path:
+            type: PathPrefix
+            value: /verify
+        - path:
+            type: PathPrefix
+            value: /dashboard
+        - path:
+            type: PathPrefix
+            value: /static
+        - path:
+            type: PathPrefix
+            value: /assets
+      backendRefs:
+        - name: glycemicgpt-bot
+          port: 8080
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+              - name: Content-Security-Policy
+                value: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://cdn.discordapp.com; connect-src 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+              - name: Permissions-Policy
+                value: "geolocation=(), microphone=(), camera=(), payment=()"

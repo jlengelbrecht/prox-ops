@@ -11,7 +11,7 @@
   ],
   dependencyDashboard: true,
   dependencyDashboardTitle: '🤖 Renovate Dashboard 🤖',
-  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates run every weekend. Check a box to run immediately.\n\n---\n',
+  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates flow continuously, rate-limited (max 5 open PRs, 2 new/hour) with per-package soak windows. Check a box to run immediately.\n\n---\n',
   dependencyDashboardFooter: '\n---\n\n📚 **Documentation:** [Renovate Docs](https://docs.renovatebot.com/) | ⚙️ **Config:** `.github/renovate.json5`',
   suppressNotifications: [
     'prEditedNotification',
@@ -19,10 +19,19 @@
     'configErrorIssue',
   ],
   configWarningReuseIssue: false,
-  rebaseWhen: 'conflicted',
+  rebaseWhen: 'behind-base-branch',
+  // Continuous (rate-limited) instead of weekend-only: throttling is handled by
+  // prConcurrentLimit/prHourlyLimit + per-package minimumReleaseAge soaks, so PRs
+  // flow as updates release rather than batching weekly (keeps the cluster current).
   schedule: [
-    'every weekend',
+    'at any time',
   ],
+  automergeSchedule: [
+    'at any time',
+  ],
+  prConcurrentLimit: 5,
+  prHourlyLimit: 2,
+  branchConcurrentLimit: 10,
   platformAutomerge: true,
   'pre-commit': {
     enabled: true,
@@ -229,7 +238,7 @@
         '/qbittorrent/',
         '/sabnzbd/',
         '/notifiarr/',
-        '/huntarr/',
+        '/newtarr/',
         '/cleanuparr/',
         '/fileflows/',
       ],
@@ -359,6 +368,8 @@
         '/litellm/',
         '/lightrag/',
         '/qdrant/',
+        '/openclaw/',
+        '/glycemicgpt/',
       ],
     },
     {
@@ -423,6 +434,32 @@
       ],
       addLabels: [
         'deps/tools',
+      ],
+    },
+    {
+      // Stamps the trigger label for the Claude advisory upgrade-briefing workflow
+      // (.github/workflows/renovate-critical-review.yaml). Exactly the manual +
+      // critical-infra tier from renovate/autoMerge.json5 Tier-3. Advisory only —
+      // does not change merge behaviour; Claude posts a risk briefing + claude/<risk> label.
+      description: 'Label critical-infra updates for Claude advisory review',
+      addLabels: [
+        'renovate/critical-review',
+      ],
+      matchPackageNames: [
+        '/rook/',
+        '/ceph/',
+        '/authentik/',
+        '/goauthentik/',
+        '/nvidia/',
+        '/nvidia-device-plugin/',
+        'kube-prometheus-stack',
+        '/envoy-gateway/',
+        '/envoyproxy/',
+        '/cert-manager/',
+        '/jetstack/',
+        '/cilium/',
+        '/external-secrets/',
+        '/cloudnative-pg/',
       ],
     },
     {
@@ -547,6 +584,11 @@
     {
       description: 'Wait 2 days for AI/ML stack updates',
       minimumReleaseAge: '2 days',
+      matchUpdateTypes: [
+        'major',
+        'minor',
+        'patch',
+      ],
       prBodyNotes: [
         '🤖 **AI/ML**: Rapidly evolving stack. Check for breaking API changes, model compatibility, and integration updates.',
       ],
@@ -556,6 +598,8 @@
         '/litellm/',
         '/lightrag/',
         '/qdrant/',
+        '/openclaw/',
+        '/glycemicgpt/',
       ],
     },
     {
@@ -609,6 +653,16 @@
       matchPackageNames: [
         '/ghcr.io/siderolabs/talos/',
         '/ghcr.io/siderolabs/installer/',
+      ],
+    },
+    {
+      description: 'Disable kubelet image tracking (owned by Talos; version must match schematic)',
+      matchDatasources: [
+        'docker',
+      ],
+      enabled: false,
+      matchPackageNames: [
+        '/ghcr.io/siderolabs/kubelet/',
       ],
     },
     {
@@ -772,12 +826,67 @@
       ],
     },
     {
+      description: 'Pin digest for openclaw (floating main tag, no semver releases)',
+      matchDatasources: [
+        'docker',
+      ],
+      matchPackageNames: [
+        'ghcr.io/openclaw/openclaw',
+      ],
+      pinDigests: true,
+    },
+    {
+      description: 'Pin digest for newtarr (floating rolling tag, no semver releases)',
+      matchDatasources: [
+        'docker',
+      ],
+      matchPackageNames: [
+        'ghcr.io/elfhosted/newtarr',
+      ],
+      pinDigests: true,
+    },
+    {
+      description: 'GlycemicGPT semver releases (v-prefixed or bare)',
+      matchDatasources: [
+        'docker',
+      ],
+      matchPackageNames: [
+        'ghcr.io/glycemicgpt/glycemicgpt-api',
+        'ghcr.io/glycemicgpt/glycemicgpt-web',
+        'ghcr.io/glycemicgpt/glycemicgpt-sidecar',
+        'ghcr.io/glycemicgpt/discord-bot',
+      ],
+      extractVersion: '^v?(?<version>.*)$',
+    },
+    {
       description: 'Flag images using :latest for pinning',
       matchDatasources: [
         'docker',
       ],
       matchCurrentVersion: 'latest',
       enabled: false,
+    },
+    {
+      // MUST be the last packageRule. Renovate uses the last matching
+      // minimumReleaseAge value; the root "Wait N days" rules above otherwise
+      // shorten the critical-infra PATCH auto-merge soak (cert-manager &
+      // external-secrets to 1d, cilium & cloudnative-pg to 3d). This re-asserts
+      // the intended 5-day soak for the Tier-2b patch automerge in autoMerge.json5.
+      description: 'Enforce 5-day soak for auto-merged critical-infra patch updates',
+      matchDatasources: [
+        'docker',
+        'helm',
+      ],
+      matchUpdateTypes: [
+        'patch',
+      ],
+      matchPackageNames: [
+        '/cert-manager/',
+        '/cilium/',
+        '/external-secrets/',
+        '/cloudnative-pg/',
+      ],
+      minimumReleaseAge: '5 days',
     },
   ],
   ignorePaths: [

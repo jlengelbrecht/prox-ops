@@ -38,15 +38,6 @@ spec:
         - ports:
             - port: "9696"
               protocol: TCP
-    # Allow from Huntarr (automated media hunting)
-    - fromEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: media
-            app.kubernetes.io/name: huntarr
-      toPorts:
-        - ports:
-            - port: "9696"
-              protocol: TCP
     # Allow from Notifiarr (TRaSH guide sync)
     - fromEndpoints:
         - matchLabels:

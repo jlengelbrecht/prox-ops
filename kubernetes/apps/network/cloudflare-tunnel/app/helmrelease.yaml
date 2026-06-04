@@ -119,6 +119,14 @@ spec:
                   http2Origin: true
                   originServerName: authentik.${SECRET_DOMAIN}
 
+              # Authentik on glycemicgpt.org (same backend; Host header triggers
+              # the glycemicgpt-branded flow/logo via Authentik brand matching)
+              - hostname: "authentik.glycemicgpt.org"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: authentik.glycemicgpt.org
+
               # Media Status (Uptime Kuma public status page)
               - hostname: "media-status.${SECRET_DOMAIN}"
                 service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
@@ -139,6 +147,28 @@ spec:
                 originRequest:
                   http2Origin: true
                   originServerName: voice-bridge.${SECRET_DOMAIN}
+
+              # GlycemicGPT (health/diabetes management platform)
+              - hostname: "glycemicgpt.${SECRET_DOMAIN}"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: glycemicgpt.${SECRET_DOMAIN}
+
+              # GlycemicGPT Discord bot (dashboard + OAuth callbacks for /verify)
+              - hostname: "discord.glycemicgpt.org"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: discord.glycemicgpt.org
+
+              # GlycemicGPT verify vanity URL (tunnel entry only; any redirect
+              # to discord.glycemicgpt.org/verify is handled by the app HTTPRoute)
+              - hostname: "verify.glycemicgpt.org"
+                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
+                originRequest:
+                  http2Origin: true
+                  originServerName: verify.glycemicgpt.org
 
               # NOTE: Apps NOT routed through Cloudflare tunnel:
               # - Plex (DMZ): UDM SE port forward for high bandwidth streaming

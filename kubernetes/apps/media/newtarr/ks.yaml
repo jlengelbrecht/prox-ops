@@ -2,17 +2,19 @@
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: huntarr
+  name: newtarr
   namespace: flux-system
 spec:
   targetNamespace: media
   commonMetadata:
     labels:
-      app.kubernetes.io/name: huntarr
+      app.kubernetes.io/name: newtarr
   dependsOn:
     - name: sonarr
     - name: radarr
-  path: ./kubernetes/apps/media/huntarr/app
+    - name: cluster-secret-store
+      namespace: flux-system
+  path: ./kubernetes/apps/media/newtarr/app
   prune: true
   sourceRef:
     kind: GitRepository

@@ -1,0 +1,33 @@
+---
+# Vanity URL: verify.glycemicgpt.org → 302 discord.glycemicgpt.org/verify.
+# Entire hostname is a pure redirect — no backendRefs. Nothing ever hits the
+# bot on this host. Keeps external comms terse ("visit verify.glycemicgpt.org")
+# while the actual OAuth callbacks live on the single canonical host.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: glycemicgpt-bot-verify-vanity
+  namespace: tools
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: verify.glycemicgpt.org
+spec:
+  parentRefs:
+    - name: envoy-external
+      namespace: network
+      sectionName: https
+  hostnames:
+    - "verify.glycemicgpt.org"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            hostname: discord.glycemicgpt.org
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /verify
+            statusCode: 302
