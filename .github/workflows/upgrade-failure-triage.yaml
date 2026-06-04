@@ -127,17 +127,21 @@ jobs:
           claude -p "$PROMPT" --allowedTools "Read" --output-format json > claude-out.json 2> claude-err.txt
           rc=$?
           echo "claude exit: $rc"
-          echo "--- claude stderr (tail) ---"; tail -40 claude-err.txt 2>/dev/null
-          echo "--- claude stdout (first 600 bytes) ---"; head -c 600 claude-out.json 2>/dev/null; echo
-          # Extract verdict text + record token usage to the job summary
+          # Extract the verdict markdown + usage from the JSON result
           jq -r '.result // empty' claude-out.json > triage-verdict.md 2>/dev/null
           if [ ! -s triage-verdict.md ]; then
             { echo "_Claude produced no verdict (exit ${rc}). Diagnostic tail:_"; echo '```'; tail -20 claude-err.txt 2>/dev/null; echo '```'; } > triage-verdict.md
           fi
-          {
-            echo "### Claude token usage (claude exit ${rc})"
-            jq -r '"- input_tokens: \(.usage.input_tokens // "?")\n- output_tokens: \(.usage.output_tokens // "?")\n- cache_read_tokens: \(.usage.cache_read_input_tokens // 0)\n- cost_usd: \(.total_cost_usd // "?")\n- turns: \(.num_turns // "?")\n- duration_ms: \(.duration_ms // "?")"' claude-out.json 2>/dev/null || echo "- (usage unavailable)"
-          } >> "$GITHUB_STEP_SUMMARY"
+          USAGE="$(jq -r '"- input_tokens: \(.usage.input_tokens // "?")\n- output_tokens: \(.usage.output_tokens // "?")\n- cache_read_tokens: \(.usage.cache_read_input_tokens // 0)\n- cache_creation_tokens: \(.usage.cache_creation_input_tokens // 0)\n- cost_usd: \(.total_cost_usd // "?")\n- turns: \(.num_turns // "?")\n- duration_ms: \(.duration_ms // "?")"' claude-out.json 2>/dev/null)"
+          [ -n "$USAGE" ] || USAGE="- (usage unavailable)"
+          # Echo verdict + usage to the build log for visibility. Indent every line by two
+          # spaces so any GitHub log-command Claude quoted from the failed run's logs
+          # (e.g. "##[error]…", "::set-output…") can't re-fire as a bogus annotation here.
+          echo "----- triage verdict (sanitized) -----"
+          sed 's/^/  /' triage-verdict.md
+          echo "----- token usage -----"
+          echo "$USAGE" | sed 's/^/  /'
+          { echo "### Claude token usage (claude exit ${rc})"; echo "$USAGE"; } >> "$GITHUB_STEP_SUMMARY"
           exit 0   # triage is best-effort; never fail the workflow on a triage hiccup
 
       - name: Publish verdict (job summary always; Discord if configured)
