@@ -130,9 +130,10 @@ jobs:
           RISK="$(grep -m1 -oE 'RISK: (safe|needs-action|needs-validation)' briefing.md | awk '{print $2}')"
           [ -n "$RISK" ] || RISK="needs-validation"
           echo "RISK=${RISK}" >> "$GITHUB_ENV"
-          # Drop everything up to and including the RISK marker (also removes any
-          # stray model preamble before it), leaving just the briefing body.
-          sed '1,/^RISK: /d' briefing.md > briefing-body.md
+          # Strip the RISK marker line(s) only, leaving the briefing body. Must NOT use a
+          # `1,/^RISK: /` range: sed searches the end-address from line 2, so a RISK marker
+          # on line 1 never closes the range and the whole file is deleted (empty body).
+          sed '/^RISK:/d' briefing.md > briefing-body.md
           # Visibility + usage (indent neutralizes any quoted ##[...] / :: log-commands)
           echo "----- briefing (sanitized) -----"; sed 's/^/  /' briefing.md
           USAGE="$(jq -r '"- input: \(.usage.input_tokens // "?") output: \(.usage.output_tokens // "?") cache_read: \(.usage.cache_read_input_tokens // 0) cost_usd: \(.total_cost_usd // "?") turns: \(.num_turns // "?")"' out.json 2>/dev/null)"
