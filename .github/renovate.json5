@@ -437,6 +437,32 @@
       ],
     },
     {
+      // Stamps the trigger label for the Claude advisory upgrade-briefing workflow
+      // (.github/workflows/renovate-critical-review.yaml). Exactly the manual +
+      // critical-infra tier from renovate/autoMerge.json5 Tier-3. Advisory only —
+      // does not change merge behaviour; Claude posts a risk briefing + claude/<risk> label.
+      description: 'Label critical-infra updates for Claude advisory review',
+      addLabels: [
+        'renovate/critical-review',
+      ],
+      matchPackageNames: [
+        '/rook/',
+        '/ceph/',
+        '/authentik/',
+        '/goauthentik/',
+        '/nvidia/',
+        '/nvidia-device-plugin/',
+        'kube-prometheus-stack',
+        '/envoy-gateway/',
+        '/envoyproxy/',
+        '/cert-manager/',
+        '/jetstack/',
+        '/cilium/',
+        '/external-secrets/',
+        '/cloudnative-pg/',
+      ],
+    },
+    {
       description: 'Wait 3 days for critical infrastructure updates',
       minimumReleaseAge: '3 days',
       prBodyNotes: [

@@ -1,0 +1,158 @@
+---
+# Claude-powered upgrade briefing for CRITICAL-INFRA Renovate PRs (ADVISORY ONLY).
+#
+# Fires on Renovate PRs carrying the `renovate/critical-review` label (stamped by
+# Renovate on the manual + critical-infra tier: rook-ceph, authentik, nvidia,
+# kube-prometheus-stack, envoy-gateway, cert-manager, cilium, external-secrets,
+# cloudnative-pg). Claude reads the PR diff + Renovate's embedded release notes +
+# how THIS repo configures the component, then posts a risk briefing comment and a
+# claude/<risk> label. It NEVER merges and needs NO cluster credentials — it only
+# turns a manual changelog-research task into a 30-second decision. The human merges.
+#
+# Requires repo secret CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`, Max
+# subscription — no API billing). Until that secret exists this workflow no-ops.
+name: Renovate Critical Review (Claude)
+
+on:
+  pull_request:
+    # Review at open time (and on manual relabel); skip `synchronize` to avoid
+    # re-reviewing on every Renovate rebase (comment spam + cost). Materially new
+    # versions land as a new PR/branch anyway.
+    types: [opened, reopened, labeled]
+
+permissions:
+  contents: read          # checkout + read how the repo configures the component
+  pull-requests: write    # post the briefing comment
+  issues: write           # apply the claude/<risk> label
+
+jobs:
+  review:
+    name: Critical-infra upgrade briefing
+    # Only the critical-infra tier, and skip if the auth secret is absent
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'renovate/critical-review')
+    runs-on: cattle-runner
+    timeout-minutes: 15
+    steps:
+      - name: Checkout PR (new manifests visible to Claude)
+        uses: actions/checkout@v4
+
+      - name: Gather PR context (to files; not echoed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          mkdir -p review
+          gh pr view "$PR" --json title,body,labels,files \
+            -q '"TITLE: \(.title)\n\nLABELS: \([.labels[].name]|join(", "))\n\nCHANGED FILES:\n\([.files[].path]|join("\n"))\n\n--- PR BODY (Renovate release notes) ---\n\(.body)"' \
+            > review/pr.txt 2>&1
+          # The diff shows the exact old -> new version + any values changes
+          gh pr diff "$PR" > review/diff.txt 2>&1
+          echo "context files:"; ls -la review/
+
+      - name: Setup Node.js (for Claude CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Claude review (read-only; no cluster creds; advisory)
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GITHUB_TOKEN: ""   # blank for this step so Claude can't read it from the env
+        run: |
+          set +e   # default shell is `bash -e`; keep a non-zero claude exit from
+                   # killing the step before we capture output/usage
+          # Pin the CLI version (supply-chain: avoid running an unvetted latest publish
+          # with the OAuth token + repo checkout in scope). Bump deliberately when needed.
+          CLAUDE_CLI_VERSION="2.1.162"
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" >/dev/null 2>&1 \
+            || npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
+          echo "claude version: $(claude --version 2>/dev/null || echo unknown)"
+          # Strip stray whitespace/newline the secret may carry (invalid HTTP header otherwise)
+          CLAUDE_CODE_OAUTH_TOKEN="$(printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN:-}" | tr -d '[:space:]')"
+          export CLAUDE_CODE_OAUTH_TOKEN
+          PROMPT=$(cat <<'EOF'
+          You are reviewing a Renovate dependency-update PR for a CRITICAL piece of a
+          Talos/Flux Kubernetes homelab. Your job is to produce an ADVISORY upgrade
+          briefing so the human can decide quickly. You do NOT merge.
+
+          Read ./review/pr.txt (PR title, labels, changed files, and Renovate's embedded
+          release notes) and ./review/diff.txt (the exact old -> new version change). Then
+          Read how THIS repo configures the component (the changed HelmRelease/manifest and
+          nearby kustomization/values). You MAY WebFetch the upstream changelog/release notes
+          for the exact target version if needed. Do NOT read or echo secrets, tokens, or
+          SOPS-encrypted values (they are ciphertext anyway).
+
+          Assess specifically for THIS repo:
+          - Breaking changes: CRD schema changes/migrations, removed/renamed Helm values
+            keys, required version-skew or upgrade ordering, removed flags/APIs, deprecations.
+          - Whether anything the diff/our config touches is affected by those changes.
+          - For stateful components (ceph, cloudnative-pg, authentik): data/migration risk.
+
+          OUTPUT FORMAT (strict):
+          - The VERY FIRST line must be exactly one of:
+              RISK: safe
+              RISK: needs-action
+              RISK: needs-validation
+            (safe = routine, no breaking change affecting us; needs-action = a specific change
+            is required before/with merge; needs-validation = can't fully determine from
+            available info, a human must verify a named thing.)
+          - Then a blank line, then a concise GitHub-flavored markdown briefing (<= 40 lines):
+              **Package / version**: name (a.b.c -> x.y.z, <update type>)
+              **What changed**: 2-4 headline bullets
+              **Breaking changes affecting this repo**: specifics, or "none found"
+              **Required actions**: numbered steps, or "none"
+              **Verdict**: one sentence.
+          Refer to components generically; no IP addresses or secrets.
+          EOF
+          )
+          claude -p "$PROMPT" --allowedTools "Read,WebFetch" --output-format json > out.json 2> err.txt
+          rc=$?
+          echo "claude exit: $rc"
+          jq -r '.result // empty' out.json > briefing.md 2>/dev/null
+          if [ ! -s briefing.md ]; then
+            { echo "RISK: needs-validation"; echo; echo "_Automated briefing unavailable (claude exit ${rc}); please review manually._"; } > briefing.md
+          fi
+          # Derive the risk label from the first line, then strip that marker line from the comment body
+          RISK="$(grep -m1 -oE 'RISK: (safe|needs-action|needs-validation)' briefing.md | awk '{print $2}')"
+          [ -n "$RISK" ] || RISK="needs-validation"
+          echo "RISK=${RISK}" >> "$GITHUB_ENV"
+          sed '0,/^RISK: .*/{/^RISK: .*/d;}' briefing.md > briefing-body.md
+          # Visibility + usage (indent neutralizes any quoted ##[...] / :: log-commands)
+          echo "----- briefing (sanitized) -----"; sed 's/^/  /' briefing.md
+          USAGE="$(jq -r '"- input: \(.usage.input_tokens // "?") output: \(.usage.output_tokens // "?") cache_read: \(.usage.cache_read_input_tokens // 0) cost_usd: \(.total_cost_usd // "?") turns: \(.num_turns // "?")"' out.json 2>/dev/null)"
+          { echo "### Claude review — RISK: ${RISK} (claude exit ${rc})"; echo "${USAGE:-- usage unavailable}"; } >> "$GITHUB_STEP_SUMMARY"
+          exit 0   # advisory: never fail the PR's checks on a review hiccup
+
+      - name: Post briefing comment + risk label
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          RISK="${RISK:-needs-validation}"
+          # Ensure the claude/<risk> labels exist (idempotent)
+          gh label create "claude/safe"             --color 0E8A16 --description "Claude: routine update, no breaking change for this repo" 2>/dev/null
+          gh label create "claude/needs-action"     --color D93F0B --description "Claude: breaking change — action required before merge"   2>/dev/null
+          gh label create "claude/needs-validation" --color FBCA04 --description "Claude: needs human validation of a named item"           2>/dev/null
+          # Apply this run's risk label; clear the other two so the state reflects the latest review
+          gh pr edit "$PR" --add-label "claude/${RISK}" 2>/dev/null
+          for L in safe needs-action needs-validation; do
+            [ "$L" = "$RISK" ] || gh pr edit "$PR" --remove-label "claude/${L}" 2>/dev/null
+          done
+          # Post (or update) the briefing as a single comment
+          BODY_FILE=briefing-body.md
+          [ -f "$BODY_FILE" ] || echo "_No briefing produced._" > "$BODY_FILE"
+          {
+            echo "<!-- claude-critical-review -->"
+            echo "## 🔍 Claude upgrade briefing — risk: \`${RISK}\`"
+            echo ""
+            cat "$BODY_FILE"
+            echo ""
+            echo "_Advisory only — review and merge at your discretion. Generated on each open/relabel._"
+          } > comment.md
+          gh pr comment "$PR" --body-file comment.md --edit-last --create-if-none 2>/dev/null \
+            || gh pr comment "$PR" --body-file comment.md 2>/dev/null
+          echo "posted briefing; risk=${RISK}"
