@@ -37,9 +37,19 @@ jobs:
       - name: Checkout PR (new manifests visible to Claude)
         uses: actions/checkout@v4
 
+      # Mint a GitHub App token so the briefing comment + label post as the repo's
+      # bot identity (homebot), consistent with the other PR-automation workflows,
+      # instead of the generic github-actions[bot].
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
       - name: Gather PR context (to files; not echoed)
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           set +e
@@ -91,6 +101,8 @@ jobs:
           - For stateful components (ceph, cloudnative-pg, authentik): data/migration risk.
 
           OUTPUT FORMAT (strict):
+          - Output ONLY the briefing. No preamble, no "Now I have all the information"
+            or "Let me produce the briefing" text, no leading horizontal rule.
           - The VERY FIRST line must be exactly one of:
               RISK: safe
               RISK: needs-action
@@ -118,7 +130,9 @@ jobs:
           RISK="$(grep -m1 -oE 'RISK: (safe|needs-action|needs-validation)' briefing.md | awk '{print $2}')"
           [ -n "$RISK" ] || RISK="needs-validation"
           echo "RISK=${RISK}" >> "$GITHUB_ENV"
-          sed '0,/^RISK: .*/{/^RISK: .*/d;}' briefing.md > briefing-body.md
+          # Drop everything up to and including the RISK marker (also removes any
+          # stray model preamble before it), leaving just the briefing body.
+          sed '1,/^RISK: /d' briefing.md > briefing-body.md
           # Visibility + usage (indent neutralizes any quoted ##[...] / :: log-commands)
           echo "----- briefing (sanitized) -----"; sed 's/^/  /' briefing.md
           USAGE="$(jq -r '"- input: \(.usage.input_tokens // "?") output: \(.usage.output_tokens // "?") cache_read: \(.usage.cache_read_input_tokens // 0) cost_usd: \(.total_cost_usd // "?") turns: \(.num_turns // "?")"' out.json 2>/dev/null)"
@@ -128,7 +142,7 @@ jobs:
       - name: Post briefing comment + risk label
         if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           set +e
