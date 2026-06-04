@@ -29,8 +29,7 @@ on:
 
 permissions:
   contents: read
-  actions: read    # read the failed run's logs
-  id-token: write  # required by claude-code-action to mint its GitHub token via OIDC
+  actions: read   # read the failed run's logs (CLI approach needs no id-token/OIDC)
 
 jobs:
   triage:
@@ -78,40 +77,58 @@ jobs:
           rm -f "$HOME/.kube/config" "$HOME/.talos/config" 2>/dev/null || true
           echo "cluster credentials removed; Claude will see only ./triage/ bundle"
 
-      - name: Claude triage (read-only; no cluster creds present)
-        uses: anthropics/claude-code-action@36a69b6a90b850823f86de06fdfd56264772ad98  # v1
+      # Use the Claude Code CLI (Node) directly instead of claude-code-action: the
+      # action's bun runtime throws "directory mismatch" on the in-cluster cattle-runner
+      # and its PR-comment machinery is irrelevant for headless triage.
+      - name: Setup Node.js (for Claude CLI)
+        uses: actions/setup-node@v4
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            A Talos upgrade workflow run FAILED and you are triaging it.
+          node-version: "20"
 
-            Read ONLY the pre-collected diagnostic bundle in ./triage/ and repo context
-            (.github/workflows/upgrade-cattle.yaml, .github/workflows/upgrade-pets.yaml,
-            and .claude/.ai-docs/ for known failure patterns). Do NOT attempt to reach the
-            cluster (no credentials are present) and do NOT read or echo any secrets,
-            tokens, kubeconfigs, or internal IP addresses.
+      - name: Claude triage (CLI; read-only; no cluster creds present)
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GITHUB_TOKEN: ""   # blank it for this step so Claude can't read it from the env
+        run: |
+          set -uo pipefail
+          npm install -g @anthropic-ai/claude-code >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code
+          echo "claude version: $(claude --version 2>/dev/null || echo unknown)"
+          PROMPT=$(cat <<'EOF'
+          A Talos upgrade workflow run FAILED and you are triaging it.
 
-            Determine and report:
-            1. CLASSIFICATION: is this a REAL failure or a KNOWN-BENIGN one? Known-benign patterns:
-               - GPU validation false-failure (device-plugin lag; node actually upgraded; time-sliced gpu count is 3 not 1)
-               - "No changes / template already current" tripping the template safety assertion -> re-run cattle with taint_templates=true
-               - ephemeral cattle-runner offline/cycling between worker pairs (a ~5-min gap, NOT a stall)
-               - terraform state-lock / tool-install race -> safe to re-run
-               - power-induced host drop (a Proxmox host went unreachable -> nodes NotReady)
-            2. ROOT CAUSE: cite the failed step and the key log line(s).
-            3. RECOMMENDED ACTION: safe to re-run? with what inputs (e.g. taint_templates=true, worker_rollout_mode=safe)? or STOP and investigate what?
+          Read ONLY the diagnostic bundle in ./triage/ and repo context
+          (.github/workflows/upgrade-cattle.yaml, .github/workflows/upgrade-pets.yaml, and
+          .claude/.ai-docs/ for known failure patterns). Do NOT read or echo any secrets,
+          tokens, kubeconfigs, or internal IP addresses.
 
-            The bundle in ./triage/ contains: _meta.txt, run-summary.txt, failed-logs.txt,
-            nodes.txt, unhealthy-pods.txt, events.txt, ceph.txt, talos-members.txt, etcd.txt.
+          Determine and report:
+          1. CLASSIFICATION: REAL failure or KNOWN-BENIGN? Known-benign patterns:
+             - GPU validation false-failure (device-plugin lag; node actually upgraded; time-sliced gpu count is 3 not 1)
+             - "No changes / template already current" tripping the template safety assertion -> re-run cattle with taint_templates=true
+             - ephemeral cattle-runner offline/cycling between worker pairs (a ~5-min gap, NOT a stall)
+             - terraform state-lock / tool-install race -> safe to re-run
+             - power-induced host drop (a Proxmox host went unreachable -> nodes NotReady)
+          2. ROOT CAUSE: cite the failed step and key log line(s).
+          3. RECOMMENDED ACTION: safe to re-run? with what inputs (taint_templates=true, worker_rollout_mode=safe)? or STOP and investigate what?
 
-            Write a concise verdict (<= 25 lines, GitHub-flavored markdown) to ./triage-verdict.md.
-            Refer to nodes generically (ctrl-1, work-4) — no IP addresses. Lead with the CLASSIFICATION in bold.
-          # Tools restricted to the workspace-sandboxed Read + Write only (no Bash): prevents
-          # reading runner env (e.g. /proc/self/environ -> auto-injected GITHUB_TOKEN) or
-          # arbitrary command execution. GITHUB_TOKEN here is contents:read/actions:read only.
-          claude_args: |
-            --allowedTools Read,Write
-            --permission-mode acceptEdits
+          The bundle in ./triage/ contains: _meta.txt, run-summary.txt, failed-logs.txt,
+          nodes.txt, unhealthy-pods.txt, events.txt, ceph.txt, talos-members.txt, etcd.txt.
+
+          Output the verdict as GitHub-flavored markdown (<= 25 lines) to stdout. Lead with the
+          CLASSIFICATION in bold. Use generic node names (ctrl-1, work-4) — no IP addresses or secrets.
+          EOF
+          )
+          claude -p "$PROMPT" --allowedTools "Read" --output-format json > claude-out.json 2> claude-err.txt
+          rc=$?
+          echo "claude exit: $rc"
+          if [ ! -s claude-out.json ]; then echo "::warning::no claude JSON output"; tail -40 claude-err.txt 2>/dev/null || true; fi
+          # Extract verdict text + record token usage to the job summary
+          jq -r '.result // empty' claude-out.json > triage-verdict.md 2>/dev/null || true
+          [ -s triage-verdict.md ] || { echo "(no verdict produced — see logs)"; tail -20 claude-err.txt 2>/dev/null; } > triage-verdict.md
+          {
+            echo "### Claude token usage"
+            jq -r '"- input_tokens: \(.usage.input_tokens // "?")\n- output_tokens: \(.usage.output_tokens // "?")\n- cache_read_tokens: \(.usage.cache_read_input_tokens // 0)\n- cost_usd: \(.total_cost_usd // "?")\n- turns: \(.num_turns // "?")\n- duration_ms: \(.duration_ms // "?")"' claude-out.json 2>/dev/null || echo "- (usage unavailable)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish verdict (job summary always; Discord if configured)
         if: always()
