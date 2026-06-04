@@ -102,9 +102,11 @@ runs:
           exit 1
         fi
 
-        # Verify kubeconfig is valid
+        # Verify kubeconfig is valid (do NOT print it — minify view leaks the API
+        # server URL + cluster CA to the public Actions log on a public repo)
         echo "Verifying kubeconfig..."
-        kubectl config view --minify
+        kubectl config view --minify -o jsonpath='{.clusters[0].name}' >/dev/null 2>&1 \
+          && echo "kubeconfig valid" || echo "WARNING: kubeconfig minify check failed"
 
         # Verify cluster connectivity
         echo "Testing cluster API connectivity..."
