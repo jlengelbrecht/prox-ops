@@ -44,6 +44,11 @@ spec:
               TZ: America/New_York
               PUID: "568"
               PGID: "568"
+              # homepage v1.x enforces strict Host validation (SSRF / DNS-rebind
+              # protection). Without this, every external request is rejected with
+              # "Host validation failed" and no config (services/bookmarks/widgets)
+              # is rendered. List every host used to reach the dashboard.
+              HOMEPAGE_ALLOWED_HOSTS: homepage.homelab0.org
             # Inject all HOMEPAGE_VAR_* secrets from ExternalSecret
             # These replace {{HOMEPAGE_VAR_*}} placeholders in services.yaml
             envFrom:
