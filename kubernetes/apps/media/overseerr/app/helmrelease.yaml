@@ -22,9 +22,13 @@ spec:
         containers:
           app:
             image:
-              repository: sctx/overseerr
-              # renovate: datasource=docker depName=sctx/overseerr
-              tag: 1.35.0
+              # Migrated from archived sctx/overseerr to its active successor Seerr
+              # (seerr-team/seerr, merges Overseerr + Jellyseerr). Drop-in: the existing
+              # /app/config PVC auto-migrates the SQLite DB on first boot. Kept UID 568
+              # (PVC is already 568-owned) and the same PVC/service/host to preserve data.
+              repository: ghcr.io/seerr-team/seerr
+              # renovate: datasource=docker depName=ghcr.io/seerr-team/seerr
+              tag: v3.3.0
             env:
               TZ: America/New_York
               LOG_LEVEL: info
