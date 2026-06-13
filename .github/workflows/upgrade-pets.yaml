@@ -796,9 +796,11 @@ jobs:
         run: |
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
 
-          # Controllers and workers require factory image with qemu-guest-agent
-          INSTALLER_IMAGE="factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515:v${{ inputs.new_version }}"
-          echo "Control plane node - using base factory image with qemu-guest-agent"
+          # Controllers require base factory image: qemu-guest-agent + net.ifnames=0
+          # CRITICAL: Must use the same schematic as talconfig.yaml (f683308f)
+          # ce4c9805 lacks net.ifnames=0 — causes ens18 naming and breaks Cilium L2 + Multus
+          INSTALLER_IMAGE="factory.talos.dev/installer/f683308f6e49ec36d715bd41c90d800910552d8cbc015c8363ec350594535fa1:v${{ inputs.new_version }}"
+          echo "Control plane node - using base factory image (qemu-guest-agent + net.ifnames=0)"
 
           echo "Installer image: $INSTALLER_IMAGE"
           echo "Starting in-place upgrade..."
@@ -907,14 +909,16 @@ jobs:
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
 
           # Select correct factory schematic based on node type
+          # CRITICAL: Must match schematics in talconfig.yaml and terraform.tfvars
+          # Wrong schematics (ce4c9805/990731763) lack net.ifnames=0 — breaks Cilium L2 + Multus
           if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
-            # GPU schematic: qemu-guest-agent + NVIDIA extensions
-            INSTALLER_IMAGE="factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e:v${{ inputs.new_version }}"
-            echo "GPU node detected - using GPU factory image (qemu-guest-agent + NVIDIA)"
+            # GPU schematic: qemu-guest-agent + NVIDIA extensions + net.ifnames=0
+            INSTALLER_IMAGE="factory.talos.dev/installer/26a847a67a3a6575fdcb3a9a45d6f1add29827e0f549955806b532d590004982:v${{ inputs.new_version }}"
+            echo "GPU node detected - using GPU factory image (qemu-guest-agent + NVIDIA + net.ifnames=0)"
           else
-            # Base schematic: qemu-guest-agent only
-            INSTALLER_IMAGE="factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515:v${{ inputs.new_version }}"
-            echo "Non-GPU node - using base factory image (qemu-guest-agent)"
+            # Base schematic: qemu-guest-agent + net.ifnames=0
+            INSTALLER_IMAGE="factory.talos.dev/installer/f683308f6e49ec36d715bd41c90d800910552d8cbc015c8363ec350594535fa1:v${{ inputs.new_version }}"
+            echo "Non-GPU node - using base factory image (qemu-guest-agent + net.ifnames=0)"
           fi
 
           echo "Installer image: $INSTALLER_IMAGE"
