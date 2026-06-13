@@ -1,0 +1,96 @@
+---
+# Pre-merge guard against the net.ifnames=0 regression (incident: PR #1160).
+#
+# A Talos Image Factory schematic that omits the net.ifnames=0 kernel arg makes
+# nodes boot with predictable NIC names (ens18/ens19/ens20) instead of
+# eth0/eth1/eth2. That silently breaks:
+#   - Cilium L2 announcements (policies target eth0/eth1/eth2) -> all LB VIPs dark
+#   - Multus macvlan NADs (master: eth1/eth2) -> VLAN-attached pods fail to start
+#
+# This check fetches every schematic referenced in terraform/terraform.tfvars
+# directly from the Image Factory API and fails the PR if net.ifnames=0 is
+# missing, or if talconfig.yaml has drifted from terraform.tfvars.
+name: Talos Schematic Validation
+
+on:
+  pull_request:
+    paths:
+      - terraform/terraform.tfvars
+      - terraform/variables.tf
+      - talos/talconfig.yaml
+      - talos/talenv.yaml
+      - .github/workflows/upgrade-pets.yaml
+      - .github/workflows/upgrade-cattle.yaml
+      - .github/workflows/talos-schematic-validation.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  validate-schematics:
+    name: Schematics bake net.ifnames=0
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Assert schematics include net.ifnames=0 and are consistent
+        run: |
+          set -euo pipefail
+
+          TFVARS="terraform/terraform.tfvars"
+          TALCONFIG="talos/talconfig.yaml"
+
+          # REQUIRED kernel arg. Losing it renames NICs and breaks Cilium L2 +
+          # Multus (see header). Both schematics MUST bake it.
+          REQUIRED_ARG='net\.ifnames=0'
+
+          extract() { # $1 = tfvars key -> first 64-char hex schematic id on that line
+            grep -E "^$1[[:space:]]*=" "$TFVARS" | grep -oE '[a-f0-9]{64}' | head -n1
+          }
+
+          BASE="$(extract talos_schematic_base)"
+          GPU="$(extract talos_schematic_gpu)"
+
+          if [[ ! "$BASE" =~ ^[a-f0-9]{64}$ || ! "$GPU" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "::error::Could not read talos_schematic_base / talos_schematic_gpu from $TFVARS"
+            exit 1
+          fi
+
+          fail=0
+          for pair in "base:$BASE" "gpu:$GPU"; do
+            name="${pair%%:*}"; id="${pair#*:}"
+            echo "::group::Schematic $name = $id"
+            if ! body="$(curl -fsSL --max-time 20 "https://factory.talos.dev/schematics/$id")"; then
+              echo "::error::Failed to fetch $name schematic ($id) from Image Factory"
+              fail=1
+              echo "::endgroup::"
+              continue
+            fi
+            echo "$body"
+            # Match the YAML list item under extraKernelArgs: "  - net.ifnames=0"
+            if echo "$body" | grep -qE "^[[:space:]]*-[[:space:]]*${REQUIRED_ARG}([[:space:]]|$)"; then
+              echo "OK: $name schematic bakes net.ifnames=0"
+            else
+              echo "::error::$name schematic ($id) is MISSING net.ifnames=0 — it would rename NICs (ens18/19/20) and break Cilium L2 announcements + Multus VLAN NADs"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+
+          # Drift guard: talconfig.yaml must reference the same schematics as tfvars.
+          if ! grep -q "$BASE" "$TALCONFIG"; then
+            echo "::error::talconfig.yaml does not reference base schematic $BASE (drift vs terraform.tfvars)"
+            fail=1
+          fi
+          if ! grep -q "$GPU" "$TALCONFIG"; then
+            echo "::error::talconfig.yaml does not reference GPU schematic $GPU (drift vs terraform.tfvars)"
+            fail=1
+          fi
+
+          if [[ "$fail" != 0 ]]; then
+            echo "::error::Talos schematic validation failed — see annotations above"
+            exit 1
+          fi
+          echo "All Talos schematics validated: net.ifnames=0 present and talconfig.yaml is consistent."
