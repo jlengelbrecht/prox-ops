@@ -1500,6 +1500,27 @@ jobs:
           rm -f /tmp/applied-config.yaml
           echo "::endgroup::"
 
+      - name: Verify interface naming (net.ifnames=0)
+        timeout-minutes: 2
+        run: |
+          echo "::group::Verifying net.ifnames=0 / eth0 on ${{ matrix.node.name }}"
+          # Guard against the net.ifnames=0 regression (PR #1160). A schematic that
+          # omits this arg renames NICs to ens18/19/20, silently breaking Cilium L2
+          # announcements and Multus VLAN NADs. Fail fast to halt the rollout before
+          # the whole cluster is rebuilt with the wrong image.
+          NODE_IP="${{ matrix.node.ip }}"
+          CMDLINE="$(talosctl read /proc/cmdline --nodes "$NODE_IP" 2>/dev/null || true)"
+          if ! grep -q 'net.ifnames=0' <<<"$CMDLINE"; then
+            echo "::error::net.ifnames=0 missing from kernel cmdline on ${{ matrix.node.name }} — schematic lacks it. Halting to prevent ens18 naming break (Cilium L2 + Multus)."
+            exit 1
+          fi
+          if ! talosctl get links --nodes "$NODE_IP" -o json 2>/dev/null | grep -q '"eth0"'; then
+            echo "::error::eth0 not present on ${{ matrix.node.name }} after rebuild (predictable ensXX naming detected). Halting rollout."
+            exit 1
+          fi
+          echo "✅ net.ifnames=0 present and eth0 exists"
+          echo "::endgroup::"
+
       - name: Verify Talos version
         timeout-minutes: 2
         run: |
