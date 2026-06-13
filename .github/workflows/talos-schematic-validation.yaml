@@ -34,6 +34,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
 
       - name: Assert schematics include net.ifnames=0 and are consistent
         run: |
@@ -69,6 +71,16 @@ jobs:
               continue
             fi
             echo "$body"
+            # A real schematic response is YAML beginning with "customization:".
+            # Guard against the API returning HTTP 200 with an unexpected body
+            # (maintenance page, API change) — which would otherwise look like a
+            # missing kernel arg and wrongly block a valid PR.
+            if ! grep -qE '^customization:' <<<"$body"; then
+              echo "::error::Unexpected response from Image Factory for $name schematic ($id) — not a schematic document"
+              fail=1
+              echo "::endgroup::"
+              continue
+            fi
             # Match the YAML list item under extraKernelArgs: "  - net.ifnames=0"
             if echo "$body" | grep -qE "^[[:space:]]*-[[:space:]]*${REQUIRED_ARG}([[:space:]]|$)"; then
               echo "OK: $name schematic bakes net.ifnames=0"
