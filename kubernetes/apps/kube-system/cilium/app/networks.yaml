@@ -23,9 +23,12 @@ metadata:
   name: l2-policy
 spec:
   loadBalancerIPs: true
-  # Restrict to eth0 interface only (cluster network)
+  # Restrict to eth0 interface (cluster network)
+  # Defense-in-depth: also match ens18 so a net.ifnames drift does not fully
+  # silence L2 announcements cluster-wide. eth0 is the authoritative name when
+  # net.ifnames=0 is baked into the schematic (f683308f / 26a847a6).
   interfaces:
-    - ^eth0$
+    - ^(eth0|ens18)$
   nodeSelector:
     matchLabels:
       kubernetes.io/os: linux
@@ -60,9 +63,10 @@ metadata:
   name: dmz-l2-policy
 spec:
   loadBalancerIPs: true
-  # Restrict to eth2 interface only (DMZ network)
+  # Restrict to eth2 interface (DMZ network)
+  # Defense-in-depth: also match ens20 for net.ifnames drift resilience
   interfaces:
-    - ^eth2$
+    - ^(eth2|ens20)$
   # Only select worker nodes (exclude control plane nodes without eth1/eth2)
   nodeSelector:
     matchExpressions:
@@ -98,9 +102,10 @@ metadata:
   name: iot-l2-policy
 spec:
   loadBalancerIPs: true
-  # Restrict to eth1 interface only (IoT network)
+  # Restrict to eth1 interface (IoT network)
+  # Defense-in-depth: also match ens19 for net.ifnames drift resilience
   interfaces:
-    - ^eth1$
+    - ^(eth1|ens19)$
   # Only select worker nodes (exclude control plane nodes without eth1/eth2)
   nodeSelector:
     matchExpressions:

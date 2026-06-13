@@ -796,9 +796,17 @@ jobs:
         run: |
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
 
-          # Controllers and workers require factory image with qemu-guest-agent
-          INSTALLER_IMAGE="factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515:v${{ inputs.new_version }}"
-          echo "Control plane node - using base factory image with qemu-guest-agent"
+          # Controllers require the base factory image: qemu-guest-agent + net.ifnames=0
+          # Single source of truth: terraform/terraform.tfvars (talos_schematic_base).
+          # A schematic without net.ifnames=0 renames NICs (ens18) and breaks
+          # Cilium L2 announcements + Multus VLAN attachments — see PR #1160.
+          BASE_SCHEMATIC="$(grep -E '^talos_schematic_base[[:space:]]*=' terraform/terraform.tfvars | grep -oE '[a-f0-9]{64}')"
+          if [[ ! "$BASE_SCHEMATIC" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "::error::Could not read talos_schematic_base from terraform/terraform.tfvars"
+            exit 1
+          fi
+          INSTALLER_IMAGE="factory.talos.dev/installer/${BASE_SCHEMATIC}:v${{ inputs.new_version }}"
+          echo "Control plane node - using base factory image (qemu-guest-agent + net.ifnames=0)"
 
           echo "Installer image: $INSTALLER_IMAGE"
           echo "Starting in-place upgrade..."
@@ -906,15 +914,25 @@ jobs:
         run: |
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
 
-          # Select correct factory schematic based on node type
+          # Select correct factory schematic based on node type.
+          # Single source of truth: terraform/terraform.tfvars
+          # (talos_schematic_base / talos_schematic_gpu). Both include net.ifnames=0;
+          # a schematic without it renames NICs (ens18/19/20) and breaks Cilium L2
+          # announcements + Multus VLAN NADs — see PR #1160.
+          BASE_SCHEMATIC="$(grep -E '^talos_schematic_base[[:space:]]*=' terraform/terraform.tfvars | grep -oE '[a-f0-9]{64}')"
+          GPU_SCHEMATIC="$(grep -E '^talos_schematic_gpu[[:space:]]*=' terraform/terraform.tfvars | grep -oE '[a-f0-9]{64}')"
+          for s in "$BASE_SCHEMATIC" "$GPU_SCHEMATIC"; do
+            if [[ ! "$s" =~ ^[a-f0-9]{64}$ ]]; then
+              echo "::error::Could not read schematic IDs from terraform/terraform.tfvars"
+              exit 1
+            fi
+          done
           if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
-            # GPU schematic: qemu-guest-agent + NVIDIA extensions
-            INSTALLER_IMAGE="factory.talos.dev/installer/990731763242a6b3cf735e49d0f550ce4068b4d0e7f4dfbb49a31799b698877e:v${{ inputs.new_version }}"
-            echo "GPU node detected - using GPU factory image (qemu-guest-agent + NVIDIA)"
+            INSTALLER_IMAGE="factory.talos.dev/installer/${GPU_SCHEMATIC}:v${{ inputs.new_version }}"
+            echo "GPU node detected - using GPU factory image (qemu-guest-agent + NVIDIA + net.ifnames=0)"
           else
-            # Base schematic: qemu-guest-agent only
-            INSTALLER_IMAGE="factory.talos.dev/installer/ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515:v${{ inputs.new_version }}"
-            echo "Non-GPU node - using base factory image (qemu-guest-agent)"
+            INSTALLER_IMAGE="factory.talos.dev/installer/${BASE_SCHEMATIC}:v${{ inputs.new_version }}"
+            echo "Non-GPU node - using base factory image (qemu-guest-agent + net.ifnames=0)"
           fi
 
           echo "Installer image: $INSTALLER_IMAGE"
