@@ -109,8 +109,15 @@ spec:
         reloader.stakater.com/auto: "true"
 
     persistence:
-      # Git-managed config files — each file mounted individually via subPath so
-      # homepage can still write to /app/config (e.g. logs) without a read-only fs.
+      # /app/config must be writable: on startup homepage copies skeleton defaults
+      # (docker/kubernetes/proxmox.yaml, custom.css/js) for any config file not
+      # present, and writes logs there. Back it with an emptyDir, then overlay our
+      # Git-managed files (services/settings/widgets/bookmarks) read-only via subPath.
+      config-rw:
+        enabled: true
+        type: emptyDir
+        globalMounts:
+          - path: /app/config
       config:
         enabled: true
         type: configMap
@@ -128,12 +135,6 @@ spec:
           - path: /app/config/services.yaml
             subPath: services.yaml
             readOnly: true
-      # Writable scratch space for homepage runtime files (logs, cache, etc.)
-      config-rw:
-        enabled: true
-        type: emptyDir
-        globalMounts:
-          - path: /app/config/logs
 
     service:
       app:
