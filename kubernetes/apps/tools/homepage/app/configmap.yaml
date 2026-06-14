@@ -465,3 +465,20 @@ data:
             icon: cilium.png
             href: https://hubble.homelab0.org
             description: Cilium Network Observability
+  # homepage v1.10 requires these files to exist on startup (it copies skeleton
+  # defaults otherwise, which fails on the read-only mount). Provided here so the
+  # mount can stay read-only. Contents are the upstream skeleton defaults (unused).
+  docker.yaml: |
+    ---
+    # Docker integration is not used. See:
+    # https://gethomepage.dev/configs/docker/
+  kubernetes.yaml: |
+    ---
+    # Kubernetes service discovery is not used here.
+  proxmox.yaml: |
+    ---
+    # Proxmox widgets connect via services.yaml (HOMEPAGE_VAR_* creds), not this file.
+  custom.css: |
+    /* custom styles */
+  custom.js: |
+    // custom scripts
