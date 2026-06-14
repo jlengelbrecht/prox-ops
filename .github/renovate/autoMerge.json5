@@ -52,6 +52,34 @@
     },
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // DEFAULT POSTURE: broad auto-merge (denylist model)
+    // Auto-merge patch + minor for ALL packages by default, after a soak window.
+    // Placed FIRST so the specific Tier-2 soak refinements below (e.g. gluetun 5d,
+    // critical-infra 5d, github-actions 1d) and the Tier-3/Tier-4 force-manual
+    // rules both override it where needed. ALL major updates always remain manual.
+    // Digests stay opt-in (Tier 1 above).
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Default: auto-merge patch updates after a 3-day soak (non-critical packages; later tiers override)",
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "Default: auto-merge minor updates after a 5-day soak (non-critical packages; later tiers override)",
+      "matchUpdateTypes": ["minor"],
+      "automerge": true,
+      "automergeType": "pr",
+      "minimumReleaseAge": "5 days"
+    },
+    {
+      "description": "Global safety net: ALL major updates require manual review",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // TIER 2: PATCH AUTOMERGE - Stable apps with release age wait
     // Bug fixes only, community-tested before automerge
     // ═══════════════════════════════════════════════════════════════════════════
@@ -106,19 +134,6 @@
         "reloader",
         "spegel"
       ]
-    },
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // GLOBAL SAFETY NET
-    // All minor and major updates are manual unless a later rule opts them in.
-    // Placed HERE so that later opt-in rules (Tier 2b/2c/2d) can override it
-    // for specific packages, while the Tier-3 force-manual rules then re-block
-    // critical/stateful packages.
-    // ═══════════════════════════════════════════════════════════════════════════
-    {
-      "description": "Require manual review for major and minor updates (global safety net)",
-      "matchUpdateTypes": ["major", "minor"],
-      "automerge": false
     },
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -347,6 +362,31 @@
         "/cilium/",
         "/external-secrets/",
         "/cloudnative-pg/"
+      ]
+    },
+    {
+      "description": "FULLY MANUAL minor/major: critical cluster infra (Flux, CoreDNS, Multus) — control-plane / DNS / CNI. Patch still auto-merges via the default soak; minor/major need eyes (a bad reconcile/DNS/CNI update can take the cluster down).",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchUpdateTypes": ["minor", "major"],
+      "matchPackageNames": [
+        "/flux-operator/",
+        "/flux-instance/",
+        "/coredns/",
+        "/multus/"
+      ]
+    },
+    {
+      "description": "FULLY MANUAL minor/major: stateful data layer (Postgres, Valkey/Redis, MariaDB) — minor bumps can trigger restarts/migrations that need a maintenance window. Patch still auto-merges via the default soak.",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchUpdateTypes": ["minor", "major"],
+      "matchPackageNames": [
+        "/postgresql/",
+        "/postgres/",
+        "/valkey/",
+        "/redis/",
+        "/mariadb/"
       ]
     },
 
