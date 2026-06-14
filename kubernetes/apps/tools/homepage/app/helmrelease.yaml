@@ -103,16 +103,37 @@ spec:
           type: RuntimeDefault
       annotations:
         security.homelab/network: "Internal - Dashboard for homelab services"
+        # subPath configMap mounts do not live-update; reloader restarts the pod
+        # when homepage-config (or the homepage-secrets ExternalSecret) changes,
+        # so Git-managed config edits actually take effect.
+        reloader.stakater.com/auto: "true"
 
     persistence:
+      # Git-managed config files — each file mounted individually via subPath so
+      # homepage can still write to /app/config (e.g. logs) without a read-only fs.
       config:
         enabled: true
-        type: persistentVolumeClaim
-        accessMode: ReadWriteOnce
-        size: 1Gi
-        storageClass: ceph-block
+        type: configMap
+        name: homepage-config
         globalMounts:
-          - path: /app/config
+          - path: /app/config/settings.yaml
+            subPath: settings.yaml
+            readOnly: true
+          - path: /app/config/widgets.yaml
+            subPath: widgets.yaml
+            readOnly: true
+          - path: /app/config/bookmarks.yaml
+            subPath: bookmarks.yaml
+            readOnly: true
+          - path: /app/config/services.yaml
+            subPath: services.yaml
+            readOnly: true
+      # Writable scratch space for homepage runtime files (logs, cache, etc.)
+      config-rw:
+        enabled: true
+        type: emptyDir
+        globalMounts:
+          - path: /app/config/logs
 
     service:
       app:
