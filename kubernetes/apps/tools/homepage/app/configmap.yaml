@@ -1,0 +1,467 @@
+---
+# Homepage dashboard configuration - managed via GitOps
+# All HOMEPAGE_VAR_* placeholders are substituted at runtime from the
+# homepage-secrets ExternalSecret (envFrom secretRef in the HelmRelease).
+# This ConfigMap contains NO real secrets — only placeholders and public hostnames.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: homepage-config
+  namespace: tools
+data:
+  settings.yaml: |
+    ---
+    title: Homelab Services
+    theme: dark
+    color: slate
+    background:
+      image: https://images.unsplash.com/photo-1502790671504-542ad42d5189?auto=format&fit=crop&w=2560&q=80
+      blur: sm # sm, "", md, xl... see https://tailwindcss.com/docs/backdrop-blur
+      saturate: 50 # 0, 50, 100... see https://tailwindcss.com/docs/backdrop-saturate
+      brightness: 50 # 0, 50, 75... see https://tailwindcss.com/docs/backdrop-brightness
+      opacity: 50 # 0-100
+
+  widgets.yaml: |
+    ---
+    # For configuration options and examples, please see:
+    # https://gethomepage.dev/latest/configs/service-widgets
+
+    - resources:
+        cpu: true
+        memory: true
+        disk: /
+
+    - search:
+        provider: [brave, yandex, duckduckgo]
+        focus: true
+        showSearchSuggestions: true
+        target: _blank
+
+  bookmarks.yaml: |
+    ---
+    # For configuration options and examples, please see:
+    # https://gethomepage.dev/latest/configs/bookmarks
+
+    - Developer:
+        - Homepage-Docs:
+            - icon: homepage.png
+              href: https://gethomepage.dev/latest/
+        - Github:
+            - icon: github.png
+              href: https://github.com/
+        - ChatGPT:
+            - icon: chatgpt.png
+              href: https://chatgpt.com/
+        - SSLs:
+            - icon: /icons/SSLs.png
+              href: https://www.ssls.com
+        - K8S-Cluster-Template:
+            - icon: kubernetes.png
+              href: https://github.com/onedr0p/cluster-template
+        - NextDNS:
+            - icon: nextdns.png
+              href: https://my.nextdns.io/
+
+    - Social:
+        - Reddit:
+            - icon: reddit.png
+              href: https://reddit.com/
+
+    - Entertainment:
+        - YouTube:
+            - icon: youtube.png
+              href: https://youtube.com/
+
+    - Cloud Services:
+        - Cloudflare:
+            - icon: cloudflare.png
+              href: https://cloudflare.com
+        - Migadu:
+            - icon: /icons/migadu.png
+              href: https://admin.migadu.com/public/login
+        - TorGaurd:
+            - icon: /icons/torguard-logo.png
+              href: https://torguard.net
+
+  services.yaml: |
+    ---
+    # For configuration options and examples, please see:
+    # https://gethomepage.dev/latest/configs/services
+
+    - Media:
+        - Plex:
+            icon: plex.png
+            href: "{{HOMEPAGE_VAR_LINK_PLEX}}"
+            description: Streaming Platform
+            widget:
+              type: plex
+              url: http://plex.media.svc.cluster.local:32400
+              key: "{{HOMEPAGE_VAR_PLEX_KEY}}"
+
+        - Overseerr:
+            icon: overseerr.png
+            href: "{{HOMEPAGE_VAR_LINK_OVERSEERR}}"
+            description: Media Requests
+            widget:
+              type: overseerr
+              fields: ["pending", "approved", "availible"]
+              url: http://overseerr.media.svc.cluster.local:5055
+              key: "{{HOMEPAGE_VAR_OVERSEERR_KEY}}"
+        - Maintainerr:
+            icon: maintainerr.png
+            href: "{{HOMEPAGE_VAR_LINK_MAINTAINERR}}"
+            description: Media Manager
+        - Newtarr:
+            icon: sh-newtarr
+            href: https://newtarr.homelab0.org
+            description: Media Manager
+        - Cleanuparr:
+            icon: sh-cleanuparr
+            href: "{{HOMEPAGE_VAR_LINK_CLEANUPARR}}"
+            description: Media Library Cleanup
+        - FileFlows:
+            icon: fileflows.png
+            href: https://fileflows.homelab0.org
+            description: Media Processing
+        - Notifiarr:
+            icon: notifiarr.png
+            href: https://notifiarr.homelab0.org
+            description: Notification Manager
+        - Uptime Kuma:
+            icon: uptime-kuma.png
+            href: https://kuma.homelab0.org
+            description: Status Monitoring
+            widget:
+              type: uptimekuma
+              url: http://uptime-kuma.media.svc.cluster.local:3001
+              slug: default
+
+    - Indexers:
+        - Radarr:
+            icon: radarr.png
+            href: "{{HOMEPAGE_VAR_LINK_RADARR}}"
+            description: Movie Management
+            widget:
+              type: radarr
+              fields: ["wanted", "queued"]
+              url: http://radarr.media.svc.cluster.local:7878
+              key: "{{HOMEPAGE_VAR_RADARR_KEY}}"
+              enableQueue: false
+        - Sonarr:
+            icon: sonarr.png
+            href: "{{HOMEPAGE_VAR_LINK_SONARR}}"
+            description: TV Show Management
+            widget:
+              type: sonarr
+              fields: ["wanted", "queued", "series"]
+              url: http://sonarr.media.svc.cluster.local:8989
+              key: "{{HOMEPAGE_VAR_SONARR_KEY}}"
+              enableQueue: false
+        - Prowlarr:
+            icon: prowlarr.png
+            href: "{{HOMEPAGE_VAR_LINK_PROWLARR}}"
+            description: Indexer Management
+            widget:
+              type: prowlarr
+              fields: ["numberOfGrabs", "numberOfQueries", "numberOfFailGrabs", "numberOfFailQueries"]
+              url: http://prowlarr.media.svc.cluster.local:9696
+              key: "{{HOMEPAGE_VAR_PROWLARR_KEY}}"
+    - Downloads:
+        - SABnzbd:
+            icon: sabnzbd.png
+            href: "{{HOMEPAGE_VAR_LINK_SABNZBD}}"
+            description: NZB Client
+            widget:
+              type: sabnzbd
+              fields: ["rate", "queue", "timeleft"]
+              url: http://sabnzbd.downloads.svc.cluster.local:8080
+              key: "{{HOMEPAGE_VAR_SABNZBD_KEY}}"
+        - qBittorrent:
+            icon: qbittorrent.png
+            href: "{{HOMEPAGE_VAR_LINK_QBITTORRENT}}"
+            description: Torrent Client
+            widget:
+              type: qbittorrent
+              fields: ["leech", "download", "seed", "upload"]
+              url: http://qbittorrent.downloads.svc.cluster.local:8080
+              username: "{{HOMEPAGE_VAR_QBITTORRENT_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_QBITTORRENT_PASSWORD}}"
+    - Network:
+        - Milkyway:
+            icon: unifi.png
+            href: "{{HOMEPAGE_VAR_UNIFI_MILKYWAY_URL}}"
+            description: Main network
+            widget:
+              type: unifi
+              url: "{{HOMEPAGE_VAR_UNIFI_MILKYWAY_URL}}"
+              username: "{{HOMEPAGE_VAR_UNIFI_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_UNIFI_PASSWORD}}"
+
+        - Cosmos:
+            icon: unifi.png
+            href: "{{HOMEPAGE_VAR_UNIFI_COSMOS_URL}}"
+            description: Dads network
+            widget:
+              type: unifi
+              url: "{{HOMEPAGE_VAR_UNIFI_COSMOS_URL}}"
+              username: "{{HOMEPAGE_VAR_UNIFI_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_UNIFI_PASSWORD}}"
+
+        - Unifi-Mobility:
+            icon: unifi.png
+            href: "{{HOMEPAGE_VAR_UNIFI_MOBILITY_URL}}"
+            description: Travel Router
+
+        - Unifi Identity Enterprise:
+            icon: sh-unifi-identity
+            href: "{{HOMEPAGE_VAR_UNIFI_IDENTITY_URL}}"
+            description: Identity Provider
+
+        - Milkyway - Guest WiFi:
+            icon: sh-unifi-guest-portal
+            href: "{{HOMEPAGE_VAR_LINK_GUESTWIFI_MILKYWAY}}"
+            description: Guest WiFi Voucher Portal
+
+        - Cosmos - Guest WiFi:
+            icon: sh-unifi-guest-portal
+            href: "{{HOMEPAGE_VAR_LINK_GUESTWIFI_COSMOS}}"
+            description: Guest WiFi Voucher Portal
+
+        - Traefik:
+            icon: traefik.png
+            href: "{{HOMEPAGE_VAR_LINK_TRAEFIK}}"
+            description: Docker Sandbox Reverse Proxy
+            widget:
+              type: traefik
+              url: "{{HOMEPAGE_VAR_LINK_TRAEFIK}}"
+              username: "{{HOMEPAGE_VAR_TRAEFIK_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_TRAEFIK_PASSWORD}}"
+
+        - Certwarden:
+            icon: cert-warden.png
+            href: "{{HOMEPAGE_VAR_LINK_CERTWARDEN}}"
+            description: Certificate Management
+
+        - Authentik:
+            icon: authentik.png
+            href: "{{HOMEPAGE_VAR_LINK_AUTHENTIK}}"
+            description: Identity Provider
+
+    - Servers & Containers:
+        - Valhalla:
+            icon: proxmox.png
+            href: "{{HOMEPAGE_VAR_LINK_PROXMOX_VALHALLA}}"
+            description: Proxmox Cluster
+            widget:
+              type: proxmox
+              url: "{{HOMEPAGE_VAR_LINK_PROXMOX_VALHALLA}}"
+              username: "{{HOMEPAGE_VAR_PROXMOX_VALHALLA_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_PROXMOX_VALHALLA_PASSWORD}}"
+
+        - Vanir:
+            icon: proxmox.png
+            href: "{{HOMEPAGE_VAR_LINK_PROXMOX_VANIR}}"
+            description: Dads Proxmox Server
+            widget:
+              type: proxmox
+              url: "{{HOMEPAGE_VAR_LINK_PROXMOX_VANIR}}"
+              username: "{{HOMEPAGE_VAR_PROXMOX_VANIR_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_PROXMOX_VANIR_PASSWORD}}"
+              node: Vanir
+
+        - Njord:
+            icon: proxmox.png
+            href: "{{HOMEPAGE_VAR_LINK_PROXMOX_PBS}}"
+            description: PBS Off-Site
+            widget:
+              type: proxmoxbackupserver
+              url: "{{HOMEPAGE_VAR_LINK_PROXMOX_PBS}}"
+              username: "{{HOMEPAGE_VAR_PROXMOX_PBS_USERNAME}}"
+              password: "{{HOMEPAGE_VAR_PROXMOX_PBS_PASSWORD}}"
+
+        - Coolify:
+            icon: coolify.png
+            href: "{{HOMEPAGE_VAR_LINK_COOLIFY}}"
+            description: Application CI/CD
+
+        - TrueNAS-Heimdall:
+            icon: truenas-scale.png
+            href: "{{HOMEPAGE_VAR_LINK_TRUENAS_HEIMDALL}}"
+            description: Current Media NAS
+            widget:
+              type: truenas
+              url: "{{HOMEPAGE_VAR_LINK_TRUENAS_HEIMDALL}}"
+              key: "{{HOMEPAGE_VAR_TRUENAS_HEIMDALL_KEY}}"
+              enablePools: true
+              nasType: scale
+
+        - TrueNAS-Baldar:
+            icon: truenas-scale.png
+            href: "{{HOMEPAGE_VAR_LINK_TRUENAS_BALDAR}}"
+            description: NAS for pictures, documents, and caching
+            widget:
+              type: truenas
+              url: "{{HOMEPAGE_VAR_LINK_TRUENAS_BALDAR}}"
+              key: "{{HOMEPAGE_VAR_TRUENAS_BALDAR_KEY}}"
+              enablePools: true
+              nasType: scale
+
+    - Server Management:
+        - iDrac - Heimdall:
+            icon: idrac.png
+            href: "{{HOMEPAGE_VAR_LINK_IDRAC_HEIMDALL}}"
+            description: Dell R730xd Server Management Interface
+        - iDrac - Baldar:
+            icon: idrac.png
+            href: "{{HOMEPAGE_VAR_LINK_IDRAC_BALDAR}}"
+            description: Dell R730xd Server Management Interface
+        - iDrac - Odin:
+            icon: idrac.png
+            href: "{{HOMEPAGE_VAR_LINK_IDRAC_ODIN}}"
+            description: Dell R630 Server Management Interface
+        - iDrac - Thor:
+            icon: idrac.png
+            href: "{{HOMEPAGE_VAR_LINK_IDRAC_THOR}}"
+            description: Dell R740xd Server Management Interface
+        - iDrac - Loki:
+            icon: idrac.png
+            href: "{{HOMEPAGE_VAR_LINK_IDRAC_LOKI}}"
+            description: Dell R620 Server Management Interface
+        - iDrac - Borr:
+            icon: idrac.png
+            href: "{{HOMEPAGE_VAR_LINK_IDRAC_BORR}}"
+            description: Dell R630 Server Management Interface
+        - Eaton - UPS:
+            icon: sh-eaton
+            href: "{{HOMEPAGE_VAR_LINK_EATON_UPS}}"
+            description: Eaton Server Rack UPS
+        - TrippLite - AC:
+            icon: sh-tripp-lite
+            href: "{{HOMEPAGE_VAR_LINK_TRIPPLITE}}"
+            description: TrippLite AC Controller
+
+    - Other:
+        - Wallos:
+            icon: wallos.png
+            href: "{{HOMEPAGE_VAR_LINK_WALLOS}}"
+            description: Subscription Tracker
+        - Homelab0-Guides:
+            icon: sh-mkdocs
+            href: "{{HOMEPAGE_VAR_LINK_GUIDES}}"
+            description: Documentation for Homelab0
+        - Milkyway-NVR:
+            icon: unifi-protect.png
+            href: "{{HOMEPAGE_VAR_LINK_NVR_MILKYWAY}}"
+            description: Network Video Recorder
+        - Cosmos-NVR:
+            icon: unifi-protect.png
+            href: "{{HOMEPAGE_VAR_LINK_NVR_COSMOS}}"
+            description: Network Video Recorder
+        - Nextcloud:
+            icon: nextcloud.png
+            href: "{{HOMEPAGE_VAR_LINK_NEXTCLOUD}}"
+            description: Cloud Storage
+        - Wizarr:
+            icon: wizarr.png
+            href: "{{HOMEPAGE_VAR_LINK_WIZARR}}"
+            description: Media Server Invites
+        - Bytestash:
+            icon: sh-bytestash
+            href: "{{HOMEPAGE_VAR_LINK_BYTESTASH}}"
+            description: Code Snippets
+        - IT-Tools:
+            icon: it-tools.png
+            href: "{{HOMEPAGE_VAR_LINK_ITTOOLS}}"
+            description: IT Tools
+        - Plane:
+            icon: plane.png
+            href: "{{HOMEPAGE_VAR_LINK_PLANE}}"
+            description: Project Management
+        - Hoarder:
+            icon: hoarder.png
+            href: "{{HOMEPAGE_VAR_LINK_HOARDER}}"
+            description: Hoarder
+        - n8n:
+            icon: n8n.png
+            href: https://n8n.homelab0.org
+            description: Workflow Automation
+        - Home Assistant:
+            icon: home-assistant.png
+            href: https://homeassistant.homelab0.org
+            description: Home Automation
+
+    - Artificial Intelligence:
+        - Local AI:
+            icon: sh-localai
+            href: "{{HOMEPAGE_VAR_LINK_LOCALAI}}"
+            description: Self Hosted AI Suite
+        - Local AGI:
+            icon: sh-localagi
+            href: "{{HOMEPAGE_VAR_LINK_LOCALAGI}}"
+            description: Self Hosted AGI
+        - Local Recall:
+            icon: sh-localrecall
+            href: "{{HOMEPAGE_VAR_LINK_LOCALRECALL}}"
+            description: Self Hosted AI Knowledge Base
+        - GlycemicGPT:
+            icon: sh-glycemicgpt
+            href: https://glycemicgpt.homelab0.org
+            description: AI Glucose Management
+        - Open WebUI:
+            icon: open-webui.png
+            href: https://ai.homelab0.org
+            description: AI Chat Interface
+        - LiteLLM:
+            icon: litellm.png
+            href: https://ai-api.homelab0.org
+            description: LLM API Gateway
+        - OpenClaw:
+            icon: sh-openclaw
+            href: https://openclaw.homelab0.org
+            description: MCP Gateway UI
+        - ToolHive UI:
+            icon: sh-toolhive
+            href: https://mcp.homelab0.org
+            description: MCP Server Manager
+        - ToolHive Gateway:
+            icon: sh-toolhive
+            href: https://mcp-gateway.homelab0.org
+            description: MCP Virtual Gateway
+        - ToolHive Registry:
+            icon: sh-toolhive
+            href: https://mcp-api.homelab0.org
+            description: MCP Registry API
+        - Voice Bridge:
+            icon: sh-voicebridge
+            href: https://voice-bridge.homelab0.org
+            description: Voice-to-AI Bridge
+
+    - Monitoring:
+        - Wazuh:
+            icon: wazuh.png
+            href: "{{HOMEPAGE_VAR_LINK_WAZUH}}"
+            description: SIEM
+        - Graylog:
+            icon: graylog.png
+            href: "{{HOMEPAGE_VAR_LINK_GRAYLOG}}"
+            description: SIEM
+        - Grafana:
+            icon: grafana.png
+            href: https://grafana.homelab0.org
+            description: Metrics Dashboards
+        - Zabbix:
+            icon: zabbix.png
+            href: https://zabbix.homelab0.org
+            description: Infrastructure Monitoring
+        - Tautulli:
+            icon: tautulli.png
+            href: "{{HOMEPAGE_VAR_LINK_TAUTULLI}}"
+            description: Plex Analytics
+            widget:
+              type: tautulli
+              url: http://tautulli.media.svc.cluster.local:8181
+              key: "{{HOMEPAGE_VAR_TAUTULLI_KEY}}"
+        - Hubble:
+            icon: cilium.png
+            href: https://hubble.homelab0.org
+            description: Cilium Network Observability
