@@ -38,7 +38,10 @@ spec:
                 custom: true
                 spec:
                   httpGet:
-                    path: /api/v1/status
+                    # Lightweight, unauthenticated public endpoint (Seerr's
+                    # recommended healthcheck). Avoids /api/v1/status, which makes
+                    # GitHub update-check calls on every probe and can rate-limit.
+                    path: /api/v1/settings/public
                     port: &port 5055
                   initialDelaySeconds: 30
                   periodSeconds: 30
@@ -49,7 +52,10 @@ spec:
                 custom: true
                 spec:
                   httpGet:
-                    path: /api/v1/status
+                    # Lightweight, unauthenticated public endpoint (Seerr's
+                    # recommended healthcheck). Avoids /api/v1/status, which makes
+                    # GitHub update-check calls on every probe and can rate-limit.
+                    path: /api/v1/settings/public
                     port: *port
                   initialDelaySeconds: 30
                   periodSeconds: 30
