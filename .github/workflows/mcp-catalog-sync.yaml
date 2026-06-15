@@ -786,7 +786,7 @@ jobs:
       - name: Run Trivy Scan (Docker images)
         id: trivy
         if: steps.image.outputs.image_type == 'docker'
-        uses: aquasecurity/trivy-action@c1824fd6edce30d7ab345a9989de00bbd46ef284 # 0.34.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: ${{ steps.image.outputs.image }}
           format: "json"
@@ -1285,7 +1285,7 @@ jobs:
 
       - name: Login to GHCR
         if: steps.check.outputs.skip != 'true'
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
