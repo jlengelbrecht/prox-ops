@@ -1,0 +1,151 @@
+---
+# Qwen3.6-27B MTP GGUF Pre-download Job
+# Downloads the Unsloth Dynamic Q4_K_XL GGUF (MTP layers bundled) to the shared cache PVC
+#
+# Model: unsloth/Qwen3.6-27B-MTP-GGUF / Qwen3.6-27B-UD-Q4_K_XL.gguf (~17.9GB disk, ~21GB VRAM incl. KV)
+# Purpose: llama.cpp InferenceService (qwen36-27b) with MTP self-speculative decoding
+#
+# Usage:
+#   kubectl apply -f qwen36-27b-download-job.yaml
+#   kubectl logs -n ai job/qwen36-27b-download -f
+#
+# After download, verify:
+#   kubectl exec -it deploy/litellm -n ai -- ls -la /models/unsloth/Qwen3.6-27B-MTP-GGUF/
+#
+# Note: Job immutability - to re-run, delete first:
+#   kubectl delete job -n ai qwen36-27b-download
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen36-27b-download
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen36-27b-download
+    app.kubernetes.io/component: cache-loader
+    app.kubernetes.io/part-of: kserve
+spec:
+  # Allow 3 retries in case of network failures
+  backoffLimit: 3
+  # NOTE: ttlSecondsAfterFinished intentionally omitted (see model-predownload-job.yaml)
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: qwen36-27b-download
+        app.kubernetes.io/component: cache-loader
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+
+      # Fix PVC permissions for non-root user
+      # Note: initContainer MUST run as root (UID 0) to chown files - this is intentional
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.38
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /models/unsloth /models/.cache
+              chown -R 1000:1000 /models/unsloth /models/.cache
+              echo "Permissions fixed: /models/unsloth and /models/.cache owned by user 1000"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+          securityContext:
+            runAsUser: 0  # Required for chown operation
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+      containers:
+        - name: huggingface-downloader
+          image: python:3.11-slim
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              echo "Installing huggingface-hub CLI..."
+              pip install --no-cache-dir 'huggingface-hub[cli]>=0.27,<0.28'
+              export PATH="/tmp/.local/bin:$PATH"
+
+              echo ""
+              echo "=== Qwen3.6-27B MTP GGUF Download ==="
+              echo "Single-file GGUF, Unsloth Dynamic Q4_K_XL with bundled MTP layers"
+              echo ""
+
+              # Download only the UD-Q4_K_XL quant (~17.9GB); the repo also
+              # carries other quants we don't want on the PVC
+              echo "=== Downloading unsloth/Qwen3.6-27B-MTP-GGUF (UD-Q4_K_XL, ~17.9GB) ==="
+              huggingface-cli download \
+                unsloth/Qwen3.6-27B-MTP-GGUF \
+                Qwen3.6-27B-UD-Q4_K_XL.gguf \
+                --local-dir /models/unsloth/Qwen3.6-27B-MTP-GGUF \
+                --local-dir-use-symlinks False
+              echo "Download complete: unsloth/Qwen3.6-27B-MTP-GGUF"
+              echo ""
+
+              # Verify download
+              echo "=== Verifying download ==="
+              ls -la /models/unsloth/Qwen3.6-27B-MTP-GGUF/
+              du -sh /models/unsloth/Qwen3.6-27B-MTP-GGUF/
+              echo ""
+
+              echo "=== Qwen3.6-27B GGUF download complete ==="
+              echo "Model: unsloth/Qwen3.6-27B-MTP-GGUF (UD-Q4_K_XL)"
+              echo "Location: /models/unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"
+              echo "VRAM: ~21GB total (17.9GB weights + MTP buffers + KV at 64k ctx)"
+              echo "Use case: general/agentic chat + tool calling via llama.cpp with MTP"
+
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 2Gi
+
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: HF_TOKEN
+                  optional: true  # Model is not gated
+            - name: HOME
+              value: /tmp
+            - name: HF_HOME
+              value: /models/.cache
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache

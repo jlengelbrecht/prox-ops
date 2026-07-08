@@ -1,0 +1,102 @@
+---
+# CiliumNetworkPolicy for Qwen3.6-27B InferenceService
+# Implements zero-trust network segmentation (same posture as qwen-coder)
+#
+# Security Posture:
+# - Ingress: ONLY envoy-internal gateway, Kourier, Knative activator/autoscaler, Prometheus
+# - Egress: DNS resolution only (GGUF pre-cached on model-cache PVC, no internet needed)
+# - Default: DENY all other traffic
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: qwen36-27b
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen36-27b
+    app.kubernetes.io/component: networkpolicy
+spec:
+  # Target KServe InferenceService pods
+  # Note: KServe creates pods with serving.kserve.io/inferenceservice label
+  endpointSelector:
+    matchLabels:
+      serving.kserve.io/inferenceservice: qwen36-27b
+
+  # Ingress Rules
+  ingress:
+    # Allow traffic from envoy-internal gateway (HTTPRoute ingress)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: envoy-gateway
+            app.kubernetes.io/component: envoy-gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow traffic from Kourier gateway (KServe internal ingress)
+    # Traffic path: LiteLLM → Kourier → queue-proxy → kserve-container
+    # Port 8080: kserve-container (llama-server API)
+    # Port 8012: queue-proxy sidecar (traffic forwarding)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kourier-system
+            app: 3scale-kourier-gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "8012"
+              protocol: TCP
+
+    # Allow Knative Serving activator (cold start requests)
+    # During scale-from-zero, activator forwards requests to predictor
+    # Port 8080: kserve-container (llama-server API)
+    # Port 8012: queue-proxy sidecar (activator probes and traffic forwarding)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: activator
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+            - port: "8012"
+              protocol: TCP
+
+    # Allow Knative Serving autoscaler (metrics scraping)
+    # Autoscaler needs to scrape metrics for scaling decisions
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: autoscaler
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Allow Prometheus scraping (observability)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  # Egress Rules
+  egress:
+    # Allow DNS resolution ONLY (required for internal cluster communication)
+    # No internet egress needed - GGUF is pre-cached, llama.cpp never phones home
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*"

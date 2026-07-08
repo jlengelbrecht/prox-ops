@@ -112,6 +112,16 @@ data:
         model_info:
           description: "KServe Qwen2.5-Omni multimodal (~150s cold start)"
 
+      - model_name: "qwen36-27b"
+        litellm_params:
+          # llama.cpp exposes the model under its --alias, not a /models/... path
+          model: "openai/qwen3.6-27b"
+          api_base: "http://qwen36-27b-predictor.ai.svc.cluster.local/v1"
+          api_key: "dummy"
+          timeout: 240        # Cold start ~120-180s (17.9GB GGUF from CephFS)
+        model_info:
+          description: "KServe Qwen3.6-27B llama.cpp + MTP (~150s cold start, tool calling)"
+
       # =====================================================
       # EPIC-030: TTS Models (Text-to-Speech)
       # Use /v1/audio/speech endpoint via mode: audio_speech
