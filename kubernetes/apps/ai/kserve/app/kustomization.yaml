@@ -61,6 +61,15 @@ configMapGenerator:
       # These values point to Kourier but are not actually used when disableIstioVirtualHost is enabled
       - ingress={"ingressClassName":"kourier.ingress.networking.knative.dev","ingressDomain":"svc.cluster.local","domainTemplate":"{{.Name}}.{{.Namespace}}.svc.cluster.local","urlScheme":"http","disableIstioVirtualHost":true,"ingressGateway":"knative-serving/knative-ingress-gateway","ingressService":"kourier.kourier-system.svc.cluster.local"}
 
+# gcr.io/kubebuilder was sunset; redirect kube-rbac-proxy to the upstream canonical mirror.
+# quay.io/brancz/kube-rbac-proxy:v0.13.1 is the source-of-truth image (same digest, multi-arch).
+# This unblocks the kserve-controller-manager pod (1/2 ImagePullBackOff for ~3 days) and
+# restores the kserve-webhook-server-service endpoints so InferenceService webhooks function.
+images:
+  - name: gcr.io/kubebuilder/kube-rbac-proxy
+    newName: quay.io/brancz/kube-rbac-proxy
+    newTag: v0.13.1
+
 patches:
   # Add resource limits to controller manager
   - target:
