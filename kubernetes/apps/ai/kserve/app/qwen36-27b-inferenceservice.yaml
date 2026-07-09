@@ -1,0 +1,182 @@
+---
+# KServe InferenceService: Qwen3.6-27B (llama.cpp + MTP)
+# Model: unsloth/Qwen3.6-27B-MTP-GGUF, UD-Q4_K_XL quant (~17.9GB file)
+# Framework: llama.cpp llama-server (OpenAI-compatible), first llama.cpp ISVC in cluster
+# GPU: RTX A5000 24GB (k8s-work-10 ONLY, NOT Plex rtx-a2000 node)
+#
+# Why llama.cpp here instead of vLLM:
+# - GGUF Q4_K_XL is the only 4-bit format that fits this 27B dense model in 24GB
+# - Qwen3.6 ships trained MTP layers (bundled in this GGUF); llama.cpp >= b9180
+#   supports self-speculative decoding via --spec-type draft-mtp for ~1.5-1.7x decode
+#   speedup (community-verified on RTX 3090/4090 24GB cards)
+#
+# VRAM budget (24GB card): 17.9GB weights + ~1-2GB MTP draft buffers
+#   + ~1.3GB KV at 64k ctx (hybrid DeltaNet: only 10/64 layers carry KV) => ~21-22GB
+# KV cache stays f16: q8_0 KV + flash-attn has known instability with some
+#   architectures and the hybrid-attention KV is small enough not to bother.
+#
+# Performance expectations (extrapolated from 3090/4090 community reports):
+# - Cold start: ~120-180s (17.9GB single file from CephFS is the bottleneck)
+# - Decode: ~35-40 t/s baseline, ~55-70 t/s with MTP accepted drafts
+# - Scale-to-zero: 5 minutes idle timeout (global Knative config)
+# - Single GPU: maxReplicas=1 enforced (only 1 RTX A5000 available)
+#
+# Usage:
+#   kubectl run -it --rm test-curl --image=curlimages/curl --restart=Never -- \
+#     curl -X POST http://qwen36-27b.ai.svc.cluster.local/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model":"qwen3.6-27b","messages":[{"role":"user","content":"hello"}]}'
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen36-27b
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen36-27b
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: llama-cpp
+    model.type: text-only
+    model.size: 27b
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A5000 for LLM inference"
+    security.homelab/network: "Internal only - ClusterIP service"
+spec:
+  predictor:
+    # Scale-to-zero configuration (Knative Serving)
+    minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
+    maxReplicas: 1  # Single GPU workload - only 1 pod can run at a time
+
+    # CRITICAL: GPU and Node Targeting
+    # Target ONLY k8s-work-10 (RTX A5000 24GB)
+    # Do NOT schedule on Plex node (rtx-a2000 reserved for transcoding)
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-10
+      gpu.nvidia.com/model: rtx-a5000
+
+    # Custom container approach (no ClusterServingRuntime needed)
+    # Official llama.cpp CUDA server image; MTP support requires >= b9180
+    containers:
+      - name: llama-server
+        # renovate: datasource=docker depName=ghcr.io/ggml-org/llama.cpp
+        image: ghcr.io/ggml-org/llama.cpp:server-cuda-b9917
+
+        # llama-server arguments
+        args:
+          # Model path (pre-downloaded to model-cache PVC by qwen36-27b-download Job)
+          - --model
+          - /models/unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf
+
+          # Model name exposed via /v1/models (referenced by LiteLLM config)
+          - --alias
+          - qwen3.6-27b
+
+          # Offload all layers to GPU (weights + KV fit in 24GB, see budget above)
+          - --n-gpu-layers
+          - "999"
+
+          # 64k context, single slot: agentic sessions are long, and the hybrid
+          # DeltaNet KV is cheap (~20KiB/token). Concurrent requests queue inside
+          # llama-server; raise --parallel only if ctx-per-slot tradeoff is acceptable.
+          - --ctx-size
+          - "65536"
+          - --parallel
+          - "1"
+
+          # MTP self-speculative decoding (draft layers bundled in this GGUF)
+          - --spec-type
+          - draft-mtp
+          - --spec-draft-n-max
+          - "2"
+
+          # Qwen3.6 chat template with tool-calling support
+          - --jinja
+
+          # Prometheus /metrics endpoint (scraped via kserve annotation above)
+          - --metrics
+
+          # Server configuration
+          - --host
+          - 0.0.0.0
+          - --port
+          - "8080"
+
+        env:
+          # NVIDIA GPU visibility
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+          # Writable home for any runtime scratch (image may run non-root)
+          - name: HOME
+            value: "/tmp"
+
+        # Resource requirements
+        # Host RAM stays low: weights are mmap'd from CephFS and uploaded to VRAM;
+        # file-backed pages are reclaimable and won't OOM the cgroup
+        resources:
+          requests:
+            cpu: 4
+            memory: 8Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 8
+            memory: 12Gi
+            nvidia.com/gpu: 1
+
+        ports:
+          - containerPort: 8080
+            name: http1  # Knative requires port name to be 'http1' or 'h2c'
+            protocol: TCP
+
+        # llama-server /health returns 503 while the model is loading, 200 when ready
+        # Cold start ~120-180s (17.9GB from CephFS); liveness must not kill during load:
+        # 90 + (8-1)x15 = 195s before first possible kill
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 8
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 40  # (40-1)x5=195s after initial delay (~225s total)
+
+        # Volume mounts
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: true  # llama.cpp only reads the GGUF, never writes
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # llama-server needs writable /tmp
+          capabilities:
+            drop:
+              - ALL
+
+    # NVIDIA container runtime for GPU access
+    runtimeClassName: nvidia
+
+    # Security context (pod-level)
+    # fsGroup for PVC volume read permissions (files owned 1000:1000)
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+
+    serviceAccountName: default
+
+    # Volumes
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache
