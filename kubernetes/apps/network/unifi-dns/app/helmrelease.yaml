@@ -79,6 +79,35 @@ spec:
       - gateway-httproute
       - service
 
+    # Gateway API scoping (CRITICAL): only watch HTTPRoutes attached to the
+    # envoy-internal Gateway, mirroring how network/cloudflare-dns is scoped
+    # to --gateway-name=envoy-external.
+    #
+    # Without this filter, unifi-dns also watches HTTPRoutes attached to
+    # envoy-external. Apps that publish both an "-internal" and "-external"
+    # HTTPRoute for the same hostname (e.g. overseerr.homelab0.org) then have
+    # two candidate CNAME targets registered against this single UniFi/UDM
+    # DNS provider: envoy-internal's target (internal.homelab0.org) and
+    # envoy-external's target (external.homelab0.org). external-dns cannot
+    # publish two CNAMEs for one name, so its planner arbitrarily drops one
+    # candidate every sync interval, logging:
+    #   "Only one CNAME per name — <host> CNAME external.homelab0.org and
+    #    <host> CNAME internal.homelab0.org is invalid DNS."
+    # The surviving answer flaps between internal and external on every
+    # ~5m reconcile. When the external answer wins, LAN/UDM resolver
+    # (10.20.65.1) serves a CNAME to external.homelab0.org, which is
+    # out-of-zone for this resolver (it's a Cloudflare-only name) and
+    # therefore resolves as a dangling CNAME with no A record. glibc-based
+    # clients tolerate this (they issue a follow-up query); Android's
+    # resolver does not, and fails outright ("Address Not Found").
+    #
+    # Confirmed live via unifi-dns pod logs on 2026-07-09/10 for the exact
+    # set of apps that expose both an internal and external HTTPRoute:
+    # overseerr, tautulli, wizarr, bookstack (guides.homelab0.org),
+    # authentik.
+    extraArgs:
+      - --gateway-name=envoy-internal
+
     # Policy
     policy: sync
 
