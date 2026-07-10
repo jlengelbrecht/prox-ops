@@ -61,8 +61,36 @@ spec:
   gatewayClassName: envoy
   infrastructure:
     annotations:
-      # NOTE: external.${SECRET_DOMAIN} DNS is managed by DNSEndpoint (CNAME to tunnel)
-      # Do NOT add external-dns hostname annotation here - it conflicts with tunnel routing
+      # PUBLIC DNS: external.${SECRET_DOMAIN} is managed by the DNSEndpoint in
+      # network/cloudflare-tunnel (CNAME to the Cloudflare tunnel). cloudflare-dns
+      # (the public/Cloudflare external-dns instance) does NOT have "service" in
+      # its `sources` list (only crd + gateway-httproute - see
+      # network/cloudflare-dns/app/helmrelease.yaml), so it never watches this
+      # Service and the hostname annotation below cannot conflict with or
+      # override the public tunnel CNAME.
+      #
+      # LAN DNS (this annotation): unifi-dns DOES have "service" as a source
+      # and has no gateway-name scoping on it, so it publishes a LAN-only
+      # UniFi Local DNS Record: external.${SECRET_DOMAIN} -> A 10.20.67.23
+      # (this Service's real address). This closes a real bug: every
+      # HTTPRoute parented to this Gateway inherits the
+      # `external-dns.alpha.kubernetes.io/target: external.${SECRET_DOMAIN}`
+      # annotation above as its CNAME target. On the LAN/UDM resolver,
+      # external.${SECRET_DOMAIN} was previously out-of-zone (Cloudflare-only)
+      # with no local A record, so every external-only app (grafana,
+      # voice-bridge, flux-webhook, ...) and the "losing" side of every
+      # dual-route app's non-deterministic unifi-dns pick resolved to a
+      # dangling CNAME on the LAN - glibc tolerates this (follow-up query
+      # reaches the real public Cloudflare IP and round-trips back through
+      # the tunnel), Android's resolver rejects it outright ("Address Not
+      # Found"). Giving external.${SECRET_DOMAIN} its own complete, LAN-local,
+      # LAN-reachable A record fixes every affected hostname in one place,
+      # and keeps dual-route apps working (and now flap-immune) regardless
+      # of which HTTPRoute unifi-dns's gateway-httproute source currently
+      # prefers, since both candidate targets (internal.${SECRET_DOMAIN} ->
+      # .22, external.${SECRET_DOMAIN} -> .23) are now complete and
+      # LAN-reachable.
+      external-dns.alpha.kubernetes.io/hostname: external.${SECRET_DOMAIN}
       lbipam.cilium.io/ips: "10.20.67.23"
   listeners:
     - name: http
