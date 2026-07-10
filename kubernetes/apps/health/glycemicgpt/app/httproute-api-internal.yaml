@@ -1,0 +1,52 @@
+---
+# Internal API routes - LAN/WiFi split-horizon access, NO Authentik forward auth
+# Uses GlycemicGPT's own JWT auth, same as the external API route.
+# This is the path the mobile app hits on WiFi; without it, resolving
+# glycemicgpt.homelab0.org to the internal VIP would 404 (no internal
+# HTTPRoute previously matched /api on envoy-internal).
+# Mirrors kubernetes/apps/health/glycemicgpt/app/httproute-api.yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: glycemicgpt-api-internal
+  namespace: health
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - "glycemicgpt.${SECRET_DOMAIN}"
+  rules:
+    # API endpoints - JWT authenticated by GlycemicGPT
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/
+      backendRefs:
+        - name: glycemicgpt-api
+          port: 8000
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: Referrer-Policy
+                value: "no-referrer"
+              - name: Content-Security-Policy
+                value: "default-src 'none'; frame-ancestors 'none'"
+              - name: Permissions-Policy
+                value: "geolocation=(), microphone=(), camera=(), payment=()"
+    # Health endpoints - no auth required
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /health
+      backendRefs:
+        - name: glycemicgpt-api
+          port: 8000

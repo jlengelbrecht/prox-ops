@@ -1,6 +1,6 @@
 ---
 # SecurityPolicy for Authentik forward auth via Envoy ext_authz
-# Attached to the main 'glycemicgpt' HTTPRoute (WebUI only)
+# Attached to the WebUI HTTPRoutes only (external + internal)
 # API routes use GlycemicGPT's own JWT authentication
 # ReferenceGrant in security namespace allows cross-namespace backendRef
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -13,6 +13,9 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: glycemicgpt
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: glycemicgpt-internal
   extAuth:
     headersToExtAuth:
       - accept
