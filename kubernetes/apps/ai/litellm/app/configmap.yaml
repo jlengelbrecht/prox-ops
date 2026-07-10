@@ -237,28 +237,71 @@ data:
     # Config here serves as bootstrap/fallback definition
     # Primary management: LiteLLM UI > Guardrails page
     # Reference: https://docs.litellm.ai/docs/proxy/guardrails/quick_start
+    #
+    # STORY: Local KServe models / Claude Code must bypass guardrails
+    # ------------------------------------------------------------------
+    # Both guardrails were previously `default_on: true`, meaning they ran
+    # on EVERY request (pre_call/during_call) with no way to exempt local
+    # KServe models. When the OpenAI account backing "openai-mod" hit its
+    # rate limit, the pre_call moderation check 429'd on every single
+    # request - including calls to fully self-hosted models (qwen36-27b,
+    # qwen-coder, dolphin-chat, etc.) and Claude Code - because pre_call
+    # guardrails run BEFORE routing decides which model to call.
+    #
+    # Per LiteLLM docs (https://docs.litellm.ai/docs/proxy/guardrails/quick_start):
+    #   "default_on: true ... will run even if user specifies a different
+    #    guardrail or empty guardrails array" - i.e. default_on guardrails
+    #   CANNOT be excluded per-request, per-model, or per-key while
+    #   default_on remains true.
+    #
+    # The only per-model (`model_list[].litellm_params.guardrails`) and
+    # per-virtual-key (`/key/generate` `guardrails` field) scoping
+    # mechanisms are Enterprise-only features (confirmed in the same doc
+    # under "Model-level Guardrails" and "Control Guardrails per API Key" -
+    # both flagged "Enterprise only feature"). We run the OSS
+    # litellm-database image with no LiteLLM Enterprise license, so those
+    # mechanisms are not available to us.
+    #
+    # Chosen fix: flip both guardrails to `default_on: false`. They stay
+    # fully defined/enabled (API keys, mode, provider all intact) and can
+    # still be enforced by ANY caller - local or external - by explicitly
+    # requesting them per-call, which IS a base OSS feature:
+    #
+    #   curl http://litellm.../v1/chat/completions \
+    #     -d '{"model": "gpt-4", "messages": [...], \
+    #          "guardrails": ["openai-mod", "lakera-guard"]}'
+    #
+    # KServe local models and Claude Code never set this field, so they
+    # bypass both guardrails entirely (no OpenAI moderation call, no
+    # Lakera call). Any future public-facing / external-model route can
+    # opt back in by adding the "guardrails" field to its requests.
     # =====================================================
     guardrails:
       # Lakera AI - Prompt injection detection
       # Uses lakera_v2 API (not lakera_prompt_injection)
-      # default_on: true runs on ALL requests automatically
+      # default_on: false - no longer runs automatically on every request.
+      # Opt in per-request with "guardrails": ["lakera-guard"].
       # Reference: https://docs.litellm.ai/docs/proxy/guardrails/lakera_ai
       - guardrail_name: "lakera-guard"
         litellm_params:
           guardrail: lakera_v2
           mode: "during_call"
-          default_on: true
+          default_on: false
           api_key: os.environ/LAKERA_API_KEY
           api_base: "https://api.lakera.ai"
 
       # OpenAI Moderation - Content policy compliance (free)
-      # default_on: true runs on ALL requests automatically
+      # default_on: false - no longer runs automatically on every request.
+      # This was the guardrail 429'ing on every call once the OpenAI
+      # account hit its moderation rate limit, blocking ALL completions
+      # (including local KServe models) before routing. Opt in per-request
+      # with "guardrails": ["openai-mod"] for public/external model usage.
       # Reference: https://docs.litellm.ai/docs/proxy/guardrails/openai_moderation
       - guardrail_name: "openai-mod"
         litellm_params:
           guardrail: openai_moderation
           mode: "pre_call"
-          default_on: true
+          default_on: false
           api_key: os.environ/OPENAI_API_KEY
 
     general_settings:

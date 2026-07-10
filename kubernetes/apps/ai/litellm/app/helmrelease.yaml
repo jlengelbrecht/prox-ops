@@ -57,6 +57,10 @@ spec:
       security.homelab/purpose: "OpenAI-compatible API gateway for Ollama"
       # Restart pods when any ExternalSecret-backed secret is updated
       secret.reloader.stakater.com/reload: "litellm-masterkey,litellm-oidc,litellm-openai,litellm-graphiti-mcp,litellm-n8n-mcp,firecrawl-secrets,litellm-valkey,litellm-lakera"
+      # config.yaml is mounted via subPath (see proxyConfigMap below), so it does NOT
+      # auto-propagate or auto-restart on ConfigMap changes by default. Reloader watches
+      # the litellm-config ConfigMap and restarts the pod whenever it changes.
+      configmap.reloader.stakater.com/reload: "litellm-config"
 
     # Pod security context
     # Note: litellm-database image specifies USER as text "root" in Dockerfile,
