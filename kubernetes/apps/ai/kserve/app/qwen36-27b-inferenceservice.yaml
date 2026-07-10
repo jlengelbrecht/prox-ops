@@ -18,7 +18,10 @@
 # Performance expectations (extrapolated from 3090/4090 community reports):
 # - Cold start: ~120-180s (17.9GB single file from CephFS is the bottleneck)
 # - Decode: ~35-40 t/s baseline, ~55-70 t/s with MTP accepted drafts
-# - Scale-to-zero: 5 minutes idle timeout (global Knative config)
+# - Scale-to-zero: 30 minute idle retention (predictor-level override below;
+#   cluster-wide Knative default is 5 min - see kubernetes/apps/kube-system/
+#   knative-serving/app/kustomization.yaml). Still minReplicas=0 (GPU freed
+#   when idle), just stays warm longer to survive gaps in a coding session.
 # - Single GPU: maxReplicas=1 enforced (only 1 RTX A5000 available)
 #
 # Usage:
@@ -47,6 +50,27 @@ spec:
     # Scale-to-zero configuration (Knative Serving)
     minReplicas: 0  # Enable scale-to-zero (GPU freed when idle)
     maxReplicas: 1  # Single GPU workload - only 1 pod can run at a time
+
+    # Predictor-level Knative autoscaling override: this component (and only
+    # this component) stays warm for 30 minutes after the last request before
+    # scaling to zero, instead of the cluster-wide 5 minute default in
+    # kubernetes/apps/kube-system/knative-serving/app/kustomization.yaml
+    # (config-autoscaler: scale-to-zero-pod-retention-period=5m). Placed here
+    # (spec.predictor.annotations) rather than top-level metadata.annotations
+    # so it only affects this InferenceService's predictor Knative Revision -
+    # KServe merges isvc-level and predictor-level annotations (predictor
+    # wins) into the Revision template before handing off to Knative; this
+    # key is not in KServe's serviceAnnotationDisallowedList so it propagates
+    # untouched. The per-revision value overrides (does not get clamped by)
+    # the global config-autoscaler default; the effective idle window is
+    # max(scale-to-zero-grace-period, scale-to-zero-pod-retention-period),
+    # so this cleanly wins over the 5m cluster grace period too.
+    # Used interactively from Claude Code/BMad on a dev VM - cold start is
+    # ~120-180s (17.9GB model), so keeping it warm ~30m avoids re-paying that
+    # cost on every gap in a coding session while still freeing the GPU when
+    # truly idle.
+    annotations:
+      autoscaling.knative.dev/scale-to-zero-pod-retention-period: "30m"
 
     # CRITICAL: GPU and Node Targeting
     # Target ONLY k8s-work-10 (RTX A5000 24GB)
