@@ -1,0 +1,34 @@
+---
+# STORY-034-2: request-log DB (sqlite on a PVC) + JSON access logging for
+# ai-gateway. `logging.format` is a typed field so it wins over any
+# equivalent set via rawConfig (CodeRabbit item carried over from 34.1).
+#
+# `spec.database.url` slash count follows the sqlx-sqlite absolute-path
+# convention (`sqlite:///` + path); this is unverified against the pinned
+# v1.3.1 runtime until Phase 2's live request-log check - see the story's
+# completion report DEVIATIONS section.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayParameters
+metadata:
+  name: ai-gateway
+  namespace: network
+spec:
+  logging:
+    format: json
+  rawConfig:
+    config:
+      database:
+        url: "sqlite:///data/agentgateway/request-log.db?mode=rwc"
+  deployment:
+    spec:
+      template:
+        spec:
+          volumes:
+            - name: request-log
+              persistentVolumeClaim:
+                claimName: agentgateway-request-log
+          containers:
+            - name: agentgateway
+              volumeMounts:
+                - name: request-log
+                  mountPath: /data/agentgateway

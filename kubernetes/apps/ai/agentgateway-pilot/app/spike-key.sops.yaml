@@ -1,0 +1,30 @@
+# STORY-034-2: ONE throwaway spike API key for the pilot route's inbound
+# auth (openssl-rand generated). Plaintext also lives at
+# ~/.config/agw-spike-key on the dev box - outside the repo, never in
+# 1Password (production keys + scoping are Story 34.10). See policy.yaml
+# for why this is plaintext-in-a-SOPS-Secret rather than a ConfigMap of
+# SHA-256 hashes (keyHash isn't in the pinned v1.3.1 CRD).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agentgateway-pilot-spike-key
+  namespace: ai
+type: Opaque
+stringData:
+  spike: ENC[AES256_GCM,data:UgO0YZcB0W7/ZEv2TBNYpNDOpMhvoS1GFBdE+61gM6NJRhd5YU4N5M+K6f1yX3RdmE9raFbod0Q0dwZOFvZj7RI3c7G6quF8IM66/1AWDnairc2NHecqvCE3h6XUgegZkz9uBlIA8hh74lv84whUwkeaWA==,iv:DmcqMTtrtCsoJqCj0AL+LcRJyuJwMrgieo+zl3cw/o0=,tag:xxl441X2vBYF6qXQPeQXwg==,type:str]
+sops:
+  age:
+    - recipient: age1metxlry78wefrmm5ny2zjavtucsmdvw2r3ctexu6h05ak4x2vc7qa02drd
+      enc: |
+        -----BEGIN AGE ENCRYPTED FILE-----
+        YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBlTSsrdThodko4dVVpbmgv
+        b2h3emlvdjFaOTRjK3ZobzdDT2JhRkNuZTNVCmZJdWZ3NjlDUlJLdlVKZmJ1Z0JM
+        UTJ1N2J2cXN6aUVSVjNvbkl2S0ZhQjAKLS0tIGhiNG1XT1NnT2NWcXFWcmVpOThQ
+        bWNhRzUvZUt6ZVArb2xEMWxGc0ZKaFkK/JwGzPGEq1Ye+IGkm6L5w1uCj2PnBMwz
+        NHFP4zcrWLpz44DQNhGCXVtag6ogIWCHXyprG0C3QcX72MAy2gvPnA==
+        -----END AGE ENCRYPTED FILE-----
+  lastmodified: "2026-08-01T04:03:20Z"
+  mac: ENC[AES256_GCM,data:yPeRIUzATEUtAVeHS7DR/hro8T5uShHSyTNNhmh0JovlNcAyxp4WKPW8dcACEXb1mCu9371V3HbJpuaYfA4x+gubF7jMm/8RGtcS/6uAMgrgwx4//qJDjvJVqEhfhWio9rEprft3f3LE6xaBOUxkDJ51Wf0scKauL+yYgjaMVIE=,iv:2m6Py50BhvE+VWRU5d1G3gjpGSTBlTvq2ecAjBh9mrA=,tag:UByjvv8EQhLVQ0pO21BdzA==,type:str]
+  encrypted_regex: ^(data|stringData)$
+  mac_only_encrypted: true
+  version: 3.11.0

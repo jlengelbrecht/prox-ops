@@ -1,0 +1,17 @@
+---
+# CRITICAL: prune: false prevents Flux from deleting the PVC during
+# reconciliation - protects the request-log DB from accidental deletion.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-config-storage
+spec:
+  interval: 1h
+  path: ./kubernetes/apps/network/agentgateway-config/storage
+  prune: false # NEVER prune storage - prevents data loss
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: network
+  wait: true

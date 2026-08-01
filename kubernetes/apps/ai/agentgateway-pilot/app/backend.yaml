@@ -1,0 +1,19 @@
+---
+# STORY-034-2: single-provider OpenAI backend, pinned to gpt-4o-mini
+# (today's real litellm-config.yaml mapping for the gpt-4/gpt-3.5-turbo
+# aliases - see inv-secrets.md sec 4). Production alias parity is 34.9;
+# this pilot exists to prove auth/streaming/observability end-to-end.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: agentgateway-pilot-openai
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: gpt-4o-mini
+  policies:
+    auth:
+      secretRef:
+        name: agentgateway-pilot-openai
