@@ -29,7 +29,15 @@ spec:
       port: 443
       allowedRoutes:
         namespaces:
-          from: All
+          # Deliberately NOT "from: All" (unlike the envoy Gateways): this
+          # Gateway carries the AI/MCP auth perimeter (EPIC-034), so route
+          # attachment is restricted to the namespaces that own that traffic.
+          from: Selector
+          selector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values: ["ai", "mcp", "network"]
       tls:
         certificateRefs:
           - kind: Secret

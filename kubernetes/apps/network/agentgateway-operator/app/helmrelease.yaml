@@ -25,3 +25,10 @@ spec:
     - name: agentgateway-crds
       namespace: network
   interval: 1h
+  values:
+    # kube-prometheus-stack selects ALL ServiceMonitors cluster-wide
+    # (serviceMonitorSelectorNilUsesHelmValues: false, no label scoping -
+    # see observability/kube-prometheus-stack/app/helmrelease.yaml:64), so
+    # no extra release-label matching is needed here.
+    monitoring:
+      enabled: true
