@@ -24,8 +24,8 @@ concurrency:
 env:
   # renovate: datasource=github-releases depName=gitleaks/gitleaks
   GITLEAKS_VERSION: "8.21.2"
-  # renovate: datasource=pypi depName=ensure-sops
-  ENSURE_SOPS_VERSION: "0.1.2"
+  # renovate: datasource=pypi depName=pyyaml
+  PYYAML_VERSION: "6.0.3"
 
 jobs:
   # =============================================================================
@@ -227,12 +227,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
-          python-version: "3.10"  # ensure-sops requires Python <3.11
+          python-version: "3.12"
 
-      - name: Install ensure-sops
-        run: |
-          pip install ensure-sops==${{ env.ENSURE_SOPS_VERSION }}
-          echo "ensure-sops version: $(pip show ensure-sops | grep Version)"
+      - name: Install PyYAML
+        run: pip install pyyaml==${{ env.PYYAML_VERSION }}
 
       - name: Find SOPS files in PR
         id: find-sops
@@ -272,6 +270,145 @@ jobs:
             } >> $GITHUB_OUTPUT
           fi
 
+      - name: Write SOPS validator
+        if: steps.find-sops.outputs.SOPS_FOUND == 'true'
+        run: |
+          cat > /tmp/validate_sops.py << 'PYTHON_SCRIPT'
+          # Validate that a SOPS-encrypted YAML file actually encrypts
+          # everything its own recorded sops: metadata (encrypted_regex /
+          # encrypted_suffix / unencrypted_regex / unencrypted_suffix) says
+          # it should - the same rule sops itself applies at decrypt time -
+          # rather than assuming one fixed convention (e.g. always
+          # data/stringData) across every file in the repo. This repo uses
+          # more than one: most Secrets scope to data/stringData, the NFS
+          # PersistentVolume secrets scope to server/path, and
+          # talos/talsecret.sops.yaml encrypts the whole document via
+          # unencrypted_suffix.
+          import re
+          import sys
+
+          import yaml
+
+          ENC_RE = re.compile(r"^ENC\[AES256_GCM,.*\]$", re.DOTALL)
+
+
+          def get_rule(sops_meta):
+              if not isinstance(sops_meta, dict):
+                  return None
+              if "encrypted_regex" in sops_meta:
+                  return ("regex", re.compile(sops_meta["encrypted_regex"]))
+              if "encrypted_suffix" in sops_meta:
+                  return ("suffix", sops_meta["encrypted_suffix"])
+              if "unencrypted_regex" in sops_meta:
+                  return ("unregex", re.compile(sops_meta["unencrypted_regex"]))
+              if "unencrypted_suffix" in sops_meta:
+                  return ("unsuffix", sops_meta["unencrypted_suffix"])
+              # No scoping key recorded: sops's own default is to encrypt
+              # every value.
+              return ("all", None)
+
+
+          def walk(node, rule, should_encrypt, failures, path):
+              kind, val = rule
+              if isinstance(node, dict):
+                  for k, v in node.items():
+                      child_should = should_encrypt
+                      key = str(k)
+                      if kind == "regex" and val.search(key):
+                          child_should = True
+                      elif kind == "suffix" and key.endswith(val):
+                          child_should = True
+                      elif kind == "unregex" and val.search(key):
+                          child_should = False
+                      elif kind == "unsuffix" and key.endswith(val):
+                          child_should = False
+                      walk(v, rule, child_should, failures, f"{path}.{k}")
+              elif isinstance(node, list):
+                  for i, v in enumerate(node):
+                      walk(v, rule, should_encrypt, failures, f"{path}[{i}]")
+              else:
+                  if not should_encrypt:
+                      return
+                  if node in (None, ""):
+                      return
+                  if not isinstance(node, str) or not ENC_RE.match(node):
+                      failures.append(path)
+
+
+          def validate_document(doc, doc_no):
+              if not isinstance(doc, dict):
+                  return [f"document {doc_no} could not be parsed as a YAML mapping"]
+
+              sops_meta = doc.get("sops")
+              if not isinstance(sops_meta, dict):
+                  return [f"document {doc_no} has no sops metadata"]
+
+              age_entries = sops_meta.get("age")
+              if not isinstance(age_entries, list) or not age_entries:
+                  return [
+                      f"document {doc_no}: sops.age is missing or empty - "
+                      "no age recipient present"
+                  ]
+
+              has_recipient = any(
+                  isinstance(e, dict) and e.get("recipient") for e in age_entries
+              )
+              if not has_recipient:
+                  return [f"document {doc_no}: no sops.age[].recipient present"]
+
+              rule = get_rule(sops_meta)
+              kind, _ = rule
+              start_should_encrypt = kind in ("all", "unregex", "unsuffix")
+
+              body = {k: v for k, v in doc.items() if k != "sops"}
+              failures = []
+              walk(body, rule, start_should_encrypt, failures, "$")
+
+              return [f"document {doc_no}: unencrypted value at {p}" for p in failures]
+
+
+          def validate_file(path):
+              with open(path, "r") as f:
+                  # A file may contain multiple `---`-separated YAML
+                  # documents (e.g. a Secret + a ConfigMap in one file).
+                  # yaml.safe_load only ever sees the first one and would
+                  # silently skip encryption checks on the rest, so every
+                  # document is parsed and validated independently here.
+                  docs = list(yaml.safe_load_all(f))
+
+              all_failures = []
+              for i, doc in enumerate(docs, start=1):
+                  if doc is None:
+                      # Fully-empty document (e.g. a trailing `---` with
+                      # nothing after it) - nothing to validate.
+                      continue
+                  all_failures.extend(validate_document(doc, i))
+
+              if all_failures:
+                  return "; ".join(all_failures)
+
+              return None
+
+
+          def main(argv):
+              failed = False
+              for path in argv[1:]:
+                  try:
+                      error = validate_file(path)
+                  except Exception as exc:  # noqa: BLE001 - report and fail closed
+                      error = f"failed to validate ({exc})"
+                  if error:
+                      print(f"{path} - {error}", file=sys.stderr)
+                      failed = True
+                  else:
+                      print(f"{path} - OK")
+              return 1 if failed else 0
+
+
+          if __name__ == "__main__":
+              sys.exit(main(sys.argv))
+          PYTHON_SCRIPT
+
       - name: Validate SOPS encryption
         id: validate-sops
         if: steps.find-sops.outputs.SOPS_FOUND == 'true'
@@ -289,8 +426,11 @@ jobs:
 
             echo "Checking: $file"
 
-            # Run ensure_sops and capture output
-            if ensure_sops "$file" 2>&1; then
+            # Run the SOPS validator and capture output. It checks each
+            # file against ITS OWN recorded encrypted_regex/suffix rule
+            # (or full-document encryption if none is recorded) instead of
+            # assuming a single fixed convention repo-wide.
+            if python3 /tmp/validate_sops.py "$file" 2>&1; then
               echo "  PASS: $file is properly encrypted"
               PASSED_FILES="${PASSED_FILES}${file}
           "
