@@ -4,9 +4,15 @@
 # equivalent set via rawConfig (CodeRabbit item carried over from 34.1).
 #
 # `spec.database.url` slash count follows the sqlx-sqlite absolute-path
-# convention (`sqlite:///` + path); this is unverified against the pinned
-# v1.3.1 runtime until Phase 2's live request-log check - see the story's
-# completion report DEVIATIONS section.
+# convention (`sqlite:///` + path); still pending final confirmation from
+# Phase 2's live request-log check once this fsGroup fix rolls out.
+#
+# fsGroup is required: the proxy container runs runAsNonRoot/runAsUser
+# 10101 (chart default) with no matching group, and a freshly-provisioned
+# ceph-block PVC is root-owned - without this the container can't create
+# the sqlite file (SQLITE_CANTOPEN, discovered live in Phase 2: the new
+# ReplicaSet pod crash-looped while the old one kept serving traffic
+# through the rolling update, so no consumer impact during the fix).
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayParameters
 metadata:
@@ -23,6 +29,8 @@ spec:
     spec:
       template:
         spec:
+          securityContext:
+            fsGroup: 10101
           volumes:
             - name: request-log
               persistentVolumeClaim:
