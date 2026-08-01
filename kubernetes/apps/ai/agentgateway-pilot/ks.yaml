@@ -17,7 +17,12 @@ spec:
     namespace: flux-system
   targetNamespace: ai
   wait: false
+  # No explicit secretRef: the ai/ tree's namespace: ai kustomize transform
+  # places this Kustomization CR in ns ai, but sops-age only exists in
+  # flux-system - an explicit secretRef.name looks up the secret in this
+  # CR's OWN namespace and fails ("secrets \"sops-age\" not found",
+  # discovered live in Phase 2). Omitting secretRef matches
+  # wireguard-gateway/ks.yaml's working pattern (ns network, same secret,
+  # no explicit ref) and resolves correctly.
   decryption:
     provider: sops
-    secretRef:
-      name: sops-age
