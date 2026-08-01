@@ -23,7 +23,12 @@ spec:
   # must live in kourier-system, so every resource in app/ carries an
   # explicit `namespace:` instead of being force-placed in ai.
   #
-  # No `decryption:` block either - this Kustomization ships no SOPS files
-  # (it borrows 34.2's already-decrypted Secret), so it sidesteps the
-  # secretRef-resolves-in-the-CR's-own-namespace trap 34.2 hit live.
+  # No `decryption:` block here on purpose. The cluster-apps parent patches
+  # `decryption: {provider: sops}` into EVERY child Kustomization
+  # (kubernetes/flux/cluster/ks.yaml:19-28), so the rendered object gets
+  # provider-only decryption for free - which is exactly the shape that
+  # works. Declaring one locally is what invites the trap 34.2 hit live: an
+  # explicit `secretRef.name` resolves in the CR's OWN namespace (ai), but
+  # sops-age lives in flux-system. This Kustomization ships no SOPS files
+  # anyway (it borrows 34.2's already-decrypted Secret).
   wait: false
