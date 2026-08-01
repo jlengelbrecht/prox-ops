@@ -1,0 +1,79 @@
+---
+# STORY-034-3 (auth-mechanics spike): backends used only by the auth-matrix
+# route. Additive; nothing here is referenced by 34.2's pilot route or by
+# 34.4's wake-gate route.
+#
+# ---------------------------------------------------------------------
+# JWKS source for Q1 (remote JWKS validation against Authentik).
+#
+# Why a static AgentgatewayBackend and not a direct cross-namespace Service
+# ref: `jwks.remote.backendRef` DOES accept `kind: Service` on the pinned
+# v1.3.1 CRD, but the CRD's own doc-string for that field's `namespace`
+# says a ReferenceGrant is required in the referent namespace, and the
+# agentgateway-pilot Kustomization sets `targetNamespace: ai` - so it
+# cannot place a grant into ns `security` at all. A static Backend keeps
+# the whole reference inside ns `ai` and needs no grant.
+#
+# Clear-text on purpose. Verified against the pinned version's own
+# testdata (controller/pkg/agentgateway/remotehttp/resolver.go:119,127 at
+# tag v1.3.1): the URL is built as `http://<host:port>/<path>` unless a TLS
+# policy is attached, and the upstream fixtures name the no-TLS case
+# `gw-with-backend-clear-text.yaml` while `gw-with-backend-default-tls.yaml`
+# has to add an explicit `policies.tls: {}`. So omitting TLS is not an
+# oversight - it is the documented clear-text shape, which is what an
+# in-cluster ClusterIP hop to Authentik wants.
+#
+# Reachability pre-verified live (read-only, 2026-08-01) with a throwaway
+# curl pod in ns security:
+#   GET http://authentik-server.security.svc.cluster.local:80\
+#       /application/o/toolhive-mcp-gateway/jwks/  -> HTTP 200 application/json
+#   (RS256 key, kid dbcc2396...). No Host header needed; Authentik serves
+#   the JWKS on the Service port regardless of the external hostname.
+# Also verified: ns `security` has ZERO CiliumNetworkPolicies and only a
+# postgresql-scoped native NetworkPolicy, so authentik-server ingress is
+# unrestricted - no policy work is required by this story.
+#
+# NOTE for later stories: the JWKS is fetched by the agentgateway
+# CONTROLLER (ns network), not by the proxy pod, and is inlined into the
+# xDS config (traffic_plugin.go:738-748 resolves RemoteJWKS to an Inline
+# JwksSource at translation time). Any future egress restriction therefore
+# has to allow the controller, not the data plane, to reach Authentik.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: auth-matrix-authentik-jwks
+  namespace: ai
+spec:
+  static:
+    host: authentik-server.security.svc.cluster.local
+    port: 80
+---
+# ---------------------------------------------------------------------
+# Q3's real-model target: a byte-for-byte copy of Story 34.4's winning V1
+# shape (WI-034-4 sec 8), used ONLY to prove that a per-key CEL denial
+# returns 403 *before* any backend contact - i.e. without waking the A5000.
+#
+# Why a duplicate rather than a backendRef to `wake-gate-v1`: the
+# agentgateway-wake-gate Kustomization already declares `dependsOn`
+# agentgateway-pilot, so pilot cannot depend on wake-gate without creating
+# a Flux dependency cycle. Duplicating the (tiny, proven) backend keeps
+# both Kustomizations independent and makes this story revert cleanly on
+# its own - which matters because 34.11 is scheduled to delete the
+# wake-gate app entirely.
+#
+# No policies.health, no URLRewrite, no hostRewrite - exactly as 34.4
+# established. The route rule that references this backend is auth'd AND
+# authorization-gated, and every other rule on the auth-matrix route is a
+# directResponse, so no unauthenticated path can reach a GPU.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: auth-matrix-qwen36
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: qwen3.6-27b
+      host: qwen36-27b-predictor.ai.svc.cluster.local
+      port: 80

@@ -2,8 +2,19 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
+  # STORY-034-2: cloud pilot route
   - externalsecret.yaml
   - spike-key.sops.yaml
   - backend.yaml
   - httproute.yaml
   - policy.yaml
+  # STORY-034-3: auth-mechanics spike (additive - separate HTTPRoute,
+  # separate hostname, separate Secret; nothing above is modified).
+  # Lives here rather than in agentgateway-wake-gate because this
+  # Kustomization already carries `decryption: {provider: sops}` and owns
+  # the only other spike credential, while wake-gate deliberately ships no
+  # SOPS files at all and is scheduled for deletion in Story 34.11.
+  - auth-matrix-keys.sops.yaml
+  - auth-matrix-backends.yaml
+  - auth-matrix-httproute.yaml
+  - auth-matrix-policies.yaml

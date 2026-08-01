@@ -1,0 +1,384 @@
+---
+# STORY-034-3 (auth-mechanics spike): every policy in this file targets a
+# NAMED RULE of the agentgateway-auth-matrix HTTPRoute. Nothing here
+# targets the Gateway, 34.2's pilot route, or 34.4's wake-gate route.
+#
+# ===================================================================
+# WHY ONE CONCERN PER POLICY OBJECT
+# ===================================================================
+# The pinned v1.3.1 CRD documents the merge rule (AgentgatewayPolicy
+# spec.traffic doc-string): "When multiple policies are selected for a
+# given request, they are merged on a field-level basis, but not a deep
+# merge. Precedence is given to more precise policies: Gateway < Listener
+# < Route < Route Rule."
+#
+# Two consequences this file is built around:
+#
+# 1. Splitting authentication and authorization into separate objects is
+#    safe (disjoint fields merge cleanly) AND it is a safety property:
+#    the authorization policies below are the only ones carrying CEL, and
+#    CEL is the only thing here that can fail to compile. Keeping
+#    `apiKeyAuthentication` in its own CEL-free object means a bad
+#    expression can never leave a rule unauthenticated - which matters
+#    most for `qwen-live`, the one rule with a GPU behind it.
+# 2. It gives Q2 more evidence than the headline test: rules
+#    scope-meta / scope-body / qwen-live each have two policies attached
+#    at the same point setting disjoint fields, so the field-level merge
+#    claim is exercised three extra times.
+#
+# ===================================================================
+# WHAT IS *NOT* TESTED HERE, AND WHY (Q2c)
+# ===================================================================
+# Gateway-scoped and listener-`sectionName`-scoped policies are NOT
+# shipped. Two independent reasons, both structural rather than a choice
+# to skip work:
+#
+#   (a) The v1.3.1 CRD requires a policy's targetRef to be in the SAME
+#       NAMESPACE as the policy ("Selects one same-namespace object..."),
+#       and Gateway `ai-gateway` lives in ns `network` while this
+#       Kustomization is pinned to `targetNamespace: ai`. A Gateway- or
+#       listener-scoped policy is therefore not expressible from here at
+#       all - it would have to live in the network-tree app.
+#   (b) Any Gateway-scoped auth policy would merge DOWN into 34.2's pilot
+#       route and 34.4's wake-gate route, both of which are live spike
+#       surfaces the story is forbidden to touch.
+#
+# (a) is itself a finding worth carrying: auth-policy ownership splits
+# across namespaces the moment anything is Gateway-scoped.
+
+# ===================================================================
+# Q1 - JWT validation via remote JWKS against Authentik
+# ===================================================================
+# Provider contract copied from the live Authentik discovery document
+# (read-only GET, 2026-08-01):
+#   https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/\
+#     .well-known/openid-configuration
+#     issuer   = https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/
+#     jwks_uri = https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/jwks/
+# The trailing slash on `issuer` is significant - Authentik runs
+# `issuer_mode: per_provider` (inv-network.md sec 7) and emits exactly
+# this string in the `iss` claim.
+#
+# `audiences: [toolhive-mcp-gateway]` is what the blueprint's "MCP Gateway
+# Audience" scope mapping injects for the `mcp` scope
+# (configmap-blueprints.yaml:123-133). This is also the free
+# wrong-audience test: a token requested WITHOUT the `mcp` scope carries
+# Authentik's default aud (the client_id) instead, and must be rejected.
+#
+# jwksPath is given with a leading slash. Verified equivalent either way:
+# the resolver does `strings.TrimPrefix(input.Path, "/")` before building
+# `http://<host>/<path>` (remotehttp/resolver.go:94,119 at tag v1.3.1),
+# and upstream ships a `jwkspath-starts-with-slash.yaml` fixture.
+#
+# cacheDuration is left at its default (5m, which is also the CRD's
+# enforced minimum).
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-jwt-only
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: jwt-only
+  traffic:
+    jwtAuthentication:
+      mode: Strict
+      providers:
+        - issuer: https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/
+          audiences:
+            - toolhive-mcp-gateway
+          jwks:
+            remote:
+              backendRef:
+                group: agentgateway.dev
+                kind: AgentgatewayBackend
+                name: auth-matrix-authentik-jwks
+              jwksPath: /application/o/toolhive-mcp-gateway/jwks/
+    directResponse:
+      status: 200
+      headers:
+        - name: content-type
+          value: application/json
+      body: |
+        {"spike":"jwt-only","result":"jwt accepted"}
+---
+# ===================================================================
+# Q2a + Q4 - API-key-only rule, on the same Gateway and the same route
+# as the JWT rule above
+# ===================================================================
+# Default credential location on purpose: the v1.3.1 CRD says of
+# `apiKeyAuthentication.location`, "If omitted, credentials are read from
+# the `Authorization` header with the `Bearer ` prefix." That default is
+# exactly what makes Claude Code's ANTHROPIC_AUTH_TOKEN work (34.4 sec 3.6,
+# proven live in 34.2 and 34.4), and it is what Q4's negative test probes:
+# the same key sent as `x-api-key` with no Authorization header must be
+# rejected, because nothing is configured to look there.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-apikey-only
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: apikey-only
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: agentgateway-auth-matrix-keys
+    directResponse:
+      status: 200
+      headers:
+        - name: content-type
+          value: application/json
+      body: |
+        {"spike":"apikey-only","result":"api key accepted"}
+---
+# ===================================================================
+# Q2b - BOTH auth types on the SAME route rule, from two policy objects
+# ===================================================================
+# Object 1 of 2: the API key half. `location.header.name: x-spike-key`
+# with no prefix is deliberate and is what makes the experiment
+# meaningful - see the HTTPRoute comment on this rule. It also
+# demonstrates that the credential location is configurable, which is the
+# escape hatch if a client ever genuinely cannot send Authorization.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-both-apikey
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: both-auth
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      location:
+        header:
+          name: x-spike-key
+      secretRef:
+        name: agentgateway-auth-matrix-keys
+    directResponse:
+      status: 200
+      headers:
+        - name: content-type
+          value: application/json
+      body: |
+        {"spike":"both-auth","result":"all configured auth passed"}
+---
+# Object 2 of 2: the JWT half, same attachment point, disjoint field.
+# Expected per the documented field-level merge: the effective policy for
+# this rule carries BOTH `apiKeyAuthentication` and `jwtAuthentication`,
+# both in Strict mode, so both credentials are required (AND, not OR).
+# The live 3-way test (both / JWT only / key only) is what settles it.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-both-jwt
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: both-auth
+  traffic:
+    jwtAuthentication:
+      mode: Strict
+      providers:
+        - issuer: https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/
+          audiences:
+            - toolhive-mcp-gateway
+          jwks:
+            remote:
+              backendRef:
+                group: agentgateway.dev
+                kind: AgentgatewayBackend
+                name: auth-matrix-authentik-jwks
+              jwksPath: /application/o/toolhive-mcp-gateway/jwks/
+---
+# ===================================================================
+# Q3 part 1 - does apiKey.* metadata reach authorization CEL?
+# ===================================================================
+# This is Q3's actual question, isolated so it can be answered with a
+# single string comparison and no GPU, no body parsing and no LLM
+# context. Both spike keys authenticate here; only the scoped one carries
+# `scope: qwen-only`, so:
+#   scoped key -> 200   broad key -> 403
+# and a 403 for BOTH would mean `apiKey.*` never reaches this context.
+#
+# Source-level expectation (v1.3.1, crates/agentgateway/src/http/apikey.rs
+# :44-56): the API key Claims struct is `{ key, #[dynamic(flatten)]
+# metadata }`, i.e. each key's JSON `metadata` object is flattened onto
+# the `apiKey` CEL root - so `apiKey.scope` is addressable directly.
+# schema/cel.md at the same tag lists `apiKey` in the single shared CEL
+# context. The live test is what turns that into evidence.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-scope-meta-apikey
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: scope-meta
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: agentgateway-auth-matrix-keys
+    directResponse:
+      status: 200
+      headers:
+        - name: content-type
+          value: application/json
+      body: |
+        {"spike":"scope-meta","result":"authorized by apiKey metadata"}
+---
+# The authorization half. `action: Allow` gives deny-by-default semantics
+# per the CRD: "If at least one Allow rule is configured, requests are
+# denied unless at least one allow rule matches." A CEL expression that
+# fails to evaluate does not match, so an unavailable `apiKey.*` context
+# degrades to 403 - i.e. this policy fails CLOSED, never open.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-scope-meta-authz
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: scope-meta
+  traffic:
+    authorization:
+      action: Allow
+      policy:
+        matchExpressions:
+          - apiKey.scope == 'qwen-only'
+---
+# ===================================================================
+# Q3 part 2 - per-key MODEL scoping, proven with zero GPU exposure
+# ===================================================================
+# Reproduces claude-code-qwen36's "this key may only reach qwen3.6-27b"
+# restriction, but reads the requested model from the request body
+# (`json(request.body).model`) instead of from the LLM context, so the
+# whole allow-vs-403 pair runs against a directResponse:
+#   scoped key + {"model":"qwen3.6-27b"}  -> 200
+#   scoped key + {"model":"gpt-4o-mini"}  -> 403
+#   broad  key + either                   -> 200   (models: "any")
+#
+# `json()` and the strings-extension `split()` are both confirmed present
+# at the pinned version (schema/cel-functions.md at tag v1.3.1). Cost to
+# note for Story 34.11: touching `request.body` in CEL buffers the body
+# (documented in the same reference), which interacts with the PreRouting
+# model-extraction transformation planned in 34.5 - so this fallback is
+# not free, it is just GPU-free.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-scope-body-apikey
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: scope-body
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: agentgateway-auth-matrix-keys
+    directResponse:
+      status: 200
+      headers:
+        - name: content-type
+          value: application/json
+      body: |
+        {"spike":"scope-body","result":"model allowed for this key"}
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-scope-body-authz
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: scope-body
+  traffic:
+    authorization:
+      action: Allow
+      policy:
+        matchExpressions:
+          - apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == json(request.body).model)
+---
+# ===================================================================
+# Q3 part 3 - the same scoping against the REAL qwen36-27b backend
+# ===================================================================
+# Authentication only in this object; no CEL, so it cannot fail to
+# compile. This is the guarantee that the one rule with a GPU behind it
+# is never reachable without a key even if the authorization policy below
+# is rejected.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-qwen-live-apikey
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: qwen-live
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: agentgateway-auth-matrix-keys
+---
+# The model restriction expressed the way Story 34.10 would prefer to
+# write it - against `llm.requestModel` rather than by parsing the body.
+# Whether `llm.*` is populated at authorization time on an AI route is the
+# open half of Q3; if it is not, the expression cannot evaluate, does not
+# match, and the request is denied - so the failure mode is a 403, never a
+# GPU wake.
+#
+# That fail-closed behaviour is also why the DENY direction can be tested
+# immediately while the ALLOW direction waits for 34.4's soak clearance:
+# a 403 alone cannot distinguish "correctly denied" from "llm.* was
+# unavailable". The scope-body rule above is the disambiguator that does
+# not need a GPU, and the single allow-side run against this rule after
+# soak clearance is what closes it completely.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: auth-matrix-qwen-live-authz
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-auth-matrix
+      sectionName: qwen-live
+  traffic:
+    authorization:
+      action: Allow
+      policy:
+        matchExpressions:
+          - apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == llm.requestModel)

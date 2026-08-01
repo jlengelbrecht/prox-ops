@@ -1,0 +1,158 @@
+---
+# STORY-034-3 (auth-mechanics spike): the auth-matrix route.
+#
+# A SEPARATE HTTPRoute rather than extra rules on 34.2's pilot route,
+# because the pilot's apiKeyAuthentication policy targets that whole
+# HTTPRoute with no sectionName - so every rule added there inherits the
+# API key requirement and Q1 (JWT alone) and Q2 (per-rule auth types)
+# would be untestable by construction.
+#
+# Hostname is single-level so the existing wildcard cert
+# (`homelab0-org-production-tls`, dnsNames ["homelab0.org","*.homelab0.org"])
+# covers it - same constraint 34.4 hit. No external-dns annotation and no
+# tunnel entry; note per 34.4's finding F2 that unifi-dns publishes a LAN
+# record for every HTTPRoute hostname on any Gateway regardless, so this
+# name WILL resolve on the LAN and must not be treated as unreachable.
+# Public DNS remains structurally impossible (cloudflare-dns is scoped
+# --gateway-name=envoy-external).
+#
+# EVERY rule is an Exact path match and there is deliberately NO
+# `PathPrefix: /` catch-all. That is a direct application of 34.4's
+# finding F3 (a catch-all lets any authenticated request on any path reach
+# a backend, and here one rule fronts a GPU model). Unmatched paths get a
+# 404 from the gateway, which also makes "did the rule match?" and "did the
+# policy reject?" distinguishable in every test below: 404 = wrong rule,
+# 401/403 = the policy did its job.
+#
+# Rule -> question map (the whole story in one table):
+#   jwt-only     Q1  JWT via remote JWKS, no API key anywhere
+#   apikey-only  Q2a + Q4  API key only; also the x-api-key negative test
+#   both-auth    Q2b  BOTH policies on the SAME rule - semantics probe
+#   scope-meta   Q3   does apiKey.* metadata reach authorization CEL?
+#   scope-body   Q3   GPU-free fallback: model scoping from the request body
+#   qwen-live    Q3   the real qwen36 backend: 403 side now, allow side
+#                     gated on the 34.4 soak
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agentgateway-auth-matrix
+  namespace: ai
+spec:
+  parentRefs:
+    - name: ai-gateway
+      namespace: network
+  hostnames:
+    - ai-gateway-auth.homelab0.org
+  rules:
+    # -----------------------------------------------------------------
+    # Q1: JWT validation via remote JWKS against Authentik.
+    # Answered by a directResponse (see auth-matrix-policies.yaml), so a
+    # forged, expired or wrong-audience token costs nothing and a valid
+    # one wakes nothing. There is no backend behind this rule at all.
+    - name: jwt-only
+      matches:
+        - path:
+            type: Exact
+            value: /spike/jwt
+          method: GET
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: auth-matrix-authentik-jwks
+
+    # -----------------------------------------------------------------
+    # Q2a: an API-key-authenticated rule living on the SAME Gateway and
+    # the SAME HTTPRoute as the JWT rule above. Also carries Q4's negative
+    # test (key sent as `x-api-key` with no Authorization header).
+    - name: apikey-only
+      matches:
+        - path:
+            type: Exact
+            value: /spike/apikey
+          method: GET
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: auth-matrix-authentik-jwks
+
+    # -----------------------------------------------------------------
+    # Q2b: both an apiKeyAuthentication policy and a jwtAuthentication
+    # policy attached to THIS rule, from two separate AgentgatewayPolicy
+    # objects. The API-key policy here reads a non-default header
+    # (`x-spike-key`) precisely so the two credentials can coexist on one
+    # request - both auth types default to `Authorization: Bearer`, and a
+    # single Authorization header cannot be both a valid API key and a
+    # valid JWT, which would make "both required" trivially unsatisfiable
+    # and the experiment meaningless.
+    - name: both-auth
+      matches:
+        - path:
+            type: Exact
+            value: /spike/both
+          method: GET
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: auth-matrix-authentik-jwks
+
+    # -----------------------------------------------------------------
+    # Q3 part 1: does key metadata reach authorization CEL at all?
+    # `apiKey.scope` is metadata carried on the key itself, so this needs
+    # no request body and no backend - the cleanest possible allow-vs-403
+    # pair (scoped key 200, broad key 403) with zero GPU exposure.
+    - name: scope-meta
+      matches:
+        - path:
+            type: Exact
+            value: /spike/scope
+          method: GET
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: auth-matrix-authentik-jwks
+
+    # -----------------------------------------------------------------
+    # Q3 part 2: the GPU-free fallback mechanism. Scopes by the model in
+    # the request body via `json(request.body).model` instead of
+    # `llm.requestModel`, so the identical allow-vs-403 pair can be proven
+    # against a directResponse with no model ever contacted. This is the
+    # shape Story 34.10 falls back to if `llm.*` turns out not to be
+    # populated at authorization time.
+    - name: scope-body
+      matches:
+        - path:
+            type: Exact
+            value: /spike/scope-body
+          method: POST
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: auth-matrix-authentik-jwks
+
+    # -----------------------------------------------------------------
+    # Q3 part 3: the same scoping question against the REAL qwen36-27b
+    # backend, using `llm.requestModel`.
+    #
+    # SOAK CONSTRAINT (34.4 Checkpoint B, ~2026-08-02T07:04Z): only the
+    # DENY direction may be exercised before soak clearance. A 403 is
+    # returned by the authorization policy before the upstream call, so it
+    # cannot wake the A5000 - verified in 34.4, where a 401 on this same
+    # Gateway cost 1ms and woke nothing. The ALLOW direction would cold-
+    # start the GPU and is explicitly held for PM soak-clearance.
+    #
+    # Route shape is 34.4's proven standard: 240s request timeout,
+    # retry.attempts 0, no filters, no health policy.
+    - name: qwen-live
+      matches:
+        - path:
+            type: Exact
+            value: /v1/chat/completions
+          method: POST
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: auth-matrix-qwen36
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 0
