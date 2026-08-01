@@ -335,26 +335,26 @@ jobs:
                       failures.append(path)
 
 
-          def validate_file(path):
-              with open(path, "r") as f:
-                  doc = yaml.safe_load(f)
-
+          def validate_document(doc, doc_no):
               if not isinstance(doc, dict):
-                  return "could not parse as a YAML mapping"
+                  return [f"document {doc_no} could not be parsed as a YAML mapping"]
 
               sops_meta = doc.get("sops")
               if not isinstance(sops_meta, dict):
-                  return "no sops: metadata section present"
+                  return [f"document {doc_no} has no sops metadata"]
 
               age_entries = sops_meta.get("age")
               if not isinstance(age_entries, list) or not age_entries:
-                  return "sops.age is missing or empty - no age recipient present"
+                  return [
+                      f"document {doc_no}: sops.age is missing or empty - "
+                      "no age recipient present"
+                  ]
 
               has_recipient = any(
                   isinstance(e, dict) and e.get("recipient") for e in age_entries
               )
               if not has_recipient:
-                  return "no sops.age[].recipient present"
+                  return [f"document {doc_no}: no sops.age[].recipient present"]
 
               rule = get_rule(sops_meta)
               kind, _ = rule
@@ -364,8 +364,28 @@ jobs:
               failures = []
               walk(body, rule, start_should_encrypt, failures, "$")
 
-              if failures:
-                  return f"unencrypted value(s) at: {', '.join(failures)}"
+              return [f"document {doc_no}: unencrypted value at {p}" for p in failures]
+
+
+          def validate_file(path):
+              with open(path, "r") as f:
+                  # A file may contain multiple `---`-separated YAML
+                  # documents (e.g. a Secret + a ConfigMap in one file).
+                  # yaml.safe_load only ever sees the first one and would
+                  # silently skip encryption checks on the rest, so every
+                  # document is parsed and validated independently here.
+                  docs = list(yaml.safe_load_all(f))
+
+              all_failures = []
+              for i, doc in enumerate(docs, start=1):
+                  if doc is None:
+                      # Fully-empty document (e.g. a trailing `---` with
+                      # nothing after it) - nothing to validate.
+                      continue
+                  all_failures.extend(validate_document(doc, i))
+
+              if all_failures:
+                  return "; ".join(all_failures)
 
               return None
 
