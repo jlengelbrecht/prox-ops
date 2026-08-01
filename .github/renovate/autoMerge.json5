@@ -353,6 +353,14 @@
       ]
     },
     {
+      "description": "FULLY MANUAL: agentgateway — no automerge for any update type (all CRDs are v1alpha1 with real breaking changes on a monthly cadence; version pin is load-bearing on the cluster's Gateway API CRD version, see WI-034-1-version-decision.md — every bump needs a release-note read before merge, not just a soak window)",
+      "matchDatasources": ["docker", "helm"],
+      "automerge": false,
+      "matchPackageNames": [
+        "/agentgateway/"
+      ]
+    },
+    {
       "description": "Require manual review for critical-infra minor and major (cert-manager, cilium, external-secrets, cloudnative-pg)",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,

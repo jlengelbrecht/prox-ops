@@ -1,0 +1,34 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: agentgateway-crds
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: agentgateway-crds
+  interval: 1h
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: agentgateway
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: agentgateway
+  dependsOn:
+    - name: agentgateway-crds
+      namespace: network
+  interval: 1h
+  values:
+    # kube-prometheus-stack selects ALL ServiceMonitors cluster-wide
+    # (serviceMonitorSelectorNilUsesHelmValues: false, no label scoping -
+    # see observability/kube-prometheus-stack/app/helmrelease.yaml:64), so
+    # no extra release-label matching is needed here.
+    monitoring:
+      enabled: true
