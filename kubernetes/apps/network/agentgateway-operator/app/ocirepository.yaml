@@ -1,0 +1,37 @@
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: agentgateway-crds
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  # renovate: datasource=docker depName=cr.agentgateway.dev/charts/agentgateway-crds
+  # NOTE: agentgateway tags carry a leading "v" (v1.3.1), unlike envoy-gateway's
+  # bare "1.5.3" - do not strip it, the OCI registry only serves v-prefixed tags.
+  # PINNED to the 1.3.x line: cluster Gateway API CRDs are bundle v1.3.0
+  # (owned by envoy-gateway-operator, see envoy-gateway-operator/app/ocirepository.yaml)
+  # and agentgateway 1.4.x requires Gateway API 1.4-1.6 - see
+  # .claude/.ai-docs/stories/WI-034-1-version-decision.md for the full evidence trail.
+  # Renovate will still propose 1.4.x/1.5.x bumps; they must NOT be merged until a
+  # separate Gateway API CRD upgrade story lands (see autoMerge.json5 manual-review rule).
+  ref:
+    tag: v1.3.1
+  url: oci://cr.agentgateway.dev/charts/agentgateway-crds
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: agentgateway
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  # renovate: datasource=docker depName=cr.agentgateway.dev/charts/agentgateway
+  # See agentgateway-crds OCIRepository above for the version-pin rationale.
+  ref:
+    tag: v1.3.1
+  url: oci://cr.agentgateway.dev/charts/agentgateway

@@ -1,0 +1,36 @@
+---
+# GatewayClass "agentgateway" is created automatically by the agentgateway
+# control-plane chart (agentgateway-operator) - it is NOT declared here.
+# This is the third GatewayClass in the cluster, alongside "envoy" and
+# "cilium" (EPIC-034 R6): non-AI ingress stays on Envoy Gateway.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: agentgateway
+spec:
+  gatewayClassName: agentgateway
+  infrastructure:
+    annotations:
+      # LAN-only VIP from the shared Cilium LBIPAM pool (10.20.66.0/23).
+      # No external-dns hostname annotation: this Gateway must stay off
+      # both cloudflare-dns (public) and unifi-dns (LAN record) until a
+      # later story explicitly publishes it (EPIC-034 non-negotiable #2 -
+      # private by default, reached via WireGuard, no public tunnel hostname).
+      lbipam.cilium.io/ips: "10.20.67.27"
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https
+      protocol: HTTPS
+      port: 443
+      allowedRoutes:
+        namespaces:
+          from: All
+      tls:
+        certificateRefs:
+          - kind: Secret
+            name: homelab0-org-production-tls
