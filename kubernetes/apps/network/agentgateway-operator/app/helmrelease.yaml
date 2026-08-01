@@ -25,6 +25,13 @@ spec:
     - name: agentgateway-crds
       namespace: network
   interval: 1h
+  # The old "agentgateway"-named Gateway (fixed in this same change) caused
+  # the deployer to merge its per-Gateway proxy Service into this chart's own
+  # controller Service; drift detection makes Helm actively restore any such
+  # out-of-band mutation instead of silently drifting (post-merge incident,
+  # 2026-08-01).
+  driftDetection:
+    mode: enabled
   values:
     # kube-prometheus-stack selects ALL ServiceMonitors cluster-wide
     # (serviceMonitorSelectorNilUsesHelmValues: false, no label scoping -
