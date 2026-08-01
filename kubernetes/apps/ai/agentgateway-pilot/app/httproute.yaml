@@ -1,0 +1,46 @@
+---
+# STORY-034-2: pilot cloud route. Hostname is provisional-but-expected-final
+# (covered by the wildcard cert); no DNS record is published (Story 34.19) -
+# LAN tests use `curl --resolve`.
+#
+# Rule order: the exact-match /v1/models stub is listed first and pinned via
+# an AgentgatewayPolicy directResponse (see policy.yaml) so a future
+# catch-all PathPrefix "/" route never shadows it (scale-to-zero hazard
+# control carried forward from Story 34.9's requirement). Gateway API's own
+# specificity rules (exact beats prefix) already favor this rule regardless
+# of list order; the directResponse policy is what actually answers it.
+# The rule keeps a backendRef only to satisfy HTTPRoute's schema - the
+# directResponse policy is expected to short-circuit before the backend is
+# ever reached. Unverified until Phase 2's live /v1/models check; see the
+# completion report DEVIATIONS section.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agentgateway-pilot
+  namespace: ai
+spec:
+  parentRefs:
+    - name: ai-gateway
+      namespace: network
+  hostnames:
+    - ai-gateway.homelab0.org
+  rules:
+    - name: models-stub
+      matches:
+        - path:
+            type: Exact
+            value: /v1/models
+          method: GET
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: agentgateway-pilot-openai
+    - name: pilot
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: agentgateway-pilot-openai

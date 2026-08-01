@@ -1,0 +1,57 @@
+---
+# STORY-034-2: inbound auth + the /v1/models stub, both scoped to this
+# pilot route only (AgentgatewayPolicy targetRefs supports Route per the
+# installed v1.3.1 CRD - broader than the Gateway-only scoping
+# res-agentgateway-core.md's doc survey described; verified via
+# `kubectl explain agentgatewaypolicy.spec.traffic`).
+#
+# DEVIATION (see completion report): the installed v1.3.1
+# AgentgatewayPolicy CRD's apiKeyAuthentication.secretRef only documents a
+# plaintext `key` (optionally with `metadata`) value - no `keyHash`/
+# `sha256:` field exists in the v1.3.1 CRD schema or in the v1.3.1-tagged
+# controller source (confirmed against
+# github.com/agentgateway/agentgateway at tag v1.3.1: neither
+# agentgateway_policy_types.go's doc comment nor
+# controller/pkg/agentgateway/plugins/traffic_plugin.go, which defines
+# `keyHash`/`sha256:` validation on main, exist at that tag). SHA-256
+# virtual keys are a 1.4.x-era feature, not present at the pinned version.
+# Closest v1.3.1 shape: the raw spike key lives in a SOPS-encrypted Secret
+# (spike-key.sops.yaml) instead of a plaintext-in-Git ConfigMap hash -
+# ciphertext-at-rest in Git, ONE throwaway key, never in 1Password
+# (production keys + real hashing, if 1.4.x lands by then, are Story
+# 34.10's job).
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-pilot-apikey
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: agentgateway-pilot-spike-key
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-pilot-models-stub
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: models-stub
+  traffic:
+    directResponse:
+      status: 200
+      headers:
+        - name: content-type
+          value: application/json
+      body: |
+        {"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"openai"}]}
