@@ -1,0 +1,34 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-wake-gate
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: agentgateway-config
+      namespace: network
+    # The apiKeyAuthentication policy references Story 34.2's spike-key
+    # Secret, which that Kustomization owns (see app/policy.yaml).
+    - name: agentgateway-pilot
+      namespace: ai
+  interval: 1h
+  path: ./kubernetes/apps/ai/agentgateway-wake-gate/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # Deliberately NO targetNamespace: the degraded variant's ReferenceGrant
+  # must live in kourier-system, so every resource in app/ carries an
+  # explicit `namespace:` instead of being force-placed in ai.
+  #
+  # No `decryption:` block here on purpose. The cluster-apps parent patches
+  # `decryption: {provider: sops}` into EVERY child Kustomization
+  # (kubernetes/flux/cluster/ks.yaml:19-28), so the rendered object gets
+  # provider-only decryption for free - which is exactly the shape that
+  # works. Declaring one locally is what invites the trap 34.2 hit live: an
+  # explicit `secretRef.name` resolves in the CR's OWN namespace (ai), but
+  # sops-age lives in flux-system. This Kustomization ships no SOPS files
+  # anyway (it borrows 34.2's already-decrypted Secret).
+  wait: false

@@ -1,0 +1,62 @@
+---
+# STORY-034-4: inbound auth for the wake-gate spike route.
+#
+# Reuses Story 34.2's spike-key Secret rather than minting a second one:
+# `agentgateway-pilot-spike-key` already lives in this namespace, is
+# already SOPS-encrypted in Git, is already proven to decrypt and
+# authenticate (34.2 post-merge validation), and its plaintext is already
+# on the dev box at ~/.config/agw-spike-key. Adding a second throwaway
+# credential would put more key material in Git for no gain. The cost is a
+# Flux dependency on the agentgateway-pilot Kustomization, declared in
+# ks.yaml. Production keys with real scoping are Story 34.10's job.
+#
+# Same v1.3.1 shape as 34.2: `apiKeyAuthentication.secretRef` takes a
+# plaintext key in a Secret - the SHA-256/ConfigMap "virtual key" form is a
+# 1.4.x feature and does not exist in the pinned CRD.
+#
+# Scoped to the whole HTTPRoute (no sectionName), so every rule including
+# the /v1/models stub requires the key - matching 34.2 and keeping the
+# spike hostname closed even though no DNS record points at it.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-wake-gate-apikey
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-wake-gate
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: agentgateway-pilot-spike-key
+---
+# STORY-034-4: the /v1/models stub that keeps bodyless GET probes off the
+# GPU. Lists only qwen36-27b - this spike route fronts exactly one model,
+# and the merged production catalog is Story 34.9's problem.
+#
+# The id advertised is the upstream llama-server alias `qwen3.6-27b`
+# (isvc line 96-97), which is also what the backends pin via
+# provider.openai.model, so a client that reads this list and echoes the
+# id back gets a request that routes and resolves identically.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-wake-gate-models-stub
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-wake-gate
+      sectionName: models-stub
+  traffic:
+    directResponse:
+      status: 200
+      headers:
+        - name: content-type
+          value: application/json
+      body: |
+        {"object":"list","data":[{"id":"qwen3.6-27b","object":"model","owned_by":"kserve"}]}
