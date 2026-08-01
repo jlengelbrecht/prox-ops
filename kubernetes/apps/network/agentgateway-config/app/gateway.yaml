@@ -6,7 +6,12 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: agentgateway
+  # This name must NEVER be "agentgateway": the agentgateway deployer names
+  # per-Gateway proxy Deployment/Service resources after the Gateway, which
+  # collides with the controller chart's own Deployment/Service in this
+  # namespace (post-merge incident, 2026-08-01 - the proxy data plane was
+  # never created and the controller's own Service got mutated).
+  name: ai-gateway
 spec:
   gatewayClassName: agentgateway
   infrastructure:
