@@ -1,0 +1,46 @@
+# STORY-034-3: TWO throwaway spike API keys for the auth-matrix route
+# (openssl-rand generated, 24 bytes hex each). Plaintext lives only at
+# ~/.config/agw-spike-key-scoped and ~/.config/agw-spike-key-broad on the
+# dev box - outside the repo, never in 1Password, never in a PR body.
+# Production keys and their real scoping are Story 34.10's job.
+#
+# Both entries use the v1.3.1 metadata-carrying form. The CRD documents it
+# ("A JSON object with two fields, `key` and `metadata`... you may write an
+# authorization policy allowing `apiKey.group == 'sales'`") and the pinned
+# controller implements it (APIKeyEntry{Key,Metadata} in
+# controller/pkg/agentgateway/plugins/traffic_plugin.go:840-843 at tag
+# v1.3.1, which falls back to a raw-string key only when the value does not
+# start with '{'). Story 34.2's single key used the raw-string form and so
+# carries no metadata at all - which is exactly why this story needs its
+# own Secret rather than reusing it.
+#
+# The two keys differ ONLY in metadata, so every allow-vs-403 pair in this
+# story isolates the authorization policy and nothing else:
+#   scoped -> scope=qwen-only, models=qwen3.6-27b   (the claude-code-qwen36
+#             successor's restriction, reproduced)
+#   broad  -> scope=all,       models=any           (the control)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agentgateway-auth-matrix-keys
+  namespace: ai
+type: Opaque
+stringData:
+  scoped: ENC[AES256_GCM,data:ZNIuZMxUUAkxUSVSjp1qyq0Gc2+96DNpmOEtNQRpOvxoFN76Yc17utL88KZ8Qa98n6UXKglab+Vw+5eEtVUE02ZZxDjrgKk2ZaeaLR8qePFKNve2K+m5UuOqyhsvZ/UYKomgeF2+FdbUPGexLukL7l2W4dDLLBo+PQ8wBWU6nUfFSNckf8xuPm4MbImtu/rV85lFawAW9KQTJySml5th404oPg==,iv:wrboloTWl4nvfnwJSZRqcgnMkq7uBfDYjrdd6xWfLmE=,tag:0pmdEQSRa+QbjWJhGcA+dA==,type:str]
+  broad: ENC[AES256_GCM,data:QcfFiEityKG9JsX7G/OxX6tSipIwkNlsDyba2+bn+X+mE9VIT+Hh/yLZnEB4cDSQpW5lDmyCIgkc+aJmnUYVvN4KEYAiMCZE4IIz6M7U2yvY5a/mpEm2weXR/YHrLL/nvVsCiI6F+ZY+0l+4bTsox4OP32sTLt8UqaVZOwENuE3S1MicnxlucrJUtXUPyGNkGzMY4A==,iv:wTmkQzt6n0/lSG8NwRm7FclwGrrKOt/cILMnZ6sbwLg=,tag:lq6IOWcCYLmyz8qosQtDug==,type:str]
+sops:
+  age:
+    - recipient: age1metxlry78wefrmm5ny2zjavtucsmdvw2r3ctexu6h05ak4x2vc7qa02drd
+      enc: |
+        -----BEGIN AGE ENCRYPTED FILE-----
+        YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBVSUxxa2MwUloyV0t0M2Ux
+        ZXZ5UVMzZXhITGQ3endOcGpYbUgzWGEyUXpFCnJoMFArVExiYW55S050cVN3cjYz
+        NUsycmgzOExVQ05uMTQ2bkJPUy9Zd2sKLS0tIFdXcXZzWEY5WU5aMUMxQmtTaGN2
+        M2lab0FLOFJReTF0RldMUUJTbjNvbHMKk4FHltwfpFKHm4mNelQ8xWs5CO9oxhqS
+        NjsoipovuXx8plFOGG600DXLbZ2cDaB7KkHFtPGgoXLml3XxphoOxg==
+        -----END AGE ENCRYPTED FILE-----
+  lastmodified: "2026-08-01T07:30:45Z"
+  mac: ENC[AES256_GCM,data:Udt1412wTb+8rw01y8uawaax3452RbONDjzrKyAikKVquPv8OJLH9c8l+WtjI+VjBk46pdHpWpTi2bjVmegkNrfSv5uDjSFuzrGYTEp1T3sRN5zNS6auA+TGjuOglf69E1WzlzdGYD2jx856WicFzfJ9TcJ/PC0Yf5iJ1bwCcEI=,iv:k5GI1telWJ+mRn/p1Oyvt+34HlV1EApEB8YnpgxSdBY=,tag:a1rk5TiTjztBDo1wrnozhA==,type:str]
+  encrypted_regex: ^(data|stringData)$
+  mac_only_encrypted: true
+  version: 3.11.0
