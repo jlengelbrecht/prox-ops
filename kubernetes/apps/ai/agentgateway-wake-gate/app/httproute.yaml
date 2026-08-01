@@ -1,0 +1,169 @@
+---
+# STORY-034-4 (KILL GATE): the wake-from-zero spike route.
+#
+# Hostname is deliberately SINGLE-level: the homelab0.org wildcard cert
+# (`homelab0-org-production-tls`, dnsNames ["homelab0.org",
+# "*.homelab0.org"] - verified live) does not cover two-level subdomains.
+# No DNS record is published for it (private-by-default, EPIC-034
+# non-negotiable #2); LAN tests use
+# `curl --resolve ai-gateway-spike.homelab0.org:443:10.20.67.27` and
+# Claude Code uses the /etc/hosts approach proven in Story 34.2.
+#
+# VARIANT SELECTION - all four variants are live simultaneously and are
+# picked by the `x-wake-variant` request header. Gateway API ranks a
+# rule with a header match above an otherwise-identical rule without one,
+# so V1 (no header) is the default path and V2/V3/degraded only ever see
+# traffic when a test explicitly asks for them. This keeps them inert in
+# the only sense that matters (they carry zero traffic) while making
+# activation a curl flag rather than a redeploy - important because each
+# escalation happens mid-gate, between timed cold-start runs.
+#
+# TIMEOUTS/RETRIES on every model-bound rule:
+#   timeouts.request: 240s  - mirrors LiteLLM's qwen36-27b client timeout
+#                             (configmap.yaml:121) and sits under Knative's
+#                             300s revision ceiling. Measured wake baseline
+#                             is 133-139s, so this leaves ~100s of headroom
+#                             for generation.
+#   retry.attempts: 0       - explicit. LiteLLM sets num_retries: 0
+#                             cluster-wide precisely so concurrent cold
+#                             starts can't multiply GPU pressure on the
+#                             single A5000 (inv-kserve.md sec 7). Note the
+#                             load-bearing guarantee is actually the ABSENCE
+#                             of an AgentgatewayPolicy `traffic.retry` block
+#                             (whose `attempts` has minimum: 1 in the v1.3.1
+#                             CRD and so cannot express zero); this field is
+#                             the Gateway-API-native statement of the same
+#                             intent, honoured or harmlessly ignored.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agentgateway-wake-gate
+  namespace: ai
+spec:
+  parentRefs:
+    - name: ai-gateway
+      namespace: network
+  hostnames:
+    - ai-gateway-spike.homelab0.org
+  rules:
+    # -----------------------------------------------------------------
+    # /v1/models stub. NOT a convenience: a bodyless GET would otherwise
+    # fall through to the catch-all V1 rule and cold-start the A5000 on
+    # every CLI startup probe (verify-kserve-serverless.md sec 3.5). The
+    # 24h idle soak (G5) depends on this rule existing - without it, any
+    # monitoring or client probe against this hostname invalidates the
+    # "no spurious wakes" result. Answered by a directResponse policy
+    # (policy.yaml); the backendRef only satisfies HTTPRoute's schema.
+    - name: models-stub
+      matches:
+        - path:
+            type: Exact
+            value: /v1/models
+          method: GET
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: wake-gate-v1
+
+    # -----------------------------------------------------------------
+    # V2: V1's backend + URLRewrite.hostname Host pin.
+    - name: v2
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+          headers:
+            - name: x-wake-variant
+              value: v2
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: qwen36-27b-predictor.ai.svc.cluster.local
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: wake-gate-v2
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 0
+
+    # -----------------------------------------------------------------
+    # V3: AI backend aimed at kourier-internal, Host pinned back to the
+    # predictor hostname (Kourier routes on Host alone, so this is what
+    # selects the qwen36-27b virtual host).
+    - name: v3
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+          headers:
+            - name: x-wake-variant
+              value: v3
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: qwen36-27b-predictor.ai.svc.cluster.local
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: wake-gate-v3
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 0
+
+    # -----------------------------------------------------------------
+    # DEGRADED - measured for the record, explicitly NOT a pass.
+    #
+    # Plain HTTP proxying to the kourier-internal Service (cross-namespace,
+    # hence the ReferenceGrant in referencegrant.yaml) with the same Host
+    # pin. If this is the ONLY thing that works, the gate outcome is
+    # STOP-FOR-JOSH, not PASS: a raw proxy drops Anthropic-Messages ->
+    # OpenAI-chat translation (so external Claude Code can no longer reach
+    # qwen36-27b, a flow that works today through LiteLLM) and drops token
+    # accounting for every local model
+    # (verify-kserve-serverless.md sec 2.1).
+    #
+    # It is shipped live so the NO-GO evidence trail is complete in one
+    # deploy rather than needing a second PR at the worst possible moment.
+    - name: degraded
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+          headers:
+            - name: x-wake-variant
+              value: degraded
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: qwen36-27b-predictor.ai.svc.cluster.local
+      backendRefs:
+        - kind: Service
+          name: kourier-internal
+          namespace: kourier-system
+          port: 80
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 0
+
+    # -----------------------------------------------------------------
+    # V1 (DEFAULT): the prescribed pattern, no header, no filters, no
+    # rewrite - whatever the proxy does on its own is the answer G1 is
+    # after. Listed last only for readability; Gateway API precedence,
+    # not list order, is what makes the header-matched rules above win.
+    - name: v1
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: wake-gate-v1
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 0

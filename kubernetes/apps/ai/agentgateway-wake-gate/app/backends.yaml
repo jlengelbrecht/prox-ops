@@ -1,0 +1,114 @@
+---
+# STORY-034-4 (KILL GATE): three AI-typed backend variants for the
+# wake-from-zero test against qwen36-27b. All three are deployed; only the
+# variant selected by the `x-wake-variant` request header receives traffic
+# (see httproute.yaml), so activating V2/V3 needs no redeploy.
+#
+# Shared facts (verified live 2026-08-01, read-only kubectl):
+#   svc/qwen36-27b-predictor (ns ai)   = ExternalName -> kourier-internal.kourier-system.svc.cluster.local
+#   svc/kourier-internal (ns kourier-system) = ClusterIP 10.43.101.155, port 80 (name "http2") -> targetPort 8081
+#   Kourier virtual-host selection is PURE Host/authority matching; the
+#   activator is on-path at 0 replicas (target-burst-capacity=200) and is
+#   what actually wakes the revision. Getting the right Host to Kourier IS
+#   the wake mechanism - nothing else in this file matters if that fails.
+#
+# Model id + base path mirror LiteLLM exactly (kubernetes/apps/ai/litellm/
+# app/configmap.yaml:115-121): model "openai/qwen3.6-27b" -> provider openai
+# + model "qwen3.6-27b" (llama-server --alias, isvc line 96-97);
+# api_base ".../v1" -> provider default pathPrefix (NOT set here; the
+# OpenAI provider default is already /v1).
+#
+# No `policies.auth`: llama-server runs without --api-key (isvc args
+# 90-127), matching LiteLLM's `api_key: "dummy"`.
+#
+# No `policies.health` on ANY of these - deliberate. Per the v1.3.1 CRD,
+# eviction is opt-in and absent-policy means "never evicted"; active health
+# probing against a predictor hostname would either wake the GPU on every
+# probe or hold it warm forever, destroying scale-to-zero economics on the
+# shared A5000 (inv-kserve.md sec 5 "health-check gotcha",
+# verify-kserve-serverless.md sec 3.2).
+#
+# No `policies.http.version` either - the v1.3.1 CRD documents that
+# plaintext-in/HTTPS-in traffic resolves to HTTP1 automatically, and
+# forcing it would mask what the defaults actually do. If V3 misbehaves,
+# `policies.http.version: HTTP1` is its first diagnostic lever (kourier's
+# port 80 is *named* http2 - verify-kserve-serverless.md sec 3.7).
+
+# ---------------------------------------------------------------------
+# V1 - the prescribed pattern. AI-typed backend, host-form target pointed
+# straight at the predictor hostname, everything else defaulted.
+#
+# The open question this variant answers: what :authority does the proxy
+# put on the wire? The installed v1.3.1 AgentgatewayPolicy CRD documents
+# `traffic.hostRewrite.mode` as defaulting to `Auto` ("automatically set
+# the Host header based on the destination") for hostname-based backends,
+# which would produce exactly the Host Kourier needs - but that default is
+# asserted by a CRD doc-string, not by any published behaviour for AI-typed
+# backends, and this story exists to establish it live rather than assume
+# it. If V1 fails, the first lever before moving to V2 is an explicit
+# AgentgatewayPolicy `traffic.hostRewrite: {mode: Auto}` on the route (see
+# WI-034-4 for the diagnostic ladder).
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: wake-gate-v1
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: qwen3.6-27b
+      host: qwen36-27b-predictor.ai.svc.cluster.local
+      port: 80
+---
+# ---------------------------------------------------------------------
+# V2 - identical backend to V1; the difference lives entirely on the route
+# (an HTTPRoute URLRewrite.hostname filter pinning Host to the predictor
+# hostname). Kept as a separate object rather than reusing V1 so the two
+# results can never be confused, and so either can be removed without
+# touching the other.
+#
+# Why this is a real question and not belt-and-braces: the upstream
+# URLRewrite host example uses a `spec.static` backend, NOT `spec.ai`
+# (verify-kserve-serverless.md sec 2.2). Whether a route-level rewrite runs
+# before or after the AI-provider machinery sets its own upstream authority
+# is undocumented. The v1.3.1 CRD gives one piece of supporting evidence:
+# `traffic.hostRewrite`'s doc-string says "If the HTTPRoute urlRewrite
+# filter already specifies a host rewrite, this setting is ignored" - i.e.
+# the filter is expected to win over the automatic rewrite.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: wake-gate-v2
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: qwen3.6-27b
+      host: qwen36-27b-predictor.ai.svc.cluster.local
+      port: 80
+---
+# ---------------------------------------------------------------------
+# V3 - AI-typed backend aimed at kourier-internal directly, with the Host
+# pinned back to the predictor hostname by the route's URLRewrite filter.
+#
+# This sidesteps the ExternalName-resolution unknown entirely (kourier-
+# internal is an ordinary ClusterIP Service with real endpoints) at the
+# cost of depending on the same undocumented rewrite-ordering question as
+# V2. Host-form is still used rather than a Service backendRef: a Service
+# backendRef would resolve to endpoints and could bypass the activator,
+# and Gateway API discourages ExternalName refs outright
+# (res-kserve.md sec 4 "two traps").
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: wake-gate-v3
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: qwen3.6-27b
+      host: kourier-internal.kourier-system.svc.cluster.local
+      port: 80

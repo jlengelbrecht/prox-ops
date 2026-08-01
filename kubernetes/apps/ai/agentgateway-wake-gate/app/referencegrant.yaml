@@ -1,0 +1,31 @@
+---
+# STORY-034-4: required only by the DEGRADED variant, whose backendRef is
+# a Service in another namespace. Gateway API requires the grant to live in
+# the *target* namespace (kourier-system), which is why this Kustomization
+# does not set `targetNamespace` and every resource carries an explicit
+# `namespace:` instead.
+#
+# Scope is as narrow as the API allows: HTTPRoutes from namespace `ai`
+# only, to Services only, and `to.name` pins it to kourier-internal so it
+# cannot be used to reach any other Service in kourier-system. It grants
+# reference permission, not connectivity - Kourier's listener is already
+# reachable from any pod that can resolve a predictor hostname, which is
+# how LiteLLM has worked all along.
+#
+# Removed by `git revert` along with the rest of the story. If the gate
+# outcome is PASS on an AI-typed variant, the degraded rule and this grant
+# should be dropped rather than carried into Phase 2.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: agentgateway-wake-gate-kourier
+  namespace: kourier-system
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: ai
+  to:
+    - group: ""
+      kind: Service
+      name: kourier-internal
