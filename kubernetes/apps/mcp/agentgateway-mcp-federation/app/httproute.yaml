@@ -1,0 +1,204 @@
+---
+# STORY-034-6 (MCP federation spike): the federated MCP route.
+#
+# Hostname is single-level so the existing wildcard cert
+# (`homelab0-org-production-tls`, dnsNames ["homelab0.org","*.homelab0.org"])
+# covers it - the same constraint 34.4 and 34.3 hit. No external-dns
+# annotation here, but per 34.4 finding F2 `unifi-dns` runs
+# `--source=gateway-httproute` with no `--gateway-name` filter, so it will
+# publish a LAN A record for this hostname automatically. That is expected,
+# not a leak: public DNS stays impossible because cloudflare-dns is scoped
+# `--gateway-name=envoy-external`. Every rule below requires a real
+# Authentik JWT except the two public OAuth metadata documents, which RFC
+# 8414 / RFC 9728 require to be unauthenticated.
+#
+# vmcp is untouched. `mcp-gateway.homelab0.org` (envoy-internal ->
+# vmcp-homelab-gateway:4483) keeps serving throughout; this is a second,
+# parallel endpoint on a different hostname and a different Gateway.
+#
+# ===================================================================
+# EVERY RULE IS AN EXPLICIT PATH MATCH (34.4 finding F3)
+# ===================================================================
+# No `PathPrefix: /` catch-all anywhere. F3 was written about GPU wakes,
+# and no GPU is reachable from this route at all - but the same property
+# buys the diagnostic that every Phase-2 test below relies on: on this
+# hostname `404` means "no rule matched", `401` means "the JWT policy did
+# its job", and `403` means "the MCP authorization CEL did its job".
+#
+# The two PathPrefix rules that do exist are pinned under
+# `/.well-known/oauth-*`, which the gateway's own MCP auth layer terminates
+# (crates/agentgateway/src/mcp/auth.rs:19-22, 65-96) - they cannot reach a
+# tool.
+#
+# ===================================================================
+# METHOD PINNING ON THE METADATA RULES IS A SAFETY PROPERTY
+# ===================================================================
+# `oauth-as-metadata` is deliberately the ONE rule with no
+# jwtAuthentication policy (see policies.yaml for why it must not have
+# one). Its backendRef is a schema filler that a working directResponse
+# never reaches - but if that policy ever failed to attach, the rule would
+# fall through to the MCP backend with no authentication at all, and an
+# MCP `initialize` + `tools/list` would then succeed anonymously.
+# `method: GET` closes that structurally: MCP JSON-RPC is POST, and a
+# bare GET to a streamable-HTTP endpoint without a session id is rejected
+# by the transport. The same pinning is applied to the other metadata
+# rules for consistency.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agentgateway-mcp-federation
+  namespace: mcp
+spec:
+  parentRefs:
+    - name: ai-gateway
+      namespace: network
+  hostnames:
+    - ai-gateway-mcp.homelab0.org
+  rules:
+    # -----------------------------------------------------------------
+    # The federated endpoint: all five MCP servers behind one URL, tool
+    # names prefixed `{workload}_` exactly as vmcp renders them today.
+    # Requires a real Authentik JWT (aud toolhive-mcp-gateway) and is
+    # subject to the MCP tool-RBAC CEL in policies.yaml.
+    - name: federated
+      matches:
+        - path:
+            type: Exact
+            value: /mcp
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: mcp-federation
+      # 60s is the longest per-workload timeout vmcp configures today
+      # (truenas-baldar / truenas-heimdall, virtualmcpserver.yaml:28-32).
+      # Per-target timeouts inside one MCP Backend do not exist at
+      # v1.3.1, so the route timeout must be the MAX of the workloads it
+      # fronts, not the default 30s - otherwise the two TrueNAS servers
+      # regress relative to vmcp. Story 34.16 inherits this decision.
+      timeouts:
+        request: 60s
+      # Explicitly zero, matching 34.4's shape. A retried tools/call is a
+      # retried side effect; MCP is not safe to replay blindly.
+      retry:
+        attempts: 0
+    # -----------------------------------------------------------------
+    # The one-target control (see backends.yaml). Exists ONLY to prove
+    # live that a single-target MCP backend drops the prefix. Expected
+    # Phase-2 result: this endpoint returns `tools_documentation` where
+    # /mcp returns `n8n_tools_documentation`.
+    - name: single
+      matches:
+        - path:
+            type: Exact
+            value: /mcp-single
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: mcp-federation-single
+      timeouts:
+        request: 60s
+      retry:
+        attempts: 0
+    # -----------------------------------------------------------------
+    # RFC 9728 protected-resource metadata. Public by specification, and
+    # the gateway's MCP auth layer exempts it from JWT validation before
+    # serving it (agent.rs:2560-2568 skips `jwt.apply` for well-known
+    # paths, then hands off to `handle_mcp_request`).
+    #
+    # PathPrefix, not Exact: clients append the resource path, so the real
+    # request is `/.well-known/oauth-protected-resource/mcp`.
+    #
+    # This is the endpoint today's vmcp gets wrong - it 401s its own
+    # discovery document and advertises an in-cluster
+    # `http://homelab-gateway.mcp.svc.cluster.local:4483/...` URL that no
+    # external client can resolve (measured 2026-08-02, WI-034-6 sec 6).
+    - name: oauth-protected-resource
+      matches:
+        - path:
+            type: PathPrefix
+            value: /.well-known/oauth-protected-resource
+          method: GET
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: mcp-federation
+    # -----------------------------------------------------------------
+    # RFC 8414 authorization-server metadata, served as a directResponse.
+    #
+    # This is the DCR-proxy hinge of Part B. Authentik has NO
+    # `registration_endpoint` (verified live: its
+    # openid-configuration omits the key entirely), so a strict MCP client
+    # cannot register and cannot obtain a token. agentgateway ships the
+    # remedy - a mock DCR responder keyed on
+    # `jwtAuthentication.mcp.clientId` - but that responder is only ever
+    # reached if the advertised `registration_endpoint` points back at the
+    # gateway. Nothing in the v1.3.1 CRD can inject that key into a
+    # proxied document (the `provider: Keycloak` branch that would rewrite
+    # it hard-fails when the upstream document lacks the key -
+    # mcp/auth.rs:280-298 - so it is unusable against Authentik).
+    #
+    # Hence: serve the document ourselves. See policies.yaml for the body
+    # and the field-by-field justification.
+    - name: oauth-as-metadata
+      matches:
+        - path:
+            type: Exact
+            value: /.well-known/oauth-authorization-server
+          method: GET
+      # Schema filler only - the directResponse policy answers first.
+      # See the METHOD PINNING note above for what guards this.
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: mcp-federation
+    # -----------------------------------------------------------------
+    # Diagnostic twin of the rule above: the gateway's OWN proxied view of
+    # Authentik's authorization-server metadata, reached by letting the
+    # MCP auth layer handle a well-known path normally.
+    #
+    # Worth one rule because it proves two things Phase 2 would otherwise
+    # have to assume: (i) the agentgateway data plane can actually reach
+    # Authentik at the RFC 8414 path-inserted URL
+    # `https://authentik.homelab0.org/.well-known/oauth-authorization-server/application/o/toolhive-mcp-gateway/`
+    # (that exact URL was verified to return 200 from the dev box on
+    # 2026-08-02 - and 404 WITHOUT the trailing slash, which is why the
+    # issuer's trailing slash is load-bearing here too); and (ii) it gives
+    # a byte-level diff target for the synthesized document above, so any
+    # future drift in Authentik's real metadata is visible rather than
+    # silently masked.
+    - name: oauth-as-upstream
+      matches:
+        - path:
+            type: Exact
+            value: /.well-known/oauth-authorization-server/upstream
+          method: GET
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: mcp-federation
+    # -----------------------------------------------------------------
+    # The mock Dynamic Client Registration endpoint.
+    #
+    # `handle_mcp_request` matches `path.ends_with("client-registration")`
+    # BEFORE either well-known prefix arm (mcp/auth.rs:71-96), and with
+    # `clientId` set it short-circuits to `build_mock_dcr_response`
+    # (mcp/auth.rs:316-323, 370-403) instead of proxying a registration
+    # request to an IdP that has no such endpoint. The response echoes the
+    # client's requested `redirect_uris` and returns
+    # `token_endpoint_auth_method: "none"` + `grant_types:
+    # ["authorization_code"]`, which is exactly what the existing public
+    # PKCE provider expects.
+    #
+    # Still under the `/.well-known/oauth-authorization-server` prefix, so
+    # JWT validation is skipped - which is required: registration happens
+    # before the client has any token.
+    - name: oauth-dcr
+      matches:
+        - path:
+            type: Exact
+            value: /.well-known/oauth-authorization-server/client-registration
+          method: POST
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: mcp-federation

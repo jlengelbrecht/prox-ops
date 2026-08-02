@@ -1,0 +1,195 @@
+---
+# STORY-034-6 (MCP federation spike): the MCP backends.
+#
+# ===================================================================
+# THE PREFIX CONTRACT, READ FROM THE PINNED SOURCE
+# ===================================================================
+# Today's clients depend on tool names rendering exactly
+# `{workload}_<tool>` (VirtualMCPServer `conflictResolution: prefix`,
+# `prefixFormat: "{workload}_"` - virtualmcpserver.yaml:18-20). At
+# agentgateway v1.3.1 that shape is reproduced by the target `name:`
+# field, and the delimiter is not configurable:
+#
+#   crates/agentgateway/src/mcp/handler.rs:31
+#     const DELIMITER: &str = "_";
+#   crates/agentgateway/src/mcp/handler.rs:33-38
+#     fn resource_name(default_target_name, target, name) {
+#         if default_target_name.is_none() { format!("{target}_{name}") }
+#         else { name.to_string() }
+#     }
+#
+# So `targets[].name` IS the prefix, verbatim. The five names below are
+# byte-identical to today's MCPServer metadata.name values, which is what
+# makes the federated names byte-identical to vmcp's.
+#
+# ------------------------------------------------------------------
+# THE ONE-TARGET TRAP (why `mcp-federation-single` exists below)
+# ------------------------------------------------------------------
+#   crates/agentgateway/src/mcp/upstream/mod.rs:272-279
+#     let default_target_name = if backend.targets.len() != 1 {
+#         is_multiplexing = true; None
+#     } else if backend.targets[0].always_use_prefix { None }
+#       else { Some(backend.targets[0].name.to_string()) };
+#
+# With exactly ONE target the prefix is DROPPED. `always_use_prefix` is
+# driven by the xDS `MCPBackend.prefix_mode` field
+# (crates/protos/proto/resource.proto:1659-1670,
+# crates/agentgateway/src/types/agent_xds.rs:1457-1460), and the
+# Kubernetes controller NEVER sets it - grep for PrefixMode across
+# controller/ at tag v1.3.1 returns nothing, and
+# backend_plugin.go:355-370 builds api.MCPBackend with only Targets,
+# StatefulMode and FailureMode. It therefore stays CONDITIONAL (=0).
+#
+# Consequence for Story 34.16: a single-server MCP backend serves
+# UNPREFIXED tool names, and there is no knob to change that. Federating
+# servers one at a time, or ever dropping to one target, silently breaks
+# every client. The `mcp-federation-single` backend below exists purely
+# to demonstrate that live rather than assert it.
+#
+# ===================================================================
+# WHY `static.backendRef` AND NOT `static.host`
+# ===================================================================
+# `backendRef` is a namespace-local Service reference
+# (backend_plugin.go:270-289 resolves it to a
+# BackendReference_Service{hostname, namespace}), which is why this whole
+# app lives in ns `mcp` next to the proxyrunner Services. It keeps the
+# manifests free of hand-written FQDNs and lets the gateway route through
+# the Service's EndpointSlices.
+#
+# Cost, recorded because it is a real CRD constraint:
+#   "mcp target policies may not be used with backendRef"
+# (AgentgatewayBackend CEL validation). No per-target policies are needed
+# here - none of the five proxyrunner endpoints requires backend auth or
+# TLS - so the constraint is free today. If a future target ever needs
+# backend credentials, that target (and only that target) must switch to
+# the `host`/`port` form.
+#
+# `path: /mcp` and `protocol: StreamableHTTP` are stated explicitly rather
+# than relying on the CRD default ("Defaults to /sse for SSE or /mcp for
+# StreamableHTTP"), because all five MCPServer CRs advertise
+# `.../mcp` in their own registry-url annotations and an accidental
+# protocol default flip would be a silent SSE downgrade.
+#
+# ===================================================================
+# failureMode: FailOpen - A DELIBERATE CHOICE, NOT THE DEFAULT
+# ===================================================================
+# The CRD default is FailClosed: "fails the entire session if any target
+# fails". Measured state of this estate on 2026-08-02 (read-only, see
+# WI-034-6 sec 3): graphiti returns HTTP 421 to every non-loopback Host
+# (an upstream graphiti/FastMCP defect, NOT a gateway problem, and it
+# breaks vmcp identically today), and the three stdio proxyrunners have a
+# demonstrated habit of losing their exec stream to the backend pod.
+# Under FailClosed a single sick target would take down tools/list for all
+# five. FailOpen keeps the healthy targets serving and is the only setting
+# consistent with what vmcp does today (it logged "Successfully queried
+# 1/5 backends" and still served n8n's 20 tools).
+#
+# sessionRouting is left at its default (Stateful). Accepted consequence,
+# and the constraint the brief calls out: the MCP data plane is capped at
+# ONE proxy replica while stateful. Recorded in WI-034-6 sec 7.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: mcp-federation
+  namespace: mcp
+spec:
+  mcp:
+    failureMode: FailOpen
+    targets:
+      # Target names are the prefix. Do not rename without renaming the
+      # tools every client has bound to.
+      - name: graphiti
+        static:
+          backendRef:
+            name: mcp-graphiti-proxy
+          port: 8080
+          path: /mcp
+          protocol: StreamableHTTP
+      - name: n8n
+        static:
+          backendRef:
+            name: mcp-n8n-proxy
+          port: 8080
+          path: /mcp
+          protocol: StreamableHTTP
+      - name: unifi
+        static:
+          backendRef:
+            name: mcp-unifi-proxy
+          port: 8080
+          path: /mcp
+          protocol: StreamableHTTP
+      - name: truenas-baldar
+        static:
+          backendRef:
+            name: mcp-truenas-baldar-proxy
+          port: 8080
+          path: /mcp
+          protocol: StreamableHTTP
+      - name: truenas-heimdall
+        static:
+          backendRef:
+            name: mcp-truenas-heimdall-proxy
+          port: 8080
+          path: /mcp
+          protocol: StreamableHTTP
+---
+# The one-target control. Same n8n target, alone, so the conditional-prefix
+# behaviour documented above is proven by observation rather than by
+# reading Rust: `/mcp-single` must return `tools_documentation`, while
+# `/mcp` must return `n8n_tools_documentation` for the same upstream tool.
+#
+# n8n is the control because it is the one server measured healthy
+# end-to-end on 2026-08-02 (20 tools, fresh backend response), so a
+# difference between the two routes can only be the prefix rule.
+#
+# This backend is spike-only and must be deleted with the rest of this
+# Kustomization; it must NEVER become the production shape.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: mcp-federation-single
+  namespace: mcp
+spec:
+  mcp:
+    failureMode: FailOpen
+    targets:
+      - name: n8n
+        static:
+          backendRef:
+            name: mcp-n8n-proxy
+          port: 8080
+          path: /mcp
+          protocol: StreamableHTTP
+---
+# JWKS source for Authentik, reached over plain in-cluster HTTP.
+#
+# Same shape and same reasoning as Story 34.3's
+# `auth-matrix-authentik-jwks` (WI-034-3 sec 3.2), restated here because
+# this Kustomization is in ns `mcp` and cannot reference an object in
+# ns `ai`:
+#   - a static Backend, not a cross-namespace `kind: Service` ref, because
+#     the latter needs a ReferenceGrant in ns `security` which this app
+#     cannot place;
+#   - no TLS policy, which is the documented clear-text shape at v1.3.1
+#     (remotehttp/resolver.go builds http://<host:port>/<path> unless a
+#     TLS policy is attached);
+#   - reachability and content already verified live in 34.3: the endpoint
+#     answers HTTP 200 with an RS256 key over plain HTTP on the Service
+#     port, and ns `security` has no CiliumNetworkPolicies at all.
+#
+# Carried forward from 34.3 finding F5: the JWKS is fetched by the
+# agentgateway CONTROLLER in ns `network`, not by the proxy pod, and is
+# inlined into the xDS config at translation time. A controller that
+# cannot reach Authentik shows up as a policy that fails to translate, not
+# as a request-time error - so deploy validation must check policy status,
+# not just curl.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: mcp-federation-authentik-jwks
+  namespace: mcp
+spec:
+  static:
+    host: authentik-server.security.svc.cluster.local
+    port: 80

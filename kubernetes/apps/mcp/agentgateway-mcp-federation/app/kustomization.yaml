@@ -1,0 +1,11 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # STORY-034-6: MCP federation spike. All additive; no file owned by the
+  # toolhive / toolhive-gateway / toolhive-registry Kustomizations is
+  # touched, and vmcp keeps serving on mcp-gateway.homelab0.org throughout.
+  - backends.yaml
+  - httproute.yaml
+  - policies.yaml
+  - networkpolicy.yaml

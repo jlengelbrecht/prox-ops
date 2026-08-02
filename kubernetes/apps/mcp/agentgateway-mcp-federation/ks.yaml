@@ -1,0 +1,39 @@
+---
+# yaml-language-server: $schema=https://kubernetes-schemas.pages.dev/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-mcp-federation
+  namespace: flux-system
+spec:
+  # STORY-034-6 (EPIC-034 Phase 0): federate the five ToolHive MCP servers
+  # behind the agentgateway data plane, in parallel with vmcp. Spike only -
+  # reverting this PR removes every object and leaves vmcp untouched.
+  dependsOn:
+    # The Gateway, its GatewayClass and the AgentgatewayBackend /
+    # AgentgatewayPolicy CRDs all come from the network tree.
+    - name: agentgateway-config
+      namespace: network
+    # The AgentgatewayBackend targets reference the mcp-*-proxy Services
+    # by name, which the MCPServer CRs in the toolhive-gateway Kustomization create.
+    - name: toolhive-gateway
+      namespace: mcp
+  interval: 1h
+  path: ./kubernetes/apps/mcp/agentgateway-mcp-federation/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # Every resource in app/ carries an explicit `namespace: mcp`, so no
+  # targetNamespace is set. Matches the wake-gate app's shape rather than
+  # the pilot's, and keeps the rendered objects self-describing.
+  #
+  # No `decryption:` block: this story ships NO SOPS files. It mints no
+  # credential at all - the only secret material anywhere in the flow is a
+  # user's own Authentik token, which never touches the cluster's storage.
+  # (The parent cluster-apps Kustomization patches
+  # `decryption: {provider: sops}` into every child anyway -
+  # kubernetes/flux/cluster/ks.yaml:19-28 - so declaring one locally would
+  # only risk the ns-mismatch trap 34.2 hit live.)
+  wait: false
