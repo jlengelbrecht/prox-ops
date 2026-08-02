@@ -9,15 +9,40 @@ spec:
   # STORY-034-6 (EPIC-034 Phase 0): federate the five ToolHive MCP servers
   # behind the agentgateway data plane, in parallel with vmcp. Spike only -
   # reverting this PR removes every object and leaves vmcp untouched.
+  # `dependsOn[].namespace` is where the DEPENDENCY'S OWN Kustomization CR
+  # lives. It is NOT that Kustomization's `spec.targetNamespace`, and it is
+  # not inferable from the app's namespace - this repo has two conventions
+  # and both are in use below:
+  #
+  #   * 88 of the ks.yaml files set `metadata.namespace: flux-system`
+  #     explicitly. Their CR is in flux-system no matter which app tree the
+  #     file sits in. `toolhive-gateway` is one of these
+  #     (`mcp/toolhive-gateway/ks.yaml:6-7`) - its `spec.targetNamespace:
+  #     mcp` only says where its RESOURCES go.
+  #   * 15 set no namespace at all and inherit one from their tree's
+  #     kustomize transform. `agentgateway-config` is one of these, and
+  #     `kubernetes/apps/network/kustomization.yaml:4` sets
+  #     `namespace: network`, which is what puts its CR in ns network.
+  #
+  # The mcp tree has NO such transform, so files under it keep whatever
+  # `metadata.namespace` they declare. Verify against the cluster rather
+  # than guessing:
+  #   kubectl get kustomization -A | grep -E 'toolhive-gateway|agentgateway-config'
   dependsOn:
     # The Gateway, its GatewayClass and the AgentgatewayBackend /
     # AgentgatewayPolicy CRDs all come from the network tree.
+    # CR namespace: network (inherited from the network tree transform).
     - name: agentgateway-config
       namespace: network
-    # The AgentgatewayBackend targets reference the mcp-*-proxy Services
-    # by name, which the MCPServer CRs in the toolhive-gateway Kustomization create.
+    # The AgentgatewayBackend targets reference the mcp-*-proxy Services by
+    # name, which the MCPServer CRs owned by the toolhive-gateway
+    # Kustomization create in ns mcp.
+    # CR namespace: flux-system (declared in that file, NOT its
+    # targetNamespace of mcp - getting this wrong is what left this
+    # Kustomization stuck on "dependency 'mcp/toolhive-gateway' not found"
+    # and the whole federation deployed inert).
     - name: toolhive-gateway
-      namespace: mcp
+      namespace: flux-system
   interval: 1h
   path: ./kubernetes/apps/mcp/agentgateway-mcp-federation/app
   prune: true
