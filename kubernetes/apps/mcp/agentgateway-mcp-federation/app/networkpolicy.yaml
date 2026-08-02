@@ -1,0 +1,68 @@
+---
+# STORY-034-6: the one piece of this story that is NOT optional plumbing.
+#
+# ===================================================================
+# WHY THIS IS REQUIRED (34.4 needed no CNP; this story does)
+# ===================================================================
+# Story 34.4 could skip network policy entirely because ns `ai`'s KServe
+# predictors are reached through Kourier, and the ai-gateway proxy pod in
+# ns `network` is selected by ZERO CiliumNetworkPolicies (so its egress is
+# default-allow). That reasoning covers the SOURCE side only, and it still
+# holds - nothing here touches ns `network`.
+#
+# The DESTINATION side is different. Verified live 2026-08-02:
+# `toolhive-gateway/app/networkpolicy-mcpservers.yaml` declares
+# CiliumNetworkPolicy `toolhive-mcpservers` with
+# `endpointSelector: {matchLabels: {toolhive: "true"}}`, and the
+# proxyrunner Deployments' pods DO carry `toolhive=true` (confirmed via
+# `kubectl get pods -n mcp --show-labels`: e.g. `graphiti-554fc9ffd7-*`
+# has both `app.kubernetes.io/name=mcpserver` and `toolhive=true`).
+#
+# In Cilium, once ANY policy selects an endpoint, that endpoint's ingress
+# is default-deny for everything not explicitly allowed. That policy's
+# ingress allowlist is exactly three sources - the vmcp pods
+# (`app.kubernetes.io/name: virtualmcpserver`), the ToolHive operator, and
+# the proxyrunners themselves. The agentgateway proxy is none of them, so
+# without this file the federated backend cannot reach a single MCP
+# target and every tools/list would come back empty.
+#
+# ===================================================================
+# WHY A SEPARATE POLICY OBJECT INSTEAD OF EDITING THE EXISTING ONE
+# ===================================================================
+# Cilium evaluates the UNION of all policies selecting an endpoint, so an
+# additive policy grants the same access as an extra `ingress:` entry
+# would. Keeping it separate means this story modifies no file owned by
+# the `toolhive-gateway` Kustomization, and `git revert` of this PR
+# removes the grant completely and atomically. vmcp's own reachability is
+# unaffected either way.
+#
+# ===================================================================
+# SCOPE: AS TIGHT AS THE LABELS ALLOW
+# ===================================================================
+# Destination is the PROXYRUNNER pods only
+# (`app.kubernetes.io/name: mcpserver`), not every `toolhive=true`
+# endpoint - so the stdio backend StatefulSets (`graphiti-0`, `unifi-0`,
+# `truenas-*-0`, which also carry `toolhive=true`) are NOT opened up.
+# Source is pinned to the single Gateway by
+# `gateway.networking.k8s.io/gateway-name: ai-gateway`, which is narrower
+# than the namespace and narrower than the GatewayClass - a second
+# agentgateway Gateway in ns `network` would not inherit this grant.
+# Port is the single proxyPort every MCPServer CR declares (8080).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: agentgateway-mcp-federation
+  namespace: mcp
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: mcpserver
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.networking.k8s.io/gateway-name: ai-gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

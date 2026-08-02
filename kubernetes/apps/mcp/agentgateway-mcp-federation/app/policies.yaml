@@ -1,0 +1,461 @@
+---
+# STORY-034-6 (MCP federation spike): auth + tool RBAC + the DCR proxy.
+#
+# Every policy here targets either a NAMED RULE of
+# `agentgateway-mcp-federation` or one of this story's own
+# AgentgatewayBackends. Nothing targets the Gateway, and nothing targets
+# 34.2's pilot route, 34.3's auth-matrix route or 34.4's wake-gate route.
+#
+# One concern per policy object, for the reason 34.3 established: policies
+# merge on a FIELD-LEVEL basis (AgentgatewayPolicy spec.traffic
+# doc-string), so disjoint fields compose safely, and keeping CEL in its
+# own object means a CEL compile failure can never strip authentication
+# off a rule.
+#
+# ===================================================================
+# TOPOLOGY NOTE (34.3 finding F4, still binding)
+# ===================================================================
+# A policy's targetRef selects a SAME-NAMESPACE object. This app is in ns
+# `mcp` and Gateway `ai-gateway` is in ns `network`, so nothing here can
+# be Gateway-scoped even if it wanted to be. Per-route scoping is what
+# 34.3 recorded as the standing rule for Phases 1-5 anyway.
+
+# ===================================================================
+# 1. JWT AUTHENTICATION + MCP OAUTH DISCOVERY
+# ===================================================================
+# `traffic.jwtAuthentication` with the `.mcp` sub-object, NOT the
+# deprecated `backend.mcp.authentication`. The CRD says so explicitly:
+# "This field is deprecated; prefer to use traffic policy
+# `jwtAuthentication.mcp`, which ensures authentication runs before other
+# policies such as transformation and rate limiting." The two are also
+# mutually exclusive by CRD validation, and the deprecated form actively
+# rejects a request whose JWT was already validated upstream
+# ("MCP backend authentication configured but JWT token already validated
+# and stripped by Gateway or Route level policy" - mcp/auth.rs:33-40).
+#
+# What `.mcp` buys beyond plain JWT validation (agent.rs:2553-2574):
+#   1. `/.well-known/oauth-*` paths are EXEMPTED from JWT validation, then
+#      handed to `handle_mcp_request` which serves the discovery documents.
+#   2. A 401 carries
+#      `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource<path>"`,
+#      which is the RFC 9728 handshake every strict MCP client starts from.
+# Both are things today's vmcp gets wrong (it 401s its own discovery
+# document and advertises an in-cluster URL) - see WI-034-6 sec 6.
+#
+# CRD constraints satisfied: `.mcp` requires exactly one provider, and
+# requires mode Strict (both CEL-validated).
+#
+# `provider` is deliberately UNSET. The enum only offers Auth0 / Keycloak /
+# Okta, and Authentik is none of them:
+#   - Keycloak mode fetches `{issuer}/.well-known/openid-configuration`
+#     (which Authentik DOES serve) but then hard-fails with
+#     "registration_endpoint missing" when the upstream document lacks
+#     that key - and Authentik's does (verified live). Unusable.
+#   - Unset mode fetches the RFC 8414 path-inserted URL, which Authentik
+#     serves at
+#     .../.well-known/oauth-authorization-server/application/o/toolhive-mcp-gateway/
+#     - verified HTTP 200 live on 2026-08-02, and 404 without the trailing
+#     slash. The issuer's trailing slash (Authentik runs
+#     `issuer_mode: per_provider`) is what makes the derived URL correct.
+#
+# `clientId` is the literal OAuth client_id of the EXISTING
+# blueprint-managed public PKCE provider. It is not a credential: OAuth
+# client IDs for public clients are published by definition, this exact
+# string is already in Git at
+# `toolhive-gateway/app/virtualmcpserver.yaml:47`, and the provider is
+# `client_type: public` with no secret. It is what the mock DCR responder
+# hands back to clients.
+#
+# DRIFT HAZARD (security-guardian, 2026-08-02). The blueprint does not
+# hardcode this value - it reads `!Env
+# AUTHENTIK_TOOLHIVE_MCP_GATEWAY_CLIENT_ID` from 1Password
+# (`security/authentik/app/externalsecret.yaml:80-83`). Verified live on
+# 2026-08-02 that the 1Password value IS currently the literal string
+# `toolhive-mcp-gateway` (it appears as `client_id=` in the authorize URL
+# Authentik accepts). But if that item is ever rotated, this file and
+# `virtualmcpserver.yaml:47` both drift silently and MCP auth breaks with
+# no compile-time signal. Pre-existing to this story - flagged for a
+# follow-up that resolves the ID from the Secret instead of duplicating
+# it. Do not "fix" it here by inventing a new indirection: the CRD field
+# takes a literal string, and 34.16 owns the production shape.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-federation-jwt
+  namespace: mcp
+spec:
+  targetRefs:
+    # Every rule EXCEPT `oauth-as-metadata`. That omission is load-bearing,
+    # not an oversight: this policy's MCP layer terminates any path
+    # starting with `/.well-known/oauth-authorization-server` by proxying
+    # Authentik's document as a DirectResponse, which would pre-empt the
+    # synthesized document in section 2 below and silently drop the
+    # `registration_endpoint` that the whole DCR flow depends on.
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-mcp-federation
+      sectionName: federated
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-mcp-federation
+      sectionName: single
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-mcp-federation
+      sectionName: oauth-protected-resource
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-mcp-federation
+      sectionName: oauth-as-upstream
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-mcp-federation
+      sectionName: oauth-dcr
+  traffic:
+    jwtAuthentication:
+      mode: Strict
+      providers:
+        - issuer: https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/
+          # Same audience vmcp validates today
+          # (virtualmcpserver.yaml:49), injected by the blueprint's "MCP
+          # Gateway Audience" scope mapping on the `mcp` scope
+          # (configmap-blueprints.yaml:123-133).
+          #
+          # Recorded because it corrects an assumption in WI-034-3 sec 3.4:
+          # Authentik's fallback audience when the `mcp` scope is omitted
+          # is the client_id, and the client_id here IS the literal string
+          # `toolhive-mcp-gateway`. So a token requested WITHOUT the `mcp`
+          # scope carries the SAME `aud` and will be ACCEPTED. 34.3's
+          # `--no-mcp` "wrong-audience negative test" therefore does not
+          # test what it claims to; a genuine wrong-audience token has to
+          # come from a different provider.
+          audiences:
+            - toolhive-mcp-gateway
+          jwks:
+            remote:
+              backendRef:
+                group: agentgateway.dev
+                kind: AgentgatewayBackend
+                name: mcp-federation-authentik-jwks
+              jwksPath: /application/o/toolhive-mcp-gateway/jwks/
+      mcp:
+        clientId: toolhive-mcp-gateway
+        # These keys are camelCase here and emitted snake_case in the RFC
+        # 9728 document (`to_rfc_json` runs `to_snake_case` over every
+        # user-supplied key, and user keys override the computed ones).
+        #
+        # `resource` is pinned rather than derived so the WWW-Authenticate
+        # challenge is deterministic: the code uses this value's origin as
+        # the base for the resource_metadata URL it advertises, and
+        # deriving it from the request would make the challenge depend on
+        # proxy/Host handling.
+        #
+        # `authorizationServers` points at THIS GATEWAY, not at Authentik.
+        # That is what routes the client's RFC 8414 discovery to the
+        # synthesized document in section 2, which is the only document in
+        # this chain that carries a `registration_endpoint`.
+        resourceMetadata:
+          resource: https://ai-gateway-mcp.homelab0.org/mcp
+          authorizationServers:
+            - https://ai-gateway-mcp.homelab0.org
+          scopesSupported:
+            - openid
+            - profile
+            - email
+            - mcp
+          bearerMethodsSupported:
+            - header
+---
+# ===================================================================
+# 2. THE SYNTHESIZED AUTHORIZATION-SERVER METADATA (the DCR proxy)
+# ===================================================================
+# Authentik does not implement Dynamic Client Registration
+# (goauthentik#8751 is still open, and the epic lists MCP-spec OAuth with
+# DCR as future work). Its discovery document has no
+# `registration_endpoint` at all - verified live 2026-08-02 against
+# https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/.well-known/openid-configuration
+#
+# agentgateway already ships the missing half: with
+# `jwtAuthentication.mcp.clientId` set, a POST to any path ending
+# `client-registration` returns a deterministic registration response
+# naming the pre-registered client instead of creating one upstream. What
+# it does NOT ship is a way to advertise that endpoint when the upstream
+# document omits it (the only rewrite path, `provider: Keycloak`, hard
+# -fails on exactly that condition).
+#
+# So this document is served locally. Every endpoint below is copied
+# verbatim from Authentik's live discovery document; only
+# `registration_endpoint` is added, and it points back at this gateway.
+#
+# Two deliberate divergences from Authentik's own document, both
+# corrections rather than fabrications:
+#
+#   * `token_endpoint_auth_methods_supported: ["none"]`. Authentik
+#     advertises `client_secret_post` / `client_secret_basic` globally,
+#     but THIS provider is `client_type: public` with no secret
+#     (configmap-blueprints.yaml). A strict client reading Authentik's
+#     global list would try to authenticate with a secret it cannot have.
+#     `none` is the correct value for a public PKCE client.
+#   * `grant_types_supported` and `response_types_supported` are narrowed
+#     to the authorization-code + refresh flows. Authentik also advertises
+#     `implicit`, `password` and `client_credentials`; none is appropriate
+#     for an MCP client, and `password` in particular should never be
+#     advertised to one.
+#
+# RFC 8414 nuance, recorded rather than glossed: `issuer` names Authentik
+# while this document is served from the gateway's metadata URL, so a
+# maximally strict client could object. This is not a shortcut - it is
+# exactly what agentgateway itself does when it proxies the upstream
+# document (mcp/auth.rs:217-312 returns the upstream body, issuer
+# included, under the gateway's own URL). The `oauth-as-upstream`
+# diagnostic rule exists so Phase 2 can diff the two documents and confirm
+# they agree on everything except `registration_endpoint`.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-federation-as-metadata
+  namespace: mcp
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-mcp-federation
+      sectionName: oauth-as-metadata
+  traffic:
+    directResponse:
+      status: 200
+      headers:
+        - name: content-type
+          value: application/json
+        - name: cache-control
+          value: "no-store"
+        # RFC 8414 metadata is fetched cross-origin by browser-based
+        # clients; agentgateway sets these itself on the documents it
+        # serves, so the locally-served one matches.
+        - name: access-control-allow-origin
+          value: "*"
+      # KEEP THIS PRETTY-PRINTED - do not collapse it back onto one line.
+      # The repo's own `authentik-token` Gitleaks rule
+      # (`.gitleaks.toml:205-209`) is line-anchored:
+      #   (?i)authentik[^\n]*(token|secret|key)[^\n]*[A-Za-z0-9_-]{32,}
+      # A single-line form of this document puts "authentik",
+      # "token_endpoint" and a 32-character identifier
+      # (`code_challenge_methods_supported`) on the same line and trips it -
+      # confirmed on the first CI run of this PR. There is no secret here;
+      # every value is a public OAuth discovery URL. Splitting the lines is
+      # the right fix because it keeps the detection rule at full strength
+      # rather than adding a `.gitleaks.toml` allowlist entry that would
+      # weaken it for every future file.
+      body: |
+        {
+          "issuer": "https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/",
+          "authorization_endpoint": "https://authentik.homelab0.org/application/o/authorize/",
+          "token_endpoint": "https://authentik.homelab0.org/application/o/token/",
+          "userinfo_endpoint": "https://authentik.homelab0.org/application/o/userinfo/",
+          "jwks_uri": "https://authentik.homelab0.org/application/o/toolhive-mcp-gateway/jwks/",
+          "registration_endpoint": "https://ai-gateway-mcp.homelab0.org/.well-known/oauth-authorization-server/client-registration",
+          "scopes_supported": ["openid", "profile", "email", "offline_access", "mcp"],
+          "response_types_supported": ["code"],
+          "response_modes_supported": ["query"],
+          "grant_types_supported": ["authorization_code", "refresh_token"],
+          "code_challenge_methods_supported": ["S256"],
+          "token_endpoint_auth_methods_supported": ["none"],
+          "id_token_signing_alg_values_supported": ["RS256"],
+          "subject_types_supported": ["public"]
+        }
+---
+# ===================================================================
+# 3. MCP TOOL RBAC - the Cedar rule, re-expressed in CEL
+# ===================================================================
+# Today's rule (virtualmcpserver.yaml:62-93), three Cedar statements:
+#   permit call_tool when principal.claim_email == "<admin>"
+#   permit call_tool when !resource.name like "unifi_*"
+#   forbid call_tool when resource.name like "unifi_*" && email != "<admin>"
+#
+# ------------------------------------------------------------------
+# THE FINDING THAT DECIDES HOW THIS IS WRITTEN
+# ------------------------------------------------------------------
+# The brief asked whether `mcp.tool.name` carries the PREFIXED name under
+# federation. It does NOT. Verified three ways at tag v1.3.1:
+#
+#   * tools/list - handler.rs:317-346: authorization runs inside
+#     `merge_tools` on `ResourceId::new(server_name, t.name)` where
+#     `t.name` is still the RAW upstream name; `resource_name()` applies
+#     the prefix afterwards, in a later `.map()`.
+#   * tools/call - session.rs:453-470: the client sends the prefixed name,
+#     `parse_resource_name` splits it at the FIRST `_` into
+#     (service_name, tool), and authorization is handed
+#     `ResourceId::new(service_name, tool)` - the UNPREFIXED half.
+#   * schema/cel.md:121-122 documents it in as many words:
+#     `mcp.tool.target` = "The target handling the tool call after
+#     multiplexing resolution", `mcp.tool.name` = "The resolved tool name
+#     sent to the upstream target".
+#
+# So `mcp.tool.name.startsWith('unifi_')` - the naive transliteration of
+# the Cedar rule - would be WRONG in both directions. It would fail to
+# match the real unifi tools on `tools/call` (the gateway strips the
+# `unifi_` prefix before authorization, leaving `unifi_tool_index` etc.
+# from the SERVER's own naming, which happens to still start with
+# `unifi_`... but `truenas-baldar_list_pools` arrives as `list_pools`),
+# and it would wrongly match any other server that ever shipped a tool
+# literally named `unifi_*`.
+#
+# The correct predicate is `mcp.tool.target`, which is the workload name -
+# i.e. exactly the thing the Cedar `unifi_*` glob was really selecting on.
+#
+# ------------------------------------------------------------------
+# WHY THREE POLICY OBJECTS
+# ------------------------------------------------------------------
+# `backend.mcp.authorization` holds ONE action and ONE rule whose
+# `matchExpressions` are ANDed. Cedar's two independent `permit`s are
+# therefore two Allow policies; the CRD merges "authorization rules
+# applied across different policies" into one rule set, and "any matching
+# allow rule allows the request".
+#
+# ------------------------------------------------------------------
+# WHAT THIS DOES *NOT* DO, STATED PLAINLY
+# ------------------------------------------------------------------
+# A denied tool does NOT produce an HTTP 403. The CRD is explicit:
+# "Unlike authorization at the HTTP level, which rejects unauthorized
+# requests with a 403 error, this policy works at the MCPBackend level.
+# List operations ... will have each item evaluated. Items that do not
+# meet the rule will be filtered. Get or call operations ... will evaluate
+# the specific item and reject requests that do not meet the rule."
+# So: unifi tools VANISH from a non-admin's tools/list, and a direct
+# tools/call returns a JSON-RPC error inside an HTTP 200. That is the same
+# shape vmcp's Cedar layer produces today, and it is the only shape the
+# product offers - HTTP-level authorization CEL runs before the MCP body
+# is parsed, so `mcp.tool.*` is not populated there.
+#
+# Prompts and resources are denied outright, because no Allow rule
+# references `mcp.prompt` / `mcp.resource` and deny-by-default applies
+# once any Allow exists. That is FAITHFUL to today: Cedar is also
+# deny-by-default and its three statements only ever permit
+# `Action::"call_tool"`. It is also currently moot - all five servers
+# were measured on 2026-08-02 returning `"prompts":[]` and
+# `"resources":[]`. Story 34.16 must revisit this if any server ever
+# grows one.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-federation-authz-nonadmin
+  namespace: mcp
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-federation
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-federation-single
+  backend:
+    mcp:
+      # Cedar statement 2: everyone authenticated gets every non-unifi tool.
+      authorization:
+        action: Allow
+        policy:
+          matchExpressions:
+            - mcp.tool.target != 'unifi'
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-federation-authz-admin
+  namespace: mcp
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-federation
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-federation-single
+  backend:
+    mcp:
+      # Cedar statement 1: the admin gets everything, unifi included.
+      #
+      # `jwt.<claim>` is the flattened claims map
+      # (http/jwt.rs:423-426 + its DynamicType impl), and the MCP
+      # authorization executor is built from the request
+      # (cel/types.rs:568-573 -> set_request -> `jwt: ext::<jwt::Claims>`),
+      # so verified claims ARE in scope here. Confirmed against a real
+      # Authentik access token on 2026-08-02: it carries `groups` (and
+      # `email`), so both forms are addressable.
+      #
+      # GROUP CLAIM, NOT EMAIL. The first draft matched on a personal
+      # email literal duplicated across this rule and the deny rule below.
+      # Replaced for three reasons: it is PII in a public repo, two copies
+      # of one identity can drift apart, and the token's
+      # `email_verified` is **false** - so `email` is an unverified
+      # self-asserted string and is the weaker claim of the two.
+      #
+      # `authentik Admins` is the IdP superuser group and is the admin
+      # identity for now. It is deliberately coarse: membership grants
+      # Authentik superuser, so it is a strict superset of who should hold
+      # unifi access rather than a purpose-built role. A dedicated
+      # `mcp-admins` group is the right end state and is tracked as a
+      # follow-up (rider 34.M9); the group does NOT exist yet, and naming
+      # it here would evaluate false for every principal and make unifi
+      # unreachable - fail-closed, but indistinguishable from a correct
+      # denial. Live group list at time of writing: `authentik Admins`,
+      # `bookstack-uid-full-access`, `bookstack-admins`,
+      # `openwebui-admins`.
+      #
+      # The `has()` guard is not decoration. Measured against the running
+      # gateway's own CEL evaluator (WI-034-6 sec 7.2): the bare form
+      # `'authentik Admins' in jwt.groups` raises
+      # "No such key: groups" for a token with no `groups` claim, and an
+      # expression that fails to evaluate does not match. Guarded, this
+      # rule and the deny rule below are EXACT negations across every
+      # input - present, absent, and empty-list - which is what keeps them
+      # from drifting.
+      authorization:
+        action: Allow
+        policy:
+          matchExpressions:
+            - has(jwt.groups) && 'authentik Admins' in jwt.groups
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-federation-authz-unifi-deny
+  namespace: mcp
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-federation
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-federation-single
+  backend:
+    mcp:
+      # Cedar statement 3: the explicit forbid.
+      #
+      # Redundant against the deny-by-default that the two Allow rules
+      # already create - and kept for exactly the reason Cedar kept it.
+      # Deny beats Allow, so if a later story ever adds a broader Allow
+      # (a service-account rule, a break-glass rule), unifi stays shut for
+      # non-admins instead of quietly opening.
+      #
+      # The second expression is the De Morgan negation of the admin
+      # rule's guarded form:
+      #   !( has(jwt.groups) && 'authentik Admins' in jwt.groups )
+      #   == !has(jwt.groups) || !('authentik Admins' in jwt.groups)
+      # so the two rules are exact complements by construction, not by
+      # someone remembering to edit both. If the group name here and in
+      # the admin rule ever diverge, unifi opens for a non-admin - which
+      # is why they are written as one expression and its mechanical
+      # negation rather than as two independent conditions.
+      #
+      # `!has(jwt.groups)` is what makes this FIRE for a token carrying no
+      # `groups` claim at all, instead of erroring out into a no-match.
+      # That matters precisely here: without it, a groups-less token would
+      # be denied only by deny-by-default, and this rule's whole purpose
+      # is to keep unifi shut even if a future story adds a broader Allow.
+      authorization:
+        action: Deny
+        policy:
+          matchExpressions:
+            - mcp.tool.target == 'unifi'
+            - "!has(jwt.groups) || !('authentik Admins' in jwt.groups)"
