@@ -1,8 +1,22 @@
 ---
 # STORY-034-2: single-provider OpenAI backend, pinned to gpt-4o-mini
 # (today's real litellm-config.yaml mapping for the gpt-4/gpt-3.5-turbo
-# aliases - see inv-secrets.md sec 4). Production alias parity is 34.9;
-# this pilot exists to prove auth/streaming/observability end-to-end.
+# aliases - see inv-secrets.md sec 4). The original pilot scope was
+# auth/streaming/observability end-to-end; the backend is now dormant.
+#
+# STORY-034-9 (2026-08-02, Decision 7): cloud is DESCOPED. The
+# gpt-4/gpt-3.5-turbo aliases and any production cloud cutover are cut
+# entirely - not built, not planned. This backend stays exactly as
+# 34.2 shipped it: defined but dormant (the account backing the
+# ExternalSecret `agentgateway-pilot-openai` - externalsecret.yaml,
+# same name as this Backend and the Secret it produces - reads
+# litellm-secrets/OPENAI_API_KEY, which has zero credits: 429
+# insufficient_quota, proven in 34.2). Re-enabling cloud later is a
+# contained multi-file change within this app directory (at minimum
+# externalsecret.yaml for a real key, this file for real aliases,
+# and possibly httproute.yaml/policy.yaml), not a one-file change, if
+# Josh ever funds billing. Nothing here is "production alias parity" -
+# that scope no longer exists.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend
 metadata:

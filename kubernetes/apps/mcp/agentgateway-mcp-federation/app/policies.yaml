@@ -232,8 +232,18 @@ spec:
         # RFC 8414 metadata is fetched cross-origin by browser-based
         # clients; agentgateway sets these itself on the documents it
         # serves, so the locally-served one matches.
+        #
+        # STORY-034-9-10 STEP 5 fix: this field is a CEL expression, not a
+        # literal (kubectl explain agentgatewaypolicy.spec.traffic.
+        # directResponse.headers.value: "CEL expression that generates the
+        # output value for the header"). A bare `*` is not valid CEL
+        # syntax - the controller reported this policy Accepted=
+        # PartiallyValid with reason `directResponse header
+        # "access-control-allow-origin" is not a valid CEL expression: *`.
+        # It needs to be a quoted CEL string literal so it evaluates to
+        # the single character "*", not a CEL operator.
         - name: access-control-allow-origin
-          value: "*"
+          value: "'*'"
       # KEEP THIS PRETTY-PRINTED - do not collapse it back onto one line.
       # The repo's own `authentik-token` Gitleaks rule
       # (`.gitleaks.toml:205-209`) is line-anchored:
