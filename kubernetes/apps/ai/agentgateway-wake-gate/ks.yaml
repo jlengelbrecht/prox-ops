@@ -19,9 +19,12 @@ spec:
     kind: GitRepository
     name: flux-system
     namespace: flux-system
-  # Deliberately NO targetNamespace: the degraded variant's ReferenceGrant
-  # must live in kourier-system, so every resource in app/ carries an
-  # explicit `namespace:` instead of being force-placed in ai.
+  # No targetNamespace: every resource in app/ carries an explicit
+  # `namespace: ai` instead of being force-placed by this Kustomization.
+  # (Originally required because the now-removed DEGRADED variant's
+  # ReferenceGrant had to live in kourier-system - Story 34.11 cleanup
+  # removed that rule and its grant; left as explicit namespaces rather
+  # than reintroducing targetNamespace for a no-op change.)
   #
   # No `decryption:` block here on purpose. The cluster-apps parent patches
   # `decryption: {provider: sops}` into EVERY child Kustomization

@@ -9,14 +9,15 @@
 # `curl --resolve ai-gateway-spike.homelab0.org:443:10.20.67.27` and
 # Claude Code uses the /etc/hosts approach proven in Story 34.2.
 #
-# VARIANT SELECTION - all four variants are live simultaneously and are
-# picked by the `x-wake-variant` request header. Gateway API ranks a
+# VARIANT SELECTION - the three remaining variants (V1/V2/V3; DEGRADED was
+# removed in Story 34.11's cleanup, see below) are live simultaneously and
+# are picked by the `x-wake-variant` request header. Gateway API ranks a
 # rule with a header match above an otherwise-identical rule without one,
-# so V1 (no header) is the default path and V2/V3/degraded only ever see
-# traffic when a test explicitly asks for them. This keeps them inert in
-# the only sense that matters (they carry zero traffic) while making
-# activation a curl flag rather than a redeploy - important because each
-# escalation happens mid-gate, between timed cold-start runs.
+# so V1 (no header) is the default path and V2/V3 only ever see traffic
+# when a test explicitly asks for them. This keeps them inert in the only
+# sense that matters (they carry zero traffic) while making activation a
+# curl flag rather than a redeploy - important because each escalation
+# happens mid-gate, between timed cold-start runs.
 #
 # TIMEOUTS/RETRIES on every model-bound rule:
 #   timeouts.request: 240s  - mirrors LiteLLM's qwen36-27b client timeout
@@ -114,41 +115,17 @@ spec:
         attempts: 0
 
     # -----------------------------------------------------------------
-    # DEGRADED - measured for the record, explicitly NOT a pass.
-    #
-    # Plain HTTP proxying to the kourier-internal Service (cross-namespace,
-    # hence the ReferenceGrant in referencegrant.yaml) with the same Host
-    # pin. If this is the ONLY thing that works, the gate outcome is
-    # STOP-FOR-JOSH, not PASS: a raw proxy drops Anthropic-Messages ->
-    # OpenAI-chat translation (so external Claude Code can no longer reach
-    # qwen36-27b, a flow that works today through LiteLLM) and drops token
-    # accounting for every local model
-    # (verify-kserve-serverless.md sec 2.1).
-    #
-    # It is shipped live so the NO-GO evidence trail is complete in one
-    # deploy rather than needing a second PR at the worst possible moment.
-    - name: degraded
-      matches:
-        - path:
-            type: PathPrefix
-            value: /
-          headers:
-            - name: x-wake-variant
-              value: degraded
-      filters:
-        - type: URLRewrite
-          urlRewrite:
-            hostname: qwen36-27b-predictor.ai.svc.cluster.local
-      backendRefs:
-        - kind: Service
-          name: kourier-internal
-          namespace: kourier-system
-          port: 80
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 0
-
+    # STORY-034-11 CLEANUP: the DEGRADED rule (plain HTTP proxy to the
+    # kourier-internal Service, cross-namespace via a ReferenceGrant) was
+    # removed here. The gate PASSED on the AI-typed V1 variant on the
+    # first attempt (WI-034-4 sec 8) - the degraded rule was never
+    # activated and the STOP-FOR-JOSH branch it existed for is moot. Its
+    # matching kourier-system ReferenceGrant (referencegrant.yaml) was
+    # deleted in the same change; nothing else referenced it (verified by
+    # repo-wide grep before removal). See WI-034-4 sec 7 "Rollback": "If
+    # the gate outcome is PASS on an AI-typed variant, the degraded route
+    # rule and the kourier-system ReferenceGrant should be dropped rather
+    # than carried into Phase 2."
     # -----------------------------------------------------------------
     # V1 (DEFAULT): the prescribed pattern, no header, no filters, no
     # rewrite - whatever the proxy does on its own is the answer G1 is
