@@ -1,0 +1,247 @@
+---
+# STORY-034-11: auth + authorization for the five local chat-model rules
+# added to the agentgateway-pilot route in httproute.yaml.
+#
+# Two objects, one concern each - same reasoning as 34.3's auth-matrix
+# split (auth-matrix-policies.yaml): apiKeyAuthentication carries no CEL
+# and so can never fail to compile, keeping every one of these ten
+# GPU-fronting rules reachable-only-with-a-key even if the CEL in the
+# second object were ever rejected by the controller.
+#
+# These are Route-Rule-scoped (sectionName per targetRef), which is MORE
+# PRECISE than agentgateway-pilot-apikey's whole-route policy (policy.yaml)
+# and so wins on the `apiKeyAuthentication` field for exactly these ten
+# sections (v1.3.1 CRD doc-string: "Precedence is given to more precise
+# policies: Gateway < Listener < Route < Route Rule"), while leaving the
+# spike key policy fully in force on models-stub and the pilot catch-all,
+# both untouched by this story.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-pilot-local-models-apikey
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-messages
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen-coder-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen-coder-messages
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: dolphin-chat-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: dolphin-chat-messages
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: hermes-jarvis-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: hermes-jarvis-messages
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen-omni-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen-omni-messages
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      # secretSelector (not secretRef) because 34.10 shipped the two
+      # production keys as SEPARATE Secrets, one per consumer
+      # (agentgateway-keys/app/externalsecret.yaml, deliberately - see
+      # that file's comment). secretRef only takes one Secret name;
+      # secretSelector combines both by label without renaming or
+      # merging either 34.10 object, so both already-SecretSynced
+      # Secrets are left exactly as shipped.
+      secretSelector:
+        matchLabels:
+          agentgateway.dev/credential-set: agentgateway-pilot-local-models
+---
+# STORY-034-11's answer to 34.10's deferred AC: "each key authenticates
+# only its intended consumer."
+#
+# SECURITY FIX (security-guardian review, this PR): the first draft of
+# this file used ONE shared CEL expression identical across all ten
+# sections - `apiKey.models == 'any' || apiKey.models.split(',').exists(m,
+# m == json(request.body).model)` (34.3's proven scope-body shape,
+# verbatim). That is broken for a MULTI-BACKEND route: backend SELECTION
+# is driven by the `x-model` request header (httproute.yaml), but that
+# expression's authorization decision is driven ENTIRELY by the request
+# BODY's declared model - two independent, both client-controlled
+# signals with nothing tying them together. A restricted key (e.g.
+# claude-code-qwen36, models: "qwen36-27b") could set
+# `x-model: qwen-coder` to ROUTE to the qwen-coder backend while keeping
+# `{"model":"qwen36-27b",...}` in the body to satisfy the (identical,
+# per-section) authorization check - full bypass of the scoping this
+# story exists to add.
+#
+# FIX: one policy PER MODEL, each with a STATIC, hardcoded expected-model
+# string - not derived from ANY client-controlled value. The comparison
+# target (`'qwen36-27b'`, `'qwen-coder'`, ...) is fixed at write-time to
+# match exactly what THIS section's backend actually is (local-model-
+# backends.yaml), so there is no second signal for a client to
+# desynchronize from routing: whichever rule/section a request lands on
+# (determined solely by Gateway API path+header matching, upstream of any
+# CEL), that section's hardcoded string IS the truth about what model it
+# serves. A key's `apiKey.models` list is checked against that fixed
+# truth, never against anything the client sent.
+#
+#   apiKey.models == 'any'                                          -> unrestricted permission (Open WebUI)
+#   apiKey.models.split(',').exists(m, m == '<this-section's-model>') -> scoped permission (Claude Code: qwen36-27b only)
+#
+# CORRECTNESS FIX (Josh's review, this PR): the first cut of this
+# expression was `permission || (in-list && body-matches)` - i.e.
+# `apiKey.models == 'any' || (...)`. CEL's `||` short-circuits, so an
+# unrestricted ('any') key never reached the body-consistency check at
+# all. Concretely: Open WebUI's key hitting the DEFAULT (headerless)
+# qwen36-27b-chat rule with `{"model":"qwen-coder"}` in the body and no
+# `x-model` header would pass authorization on the `'any'` branch alone
+# and get silently answered BY qwen36-27b while believing it reached
+# qwen-coder - a wrong-model-no-error bug, not a security bypass (an
+# unrestricted key is still only ever reachable via a rule it was
+# already allowed on), but exactly the kind of silent-wrong-answer this
+# epic's own findings (F1, F3) exist to keep out.
+#
+# FIX: restructured to `(permission) && (body-matches)`, so the body
+# check applies to EVERY key, 'any' included - no branch of the
+# expression can rely on routing (the header, or its absence) and body
+# agreeing without saying so:
+#
+#   (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == '<model>'))
+#     && json(request.body).model == '<model>'
+#
+# `json(request.body).model == '<model>'` uses the body-parsing fallback
+# the handoff mandates (`llm.requestModel` measured NOT working in
+# authorization CEL at this pinned version, 34.9/34.10 - see
+# agentgateway-keys/app/externalsecret.yaml). It is now mandatory for
+# every key on every section: a client (of any key) that declares a
+# model inconsistent with the rule/header it actually hit gets 403, not
+# a silently-substituted answer.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-pilot-qwen36-27b-authz
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-messages
+  traffic:
+    authorization:
+      action: Allow
+      policy:
+        matchExpressions:
+          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'qwen36-27b')) && json(request.body).model == 'qwen36-27b'
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-pilot-qwen-coder-authz
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen-coder-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen-coder-messages
+  traffic:
+    authorization:
+      action: Allow
+      policy:
+        matchExpressions:
+          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'qwen-coder')) && json(request.body).model == 'qwen-coder'
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-pilot-dolphin-chat-authz
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: dolphin-chat-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: dolphin-chat-messages
+  traffic:
+    authorization:
+      action: Allow
+      policy:
+        matchExpressions:
+          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'dolphin-chat')) && json(request.body).model == 'dolphin-chat'
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-pilot-hermes-jarvis-authz
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: hermes-jarvis-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: hermes-jarvis-messages
+  traffic:
+    authorization:
+      action: Allow
+      policy:
+        matchExpressions:
+          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'hermes-jarvis')) && json(request.body).model == 'hermes-jarvis'
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-pilot-qwen-omni-authz
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen-omni-chat
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen-omni-messages
+  traffic:
+    authorization:
+      action: Allow
+      policy:
+        matchExpressions:
+          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'qwen-omni')) && json(request.body).model == 'qwen-omni'

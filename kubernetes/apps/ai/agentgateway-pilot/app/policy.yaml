@@ -36,6 +36,15 @@ spec:
       secretRef:
         name: agentgateway-pilot-spike-key
 ---
+# STORY-034-11: appended the 5 local chat-model aliases for LiteLLM
+# parity - the exact `model_name` strings from litellm/app/configmap.yaml,
+# which is also what local-model-policies.yaml's authorization CEL expects
+# in the request body (`json(request.body).model`); local-model-
+# backends.yaml's `provider.openai.model` override makes an echoed id
+# resolve correctly regardless of the differing internal upstream
+# identifier (see that file's comment). gpt-4o-mini stays first,
+# unchanged - cloud remains descoped (34.9 decision 7) but the dormant
+# entry is additive-only, not this story's to remove.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
@@ -54,4 +63,4 @@ spec:
         - name: content-type
           value: application/json
       body: |
-        {"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"openai"}]}
+        {"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"openai"},{"id":"qwen36-27b","object":"model","owned_by":"kserve"},{"id":"qwen-coder","object":"model","owned_by":"kserve"},{"id":"dolphin-chat","object":"model","owned_by":"kserve"},{"id":"hermes-jarvis","object":"model","owned_by":"kserve"},{"id":"qwen-omni","object":"model","owned_by":"kserve"}]}

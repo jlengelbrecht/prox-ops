@@ -1,0 +1,104 @@
+---
+# STORY-034-11: five local chat-model backends, production shape.
+#
+# Byte-for-byte reuse of the 34.4 KILL GATE's proven, gate-passed shape
+# (WI-034-4 sec 8, "V1" - the only variant ever exercised, first attempt,
+# no escalation needed): AI-typed AgentgatewayBackend, provider.openai.model
+# set to the exact upstream model identifier, host-form host/port pointed
+# straight at the Knative predictor hostname, NO URLRewrite, NO
+# hostRewrite policy, NO health policy, NO auth on the backend itself
+# (every upstream llama-server/vLLM instance runs without an API key,
+# matching LiteLLM's "dummy" api_key for all 11 local models -
+# configmap.yaml). Timeouts/retries live on the HTTPRoute rule
+# (httproute.yaml), not here, matching 34.4's split.
+#
+# `provider.openai.model` is a MODEL-NAME OVERRIDE (confirmed live via the
+# installed v1.3.1 CRD doc-string: "If unset, the model name is taken from
+# the request" - i.e. when SET, as here, it always wins over whatever the
+# client declared in its request body). This is what makes true LiteLLM
+# alias parity possible: clients declare LiteLLM's public alias
+# (qwen36-27b, qwen-coder, ...) in the body for authorization purposes
+# (see local-model-policies.yaml), while the ACTUAL upstream call always
+# carries the correct internal identifier below, regardless.
+#
+# Upstream identifiers mirror LiteLLM exactly (litellm/app/configmap.yaml):
+#   qwen36-27b:     openai/qwen3.6-27b                        (llama-server --alias)
+#   qwen-coder:     openai//models/Qwen/Qwen2.5-Coder-7B-Instruct       (vLLM --model path)
+#   dolphin-chat:   openai//models/cognitivecomputations/Dolphin3.0-Llama3.1-8B
+#   hermes-jarvis:  openai//models/NousResearch/Hermes-3-Llama-3.1-8B
+#   qwen-omni:      openai//models/Qwen/Qwen2.5-Omni-7B
+# vLLM identifies models by the local filesystem path it was started with
+# (no --served-model-name on any of these four ISVCs - verified against
+# kserve/app/*-inferenceservice.yaml), so the leading "/models/..." must be
+# sent upstream verbatim.
+#
+# qwen-omni endpoint-type check (SCOPE item, done before writing this
+# file): kserve/app/qwen-omni-inferenceservice.yaml documents
+# "/v1/chat/completions - Standard chat (text-only or multimodal input)"
+# and "modalities": ["text"] for text-only output - a genuine
+# chat-completions endpoint, not a TTS/audio/vision-output modality. It
+# belongs in the 5-model chat scope, not 34.12's non-chat bucket.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: qwen36-27b
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: qwen3.6-27b
+      host: qwen36-27b-predictor.ai.svc.cluster.local
+      port: 80
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: qwen-coder
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: /models/Qwen/Qwen2.5-Coder-7B-Instruct
+      host: qwen-coder-predictor.ai.svc.cluster.local
+      port: 80
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: dolphin-chat
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: /models/cognitivecomputations/Dolphin3.0-Llama3.1-8B
+      host: dolphin-chat-predictor.ai.svc.cluster.local
+      port: 80
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: hermes-jarvis
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: /models/NousResearch/Hermes-3-Llama-3.1-8B
+      host: hermes-jarvis-predictor.ai.svc.cluster.local
+      port: 80
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: qwen-omni
+  namespace: ai
+spec:
+  ai:
+    provider:
+      openai:
+        model: /models/Qwen/Qwen2.5-Omni-7B
+      host: qwen-omni-predictor.ai.svc.cluster.local
+      port: 80
