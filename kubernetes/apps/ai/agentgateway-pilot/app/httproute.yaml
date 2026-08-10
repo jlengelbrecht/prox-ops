@@ -11,8 +11,22 @@
 # of list order; the directResponse policy is what actually answers it.
 # The rule keeps a backendRef only to satisfy HTTPRoute's schema - the
 # directResponse policy is expected to short-circuit before the backend is
-# ever reached. Unverified until Phase 2's live /v1/models check; see the
-# completion report DEVIATIONS section.
+# ever reached.
+#
+# STORY-034-9 (2026-08-02): re-verified live as this story's own AC,
+# independent of 34.2's original Phase-2 proof. Unauthenticated GET
+# /v1/models -> 401; authenticated -> 200 with the stub list; zero pods
+# created in ns ai across all probes (kubectl get pod -n ai stays
+# empty - this route has no KServe backend at all, so there is no GPU
+# to wake). Bonus finding while re-verifying: an authenticated
+# bodyless GET on any OTHER path (e.g. /api/hello) still falls through
+# to the `pilot` catch-all rule below and reaches the AI-typed
+# backend's body parser, which 503s on "EOF while parsing a value" -
+# this is 34.4's finding F3 in miniature. It fails safely here only
+# because the backend is a dormant cloud model with no upstream to
+# actually contact; the recommendation carried to 34.11 stands
+# unchanged: production local-model routes must use explicit path
+# matches, not PathPrefix "/".
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
