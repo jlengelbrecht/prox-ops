@@ -42,7 +42,7 @@ variable "proxmox_ssh_user" {
 variable "talos_version" {
   description = "Talos Linux version to deploy"
   type        = string
-  default     = "1.13.5"
+  default     = "1.13.8"
 }
 
 variable "talos_schematic_base" {
