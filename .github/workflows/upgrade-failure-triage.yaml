@@ -172,7 +172,14 @@ jobs:
           echo "claude exit: $rc"
           # Extract the verdict markdown + usage from the JSON result
           jq -r '.result // empty' claude-out.json > triage-verdict.md 2>/dev/null
+          # Track whether a REAL verdict was extracted. Testing claude-out.json for
+          # emptiness is not enough: an error response is valid non-empty JSON with
+          # no `.result`, which would fall through to the diagnostic fallback below
+          # and still report success -- the same green-but-empty outcome this whole
+          # change exists to eliminate.
+          VERDICT_OK=1
           if [ ! -s triage-verdict.md ]; then
+            VERDICT_OK=0
             { echo "_Claude produced no verdict (exit ${rc}). Diagnostic tail:_"; echo '```'; tail -20 claude-err.txt 2>/dev/null; echo '```'; } > triage-verdict.md
           fi
           USAGE="$(jq -r '"- input_tokens: \(.usage.input_tokens // "?")\n- output_tokens: \(.usage.output_tokens // "?")\n- cache_read_tokens: \(.usage.cache_read_input_tokens // 0)\n- cache_creation_tokens: \(.usage.cache_creation_input_tokens // 0)\n- cost_usd: \(.total_cost_usd // "?")\n- turns: \(.num_turns // "?")\n- duration_ms: \(.duration_ms // "?")"' claude-out.json 2>/dev/null)"
@@ -193,7 +200,7 @@ jobs:
           # 2026-06-04 to 2026-08-15: six runs, all "success", all empty. Fail
           # loudly instead. The "Publish verdict" step is `if: always()`, so
           # Discord still receives the diagnostic tail either way.
-          if [ "$TRIAGE_BROKEN" = "1" ] || [ ! -s claude-out.json ]; then
+          if [ "$TRIAGE_BROKEN" = "1" ] || [ "$VERDICT_OK" != "1" ]; then
             echo "::error::Triage produced no verdict (claude exit ${rc}) - the notification will contain only a diagnostic tail"
             exit 1
           fi
