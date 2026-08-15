@@ -1676,7 +1676,15 @@ jobs:
 
           # Check all nodes are Ready
           echo "Checking node health..."
-          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready " | wc -l)
+          # Ready CONDITION, not the STATUS column. A cordoned node renders as
+          # "Ready,SchedulingDisabled", so `grep -v " Ready "` counts a healthy
+          # node as NotReady. That matters doubly here: this workflow cordons
+          # nodes itself, and a cordon left over from an aborted run would
+          # otherwise block every subsequent upgrade.
+          NOT_READY=$(kubectl get nodes \
+            -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+            | grep -cv '^True$' || true)
+          NOT_READY="${NOT_READY:-0}"
           if [[ $NOT_READY -gt 0 ]]; then
             echo "::error::Found $NOT_READY nodes not in Ready state"
             kubectl get nodes
@@ -3120,7 +3128,15 @@ jobs:
 
           # Check all nodes are Ready
           echo "Checking node health..."
-          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready " | wc -l)
+          # Ready CONDITION, not the STATUS column. A cordoned node renders as
+          # "Ready,SchedulingDisabled", so `grep -v " Ready "` counts a healthy
+          # node as NotReady. That matters doubly here: this workflow cordons
+          # nodes itself, and a cordon left over from an aborted run would
+          # otherwise block every subsequent upgrade.
+          NOT_READY=$(kubectl get nodes \
+            -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+            | grep -cv '^True$' || true)
+          NOT_READY="${NOT_READY:-0}"
           if [[ $NOT_READY -gt 0 ]]; then
             echo "::warning::Found $NOT_READY nodes not in Ready state after pair ${{ matrix.pair_id }}"
             kubectl get nodes
