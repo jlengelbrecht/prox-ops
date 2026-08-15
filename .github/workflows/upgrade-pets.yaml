@@ -809,13 +809,74 @@ jobs:
           echo "Control plane node - using base factory image (qemu-guest-agent + net.ifnames=0)"
 
           echo "Installer image: $INSTALLER_IMAGE"
-          echo "Starting in-place upgrade..."
-          talosctl upgrade \
-            --nodes ${{ matrix.node.ip }} \
-            --image "$INSTALLER_IMAGE" \
-            --preserve \
-            --wait \
-            --timeout 10m
+
+          NODE_IP="${{ matrix.node.ip }}"
+          TARGET="v${{ inputs.new_version }}"
+
+          current_version() {
+            talosctl version --nodes "$NODE_IP" --short 2>/dev/null \
+              | grep "Tag:" | awk '{print $2}'
+          }
+
+          # Retry once. Two distinct things used to strand a node permanently:
+          #
+          #   1. `talosctl upgrade` exits non-zero when the API connection drops
+          #      during the reboot -- which is NORMAL. The node is often already
+          #      on the target version, so always check the real version before
+          #      concluding anything failed.
+          #   2. A genuinely transient failure (image pull, brief API blip) got
+          #      no second chance; the node was simply left behind, and every
+          #      later run then skipped it.
+          #
+          # Control-plane nodes upgrade with max-parallel: 1, so retrying a
+          # single node never puts etcd quorum at risk.
+          UPGRADE_OK=0
+          for attempt in 1 2; do
+            echo "Upgrade attempt ${attempt}/2 for ${{ matrix.node.name }} -> ${TARGET}"
+
+            if talosctl upgrade \
+              --nodes "$NODE_IP" \
+              --image "$INSTALLER_IMAGE" \
+              --preserve \
+              --wait \
+              --timeout 10m; then
+              UPGRADE_OK=1
+              break
+            fi
+
+            echo "::warning::talosctl upgrade returned non-zero on attempt ${attempt} - verifying the node's actual version (a dropped connection during reboot is expected)"
+
+            # Let the node finish rebooting before believing any version read.
+            # GPU nodes take roughly twice as long to come back (NVIDIA driver
+            # load), so give them a longer window -- otherwise a slow-but-fine
+            # boot looks like a failure and we would re-issue the upgrade while
+            # the node is still rebooting. This expression renders empty for the
+            # control-plane matrix (no is_gpu key), which correctly selects 5m.
+            SETTLE_TRIES=30    # 30 x 10s = 5 minutes
+            if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
+              SETTLE_TRIES=60  # 60 x 10s = 10 minutes
+            fi
+            for _ in $(seq 1 "$SETTLE_TRIES"); do
+              if [[ "$(current_version)" == "$TARGET" ]]; then break; fi
+              sleep 10
+            done
+
+            if [[ "$(current_version)" == "$TARGET" ]]; then
+              echo "✅ Node is on ${TARGET} - the upgrade landed despite the non-zero exit"
+              UPGRADE_OK=1
+              break
+            fi
+
+            if [[ "$attempt" -eq 1 ]]; then
+              echo "::warning::Node still on '$(current_version)' - retrying once"
+              sleep 30
+            fi
+          done
+
+          if [[ "$UPGRADE_OK" -ne 1 ]]; then
+            echo "::error::Upgrade of ${{ matrix.node.name }} failed after 2 attempts (still on '$(current_version)')"
+            exit 1
+          fi
 
           echo "✅ Upgrade completed"
           echo "::endgroup::"
@@ -930,6 +991,36 @@ jobs:
           echo "✅ Pre-upgrade validation passed"
           echo "::endgroup::"
 
+      - name: Wait for control plane to settle
+        run: |
+          echo "::group::Waiting for the API server to stabilise"
+          # The worker rollout previously began TWO SECONDS after the last
+          # control-plane node finished rebooting. On 2026-08-11 the first three
+          # worker jobs then died in tool setup and k8s-work-2/3/4 were left
+          # un-upgraded. Draining workers while etcd is still settling after a
+          # rolling control-plane reboot invites exactly that.
+          #
+          # Require three CONSECUTIVE healthy probes, so one lucky response
+          # mid-election does not read as stable.
+          STABLE=0
+          for i in $(seq 1 30); do
+            if kubectl get --raw /readyz >/dev/null 2>&1; then
+              STABLE=$(( STABLE + 1 ))
+            else
+              STABLE=0
+            fi
+            if [[ "$STABLE" -ge 3 ]]; then
+              echo "✅ API server healthy on 3 consecutive probes"
+              echo "::endgroup::"
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "::error::Control plane did not stabilise within 5 minutes - refusing to start the worker rollout"
+          kubectl get --raw '/readyz?verbose' 2>&1 | tail -20 || true
+          exit 1
+
       - name: In-place upgrade using talosctl
         run: |
           echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
@@ -956,13 +1047,74 @@ jobs:
           fi
 
           echo "Installer image: $INSTALLER_IMAGE"
-          echo "Starting in-place upgrade..."
-          talosctl upgrade \
-            --nodes ${{ matrix.node.ip }} \
-            --image "$INSTALLER_IMAGE" \
-            --preserve \
-            --wait \
-            --timeout 10m
+
+          NODE_IP="${{ matrix.node.ip }}"
+          TARGET="v${{ inputs.new_version }}"
+
+          current_version() {
+            talosctl version --nodes "$NODE_IP" --short 2>/dev/null \
+              | grep "Tag:" | awk '{print $2}'
+          }
+
+          # Retry once. Two distinct things used to strand a node permanently:
+          #
+          #   1. `talosctl upgrade` exits non-zero when the API connection drops
+          #      during the reboot -- which is NORMAL. The node is often already
+          #      on the target version, so always check the real version before
+          #      concluding anything failed.
+          #   2. A genuinely transient failure (image pull, brief API blip) got
+          #      no second chance; the node was simply left behind, and every
+          #      later run then skipped it.
+          #
+          # Control-plane nodes upgrade with max-parallel: 1, so retrying a
+          # single node never puts etcd quorum at risk.
+          UPGRADE_OK=0
+          for attempt in 1 2; do
+            echo "Upgrade attempt ${attempt}/2 for ${{ matrix.node.name }} -> ${TARGET}"
+
+            if talosctl upgrade \
+              --nodes "$NODE_IP" \
+              --image "$INSTALLER_IMAGE" \
+              --preserve \
+              --wait \
+              --timeout 10m; then
+              UPGRADE_OK=1
+              break
+            fi
+
+            echo "::warning::talosctl upgrade returned non-zero on attempt ${attempt} - verifying the node's actual version (a dropped connection during reboot is expected)"
+
+            # Let the node finish rebooting before believing any version read.
+            # GPU nodes take roughly twice as long to come back (NVIDIA driver
+            # load), so give them a longer window -- otherwise a slow-but-fine
+            # boot looks like a failure and we would re-issue the upgrade while
+            # the node is still rebooting. This expression renders empty for the
+            # control-plane matrix (no is_gpu key), which correctly selects 5m.
+            SETTLE_TRIES=30    # 30 x 10s = 5 minutes
+            if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
+              SETTLE_TRIES=60  # 60 x 10s = 10 minutes
+            fi
+            for _ in $(seq 1 "$SETTLE_TRIES"); do
+              if [[ "$(current_version)" == "$TARGET" ]]; then break; fi
+              sleep 10
+            done
+
+            if [[ "$(current_version)" == "$TARGET" ]]; then
+              echo "✅ Node is on ${TARGET} - the upgrade landed despite the non-zero exit"
+              UPGRADE_OK=1
+              break
+            fi
+
+            if [[ "$attempt" -eq 1 ]]; then
+              echo "::warning::Node still on '$(current_version)' - retrying once"
+              sleep 30
+            fi
+          done
+
+          if [[ "$UPGRADE_OK" -ne 1 ]]; then
+            echo "::error::Upgrade of ${{ matrix.node.name }} failed after 2 attempts (still on '$(current_version)')"
+            exit 1
+          fi
 
           echo "✅ Upgrade completed"
           echo "::endgroup::"

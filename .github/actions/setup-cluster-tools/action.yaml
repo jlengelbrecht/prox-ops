@@ -21,7 +21,12 @@ runs:
       run: |
         echo "MISE_PYTHON_VENV_AUTO_CREATE=0" >> $GITHUB_ENV
 
+    # continue-on-error: a transient registry failure here must not take the
+    # whole job with it. The retry step below is the real gate — it fails the
+    # job only if a required tool is genuinely absent afterwards.
     - name: Setup mise and install tools
+      id: mise-install
+      continue-on-error: true
       uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
       with:
         cache: true
@@ -29,6 +34,71 @@ runs:
         # Only install tools needed for CI workflows (not full .mise.toml)
         # This prevents disk space exhaustion on cattle-runner
         install_args: "aqua:hashicorp/terraform aqua:kubernetes/kubectl aqua:siderolabs/talos aqua:fluxcd/flux2 aqua:helm/helm aqua:jqlang/jq aqua:mikefarah/yq aqua:kubernetes-sigs/kustomize"
+
+    - name: Ensure required tools are present (retry)
+      shell: bash
+      run: |
+        # The aqua/mise registries return intermittent HTTP 400s. Before this
+        # retry existed, one blip killed the whole job: on 2026-08-11 three
+        # worker upgrade jobs died at exactly the 10-minute mark inside the
+        # step above, and k8s-work-2/3/4 were silently left un-upgraded.
+        # See .claude/.ai-docs/troubleshooting/RCA-2026-08-15-talos-upgrade-stall.md
+        #
+        # This step handles NO secrets. It prints tool names and versions only;
+        # nothing here reads or echoes the talosconfig input.
+        set -uo pipefail
+
+        TOOLS="aqua:hashicorp/terraform aqua:kubernetes/kubectl aqua:siderolabs/talos aqua:fluxcd/flux2 aqua:helm/helm aqua:jqlang/jq aqua:mikefarah/yq aqua:kubernetes-sigs/kustomize"
+        REQUIRED_BINS="terraform kubectl talosctl flux helm jq yq kustomize"
+
+        # mise shims may not be on PATH if the action above bailed out early.
+        SHIM_DIR="${MISE_DATA_DIR:-$HOME/.local/share/mise}/shims"
+        case ":$PATH:" in
+          *":$SHIM_DIR:"*) : ;;
+          *) export PATH="$SHIM_DIR:$PATH" ;;
+        esac
+
+        missing_bins() {
+          local m=""
+          for b in $REQUIRED_BINS; do
+            if ! command -v "$b" >/dev/null 2>&1; then m="$m $b"; fi
+          done
+          printf '%s' "$m"
+        }
+
+        if ! command -v mise >/dev/null 2>&1; then
+          echo "::error::mise is not on PATH - the setup action could not bootstrap it"
+          exit 1
+        fi
+
+        for attempt in 1 2 3; do
+          MISSING="$(missing_bins)"
+          if [ -z "$MISSING" ]; then
+            break
+          fi
+          echo "Attempt ${attempt}/3 - missing:${MISSING}"
+          # Bound each attempt so a hung download cannot consume the job timeout.
+          if timeout 300 mise install $TOOLS; then
+            echo "  mise install completed"
+          else
+            echo "  mise install attempt ${attempt} did not complete (rc=$?)"
+          fi
+          hash -r 2>/dev/null || true
+          if [ "$attempt" -lt 3 ]; then
+            sleep $(( attempt * 20 ))
+          fi
+        done
+
+        MISSING="$(missing_bins)"
+        if [ -n "$MISSING" ]; then
+          echo "::error::Required tools still missing after 3 attempts:${MISSING}"
+          echo "::error::mise-action outcome was '${{ steps.mise-install.outcome }}'"
+          exit 1
+        fi
+
+        # Persist the shim dir for later steps in the calling job.
+        echo "$SHIM_DIR" >> "$GITHUB_PATH"
+        echo "✅ All required tools present"
 
     - name: Verify tool versions
       shell: bash
