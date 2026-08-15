@@ -59,6 +59,53 @@ configMapGenerator:
       - kubernetes.containerspec-addcapabilities=enabled
 
 patches:
+  # Make the upstream PDBs drainable.
+  #
+  # Knative and net-kourier ship PodDisruptionBudgets with minAvailable: 80%,
+  # which assumes a multi-replica production deployment. We run one replica of
+  # each. Kubernetes rounds a minAvailable percentage UP, so
+  # desiredHealthy = ceil(0.8 * replicas) equals the replica count at 1, 2, 3
+  # and 4 replicas — disruptionsAllowed is 0 until 5 replicas. The pod therefore
+  # can never be evicted and its node can never be drained. Note that simply
+  # scaling to 2 does NOT fix this; the PDB itself has to change.
+  #
+  # Talos' upgrade sequence cordons a node and then drains it, so whichever node
+  # held activator / webhook / kourier-gateway silently failed every Talos
+  # upgrade and was left cordoned. k8s-work-6/8/9 sat on v1.13.4 for seven weeks
+  # this way. maxUnavailable: 1 keeps the disruption budget meaningful while
+  # allowing exactly one pod to be evicted at a time.
+  # See .claude/.ai-docs/troubleshooting/RCA-2026-08-15-talos-upgrade-stall.md
+  - target:
+      kind: PodDisruptionBudget
+      name: activator-pdb
+      namespace: knative-serving
+    patch: |-
+      - op: remove
+        path: /spec/minAvailable
+      - op: add
+        path: /spec/maxUnavailable
+        value: 1
+  - target:
+      kind: PodDisruptionBudget
+      name: webhook-pdb
+      namespace: knative-serving
+    patch: |-
+      - op: remove
+        path: /spec/minAvailable
+      - op: add
+        path: /spec/maxUnavailable
+        value: 1
+  - target:
+      kind: PodDisruptionBudget
+      name: 3scale-kourier-gateway-pdb
+      namespace: kourier-system
+    patch: |-
+      - op: remove
+        path: /spec/minAvailable
+      - op: add
+        path: /spec/maxUnavailable
+        value: 1
+
   # Patch Kourier service to use Cilium LoadBalancer with specific IP
   # IP must be within default pool range: 10.20.66.0/23
   - target:

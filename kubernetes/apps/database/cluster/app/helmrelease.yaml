@@ -36,6 +36,16 @@ spec:
     cluster:
       instances: 1
 
+      # A single-instance cluster gets a PDB with minAvailable=1, which makes
+      # disruptionsAllowed permanently 0 — the primary can never be evicted, so
+      # its node can never be drained. Talos' upgrade sequence cordons a node and
+      # then drains it, so this silently aborted every Talos upgrade of whichever
+      # node held the primary and left it cordoned (k8s-work-3 sat on v1.13.4 for
+      # seven weeks this way). With instances: 1 the PDB protects nothing anyway
+      # — there is no replica to fail over to. Re-enable if instances ever > 1.
+      # See .claude/.ai-docs/troubleshooting/RCA-2026-08-15-talos-upgrade-stall.md
+      enablePDB: false
+
       # Storage configuration
       storage:
         size: 20Gi
