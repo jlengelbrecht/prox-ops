@@ -95,9 +95,42 @@ jobs:
           # Pin the CLI version (supply-chain: avoid running an unvetted latest publish
           # with the OAuth token + cluster-adjacent runner in scope). Bump deliberately.
           CLAUDE_CLI_VERSION="2.1.162"
-          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" >/dev/null 2>&1 \
-            || npm install -g "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
-          echo "claude version: $(claude --version 2>/dev/null || echo unknown)"
+
+          # Install into a PER-RUN prefix, not the global npm prefix.
+          #
+          # This runner is self-hosted, so /opt/hostedtoolcache persists between
+          # runs. A half-written copy of the package there made every
+          # `npm install -g` fail with:
+          #   ENOTEMPTY: directory not empty, rename
+          #   .../node_modules/@anthropic-ai/claude-code -> .../.claude-code-XXXX
+          # and left bin/claude as a stale symlink. Every triage run since
+          # 2026-06-04 therefore exited 126 (Permission denied) and produced no
+          # verdict -- while the job still reported success. The `|| npm install`
+          # fallback re-ran the identical failing command, so it never recovered.
+          #
+          # A fresh prefix under $RUNNER_TEMP cannot inherit that state.
+          CLAUDE_HOME="${RUNNER_TEMP:-/tmp}/claude-cli-$$"
+          rm -rf "$CLAUDE_HOME"
+          mkdir -p "$CLAUDE_HOME"
+          npm install --prefix "$CLAUDE_HOME" --no-fund --no-audit \
+            "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}" >/dev/null 2>&1 \
+            || npm install --prefix "$CLAUDE_HOME" --no-fund --no-audit \
+                 "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
+
+          CLAUDE_BIN="$CLAUDE_HOME/node_modules/.bin/claude"
+          TRIAGE_BROKEN=0
+          if [ ! -x "$CLAUDE_BIN" ]; then
+            echo "::error::Claude CLI did not install as an executable at $CLAUDE_BIN"
+            ls -l "$CLAUDE_HOME/node_modules/.bin" 2>/dev/null || true
+            TRIAGE_BROKEN=1
+          else
+            CLI_VERSION="$("$CLAUDE_BIN" --version 2>/dev/null || echo unknown)"
+            echo "claude version: $CLI_VERSION"
+            if [ "$CLI_VERSION" = "unknown" ]; then
+              echo "::error::Claude CLI installed but is not runnable"
+              TRIAGE_BROKEN=1
+            fi
+          fi
           # Strip any stray whitespace/newline the GitHub secret may carry; otherwise the
           # token becomes an invalid HTTP header value ("Header has invalid value") and auth
           # is rejected at the handshake. The OAuth token contains no internal whitespace.
@@ -128,8 +161,14 @@ jobs:
           CLASSIFICATION in bold. Use generic node names (ctrl-1, work-4) — no IP addresses or secrets.
           EOF
           )
-          claude -p "$PROMPT" --allowedTools "Read" --output-format json > claude-out.json 2> claude-err.txt
-          rc=$?
+          if [ "$TRIAGE_BROKEN" = "1" ]; then
+            rc=127
+            : > claude-out.json
+            echo "Claude CLI unavailable - skipping invocation" > claude-err.txt
+          else
+            "$CLAUDE_BIN" -p "$PROMPT" --allowedTools "Read" --output-format json > claude-out.json 2> claude-err.txt
+            rc=$?
+          fi
           echo "claude exit: $rc"
           # Extract the verdict markdown + usage from the JSON result
           jq -r '.result // empty' claude-out.json > triage-verdict.md 2>/dev/null
@@ -146,7 +185,19 @@ jobs:
           echo "----- token usage -----"
           echo "$USAGE" | sed 's/^/  /'
           { echo "### Claude token usage (claude exit ${rc})"; echo "$USAGE"; } >> "$GITHUB_STEP_SUMMARY"
-          exit 0   # triage is best-effort; never fail the workflow on a triage hiccup
+          rm -rf "$CLAUDE_HOME"
+
+          # Triage is best-effort and blocks nothing (no workflow depends on it,
+          # and it does not watch itself, so a red run cannot loop). But a GREEN
+          # job that produced no diagnosis is exactly how this stayed broken from
+          # 2026-06-04 to 2026-08-15: six runs, all "success", all empty. Fail
+          # loudly instead. The "Publish verdict" step is `if: always()`, so
+          # Discord still receives the diagnostic tail either way.
+          if [ "$TRIAGE_BROKEN" = "1" ] || [ ! -s claude-out.json ]; then
+            echo "::error::Triage produced no verdict (claude exit ${rc}) - the notification will contain only a diagnostic tail"
+            exit 1
+          fi
+          exit 0
 
       - name: Publish verdict (job summary always; Discord if configured)
         if: always()
