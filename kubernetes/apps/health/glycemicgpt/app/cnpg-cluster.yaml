@@ -14,6 +14,14 @@ metadata:
 spec:
   instances: 1
 
+  # With instances: 1 the operator's primary PDB (minAvailable=1) leaves
+  # disruptionsAllowed=0 forever, so the primary cannot be evicted and its node
+  # cannot be drained. Talos cordons then drains during upgrade, so this aborts
+  # the upgrade and strands the node cordoned. The PDB guards nothing at a single
+  # instance — there is no replica to fail over to. Re-enable if instances > 1.
+  # See .claude/.ai-docs/troubleshooting/RCA-2026-08-15-talos-upgrade-stall.md
+  enablePDB: false
+
   # renovate: datasource=docker depName=ghcr.io/cloudnative-pg/postgresql
   imageName: ghcr.io/cloudnative-pg/postgresql:16.8
 
