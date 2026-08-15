@@ -759,7 +759,18 @@ jobs:
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       inputs.test_templates == false &&
       inputs.test_workers == false
-    timeout-minutes: 30
+    # Budget must exceed the worst-case retry path or GitHub cancels the job
+    # mid-retry and the diagnosis never prints. Worst case:
+    #   tool install retry   3 x 5m  = 15m
+    #   upgrade attempt 1           = 10m   (--timeout 10m)
+    #   settle poll after failure   =  5m
+    #   backoff                     = 0.5m
+    #   upgrade attempt 2           = 10m
+    #   settle poll after failure   =  5m
+    #   wait for Ready              =  5m
+    #   verify + uncordon + summary =  2m
+    #                          total ~ 52m
+    timeout-minutes: 55
     strategy:
       # CRITICAL: Control plane MUST upgrade sequentially to maintain etcd quorum
       max-parallel: 1
@@ -793,8 +804,14 @@ jobs:
           echo "::endgroup::"
 
       - name: In-place upgrade using talosctl
+        # new_version is dispatch-controlled, so it is passed through env and
+        # read as "$NEW_VERSION" rather than expanded into the script body,
+        # where a crafted value could terminate the string and inject commands.
+        # (matrix.node.* comes from a hardcoded fromJSON literal in this file.)
+        env:
+          NEW_VERSION: ${{ inputs.new_version }}
         run: |
-          echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
+          echo "::group::Upgrading ${{ matrix.node.name }} to v${NEW_VERSION}"
 
           # Controllers require the base factory image: qemu-guest-agent + net.ifnames=0
           # Single source of truth: terraform/terraform.tfvars (talos_schematic_base).
@@ -805,13 +822,13 @@ jobs:
             echo "::error::Could not read talos_schematic_base from terraform/terraform.tfvars"
             exit 1
           fi
-          INSTALLER_IMAGE="factory.talos.dev/installer/${BASE_SCHEMATIC}:v${{ inputs.new_version }}"
+          INSTALLER_IMAGE="factory.talos.dev/installer/${BASE_SCHEMATIC}:v${NEW_VERSION}"
           echo "Control plane node - using base factory image (qemu-guest-agent + net.ifnames=0)"
 
           echo "Installer image: $INSTALLER_IMAGE"
 
           NODE_IP="${{ matrix.node.ip }}"
-          TARGET="v${{ inputs.new_version }}"
+          TARGET="v${NEW_VERSION}"
 
           current_version() {
             talosctl version --nodes "$NODE_IP" --short 2>/dev/null \
@@ -954,7 +971,20 @@ jobs:
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped') &&
       inputs.test_templates == false &&
       inputs.test_controllers == false
-    timeout-minutes: 20
+    # Budget must exceed the worst-case retry path (see upgrade-control-plane).
+    # Workers add the settle gate and, on GPU nodes, doubled boot windows:
+    #   tool install retry   3 x 5m  = 15m
+    #   control-plane settle gate    =  5m
+    #   upgrade attempt 1            = 10m
+    #   settle poll (GPU)            = 10m
+    #   backoff                      = 0.5m
+    #   upgrade attempt 2            = 10m
+    #   settle poll (GPU)            = 10m
+    #   wait for Ready               =  5m
+    #   verify + GPU validation      = 10m
+    #   uncordon + summary           =  1m
+    #                           total ~ 77m
+    timeout-minutes: 85
     strategy:
       fail-fast: false
       # Simplified parallelism logic: aggressive=12, safe=1, default=4
@@ -1022,8 +1052,14 @@ jobs:
           exit 1
 
       - name: In-place upgrade using talosctl
+        # new_version is dispatch-controlled, so it is passed through env and
+        # read as "$NEW_VERSION" rather than expanded into the script body,
+        # where a crafted value could terminate the string and inject commands.
+        # (matrix.node.* comes from a hardcoded fromJSON literal in this file.)
+        env:
+          NEW_VERSION: ${{ inputs.new_version }}
         run: |
-          echo "::group::Upgrading ${{ matrix.node.name }} to v${{ inputs.new_version }}"
+          echo "::group::Upgrading ${{ matrix.node.name }} to v${NEW_VERSION}"
 
           # Select correct factory schematic based on node type.
           # Single source of truth: terraform/terraform.tfvars
@@ -1039,17 +1075,17 @@ jobs:
             fi
           done
           if [[ "${{ matrix.node.is_gpu }}" == "true" ]]; then
-            INSTALLER_IMAGE="factory.talos.dev/installer/${GPU_SCHEMATIC}:v${{ inputs.new_version }}"
+            INSTALLER_IMAGE="factory.talos.dev/installer/${GPU_SCHEMATIC}:v${NEW_VERSION}"
             echo "GPU node detected - using GPU factory image (qemu-guest-agent + NVIDIA + net.ifnames=0)"
           else
-            INSTALLER_IMAGE="factory.talos.dev/installer/${BASE_SCHEMATIC}:v${{ inputs.new_version }}"
+            INSTALLER_IMAGE="factory.talos.dev/installer/${BASE_SCHEMATIC}:v${NEW_VERSION}"
             echo "Non-GPU node - using base factory image (qemu-guest-agent + net.ifnames=0)"
           fi
 
           echo "Installer image: $INSTALLER_IMAGE"
 
           NODE_IP="${{ matrix.node.ip }}"
-          TARGET="v${{ inputs.new_version }}"
+          TARGET="v${NEW_VERSION}"
 
           current_version() {
             talosctl version --nodes "$NODE_IP" --short 2>/dev/null \
