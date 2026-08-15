@@ -68,6 +68,10 @@ env:
   AWS_REGION: us-east-2
   TERRAFORM_STATE_BUCKET: prox-ops-terraform-state
   TERRAFORM_VERSION: "1.15.8"  # Managed by Renovate
+  # Total nodes expected in the cluster (3 control plane + 12 workers). The
+  # health gates assert this exact count so a partial API response cannot be
+  # read as "every node is Ready". Update when the cluster is resized.
+  EXPECTED_NODE_COUNT: "15"
 
 jobs:
   # ==========================================================================
@@ -252,15 +256,48 @@ jobs:
           echo "::group::Checking node health"
           kubectl get nodes
 
-          READY_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
-          TOTAL_NODES=$(kubectl get nodes --no-headers 2>/dev/null | wc -l || echo "0")
-
-          echo "Ready nodes: $READY_NODES / $TOTAL_NODES"
-
-          if [[ "$READY_NODES" -ne "$TOTAL_NODES" ]]; then
-            echo "::error::Not all nodes are Ready"
-            kubectl get nodes | grep -v " Ready "
+          # Read the Ready CONDITION, never the STATUS column. A cordoned node
+          # renders as "Ready,SchedulingDisabled", so `grep " Ready "` does not
+          # match it and a perfectly healthy node is counted as NotReady.
+          # That false negative stranded k8s-work-3/6/8/9 across three
+          # consecutive Talos upgrades — see
+          # .claude/.ai-docs/troubleshooting/RCA-2026-08-15-talos-upgrade-stall.md
+          #
+          # Capture kubectl's output in its own statement so a FAILED API call
+          # cannot masquerade as "no unhealthy nodes". Piping straight into
+          # `grep ... || true` swallows the failure and the gate passes on an
+          # empty result — an outage would read as a healthy cluster.
+          if ! NODE_STATE=$(kubectl get nodes \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'); then
+            echo "::error::'kubectl get nodes' failed — cannot assess cluster health, refusing to upgrade"
             exit 1
+          fi
+
+          # An incomplete inventory is also a failure: if nodes are missing from
+          # the response entirely, their Ready condition is simply absent and
+          # they would silently pass the check below.
+          NODE_COUNT=$(grep -c . <<<"$NODE_STATE" || true)
+          if [[ "$NODE_COUNT" -ne "$EXPECTED_NODE_COUNT" ]]; then
+            echo "::error::Incomplete node inventory: found $NODE_COUNT, expected $EXPECTED_NODE_COUNT"
+            echo "$NODE_STATE"
+            exit 1
+          fi
+
+          NOT_READY=$(grep -v '=True$' <<<"$NODE_STATE" || true)
+
+          if [[ -n "$NOT_READY" ]]; then
+            echo "::error::Not all nodes are Ready"
+            echo "$NOT_READY"
+            exit 1
+          fi
+
+          # Cordoned-but-Ready is not fatal, but it is worth surfacing: it is
+          # normally the residue of an upgrade that aborted part-way.
+          CORDONED=$(kubectl get nodes \
+            -o jsonpath='{range .items[?(@.spec.unschedulable==true)]}{.metadata.name}{"\n"}{end}' || true)
+          if [[ -n "$CORDONED" ]]; then
+            echo "::warning::Cordoned nodes present (will be upgraded and uncordoned):"
+            echo "$CORDONED"
           fi
 
           echo "✅ All nodes are Ready"
@@ -754,8 +791,13 @@ jobs:
     name: Upgrade Control Plane (In-Place)
     runs-on: cattle-runner
     needs: [validate-inputs, pre-upgrade-health-check, rebuild-templates]
+    # pre-upgrade-health-check must actually gate the rollout. It previously
+    # appeared in `needs` but was never referenced here, so a failed health
+    # check did not stop anything — on 2026-08-11 it failed and all 15 upgrade
+    # jobs ran regardless. A gate that does not gate is worse than no gate.
     if: |
       always() &&
+      needs.pre-upgrade-health-check.result == 'success' &&
       (needs.rebuild-templates.result == 'success' || needs.rebuild-templates.result == 'skipped') &&
       inputs.test_templates == false &&
       inputs.test_workers == false
@@ -790,10 +832,18 @@ jobs:
         run: |
           echo "::group::Pre-upgrade validation for ${{ matrix.node.name }}"
 
-          # Check node is Ready
-          if ! kubectl get node ${{ matrix.node.name }} | grep -q " Ready "; then
-            echo "::error::Node ${{ matrix.node.name }} is not Ready"
+          # Check node is Ready. Read the condition, not the STATUS column —
+          # a cordoned node renders as "Ready,SchedulingDisabled".
+          READY=$(kubectl get node ${{ matrix.node.name }} \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+          if [[ "$READY" != "True" ]]; then
+            echo "::error::Node ${{ matrix.node.name }} is not Ready (Ready=${READY:-unknown})"
             exit 1
+          fi
+
+          # A cordon left behind by an aborted upgrade must not block this one.
+          if [[ "$(kubectl get node ${{ matrix.node.name }} -o jsonpath='{.spec.unschedulable}')" == "true" ]]; then
+            echo "::warning::Node ${{ matrix.node.name }} is cordoned (likely residue of an aborted upgrade); proceeding and will uncordon on completion"
           fi
 
           # Check current version
@@ -939,6 +989,24 @@ jobs:
           echo "✅ net.ifnames=0 present and eth0 exists"
           echo "::endgroup::"
 
+      - name: Restore scheduling (uncordon)
+        if: always()
+        run: |
+          # Talos' own upgrade sequence cordons the node via the Kubernetes API
+          # before it reboots. Nothing restores that cordon if the upgrade
+          # aborts, so a failed run leaves the node Ready,SchedulingDisabled
+          # with its workloads still on it — cordoned but never drained.
+          # That stale cordon is what latched k8s-work-3/6/8/9 out of three
+          # consecutive rollouts. Always hand scheduling back.
+          NODE="${{ matrix.node.name }}"
+          READY=$(kubectl get node "$NODE" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+          if [[ "$READY" == "True" ]]; then
+            kubectl uncordon "$NODE" || true
+          else
+            echo "::warning::$NODE is not Ready (Ready=${READY:-unknown}) — leaving it cordoned for manual inspection"
+          fi
+
       - name: Upgrade summary
         if: always()
         run: |
@@ -965,9 +1033,13 @@ jobs:
   upgrade-workers:
     name: Upgrade Workers (In-Place)
     runs-on: cattle-runner
-    needs: [validate-inputs, upgrade-control-plane]
+    needs: [validate-inputs, pre-upgrade-health-check, upgrade-control-plane]
+    # upgrade-control-plane is legitimately 'skipped' in test_workers mode, so
+    # the health check is asserted directly here too — otherwise a failed health
+    # check would still let the worker rollout proceed.
     if: |
       always() &&
+      needs.pre-upgrade-health-check.result == 'success' &&
       (needs.upgrade-control-plane.result == 'success' || needs.upgrade-control-plane.result == 'skipped') &&
       inputs.test_templates == false &&
       inputs.test_controllers == false
@@ -1004,10 +1076,18 @@ jobs:
         run: |
           echo "::group::Pre-upgrade validation for ${{ matrix.node.name }}"
 
-          # Check node is Ready
-          if ! kubectl get node ${{ matrix.node.name }} | grep -q " Ready "; then
-            echo "::error::Node ${{ matrix.node.name }} is not Ready"
+          # Check node is Ready. Read the condition, not the STATUS column —
+          # a cordoned node renders as "Ready,SchedulingDisabled".
+          READY=$(kubectl get node ${{ matrix.node.name }} \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+          if [[ "$READY" != "True" ]]; then
+            echo "::error::Node ${{ matrix.node.name }} is not Ready (Ready=${READY:-unknown})"
             exit 1
+          fi
+
+          # A cordon left behind by an aborted upgrade must not block this one.
+          if [[ "$(kubectl get node ${{ matrix.node.name }} -o jsonpath='{.spec.unschedulable}')" == "true" ]]; then
+            echo "::warning::Node ${{ matrix.node.name }} is cordoned (likely residue of an aborted upgrade); proceeding and will uncordon on completion"
           fi
 
           # Check current version
@@ -1257,6 +1337,24 @@ jobs:
           echo "::error::GPU not detected and NVIDIA extension/label missing on ${{ matrix.node.name }} — genuine GPU failure"
           exit 1
 
+      - name: Restore scheduling (uncordon)
+        if: always()
+        run: |
+          # Talos' own upgrade sequence cordons the node via the Kubernetes API
+          # before it reboots. Nothing restores that cordon if the upgrade
+          # aborts, so a failed run leaves the node Ready,SchedulingDisabled
+          # with its workloads still on it — cordoned but never drained.
+          # That stale cordon is what latched k8s-work-3/6/8/9 out of three
+          # consecutive rollouts. Always hand scheduling back.
+          NODE="${{ matrix.node.name }}"
+          READY=$(kubectl get node "$NODE" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+          if [[ "$READY" == "True" ]]; then
+            kubectl uncordon "$NODE" || true
+          else
+            echo "::warning::$NODE is not Ready (Ready=${READY:-unknown}) — leaving it cordoned for manual inspection"
+          fi
+
       - name: Upgrade summary
         if: always()
         run: |
@@ -1335,14 +1433,36 @@ jobs:
           # Check nodes
           kubectl get nodes
 
-          READY_NODES=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready " || echo "0")
-          TOTAL_NODES=$(kubectl get nodes --no-headers 2>/dev/null | wc -l || echo "0")
+          # Ready CONDITION, not the STATUS column (see "Check cluster health").
+          # kubectl failure and an incomplete inventory are both hard failures —
+          # neither may be mistaken for a healthy cluster.
+          if ! NODE_STATE=$(kubectl get nodes \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'); then
+            echo "::error::'kubectl get nodes' failed — cannot validate the upgrade"
+            exit 1
+          fi
 
-          echo "Ready nodes: $READY_NODES / $TOTAL_NODES"
+          NODE_COUNT=$(grep -c . <<<"$NODE_STATE" || true)
+          if [[ "$NODE_COUNT" -ne "$EXPECTED_NODE_COUNT" ]]; then
+            echo "::error::Incomplete node inventory after upgrade: found $NODE_COUNT, expected $EXPECTED_NODE_COUNT"
+            echo "$NODE_STATE"
+            exit 1
+          fi
 
-          if [[ "$READY_NODES" -ne "$TOTAL_NODES" ]]; then
+          NOT_READY=$(grep -v '=True$' <<<"$NODE_STATE" || true)
+
+          if [[ -n "$NOT_READY" ]]; then
             echo "::error::Not all nodes are Ready after upgrade"
-            kubectl get nodes | grep -v " Ready "
+            echo "$NOT_READY"
+            exit 1
+          fi
+
+          # Nothing should still be cordoned once the rollout has finished.
+          STILL_CORDONED=$(kubectl get nodes \
+            -o jsonpath='{range .items[?(@.spec.unschedulable==true)]}{.metadata.name}{"\n"}{end}' || true)
+          if [[ -n "$STILL_CORDONED" ]]; then
+            echo "::error::Nodes left cordoned after upgrade — these will be skipped by future runs until uncordoned:"
+            echo "$STILL_CORDONED"
             exit 1
           fi
 

@@ -148,6 +148,11 @@ env:
   # Cache Terraform providers to prevent GitHub rate limiting and download timeouts
   # (work-9 failed in run 20842324836 due to provider download timeout)
   TF_PLUGIN_CACHE_DIR: /tmp/terraform-plugin-cache
+  # Total nodes expected in the cluster (3 control plane + 12 workers). Asserted
+  # by the PRE-FLIGHT health gate only, so a partial API response cannot read as
+  # a healthy cluster. Not asserted mid-rebuild, where nodes are legitimately
+  # absent. Update when the cluster is resized.
+  EXPECTED_NODE_COUNT: "15"
 
 jobs:
   # ==========================================================================
@@ -1676,10 +1681,35 @@ jobs:
 
           # Check all nodes are Ready
           echo "Checking node health..."
-          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready " | wc -l)
+          # Ready CONDITION, not the STATUS column. A cordoned node renders as
+          # "Ready,SchedulingDisabled", so `grep -v " Ready "` counts a healthy
+          # node as NotReady. That matters doubly here: this workflow cordons
+          # nodes itself, and a cordon left over from an aborted run would
+          # otherwise block every subsequent upgrade.
+          # Capture kubectl separately: piping a failed call into `grep ... || true`
+          # yields 0 unhealthy nodes, so an API outage would read as a healthy
+          # cluster and this pre-flight gate would wave the rebuild through.
+          if ! NODE_STATE=$(kubectl get nodes \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'); then
+            echo "::error::'kubectl get nodes' failed — cannot assess cluster health, refusing to start the rebuild"
+            exit 1
+          fi
+
+          # This gate runs BEFORE any node is destroyed, so the full inventory
+          # must be present. (The post-pair check deliberately does not assert a
+          # count — nodes are legitimately absent while a pair is rebuilding.)
+          NODE_COUNT=$(grep -c . <<<"$NODE_STATE" || true)
+          if [[ "$NODE_COUNT" -ne "$EXPECTED_NODE_COUNT" ]]; then
+            echo "::error::Incomplete node inventory: found $NODE_COUNT, expected $EXPECTED_NODE_COUNT"
+            echo "$NODE_STATE"
+            exit 1
+          fi
+
+          NOT_READY=$(grep -cv '=True$' <<<"$NODE_STATE" || true)
+          NOT_READY="${NOT_READY:-0}"
           if [[ $NOT_READY -gt 0 ]]; then
             echo "::error::Found $NOT_READY nodes not in Ready state"
-            kubectl get nodes
+            echo "$NODE_STATE"
             exit 1
           fi
           echo "✅ All nodes Ready"
@@ -3120,13 +3150,35 @@ jobs:
 
           # Check all nodes are Ready
           echo "Checking node health..."
-          NOT_READY=$(kubectl get nodes --no-headers | grep -v " Ready " | wc -l)
-          if [[ $NOT_READY -gt 0 ]]; then
-            echo "::warning::Found $NOT_READY nodes not in Ready state after pair ${{ matrix.pair_id }}"
-            kubectl get nodes
-            # Don't fail, just warn - pair might still be stabilizing
+          # Ready CONDITION, not the STATUS column. A cordoned node renders as
+          # "Ready,SchedulingDisabled", so `grep -v " Ready "` counts a healthy
+          # node as NotReady. That matters doubly here: this workflow cordons
+          # nodes itself, and a cordon left over from an aborted run would
+          # otherwise block every subsequent upgrade.
+          # NOTE: unlike the pre-flight gate, this one deliberately does NOT
+          # assert a node count — during a cattle rebuild nodes are legitimately
+          # absent while their pair is being recreated. A kubectl failure is
+          # still surfaced rather than silently counted as zero unhealthy nodes.
+          if ! NODE_STATE=$(kubectl get nodes \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'); then
+            NODE_STATE=""
+          fi
+
+          # Distinguish "we could not find out" from "everything is Ready".
+          # A herestring on an empty variable still feeds grep one empty line,
+          # so counting without this guard would report a phantom unready node.
+          if [[ -z "$NODE_STATE" ]]; then
+            echo "::warning::Node health UNKNOWN after pair ${{ matrix.pair_id }} — 'kubectl get nodes' returned nothing"
           else
-            echo "✅ All nodes Ready"
+            NOT_READY=$(grep -cv '=True$' <<<"$NODE_STATE" || true)
+            NOT_READY="${NOT_READY:-0}"
+            if [[ $NOT_READY -gt 0 ]]; then
+              echo "::warning::Found $NOT_READY nodes not in Ready state after pair ${{ matrix.pair_id }}"
+              echo "$NODE_STATE"
+              # Don't fail, just warn - pair might still be stabilizing
+            else
+              echo "✅ All nodes Ready"
+            fi
           fi
 
           # Check for pods in bad state
