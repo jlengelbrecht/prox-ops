@@ -68,6 +68,10 @@ env:
   AWS_REGION: us-east-2
   TERRAFORM_STATE_BUCKET: prox-ops-terraform-state
   TERRAFORM_VERSION: "1.15.8"  # Managed by Renovate
+  # Total nodes expected in the cluster (3 control plane + 12 workers). The
+  # health gates assert this exact count so a partial API response cannot be
+  # read as "every node is Ready". Update when the cluster is resized.
+  EXPECTED_NODE_COUNT: "15"
 
 jobs:
   # ==========================================================================
@@ -258,9 +262,28 @@ jobs:
           # That false negative stranded k8s-work-3/6/8/9 across three
           # consecutive Talos upgrades — see
           # .claude/.ai-docs/troubleshooting/RCA-2026-08-15-talos-upgrade-stall.md
-          NOT_READY=$(kubectl get nodes \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
-            | grep -v '=True$' || true)
+          #
+          # Capture kubectl's output in its own statement so a FAILED API call
+          # cannot masquerade as "no unhealthy nodes". Piping straight into
+          # `grep ... || true` swallows the failure and the gate passes on an
+          # empty result — an outage would read as a healthy cluster.
+          if ! NODE_STATE=$(kubectl get nodes \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'); then
+            echo "::error::'kubectl get nodes' failed — cannot assess cluster health, refusing to upgrade"
+            exit 1
+          fi
+
+          # An incomplete inventory is also a failure: if nodes are missing from
+          # the response entirely, their Ready condition is simply absent and
+          # they would silently pass the check below.
+          NODE_COUNT=$(grep -c . <<<"$NODE_STATE" || true)
+          if [[ "$NODE_COUNT" -ne "$EXPECTED_NODE_COUNT" ]]; then
+            echo "::error::Incomplete node inventory: found $NODE_COUNT, expected $EXPECTED_NODE_COUNT"
+            echo "$NODE_STATE"
+            exit 1
+          fi
+
+          NOT_READY=$(grep -v '=True$' <<<"$NODE_STATE" || true)
 
           if [[ -n "$NOT_READY" ]]; then
             echo "::error::Not all nodes are Ready"
@@ -1223,9 +1246,22 @@ jobs:
           kubectl get nodes
 
           # Ready CONDITION, not the STATUS column (see "Check cluster health").
-          NOT_READY=$(kubectl get nodes \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
-            | grep -v '=True$' || true)
+          # kubectl failure and an incomplete inventory are both hard failures —
+          # neither may be mistaken for a healthy cluster.
+          if ! NODE_STATE=$(kubectl get nodes \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"="}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'); then
+            echo "::error::'kubectl get nodes' failed — cannot validate the upgrade"
+            exit 1
+          fi
+
+          NODE_COUNT=$(grep -c . <<<"$NODE_STATE" || true)
+          if [[ "$NODE_COUNT" -ne "$EXPECTED_NODE_COUNT" ]]; then
+            echo "::error::Incomplete node inventory after upgrade: found $NODE_COUNT, expected $EXPECTED_NODE_COUNT"
+            echo "$NODE_STATE"
+            exit 1
+          fi
+
+          NOT_READY=$(grep -v '=True$' <<<"$NODE_STATE" || true)
 
           if [[ -n "$NOT_READY" ]]; then
             echo "::error::Not all nodes are Ready after upgrade"
