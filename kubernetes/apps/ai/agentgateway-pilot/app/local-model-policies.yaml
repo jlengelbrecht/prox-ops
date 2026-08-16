@@ -136,6 +136,25 @@ spec:
 # every key on every section: a client (of any key) that declares a
 # model inconsistent with the rule/header it actually hit gets 403, not
 # a silently-substituted answer.
+# FOLLOW-UP (post-34.11 live verification, PM decision: alias not pin):
+# Claude Code's zero-config /v1/messages path sends its OWN configured
+# default in the body - "model":"claude-sonnet-5" - not "qwen36-27b".
+# That failed the mandatory body-consistency check above (403, matching
+# 34.11's own LEAD ITEM finding). Widening the two match expressions
+# below to accept either string does NOT weaken the property that
+# check exists to protect: which backend serves a request is still
+# fixed entirely by which section/targetRef this policy is attached to
+# (qwen36-27b-chat / qwen36-27b-messages, set at write-time, never
+# derived from the request), so accepting the alias only widens WHO is
+# authorized to use it, never WHERE the request can go. Keeping each
+# model's authz as its own hardcoded-literal section (not collapsed,
+# not derived from client input) is unchanged.
+#
+# MAINTENANCE NOTE: "claude-sonnet-5" is Claude Code's own default model
+# string, set by Anthropic and independent of this repo - it has already
+# changed across CLI releases and will again. Re-capture the live value
+# (see WI-034-11-LIVE-VERIFICATION.md's capture-server method) if the
+# zero-config path starts 403ing again after a Claude Code upgrade.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
@@ -156,7 +175,7 @@ spec:
       action: Allow
       policy:
         matchExpressions:
-          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'qwen36-27b')) && json(request.body).model == 'qwen36-27b'
+          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'qwen36-27b')) && json(request.body).model in ['qwen36-27b', 'claude-sonnet-5']
 ---
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
