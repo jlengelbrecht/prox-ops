@@ -2941,8 +2941,15 @@ jobs:
           MAX_RETRIES=42  # 42 * 10s = 7 minutes (GPU nodes boot ~5 min)
 
           while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
-            if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
-              echo "✅ GPU detected by Kubernetes after $((RETRY_COUNT * 10))s"
+            # Wait for a POSITIVE COUNT, not merely the presence of the key --
+            # after a reboot the node still carries `nvidia.com/gpu: "0"` until
+            # the device plugin re-registers, so matching the key alone exits
+            # this loop at 0s and downstream checks then fail on the zero.
+            # See the same fix in upgrade-pets.yaml.
+            GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} \
+              -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null || true)
+            if [[ -n "$GPU_COUNT" && "$GPU_COUNT" =~ ^[0-9]+$ && "$GPU_COUNT" -ge 1 ]]; then
+              echo "✅ GPU detected by Kubernetes after $((RETRY_COUNT * 10))s (${GPU_COUNT} allocatable)"
               break
             fi
 
@@ -2969,11 +2976,12 @@ jobs:
             exit 1
           fi
 
-          # Verify GPU count. Time-slicing advertises multiple virtual GPUs per
-          # physical card (e.g. 3), so accept any positive count rather than
-          # requiring exactly 1.
-          GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
-          echo "Allocatable nvidia.com/gpu: ${GPU_COUNT:-0}"
+          # Reuse the count the loop already validated. Re-reading it here would
+          # reintroduce the race this fix removes: a transient empty or zero
+          # response would fail the job moments after a positive count was
+          # confirmed. Time-slicing advertises multiple virtual GPUs per physical
+          # card (e.g. 3), which the loop's `-ge 1` test accepts.
+          echo "Allocatable nvidia.com/gpu: ${GPU_COUNT}"
 
           if [[ -z "$GPU_COUNT" || "$GPU_COUNT" -lt 1 ]]; then
             echo "::error::GPU advertised but allocatable count is not positive ($GPU_COUNT)"
