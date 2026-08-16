@@ -2941,8 +2941,15 @@ jobs:
           MAX_RETRIES=42  # 42 * 10s = 7 minutes (GPU nodes boot ~5 min)
 
           while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
-            if kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
-              echo "✅ GPU detected by Kubernetes after $((RETRY_COUNT * 10))s"
+            # Wait for a POSITIVE COUNT, not merely the presence of the key --
+            # after a reboot the node still carries `nvidia.com/gpu: "0"` until
+            # the device plugin re-registers, so matching the key alone exits
+            # this loop at 0s and downstream checks then fail on the zero.
+            # See the same fix in upgrade-pets.yaml.
+            GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} \
+              -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null || true)
+            if [[ -n "$GPU_COUNT" && "$GPU_COUNT" =~ ^[0-9]+$ && "$GPU_COUNT" -ge 1 ]]; then
+              echo "✅ GPU detected by Kubernetes after $((RETRY_COUNT * 10))s (${GPU_COUNT} allocatable)"
               break
             fi
 

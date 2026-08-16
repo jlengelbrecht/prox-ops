@@ -1290,8 +1290,22 @@ jobs:
 
           GPU_DETECTED=false
           while [[ $RETRY_COUNT -lt $MAX_RETRIES ]]; do
-            if kubectl get nodes ${{ matrix.node.name }} -o jsonpath='{.status.allocatable}' | grep -q "nvidia.com/gpu"; then
-              echo "✅ GPU detected by Kubernetes after $((RETRY_COUNT * 10))s"
+            # Wait for a POSITIVE COUNT, not merely the presence of the key.
+            # Straight after a reboot the node still carries
+            # `nvidia.com/gpu: "0"` in allocatable because the device plugin has
+            # not re-registered yet. Grepping the raw allocatable blob for the
+            # key therefore matched immediately, broke out of this loop at 0s,
+            # and the count check below then hard-failed on that zero:
+            #   ✅ GPU detected by Kubernetes after 0s
+            #   Allocatable nvidia.com/gpu: 0
+            #   ::error::GPU advertised but allocatable count is not positive (0)
+            # So the wait never actually waited, and every GPU node upgrade
+            # reported failure even though the upgrade itself succeeded
+            # (k8s-work-10 on 2026-08-11, k8s-work-4 on 2026-06-28).
+            GPU_COUNT=$(kubectl get nodes ${{ matrix.node.name }} \
+              -o jsonpath='{.status.allocatable.nvidia\.com/gpu}' 2>/dev/null || true)
+            if [[ -n "$GPU_COUNT" && "$GPU_COUNT" =~ ^[0-9]+$ && "$GPU_COUNT" -ge 1 ]]; then
+              echo "✅ GPU detected by Kubernetes after $((RETRY_COUNT * 10))s (${GPU_COUNT} allocatable)"
               GPU_DETECTED=true
               break
             fi
