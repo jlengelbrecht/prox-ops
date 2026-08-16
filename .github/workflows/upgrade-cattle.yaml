@@ -2976,11 +2976,12 @@ jobs:
             exit 1
           fi
 
-          # Verify GPU count. Time-slicing advertises multiple virtual GPUs per
-          # physical card (e.g. 3), so accept any positive count rather than
-          # requiring exactly 1.
-          GPU_COUNT=$(kubectl get nodes ${{ matrix.node }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')
-          echo "Allocatable nvidia.com/gpu: ${GPU_COUNT:-0}"
+          # Reuse the count the loop already validated. Re-reading it here would
+          # reintroduce the race this fix removes: a transient empty or zero
+          # response would fail the job moments after a positive count was
+          # confirmed. Time-slicing advertises multiple virtual GPUs per physical
+          # card (e.g. 3), which the loop's `-ge 1` test accepts.
+          echo "Allocatable nvidia.com/gpu: ${GPU_COUNT}"
 
           if [[ -z "$GPU_COUNT" || "$GPU_COUNT" -lt 1 ]]; then
             echo "::error::GPU advertised but allocatable count is not positive ($GPU_COUNT)"
