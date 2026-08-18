@@ -101,6 +101,20 @@ spec:
   # story is forbidden from reintroducing. `coredns.io/hostname` is
   # k8s-gateway-only and invisible to unifi-dns/external-dns.
   #
+  # MERGE SAFETY (PR #1255 review): this overlay cannot clobber the Gateway's
+  # `lbipam.cilium.io/ips` pin. At operator v1.3.1 the overlay runs AFTER helm
+  # renders the Service - which already carries infrastructure.annotations via
+  # `gatewayAnnotations` (controller/pkg/helm/agentgateway/templates/
+  # service.yaml) - and overlay metadata merges additively into the existing
+  # annotation map (`maps.Copy`, never a map replace:
+  # controller/pkg/deployer/strategicpatch/strategicpatch.go:150-157, invoked
+  # post-render by gateway_parameters.go PostProcessObjects). Putting the
+  # hostname in gateway.yaml's infrastructure.annotations instead was
+  # considered and rejected: the chart also smears those annotations onto the
+  # Deployment metadata AND pod template (templates/deployment.yaml), so a
+  # DNS-only edit would roll the proxy pods; this overlay touches only the
+  # Service.
+  #
   # SPIKE HOSTNAMES (AC3): only the pilot hostname (this story's actual
   # subject, STORY-034-2) is published here. `ai-gateway-auth.homelab0.org`
   # (34.3 auth-matrix spike), `ai-gateway-spike.homelab0.org` (34.4
