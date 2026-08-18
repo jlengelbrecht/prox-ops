@@ -36,6 +36,35 @@ spec:
       secretRef:
         name: agentgateway-pilot-spike-key
 ---
+# FOLLOW-UP (post-34.11 live verification): /v1/models is how every real
+# consumer discovers models, but it inherited auth from the route-level
+# policy above, which only recognises the 34.2 throwaway spike key - both
+# production keys (34.10: agentgateway-claude-code, agentgateway-open-webui)
+# got 401 here even though they work fine on the actual chat/messages
+# routes. Section-scoped policy wins over the route-level default (same
+# precedence rule local-model-policies.yaml relies on), so this narrowly
+# swaps auth for JUST the models-stub section to secretSelector on the
+# label 34.10 already put on both production Secrets - no changes to
+# those Secrets, and the spike key keeps working everywhere else on this
+# route (route-level policy is untouched).
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: agentgateway-pilot-models-stub-apikey
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: models-stub
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretSelector:
+        matchLabels:
+          agentgateway.dev/credential-set: agentgateway-pilot-local-models
+---
 # STORY-034-11: appended the 5 local chat-model aliases for LiteLLM
 # parity - the exact `model_name` strings from litellm/app/configmap.yaml,
 # which is also what local-model-policies.yaml's authorization CEL expects
