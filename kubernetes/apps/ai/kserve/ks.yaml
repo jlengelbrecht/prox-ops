@@ -16,7 +16,16 @@ spec:
     kind: GitRepository
     name: flux-system
     namespace: flux-system
-  wait: true
+  # STORY-034-M10: InferenceService health is NOT gated here. KServe v0.13.1
+  # writes ISVC status.observedGeneration from the Knative revision counter,
+  # not the ISVC's own metadata.generation, so the two never match and kstatus
+  # reads InProgress forever. Flux's healthCheckExprs cannot work around this:
+  # kustomize-controller's CEL evaluator (fluxcd/pkg/runtime, RFC 0009) checks
+  # observedGeneration != generation and returns InProgress BEFORE evaluating
+  # any user expression. Until the KServe upgrade fixes observedGeneration,
+  # wait stays false and only the explicit healthChecks below gate the
+  # release; revert to wait: true once the upgrade lands.
+  wait: false
   timeout: 10m
   healthChecks:
     # Wait for KServe controller manager to be ready
@@ -30,24 +39,3 @@ spec:
       kind: Service
       name: kserve-webhook-server-service
       namespace: kserve
-  # STORY-034-M10: KServe v0.13.1's InferenceService status.observedGeneration
-  # mirrors the Knative revision counter instead of the ISVC's own spec
-  # generation, so kstatus's default generation-comparison health check never
-  # converges even though the ISVC is actually Ready (e.g. gen=18/obsGen=16,
-  # or gen=8/obsGen=10 where obsGen exceeds gen). Key InferenceService health
-  # on the Ready condition instead. Revert this once 34.M5 upgrades KServe
-  # past the obsGen bug.
-  # No `failed` expression (it is optional per the Flux docs): Ready=False is
-  # routinely transient during rollouts (RevisionMissing, image pulls), and a
-  # failed hit would hard-fail the Kustomization immediately. Without it, a
-  # not-yet-Ready ISVC stays in-progress until the 10m timeout — the same
-  # failure semantics as the default kstatus check.
-  # has() guard: an ISVC whose status has no conditions (or no Ready entry
-  # yet) evaluates false (in-progress), not vacuously true. A brand-new ISVC
-  # with no status at all makes the expression error, which Flux treats as
-  # still-in-progress until timeout; CEL's has() cannot guard top-level
-  # fields like status, so this is the tightest guard available.
-  healthCheckExprs:
-    - apiVersion: serving.kserve.io/v1beta1
-      kind: InferenceService
-      current: has(status.conditions) && status.conditions.exists(e, e.type == 'Ready' && e.status == 'True')
