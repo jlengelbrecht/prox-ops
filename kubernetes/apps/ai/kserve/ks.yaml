@@ -30,3 +30,15 @@ spec:
       kind: Service
       name: kserve-webhook-server-service
       namespace: kserve
+  # STORY-034-M10: KServe v0.13.1's InferenceService status.observedGeneration
+  # mirrors the Knative revision counter instead of the ISVC's own spec
+  # generation, so kstatus's default generation-comparison health check never
+  # converges even though the ISVC is actually Ready (e.g. gen=18/obsGen=16,
+  # or gen=8/obsGen=10 where obsGen exceeds gen). Key InferenceService health
+  # on the Ready condition instead. Revert this once 34.M5 upgrades KServe
+  # past the obsGen bug.
+  healthCheckExprs:
+    - apiVersion: serving.kserve.io/v1beta1
+      kind: InferenceService
+      failed: status.conditions.filter(e, e.type == 'Ready').all(e, e.status == 'False')
+      current: status.conditions.filter(e, e.type == 'Ready').all(e, e.status == 'True')
