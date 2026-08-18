@@ -16,7 +16,16 @@ spec:
     kind: GitRepository
     name: flux-system
     namespace: flux-system
-  wait: true
+  # STORY-034-M10: InferenceService health is NOT gated here. KServe v0.13.1
+  # writes ISVC status.observedGeneration from the Knative revision counter,
+  # not the ISVC's own metadata.generation, so the two never match and kstatus
+  # reads InProgress forever. Flux's healthCheckExprs cannot work around this:
+  # kustomize-controller's CEL evaluator (fluxcd/pkg/runtime, RFC 0009) checks
+  # observedGeneration != generation and returns InProgress BEFORE evaluating
+  # any user expression. Until the KServe upgrade fixes observedGeneration,
+  # wait stays false and only the explicit healthChecks below gate the
+  # release; revert to wait: true once the upgrade lands.
+  wait: false
   timeout: 10m
   healthChecks:
     # Wait for KServe controller manager to be ready
