@@ -13,6 +13,9 @@
 # the sqlite file (SQLITE_CANTOPEN, discovered live in Phase 2: the new
 # ReplicaSet pod crash-looped while the old one kept serving traffic
 # through the rolling update, so no consumer impact during the fix).
+# STORY-034-19b: restores LAN name resolution for the agentgateway front
+# door via `service.metadata.annotations` below. See that field for the
+# root-cause writeup and the reasoning behind the mechanism chosen.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayParameters
 metadata:
@@ -40,3 +43,76 @@ spec:
               volumeMounts:
                 - name: request-log
                   mountPath: /data/agentgateway
+
+  # ROOT CAUSE (STORY-034-19b AC1, confirmed by reading the k8s-gateway
+  # CoreDNS plugin source, chart 3.7.1 / app v1.7.0, and agentgateway
+  # v1.3.1's status_syncer.go, both at
+  # ../../k8s-gateway/app/helmrelease.yaml's pinned versions):
+  #
+  # k8s-gateway's HTTPRoute lookup (kubernetes.go:lookupGateways ->
+  # fetchGatewayIPs) resolves a hostname's IP ONLY from the parent
+  # Gateway's `status.addresses` - never from the HTTPRoute or any
+  # annotation. Our own HelmRelease sets no `filters.gatewayClasses`
+  # (../../k8s-gateway/app/helmrelease.yaml), which defaults to an empty
+  # list - k8s-gateway already watches Gateways/HTTPRoutes of EVERY
+  # GatewayClass, "agentgateway" included. So the PM's original hypothesis
+  # (a watch/class-scoping bug in the k8s-gateway chart) is RULED OUT:
+  # there is no restrictive filter to widen.
+  # grafana.homelab0.org resolves because its parent Gateway
+  # (gatewayClassName: envoy) is Envoy Gateway, a mature implementation
+  # that reliably publishes `status.addresses` from its managed Service.
+  # ai-gateway's parent Gateway (gatewayClassName: agentgateway) is
+  # reconciled by the agentgateway-operator (pinned v1.3.1) instead. That
+  # control plane does carry logic to mirror a generated Service's
+  # LoadBalancer address onto `Gateway.status.addresses`
+  # (status_syncer.go's mergeGatewayAddresses, "computed from the
+  # generated Service by the gateway reconciler") - but this repo has
+  # already hit two other Gateway/Service-parity gaps in this same
+  # operator (the 2026-08-01 Gateway-named-"agentgateway" Service
+  # collision documented in ../agentgateway-operator/app/helmrelease.yaml,
+  # and STORY-034-20a's finding that the generated proxy Service never
+  # gets a `metrics` port), so `status.addresses` landing reliably here is
+  # unproven, not just unlucky timing.
+  #
+  # FIX (AC2): rather than touch k8s-gateway's watch config (nothing to
+  # scope - see above) or resurrect blanket/scoped unifi-dns publication
+  # (would reopen 34.4 finding F2, forbidden by this story), this
+  # `service` overlay teaches k8s-gateway the same hostname through a
+  # SECOND, independent, already-enabled resource type: "Service" is
+  # already in k8s-gateway's `watchedResources`
+  # (../../k8s-gateway/app/helmrelease.yaml). k8s-gateway's Service
+  # lookup (kubernetes.go:lookupServiceIndex) reads
+  # `Service.status.loadBalancer.ingress` directly - populated by Cilium
+  # LBIPAM from this same Gateway's `lbipam.cilium.io/ips: "10.20.67.27"`
+  # infrastructure annotation (gateway.yaml), the exact mechanism already
+  # proven live (the VIP is reachable today, per this story's Problem
+  # statement - only the name doesn't resolve). This is a single
+  # consistent path: still k8s-gateway, still *.homelab0.org, no new DNS
+  # system, no live-cluster dependency on the agentgateway operator's own
+  # status reconciliation.
+  #
+  # `coredns.io/hostname` (not `external-dns.alpha.kubernetes.io/hostname`)
+  # is deliberate: unifi-dns runs `sources: [gateway-httproute, service]`
+  # (../unifi-dns/app/helmrelease.yaml) and its `--gateway-name=
+  # envoy-internal` scoping only narrows the gateway-httproute source, not
+  # the service source - an `external-dns.alpha...` annotation here would
+  # make unifi-dns's UNSCOPED service source publish a UDM record for this
+  # Service, which is exactly the blanket-publication regression (F2) this
+  # story is forbidden from reintroducing. `coredns.io/hostname` is
+  # k8s-gateway-only and invisible to unifi-dns/external-dns.
+  #
+  # SPIKE HOSTNAMES (AC3): only the pilot hostname (this story's actual
+  # subject, STORY-034-2) is published here. `ai-gateway-auth.homelab0.org`
+  # (34.3 auth-matrix spike), `ai-gateway-spike.homelab0.org` (34.4
+  # wake-gate spike) and `ai-gateway-mcp.homelab0.org` (34.6 MCP
+  # federation spike) are left dark on purpose: all three are temporary
+  # kill-gate/spike surfaces (their own HTTPRoute file headers say so),
+  # each already has a working LAN test path that doesn't need a DNS
+  # record (`curl --resolve` / `/etc/hosts`, per those files' comments),
+  # and publishing them would be new general LAN reachability for
+  # surfaces this epic hasn't decided to keep - scope creep beyond what
+  # this story asked for.
+  service:
+    metadata:
+      annotations:
+        coredns.io/hostname: ai-gateway.homelab0.org
