@@ -39,3 +39,30 @@ spec:
     # no extra release-label matching is needed here.
     monitoring:
       enabled: true
+  # STORY-034-20a: the chart's `agentgateway-proxy` ServiceMonitor
+  # (templates/monitoring.yaml) selects Services by
+  # `gateway.networking.k8s.io/gateway-class-name: agentgateway`, but the
+  # deployer's per-Gateway Service only publishes the Gateway's own
+  # listener ports, never a `metrics` port - so it has scraped zero
+  # targets since day one (PM measurement 2026-08-10, live-verified).
+  # `monitoring.serviceMonitor.enabled` is the only chart toggle and it
+  # would also remove the *working* control-plane ServiceMonitor
+  # (`agentgateway`, which scrapes this chart's own Service - that one
+  # does publish a `metrics` port, see templates/service.yaml), so a
+  # values toggle can't disable just the broken one. A postRenderer patch
+  # removes only the dead ServiceMonitor; ../../agentgateway-config/app/
+  # podmonitor.yaml is the real fix that scrapes the proxy pods directly.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: ServiceMonitor
+              name: "^agentgateway-proxy$"
+              namespace: network
+            patch: |
+              apiVersion: monitoring.coreos.com/v1
+              kind: ServiceMonitor
+              metadata:
+                name: agentgateway-proxy
+                namespace: network
+              $patch: delete
