@@ -37,8 +37,11 @@ spec:
   # or gen=8/obsGen=10 where obsGen exceeds gen). Key InferenceService health
   # on the Ready condition instead. Revert this once 34.M5 upgrades KServe
   # past the obsGen bug.
+  # has()/exists() guard: a fresh ISVC with no status.conditions (or no Ready
+  # entry yet) must evaluate false for both exprs (in-progress), not vacuously
+  # true as filter().all() would on an empty list.
   healthCheckExprs:
     - apiVersion: serving.kserve.io/v1beta1
       kind: InferenceService
-      failed: status.conditions.filter(e, e.type == 'Ready').all(e, e.status == 'False')
-      current: status.conditions.filter(e, e.type == 'Ready').all(e, e.status == 'True')
+      failed: has(status.conditions) && status.conditions.exists(e, e.type == 'Ready' && e.status == 'False')
+      current: has(status.conditions) && status.conditions.exists(e, e.type == 'Ready' && e.status == 'True')
