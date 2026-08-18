@@ -37,11 +37,17 @@ spec:
   # or gen=8/obsGen=10 where obsGen exceeds gen). Key InferenceService health
   # on the Ready condition instead. Revert this once 34.M5 upgrades KServe
   # past the obsGen bug.
-  # has()/exists() guard: a fresh ISVC with no status.conditions (or no Ready
-  # entry yet) must evaluate false for both exprs (in-progress), not vacuously
-  # true as filter().all() would on an empty list.
+  # No `failed` expression (it is optional per the Flux docs): Ready=False is
+  # routinely transient during rollouts (RevisionMissing, image pulls), and a
+  # failed hit would hard-fail the Kustomization immediately. Without it, a
+  # not-yet-Ready ISVC stays in-progress until the 10m timeout — the same
+  # failure semantics as the default kstatus check.
+  # has() guard: an ISVC whose status has no conditions (or no Ready entry
+  # yet) evaluates false (in-progress), not vacuously true. A brand-new ISVC
+  # with no status at all makes the expression error, which Flux treats as
+  # still-in-progress until timeout; CEL's has() cannot guard top-level
+  # fields like status, so this is the tightest guard available.
   healthCheckExprs:
     - apiVersion: serving.kserve.io/v1beta1
       kind: InferenceService
-      failed: has(status.conditions) && status.conditions.exists(e, e.type == 'Ready' && e.status == 'False')
       current: has(status.conditions) && status.conditions.exists(e, e.type == 'Ready' && e.status == 'True')
