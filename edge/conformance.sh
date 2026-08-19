@@ -19,7 +19,8 @@
 # Optional:
 #   --model NAME           Model id used for the primary requests (default: qwen36-27b)
 #   --alias-model NAME     A second model id expected to route identically to
-#                          --model (e.g. a gateway alias). Skipped if unset.
+#                          --model (e.g. a gateway alias). Both must report the
+#                          same resolved model id. Skipped if unset.
 #   --resolve HOST:PORT:IP Passed straight through to curl --resolve, for
 #                          endpoints with no DNS record yet.
 #   --insecure              Disable TLS certificate validation. Downgrades the
@@ -44,19 +45,35 @@ RESOLVE=""
 INSECURE=0
 TIMEOUT=180
 
+# Model id reported in the primary (non-streaming) completion, used by the
+# alias check to prove both ids land on the same served model.
+PRIMARY_RESOLVED_MODEL=""
+
 usage() {
-    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+    # Print the contiguous comment block that follows the shebang, stopping at
+    # the first non-comment line. Deriving the range instead of hardcoding it
+    # keeps --help complete when this header grows.
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+}
+
+# Guard for flags that take a value: $1 is the flag, $2 is the remaining
+# argument count including the flag itself.
+require_value() {
+    if [ "$2" -lt 2 ]; then
+        echo "FATAL: $1 requires a value" >&2
+        exit 2
+    fi
 }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --endpoint) ENDPOINT="$2"; shift 2 ;;
-        --api-key) API_KEY="$2"; shift 2 ;;
-        --model) MODEL="$2"; shift 2 ;;
-        --alias-model) ALIAS_MODEL="$2"; shift 2 ;;
-        --resolve) RESOLVE="$2"; shift 2 ;;
+        --endpoint) require_value "$1" "$#"; ENDPOINT="$2"; shift 2 ;;
+        --api-key) require_value "$1" "$#"; API_KEY="$2"; shift 2 ;;
+        --model) require_value "$1" "$#"; MODEL="$2"; shift 2 ;;
+        --alias-model) require_value "$1" "$#"; ALIAS_MODEL="$2"; shift 2 ;;
+        --resolve) require_value "$1" "$#"; RESOLVE="$2"; shift 2 ;;
         --insecure) INSECURE=1; shift ;;
-        --timeout) TIMEOUT="$2"; shift 2 ;;
+        --timeout) require_value "$1" "$#"; TIMEOUT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
     esac
@@ -144,20 +161,29 @@ check_chat_completions() {
         report FAIL "chat_completions" "no choices[0].message.content in response"
         return
     fi
+    PRIMARY_RESOLVED_MODEL=$(echo "$resp" | jq -r '.model // empty' 2>/dev/null)
     report PASS "chat_completions"
 }
 
 # --- capability: SSE streaming with correct framing --------------------------
 check_sse_streaming() {
-    local raw has_data has_done bad_json payload line
+    local raw has_data has_done has_content bad_json payload line
+    # max_tokens is generous because a reasoning model can spend a lot of the
+    # budget in reasoning_content before it emits any assistant content, and
+    # this check requires real content below.
     raw=$(curl "${CURL_OPTS[@]}" \
         -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
         -X POST "$ENDPOINT/v1/chat/completions" \
-        -d "$(jq -n --arg model "$MODEL" '{model: $model, messages: [{role: "user", content: "Count from 1 to 3."}], max_tokens: 512, stream: true}')" \
+        -d "$(jq -n --arg model "$MODEL" '{model: $model, messages: [{role: "user", content: "Count from 1 to 3."}], max_tokens: 1024, stream: true}')" \
         2>"$SCRATCH_DIR/sse.err") || {
         report FAIL "sse_streaming" "request failed: $(cat "$SCRATCH_DIR/sse.err" 2>/dev/null)"
         return
     }
+    # SSE lines may end CRLF, which is legal and which end-of-line-anchored
+    # matches would otherwise reject. Drop the trailing CR once so every match
+    # below is CR-tolerant. A bare CR inside a frame would be invalid JSON, so
+    # nothing legitimate is lost.
+    raw=$(printf '%s' "$raw" | sed $'s/\r$//')
     has_data=$(printf '%s' "$raw" | grep -c '^data: ' || true)
     has_done=$(printf '%s' "$raw" | grep -c '^data: \[DONE\]$' || true)
     if [ "$has_data" -eq 0 ]; then
@@ -169,6 +195,7 @@ check_sse_streaming() {
         return
     fi
     bad_json=0
+    has_content=0
     while IFS= read -r line; do
         payload="${line#data: }"
         [ "$payload" = "[DONE]" ] && continue
@@ -178,9 +205,18 @@ check_sse_streaming() {
         if ! printf '%s' "$payload" | jq -e '.choices | type == "array"' >/dev/null 2>&1; then
             bad_json=1
         fi
+        # Correct framing around an empty stream is not a working stream: at
+        # least one frame has to carry generated assistant content.
+        if printf '%s' "$payload" | jq -e '[.choices[]? | .delta.content? | select(type == "string" and length > 0)] | length > 0' >/dev/null 2>&1; then
+            has_content=1
+        fi
     done < <(printf '%s' "$raw" | grep '^data: ')
     if [ "$bad_json" -eq 1 ]; then
         report FAIL "sse_streaming" "a data frame did not parse as {choices: [...]}"
+        return
+    fi
+    if [ "$has_content" -eq 0 ]; then
+        report FAIL "sse_streaming" "framing is correct but no frame carried choices[].delta.content"
         return
     fi
     report PASS "sse_streaming"
@@ -226,7 +262,7 @@ check_model_alias() {
         report SKIP "model_alias" "no --alias-model given"
         return
     fi
-    local resp status content
+    local resp status content resolved
     resp=$(curl "${CURL_OPTS[@]}" --write-out '\n%{http_code}' \
         -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
         -X POST "$ENDPOINT/v1/chat/completions" \
@@ -246,7 +282,23 @@ check_model_alias() {
         report FAIL "model_alias" "alias '$ALIAS_MODEL' did not return a normal chat completion"
         return
     fi
-    report PASS "model_alias" "'$ALIAS_MODEL' routes like '$MODEL'"
+    # HTTP 2xx only proves the alias is accepted somewhere. The contract claims
+    # the alias behaves identically to --model, so compare the model id each
+    # request actually resolved to (a required field of the completion object).
+    resolved=$(echo "$resp" | jq -r '.model // empty' 2>/dev/null)
+    if [ -z "$PRIMARY_RESOLVED_MODEL" ]; then
+        report FAIL "model_alias" "cannot compare routing: '$MODEL' reported no 'model' id"
+        return
+    fi
+    if [ -z "$resolved" ]; then
+        report FAIL "model_alias" "alias '$ALIAS_MODEL' response carries no 'model' id to compare"
+        return
+    fi
+    if [ "$resolved" != "$PRIMARY_RESOLVED_MODEL" ]; then
+        report FAIL "model_alias" "alias resolved to '$resolved', '$MODEL' resolved to '$PRIMARY_RESOLVED_MODEL'"
+        return
+    fi
+    report PASS "model_alias" "'$ALIAS_MODEL' and '$MODEL' both resolve to '$resolved'"
 }
 
 # --- capability: auth actually enforced --------------------------------------

@@ -27,7 +27,7 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
   "runtime": {
     "kind": "llama-swap+llama.cpp",
     "version": "…",
-    "endpoint": "http://<edge-host>:<edge-port>"
+    "endpoint": "https://<edge-host>:<edge-port>"
   },
   "active_model": "qwen3.6-27b",
   "cached_models": ["qwen3.6-27b"],
@@ -149,14 +149,17 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
   `choices[0].message.content`.
 - **`sse_streaming`** — the same endpoint with `stream: true` returns correctly framed SSE:
   one or more `data: {...}` frames each parseable as `{choices[0].delta: ...}`, terminated
-  by a literal `data: [DONE]` frame.
+  by a literal `data: [DONE]` frame, **and at least one frame carrying non-empty
+  `choices[].delta.content`** — framing around an empty stream is not a working stream.
+  Both `LF` and `CRLF` line endings are accepted, since SSE permits either.
 - **`tool_calling`** — a forced-tool-choice request round-trips a matching
   `choices[0].message.tool_calls[0].function.name`.
-- **`model_alias`** — when `--alias-model` is given, the alias routes and behaves
-  identically to `--model` (both return normal completions). This is what proves an edge
-  node's alias handling matches the KServe path's model-alias semantics (34.11's authz
-  binds body-model to routed-model — an alias that diverges here is a routing bug, not a
-  cosmetic difference).
+- **`model_alias`** — when `--alias-model` is given, the alias must return a normal
+  completion **and report the same resolved `model` id as `--model` did**, which is how the
+  script proves the two ids land on the same served model rather than merely both being
+  accepted. This is what proves an edge node's alias handling matches the KServe path's
+  model-alias semantics (34.11's authz binds body-model to routed-model — an alias that
+  diverges here is a routing bug, not a cosmetic difference).
 - **`auth_enforced`** — the same endpoint with no `Authorization` header must be rejected
   (`401`/`403`), never `200`.
 - **`tls_validation`** — for `https` endpoints, the script connects **without** `-k`/
