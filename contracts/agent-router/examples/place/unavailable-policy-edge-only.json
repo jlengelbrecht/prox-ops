@@ -1,0 +1,49 @@
+{
+  "status": "unavailable",
+  "model": null,
+  "placement": null,
+  "readiness": null,
+  "estimated_cold_start_s": null,
+  "headers": {},
+  "ttl_seconds": 300,
+  "reason": {
+    "code": "policy_resolves_to_nothing",
+    "message": "edge-only names three placements and all three are status: planned / selectable: false in catalog 1.0.0 - their bring-up stories have not landed. The policy's own resolves_today is false. This is an explicit empty result: falling through to kserve-a5000 would serve the request while doing precisely what the caller asked not to do."
+  },
+  "alternatives": [
+    {
+      "placement": "cachyos-7900xtx",
+      "model": "qwen36-27b",
+      "readiness": "unknown",
+      "estimated_cold_start_s": null,
+      "eligible": false,
+      "reason": {
+        "code": "not_selectable",
+        "message": "Declared so the placement name is fixed, but not reachable, configured or usable. Blocked by 35.6, 35.7 and 35.8."
+      }
+    },
+    {
+      "placement": "bazzite-5090",
+      "model": "qwen36-27b",
+      "readiness": "unknown",
+      "estimated_cold_start_s": null,
+      "eligible": false,
+      "reason": {
+        "code": "not_selectable",
+        "message": "Hardware confirmed, nothing about its behaviour under this contract measured. Blocked by 35.13."
+      }
+    },
+    {
+      "placement": "laptop-rtx5000",
+      "model": "qwen36-27b",
+      "readiness": "unknown",
+      "estimated_cold_start_s": null,
+      "eligible": false,
+      "reason": {
+        "code": "not_selectable",
+        "message": "SKU, generation and VRAM unmeasured; hardware detection is task 1 of 35.14 and no profile may assume viability here until it lands."
+      }
+    }
+  ],
+  "catalog_version": "sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53"
+}

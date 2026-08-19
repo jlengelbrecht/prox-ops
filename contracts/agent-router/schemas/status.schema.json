@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StatusResponse",
+  "description": "Response body of GET /v1/status (HTTP 200). The model catalog as the router currently understands it - profiles to physical models to eligible placements - plus compute providers, health, warm-model state, availability and the catalog version (EPIC-035 section 4).\n\nThis endpoint is the router's whole read surface. It is how an operator answers 'why did it place there' without reading the router's logs, and how an independent client discovers the vocabulary without reading the router's source.\n\nJSON is the contract; a human-readable HTML rendering is optional and may be added later without a contract change.\n\nThis schema is an addition to the layout story 35.2 required, for the same reason as error.schema.json: it makes the /v1/status example a checked artifact instead of an illustration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalog_version",
+    "catalog_document_version",
+    "catalog_schema_version",
+    "generated_at",
+    "router",
+    "heartbeat_policy",
+    "harnesses",
+    "profiles",
+    "placements",
+    "policies"
+  ],
+  "properties": {
+    "catalog_version": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Digest of the loaded catalog document; same definition as on ExecutionProfile. This is the value a caller echoes back to assert it is still planning against the same catalog."
+    },
+    "catalog_document_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "The catalog's own semver `version` field."
+    },
+    "catalog_schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The catalog's structural `schema_version`. A router MUST refuse a major it does not implement rather than best-effort parsing an unknown shape; when it refuses, it serves 503 catalog_unavailable rather than a partial status."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 instant this response was rendered. Capacity state is in-memory and moves between calls; nothing here is cacheable past the heartbeat interval."
+    },
+    "router": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "capacity_state"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "agent-router build version."
+        },
+        "capacity_state": {
+          "type": "string",
+          "enum": ["learning", "steady"],
+          "description": "`learning` - the router has been up for less than one heartbeat interval and has not necessarily heard from every node yet. Capacity is in-memory only and a restart re-learns it within one interval (EPIC-035 section 4: no persistence beyond in-memory state and the Git catalog). A caller that sees `learning` should expect placements to be reported OFFLINE that are in fact healthy, and should treat an unavailable placement result as provisional.\n`steady` - at least one full heartbeat interval has elapsed since start."
+        },
+        "uptime_seconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "heartbeat_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interval_seconds", "offline_after_seconds"],
+      "properties": {
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The interval edge nodes are expected to heartbeat at. Published here because the interval is a ROUTER-SIDE constant, not a heartbeat field: the edge worker contract's payload has no interval, and this contract does not add one to it. This is where a node discovers the value rather than hard-coding it."
+        },
+        "offline_after_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Silence after which the router transitions a node to OFFLINE. Equals 3x interval_seconds (EPIC-035 section 4). This is withdrawal mechanism 2 of 3 - silence as failure detection - and it is the SLOWEST of the three, which is why it must never be the only one relied on."
+        }
+      }
+    },
+    "harnesses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "supported", "selectable"],
+        "properties": {
+          "name": { "type": "string" },
+          "supported": { "type": "boolean" },
+          "selectable": { "type": "boolean" },
+          "router_behaviour": {
+            "type": "string",
+            "description": "Present when selectable is false. `refuse-to-emit` for local-agent (invariant 16)."
+          }
+        }
+      },
+      "description": "The harness axis as loaded. `local-agent` appears here with supported: false / selectable: false so that a client can SEE the reserved value and its refusal behaviour rather than discovering it by having a request rejected. Its presence in this list is not permission to send it."
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "cost_class", "hosting", "alignment", "capabilities", "min_context", "forbidden_for", "selectable", "physical"],
+        "properties": {
+          "name": { "type": "string" },
+          "cost_class": { "type": "string", "enum": ["free", "subscription", "metered"] },
+          "hosting": { "type": "string", "enum": ["local", "vendor"] },
+          "alignment": {
+            "type": "string",
+            "enum": ["standard", "unrestricted"],
+            "description": "Invariant 12: an alignment property, not a quality tier."
+          },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string", "enum": ["chat", "tools", "vision", "audio"] },
+            "description": "The capability floor this profile GUARANTEES, i.e. the intersection across its candidates - not a union. A consumer needing an optional capability filters physical[] rather than assuming the whole list has it."
+          },
+          "min_context": {
+            "type": ["integer", "null"],
+            "description": "The context floor this profile GUARANTEES. null means no guarantee, and a consumer must not use a null-guarantee profile to satisfy an explicit context requirement."
+          },
+          "forbidden_for": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Task tags this profile is never AUTO-SELECTED for. A hard exclusion, not a score or a tie-break."
+          },
+          "selectable": { "type": "boolean" },
+          "physical": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["model_id", "placement", "eligible"],
+              "properties": {
+                "model_id": { "type": "string" },
+                "placement": {
+                  "type": ["string", "null"],
+                  "description": "null is correct for vendor-hosted candidates, not a gap: placement names are agentgateway provider names and vendor traffic never touches agentgateway. A local model with a null placement is an error."
+                },
+                "eligible": {
+                  "type": "boolean",
+                  "description": "Whether /v1/place could return this candidate right now, given live capacity state."
+                },
+                "reason_code": {
+                  "type": "string",
+                  "description": "Present when eligible is false; same vocabulary as PlaceResult reason codes."
+                }
+              }
+            },
+            "description": "ORDERED preference list. First entry is preferred; order is the only preference expression and there are no weights."
+          }
+        }
+      }
+    },
+    "placements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "status", "selectable", "state", "state_source", "readiness", "eligible", "last_heartbeat", "heartbeat"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string", "enum": ["kserve", "edge"] },
+          "status": { "type": "string", "enum": ["available", "planned"] },
+          "selectable": { "type": "boolean" },
+          "state": {
+            "type": "string",
+            "enum": ["AVAILABLE", "SERVING", "DRAINING", "INTERACTIVE", "OFFLINE"],
+            "description": "Current state. For an edge placement this is the last heartbeat's self-reported state, or OFFLINE if it has been silent for offline_after_seconds. A placement that has never heartbeated is OFFLINE with last_heartbeat: null."
+          },
+          "state_source": {
+            "type": "string",
+            "enum": ["heartbeat", "silence", "static"],
+            "description": "`heartbeat` - the node said so. `silence` - the router inferred OFFLINE from a missed heartbeat window. `static` - the placement does not heartbeat at all and its state comes from catalog status (KServe placements: the cluster GPU is not a node that can withdraw itself)."
+          },
+          "readiness": {
+            "type": "string",
+            "enum": ["warm", "cached", "absent", "unknown"],
+            "description": "Warm/cached/absent per owner ruling R11, derived from the heartbeat's active_model and cached_models.\n\nFor a KServe placement this is normally `unknown`, and that is correct rather than lazy: THE ROUTER DOES NOT PROBE KSERVE. 35.5 case 14 established that no mechanism may wake a scale-to-zero model merely to observe it (invariant 7), and a status endpoint that pinged predictors to fill this field in would be exactly that mechanism wearing a different hat."
+          },
+          "eligible": {
+            "type": "boolean",
+            "description": "Whether /v1/place may currently return this placement. False for status: planned placements, for withdrawn nodes, and for anything the router has excluded."
+          },
+          "cold_start_s_estimate": {
+            "type": ["number", "null"],
+            "description": "PROVISIONAL where it comes from the catalog (ruling R1); 35.7 measures it."
+          },
+          "last_heartbeat": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Receipt time of the most recent heartbeat, or null if none has ever arrived."
+          },
+          "heartbeat": {
+            "oneOf": [{ "$ref": "heartbeat.schema.json" }, { "type": "null" }],
+            "description": "The most recent heartbeat, re-exposed VERBATIM in the edge worker contract's own shape (edge/EDGE-WORKER-CONTRACT.md section 1: the heartbeat payload 'is also the shape GET /v1/status re-exposes'). null for placements that do not heartbeat, such as KServe.\n\nIt is re-exposed rather than flattened so there is exactly one heartbeat shape in this contract and no second, subtly different one to drift from it.\n\nruntime.endpoint appears here because this is a STATUS surface and R9 makes that field observational metadata. Surfacing it for a human to read is its purpose; routing on it is forbidden, for the router and for every consumer of this response alike."
+          }
+        }
+      }
+    },
+    "policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "prefer_order", "warm_preference", "allow_cold_start", "resolves_today", "resolves_now"],
+        "properties": {
+          "name": { "type": "string" },
+          "prefer_order": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Placement names, best first."
+          },
+          "warm_preference": { "type": "string", "enum": ["strict", "weighted", "ignored"] },
+          "warm_bonus_rank_shift": { "type": ["integer", "null"] },
+          "allow_cold_start": { "type": "boolean" },
+          "min_vram_gb": { "type": ["number", "null"] },
+          "min_free_vram_gb": { "type": ["number", "null"] },
+          "resolves_today": {
+            "type": "boolean",
+            "description": "The catalog's own static claim: can this policy select anything given today's placement statuses and constraints, ignoring live capacity."
+          },
+          "resolves_now": {
+            "type": "boolean",
+            "description": "The live answer: can it select anything given current capacity state. A policy with resolves_today: true and resolves_now: false is the normal shape of 'every candidate is INTERACTIVE right now' - and the pair is worth reporting separately, because one is a Git-level fact and the other is a runtime one."
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "harness": "devin",
+  "model_profile": "devin/free",
+  "effort": "medium",
+  "cost_class": "free",
+  "placement_policy": "prefer-warm-local",
+  "fallbacks": [],
+  "metered": false,
+  "rationale": "The codex subscription pool is exhausted for this window, so the highest-scoring option would have had to run openai/strong against billable API spend instead of the subscription. The request did not carry allow_metered, so that option was withheld and this is the best remaining non-metered one. devin/free is a visible downgrade in capability; that is the correct outcome, not a failure, because absence of subscription capacity never silently promotes to billable API (invariant 4). No fallbacks are offered: every remaining alternative is either the withheld metered option or weaker than this one.",
+  "catalog_version": "sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53",
+  "catalog_document_version": "1.0.0",
+  "expires_at": "2026-08-19T15:24:30Z",
+  "metered_denied": {
+    "code": "metered_denied",
+    "message": "openai/strong scored highest but its subscription path is exhausted, so serving it would have been billable per-token spend. allow_metered was not set on the request, so it was withheld and a non-metered option was returned instead. Authorizing this is a human decision, per attempt.",
+    "obligation": "re-plan",
+    "withheld": {
+      "harness": "codex",
+      "model_profile": "openai/strong",
+      "cost_class": "metered"
+    }
+  }
+}

@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExecutionProfile",
+  "description": "Response body of POST /v1/route (HTTP 200). The planning-time decision, stamped IMMUTABLY into story frontmatter.\n\nINVARIANT 2 (planning-time immutability): the profile chosen for an execution attempt is frozen. A worker may not re-choose its model mid-attempt; re-routing requires a NEW attempt with a new call to /v1/route.\n\nINVARIANT 1 (three independent axes): harness, model_profile and placement_policy are three separate fields on purpose. No consumer may collapse two of them into one, and nothing here names a physical model or an endpoint - resolving a profile onto physical compute is /v1/place's job, and substituting a different model is never legitimate (invariant 3).\n\nVOCABULARY: harness, model_profile and placement_policy are closed enums taken verbatim from ConfigMap ai/agent-router-catalog, catalog document version 1.0.0, schema_version 1. They are not restated from memory. See README 'Vocabulary coupling' for the change protocol that keeps this file and the catalog in step.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "harness",
+    "model_profile",
+    "effort",
+    "cost_class",
+    "placement_policy",
+    "fallbacks",
+    "metered",
+    "rationale",
+    "catalog_version",
+    "expires_at"
+  ],
+  "properties": {
+    "harness": {
+      "$ref": "#/$defs/harness",
+      "description": "Which autonomous coding harness runs the work."
+    },
+    "model_profile": {
+      "$ref": "#/$defs/model_profile",
+      "description": "Logical model/capability profile. The only model-ish name BMAD stamps; the physical model behind it moves by catalog PR underneath a stable profile name."
+    },
+    "effort": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "xhigh"],
+      "description": "Reasoning-effort tier for the harness session."
+    },
+    "cost_class": {
+      "type": "string",
+      "enum": ["free", "subscription", "metered"],
+      "description": "How THIS ATTEMPT will be paid for. Invariant 4 is written per-attempt (\"Billable use is explicit, per-attempt, and recorded\"), so this is a property of the attempt, not a copy of the catalog field.\n\n`free` - local GPU, or a free vendor tier.\n`subscription` - a seat the operator already pays for (invariant 10: a subscription is NOT an API key, and nothing here authorises centralising an OAuth token or introducing ANTHROPIC_API_KEY).\n`metered` - billable per-token spend. DEFAULT-DENY (invariant 4).\n\nIt normally equals the selected profile's catalog cost_class, and differs exactly when the profile's usual payment path is unavailable and a billable one exists for the same profile - a subscription pool exhausted for the window, say. That case is the reason the distinction matters: it is where an unguarded router would quietly start spending money."
+    },
+    "placement_policy": {
+      "$ref": "#/$defs/placement_policy",
+      "description": "Which placement policy /v1/place must resolve this attempt under. Stamped at planning time so that dispatch-time placement cannot silently widen the set of compute the attempt may land on."
+    },
+    "fallbacks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fallback" },
+      "description": "Ordered alternatives, most preferred first, for use when the primary choice cannot start AT ALL (e.g. the harness pool is exhausted). Empty array is legal and means 'no fallback: fail the attempt instead'.\n\nA fallback is a NEW ATTEMPT, not a mid-attempt swap (invariant 2). Every entry obeys the same rules as the primary: no metered entry may appear unless the request set allow_metered: true, and the harness enum is equally closed."
+    },
+    "metered": {
+      "type": "boolean",
+      "description": "True only when this attempt is authorized to spend billable API budget. INVARIANT 4 - metered API is default-deny: absence of subscription or local capacity never silently promotes to billable API. True here requires allow_metered: true on the /v1/route request; the router refuses otherwise (see metered_denied)."
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One human-readable paragraph citing the deciding signals (blast radius, ambiguity, tags, capacity, cost). This is read by a human reviewing a stamped story months later; 'policy said so' is not a rationale."
+    },
+    "catalog_version": {
+      "$ref": "#/$defs/catalog_version"
+    },
+    "catalog_document_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Additive, optional. The catalog's own semver `version` field (e.g. \"1.0.0\"), carried so a stale-catalog message can name a human-meaningful version rather than only a digest. Never a substitute for catalog_version in an equality check."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339. After this instant the decision is stale and MUST be recomputed by calling /v1/route again rather than dispatched. Expiry exists because the inputs (pool temperature, capacity, catalog) move; it is not a cache TTL for the response body."
+    },
+    "metered_denied": {
+      "$ref": "#/$defs/metered_denied"
+    }
+  },
+  "allOf": [
+    {
+      "description": "INVARIANT 4, mechanically: `metered` is true exactly when the selected cost_class is metered. A profile that claims cost_class=metered with metered=false would spend money without authorization; the reverse would record an authorization that bought nothing.",
+      "if": {
+        "properties": { "cost_class": { "const": "metered" } },
+        "required": ["cost_class"]
+      },
+      "then": {
+        "properties": { "metered": { "const": true } },
+        "required": ["metered"]
+      },
+      "else": {
+        "properties": { "metered": { "const": false } },
+        "required": ["metered"]
+      }
+    },
+    {
+      "description": "The metered_denied note is only meaningful on a substituted, non-metered result: it says 'the best option was withheld and this is the best remaining one'. It can never accompany a profile that is itself metered.",
+      "if": { "required": ["metered_denied"] },
+      "then": {
+        "properties": {
+          "metered": { "const": false },
+          "cost_class": { "not": { "const": "metered" } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "harness": {
+      "type": "string",
+      "enum": ["claude", "codex", "devin"],
+      "not": { "enum": ["local-agent"] },
+      "description": "INVARIANT 16 - the harness axis accepts claude|codex|devin ONLY. `local-agent` exists in the catalog as a RESERVED, supported:false / selectable:false placeholder so the axis is future-proof, and the catalog states router_behaviour: refuse-to-emit. A router that emits it is wrong and must refuse loudly rather than degrade.\n\nllama.cpp, vLLM and llama-swap are INFERENCE RUNTIME, not autonomous coding harnesses, and no harness may be adopted merely to fill an architectural slot. Making `local-agent` selectable requires its own story evaluating a specific harness; no story in EPIC-035 does that.\n\nThe redundant `not` clause is deliberate belt-and-braces: it keeps the refusal true even if somebody later widens the enum without reading this description.",
+      "$comment": "Vocabulary source: catalog v1.0.0 harnesses table, entries with selectable: true."
+    },
+    "model_profile": {
+      "type": "string",
+      "enum": [
+        "local-code-fast",
+        "local-code-standard",
+        "local-general",
+        "local-unrestricted",
+        "claude/strong",
+        "openai/strong",
+        "devin/free"
+      ],
+      "description": "Profile names read verbatim from catalog v1.0.0 (all seven are selectable: true).\n\nINVARIANT 12 - `local-unrestricted` is an ALIGNMENT property, not a quality tier: it is a weaker model than local-code-standard in every respect except refusal behaviour. Its catalog forbidden_for list (security, iam, secrets, prod-iac, destructive-tools) is a HARD EXCLUSION, not a score or a tie-break: a /v1/route request carrying any of those tags must never be auto-selected onto it, however well it otherwise fits. An operator may still choose it explicitly and own that choice.",
+      "$comment": "Vocabulary source: catalog v1.0.0 profiles table."
+    },
+    "placement_policy": {
+      "type": "string",
+      "enum": ["prefer-warm-local", "cluster-only", "edge-only", "any-24gb"],
+      "description": "Policy names read verbatim from catalog v1.0.0 policies.placement_policy. `prefer-warm-local` is the catalog default applied when a caller names none. `edge-only` has resolves_today: false - every placement it names is status: planned - so /v1/place answers it with an explicit unavailable result rather than falling through to the cluster.",
+      "$comment": "Vocabulary source: catalog v1.0.0 policies.placement_policy table."
+    },
+    "catalog_version": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Content digest of the catalog this decision was computed against: sha256 over the UTF-8 bytes of the rendered catalog document (ConfigMap ai/agent-router-catalog, key catalog.yaml) exactly as mounted, before any parsing. Computed by the router at load time; never written by hand and never equal to the catalog's semver `version` field.\n\nA caller may echo this value back on a later request to assert it is still planning against the same catalog; a mismatch is answered with 409 catalog_version_stale rather than silently served."
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "model_profile", "cost_class"],
+      "properties": {
+        "harness": { "$ref": "#/$defs/harness" },
+        "model_profile": { "$ref": "#/$defs/model_profile" },
+        "cost_class": {
+          "type": "string",
+          "enum": ["free", "subscription", "metered"]
+        }
+      },
+      "description": "One alternative attempt. Exactly three keys: the axes a fallback may change. It deliberately cannot carry an effort tier or a placement policy - those stay as stamped, so a fallback cannot quietly widen the attempt's blast radius."
+    },
+    "metered_denied": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "obligation", "withheld"],
+      "properties": {
+        "code": {
+          "const": "metered_denied",
+          "description": "Same machine-readable code as the 409 error of the same name. One condition, two carriers: this in-band note when a non-metered substitute exists, and a 409 error envelope when none does. A caller distinguishes them by whether it received a profile at all."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable explanation naming what was withheld and why."
+        },
+        "obligation": {
+          "const": "re-plan",
+          "description": "The caller's obligation. Proceeding with the returned non-metered profile is legitimate and is the expected path. The alternative is a NEW /v1/route call carrying allow_metered: true, which is a per-attempt human authorization decision - never an automatic retry. A client that retries with allow_metered: true on its own has defeated invariant 4."
+        },
+        "withheld": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["harness", "model_profile", "cost_class"],
+          "properties": {
+            "harness": { "$ref": "#/$defs/harness" },
+            "model_profile": { "$ref": "#/$defs/model_profile" },
+            "cost_class": { "const": "metered" }
+          },
+          "description": "The metered option the router would have returned had the request carried allow_metered: true. Recorded so the human authorizing the spend can see exactly what they are authorizing."
+        }
+      },
+      "description": "INVARIANT 4 refusal note. Present on a 200 response when the best option was metered, the request did not set allow_metered: true, and a non-metered option existed; the profile carried alongside it IS that non-metered option. When no non-metered option exists the router returns 409 metered_denied with no profile instead - it never returns the metered choice with a warning attached."
+    }
+  }
+}

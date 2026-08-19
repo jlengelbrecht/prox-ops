@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlaceResult",
+  "description": "Response body of POST /v1/place (HTTP 200). Resolves a stamped model_profile + placement_policy onto physical compute.\n\nSHAPE (b) - EPIC-035 section 10a, ratified in 10b. `ai.groups` is a PASSIVE SAFETY NET beneath proactive agent-router placement, not the placement mechanism. This schema is the 35.5 outcome shape {model, placement, headers, ttl_seconds, reason} plus alternatives[]; it SUPERSEDES the earlier section 4 sketch that returned a `target` object with `node`/`endpoint` and a `decided_by` field.\n\nTwo differences from that sketch are load-bearing, not editorial:\n  - NO ENDPOINT. The caller receives a placement NAME and reaches it through agentgateway, which is the only model ingress (invariant 5). Handing a caller a URL would make the heartbeat's runtime.endpoint an authoritative routing target, which owner ruling R9 forbids outright.\n  - `reason` is an object {code, message}, not the illustrative free-text string in the spike write-up, so that the unavailable case is machine-detectable (README 'Error taxonomy').\n\nAUTHORITY: a BINDING RECOMMENDATION WITH A SAFE DEFAULT. The caller expresses it as `x-placement` on its gateway request. It is not binding in the enforcement sense, because the gateway cannot reject a request for carrying the wrong placement and nothing stops a client calling the gateway without ever asking the router. That is designed in rather than papered over: a missing, unknown or stale x-placement falls through to a route rule whose backend is a GROUPED backend, so an uncooperative caller degrades to gateway-side selection instead of an error. 'You must ask the router' is enforceable only at the client/dispatcher layer.\n\nR5: x-placement is a SCHEDULING SIGNAL ONLY. It carries no authorization meaning whatsoever. Model authorization remains the per-model CEL policy binding the request body's model to the routed backend model. A design that lets x-placement influence an authorization decision is rejected on sight.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status",
+    "model",
+    "placement",
+    "readiness",
+    "estimated_cold_start_s",
+    "headers",
+    "ttl_seconds",
+    "reason",
+    "alternatives",
+    "catalog_version"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["placed", "unavailable"],
+      "description": "Discriminator. `placed` - a placement was resolved and the caller should dispatch with the given headers. `unavailable` - nothing eligible; the caller MUST NOT dispatch the inference request (see the reason codes).\n\nThis field exists because 'no eligible placement' is answered with HTTP 200, not an error status (README 'Error taxonomy' explains why), and a caller that only inspects the HTTP status must still be unable to mistake an empty result for a placement."
+    },
+    "model": {
+      "type": ["string", "null"],
+      "description": "The physical model id that will serve the request: a key in the catalog `models` table, which is also the gateway-facing alias a client puts in the request body and in x-model, and the literal the per-model CEL authorization policy compares against.\n\nDeliberately NOT enumerated here. The profile indirection exists so that changing which physical model backs a profile is a pull request against the catalog and touches nothing else; enumerating model ids in this contract would break that. Placement names are enumerated, because they are compiled into HTTPRoute matches and provider `name` fields and cannot move without a coordinated change anyway.\n\nnull exactly when status is `unavailable`."
+    },
+    "placement": {
+      "oneOf": [{ "$ref": "#/$defs/placement" }, { "type": "null" }],
+      "description": "The resolved placement name, or null when status is `unavailable`. This is the value the caller sets as x-placement."
+    },
+    "readiness": {
+      "oneOf": [{ "$ref": "#/$defs/readiness" }, { "type": "null" }],
+      "description": "OWNER RULING R11, applied: warm, cached and absent are three different costs and the middle one must not be collapsed. null exactly when status is `unavailable`."
+    },
+    "estimated_cold_start_s": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "Expected seconds to first token if the model is not already warm; 0 when readiness is `warm`. null when unknown or when status is `unavailable`.\n\nPROVISIONAL wherever it is derived from the catalog's cold_start_s_estimate (owner ruling R1): story 35.7 measures repeatable cold and warm figures on both the A5000 and the 7900 XTX, and 35.8 sets final timeout values from those numbers."
+    },
+    "headers": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "propertyNames": { "enum": ["x-placement"] },
+      "description": "Headers the caller copies VERBATIM onto its agentgateway request. When status is `placed` this contains exactly x-placement, whose value equals the `placement` field above (an equality JSON Schema cannot express; it is a MUST on the router). When status is `unavailable` it is empty.\n\nThe allowed key set is closed on purpose. This field is the one place a router could smuggle an arbitrary header into a caller's request, and R5 makes placement a scheduling signal only: restricting propertyNames means a future router cannot use this channel to hand out an Authorization header, a model override, or anything else that touches an authorization decision."
+    },
+    "ttl_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How long this placement decision may be used. After expiry the caller RE-PLACES (calls /v1/place again); it does not re-route, because the stamped profile is immutable for the attempt (invariant 2). 30 seconds is the starting value: it is short enough that an interactive preemption is honoured within one TTL, which is the primary withdrawal mechanism.\n\nPresent on `unavailable` results too, where it means 'do not hammer: wait this long before asking again'."
+    },
+    "reason": {
+      "$ref": "#/$defs/reason",
+      "description": "Why this answer, machine-readable first."
+    },
+    "alternatives": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/alternative" },
+      "description": "Every other candidate the router considered, in the order it ranked them, each with its own eligibility verdict. Empty array is legal.\n\nWhat a caller may legitimately do with this: log it, show it to a human, and - if its first dispatch fails outright before any response stream begins - retry as a NEW attempt against an eligible alternative. What it may NOT do: pick a different entry because it prefers one, or use an entry marked eligible: false. Choosing among alternatives is not a licence to override the policy the profile was stamped with.\n\nOn `unavailable` results this is where the router shows its work: each rejected candidate carries the reason it was rejected."
+    },
+    "catalog_version": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Digest of the catalog this placement was resolved against; same definition as on ExecutionProfile. A caller comparing it with the digest stamped on its ExecutionProfile can tell that the catalog moved between planning and dispatch."
+    }
+  },
+  "allOf": [
+    {
+      "description": "A placed result names a model and a placement, and carries the x-placement header the caller must send.",
+      "if": {
+        "properties": { "status": { "const": "placed" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "model": { "type": "string", "minLength": 1 },
+          "placement": { "$ref": "#/$defs/placement" },
+          "readiness": { "$ref": "#/$defs/readiness" },
+          "headers": {
+            "type": "object",
+            "required": ["x-placement"],
+            "minProperties": 1
+          },
+          "reason": {
+            "properties": {
+              "code": {
+                "enum": ["placed_warm", "placed_cached", "placed_cold", "placed_only_candidate"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "An unavailable result is an EXPLICIT EMPTY PLACEMENT, never a silent fall-through to a placement the caller did not ask for (catalog README, 'Empty candidate sets'). It carries no model, no placement and no headers, so a caller cannot accidentally dispatch it.",
+      "if": {
+        "properties": { "status": { "const": "unavailable" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "model": { "type": "null" },
+          "placement": { "type": "null" },
+          "readiness": { "type": "null" },
+          "estimated_cold_start_s": { "type": "null" },
+          "headers": { "type": "object", "maxProperties": 0 },
+          "reason": {
+            "properties": {
+              "code": {
+                "enum": [
+                  "no_eligible_placement",
+                  "policy_resolves_to_nothing",
+                  "all_candidates_withdrawn",
+                  "constraint_unsatisfiable"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "placement": {
+      "type": "string",
+      "enum": ["kserve-a5000", "cachyos-7900xtx", "bazzite-5090", "laptop-rtx5000"],
+      "description": "Placement names read verbatim from catalog v1.0.0. A PLACEMENT NAME IS A PUBLIC IDENTIFIER: 35.5 froze that it appears verbatim as an agentgateway provider `name` and as the value of the x-placement request header, so renaming one is a breaking change across the catalog, the gateway configuration and every caller. Only kserve-a5000 is status: available today; the other three are status: planned / selectable: false and cannot be returned as a placement until their bring-up stories land.",
+      "$comment": "Vocabulary source: catalog v1.0.0 placements table."
+    },
+    "readiness": {
+      "type": "string",
+      "enum": ["warm", "cached", "absent", "unknown"],
+      "description": "OWNER RULING R11's three costs, plus an honest fourth value.\n\nwarm - the model is loaded in the runtime (heartbeat active_model); servable now, no load step.\ncached - the artifact is present on local storage (heartbeat cached_models); loadable without a download, but still needs model/VRAM load time.\nabsent - neither; the artifact must be fetched before it can be loaded. Tens of gigabytes, and a different order of magnitude from `cached`.\nunknown - no heartbeat-derived signal exists for this candidate (e.g. a KServe placement whose scale state was not sampled). A router MUST NOT treat unknown as warm."
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "placed_warm",
+            "placed_cached",
+            "placed_cold",
+            "placed_only_candidate",
+            "no_eligible_placement",
+            "policy_resolves_to_nothing",
+            "all_candidates_withdrawn",
+            "constraint_unsatisfiable",
+            "not_selected_lower_rank",
+            "not_selected_colder",
+            "withdrawn_interactive",
+            "withdrawn_draining",
+            "offline",
+            "not_selectable"
+          ],
+          "description": "SELECTION OUTCOMES - legal on a `placed` result:\nplaced_warm - chosen because it is already warm (the primary economic signal).\nplaced_cached - chosen because the artifact is resident locally; a load, not a download.\nplaced_cold - chosen on policy order; a cold start is expected.\nplaced_only_candidate - exactly one eligible candidate existed.\n\nEMPTY-RESULT OUTCOMES - legal on an `unavailable` result:\nno_eligible_placement - candidates existed but none is eligible right now.\npolicy_resolves_to_nothing - the policy names no placement that can resolve today (catalog `resolves_today: false`, e.g. edge-only while every edge placement is status: planned).\nall_candidates_withdrawn - every candidate is INTERACTIVE, DRAINING or OFFLINE.\nconstraint_unsatisfiable - a hard constraint (min_vram_gb, min_free_vram_gb, a required capability, min_context) excludes every candidate. A null measured capacity can never satisfy a size floor, and a nameplate figure must not be substituted for one.\n\nCANDIDATE-LEVEL OUTCOMES - used inside alternatives[]:\nnot_selected_lower_rank - eligible, but ranked below the chosen candidate in the policy's prefer_order.\nnot_selected_colder - eligible, but the chosen candidate was warmer (warm_preference: strict means any warm candidate beats any cold one regardless of order).\nwithdrawn_interactive - the node reported state INTERACTIVE; a human has the GPU.\nwithdrawn_draining - the node reported state DRAINING.\noffline - the node reported OFFLINE, or has been silent for 3x the heartbeat interval.\nnot_selectable - the placement is declared but status: planned / selectable: false; its bring-up story has not landed."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable explanation naming the deciding signals, e.g. which candidate was warm and which was cold."
+        }
+      }
+    },
+    "alternative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["placement", "model", "readiness", "eligible", "reason"],
+      "properties": {
+        "placement": { "$ref": "#/$defs/placement" },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The physical model id this candidate would serve. May differ from the chosen one: a profile's physical[] list is an ordered set of {model_id, placement} pairs, not one model on several GPUs."
+        },
+        "readiness": { "$ref": "#/$defs/readiness" },
+        "estimated_cold_start_s": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "eligible": {
+          "type": "boolean",
+          "description": "Whether this candidate could be dispatched to right now. A caller may fall back to an eligible: true alternative as a NEW attempt; it must never dispatch to an eligible: false one."
+        },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "status": "unavailable",
+  "model": null,
+  "placement": null,
+  "readiness": null,
+  "estimated_cold_start_s": null,
+  "headers": {},
+  "ttl_seconds": 30,
+  "reason": {
+    "code": "all_candidates_withdrawn",
+    "message": "Every candidate under edge-only has withdrawn itself: one is INTERACTIVE, one is DRAINING, one has been silent past the offline window. Interactive human use of an edge host always wins (invariant 8), so this is the system working. The caller must not substitute a cluster placement the policy excluded, and must not be handed a metered alternative to make the problem go away."
+  },
+  "alternatives": [
+    {
+      "placement": "cachyos-7900xtx",
+      "model": "qwen36-27b",
+      "readiness": "cached",
+      "estimated_cold_start_s": 25,
+      "eligible": false,
+      "reason": {
+        "code": "withdrawn_interactive",
+        "message": "Last heartbeat reported state INTERACTIVE: a human has the GPU. Marked ineligible on receipt, not after a timeout."
+      }
+    },
+    {
+      "placement": "bazzite-5090",
+      "model": "qwen36-27b",
+      "readiness": "warm",
+      "estimated_cold_start_s": 0,
+      "eligible": false,
+      "reason": {
+        "code": "withdrawn_draining",
+        "message": "Reported DRAINING: finishing in-flight work, refusing new. Warm but not available - readiness and eligibility are separate questions and must not be collapsed."
+      }
+    },
+    {
+      "placement": "laptop-rtx5000",
+      "model": "qwen36-27b",
+      "readiness": "unknown",
+      "estimated_cold_start_s": null,
+      "eligible": false,
+      "reason": {
+        "code": "offline",
+        "message": "No heartbeat for longer than 3x the interval. Silence is failure detection, and it is the slowest of the three withdrawal mechanisms."
+      }
+    }
+  ],
+  "catalog_version": "sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53"
+}

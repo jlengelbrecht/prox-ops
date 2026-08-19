@@ -1,0 +1,349 @@
+{
+  "catalog_version": "sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53",
+  "catalog_document_version": "1.0.0",
+  "catalog_schema_version": 1,
+  "generated_at": "2026-08-19T15:05:04Z",
+  "router": {
+    "version": "0.1.0",
+    "capacity_state": "steady",
+    "uptime_seconds": 8416
+  },
+  "heartbeat_policy": {
+    "interval_seconds": 30,
+    "offline_after_seconds": 90
+  },
+  "harnesses": [
+    {
+      "name": "claude",
+      "supported": true,
+      "selectable": true
+    },
+    {
+      "name": "codex",
+      "supported": true,
+      "selectable": true
+    },
+    {
+      "name": "devin",
+      "supported": true,
+      "selectable": true
+    },
+    {
+      "name": "local-agent",
+      "supported": false,
+      "selectable": false,
+      "router_behaviour": "refuse-to-emit"
+    }
+  ],
+  "profiles": [
+    {
+      "name": "local-code-fast",
+      "cost_class": "free",
+      "hosting": "local",
+      "alignment": "standard",
+      "capabilities": [
+        "chat"
+      ],
+      "min_context": 8192,
+      "forbidden_for": [],
+      "selectable": true,
+      "physical": [
+        {
+          "model_id": "qwen-coder",
+          "placement": "kserve-a5000",
+          "eligible": true
+        }
+      ]
+    },
+    {
+      "name": "local-code-standard",
+      "cost_class": "free",
+      "hosting": "local",
+      "alignment": "standard",
+      "capabilities": [
+        "chat",
+        "tools"
+      ],
+      "min_context": 65536,
+      "forbidden_for": [],
+      "selectable": true,
+      "physical": [
+        {
+          "model_id": "qwen36-27b",
+          "placement": "kserve-a5000",
+          "eligible": true
+        },
+        {
+          "model_id": "qwen36-27b",
+          "placement": "cachyos-7900xtx",
+          "eligible": true
+        }
+      ]
+    },
+    {
+      "name": "local-general",
+      "cost_class": "free",
+      "hosting": "local",
+      "alignment": "standard",
+      "capabilities": [
+        "chat"
+      ],
+      "min_context": 8192,
+      "forbidden_for": [],
+      "selectable": true,
+      "physical": [
+        {
+          "model_id": "qwen36-27b",
+          "placement": "kserve-a5000",
+          "eligible": true
+        },
+        {
+          "model_id": "hermes-jarvis",
+          "placement": "kserve-a5000",
+          "eligible": true
+        },
+        {
+          "model_id": "qwen-omni",
+          "placement": "kserve-a5000",
+          "eligible": true
+        }
+      ]
+    },
+    {
+      "name": "local-unrestricted",
+      "cost_class": "free",
+      "hosting": "local",
+      "alignment": "unrestricted",
+      "capabilities": [
+        "chat"
+      ],
+      "min_context": 8192,
+      "forbidden_for": [
+        "security",
+        "iam",
+        "secrets",
+        "prod-iac",
+        "destructive-tools"
+      ],
+      "selectable": true,
+      "physical": [
+        {
+          "model_id": "dolphin-chat",
+          "placement": "kserve-a5000",
+          "eligible": true
+        }
+      ]
+    },
+    {
+      "name": "claude/strong",
+      "cost_class": "subscription",
+      "hosting": "vendor",
+      "alignment": "standard",
+      "capabilities": [
+        "chat",
+        "tools"
+      ],
+      "min_context": null,
+      "forbidden_for": [],
+      "selectable": true,
+      "physical": [
+        {
+          "model_id": "claude/opus",
+          "placement": null,
+          "eligible": true
+        }
+      ]
+    },
+    {
+      "name": "openai/strong",
+      "cost_class": "subscription",
+      "hosting": "vendor",
+      "alignment": "standard",
+      "capabilities": [
+        "chat",
+        "tools"
+      ],
+      "min_context": null,
+      "forbidden_for": [],
+      "selectable": true,
+      "physical": [
+        {
+          "model_id": "openai/gpt-5.6-sol",
+          "placement": null,
+          "eligible": true
+        }
+      ]
+    },
+    {
+      "name": "devin/free",
+      "cost_class": "free",
+      "hosting": "vendor",
+      "alignment": "standard",
+      "capabilities": [
+        "chat",
+        "tools"
+      ],
+      "min_context": null,
+      "forbidden_for": [],
+      "selectable": true,
+      "physical": [
+        {
+          "model_id": "swe-1-7",
+          "placement": null,
+          "eligible": true
+        },
+        {
+          "model_id": "swe-1-7-medium",
+          "placement": null,
+          "eligible": true
+        }
+      ]
+    }
+  ],
+  "placements": [
+    {
+      "name": "kserve-a5000",
+      "kind": "kserve",
+      "status": "available",
+      "selectable": true,
+      "state": "AVAILABLE",
+      "state_source": "static",
+      "readiness": "unknown",
+      "eligible": true,
+      "cold_start_s_estimate": 150,
+      "last_heartbeat": null,
+      "heartbeat": null
+    },
+    {
+      "name": "cachyos-7900xtx",
+      "kind": "edge",
+      "status": "available",
+      "selectable": true,
+      "state": "AVAILABLE",
+      "state_source": "heartbeat",
+      "readiness": "warm",
+      "eligible": true,
+      "cold_start_s_estimate": 25,
+      "last_heartbeat": "2026-08-19T15:04:52Z",
+      "heartbeat": {
+        "node": "<edge-node-1>",
+        "state": "AVAILABLE",
+        "gpu": {
+          "vendor": "amd",
+          "model": "RX 7900 XTX",
+          "arch": "gfx1100",
+          "vram_total_gb": 24,
+          "vram_free_gb": 21.9,
+          "utilization_pct": 3
+        },
+        "runtime": {
+          "kind": "llama-swap+llama.cpp",
+          "version": "llama-swap 1.4.0 / llama.cpp ROCm b9917",
+          "endpoint": "https://<edge-host>:<edge-port>"
+        },
+        "active_model": "qwen3.6-27b",
+        "cached_models": [
+          "qwen3.6-27b"
+        ],
+        "preemptible": true,
+        "interactive": false,
+        "ac_power": true,
+        "cluster_reachable": true,
+        "last_heartbeat": "2026-08-19T15:00:12Z",
+        "capabilities": [
+          "chat",
+          "tools"
+        ],
+        "max_context": 65536
+      }
+    },
+    {
+      "name": "bazzite-5090",
+      "kind": "edge",
+      "status": "planned",
+      "selectable": false,
+      "state": "OFFLINE",
+      "state_source": "static",
+      "readiness": "unknown",
+      "eligible": false,
+      "cold_start_s_estimate": null,
+      "last_heartbeat": null,
+      "heartbeat": null
+    },
+    {
+      "name": "laptop-rtx5000",
+      "kind": "edge",
+      "status": "planned",
+      "selectable": false,
+      "state": "OFFLINE",
+      "state_source": "static",
+      "readiness": "unknown",
+      "eligible": false,
+      "cold_start_s_estimate": null,
+      "last_heartbeat": null,
+      "heartbeat": null
+    }
+  ],
+  "policies": [
+    {
+      "name": "prefer-warm-local",
+      "prefer_order": [
+        "kserve-a5000",
+        "cachyos-7900xtx",
+        "bazzite-5090",
+        "laptop-rtx5000"
+      ],
+      "warm_preference": "strict",
+      "warm_bonus_rank_shift": null,
+      "allow_cold_start": true,
+      "min_vram_gb": null,
+      "min_free_vram_gb": null,
+      "resolves_today": true,
+      "resolves_now": true
+    },
+    {
+      "name": "cluster-only",
+      "prefer_order": [
+        "kserve-a5000"
+      ],
+      "warm_preference": "ignored",
+      "warm_bonus_rank_shift": null,
+      "allow_cold_start": true,
+      "min_vram_gb": null,
+      "min_free_vram_gb": null,
+      "resolves_today": true,
+      "resolves_now": true
+    },
+    {
+      "name": "edge-only",
+      "prefer_order": [
+        "cachyos-7900xtx",
+        "bazzite-5090",
+        "laptop-rtx5000"
+      ],
+      "warm_preference": "weighted",
+      "warm_bonus_rank_shift": 1,
+      "allow_cold_start": true,
+      "min_vram_gb": null,
+      "min_free_vram_gb": null,
+      "resolves_today": true,
+      "resolves_now": true
+    },
+    {
+      "name": "any-24gb",
+      "prefer_order": [
+        "kserve-a5000",
+        "cachyos-7900xtx",
+        "bazzite-5090",
+        "laptop-rtx5000"
+      ],
+      "warm_preference": "weighted",
+      "warm_bonus_rank_shift": 1,
+      "allow_cold_start": true,
+      "min_vram_gb": 24,
+      "min_free_vram_gb": null,
+      "resolves_today": true,
+      "resolves_now": true
+    }
+  ]
+}
