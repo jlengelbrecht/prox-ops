@@ -303,17 +303,32 @@ check_model_alias() {
 
 # --- capability: auth actually enforced --------------------------------------
 check_auth_enforced() {
-    local status
-    status=$(curl "${CURL_OPTS[@]}" --output /dev/null --write-out '%{http_code}' \
+    local list_status chat_status
+    list_status=$(curl "${CURL_OPTS[@]}" --output /dev/null --write-out '%{http_code}' \
         "$ENDPOINT/v1/models" 2>"$SCRATCH_DIR/auth.err") || {
         report FAIL "auth_enforced" "request failed: $(cat "$SCRATCH_DIR/auth.err" 2>/dev/null)"
         return
     }
-    case "$status" in
-        401|403) report PASS "auth_enforced" "no-credential request rejected with HTTP $status" ;;
-        200) report FAIL "auth_enforced" "no-credential request returned HTTP 200" ;;
-        *) report FAIL "auth_enforced" "unexpected HTTP $status for a no-credential request" ;;
+    # The listing path and the inference path can carry different policies, and
+    # section 2 is about the inference path, so probe both. max_tokens is 1 so a
+    # wrongly-open endpoint costs a token rather than a generation.
+    chat_status=$(curl "${CURL_OPTS[@]}" --output /dev/null --write-out '%{http_code}' \
+        -H "Content-Type: application/json" \
+        -X POST "$ENDPOINT/v1/chat/completions" \
+        -d "$(jq -n --arg model "$MODEL" '{model: $model, messages: [{role: "user", content: "ping"}], max_tokens: 1}')" \
+        2>"$SCRATCH_DIR/auth-chat.err") || {
+        report FAIL "auth_enforced" "no-credential inference request failed: $(cat "$SCRATCH_DIR/auth-chat.err" 2>/dev/null)"
+        return
+    }
+    case "$list_status" in
+        401|403) ;;
+        *) report FAIL "auth_enforced" "GET /v1/models without a credential returned HTTP $list_status"; return ;;
     esac
+    case "$chat_status" in
+        401|403) ;;
+        *) report FAIL "auth_enforced" "POST /v1/chat/completions without a credential returned HTTP $chat_status"; return ;;
+    esac
+    report PASS "auth_enforced" "rejected without a credential (models HTTP $list_status, chat HTTP $chat_status)"
 }
 
 # --- capability: TLS validation, when applicable -----------------------------
