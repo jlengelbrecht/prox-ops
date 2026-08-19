@@ -1,0 +1,751 @@
+---
+# STORY-035-1: model & capability catalog - schema + seed.
+#
+# INERT BY CONSTRUCTION. Nothing mounts, reads, or references this ConfigMap.
+# It is committed ahead of its consumer (agent-router, EPIC-035 story 35.9) so
+# the schema can be reviewed and argued about before any code depends on it.
+# Deleting this Kustomization today changes no running behaviour.
+#
+# Design rationale, field semantics, validation rules and the change protocol
+# live in README.md next to this file. That README is the schema document an
+# independent implementer codes against - read it before editing the data.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-router-catalog
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: agent-router-catalog
+    app.kubernetes.io/component: catalog
+    app.kubernetes.io/part-of: agent-router
+data:
+  catalog.yaml: |
+    # =====================================================================
+    # agent-router model & capability catalog
+    # EPIC-035 section 6. Schema document: README.md beside this file.
+    # =====================================================================
+    #
+    # CHANGE PROTOCOL (normative - EPIC-035 section 6, AC 5)
+    #
+    #   Changing which PHYSICAL MODEL backs a logical PROFILE is a pull
+    #   request against THIS FILE. It is never a BMAD policy edit, never a
+    #   story rewrite, and never a change to any routing rule.
+    #
+    #   That is the whole point of the profile indirection: BMAD stamps a
+    #   stable profile name (`local-code-standard`), and the model that name
+    #   resolves to is data that moves by PR underneath it.
+    #
+    #   Every change to this file MUST:
+    #     1. bump `version` (semver; see README "Versioning");
+    #     2. update `updated`;
+    #     3. keep every validation rule in README "Validation rules" true -
+    #        they are mechanically checkable and a reviewer is expected to
+    #        check them;
+    #     4. state, in the PR body, what a consumer of the catalog would do
+    #        differently after the change.
+    #
+    #   Adding a new PLACEMENT is a Git change by design (EPIC-035 section
+    #   10a): placement names are load-bearing - 35.5 froze that a placement
+    #   name appears verbatim as an agentgateway provider `name` and as the
+    #   value of the `x-placement` request header. Renaming one is a
+    #   breaking change across this catalog, the gateway config and every
+    #   caller. Choose the name once.
+    #
+    #   `x-placement` is a SCHEDULING signal only (owner ruling R5). Nothing
+    #   in this catalog expresses authorization, and nothing added to it may.
+    #   Model authorization stays where it is: the per-model CEL policy that
+    #   binds the request-body model to the routed model.
+    #
+    # WHAT IS DELIBERATELY ABSENT
+    #   - `timeouts.request` / eviction durations. Ruling R1: the 240 s in
+    #     use today is PROVISIONAL, 35.7 measures cold/warm for real and
+    #     35.8 sets the final values. Timeouts are gateway config, not
+    #     catalog data, and are not duplicated here.
+    #   - endpoints, hostnames, ports, credentials. agentgateway is the only
+    #     model ingress (invariant 5); endpoint discovery is runtime state
+    #     from the heartbeat contract, never Git data.
+    #   - anything that collapses the three axes (harness / profile /
+    #     placement) into one field (invariant 1).
+    # =====================================================================
+
+    # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
+    version: "1.0.0"
+    # Structural schema version. Consumers MUST refuse a major they do not
+    # implement rather than best-effort parsing an unknown shape.
+    schema_version: 1
+    updated: "2026-08-19"
+    epic: EPIC-035
+    story: STORY-035-1
+    # Consumers: none. This is asserted, not implied - see README "Inert".
+    consumers: []
+
+    defaults:
+      # Applied when a caller names no placement_policy. Chosen because it
+      # is the only seeded policy that both resolves today and honours the
+      # warm-GPU economics that invariant 7 protects.
+      placement_policy: prefer-warm-local
+
+    # =====================================================================
+    # TABLE 1 - harnesses
+    # The autonomous coding harness axis. Deliberately thin: a harness entry
+    # says whether the axis value exists and whether the router may emit it.
+    # Nothing else, so that no harness field can smuggle in a model or a
+    # placement (invariant 1).
+    # =====================================================================
+    harnesses:
+      claude:
+        description: >-
+          Claude Code sessions driven by the operator's own Anthropic
+          subscription. The harness resolves its own model; this catalog
+          does not pin a wire-level model id for it.
+        supported: true
+        selectable: true
+      codex:
+        description: >-
+          OpenAI Codex CLI sessions driven by the operator's own ChatGPT
+          subscription.
+        supported: true
+        selectable: true
+      devin:
+        description: >-
+          Devin (Cognition) cloud sessions, including the free `swe-1-7*`
+          tier on the existing Teams account.
+        supported: true
+        selectable: true
+      local-agent:
+        description: >-
+          RESERVED placeholder so the harness axis is future-proof. This is
+          NOT a harness today and NOT a slot to be filled opportunistically.
+        supported: false
+        selectable: false
+        # Invariant 16, quoted so nobody has to go looking: llama.cpp /
+        # vLLM / llama-swap are INFERENCE RUNTIME, not autonomous coding
+        # harnesses. Routing policy must never select a local harness, and
+        # no harness may be adopted merely to fill an architectural slot. A
+        # specific harness gets evaluated and approved in its own story
+        # before this becomes selectable. No story in EPIC-035 does that.
+        reason: invariant-16-reserved-unsupported
+        # A router that emits this value is wrong. It must refuse, loudly.
+        router_behaviour: refuse-to-emit
+
+    # =====================================================================
+    # TABLE 2 - placements
+    # Physical compute. A placement name is a public identifier: it appears
+    # as an agentgateway provider `name` and as the `x-placement` header
+    # value (35.5). Treat renames as breaking.
+    #
+    # CAPACITY NUMBERS ARE SOURCED, NOT ASSUMED.
+    #   capacity.vram_gb           - only ever a number this repo can stand
+    #                                behind. `null` means "no measurement
+    #                                exists". A router MUST NOT satisfy
+    #                                min_vram_gb / min_free_vram_gb from a
+    #                                null value, and MUST NOT substitute the
+    #                                nameplate figure for it.
+    #   capacity.vram_gb_nameplate - vendor SKU spec, informational only,
+    #                                never a scheduling input.
+    #   capacity.source            - measured | nameplate | unmeasured
+    # =====================================================================
+    placements:
+      kserve-a5000:
+        description: >-
+          The only real placement today: KServe/Knative InferenceServices on
+          the cluster's single RTX A5000 node. Every model in this catalog
+          that has a placement, has this one.
+        status: available
+        selectable: true
+        kind: kserve
+        node: k8s-work-10
+        gpu:
+          vendor: nvidia
+          model: RTX A5000
+        capacity:
+          vram_gb: 24
+          vram_gb_nameplate: 24
+          source: measured
+        runtime: >-
+          KServe v0.13.1 on Knative Serving; per-model containers are
+          llama.cpp server-cuda or vLLM / vLLM-Omni.
+        # A cluster GPU is never taken away mid-request by a human at a
+        # desk. Contention here is queueing, not preemption.
+        preemptible: false
+        scale_to_zero: true
+        # Only ONE InferenceService fits the card at a time (maxReplicas: 1,
+        # single GPU). This is a hard capacity fact a scheduler needs.
+        concurrent_models: 1
+        # Representative wake-to-first-token for the reference model
+        # (qwen36-27b) through the gateway. Per-model figures are in the
+        # `models` table. PROVISIONAL as a distribution: ruling R1 assigns
+        # repeatable cold/warm measurement to 35.7.
+        cold_start_s_estimate: 150
+        cold_start_source: measured
+        cold_start_evidence: >-
+          130.6-150 s to first token via the gateway (34.4 kill gate);
+          120.9 s re-measured 2026-08-19. Per-model vLLM figures 97-150 s
+          from the InferenceService records.
+        notes: >-
+          Invariant 7: nothing may pin a model warm here by default.
+          Scale-to-zero and the GPU economics it buys are load-bearing.
+
+      cachyos-7900xtx:
+        description: >-
+          Planned LAN edge worker on the operator's CachyOS workstation.
+          Declared here so the placement name is fixed before anything
+          depends on it - it is not reachable, not configured, not usable.
+        status: planned
+        selectable: false
+        kind: edge
+        # Physical hostname deliberately not recorded here: this repo is public
+        # and the placement is not yet selectable. 35.6 supplies the reachable
+        # endpoint as a DNS name; the OS hostname is not needed by any consumer.
+        node: null
+        gpu:
+          vendor: amd
+          model: Radeon RX 7900 XTX
+          arch: gfx1100
+        capacity:
+          # No measurement of usable VRAM on this host exists. 24 is the SKU
+          # nameplate and must not be scheduled against.
+          vram_gb: null
+          vram_gb_nameplate: 24
+          source: unmeasured
+        # Ruling R3: llama-swap is the LAN-facing service (it can require an
+        # API key and terminate TLS); llama-server runs behind it and is
+        # never LAN-exposed. Qwen runtime is llama.cpp ROCm initially.
+        runtime: llama-swap fronting llama.cpp (ROCm)
+        preemptible: true
+        scale_to_zero: null
+        concurrent_models: null
+        cold_start_s_estimate: null
+        cold_start_source: unmeasured
+        blocked_by: ["35.6", "35.7", "35.8"]
+        notes: >-
+          Invariant 8: the machine's interactive desktop work outranks AI,
+          absolutely and without a cluster round-trip. Withdrawal is by
+          silence and by 503. Ruling R4 sets the transport bar before this
+          may go selectable: HTTPS, bearer auth, a real CA, a hostname SAN,
+          a dedicated host key, no insecureSkipVerify, secrets outside Git.
+
+      bazzite-5090:
+        description: >-
+          Planned LAN edge worker on the Bazzite gaming host. Hardware is
+          confirmed to exist; nothing about its behaviour under this
+          contract has been measured.
+        status: planned
+        selectable: false
+        kind: edge
+        node: null
+        gpu:
+          vendor: nvidia
+          model: GeForce RTX 5090
+        capacity:
+          vram_gb: null
+          vram_gb_nameplate: 32
+          source: unmeasured
+        runtime: null
+        # Confirmed in EPIC-035 section 5: gaming/interactive use has
+        # absolute priority; expect abrupt withdrawal mid-request.
+        preemptible: true
+        scale_to_zero: null
+        concurrent_models: null
+        cold_start_s_estimate: null
+        cold_start_source: unmeasured
+        blocked_by: ["35.13"]
+        notes: >-
+          Ruling R2 applies hardest here: once a response stream has begun,
+          a broken stream fails the execution attempt. The gateway does not
+          rescue a mid-stream withdrawal.
+
+      laptop-rtx5000:
+        description: >-
+          Planned, CONDITIONAL edge worker. The hardware has not been
+          inspected: "RTX 5000" is ambiguous across generations and no SKU,
+          VRAM figure or thermal behaviour has been established.
+        status: planned
+        selectable: false
+        kind: edge
+        node: null
+        gpu:
+          vendor: nvidia
+          # UNMEASURED. Do not resolve this to a specific SKU from the name.
+          model: null
+          arch: null
+        capacity:
+          vram_gb: null
+          # Deliberately null too: there is no SKU to read a nameplate off.
+          vram_gb_nameplate: null
+          source: unmeasured
+        runtime: null
+        preemptible: true
+        scale_to_zero: null
+        concurrent_models: null
+        cold_start_s_estimate: null
+        cold_start_source: unmeasured
+        blocked_by: ["35.14"]
+        notes: >-
+          Hardware detection is task 1 of 35.14 and no profile may assume
+          model viability here until it lands. Even once detected, this host
+          advertises only when cluster-reachable AND on AC power AND GPU
+          idle AND thermally healthy.
+
+    # =====================================================================
+    # TABLE 3 - models
+    # The referent for every `profiles[].physical[].model_id`. EPIC-035
+    # section 6 defines a physical candidate as exactly {model_id,
+    # placement}, so the model's own facts have to live somewhere: here.
+    # One entry per model, so a model appearing in several profiles cannot
+    # drift between them.
+    #
+    # A key in this table IS the model_id. For local models it is the
+    # gateway-facing alias - the string a client puts in the request body
+    # and in `x-model`, and the literal the per-model CEL authorization
+    # policy compares against. `upstream_model_id` is the different string
+    # agentgateway sends to the upstream server. Both are copied verbatim
+    # from agentgateway-pilot/app/local-model-backends.yaml; neither is
+    # invented, and they must not be swapped.
+    # =====================================================================
+    models:
+      qwen36-27b:
+        description: >-
+          Qwen3.6-27B, UD-Q4_K_XL GGUF on llama.cpp CUDA with MTP
+          self-speculative decoding. The reference model for EPIC-035.
+        hosting: local
+        upstream_model_id: qwen3.6-27b
+        upstream_id_form: llama-server --alias
+        runtime: llama.cpp (server-cuda)
+        placements: [kserve-a5000]
+        capabilities: [chat, tools]
+        max_context: 65536
+        alignment: standard
+        vram_gb_estimate: 22
+        vram_estimate_source: >-
+          Budgeted in the InferenceService record: 17.9 GB weights + 1-2 GB
+          MTP draft buffers + ~1.3 GB KV at 64k = ~21-22 GB of 24 GB.
+        cold_start_s_estimate: 150
+        cold_start_source: measured
+        idle_retention_min: 30
+        source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
+
+      qwen-coder:
+        description: Qwen2.5-Coder-7B-Instruct on vLLM. Code-specialised, small, fast.
+        hosting: local
+        upstream_model_id: /models/Qwen/Qwen2.5-Coder-7B-Instruct
+        upstream_id_form: >-
+          vLLM --model filesystem path. No --served-model-name, so the
+          leading /models/... must be sent upstream verbatim.
+        runtime: vLLM
+        placements: [kserve-a5000]
+        # No tool calling: the InferenceService runs without
+        # --enable-auto-tool-choice / --tool-call-parser.
+        capabilities: [chat]
+        max_context: 8192
+        alignment: standard
+        vram_gb_estimate: 14
+        vram_estimate_source: InferenceService record ("~14GB VRAM").
+        cold_start_s_estimate: 100
+        cold_start_source: measured
+        idle_retention_min: 5
+        source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
+
+      dolphin-chat:
+        description: >-
+          Dolphin3.0-Llama3.1-8B on vLLM. Deployed and documented in this
+          repo as an uncensored chat model - that is why it is the only
+          `unrestricted` model here.
+        hosting: local
+        upstream_model_id: /models/cognitivecomputations/Dolphin3.0-Llama3.1-8B
+        upstream_id_form: vLLM --model filesystem path.
+        runtime: vLLM
+        placements: [kserve-a5000]
+        capabilities: [chat]
+        max_context: 8192
+        # Invariant 12: this is an ALIGNMENT property, not a quality tier.
+        alignment: unrestricted
+        vram_gb_estimate: 16
+        vram_estimate_source: InferenceService record ("~16GB VRAM").
+        cold_start_s_estimate: 100
+        cold_start_source: measured
+        idle_retention_min: 5
+        source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
+
+      hermes-jarvis:
+        description: >-
+          Hermes-3-Llama-3.1-8B on vLLM, deployed as the assistant model.
+          Native function calling is enabled on this InferenceService
+          (--enable-auto-tool-choice --tool-call-parser=hermes).
+        hosting: local
+        upstream_model_id: /models/NousResearch/Hermes-3-Llama-3.1-8B
+        upstream_id_form: vLLM --model filesystem path.
+        runtime: vLLM
+        placements: [kserve-a5000]
+        capabilities: [chat, tools]
+        max_context: 8192
+        alignment: standard
+        vram_gb_estimate: 16
+        vram_estimate_source: InferenceService record ("~16GB VRAM").
+        cold_start_s_estimate: 97
+        cold_start_source: measured
+        idle_retention_min: 5
+        source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
+
+      qwen-omni:
+        description: >-
+          Qwen2.5-Omni-7B on the vLLM-Omni fork. Multimodal INPUT
+          (text/audio/vision) through /v1/chat/completions; text output.
+          Audio OUTPUT is a different service (qwen-tts) and is not in this
+          catalog's scope.
+        hosting: local
+        upstream_model_id: /models/Qwen/Qwen2.5-Omni-7B
+        upstream_id_form: vLLM --model filesystem path.
+        runtime: vLLM-Omni
+        placements: [kserve-a5000]
+        # vision/audio are INPUT modalities. No tool calling is configured.
+        capabilities: [chat, vision, audio]
+        max_context: 8192
+        alignment: standard
+        vram_gb_estimate: 17
+        vram_estimate_source: InferenceService record ("~17GB VRAM").
+        cold_start_s_estimate: 150
+        cold_start_source: measured
+        idle_retention_min: 5
+        source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
+
+      # --- vendor-hosted -------------------------------------------------
+      # These are NOT wire-level model ids and NOT placed by the router.
+      # They are the selector a harness resolves against its own
+      # subscription, recorded so `physical[].model_id` always resolves.
+      # `placement` for these is null everywhere, on purpose: a placement
+      # name is an agentgateway provider name, and none of this traffic
+      # goes through agentgateway.
+      #
+      # max_context is null for all four. This repo has measured nothing
+      # about vendor context windows and will not carry a guessed number;
+      # see README "Vendor models" for how a real value gets in here.
+      "claude/opus":
+        description: >-
+          Strong-tier Anthropic model as selected by the claude harness
+          against the operator's subscription.
+        hosting: vendor
+        upstream_model_id: null
+        resolved_by: harness
+        placements: []
+        capabilities: [chat, tools]
+        max_context: null
+        max_context_source: unmeasured
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: EPIC-035 section 11 route table
+
+      "openai/gpt-5.6-sol":
+        description: >-
+          Strong-tier OpenAI model as selected by the codex harness against
+          the operator's subscription. Stamped as the fallback tier for
+          every claude row in EPIC-035 section 11.
+        hosting: vendor
+        upstream_model_id: null
+        resolved_by: harness
+        placements: []
+        capabilities: [chat, tools]
+        max_context: null
+        max_context_source: unmeasured
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: EPIC-035 section 11 route table
+
+      swe-1-7:
+        description: Free-tier Devin model on the existing Teams account.
+        hosting: vendor
+        upstream_model_id: null
+        resolved_by: harness
+        placements: []
+        capabilities: [chat, tools]
+        max_context: null
+        max_context_source: unmeasured
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: EPIC-035 section 11 route table
+
+      swe-1-7-medium:
+        description: Free-tier Devin model, larger sibling of swe-1-7.
+        hosting: vendor
+        upstream_model_id: null
+        resolved_by: harness
+        placements: []
+        capabilities: [chat, tools]
+        max_context: null
+        max_context_source: unmeasured
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: EPIC-035 section 11 route table
+
+    # =====================================================================
+    # TABLE 4 - profiles
+    # Logical, stable, and the ONLY thing BMAD stamps. A profile name
+    # outlives the model behind it - that is the entire contract.
+    #
+    #   capabilities  - the floor this profile GUARANTEES. Every entry in
+    #                   physical[] provides at least these. Individual
+    #                   candidates may provide more (see models[]).
+    #   min_context   - the context floor this profile GUARANTEES, i.e. the
+    #                   MINIMUM max_context across physical[]. null means no
+    #                   guarantee; a router must not use a null-guarantee
+    #                   profile to satisfy an explicit context requirement.
+    #   alignment     - standard | unrestricted (invariant 12).
+    #   forbidden_for - task tags this profile must never be auto-selected
+    #                   for, whatever else scores well.
+    #   physical      - ORDERED preference list of {model_id, placement}.
+    #                   First is preferred. Order is the only preference
+    #                   expression; there are no weights here.
+    # =====================================================================
+    profiles:
+      local-code-fast:
+        description: >-
+          Cheap, quick, code-shaped local work where latency matters more
+          than depth. Smallest cold start of the local set.
+        cost_class: free
+        hosting: local
+        selectable: true
+        capabilities: [chat]
+        min_context: 8192
+        alignment: standard
+        forbidden_for: []
+        physical:
+          - model_id: qwen-coder
+            placement: kserve-a5000
+        notes: >-
+          Guarantees `chat` only: qwen-coder has no tool calling configured
+          today. A caller that needs tools must not be routed here - use
+          local-code-standard.
+
+      local-code-standard:
+        description: >-
+          The default local coding profile. Long context and tool calling,
+          which is what makes it usable for agentic work.
+        cost_class: free
+        hosting: local
+        selectable: true
+        capabilities: [chat, tools]
+        min_context: 65536
+        alignment: standard
+        forbidden_for: []
+        physical:
+          - model_id: qwen36-27b
+            placement: kserve-a5000
+        notes: >-
+          Single candidate today. When the 7900 XTX lands (35.6/35.8) the
+          expected change is a SECOND physical entry for the same profile -
+          a catalog PR, nothing else moves.
+
+      local-general:
+        description: >-
+          Non-code local work: chat, summarisation, assistant tasks,
+          multimodal input. Broadest candidate list of any profile.
+        cost_class: free
+        hosting: local
+        selectable: true
+        # Floor only. qwen36-27b and hermes-jarvis also provide `tools`,
+        # qwen-omni also provides `vision`/`audio` input - a router that
+        # needs an optional capability filters physical[] against models[]
+        # rather than assuming the whole list has it.
+        capabilities: [chat]
+        # min(65536, 8192, 8192) = 8192.
+        min_context: 8192
+        alignment: standard
+        forbidden_for: []
+        physical:
+          - model_id: qwen36-27b
+            placement: kserve-a5000
+          - model_id: hermes-jarvis
+            placement: kserve-a5000
+          - model_id: qwen-omni
+            placement: kserve-a5000
+        notes: >-
+          Ordered by capability breadth, not by size: qwen36-27b first
+          (tools + 64k), hermes-jarvis second (tools), qwen-omni last (the
+          only multimodal-input option, but no tool calling).
+
+      local-unrestricted:
+        description: >-
+          Local model with no refusal training. This is an ALIGNMENT
+          property, NOT a quality tier - it is a weaker model than
+          local-code-standard in every respect except refusal behaviour.
+        cost_class: free
+        hosting: local
+        selectable: true
+        capabilities: [chat]
+        min_context: 8192
+        alignment: unrestricted
+        # Invariant 12. This list is a MINIMUM, extensible by catalog PR,
+        # and it is a hard exclusion: it is not a score, a tie-break or a
+        # warning. A request carrying any of these tags must never be
+        # auto-selected onto this profile, however well it otherwise fits.
+        # An operator may still choose it explicitly and own that.
+        forbidden_for:
+          - security
+          - iam
+          - secrets
+          - prod-iac
+          - destructive-tools
+        physical:
+          - model_id: dolphin-chat
+            placement: kserve-a5000
+
+      "claude/strong":
+        description: >-
+          Strong vendor model via the claude harness's own subscription.
+          Not proxied, not placed, not metered.
+        cost_class: subscription
+        hosting: vendor
+        selectable: true
+        capabilities: [chat, tools]
+        # No guarantee: see models["claude/opus"].max_context.
+        min_context: null
+        alignment: standard
+        forbidden_for: []
+        physical:
+          - model_id: "claude/opus"
+            placement: null
+        notes: >-
+          `placement: null` is the correct value, not a gap: placement names
+          are agentgateway provider names and this traffic never touches
+          agentgateway. Invariant 10 - this is a subscription, not an API
+          key; nothing here authorises introducing ANTHROPIC_API_KEY or
+          centralising an OAuth token. G9/35.17 concern proxying
+          subscription traffic through cluster ingress, which this profile
+          does not do.
+
+      "openai/strong":
+        description: >-
+          Strong vendor model via the codex harness's own subscription.
+          Stamped as the standing fallback tier in EPIC-035 section 11.
+        cost_class: subscription
+        hosting: vendor
+        selectable: true
+        capabilities: [chat, tools]
+        min_context: null
+        alignment: standard
+        forbidden_for: []
+        physical:
+          - model_id: "openai/gpt-5.6-sol"
+            placement: null
+
+      "devin/free":
+        description: >-
+          Free Devin tier on the existing Teams account. Free, not
+          subscription: it consumes no pot and no metered spend.
+        cost_class: free
+        hosting: vendor
+        selectable: true
+        capabilities: [chat, tools]
+        min_context: null
+        alignment: standard
+        forbidden_for: []
+        physical:
+          - model_id: swe-1-7
+            placement: null
+          - model_id: swe-1-7-medium
+            placement: null
+        notes: >-
+          Devin's paid on-demand tier is NOT in this catalog. Invariant 4 -
+          metered use is explicit, per-attempt and recorded, so it does not
+          get a free-looking profile name to hide behind.
+
+    # =====================================================================
+    # TABLE 5 - policies
+    # placement_policy definitions: an ordered placement preference, how
+    # hard to prefer an already-warm GPU, and hard constraints.
+    #
+    #   prefer_order          - ordered placement names. First is best.
+    #   warm_preference       - strict   : any warm candidate beats any cold
+    #                                      candidate, regardless of order.
+    #                           weighted : warm moves a candidate up
+    #                                      `warm_bonus_rank_shift` positions.
+    #                           ignored  : warmth is not a factor.
+    #   warm_bonus_rank_shift - only meaningful for `weighted`. PROVISIONAL
+    #                           until 35.7 measures what a cold start
+    #                           actually costs (ruling R1).
+    #   allow_cold_start      - false forbids waking a scaled-to-zero
+    #                           placement. Exists because invariant 7 makes
+    #                           "do not wake the A5000" a real requirement,
+    #                           not because anything needs it today.
+    #   min_vram_gb           - hard floor on capacity.vram_gb. Satisfiable
+    #                           ONLY by a measured value (see TABLE 2).
+    #   min_free_vram_gb      - hard floor on runtime free VRAM from the
+    #                           heartbeat. null = no constraint. No seeded
+    #                           policy sets one: per-model footprints are in
+    #                           models[].vram_gb_estimate and the required
+    #                           headroom is 35.7/35.11 work, not a number
+    #                           invented here.
+    # =====================================================================
+    policies:
+      placement_policy:
+        prefer-warm-local:
+          description: >-
+            Default. Take whatever is already warm; otherwise prefer the
+            cluster GPU, then the edge hosts in order of expected
+            availability.
+          prefer_order:
+            - kserve-a5000
+            - cachyos-7900xtx
+            - bazzite-5090
+            - laptop-rtx5000
+          warm_preference: strict
+          warm_bonus_rank_shift: null
+          allow_cold_start: true
+          min_vram_gb: null
+          min_free_vram_gb: null
+          resolves_today: true
+
+        cluster-only:
+          description: >-
+            Never leave the cluster. The correct policy for anything that
+            must not depend on a workstation being awake.
+          prefer_order:
+            - kserve-a5000
+          warm_preference: ignored
+          warm_bonus_rank_shift: null
+          allow_cold_start: true
+          min_vram_gb: null
+          min_free_vram_gb: null
+          resolves_today: true
+
+        edge-only:
+          description: >-
+            Never use the cluster GPU. Intended for work that must not
+            compete with cluster inference or must not wake the A5000.
+          prefer_order:
+            - cachyos-7900xtx
+            - bazzite-5090
+            - laptop-rtx5000
+          warm_preference: weighted
+          warm_bonus_rank_shift: 1
+          allow_cold_start: true
+          min_vram_gb: null
+          min_free_vram_gb: null
+          # Every placement it names is `status: planned`. A request for
+          # this policy today MUST return an explicit empty placement -
+          # never a silent fall-through to the cluster. See README
+          # "Empty candidate sets".
+          resolves_today: false
+
+        any-24gb:
+          description: >-
+            Any 24 GB-class GPU, cluster or edge. The size floor is the
+            point; ordering is secondary.
+          prefer_order:
+            - kserve-a5000
+            - cachyos-7900xtx
+            - bazzite-5090
+            - laptop-rtx5000
+          warm_preference: weighted
+          warm_bonus_rank_shift: 1
+          allow_cold_start: true
+          # Only kserve-a5000 has a measured capacity.vram_gb, so today this
+          # constraint admits exactly one placement. That is correct, not a
+          # bug: nameplate figures do not satisfy a hard constraint.
+          min_vram_gb: 24
+          min_free_vram_gb: null
+          resolves_today: true
