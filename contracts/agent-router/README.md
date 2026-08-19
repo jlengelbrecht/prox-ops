@@ -490,10 +490,9 @@ it is for a box being drained for maintenance, never for a human sitting down at
 The heartbeat's `202` response reports `eligible_for_placement`, so a node can see that its
 withdrawal was honoured rather than assuming it.
 
-> `edge/EDGE-WORKER-CONTRACT.md` §1.2 currently says a missed heartbeat and a 503 are the only
-> two withdrawal signals the cluster acts on. That sentence is superseded by owner ruling R8
-> and is being corrected in PR #1257 before it merges. The three-mechanism table above is the
-> frozen version.
+> `edge/EDGE-WORKER-CONTRACT.md` §1.2 carries the same three mechanisms, with the same actors
+> and classes. It once listed only two - a missed heartbeat and a 503 - and was corrected
+> before it merged. The two documents agree; this table is the version both are frozen at.
 
 ## Error taxonomy
 
@@ -517,7 +516,7 @@ that would have cleared in two seconds, read the number instead of the contract.
 | `no_eligible_placement` | **200**, `status: "unavailable"` | place | do not dispatch | Not an error envelope. See "An empty result is HTTP 200" above. Reason codes: `no_eligible_placement`, `policy_resolves_to_nothing`, `all_candidates_withdrawn`, `constraint_unsatisfiable`. |
 | `rate_limited` | 429 | all | `retry` | Back off; honour `retry_after_seconds`. If this fires routinely, the caller is calling per inference request instead of caching for `ttl_seconds`. |
 | `catalog_unavailable` | 503 | all | `retry` | **Transient only**: no catalog is loaded yet. The same request succeeds unchanged once the load completes. Retry with backoff. |
-| `catalog_schema_unsupported` | 503 | all | `abort` | **Permanent**: the router refused a catalog whose `schema_version` it does not implement, rather than best-effort parsing an unknown shape. Retrying cannot clear it - an operator deploys a router that understands the catalog, or reverts the catalog. Alert. |
+| `catalog_schema_unsupported` | 503 | route, place, status | `abort` | **Permanent**: the router refused a catalog whose `schema_version` it does not implement, rather than best-effort parsing an unknown shape. Retrying cannot clear it - an operator deploys a router that understands the catalog, or reverts the catalog. Alert. **Never served on the heartbeat path** - see below. |
 | `internal_error` | 500 | all | `retry` | Both decision endpoints are side-effect free, so a retry is safe. A persistent failure fails the attempt rather than degrading it onto a different profile. |
 
 Codes are stable: a code is never re-pointed at a different condition, only added, or removed
@@ -533,6 +532,15 @@ separate codes, because the obligation field is only useful if a client can trus
 - `metered_denied` (no authorization claimed) and `metered_authorization_required`
   (authorization claimed, caller does not have it) are different facts about different
   actors, and the second is the one that means "your identity is wrong", not "ask a human".
+
+**A router-side failure never ends the heartbeat loop.** `abort` is written for a caller with
+an attempt to fail; an edge node has no attempt, so the only thing it can do with `abort` is
+stop reporting - and a node that stopped because the router had a bad catalog would stay
+invisible long after an operator had fixed it, with nothing in this contract saying when to
+resume. So the heartbeat path never serves `catalog_schema_unsupported`. It serves only the
+transient `catalog_unavailable`, and recording a self-reported state needs no catalog data
+anyway. The loop ends only on a failure the node itself must fix: `unauthenticated`, or
+`node_identity_mismatch`.
 
 ## Examples
 
@@ -705,8 +713,8 @@ Recorded rather than resolved, because each belongs to a story that has not run 
 - `.claude/.ai-docs/stories/WI-035-5-SPIKE-EVIDENCE.md` - the `x-placement` mechanics, the
   grouped-backend requirement, the retry/backoff findings and the 64 KiB replay cap, all
   measured against agentgateway v1.3.1.
-- `edge/EDGE-WORKER-CONTRACT.md` (PR #1257) - authoritative for heartbeat field semantics,
-  transport requirements and per-host preemption rules.
+- `edge/EDGE-WORKER-CONTRACT.md` - authoritative for heartbeat field semantics, transport
+  requirements and per-host preemption rules. Merged; read the file, not this summary of it.
 - `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml` and its `README.md` -
   the four vocabularies, catalog document version 1.0.0, and the change protocol this
   directory has to stay in step with.

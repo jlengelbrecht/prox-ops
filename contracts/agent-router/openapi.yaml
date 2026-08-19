@@ -486,6 +486,15 @@ paths:
         what the router recorded and tells the node how often to report - it is
         not a command.
 
+        **A router-side failure never ends the heartbeat loop.** Recording a
+        self-reported state needs no catalog, so this endpoint returns only the
+        transient `catalog_unavailable` and never the permanent
+        `catalog_schema_unsupported`: an `abort` obligation aimed at an edge
+        node means "stop reporting", and a node that obeyed it would stay
+        invisible after an operator had fixed the router. The loop terminates
+        only on a failure the node itself has to fix - a rejected credential, a
+        node identity that is not its own.
+
         This is withdrawal mechanism 1 of 3 (see README "Withdrawal
         semantics"): `state: INTERACTIVE` or `DRAINING` marks the placement
         ineligible immediately, on receipt, with no timeout involved.
@@ -574,7 +583,20 @@ paths:
         '500':
           $ref: '#/components/responses/InternalError'
         '503':
-          $ref: '#/components/responses/CatalogUnavailable'
+          description: >-
+            The router cannot record capacity right now. Only the TRANSIENT
+            `catalog_unavailable` is served here - never
+            `catalog_schema_unsupported`, whose `abort` obligation would tell a
+            node to stop reporting for good over a condition on the router's
+            side of the wire. Back off and heartbeat again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                catalog-unavailable:
+                  summary: Transient - retry on the next interval
+                  externalValue: ./examples/errors/catalog-unavailable.json
 
   /v1/status:
     get:
