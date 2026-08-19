@@ -28,6 +28,7 @@ contracts/agent-router/
     place/              4 files     placed and unavailable
     errors/            14 files     one per error code, plus both metered refusals
     status/             2 files     today, and once an edge node exists
+  verify-digests.sh                 fails if an example's catalog fingerprint has rotted
   README.md                         this file
 ```
 
@@ -163,6 +164,29 @@ Real-digest examples also carry `catalog_document_version: "1.1.0"`; the illustr
 carry a higher version where they have one, so no example claims to be 1.1.0 with contents
 that are not 1.1.0's.
 
+#### What keeps this honest
+
+`./verify-digests.sh`, next to this file. Every example carrying the real digest is a
+**fixture**, and fixtures rot: the first catalog change that forgets to re-stamp them leaves
+fingerprints that are confidently wrong, which is worse than carrying none at all - the field
+exists precisely to settle which catalog an answer was computed against, so a lying one
+removes the only way a reader could tell.
+
+The script recomputes the digest from the committed ConfigMap and fails if:
+
+- an example carries a digest that is neither the real one nor a documented placeholder - a
+  whitelist rather than a shape check, so a hand-edited fixture with a plausible but invented
+  fingerprint cannot slip through;
+- an example carries the real digest while naming a different `catalog_document_version`;
+- the abbreviated digest in the table above has drifted from the real one.
+
+It exits non-zero naming the offending file and both digests. **Run it in any change that
+touches the catalog**, not only ones that touch this directory - that is the direction the
+rot comes from.
+
+It is deliberately **not wired into CI**: that means editing workflow files, which is a
+separate decision for the repository owner. Wiring it in is recommended follow-up.
+
 Examples on the real digest go stale the moment the catalog changes, which is exactly the
 condition `catalog_version_stale` exists to report.
 
@@ -236,7 +260,7 @@ The caller's obligation on a 403 is `abort`: escalate to a human, and specifical
 retry under a different credential**. A client that goes looking for a token that works has
 turned a control into an obstacle course.
 
-Worth recording: catalog 1.0.0 contains no `cost_class: metered` profile at all - Devin's
+Worth recording: catalog 1.1.0 contains no `cost_class: metered` profile at all - Devin's
 paid on-demand tier deliberately has no profile name to hide behind. So this path cannot fire
 today. The shape is specified now so that it exists before the money does.
 
@@ -756,6 +780,13 @@ uvx --from check-jsonschema check-jsonschema --schemafile \
 uvx --from check-jsonschema check-jsonschema --schemafile \
   contracts/agent-router/schemas/status.schema.json \
   contracts/agent-router/examples/status/*.json
+```
+
+And the digest check, which is the one that needs running when the CATALOG changes rather
+than when this directory does:
+
+```bash
+./contracts/agent-router/verify-digests.sh
 ```
 
 Plus a check that the four endpoints exist, and a grep proving no tracked file here carries a
