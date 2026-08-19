@@ -12,6 +12,7 @@
     "router",
     "heartbeat_policy",
     "harnesses",
+    "entitlement_pools",
     "profiles",
     "placements",
     "policies"
@@ -30,7 +31,7 @@
     "catalog_schema_version": {
       "type": "integer",
       "minimum": 1,
-      "description": "The catalog's structural `schema_version`. A router MUST refuse a major it does not implement rather than best-effort parsing an unknown shape; when it refuses, it serves 503 catalog_unavailable rather than a partial status."
+      "description": "The catalog's structural `schema_version`. A router MUST refuse a major it does not implement rather than best-effort parsing an unknown shape; when it refuses it serves 503 catalog_schema_unsupported - the PERMANENT code, obligation abort - and never the transient catalog_unavailable, which would tell a client to retry a condition only an operator can clear."
     },
     "generated_at": {
       "type": "string",
@@ -104,12 +105,61 @@
       },
       "description": "The harness axis as loaded. `local-agent` appears here with supported: false / selectable: false so that a client can SEE the reserved value and its refusal behaviour rather than discovering it by having a request rejected. Its presence in this list is not permission to send it."
     },
+    "entitlement_pools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "provider", "cost_class", "credential_class", "spillover"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Who is on the other end. Published so a client never has to infer the provider from the harness - `claude` runs against Anthropic Max on one attempt and MiniMax on another."
+          },
+          "cost_class": {
+            "type": "string",
+            "enum": ["free", "subscription", "metered"],
+            "description": "The economics of drawing on this pool. A fact about the ENTITLEMENT."
+          },
+          "credential_class": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The SHAPE and provisioning of the secret used to reach the pool: subscription-session, account-session, provider-api-key.\n\nIT IS NEVER AN INPUT TO A COST DECISION. Billing class and credential type are independent axes (owner ruling R16): minimax-max is a fixed monthly subscription reached with an API-key-shaped credential, while anthropic-max is the same cost_class reached with a signed-in session. A consumer that reads `provider-api-key` as `metered` is wrong by construction, and would bill a flat subscription as per-token spend. This field is published so a dispatcher can select the right isolated credential environment, and for no other purpose."
+          },
+          "spillover": {
+            "type": "string",
+            "enum": ["none", "metered-with-authorization"],
+            "description": "What happens when the entitlement is exhausted.\n\n`none` - the pool stops being a candidate. Routing falls back to another approved pool, to free, or to local. This is invariant 4 as data, and it is the value on every pool the catalog seeds: exhaustion NEVER promotes to billable spend, and MiniMax Token Plan exhaustion in particular must never spill into MiniMax pay-as-you-go.\n`metered-with-authorization` - reserved, and not automatic even then: it requires a separately provisioned metered credential, `allow_metered` intent on the request, AND independent metered-spend authorization held by the caller. Two of the three is a refusal."
+          },
+          "requires_authorization": {
+            "type": "boolean",
+            "description": "Optional. True when drawing on this pool at all needs metered-spend authorization. Absent or false on every seeded pool."
+          }
+        },
+        "allOf": [
+          {
+            "description": "A metered pool must say that reaching it needs authorization. Invariant 4 is not something a client should have to infer from a cost class.",
+            "if": {
+              "properties": { "cost_class": { "const": "metered" } },
+              "required": ["cost_class"]
+            },
+            "then": {
+              "properties": { "requires_authorization": { "const": true } },
+              "required": ["requires_authorization"]
+            }
+          }
+        ]
+      },
+      "description": "The funding sources the router knows about, from the catalog's `entitlement_pools` table. Published because `ExecutionProfile.entitlement_pool` is part of the vocabulary a client codes against, and a client discovering that vocabulary here would otherwise meet a pool name it has no way to interpret.\n\nEvery entry declares all four attributes so nothing is ever inferred from anything else - least of all economics from the shape of a credential."
+    },
     "profiles": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "cost_class", "hosting", "alignment", "capabilities", "min_context", "forbidden_for", "selectable", "physical"],
+        "required": ["name", "cost_class", "hosting", "alignment", "capabilities", "min_context", "forbidden_for", "selectable", "entitlements", "physical"],
         "properties": {
           "name": { "type": "string" },
           "cost_class": { "type": "string", "enum": ["free", "subscription", "metered"] },
@@ -134,6 +184,28 @@
             "description": "Task tags this profile is never AUTO-SELECTED for. A hard exclusion, not a score or a tie-break."
           },
           "selectable": { "type": "boolean" },
+          "entitlements": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["pool", "cost_class"],
+              "properties": {
+                "pool": {
+                  "type": ["string", "null"],
+                  "description": "An entitlement_pools name, or null for local execution, which draws on no pool because the GPU is already paid for."
+                },
+                "cost_class": { "type": "string", "enum": ["free", "subscription", "metered"] },
+                "requires": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Preconditions for this funding candidate to be reachable at all - allow_metered and metered-spend-authorization on a metered one. Absent on a candidate with no preconditions."
+                }
+              }
+            },
+            "description": "ORDERED funding candidates for this profile, first is the default. A LIST rather than a single value because one profile may legitimately have more than one funding source: the same harness and the same model, paid for out of a different entitlement under different preconditions. Expressing that as a list is what keeps the three axes intact - a second funding source is not a second harness, not a second model, and not a placement.\n\nThe profile's own `cost_class` is the cost class of the FIRST entry."
+          },
           "physical": {
             "type": "array",
             "items": {

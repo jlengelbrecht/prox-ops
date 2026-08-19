@@ -1,6 +1,6 @@
 {
   "catalog_version": "sha256:decafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbad",
-  "catalog_document_version": "1.1.0",
+  "catalog_document_version": "1.2.0",
   "catalog_schema_version": 1,
   "generated_at": "2026-08-19T15:05:04Z",
   "router": {
@@ -35,6 +35,36 @@
       "router_behaviour": "refuse-to-emit"
     }
   ],
+  "entitlement_pools": [
+    {
+      "name": "anthropic-max",
+      "provider": "anthropic",
+      "cost_class": "subscription",
+      "credential_class": "subscription-session",
+      "spillover": "none"
+    },
+    {
+      "name": "openai-plus",
+      "provider": "openai",
+      "cost_class": "subscription",
+      "credential_class": "subscription-session",
+      "spillover": "none"
+    },
+    {
+      "name": "devin-free",
+      "provider": "cognition",
+      "cost_class": "free",
+      "credential_class": "account-session",
+      "spillover": "none"
+    },
+    {
+      "name": "minimax-max",
+      "provider": "minimax",
+      "cost_class": "subscription",
+      "credential_class": "provider-api-key",
+      "spillover": "none"
+    }
+  ],
   "profiles": [
     {
       "name": "local-code-fast",
@@ -47,6 +77,12 @@
       "min_context": 8192,
       "forbidden_for": [],
       "selectable": true,
+      "entitlements": [
+        {
+          "pool": null,
+          "cost_class": "free"
+        }
+      ],
       "physical": [
         {
           "model_id": "qwen-coder",
@@ -67,6 +103,12 @@
       "min_context": 65536,
       "forbidden_for": [],
       "selectable": true,
+      "entitlements": [
+        {
+          "pool": null,
+          "cost_class": "free"
+        }
+      ],
       "physical": [
         {
           "model_id": "qwen36-27b",
@@ -91,6 +133,12 @@
       "min_context": 8192,
       "forbidden_for": [],
       "selectable": true,
+      "entitlements": [
+        {
+          "pool": null,
+          "cost_class": "free"
+        }
+      ],
       "physical": [
         {
           "model_id": "qwen36-27b",
@@ -126,6 +174,12 @@
         "destructive-tools"
       ],
       "selectable": true,
+      "entitlements": [
+        {
+          "pool": null,
+          "cost_class": "free"
+        }
+      ],
       "physical": [
         {
           "model_id": "dolphin-chat",
@@ -146,6 +200,12 @@
       "min_context": null,
       "forbidden_for": [],
       "selectable": true,
+      "entitlements": [
+        {
+          "pool": "anthropic-max",
+          "cost_class": "subscription"
+        }
+      ],
       "physical": [
         {
           "model_id": "claude/opus",
@@ -166,6 +226,12 @@
       "min_context": null,
       "forbidden_for": [],
       "selectable": true,
+      "entitlements": [
+        {
+          "pool": "openai-plus",
+          "cost_class": "subscription"
+        }
+      ],
       "physical": [
         {
           "model_id": "openai/gpt-5.6-sol",
@@ -186,6 +252,12 @@
       "min_context": null,
       "forbidden_for": [],
       "selectable": true,
+      "entitlements": [
+        {
+          "pool": "devin-free",
+          "cost_class": "free"
+        }
+      ],
       "physical": [
         {
           "model_id": "swe-1-7",
@@ -196,6 +268,32 @@
           "model_id": "swe-1-7-medium",
           "placement": null,
           "eligible": true
+        }
+      ]
+    },
+    {
+      "name": "minimax/strong",
+      "cost_class": "subscription",
+      "hosting": "vendor",
+      "alignment": "standard",
+      "capabilities": [
+        "chat"
+      ],
+      "min_context": null,
+      "forbidden_for": [],
+      "selectable": false,
+      "entitlements": [
+        {
+          "pool": "minimax-max",
+          "cost_class": "subscription"
+        }
+      ],
+      "physical": [
+        {
+          "model_id": "minimax/m3",
+          "placement": null,
+          "eligible": false,
+          "reason_code": "not_selectable"
         }
       ]
     }

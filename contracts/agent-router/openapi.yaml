@@ -100,11 +100,63 @@ info:
     The plaintext `http://` server below exists for in-cluster callers only and
     is scoped to that in its own description.
 
+    ## Economics: what it costs, and who is paying
+
+    Two fields, two different questions, and neither is derivable from the
+    other. `cost_class` is the economics of the ACTUAL ATTEMPT.
+    `entitlement_pool` is WHICH quota, subscription or funding source backs
+    it - `null` for local execution, which draws on none because the GPU is
+    already paid for.
+
+    Together they let a dispatcher select the correct ISOLATED provider
+    credential environment before an attempt starts, without inferring
+    billing or provider behaviour from the harness or from the shape of a
+    credential. Both inferences are wrong here: `claude` runs against
+    Anthropic Max on one attempt and MiniMax on another, and -
+
+    **Billing class and credential type are independent axes** (owner ruling
+    R16). A pool's economics are a fact about the ENTITLEMENT the operator
+    holds; the credential is a fact about the SHAPE of the secret used to
+    reach it. Neither implies the other. MiniMax's Max Token Plan is a FIXED
+    MONTHLY SUBSCRIPTION reached with a provider-issued, API-KEY-SHAPED
+    credential, so "it looks like an API key, therefore it is metered" is
+    **wrong by construction** - it bills a flat subscription as per-token
+    spend and refuses work already paid for. That heuristic is embedded in
+    tooling elsewhere in this estate; nothing built from this contract may
+    adopt it.
+
+    **Invariant 4 across pools.** Exhausting an entitlement never promotes to
+    billable spend. Every pool the catalog seeds declares `spillover: none`,
+    so an exhausted pool stops being a candidate and routing falls back to
+    another approved pool, to free, or to local. MiniMax Token Plan
+    exhaustion in particular must never spill into MiniMax pay-as-you-go:
+    different credential class, different entitlement, and holding one grants
+    nothing about the other. A metered path needs all three of a separately
+    provisioned metered credential, `allow_metered` intent, and independent
+    metered-spend authorization.
+
+    ## MiniMax is a model, not a harness
+
+    The first supported MiniMax path is `harness: claude` +
+    `model_profile: minimax/strong`, because Claude Code reaches MiniMax
+    through its Anthropic-compatible endpoint. The harness enum stays
+    `claude|codex|devin`: a new provider is a new model and possibly a new
+    funding pool, never automatically a new harness. This is exactly the
+    separation of axes the contract exists to preserve. MiniMax Code is a
+    different harness, is not approved, and would be evaluated on its own.
+
+    `minimax/strong` is in the profile vocabulary and is `selectable: false`
+    in catalog 1.1.0, so the router must not emit it until a later story has
+    validated it physically. The credential reaches a MiniMax-backed worker
+    in that worker's own process or session only - nothing rewrites the
+    machine's global Anthropic configuration, the Anthropic Max path keeps no
+    `ANTHROPIC_API_KEY`, and the secret lives in 1Password rather than Git.
+
     ## Vocabulary
 
-    Harness names, profile names, placement names and policy names are read
-    verbatim from ConfigMap `ai/agent-router-catalog`, catalog document version
-    1.0.0. See README "Vocabulary coupling" for what has to change together.
+    Harness names, profile names, placement names, policy names and
+    entitlement pool names are read verbatim from ConfigMap
+    `ai/agent-router-catalog`, catalog document version 1.1.0. See README "Vocabulary coupling" for what has to change together.
   contact:
     name: prox-ops
     url: https://github.com/jlengelbrecht/prox-ops
@@ -361,7 +413,7 @@ paths:
                 value:
                   model_profile: local-code-standard
                   placement_policy: prefer-warm-local
-                  catalog_version: sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53
+                  catalog_version: sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a
               large-context:
                 summary: Request too large for same-request failover
                 description: >-
@@ -545,7 +597,7 @@ paths:
                     eligible_for_placement: true
                     next_heartbeat_after_seconds: 30
                     offline_after_seconds: 90
-                    catalog_version: sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53
+                    catalog_version: sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a
                 withdrawn:
                   summary: Interactive node, marked ineligible on receipt
                   value:
@@ -555,7 +607,7 @@ paths:
                     eligible_for_placement: false
                     next_heartbeat_after_seconds: 30
                     offline_after_seconds: 90
-                    catalog_version: sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53
+                    catalog_version: sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a
         '400':
           $ref: '#/components/responses/InvalidRequest'
         '401':
@@ -631,7 +683,7 @@ paths:
                 $ref: '#/components/schemas/StatusResponse'
               examples:
                 today:
-                  summary: Catalog 1.0.0 as it stands - one usable placement
+                  summary: Catalog 1.1.0 as it stands - one usable placement
                   externalValue: ./examples/status/status-today.json
                 with-edge:
                   summary: Illustrative - the same view once an edge node heartbeats

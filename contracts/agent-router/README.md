@@ -69,15 +69,27 @@ field in this API collapses two of them. `/v1/route` decides the first two, `/v1
 decides the third. Resolving the same profile onto a different compatible GPU at dispatch
 time is legitimate; substituting a different model is not.
 
-Four vocabularies are read verbatim from ConfigMap `ai/agent-router-catalog`, catalog
-document version **1.0.0**, `schema_version: 1`:
+Funding is a fourth thing these three do not answer - *who is paying for this attempt* - and
+it gets its own field rather than being inferred from any of them. See "Economics" below.
+
+Five vocabularies are read verbatim from ConfigMap `ai/agent-router-catalog`, catalog
+document version **1.1.0**, `schema_version: 1`:
 
 | Vocabulary | Values | Where it is pinned |
 | --- | --- | --- |
 | harness | `claude`, `codex`, `devin` | `execution-profile.schema.json#/$defs/harness` |
-| model_profile | `local-code-fast`, `local-code-standard`, `local-general`, `local-unrestricted`, `claude/strong`, `openai/strong`, `devin/free` | `execution-profile.schema.json#/$defs/model_profile` |
+| model_profile | `local-code-fast`, `local-code-standard`, `local-general`, `local-unrestricted`, `claude/strong`, `openai/strong`, `devin/free`, `minimax/strong` | `execution-profile.schema.json#/$defs/model_profile` |
+| entitlement_pool | `anthropic-max`, `openai-plus`, `devin-free`, `minimax-max` (or `null`) | `execution-profile.schema.json#/$defs/entitlement_pool` |
 | placement_policy | `prefer-warm-local`, `cluster-only`, `edge-only`, `any-24gb` | `execution-profile.schema.json#/$defs/placement_policy` |
 | placement | `kserve-a5000`, `cachyos-7900xtx`, `bazzite-5090`, `laptop-rtx5000` | `place-result.schema.json#/$defs/placement` |
+
+**`minimax/strong` is in the enum but is not selectable.** Catalog 1.1.0 declares it with
+`selectable: false` and a `blocked_by` list, so the router must not emit it until a later
+story has validated it physically. It is in the vocabulary anyway, exactly as the placement
+enum carries `status: planned` placement names: the name is frozen now so the catalog and
+this contract land together, and flipping it to selectable is then a catalog change alone.
+Excluding it would force a contract PR to accompany that flip - which is precisely the
+drift window the 404 taxonomy describes.
 
 **`local-agent` is not in the harness enum.** It exists in the catalog as a reserved,
 `supported: false` / `selectable: false` placeholder so the axis is future-proof, and the
@@ -87,21 +99,42 @@ evaluating a specific harness, and no story in EPIC-035 does that. The schema en
 refusal twice - the enum excludes it, and a redundant `not` clause keeps the refusal true if
 somebody later widens the enum without reading the description.
 
+**MiniMax is not in the harness enum either, and for a different reason.** `local-agent` is
+refused permanently; MiniMax simply is not a harness. The first supported MiniMax path is
+`harness: claude` + `model_profile: minimax/strong`, because Claude Code reaches MiniMax
+through its Anthropic-compatible endpoint. A new provider is a new model, and possibly a new
+funding pool - never automatically a new harness. This is the separation of axes working
+rather than an exception to it. MiniMax Code is a different harness, is not approved, and
+would be evaluated on its own.
+
 ### Vocabulary coupling, and what has to move together
 
 Enumerating catalog names in this contract buys mechanical checking and costs coupling. The
 split is deliberate:
 
-- **Enumerated**: harness, profile, policy and placement names. All four are compiled into
-  something outside the catalog - a placement name appears verbatim as an agentgateway
-  provider `name` and as the value of `x-placement`, so it cannot move without a coordinated
-  change anyway.
+- **Enumerated**: harness, profile, policy, placement and entitlement pool names. Each is
+  compiled into something outside the catalog - a placement name appears verbatim as an
+  agentgateway provider `name` and as the value of `x-placement`, and a pool name selects
+  which isolated credential environment a dispatcher launches a worker in - so none of them
+  can move without a coordinated change anyway.
 - **Not enumerated**: `model_id`. The whole reason the profile indirection exists is that
   changing which physical model backs a profile is a pull request against the catalog and
   touches nothing else. Enumerating model ids here would break that guarantee.
 
-So: **adding or renaming a profile, policy or placement is a catalog PR and a matching PR
-against this directory.** Swapping the model behind a profile is a catalog PR alone. A
+- **Not enumerated either**: a pool's economics. `entitlement_pool` names the pool; what that
+  pool costs, which credential class reaches it and what it does when exhausted are declared
+  in the catalog and read from there. Encoding a pool-to-cost mapping in this contract would
+  be the exact mistake ruling R16 forbids, in a different file: deriving economics from a
+  name rather than from the entitlement.
+
+So: **adding or renaming a profile, policy, placement or entitlement pool is a catalog PR and
+a matching PR against this directory.** Swapping the model behind a profile is a catalog PR
+alone, and so is flipping a declared-but-not-selectable profile to selectable.
+
+Catalog 1.1.0 and this contract revision land in the same change for that reason. Adding
+`minimax/strong` here alone would have opened the drift window the 404 taxonomy describes -
+a name in the contract vocabulary that the loaded catalog does not have - so the two move
+together and the window never exists. A
 contract change that adds an optional field is a minor bump of `info.version`; removing a
 field, re-typing one, or changing what a field means is a major bump.
 
@@ -110,19 +143,25 @@ document (ConfigMap key `catalog.yaml`) exactly as mounted, before any parsing. 
 computes it at load time. It is not the catalog's semver `version` field, and it is never
 written by hand.
 
-**Two digests appear in these examples, and only one of them is real.**
+**Four digests appear in these examples, and only one of them is real.**
 
-| Digest | What it is |
-| --- | --- |
-| `sha256:280e5ccd…48da53` | The **real** digest of catalog 1.0.0 exactly as committed - `sha256` over `data["catalog.yaml"]` of `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml`. Reproducible from the repository today. |
-| `sha256:decafbad…decafbad` | A **placeholder**, obviously fabricated, carried by the examples that depict a catalog which does not exist yet. No router will ever emit it. |
+| Digest | What it is | Used by |
+| --- | --- | --- |
+| `sha256:fd8c4c31…50667a` | The **real** digest of catalog 1.1.0 exactly as committed - `sha256` over `data["catalog.yaml"]` of `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml`. Reproducible from the repository today. | every example describing the cluster as it is |
+| `sha256:decafbad…decafbad` | Placeholder, obviously fabricated. A later catalog in which `cachyos-7900xtx` has been brought up and is selectable; the other two edge placements are still planned. | `placed-warm-edge.json`, `status-with-edge.json` (`catalog_document_version: 1.2.0`) |
+| `sha256:f00dface…f00dface` | Placeholder. A **further** catalog in which all three edge placements are selectable - which is what "every candidate has withdrawn itself" needs, since a placement that was never selectable cannot withdraw. | `unavailable-all-withdrawn.json` |
+| `sha256:deadbeef…deadbeef` | Placeholder. A later catalog that retired `local-unrestricted` and folded the `any-24gb` policy into `prefer-warm-local`. | `unknown-profile.json`, `unknown-placement-policy.json`, `catalog-version-stale.json` (as the digest the router now serves) |
 
-The placeholder exists because a digest is a content commitment: two documents showing
-different catalog contents cannot honestly share one. An example depicting a post-35.6 world
-- an edge placement that is `selectable`, a profile with a second physical candidate, a
-policy that now resolves - is describing a **later catalog**, and says so with a different
-digest and a bumped `catalog_document_version`. Reusing the real 1.0.0 digest there taught
+The placeholders exist because a digest is a content commitment: two documents showing
+different catalog contents cannot honestly share one. That rule applies to the placeholders
+as much as to the real digest, which is why there are three of them rather than one - the
+"edge brought up" catalog, the "all edge placements brought up" catalog and the "things were
+retired" catalog are three different documents, and giving them one digest would have taught
 the opposite of the rule the field exists to enforce.
+
+Real-digest examples also carry `catalog_document_version: "1.1.0"`; the illustrative ones
+carry a higher version where they have one, so no example claims to be 1.1.0 with contents
+that are not 1.1.0's.
 
 Examples on the real digest go stale the moment the catalog changes, which is exactly the
 condition `catalog_version_stale` exists to report.
@@ -200,6 +239,87 @@ turned a control into an obstacle course.
 Worth recording: catalog 1.0.0 contains no `cost_class: metered` profile at all - Devin's
 paid on-demand tier deliberately has no profile name to hide behind. So this path cannot fire
 today. The shape is specified now so that it exists before the money does.
+
+### Economics: what it costs, and who is paying
+
+`cost_class` and `entitlement_pool` answer two different questions, and neither is derivable
+from the other:
+
+- **`cost_class` is the economics of the ACTUAL ATTEMPT.** Free, subscription, or billable.
+- **`entitlement_pool` is WHICH quota, subscription or funding source backs it.** `null` for
+  local execution, which draws on none - the GPU is already paid for.
+
+Both are on the `ExecutionProfile`, and both are on **every `fallbacks[]` entry**, so the
+economics of every candidate are auditable *before* anything runs rather than discovered when
+a fallback is taken. A fallback routinely crosses funding sources - a local attempt falling
+back to a subscription pool is the ordinary shape.
+
+Together they let the dispatcher put the attempt in the correct **isolated provider
+credential environment** before it starts, without inferring billing or provider behaviour
+from the harness or from the shape of a credential. Both of those inferences are wrong here:
+`claude` runs against Anthropic Max on one attempt and MiniMax on another, and -
+
+#### Billing class and credential type are independent axes
+
+> **An API-key-shaped credential does not imply `cost_class: metered`.** Read economics from
+> the entitlement, never from the shape of the secret, the name of the provider, or the
+> harness that happens to be running.
+
+MiniMax's Max Token Plan is a **fixed monthly subscription** reached with a provider-issued,
+API-key-shaped credential. "It looks like an API key, therefore it is metered" is **wrong by
+construction**: a consumer reasoning that way bills a flat subscription as per-token spend,
+and refuses work the operator has already paid for. That heuristic is embedded in tooling
+elsewhere in this estate, which is why this is stated rather than left to be re-derived.
+
+The four seeded pools make the point without needing the argument. Two of them are the same
+`cost_class` with completely different credential shapes, and one is neither a subscription
+nor metered:
+
+| Pool | Provider | cost_class | credential_class | spillover |
+| --- | --- | --- | --- | --- |
+| `anthropic-max` | anthropic | subscription | subscription-session | none |
+| `openai-plus` | openai | subscription | subscription-session | none |
+| `devin-free` | cognition | **free** | account-session | none |
+| `minimax-max` | minimax | **subscription** | **provider-api-key** | none |
+
+`devin-free` is also why the abstraction is called an **entitlement** pool rather than a
+subscription pool: free is not a subscription, and a future explicitly-authorized
+pay-as-you-go source is a third shape again. All three have to fit one table without
+special-casing.
+
+**A profile is not assumed to have exactly one funding source.** The catalog carries an
+ordered `entitlements[]` list per profile: the first entry is the default, later entries are
+alternatives reachable only under the conditions they declare. That is how `minimax/strong`
+can normally draw on `minimax-max` while a future `minimax-payg` entry sits behind
+`requires: [allow_metered, metered-spend-authorization]` - one harness, one model, one
+profile, two funding candidates, and no axis collapsed to express it. The `ExecutionProfile`
+stamps the ONE pool the attempt actually used, because a stamp is immutable for its attempt;
+a different funding source is a different attempt, and appears as a `fallbacks[]` entry.
+
+#### Invariant 4 across pools
+
+Exhausting an entitlement **never** promotes to billable spend. Every seeded pool declares
+`spillover: none`, so an exhausted pool simply stops being a candidate and routing falls back
+to another approved pool, to free, or to local.
+
+MiniMax specifically: **Token Plan exhaustion must never spill into MiniMax pay-as-you-go.**
+Those are two credential classes for two entitlements, and holding one grants nothing about
+the other. A pay-as-you-go path would need all three of a separately provisioned metered
+credential, `allow_metered` intent on the request, and independent metered-spend
+authorization held by the calling principal - which the ordinary automation principal does
+not have. Two of the three is a refusal.
+
+#### Credential isolation
+
+A MiniMax-backed Claude Code worker receives its MiniMax base URL and token **in its own
+process or session only**. It must not rewrite the machine's Anthropic configuration
+globally. No `ANTHROPIC_API_KEY` is introduced for the Anthropic Max path - invariant 10
+stands, a subscription is not an API key. The MiniMax credential lives in 1Password, scoped
+to MiniMax-backed worker execution, and never in Git.
+
+This is contract text rather than an implementation note because it is the difference
+between adding a funding source and quietly repointing every Claude Code session on the host
+at a different provider.
 
 ### `placement_required` - does this attempt need a placement at all
 
@@ -547,9 +667,9 @@ anyway. The loop ends only on a failure the node itself must fix: `unauthenticat
 31 files, every one validated in CI-shaped commands below. Every example is also referenced
 from `openapi.yaml`, so an example that stops being reachable from the spec is visible.
 
-Each one states which catalog it is drawn against. Examples on the real 1.0.0 digest describe
-the cluster as it is today; those carrying the `decafbad…` placeholder describe a later
-catalog, and are marked below.
+Each one states which catalog it is drawn against. Examples on the real 1.1.0 digest describe
+the cluster as it is today; those carrying a placeholder digest describe a later catalog, and
+each says which one below.
 
 **`examples/execution-profile/`** - `/v1/route` responses.
 
@@ -577,29 +697,33 @@ catalog, and are marked below.
 | File | Shows |
 | --- | --- |
 | `placed-kserve-only-candidate.json` | Today's real answer: one candidate, readiness `unknown` because KServe is not probed. |
-| `placed-warm-edge.json` | **Later catalog** (`decafbad…`): a strict warm preference beats `prefer_order` once an edge placement is selectable. |
-| `unavailable-policy-edge-only.json` | `edge-only` on catalog **1.0.0** - every placement it names is `status: planned`. Explicit empty result, not a fall-through. |
-| `unavailable-all-withdrawn.json` | **Later catalog** (`decafbad…`): interactive, draining and silent candidates; note the warm-but-ineligible one. Withdrawal is only meaningful for a placement that was selectable in the first place. |
+| `placed-warm-edge.json` | **Later catalog** (`decafbad…`, cachyos brought up): a strict warm preference beats `prefer_order` once an edge placement is selectable. |
+| `unavailable-policy-edge-only.json` | `edge-only` on catalog **1.1.0** - every placement it names is `status: planned`. Explicit empty result, not a fall-through. |
+| `unavailable-all-withdrawn.json` | **Further catalog** (`f00dface…`, all three edge placements brought up): interactive, draining and silent candidates; note the warm-but-ineligible one. Withdrawal is only meaningful for a placement that was selectable in the first place. |
 
 **`examples/errors/`** - one file per envelope code, 14 in total. Three of them carry the
-`decafbad…` placeholder because they are about a catalog that has moved on:
+`deadbeef…` placeholder because they are about a catalog that has moved on:
 `unknown-profile.json` and `unknown-placement-policy.json` show a stamped name the loaded
-catalog has dropped, and `catalog-version-stale.json` shows the caller's 1.0.0 digest against
+catalog has dropped, and `catalog-version-stale.json` shows the caller's 1.1.0 digest against
 the newer one the router is serving.
 
-**`examples/status/`** - `status-today.json` is catalog 1.0.0 exactly as it stands, on the
-real digest, with one usable placement. `status-with-edge.json` is the same view after 35.6
-has landed: `cachyos-7900xtx` selectable and heartbeating, `local-code-standard` with a second
-physical candidate, `edge-only` resolving. Those are catalog-static facts, so it carries the
-`decafbad…` placeholder digest and `catalog_document_version: 1.1.0` rather than pretending to
-be 1.0.0 with different contents. It is also the example that shows a heartbeat re-exposed
+**`examples/status/`** - `status-today.json` is catalog 1.1.0 exactly as it stands, on the
+real digest, with one usable placement, the four entitlement pools, and `minimax/strong`
+visible but not selectable. `status-with-edge.json` is the same view after 35.6 has landed:
+`cachyos-7900xtx` selectable and heartbeating, `local-code-standard` with a second physical
+candidate, `edge-only` resolving. Those are catalog-static facts, so it carries a placeholder
+digest and `catalog_document_version: 1.2.0` rather than pretending to be 1.1.0 with
+different contents. It is also the example that shows a heartbeat re-exposed
 verbatim inside a placement.
 
-The examples that describe a world which does not exist yet are the ones naming
-`cachyos-7900xtx` as usable: `placed-warm-edge.json`, `unavailable-all-withdrawn.json` and
-`status-with-edge.json`. In catalog 1.0.0 that placement is `status: planned` /
-`selectable: false` and cannot be returned by `/v1/place` at all, which is why they sit on a
-later catalog digest instead of contradicting the one they claim.
+Three examples describe a world that does not exist yet, and they do not all describe the
+**same** one. `placed-warm-edge.json` and `status-with-edge.json` need only
+`cachyos-7900xtx` to have been brought up, and share a digest.
+`unavailable-all-withdrawn.json` needs all three edge placements to be selectable - a node
+that was never selectable cannot withdraw itself - so it describes a further catalog again
+and carries its own. In catalog 1.1.0 all three edge placements are `status: planned` /
+`selectable: false` and cannot be returned by `/v1/place` at all, which is why none of these
+sits on the real digest.
 
 ## Validating this contract
 
@@ -639,14 +763,14 @@ literal LAN address - placeholders such as `<edge-host>` and `<node-id>` are use
 matching the edge worker contract.
 
 The schemas do real work rather than describing the examples back to themselves. They reject,
-among others: `harness: local-agent`; a profile or placement name not in catalog 1.0.0;
+among others: `harness: local-agent`; a profile or placement name not in catalog 1.1.0;
 `cost_class: metered` with `metered: false` and the reverse; a `metered_denied` note on a
 metered profile; `state: INTERACTIVE` with `interactive: false`; a header other than
 `x-placement` in a `PlaceResult`; an `unavailable` result that still carries a placement; and
 `no_eligible_placement` used as an error code.
 
-Four rules that were prose-only are now checked as well, because a rule this document states
-and the schema permits is a rule an implementer reading only the schema will break:
+Rules that were prose-only are checked as well, because a rule this document states and the
+schema permits is a rule an implementer reading only the schema will break:
 
 - a result-level reason code (`placed_warm`, `no_eligible_placement`) inside `alternatives[]`,
   where only candidate-level codes belong;
@@ -655,7 +779,12 @@ and the schema permits is a rule an implementer reading only the schema will bre
 - `state_source: "heartbeat"` on a placement with no heartbeat attached, or
   `state_source: "static"` on one that has heartbeated;
 - a heartbeat with a null `gpu.model` or `gpu.arch`, which the edge contract types as strings
-  whose unmeasured form is the literal `"unmeasured"`.
+  whose unmeasured form is the literal `"unmeasured"`;
+- an entitlement pool in `/v1/status` that omits any of its four declared attributes, which
+  would force a consumer to infer one of them - the failure the pool table exists to prevent;
+- a `cost_class: metered` pool that does not say `requires_authorization: true`;
+- a profile with an empty `entitlements[]`, or an `ExecutionProfile` or fallback entry with
+  no `entitlement_pool` at all.
 
 ## Known tensions and open items
 
@@ -665,7 +794,7 @@ Recorded rather than resolved, because each belongs to a story that has not run 
    edge contract's field table says, and where the two could drift the edge contract wins, so
    the schema follows it. A node that genuinely cannot read utilization is out of contract
    today; 35.6 is where that gets found out.
-2. **No metered profile exists in catalog 1.0.0**, so `/v1/route` cannot emit `metered: true`
+2. **No metered profile exists in catalog 1.1.0**, so `/v1/route` cannot emit `metered: true`
    at all right now. The refusal shape is specified ahead of the money on purpose.
 3. **The heartbeat interval is router-side** and deliberately not added to the payload. 35.9
    sets the real value; 30 s / 90 s in these examples is a starting point, not a measurement.
@@ -695,11 +824,25 @@ Recorded rather than resolved, because each belongs to a story that has not run 
    contract's own view is that it is a viable upgrade rather than the v1 requirement, since
    llama.cpp will not verify a client cert today — and which story provisions the certificate
    and the DNS name for the router's own TLS endpoint. 35.9 owns both answers.
-11. **`placement_required` cannot be schema-checked.** It must equal the selected profile's
+11. **A pool's economics cannot be schema-checked here.** `entitlement_pool` names the pool;
+   its `cost_class`, `credential_class` and `spillover` are declared in the catalog and read
+   from there. This contract deliberately encodes no pool-to-cost mapping, because that would
+   be ruling R16's own mistake in a different file - deriving economics from a name rather
+   than from the entitlement. A router serving a `cost_class` that disagrees with the pool's
+   catalog entry is wrong, and only a check against the catalog can say so.
+12. **`placement_required` cannot be schema-checked.** It must equal the selected profile's
    catalog `hosting: local`, and nothing here can verify that, because hosting is catalog data
    this contract deliberately does not enumerate. It is a MUST on the router, in the same class
    as `x-placement` having to equal the `placement` field.
-12. **The edge contract's example still shows the upstream model id.** Its §1 JSON blob has
+13. **`minimax/strong` is declared but unvalidated.** It is in the vocabulary and
+   `selectable: false`, and stays that way until a later story demonstrates everything in its
+   catalog `blocked_by` list: Token Plan billing rather than pay-as-you-go, Claude Code
+   driving MiniMax M3 end to end, verifiable provider and model identity, tool calling, MCP
+   compatibility, isolation from the normal Claude Max environment, observable quota
+   behaviour, no automatic pay-as-you-go spillover, and correct fallback when MiniMax
+   capacity is unavailable. Its catalog model claims `chat` only; tool calling gets claimed
+   when it is demonstrated, not before.
+14. **The edge contract's example still shows the upstream model id.** Its §1 JSON blob has
    `active_model: "qwen3.6-27b"`; the canonical rule frozen here is that the field carries the
    catalog `model_id` (`qwen36-27b`). The field table types it as an unqualified string and
    never states a namespace, so this is a gap being filled rather than a contradiction — but
@@ -716,5 +859,6 @@ Recorded rather than resolved, because each belongs to a story that has not run 
 - `edge/EDGE-WORKER-CONTRACT.md` - authoritative for heartbeat field semantics, transport
   requirements and per-host preemption rules. Merged; read the file, not this summary of it.
 - `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml` and its `README.md` -
-  the four vocabularies, catalog document version 1.0.0, and the change protocol this
+  the five vocabularies, catalog document version 1.1.0, the entitlement pools, and the
+  change protocol this
   directory has to stay in step with.
