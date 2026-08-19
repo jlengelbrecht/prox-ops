@@ -196,7 +196,7 @@
             "model_profile": { "$ref": "#/$defs/model_profile" },
             "cost_class": { "const": "metered" }
           },
-          "description": "The metered option the router would have returned had the request carried allow_metered: true. Recorded so the human authorizing the spend can see exactly what they are authorizing."
+          "description": "The metered option the router would have returned had the request carried allow_metered: true, AND had the caller held authority to approve it. Recorded so the human authorizing the spend can see exactly what they are authorizing.\n\nIt deliberately carries no entitlement_pool. A withheld option is one that was NOT funded from anywhere: the whole content of the refusal is that no authorized funding source existed for it. Naming a pool here would suggest the router had picked one, which is the opposite of what happened."
         }
       },
       "description": "INVARIANT 4 refusal note. Present on a 200 response when the best option was metered, the request did not set allow_metered: true, and a non-metered option existed; the profile carried alongside it IS that non-metered option. When no non-metered option exists the router returns 409 metered_denied with no profile instead - it never returns the metered choice with a warning attached."
