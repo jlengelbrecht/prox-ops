@@ -45,6 +45,18 @@ Presentation order in the file is referents-before-referrers (`placements`, `mod
 then `profiles`), which is not the order section 6 lists them in. YAML mappings are
 unordered; nothing reads meaning from it.
 
+### Absent keys
+
+An absent key and an explicit `null` mean the same thing to a consumer. A field marked
+`required` in the tables below is always present; a field marked `required when X` is
+present exactly when X holds; everything else is optional and reads as `null` when
+missing.
+
+Fields that only make sense for one kind of row are omitted on the rows where they do not
+apply rather than carried as `null` padding - `upstream_id_form`, `runtime`,
+`vram_gb_estimate`, `vram_estimate_source` and `idle_retention_min` on a vendor model,
+`resolved_by` on a local one. The `notes` column says which rows each field applies to.
+
 ### `harnesses`
 
 Keyed by harness id. Deliberately thin - a harness entry says whether the axis value
@@ -135,22 +147,27 @@ prefix. That prefix is LiteLLM's, not the model's, and is not used here.
 | field | type | notes |
 | --- | --- | --- |
 | `description` | string | required |
-| `hosting` | enum | `local` \| `vendor` |
-| `upstream_model_id` | string \| null | `null` for vendor models |
-| `upstream_id_form` | string | how the upstream derives it |
-| `resolved_by` | enum | `harness`, for vendor models |
-| `runtime` | string \| null | |
-| `placements` | list | placement names this model is deployed on; `[]` for vendor |
-| `capabilities` | list | `chat` \| `tools` \| `vision` \| `audio` |
-| `max_context` | int \| null | tokens; `null` means unknown |
-| `max_context_source` | enum | required when `max_context: null` |
-| `alignment` | enum | `standard` \| `unrestricted` |
-| `vram_gb_estimate` | number \| null | working-set estimate |
+| `hosting` | enum | required. `local` \| `vendor` |
+| `upstream_model_id` | string \| null | required. `null` for vendor models |
+| `upstream_id_form` | string | local models only. How the upstream derives `upstream_model_id`; absent on vendor models, which have no upstream id |
+| `resolved_by` | enum | vendor models only. Always `harness` today; absent on local models |
+| `runtime` | string \| null | local models only |
+| `placements` | list | required. Placement names this model is deployed on; `[]` for vendor |
+| `capabilities` | list | required. `chat` \| `tools` \| `vision` \| `audio` |
+| `max_context` | int \| null | required. Tokens; `null` means unknown |
+| `max_context_source` | enum | required when `max_context` is `null` |
+| `alignment` | enum | required. `standard` \| `unrestricted` |
+| `vram_gb_estimate` | number \| null | local models only. Working-set estimate |
 | `vram_estimate_source` | string | required when `vram_gb_estimate` is set |
-| `cold_start_s_estimate` | number \| null | |
-| `cold_start_source` | enum | `measured` \| `unmeasured` \| `n-a` |
-| `idle_retention_min` | int \| null | scale-to-zero retention |
-| `source` | string | where the identifiers came from |
+| `cold_start_s_estimate` | number \| null | required |
+| `cold_start_source` | enum | required. `measured` \| `unmeasured` \| `n-a` |
+| `idle_retention_min` | int \| null | local models only. Scale-to-zero retention |
+| `source` | string | required. Where the identifiers came from |
+
+A vendor model is resolved by its harness against a subscription, so there is no upstream
+server, no local runtime and no GPU footprint to describe: `upstream_id_form`, `runtime`,
+`vram_gb_estimate`, `vram_estimate_source` and `idle_retention_min` are absent on all four
+rather than set to `null`.
 
 `vision` and `audio` on `qwen-omni` are **input** modalities. Audio output is a separate
 service (`qwen-tts`) and is out of scope here.
@@ -329,7 +346,9 @@ Adding a placement is a Git change by design (section 10a). Renaming one is brea
   are gateway configuration and are not duplicated here.
 - Endpoints, hostnames, ports and credentials. agentgateway is the only model ingress
   (invariant 5), and endpoint state comes from the heartbeat contract at runtime, never
-  from Git.
+  from Git. That is also why no placement carries an `ingress` field: the value would be
+  `agentgateway` on every row, so it would record a decision already made once here rather
+  than anything a consumer could act on.
 - Anything that collapses harness, profile and placement into one field (invariant 1).
 - Any authorization semantics (ruling R5).
 
