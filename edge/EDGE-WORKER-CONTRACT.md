@@ -52,9 +52,9 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
 | `gpu.utilization_pct` | number | 0–100 |
 | `runtime.kind` | string | e.g. `llama-swap+llama.cpp` |
 | `runtime.version` | string | runtime/daemon version string |
-| `runtime.endpoint` | string | reachable-from-cluster endpoint, e.g. `https://<edge-host>:<edge-port>` |
-| `active_model` | string \| null | currently loaded model, if any |
-| `cached_models` | string[] | models resident without a reload |
+| `runtime.endpoint` | string | reachable-from-cluster endpoint, e.g. `https://<edge-host>:<edge-port>`. **Observational status metadata only — never an authoritative routing target; see §2** |
+| `active_model` | string \| null | the model currently **loaded and warm** in the inference runtime, if any |
+| `cached_models` | string[] | model artifacts already **present on local storage**, so loadable without a download — but still possibly needing model/VRAM load time |
 | `preemptible` | bool | true if local interactive use can evict AI work |
 | `interactive` | bool | true while a human is actively using the host |
 | `ac_power` | bool | false disqualifies laptop placements — see §4 |
@@ -62,6 +62,19 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
 | `last_heartbeat` | RFC3339 | stamped by the edge host, not the router |
 | `capabilities` | string[] | e.g. `chat`, `tools`, `vision` |
 | `max_context` | number | tokens |
+
+**`active_model` vs `cached_models` — why both exist.** They describe three different costs,
+and `/v1/place` economics consume the distinction later:
+
+| Condition | Cost to serve |
+|---|---|
+| model is `active_model` | warm — serve now |
+| model is in `cached_models` | on local disk; pay a model/VRAM load (seconds to tens of seconds) |
+| model is in neither | pay a download first (tens of GB over the LAN or the internet), then the load |
+
+Collapsing `cached_models` into either neighbour destroys that middle tier: report it as
+warm and the router promises latency the node cannot deliver; report it as absent and the
+router cannot prefer a node that loads in seconds over one that must fetch 30 GB first.
 
 ### 1.1 States
 
@@ -79,13 +92,25 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
   forces a node into `SERVING` — `agent-router`'s `/v1/place` response is
   authoritative-with-alternatives for placement *intent*, but the edge host is what
   actually accepts or refuses the inference request.
-- **Withdrawal is by silence and by 503.** Entering `INTERACTIVE` or `DRAINING` means the
-  inference endpoint itself stops accepting new work. The gateway's health weighting
-  removes the backend without any control-plane round trip — there is no "please drain"
-  RPC from the cluster to the edge. A missed heartbeat (silence) and a `503` from the
-  inference endpoint are the only two withdrawal signals the cluster acts on.
-- The router marks a node `OFFLINE` once it has gone `3 ×` the heartbeat interval without
-  a heartbeat (EPIC-035 §4).
+- **Withdrawal has three distinct mechanisms.** They differ in actor, latency and class,
+  and they are complementary — none of them substitutes for another:
+
+| Signal | Actor | Effect | Class |
+|---|---|---|---|
+| heartbeat `state: INTERACTIVE` or `DRAINING` | `agent-router` | the placement becomes ineligible **immediately** | proactive control-plane state |
+| no heartbeat for `3 × interval` (EPIC-035 §4) | `agent-router` | the placement transitions to `OFFLINE` | failure detection |
+| `503` (or a wire failure) from the inference endpoint | `agentgateway` | passive health weighting, retry and failover | reactive data-plane state |
+
+Put plainly: **the heartbeat is proactive control-plane state** — the host announces it is
+withdrawing and the router stops placing on it without waiting for a request to fail.
+**A `503` is reactive data-plane state** — the gateway learns about the withdrawal from
+traffic it has already sent. **Silence is failure detection** — it is what catches a host
+that stopped without saying anything.
+- Entering `INTERACTIVE` or `DRAINING` means the host does both: it publishes that state on
+  its next heartbeat *and* stops accepting new work at the inference endpoint, so the
+  control-plane and data-plane views agree. There is still no "please drain" RPC from the
+  cluster to the edge — every signal above is either the host announcing its own state or
+  the cluster observing the consequences.
 
 ## 2. Transport (owner ruling R4 — production shape, non-negotiable)
 
@@ -103,12 +128,30 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
   reference — use the hostname form, not a bare IP.
 - **Dedicated host certificate and private key.** Never reuse the Kubernetes wildcard
   private key for an edge host cert.
+- **Testing against that dedicated CA is `conformance.sh --ca-cert PATH`** (or the
+  `EDGE_CA_CERT` environment variable), which verifies against that bundle instead of the
+  machine's trust store. Verification stays on and the host's global trust store is left
+  untouched, which is how 35.6 validates an edge host whose leaf is issued by the edge CA
+  rather than a publicly-chaining issuer. `--insecure` is not a substitute: it remains the
+  non-conforming debug path, it overrides `--ca-cert`, and passing both makes the script
+  warn and downgrade `tls_validation` to `SKIP`.
 - **Secret material lives outside Git** — the edge bearer token and the host key/cert live
   in 1Password / cluster `ExternalSecret`s, never committed.
 - `policies.tls.mtlsCertificateRef` (mutual TLS) is a viable upgrade path if an edge host
   ever fronts something more sensitive than this, but it needs a client cert issued to the
   gateway and an edge daemon willing to verify it — llama.cpp does not do this today, so
   bearer-over-TLS is the right amount of mechanism for 35.8.
+- **`runtime.endpoint` is status metadata, never routing configuration.** It is
+  observational only. It **must not** become an authoritative routing target, **must not**
+  trigger dynamic agentgateway reconfiguration, and **must not** override the Git-managed
+  placement/backend topology. agentgateway backend hostnames stay Git-managed, full stop.
+  The threat is concrete: whoever holds an edge heartbeat credential must not be able to
+  redirect inference traffic simply by advertising an endpoint of their choosing — that
+  would turn one leaked node credential into traffic interception for the whole placement.
+  A heartbeat that advertises an endpoint which disagrees with the Git-managed backend is a
+  reconciliation alarm, not an instruction. This is the same shape of rule as `x-placement`
+  being a scheduling signal only (§7): between them they are the two things a compromised
+  edge host or client must never be able to do — reroute traffic, or grant itself authz.
 - **Certificate provisioning may be documented as provisional at 35.6** if no automated
   non-Kubernetes PKI flow exists yet — that gap does not block the contract, it blocks
   calling 35.6 "done."
@@ -142,7 +185,8 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
 ## 5. Conformance script
 
 `edge/conformance.sh` takes an endpoint (`--endpoint`) and a bearer credential
-(`--api-key`), and prints one `PASS`/`FAIL`/`SKIP` line per capability:
+(`--api-key`) — plus `--ca-cert` when the endpoint chains to a private edge CA — and prints
+one `PASS`/`FAIL`/`SKIP` line per capability:
 
 - **`models_shape`** — `GET /v1/models` returns `{"data": [{"id": ...}, ...]}`.
 - **`chat_completions`** — `POST /v1/chat/completions` (non-streaming) returns a
@@ -168,8 +212,9 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
   listing while leaving inference open.
 - **`tls_validation`** — for `https` endpoints, the script connects **without** `-k`/
   `--insecure` and requires success, proving the certificate chain and hostname SAN are
-  actually valid (§2). Passing `--insecure` downgrades this check to `SKIP` with an explicit
-  warning that the tested shape violates rule R4 and must never be the production shape.
+  actually valid (§2), against the system trust store or against `--ca-cert` when given.
+  Passing `--insecure` downgrades this check to `SKIP` with an explicit warning that the
+  tested shape violates rule R4 and must never be the production shape.
 
 The script exits non-zero if any capability `FAIL`s. `SKIP` (e.g. no `--alias-model` given,
 or `--insecure` requested) does not fail the run — it is a narrower test, not a failure.
@@ -190,4 +235,6 @@ authorization meaning whatsoever. Model authorization is, and remains, the per-m
 policy binding the request body's `model` field to the routed backend model (34.11's
 shape). Nothing in this contract, in `conformance.sh`, or in any edge node's request
 handling may let `x-placement` influence an authorization decision — a design that does so
-is rejected on sight.
+is rejected on sight. Its counterpart on the transport side is `runtime.endpoint` being
+observational only (§2): one must never grant authorization, the other must never redirect
+traffic.

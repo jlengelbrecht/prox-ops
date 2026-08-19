@@ -23,14 +23,22 @@
 #                          same resolved model id. Skipped if unset.
 #   --resolve HOST:PORT:IP Passed straight through to curl --resolve, for
 #                          endpoints with no DNS record yet.
+#   --ca-cert PATH         Verify the endpoint against this CA bundle instead of
+#                          the machine's trust store (curl --cacert), for an edge
+#                          host issued by a dedicated edge CA. This is the
+#                          conforming way to test such a host: verification stays
+#                          on, and the system trust store is left alone.
 #   --insecure              Disable TLS certificate validation. Downgrades the
 #                          TLS-validation capability to SKIP with a warning —
 #                          this shape does not conform to EDGE-WORKER-CONTRACT
 #                          rule R4 and must never be used against production.
+#                          It also overrides --ca-cert: curl verifies nothing,
+#                          so the two together are a debug shape, never a test
+#                          of the CA.
 #   --timeout SECONDS       Per-request timeout (default: 180, cold starts run ~150s)
 #
 # Environment variables EDGE_ENDPOINT, EDGE_API_KEY, EDGE_MODEL, EDGE_ALIAS_MODEL
-# are read as defaults for the flags above.
+# and EDGE_CA_CERT are read as defaults for the flags above.
 #
 # Exit status: 0 if every capability PASSed (SKIP does not fail the run),
 # 1 if any capability FAILed, 2 on usage/environment error.
@@ -41,6 +49,7 @@ ENDPOINT="${EDGE_ENDPOINT:-}"
 API_KEY="${EDGE_API_KEY:-}"
 MODEL="${EDGE_MODEL:-qwen36-27b}"
 ALIAS_MODEL="${EDGE_ALIAS_MODEL:-}"
+CA_CERT="${EDGE_CA_CERT:-}"
 RESOLVE=""
 INSECURE=0
 TIMEOUT=180
@@ -72,6 +81,7 @@ while [ "$#" -gt 0 ]; do
         --model) require_value "$1" "$#"; MODEL="$2"; shift 2 ;;
         --alias-model) require_value "$1" "$#"; ALIAS_MODEL="$2"; shift 2 ;;
         --resolve) require_value "$1" "$#"; RESOLVE="$2"; shift 2 ;;
+        --ca-cert) require_value "$1" "$#"; CA_CERT="$2"; shift 2 ;;
         --insecure) INSECURE=1; shift ;;
         --timeout) require_value "$1" "$#"; TIMEOUT="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
@@ -82,6 +92,15 @@ done
 if [ -z "$ENDPOINT" ] || [ -z "$API_KEY" ]; then
     echo "FATAL: --endpoint and --api-key (or EDGE_ENDPOINT/EDGE_API_KEY) are required" >&2
     exit 2
+fi
+
+if [ -n "$CA_CERT" ] && [ ! -r "$CA_CERT" ]; then
+    echo "FATAL: --ca-cert '$CA_CERT' is not a readable file" >&2
+    exit 2
+fi
+
+if [ -n "$CA_CERT" ] && [ "$INSECURE" -eq 1 ]; then
+    echo "WARNING: --insecure overrides --ca-cert; certificates are not verified at all" >&2
 fi
 
 for bin in curl jq; do
@@ -98,6 +117,7 @@ trap 'rm -rf "$SCRATCH_DIR"' EXIT
 
 CURL_OPTS=(--silent --show-error --max-time "$TIMEOUT")
 [ -n "$RESOLVE" ] && CURL_OPTS+=(--resolve "$RESOLVE")
+[ -n "$CA_CERT" ] && CURL_OPTS+=(--cacert "$CA_CERT")
 [ "$INSECURE" -eq 1 ] && CURL_OPTS+=(--insecure)
 
 PASS_COUNT=0
@@ -345,11 +365,14 @@ check_tls_validation() {
         return
     fi
     if [ "$INSECURE" -eq 1 ]; then
-        report SKIP "tls_validation" "--insecure given; this shape violates contract rule R4 and must never ship"
+        report SKIP "tls_validation" "--insecure given${CA_CERT:+ (overriding --ca-cert)}; this shape violates contract rule R4 and must never ship"
         return
     fi
+    # Deliberately rebuilt without --insecure. --ca-cert is kept: verifying
+    # against a dedicated edge CA is conforming, trusting nothing is not.
     local strict_opts=(--silent --show-error --max-time "$TIMEOUT" --output /dev/null --write-out '%{http_code}')
     [ -n "$RESOLVE" ] && strict_opts+=(--resolve "$RESOLVE")
+    [ -n "$CA_CERT" ] && strict_opts+=(--cacert "$CA_CERT")
     local status
     status=$(curl "${strict_opts[@]}" -H "Authorization: Bearer $API_KEY" "$ENDPOINT/v1/models" 2>"$SCRATCH_DIR/tls.err") || {
         report FAIL "tls_validation" "TLS handshake/verification failed: $(cat "$SCRATCH_DIR/tls.err" 2>/dev/null)"
@@ -359,7 +382,7 @@ check_tls_validation() {
         report FAIL "tls_validation" "HTTP $status with certificate validation on"
         return
     fi
-    report PASS "tls_validation" "certificate chain and hostname SAN verified (no --insecure)"
+    report PASS "tls_validation" "certificate chain and hostname SAN verified against ${CA_CERT:-the system trust store} (no --insecure)"
 }
 
 echo "Edge worker conformance: $ENDPOINT (model=$MODEL${ALIAS_MODEL:+, alias=$ALIAS_MODEL})"
