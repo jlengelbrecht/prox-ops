@@ -1,0 +1,46 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agent-router-catalog
+  namespace: flux-system
+spec:
+  # NO dependsOn, deliberately.
+  #
+  # This Kustomization ships exactly one inert ConfigMap. It has no
+  # apply-time ordering requirement against anything: no CRD to wait for, no
+  # Secret to borrow, no controller that must exist first. Adding a
+  # decorative dependency would be a real regression - a dependsOn gates
+  # reconciliation on the dependency's health, so pointing this at (say)
+  # agentgateway-config would stop the catalog reconciling whenever the
+  # gateway is degraded, for no benefit. searxng/ks.yaml and
+  # model-cache/ks.yaml are the in-repo precedent for the same shape.
+  #
+  # WHEN A DEPENDENCY IS ADDED HERE (35.9's agent-router will more likely
+  # depend on THIS Kustomization than the other way round), the namespace in
+  # a dependsOn entry is the DEPENDENCY'S OWN Kustomization CR namespace -
+  # NOT this object's targetNamespace, and NOT flux-system by reflex. This
+  # repo has had two incidents from getting that wrong. Concretely:
+  #   - anything under kubernetes/apps/ai/   -> `namespace: ai`
+  #   - anything under kubernetes/apps/network/ -> `namespace: network`
+  # because each tree's kustomization.yaml applies a `namespace:` transform
+  # to every Kustomization CR in it (kubernetes/apps/ai/kustomization.yaml
+  # line 4), which overrides the `metadata.namespace: flux-system` written
+  # in the file above. Compare agentgateway-wake-gate/ks.yaml, which depends
+  # on agentgateway-pilot with `namespace: ai` for exactly this reason,
+  # while agentgateway-keys/ks.yaml uses `namespace: network` for
+  # agentgateway-config. flux-local cannot catch a wrong value here.
+  interval: 1h
+  path: ./kubernetes/apps/ai/agent-router-catalog/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: ai
+  # No decryption block: this Kustomization ships no SOPS files and no key
+  # material of any kind - it is a plaintext data catalog. The cluster-apps
+  # parent already patches `decryption: {provider: sops}` into every child
+  # (kubernetes/flux/cluster/ks.yaml), so nothing is lost by omitting it.
+  # Matches agentgateway-keys/ks.yaml's reasoning for the same omission.
+  wait: false
