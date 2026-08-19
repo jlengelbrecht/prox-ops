@@ -1,7 +1,7 @@
 {
   "error": {
     "code": "catalog_unavailable",
-    "message": "No usable catalog is loaded yet; the router has started but has not read the mounted document. No catalog_version is reported because there is nothing to hash. The same code covers a catalog whose schema_version this router does not implement - it refuses rather than best-effort parsing an unknown shape - and that variant will not clear on retry without an operator.",
+    "message": "No catalog is loaded yet. The router has started but has not finished reading the mounted document, so it has nothing to answer from and no catalog_version to report - there is nothing to hash. This is the TRANSIENT case only: the same request will succeed unchanged once the load completes, which is why the obligation is retry. A catalog the router loaded and then refused because its schema_version is one this build does not implement is a different code, catalog_schema_unsupported, precisely because retrying that one forever is the wrong behaviour.",
     "obligation": "retry",
     "http_status": 503,
     "endpoint": "/v1/status",

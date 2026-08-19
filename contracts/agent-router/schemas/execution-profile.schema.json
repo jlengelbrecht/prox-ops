@@ -10,6 +10,7 @@
     "effort",
     "cost_class",
     "placement_policy",
+    "placement_required",
     "fallbacks",
     "metered",
     "rationale",
@@ -37,7 +38,11 @@
     },
     "placement_policy": {
       "$ref": "#/$defs/placement_policy",
-      "description": "Which placement policy /v1/place must resolve this attempt under. Stamped at planning time so that dispatch-time placement cannot silently widen the set of compute the attempt may land on."
+      "description": "Which placement policy /v1/place must resolve this attempt under. Stamped at planning time so that dispatch-time placement cannot silently widen the set of compute the attempt may land on. It is inert while the selected profile is vendor-hosted (placement_required false) and binds only if the attempt runs on local compute."
+    },
+    "placement_required": {
+      "type": "boolean",
+      "description": "Does this attempt need a physical placement decision before it can be dispatched?\n\ntrue - a LOCAL profile. The model is served through agentgateway on a specific GPU, so the client MUST call /v1/place with the stamped model_profile and placement_policy, and MUST send the returned x-placement header. Dispatching without placing means gateway-side selection, which may be exactly the compute the stamped policy excluded.\nfalse - a VENDOR profile, resolved by the harness itself (the catalog records these as resolved_by: harness). There is no placement to make: the traffic never touches agentgateway, and calling /v1/place for it would be a meaningless round trip. Launch the harness directly.\n\nWHY IT IS A FIELD RATHER THAN SOMETHING THE CLIENT WORKS OUT: without it a client has to carry its own copy of which profiles are local - either by duplicating catalog knowledge that is deliberately not published in this contract, or by inferring from the `local-` name prefix, which is a naming convention and not a guarantee. Both go stale the moment the catalog moves, and both fail silently. The router already knows the answer; it says so.\n\nIt equals `hosting: local` for the SELECTED profile in the loaded catalog. That equality is a MUST on the router which this schema cannot check, because model/profile hosting is catalog data and this contract deliberately does not enumerate it (README 'Vocabulary coupling')."
     },
     "fallbacks": {
       "type": "array",
@@ -46,7 +51,7 @@
     },
     "metered": {
       "type": "boolean",
-      "description": "True only when this attempt is authorized to spend billable API budget. INVARIANT 4 - metered API is default-deny: absence of subscription or local capacity never silently promotes to billable API. True here requires allow_metered: true on the /v1/route request; the router refuses otherwise (see metered_denied)."
+      "description": "True only when this attempt is authorized to spend billable API budget. INVARIANT 4 - metered API is default-deny: absence of subscription or local capacity never silently promotes to billable API. True here requires allow_metered: true on the /v1/route request; the router refuses otherwise (see metered_denied).\n\nallow_metered: true IS NOT ITSELF AUTHORIZATION. It expresses INTENT - the caller is asking for a billable option to be considered - and the router grants it only if the AUTHENTICATED CALLER independently holds authority to approve metered spend. The ordinary automation principal (the BMAD dispatcher and every machine caller like it) does NOT hold that authority, and a request from one carrying allow_metered: true is refused 403 metered_authorization_required rather than served. A boolean a client can set for itself is a request, not a control."
     },
     "rationale": {
       "type": "string",
@@ -133,16 +138,20 @@
     "fallback": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["harness", "model_profile", "cost_class"],
+      "required": ["harness", "model_profile", "cost_class", "placement_required"],
       "properties": {
         "harness": { "$ref": "#/$defs/harness" },
         "model_profile": { "$ref": "#/$defs/model_profile" },
         "cost_class": {
           "type": "string",
           "enum": ["free", "subscription", "metered"]
+        },
+        "placement_required": {
+          "type": "boolean",
+          "description": "Same meaning as on the profile itself, for this alternative: true means the client calls /v1/place before dispatching it, false means it launches the harness directly. Carried per entry because a fallback can cross the local/vendor line - a local primary falling back to a vendor profile is the ordinary case - and a client that has just failed over is exactly the client that should not be guessing."
         }
       },
-      "description": "One alternative attempt. Exactly three keys: the axes a fallback may change. It deliberately cannot carry an effort tier or a placement policy - those stay as stamped, so a fallback cannot quietly widen the attempt's blast radius."
+      "description": "One alternative attempt: the axes a fallback may change, plus whether it needs placing. It deliberately cannot carry an effort tier or a placement policy - those stay as stamped, so a fallback cannot quietly widen the attempt's blast radius."
     },
     "metered_denied": {
       "type": "object",

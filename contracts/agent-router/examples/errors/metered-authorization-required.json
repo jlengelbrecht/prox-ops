@@ -1,0 +1,17 @@
+{
+  "error": {
+    "code": "metered_authorization_required",
+    "message": "The request set allow_metered: true, but the authenticated caller does not hold authority to approve billable spend. The flag is INTENT, not authority: it says a billable candidate may be considered, and the router then checks whether this principal is allowed to approve one. This caller is the ordinary automation principal - the dispatcher that plans and stamps stories - and it deliberately does not have that permission, so no billable candidate was returned and nothing was spent. Escalate to a principal that holds metered-spend authority. Retrying this request unchanged, or under a borrowed credential, is not the remedy.",
+    "obligation": "abort",
+    "http_status": 403,
+    "endpoint": "/v1/route",
+    "details": {
+      "withheld": {
+        "harness": "codex",
+        "model_profile": "openai/strong",
+        "cost_class": "metered"
+      }
+    },
+    "catalog_version": "sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53"
+  }
+}

@@ -1,22 +1,21 @@
 {
   "error": {
     "code": "unknown_profile",
-    "message": "model_profile \"local-code-huge\" is not in the loaded catalog. This usually means the attempt was stamped against a catalog that has since changed, or a profile name was typed by hand.",
+    "message": "model_profile \"local-unrestricted\" is a name this contract's vocabulary still carries, but the loaded catalog no longer defines it - it was retired by a catalog pull request after this attempt was stamped. Re-plan: call /v1/route again against the catalog that is actually loaded. Note what this error is NOT: a name outside the contract vocabulary never reaches here, because PlaceRequest.model_profile is a closed enum and an unrecognised value is rejected 400 invalid_request at request validation. 404 is the catalog-moved case only.",
     "obligation": "re-plan",
     "http_status": 404,
     "endpoint": "/v1/place",
     "details": {
-      "requested": "local-code-huge",
+      "requested": "local-unrestricted",
       "known": [
         "local-code-fast",
         "local-code-standard",
         "local-general",
-        "local-unrestricted",
         "claude/strong",
         "openai/strong",
         "devin/free"
       ]
     },
-    "catalog_version": "sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53"
+    "catalog_version": "sha256:decafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbad"
   }
 }

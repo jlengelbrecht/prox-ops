@@ -19,14 +19,16 @@
             "node_identity_mismatch",
             "unknown_profile",
             "unknown_placement_policy",
+            "metered_authorization_required",
             "catalog_version_stale",
             "metered_denied",
             "no_eligible_profile",
             "rate_limited",
             "catalog_unavailable",
+            "catalog_schema_unsupported",
             "internal_error"
           ],
-          "description": "Machine-readable error code. Stable across versions: a code is never re-pointed at a different condition, only added or (with a major bump) removed. Full taxonomy with per-endpoint applicability in README 'Error taxonomy'."
+          "description": "Machine-readable error code. Stable across versions: a code is never re-pointed at a different condition, only added or (with a major bump) removed. Full taxonomy with per-endpoint applicability in README 'Error taxonomy'.\n\nTwo of these separate cases that would otherwise be conflated:\n\nmetered_authorization_required (403, on /v1/route) - the request carried allow_metered: true but the AUTHENTICATED CALLER does not hold authority to approve billable spend. The flag is intent; authority is a property of the principal. The ordinary automation principal does not have it, so the flag alone can never buy a billable candidate. Distinct from metered_denied, which is the answer when no authorization was claimed at all.\n\ncatalog_schema_unsupported (503) - the router loaded a catalog whose structural schema_version it does not implement and refused it rather than best-effort parsing an unknown shape. PERMANENT: it will not clear on retry, only on an operator deploying a router that understands the catalog or reverting the catalog. Split out of catalog_unavailable, which is now strictly the transient 'no catalog loaded yet' state, because one obligation is retry and the other is abort and a client cannot be asked to guess which it got."
         },
         "message": {
           "type": "string",
@@ -36,7 +38,7 @@
         "obligation": {
           "type": "string",
           "enum": ["retry", "re-plan", "abort"],
-          "description": "What the caller must do next.\n\nretry - the same request may succeed unchanged; back off first, and honour retry_after_seconds when present. Both /v1/route and /v1/place are side-effect free and safe to retry.\nre-plan - the request as framed cannot be served; the caller must go back a step (call /v1/route again, relax a constraint, or obtain human authorization) and issue a DIFFERENT request. Re-sending the identical request is a loop.\nabort - the caller is wrong or unauthorized. Fail the attempt and surface it. Do not retry, and do not work around it - `metered_denied` in particular must never be worked around by resending with allow_metered: true, which would defeat invariant 4."
+          "description": "What the caller must do next.\n\nretry - the same request may succeed unchanged; back off first, and honour retry_after_seconds when present. Both /v1/route and /v1/place are side-effect free and safe to retry.\nre-plan - the request as framed cannot be served; the caller must go back a step (call /v1/route again, relax a constraint, or obtain human authorization) and issue a DIFFERENT request. Re-sending the identical request is a loop.\nabort - retrying cannot help, because nothing the caller controls would change the answer: it is wrong, it is unauthorized, or the condition needs an operator. Fail the attempt and surface it. Do not work around it - `metered_denied` in particular must never be worked around by resending with allow_metered: true, which would defeat invariant 4, and `metered_authorization_required` must never be worked around by retrying under a different credential."
         },
         "http_status": {
           "type": "integer",
@@ -74,13 +76,21 @@
               "type": "string",
               "description": "For catalog_version_stale: the digest the caller asserted."
             },
+            "received_catalog_schema_version": {
+              "type": "integer",
+              "description": "For catalog_schema_unsupported: the structural schema_version the mounted catalog declares."
+            },
+            "supported_catalog_schema_version": {
+              "type": "integer",
+              "description": "For catalog_schema_unsupported: the structural schema_version this router build implements. The pair tells an operator which side has to move."
+            },
             "node": {
               "type": "string",
               "description": "For node_identity_mismatch: the node id the payload claimed. The identity the CREDENTIAL is bound to is deliberately not echoed back - telling an unauthenticated caller which node its token belongs to is a disclosure, and R9's threat model assumes edge credentials can be stolen."
             },
             "withheld": {
               "type": "object",
-              "description": "For metered_denied with no non-metered alternative: the metered option that was withheld, in the same shape as ExecutionProfile.metered_denied.withheld."
+              "description": "For metered_denied with no non-metered alternative, and for metered_authorization_required: the metered option that was withheld, in the same shape as ExecutionProfile.metered_denied.withheld. It names what a caller with the right authority would have been given, which is what the human deciding needs to see."
             }
           }
         },

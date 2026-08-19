@@ -4,15 +4,17 @@
   "effort": "xhigh",
   "cost_class": "subscription",
   "placement_policy": "prefer-warm-local",
+  "placement_required": false,
   "fallbacks": [
     {
       "harness": "codex",
       "model_profile": "openai/strong",
-      "cost_class": "subscription"
+      "cost_class": "subscription",
+      "placement_required": false
     }
   ],
   "metered": false,
-  "rationale": "The request is tagged security and secrets and touches an auth boundary, so blast radius is critical and a plausible-but-wrong answer is expensive. local-unrestricted is excluded outright rather than ranked: its forbidden_for list covers both tags, and that is a hard exclusion regardless of how well it would otherwise score (invariant 12). Of what remains, claude/strong is the strongest option the operator already pays for, so nothing here is billable. placement_policy is the catalog default because the caller named none; it is inert while the selected profile is vendor-hosted, and would only bind if the attempt fell back to a local profile.",
+  "rationale": "The request is tagged security and secrets and touches an auth boundary, so blast radius is critical and a plausible-but-wrong answer is expensive. local-unrestricted is excluded outright rather than ranked: its forbidden_for list covers both tags, and that is a hard exclusion regardless of how well it would otherwise score (invariant 12). Of what remains, claude/strong is the strongest option the operator already pays for, so nothing here is billable. placement_policy is the catalog default because the caller named none; it is inert while the selected profile is vendor-hosted, and would only bind if the attempt fell back to a local profile. placement_required is false for the same reason the policy is inert: a vendor-hosted profile is resolved by the harness, so there is no placement to make and calling /v1/place for it would be a wasted round trip.",
   "catalog_version": "sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53",
   "catalog_document_version": "1.0.0",
   "expires_at": "2026-08-19T15:19:02Z"

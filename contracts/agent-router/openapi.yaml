@@ -75,6 +75,31 @@ info:
     per-model CEL policy binding the request body's model to the routed backend
     model.
 
+    ## Transport
+
+    Normative, and not a deployment detail: **every endpoint here is bearer
+    authenticated, so every path that is not pod-to-pod inside the cluster is
+    TLS or it does not ship.** That covers `POST /v1/capacity/heartbeat`
+    without exception - an edge worker is off-cluster by definition and its
+    per-node credential is long-lived, so plaintext there puts a stealable
+    withdraw-any-placement credential on the wire.
+
+    The requirement is the edge worker contract's rule R4 posture, applied in
+    the other direction (edge to router rather than gateway to edge):
+
+    - HTTPS, with no plaintext fallback, even inside the VLAN trust boundary.
+    - A certificate chaining to a real CA (`basicConstraints: CA:TRUE`); a
+      self-signed leaf used as its own anchor is not a CA.
+    - The certificate's SAN matches the hostname the client connects to. Use
+      the hostname form, never a bare address.
+    - No `insecureSkipVerify`, in any client, in any environment that is not a
+      developer's own laptop. It was proven to work in the 35.4 spike and must
+      not ship: it turns the CA into decoration.
+    - A dedicated key and certificate. Never the cluster wildcard's private key.
+
+    The plaintext `http://` server below exists for in-cluster callers only and
+    is scoped to that in its own description.
+
     ## Vocabulary
 
     Harness names, profile names, placement names and policy names are read
@@ -87,13 +112,27 @@ info:
 servers:
   - url: http://agent-router.ai.svc.cluster.local:{port}
     description: >-
-      In-cluster ClusterIP Service in namespace `ai`. There is no ingress in v1
-      (EPIC-035 section 4); LAN exposure, if it is ever wanted, goes through the
-      existing gateway patterns and is its own story.
+      In-cluster ClusterIP Service in namespace `ai`. Plaintext is permitted on
+      THIS path only - pod-to-pod traffic inside the cluster, never leaving it.
+      Callers outside the cluster, the edge heartbeat included, use the TLS
+      server below; see the "Transport" section of the API description, which is
+      normative.
     variables:
       port:
         default: "8080"
         description: Listen port, fixed by story 35.9.
+  - url: https://{edge_host}
+    description: >-
+      TLS-terminated path for every caller that is not a pod in this cluster.
+      Mandatory for `POST /v1/capacity/heartbeat`, which originates off-cluster
+      by definition. The hostname is provisioned with the certificate; it is not
+      fixed by this contract, and no LAN address appears here.
+    variables:
+      edge_host:
+        default: agent-router.<lan-domain>
+        description: >-
+          DNS name the certificate is issued for. Supplied by the story that
+          provisions the exposure; the placeholder is not a resolvable name.
 
 tags:
   - name: routing
@@ -126,6 +165,23 @@ paths:
         returns the metered choice with a warning attached, and a client that
         reacts by resending with `allow_metered: true` has defeated the control:
         that authorization is a human decision, per attempt, and is recorded.
+
+        **`allow_metered: true` is intent, not authority.** The flag asks for a
+        billable candidate to be considered; whether one may be returned
+        depends on the AUTHENTICATED CALLER independently holding permission to
+        approve billable spend. The ordinary automation principal - the
+        dispatcher that plans and stamps stories, and every machine caller like
+        it - does not hold it, and a request from one carrying the flag is
+        answered `403 metered_authorization_required`, not served. A control a
+        client can grant itself is not a control.
+
+        **`placement_required` on the response tells the client what to do
+        next.** True means the profile is local and the client must call
+        `/v1/place` and send the returned `x-placement`; false means it is
+        vendor-hosted, resolved by the harness, and the client launches the
+        harness directly. Without the field a client has to keep its own copy of
+        which profiles are local, or guess from the name prefix - both of which
+        go stale silently when the catalog moves.
 
         **`local-agent` is never emitted** (invariant 16). It is a reserved,
         unsupported harness value; the catalog marks it `refuse-to-emit` and the
@@ -220,6 +276,21 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: |
+            The request set `allow_metered: true` but this caller is not
+            authorized to approve billable spend. Nothing was returned and
+            nothing was spent. The caller's obligation is to escalate to a
+            principal that holds the authority - never to retry, and never to
+            retry under a different credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                metered-authorization-required:
+                  summary: Metered intent from a principal without metered authority
+                  externalValue: ./examples/errors/metered-authorization-required.json
         '409':
           description: |
             The request cannot be served as framed. `metered_denied` when every
@@ -253,6 +324,11 @@ paths:
         Dispatch-time decision. Takes the `model_profile` and
         `placement_policy` that `/v1/route` stamped, and resolves them against
         live capacity.
+
+        **Called only when the stamped profile carries
+        `placement_required: true`.** A vendor-hosted profile is resolved by the
+        harness and never touches agentgateway, so there is no placement to
+        make and this call would be a wasted round trip.
 
         Returns a placement NAME, never an endpoint. The caller sets
         `x-placement` on its agentgateway request and the gateway does the rest.
@@ -331,7 +407,18 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '404':
-          description: The request names a profile or policy that is not in the loaded catalog.
+          description: |
+            The request names a profile or policy that IS in this contract's
+            vocabulary but is not in the loaded catalog - the catalog dropped or
+            renamed it after the attempt was stamped, and this contract has not
+            caught up yet. That gap between two merges is the whole 404
+            condition.
+
+            A name outside the vocabulary never gets this far: both fields are
+            closed enums, so an unrecognised value is `400 invalid_request` at
+            request validation. Keeping the enums closed is deliberate - it is
+            what lets a typo fail loudly at the schema instead of arriving here
+            disguised as a catalog drift.
           content:
             application/json:
               schema:
@@ -371,6 +458,28 @@ paths:
         rejected 403 `node_identity_mismatch`, because a credential that could
         heartbeat as any node could withdraw a healthy placement or keep a dead
         one advertised.
+
+        **TLS is required on this path, always.** An edge worker is off-cluster
+        by definition, and the credential it presents is long-lived, so this
+        call uses the `https://` server and the transport rules in the API
+        description above. There is no plaintext variant of the edge heartbeat.
+
+        **A heartbeat may narrow static authority; it may never expand it:**
+
+            effective capability = Git/catalog authority INTERSECT heartbeat observation
+
+        The payload is an observation, and observations subtract. A node can
+        report itself busy, drained, cold or short of VRAM, and the router acts
+        on that at once. It cannot report itself INTO a model, a capability, a
+        context size or any other authority the Git-managed catalog does not
+        already give that placement. `active_model` counts as warm only when
+        that model is catalog-authorized for the placement; a claim with no
+        catalog counterpart is a reconciliation alarm and is ignored for
+        eligibility. This is not a model-authorization bypass either way -
+        authorization is the per-model CEL policy, which never reads a
+        heartbeat - but an unbounded self-report would let a compromised node
+        bias placement toward itself, and placement integrity is worth
+        defending on its own.
 
         **State ownership is local.** The host decides its own state; the
         cluster never forces a node into `SERVING`. The response acknowledges
@@ -513,16 +622,22 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           description: >-
-            No usable catalog is loaded. The router refuses a catalog
-            `schema_version` major it does not implement rather than
-            best-effort parsing an unknown shape.
+            No usable catalog is loaded - either none yet
+            (`catalog_unavailable`, transient, retry) or one the router refused
+            because its `schema_version` major is not implemented
+            (`catalog_schema_unsupported`, permanent, abort). It refuses rather
+            than best-effort parsing an unknown shape.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               examples:
                 catalog-unavailable:
+                  summary: Transient - nothing loaded yet, retry
                   externalValue: ./examples/errors/catalog-unavailable.json
+                catalog-schema-unsupported:
+                  summary: Permanent - unimplemented catalog schema_version, abort
+                  externalValue: ./examples/errors/catalog-schema-unsupported.json
 
 components:
   securitySchemes:
@@ -541,7 +656,8 @@ components:
         Per-node edge credential, bound to one `node` identifier. Provisioned
         from 1Password - `ExternalSecret` cluster-side, `op read` host-side -
         and never committed. Presenting it for a different node is 403, not a
-        silent accept.
+        silent accept. It is long-lived and it travels off-cluster, so it is
+        only ever sent over TLS: see "Transport" in the API description.
 
   schemas:
     ExecutionProfile:
@@ -634,12 +750,25 @@ components:
           type: boolean
           default: false
           description: |
-            Per-attempt authorization to spend billable API budget. Default
-            false, and the default is the whole control (invariant 4).
+            Per-attempt INTENT to spend billable API budget. Default false, and
+            the default is the whole control (invariant 4).
+
+            **Setting it does not authorize anything.** It asks the router to
+            consider a billable candidate; the router returns one only if the
+            authenticated caller independently holds authority to approve
+            billable spend. The normal BMAD/dispatcher machine principal does
+            not hold that permission, and setting this flag from one is
+            `403 metered_authorization_required` - not a route decision, and
+            not a warning.
 
             This is a human decision. A client that sets it automatically after
             receiving a `metered_denied` has removed the control while leaving
-            the paperwork in place.
+            the paperwork in place; under this contract it also simply fails.
+
+            The mechanism that carries the authority - which claim, which
+            credential, which identity provider - is finalized by the later
+            identity work and is deliberately not specified here. What is
+            specified here is that the boolean alone is never enough.
         catalog_version:
           type: string
           pattern: '^sha256:[0-9a-f]{64}$'
@@ -763,14 +892,19 @@ components:
             invalid-request:
               externalValue: ./examples/errors/invalid-request.json
     Unauthenticated:
-      description: Missing or invalid bearer credential.
+      description: >-
+        Missing or invalid CALLER bearer credential. The heartbeat endpoint has
+        its own 401 because it authenticates with the separate per-node edge
+        credential, and an example naming the wrong endpoint teaches the wrong
+        error handler.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
           examples:
             unauthenticated:
-              externalValue: ./examples/errors/heartbeat-unauthenticated.json
+              summary: Caller credential rejected; no endpoint named, since every caller endpoint serves this
+              externalValue: ./examples/errors/caller-unauthenticated.json
     RateLimited:
       description: >-
         Too many requests. The router is a planning-time service; a caller
@@ -796,11 +930,20 @@ components:
             internal-error:
               externalValue: ./examples/errors/internal-error.json
     CatalogUnavailable:
-      description: No usable catalog is loaded.
+      description: >-
+        No usable catalog is loaded. Two codes, two obligations, and a client
+        must not have to guess which it got: `catalog_unavailable` is the
+        transient case (nothing loaded yet - retry), `catalog_schema_unsupported`
+        is permanent (the router refused a catalog `schema_version` it does not
+        implement - abort and alert; no amount of backoff fixes it).
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
           examples:
             catalog-unavailable:
+              summary: Transient - nothing loaded yet, retry
               externalValue: ./examples/errors/catalog-unavailable.json
+            catalog-schema-unsupported:
+              summary: Permanent - unimplemented catalog schema_version, abort
+              externalValue: ./examples/errors/catalog-schema-unsupported.json

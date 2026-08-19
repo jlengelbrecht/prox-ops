@@ -87,9 +87,20 @@
           "selectable": { "type": "boolean" },
           "router_behaviour": {
             "type": "string",
-            "description": "Present when selectable is false. `refuse-to-emit` for local-agent (invariant 16)."
+            "minLength": 1,
+            "description": "Required when selectable is false, and meaningless otherwise. `refuse-to-emit` for local-agent (invariant 16). A non-selectable harness with no stated behaviour leaves a client to guess whether sending it is an error or merely unwise, so the requirement is enforced below rather than described here."
           }
-        }
+        },
+        "allOf": [
+          {
+            "description": "A harness the router will not emit has to say what it does instead. Documented as 'present when selectable is false' and now checked, because this contract is meant to be mechanically verifiable rather than read carefully.",
+            "if": {
+              "properties": { "selectable": { "const": false } },
+              "required": ["selectable"]
+            },
+            "then": { "required": ["router_behaviour"] }
+          }
+        ]
       },
       "description": "The harness axis as loaded. `local-agent` appears here with supported: false / selectable: false so that a client can SEE the reserved value and its refusal behaviour rather than discovering it by having a request rejected. Its presence in this list is not permission to send it."
     },
@@ -169,7 +180,7 @@
           "state_source": {
             "type": "string",
             "enum": ["heartbeat", "silence", "static"],
-            "description": "`heartbeat` - the node said so. `silence` - the router inferred OFFLINE from a missed heartbeat window. `static` - the placement does not heartbeat at all and its state comes from catalog status (KServe placements: the cluster GPU is not a node that can withdraw itself)."
+            "description": "WHERE THIS PLACEMENT'S `state` CAME FROM. The three values are exhaustive because there are exactly three ways the router can know: it was told, it noticed it stopped being told, or it was never in a position to be told.\n\n`heartbeat` - a heartbeat arrived and this is what it said. Requires a heartbeat to be present.\n`silence` - the placement HAS a heartbeat channel and has gone quiet past offline_after_seconds, so the router inferred OFFLINE. Failure detection, not a self-report.\n`static` - the router has NO heartbeat channel for this placement, so its state comes from catalog status alone. Two cases, both of them non-heartbeating by construction: a KServe placement (the cluster GPU is not a node that can withdraw itself, and it never heartbeats at all), and an edge placement that is still `status: planned` - the name is reserved in the catalog but no node is enrolled, none has ever reported, and none can. Both carry heartbeat: null and last_heartbeat: null.\n\nThe boundary that matters: `silence` is a placement that was talking and stopped; `static` is a placement that was never going to talk. Reporting a planned edge placement as `silence` would invent a missed heartbeat window that never existed, and would make an un-provisioned host indistinguishable from a crashed one."
           },
           "readiness": {
             "type": "string",
@@ -193,7 +204,35 @@
             "oneOf": [{ "$ref": "heartbeat.schema.json" }, { "type": "null" }],
             "description": "The most recent heartbeat, re-exposed VERBATIM in the edge worker contract's own shape (edge/EDGE-WORKER-CONTRACT.md section 1: the heartbeat payload 'is also the shape GET /v1/status re-exposes'). null for placements that do not heartbeat, such as KServe.\n\nIt is re-exposed rather than flattened so there is exactly one heartbeat shape in this contract and no second, subtly different one to drift from it.\n\nruntime.endpoint appears here because this is a STATUS surface and R9 makes that field observational metadata. Surfacing it for a human to read is its purpose; routing on it is forbidden, for the router and for every consumer of this response alike."
           }
-        }
+        },
+        "allOf": [
+          {
+            "description": "state_source: heartbeat means a heartbeat is what produced this state, so one has to be here. A placement claiming heartbeat-sourced state with no heartbeat attached is reporting a fact it cannot show.",
+            "if": {
+              "properties": { "state_source": { "const": "heartbeat" } },
+              "required": ["state_source"]
+            },
+            "then": {
+              "properties": {
+                "heartbeat": { "type": "object" },
+                "last_heartbeat": { "type": "string" }
+              }
+            }
+          },
+          {
+            "description": "state_source: static means no heartbeat channel exists for this placement - a KServe placement, or an edge placement still status: planned. Either way nothing has ever arrived, so both heartbeat fields are null.",
+            "if": {
+              "properties": { "state_source": { "const": "static" } },
+              "required": ["state_source"]
+            },
+            "then": {
+              "properties": {
+                "heartbeat": { "type": "null" },
+                "last_heartbeat": { "type": "null" }
+              }
+            }
+          }
+        ]
       }
     },
     "policies": {

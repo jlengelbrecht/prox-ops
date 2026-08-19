@@ -133,6 +133,19 @@
       "enum": ["warm", "cached", "absent", "unknown"],
       "description": "OWNER RULING R11's three costs, plus an honest fourth value.\n\nwarm - the model is loaded in the runtime (heartbeat active_model); servable now, no load step.\ncached - the artifact is present on local storage (heartbeat cached_models); loadable without a download, but still needs model/VRAM load time.\nabsent - neither; the artifact must be fetched before it can be loaded. Tens of gigabytes, and a different order of magnitude from `cached`.\nunknown - no heartbeat-derived signal exists for this candidate (e.g. a KServe placement whose scale state was not sampled). A router MUST NOT treat unknown as warm."
     },
+    "candidate_reason_code": {
+      "type": "string",
+      "enum": [
+        "not_selected_lower_rank",
+        "not_selected_colder",
+        "withdrawn_interactive",
+        "withdrawn_draining",
+        "offline",
+        "not_selectable",
+        "constraint_unsatisfiable"
+      ],
+      "description": "The subset of reason codes that describe ONE CANDIDATE rather than the whole call. Only these may appear inside alternatives[].\n\nconstraint_unsatisfiable is the one code legal at both levels, and deliberately so: per candidate it means this candidate fails a hard constraint, and the result-level use of the same code is what you get when that is true of every candidate. The rest of the empty-result codes and all four placed_* codes describe the call, not a candidate, and are excluded."
+    },
     "reason": {
       "type": "object",
       "additionalProperties": false,
@@ -156,7 +169,7 @@
             "offline",
             "not_selectable"
           ],
-          "description": "SELECTION OUTCOMES - legal on a `placed` result:\nplaced_warm - chosen because it is already warm (the primary economic signal).\nplaced_cached - chosen because the artifact is resident locally; a load, not a download.\nplaced_cold - chosen on policy order; a cold start is expected.\nplaced_only_candidate - exactly one eligible candidate existed.\n\nEMPTY-RESULT OUTCOMES - legal on an `unavailable` result:\nno_eligible_placement - candidates existed but none is eligible right now.\npolicy_resolves_to_nothing - the policy names no placement that can resolve today (catalog `resolves_today: false`, e.g. edge-only while every edge placement is status: planned).\nall_candidates_withdrawn - every candidate is INTERACTIVE, DRAINING or OFFLINE.\nconstraint_unsatisfiable - a hard constraint (min_vram_gb, min_free_vram_gb, a required capability, min_context) excludes every candidate. A null measured capacity can never satisfy a size floor, and a nameplate figure must not be substituted for one.\n\nCANDIDATE-LEVEL OUTCOMES - used inside alternatives[]:\nnot_selected_lower_rank - eligible, but ranked below the chosen candidate in the policy's prefer_order.\nnot_selected_colder - eligible, but the chosen candidate was warmer (warm_preference: strict means any warm candidate beats any cold one regardless of order).\nwithdrawn_interactive - the node reported state INTERACTIVE; a human has the GPU.\nwithdrawn_draining - the node reported state DRAINING.\noffline - the node reported OFFLINE, or has been silent for 3x the heartbeat interval.\nnot_selectable - the placement is declared but status: planned / selectable: false; its bring-up story has not landed."
+          "description": "SELECTION OUTCOMES - legal on a `placed` result:\nplaced_warm - chosen because it is already warm (the primary economic signal).\nplaced_cached - chosen because the artifact is resident locally; a load, not a download.\nplaced_cold - chosen on policy order; a cold start is expected.\nplaced_only_candidate - exactly one eligible candidate existed.\n\nEMPTY-RESULT OUTCOMES - legal on an `unavailable` result:\nno_eligible_placement - candidates existed but none is eligible right now.\npolicy_resolves_to_nothing - the policy names no placement that can resolve today (catalog `resolves_today: false`, e.g. edge-only while every edge placement is status: planned).\nall_candidates_withdrawn - every candidate is INTERACTIVE, DRAINING or OFFLINE.\nconstraint_unsatisfiable - a hard constraint (min_vram_gb, min_free_vram_gb, a required capability, min_context) excludes every candidate. A null measured capacity can never satisfy a size floor, and a nameplate figure must not be substituted for one.\n\nCANDIDATE-LEVEL OUTCOMES - used inside alternatives[]:\nnot_selected_lower_rank - eligible, but ranked below the chosen candidate in the policy's prefer_order.\nnot_selected_colder - eligible, but the chosen candidate was warmer (warm_preference: strict means any warm candidate beats any cold one regardless of order).\nwithdrawn_interactive - the node reported state INTERACTIVE; a human has the GPU.\nwithdrawn_draining - the node reported state DRAINING.\noffline - the node reported OFFLINE, or has been silent for 3x the heartbeat interval.\nnot_selectable - the placement is declared but status: planned / selectable: false; its bring-up story has not landed.\nconstraint_unsatisfiable - also legal here, meaning this one candidate fails a hard constraint.\n\nThe candidate-level subset is enumerated mechanically in $defs/candidate_reason_code, which alternatives[].reason narrows to; a placed_* or empty-result code inside alternatives[] is a schema failure, not just a documentation breach."
         },
         "message": {
           "type": "string",
@@ -185,7 +198,17 @@
           "type": "boolean",
           "description": "Whether this candidate could be dispatched to right now. A caller may fall back to an eligible: true alternative as a NEW attempt; it must never dispatch to an eligible: false one."
         },
-        "reason": { "$ref": "#/$defs/reason" }
+        "reason": {
+          "allOf": [
+            { "$ref": "#/$defs/reason" },
+            {
+              "properties": {
+                "code": { "$ref": "#/$defs/candidate_reason_code" }
+              }
+            }
+          ],
+          "description": "Why this candidate was not the one chosen. Restricted to the CANDIDATE-LEVEL codes: a result-level outcome such as placed_warm or no_eligible_placement describes the whole call and is meaningless attached to one entry, so the schema rejects it here rather than leaving the rule to prose."
+        }
       }
     }
   }

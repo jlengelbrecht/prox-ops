@@ -1,14 +1,14 @@
 {
   "error": {
     "code": "unknown_placement_policy",
-    "message": "placement_policy \"prefer-edge\" is not defined in the loaded catalog. Policies are catalog data; adding one is a pull request against the ConfigMap, not a request parameter.",
+    "message": "placement_policy \"any-24gb\" was stamped on this attempt but the loaded catalog no longer defines it; a later catalog pull request folded it into prefer-warm-local. Policies are catalog data, so they appear and disappear by pull request against the ConfigMap while this contract's enum lags by one merge - that window is exactly what this error covers. A policy name outside the contract vocabulary is a different failure: PlaceRequest.placement_policy is a closed enum, so it is rejected 400 invalid_request before any catalog lookup happens.",
     "obligation": "re-plan",
     "http_status": 404,
     "endpoint": "/v1/place",
     "details": {
-      "requested": "prefer-edge",
-      "known": ["prefer-warm-local", "cluster-only", "edge-only", "any-24gb"]
+      "requested": "any-24gb",
+      "known": ["prefer-warm-local", "cluster-only", "edge-only"]
     },
-    "catalog_version": "sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53"
+    "catalog_version": "sha256:decafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbad"
   }
 }

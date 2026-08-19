@@ -4,20 +4,23 @@
   "effort": "medium",
   "cost_class": "free",
   "placement_policy": "prefer-warm-local",
+  "placement_required": true,
   "fallbacks": [
     {
       "harness": "codex",
       "model_profile": "openai/strong",
-      "cost_class": "subscription"
+      "cost_class": "subscription",
+      "placement_required": false
     },
     {
       "harness": "devin",
       "model_profile": "devin/free",
-      "cost_class": "free"
+      "cost_class": "free",
+      "placement_required": false
     }
   ],
   "metered": false,
-  "rationale": "Contained single-module change with a named file list and a passing test to pin it, so blast radius is low and ambiguity is low. local-code-standard is free and guarantees the 64k context and tool calling the work needs, which local-code-fast does not. Subscription capacity is left for the stories that need judgement. Fallbacks are ordered by what is actually available if the local GPU is busy, not by capability.",
+  "rationale": "Contained single-module change with a named file list and a passing test to pin it, so blast radius is low and ambiguity is low. local-code-standard is free and guarantees the 64k context and tool calling the work needs, which local-code-fast does not. Subscription capacity is left for the stories that need judgement. Fallbacks are ordered by what is actually available if the local GPU is busy, not by capability. placement_required is true because the profile is local: the client resolves it through /v1/place and sends the x-placement header rather than dispatching blind. Both fallbacks are vendor-hosted, so each carries placement_required false - the harness resolves them and agentgateway is not in the path.",
   "catalog_version": "sha256:280e5ccd9c49cc6f4ce86b01a9be7240cfd468a8d77a5da88d2af3308248da53",
   "catalog_document_version": "1.0.0",
   "expires_at": "2026-08-19T15:12:44Z"
