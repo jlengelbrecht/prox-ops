@@ -159,7 +159,9 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
   script proves the two ids land on the same served model rather than merely both being
   accepted. This is what proves an edge node's alias handling matches the KServe path's
   model-alias semantics (34.11's authz binds body-model to routed-model — an alias that
-  diverges here is a routing bug, not a cosmetic difference).
+  diverges here is a routing bug, not a cosmetic difference). A server that simply echoes
+  the requested id back (llama.cpp's `llama-server` does) reports nothing about routing in
+  that field, so the check downgrades to `SKIP` there instead of claiming either result.
 - **`auth_enforced`** — with no `Authorization` header, both `GET /v1/models` and
   `POST /v1/chat/completions` must be rejected (`401`/`403`), never `200`. The inference
   path is checked separately because it is the one §2 protects, and a node can guard model

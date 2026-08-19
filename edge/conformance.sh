@@ -294,6 +294,13 @@ check_model_alias() {
         report FAIL "model_alias" "alias '$ALIAS_MODEL' response carries no 'model' id to compare"
         return
     fi
+    # Servers that echo the request body's model id back (llama.cpp's
+    # llama-server does this) carry no routing information in this field, so
+    # neither PASS nor FAIL would be honest — report it as not observable.
+    if [ "$resolved" = "$ALIAS_MODEL" ] && [ "$PRIMARY_RESOLVED_MODEL" = "$MODEL" ]; then
+        report SKIP "model_alias" "endpoint echoes the requested model id; alias routing is not observable from the response"
+        return
+    fi
     if [ "$resolved" != "$PRIMARY_RESOLVED_MODEL" ]; then
         report FAIL "model_alias" "alias resolved to '$resolved', '$MODEL' resolved to '$PRIMARY_RESOLVED_MODEL'"
         return
