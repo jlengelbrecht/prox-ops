@@ -69,7 +69,8 @@
 #                           AC4 requires at least 10 minutes).
 #   --interval-seconds N        Gap between the end of one request and the
 #                           start of the next (default: 2).
-#   --max-tokens N               Generation length per request (default: 128).
+#   --max-tokens N               Generation length per request (default: 256,
+#                           the same default the cold and warm subcommands use).
 #   --out FILE
 #
 # tool-call options:
