@@ -453,6 +453,13 @@ case "$SUBCOMMAND" in
                   max_tokens: 512, temperature: 0}')" \
             2>"$SCRATCH_DIR/tool-call.err")
         HTTP_CODE="$CURL_META"
+        # curl writes nothing on a transport failure; --argjson would reject a
+        # non-numeric value and leave no record of the attempt at all.
+        case "$HTTP_CODE" in
+            ''|*[!0-9]*) HTTP_CODE=0 ;;
+        esac
+        # --slurpfile needs valid JSON; an unreachable endpoint leaves the body empty.
+        [ -s "$BODY_FILE" ] && jq -e . "$BODY_FILE" >/dev/null 2>&1 || echo 'null' > "$BODY_FILE"
         VERDICT="FAIL"
         DETAIL=""
         if [ "$HTTP_CODE" != "200" ]; then
@@ -468,7 +475,9 @@ case "$SUBCOMMAND" in
             --argjson http_code "$HTTP_CODE" --slurpfile response "$BODY_FILE" \
             '{ts: $ts, verdict: $verdict, detail: $detail, http_code: $http_code, response: $response[0]}' > "$OUT_FILE"
         echo "TOOL-CALL: $VERDICT ($DETAIL) — written to $OUT_FILE" >&2
-        [ "$VERDICT" = "PASS" ]
+        # Route the verdict through the same counter the other subcommands use, so
+        # the trailing exit-status block cannot overwrite it.
+        [ "$VERDICT" = "PASS" ] || FAILED_TRIALS=$((FAILED_TRIALS + 1))
         ;;
 esac
 
