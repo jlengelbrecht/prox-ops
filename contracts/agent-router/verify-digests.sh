@@ -39,7 +39,11 @@
 #   5. PROFILE CANDIDATES against the placements they name, one-way: a
 #      candidate may not claim `eligible: true` on a placement the same
 #      document reports `eligible: false`. Not an equality - an eligible host
-#      may carry an ineligible candidate for candidate-specific reasons.
+#      may carry an ineligible candidate for candidate-specific reasons. The
+#      same join also rejects a reason_code the placement contradicts, e.g.
+#      `offline` on a placement the router has never heard from, which is
+#      `not_yet_observed`. Enum binding cannot catch that: both are legal
+#      codes, and only the relation between them is wrong.
 #
 # WHY NOT JSON SCHEMA. This is a RELATIONAL JOIN - policies[].prefer_order
 # against placements[].name - and JSON Schema has no way to express one. It
@@ -249,6 +253,47 @@ for rel in sorted(r for r in EXPECTED if r.startswith("status/")):
                     f"    which this document does not list as a placement."
                 )
                 continue
+            placement = placements[named]
+
+            # Reason codes that must match the placement's own situation. Enum
+            # binding alone cannot catch this: `offline` is a perfectly legal
+            # candidate reason, it is simply the WRONG one for a node the
+            # router has never heard from. The mismatch is relational, so it
+            # is checked here rather than in the schema.
+            #
+            # Only situations the placement actually determines are mapped.
+            # constraint_unsatisfiable is deliberately NOT derived from
+            # placement state - it is a CANDIDATE-specific fact (this model
+            # will not fit or is not servable here) and stays legal on any
+            # placement, exactly as an eligible host may carry an ineligible
+            # candidate. Making placement state the only admissible reason
+            # would be the same over-strictness trap as forcing eligibility
+            # equality, and would force fixtures to lie.
+            required = None
+            if placement["status"] == "planned" or not placement["selectable"]:
+                required = "not_selectable"
+            elif placement["state_source"] == "unseen":
+                required = "not_yet_observed"
+            elif placement["state_source"] == "silence":
+                required = "offline"
+            elif placement["state_source"] == "heartbeat":
+                required = {"OFFLINE": "offline",
+                            "INTERACTIVE": "withdrawn_interactive",
+                            "DRAINING": "withdrawn_draining"}.get(placement["state"])
+            actual = candidate.get("reason_code")
+            if (required is not None and not candidate.get("eligible")
+                    and actual not in (required, "constraint_unsatisfiable")):
+                failures.append(
+                    f"examples/{rel}\n"
+                    f"    profile {profile['name']} explains its {candidate['model_id']} candidate on\n"
+                    f"    {named} as {actual!r}, but that placement is\n"
+                    f"    {placement['state_source']}/{placement['state']}"
+                    f"{'' if placement['selectable'] else ' and not selectable'}"
+                    f", which is {required!r}.\n"
+                    f"    (constraint_unsatisfiable is also accepted anywhere: it is a fact\n"
+                    f"    about the candidate, not about the placement.)"
+                )
+
             if candidate.get("eligible") and not placements[named]["eligible"]:
                 failures.append(
                     f"examples/{rel}\n"
@@ -287,5 +332,6 @@ if failures:
 
 print(f"{len(EXPECTED)} fixtures + openapi.yaml agree with the catalog each is bound to,")
 print("every status policy's resolves_now/resolves_today matches its own placements,")
-print("and no profile candidate claims to be usable on an unusable placement")
+print("and no profile candidate claims to be usable on an unusable placement,")
+print("nor explains itself with a reason the placement contradicts")
 PY

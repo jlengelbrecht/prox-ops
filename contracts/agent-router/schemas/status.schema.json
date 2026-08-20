@@ -223,9 +223,8 @@
                   "description": "Whether /v1/place could return this candidate right now, given live capacity state."
                 },
                 "reason_code": {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "REQUIRED when eligible is false, and meaningless otherwise; same vocabulary as PlaceResult reason codes. An ineligible candidate with no stated reason tells a reader that something is unavailable without telling them whether that is a catalog fact, a withdrawal, or a node the router has not heard from - three situations with three different responses. This is a single-object fact, so the schema checks it below; whether the reason AGREES with the referenced placement is a cross-object fact and is checked by verify-digests.sh instead."
+                  "$ref": "place-result.schema.json#/$defs/candidate_ineligible_reason_code",
+                  "description": "REQUIRED when eligible is false, and meaningless otherwise. Bound to the INELIGIBLE-ONLY subset of the PlaceResult candidate vocabulary, not the whole of it: not_selected_lower_rank and not_selected_colder describe a candidate that was eligible and lost the ranking, so they are not answers to why a candidate cannot be used. An ineligible candidate with no stated reason tells a reader that something is unavailable without telling them whether that is a catalog fact, a withdrawal, or a node the router has not heard from - three situations with three different responses. Its PRESENCE is a single-object fact, so the schema requires it below, and the enum keeps it inside a sane vocabulary. Whether the reason AGREES with the referenced placement is a cross-object fact - `offline` is a legal member of this enum but wrong for a node the router has simply never heard from - and verify-digests.sh checks that."
                 }
               },
               "allOf": [
