@@ -51,7 +51,7 @@
         "capacity_state": {
           "type": "string",
           "enum": ["learning", "steady"],
-          "description": "`learning` - the router has been up for less than one heartbeat interval and has not necessarily heard from every node yet. Capacity is in-memory only and a restart re-learns it within one interval (EPIC-035 section 4: no persistence beyond in-memory state and the Git catalog). A caller that sees `learning` should expect placements to be reported OFFLINE that are in fact healthy, and should treat an unavailable placement result as provisional.\n`steady` - at least one full heartbeat interval has elapsed since start."
+          "description": "How to read an `unseen` placement, and nothing else depends on it.\n\n`learning` - the router has been up for less than one heartbeat interval and has not necessarily heard from every node yet. Capacity is in-memory only and a restart re-learns it within one interval (EPIC-035 section 4: no persistence beyond in-memory state and the Git catalog). This supplies the extra interpretation an `unseen` placement needs: it MAY BE A HEALTHY EDGE NODE THAT HAS SIMPLY NOT BEEN RELEARNED YET, so an unavailable placement result is PROVISIONAL and a caller should expect it to change without anything having been fixed.\n\n`steady` - at least one full heartbeat interval has elapsed since start. An `unseen` placement REMAINS UNAVAILABLE UNTIL ITS FIRST HEARTBEAT ARRIVES. `steady` does not promote it, does not make it eligible, and is not permission to guess: the node has now had its interval and has not reported.\n\nNeither value changes what `unseen` means. It changes only how provisional a caller should treat the answer built from it."
         },
         "uptime_seconds": {
           "type": "integer",
@@ -247,12 +247,12 @@
           "state": {
             "type": "string",
             "enum": ["AVAILABLE", "SERVING", "DRAINING", "INTERACTIVE", "OFFLINE"],
-            "description": "Current state. For an edge placement this is the last heartbeat's self-reported state, or OFFLINE if it has been silent for offline_after_seconds. A placement that has never heartbeated is OFFLINE with last_heartbeat: null."
+            "description": "Current state. READ IT TOGETHER WITH state_source, which says where it came from; on its own this field cannot be interpreted, and the sentence that used to try got the KServe case backwards.\n\nstate_source: heartbeat - the last heartbeat's self-reported state.\nstate_source: silence - OFFLINE, inferred because the node was reporting and then exceeded offline_after_seconds.\nstate_source: unseen - OFFLINE, because no heartbeat has been observed in this router process yet.\nstate_source: static - the state the CATALOG gives it. A KServe placement is AVAILABLE here and that is correct: it has no heartbeat channel, so the absence of one says nothing about its health. Reporting the cluster GPU OFFLINE because it never checks in would take the only usable placement out of service."
           },
           "state_source": {
             "type": "string",
-            "enum": ["heartbeat", "silence", "static"],
-            "description": "WHERE THIS PLACEMENT'S `state` CAME FROM. The three values are exhaustive because there are exactly three ways the router can know: it was told, it noticed it stopped being told, or it was never in a position to be told.\n\n`heartbeat` - a heartbeat arrived and this is what it said. Requires a heartbeat to be present.\n`silence` - the placement HAS a heartbeat channel and has gone quiet past offline_after_seconds, so the router inferred OFFLINE. Failure detection, not a self-report.\n`static` - the router has NO heartbeat channel for this placement, so its state comes from catalog status alone. Two cases, both of them non-heartbeating by construction: a KServe placement (the cluster GPU is not a node that can withdraw itself, and it never heartbeats at all), and an edge placement that is still `status: planned` - the name is reserved in the catalog but no node is enrolled, none has ever reported, and none can. Both carry heartbeat: null and last_heartbeat: null.\n\nThe boundary that matters: `silence` is a placement that was talking and stopped; `static` is a placement that was never going to talk. Reporting a planned edge placement as `silence` would invent a missed heartbeat window that never existed, and would make an un-provisioned host indistinguishable from a crashed one."
+            "enum": ["heartbeat", "silence", "unseen", "static"],
+            "description": "WHERE THIS PLACEMENT'S `state` CAME FROM. Four values, and they are exhaustive because there are exactly four ways the router can stand in relation to a placement: it was told, it was told and then the telling stopped, it is waiting to be told for the first time, or it was never going to be told at all.\n\n`heartbeat` - the current state came from an OBSERVED heartbeat. The heartbeat object and the router's receipt time are both present.\n\n`silence` - the node PREVIOUSLY REPORTED and then exceeded offline_after_seconds. state is OFFLINE, the prior heartbeat and its receipt time are RETAINED rather than cleared, and the placement is not eligible. Failure detection: something that was working stopped.\n\n`unseen` - a heartbeat channel EXISTS or is expected, and the router has NEVER OBSERVED a heartbeat from it in its CURRENT IN-MEMORY LIFETIME. state is OFFLINE, heartbeat and last_heartbeat are null, and the placement is not eligible. Capacity is in-memory and a restart re-learns it, so this is the ordinary state of a healthy edge node in the seconds after the router comes up - see router.capacity_state.\n\n`static` - NO heartbeat channel exists, so the state comes from CATALOG status alone. Two cases, both non-heartbeating by construction: a KServe placement (the cluster GPU is not a node that can withdraw itself, and it never heartbeats at all), and an edge placement still `status: planned` - the name is reserved but no node is enrolled and none can report. Both carry heartbeat: null and last_heartbeat: null.\n\nTHE DISTINCTION THAT MATTERS, IN ONE LINE EACH:\n  silence - was talking and stopped.\n  unseen  - expected to talk, but has not been observed yet.\n  static  - was never expected to talk.\n\nCollapsing any two of those loses an operational fact somebody acts on. Reporting a planned placement as `silence` invents a missed heartbeat window that never existed. Reporting a restarted-but-healthy edge node as `silence` says a node failed when nothing failed. And reporting a KServe placement as anything but `static` takes the only usable placement in catalog 1.1.0 out of service, because its state would be read as a failure rather than as a catalog fact."
           },
           "readiness": {
             "type": "string",
@@ -261,7 +261,7 @@
           },
           "eligible": {
             "type": "boolean",
-            "description": "Whether /v1/place may currently return this placement. False for status: planned placements, for withdrawn nodes, and for anything the router has excluded."
+            "description": "Whether /v1/place may currently return this placement. False for status: planned placements, for withdrawn nodes, for anything the router has excluded, and for any placement whose state_source is `unseen` or `silence` - in both of those the router has no current report to place on, whether or not it once had one."
           },
           "cold_start_s_estimate": {
             "type": ["number", "null"],
@@ -270,7 +270,7 @@
           "last_heartbeat": {
             "type": ["string", "null"],
             "format": "date-time",
-            "description": "Receipt time of the most recent heartbeat, or null if none has ever arrived."
+            "description": "Router receipt time of the most recent heartbeat. null on state_source static (no channel exists) and on unseen (a channel exists, but nothing has been observed in this router process). Non-null on heartbeat and on silence - silence RETAINS the last receipt time, because when the node was last heard from is the whole content of the signal."
           },
           "heartbeat": {
             "oneOf": [{ "$ref": "heartbeat.schema.json" }, { "type": "null" }],
@@ -306,6 +306,41 @@
               "required": ["state", "heartbeat", "last_heartbeat"]
             }
           },
+{
+            "description": "state_source: unseen means a heartbeat channel exists and the router has not observed it yet in this process lifetime. So: OFFLINE, because the router cannot claim a state nobody has told it; both heartbeat fields null, because there is nothing to retain - which is exactly what distinguishes it from silence, where the prior report IS retained; and not eligible, because 'probably fine' is not a placement decision. Whether it is provisional is answered by router.capacity_state, not by relaxing any of these.",
+            "if": {
+              "properties": {
+                "state_source": {
+                  "const": "unseen"
+                }
+              },
+              "required": [
+                "state_source"
+              ]
+            },
+            "then": {
+              "properties": {
+                "state": {
+                  "const": "OFFLINE"
+                },
+                "heartbeat": {
+                  "type": "null"
+                },
+                "last_heartbeat": {
+                  "type": "null"
+                },
+                "eligible": {
+                  "const": false
+                }
+              },
+              "required": [
+                "state",
+                "heartbeat",
+                "last_heartbeat",
+                "eligible"
+              ]
+            }
+          },
           {
             "description": "state_source: static means no heartbeat channel exists for this placement - a KServe placement, or an edge placement still status: planned. Either way nothing has ever arrived, so both heartbeat fields are null.",
             "if": {
@@ -316,6 +351,32 @@
               "properties": {
                 "heartbeat": { "type": "null" },
                 "last_heartbeat": { "type": "null" }
+              }
+            }
+          },
+          {
+            "description": "An ENROLLED edge placement - kind edge, status available - has a heartbeat channel by definition, so its state can never come from the catalog alone: static is not available to it. Without this rule static and unseen would both accept that placement and the new value would settle nothing, since the two differ precisely in whether a channel exists and that is not otherwise visible in the payload.",
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "edge"
+                },
+                "status": {
+                  "const": "available"
+                }
+              },
+              "required": [
+                "kind",
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "state_source": {
+                  "not": {
+                    "const": "static"
+                  }
+                }
               }
             }
           }

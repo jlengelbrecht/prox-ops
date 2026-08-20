@@ -91,6 +91,7 @@ EXPECTED = {
     "place/unavailable-all-withdrawn.json": ({ALL_EDGE}, None),
     "place/unavailable-policy-edge-only.json": ({REAL}, None),
     "status/status-today.json": ({REAL}, DOC),
+    "status/status-restarted-unseen.json": ({EDGE}, "1.2.0"),
     "status/status-with-edge.json": ({EDGE}, "1.2.0"),
 }
 

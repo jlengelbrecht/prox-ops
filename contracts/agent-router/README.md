@@ -27,7 +27,7 @@ contracts/agent-router/
     heartbeat/          6 files     one per state, plus unmeasured hardware
     place/              4 files     placed and unavailable
     errors/            14 files     one per error code, plus both metered refusals
-    status/             2 files     today, and once an edge node exists
+    status/             3 files     today, after an edge node exists, and after a restart
   verify-digests.sh                 fails if an example's catalog fingerprint has rotted
   README.md                         this file
 ```
@@ -722,6 +722,52 @@ withdrawal was honoured rather than assuming it.
 > and classes. It once listed only two - a missed heartbeat and a 503 - and was corrected
 > before it merged. The two documents agree; this table is the version both are frozen at.
 
+## How `/v1/status` reports where a state came from
+
+Every placement in `/v1/status` carries `state_source` alongside `state`, and **`state` cannot be
+interpreted without it.** Four values, exhaustive, because there are exactly four ways the router
+can stand in relation to a placement:
+
+| `state_source` | Channel | `state` | `heartbeat` / `last_heartbeat` | `eligible` |
+| --- | --- | --- | --- | --- |
+| `heartbeat` | exists, observed | as the node reported | both present | as reported |
+| `silence` | exists, went quiet past `offline_after_seconds` | `OFFLINE` | **retained** from the last report | false |
+| `unseen` | exists or is expected, nothing observed this process | `OFFLINE` | both `null` | false |
+| `static` | none exists | from the **catalog** | both `null` | from the catalog |
+
+The distinction in one line each:
+
+- **`silence`** - was talking and stopped.
+- **`unseen`** - expected to talk, but has not been observed yet.
+- **`static`** - was never expected to talk.
+
+Collapsing any two loses a fact somebody acts on. A planned placement reported as `silence`
+invents a missed heartbeat window that never existed. A restarted-but-healthy edge node reported
+as `silence` says a node failed when nothing did. And **a KServe placement reported as anything
+but `static` takes the only usable placement in catalog 1.1.0 out of service** - it never checks
+in by design, so the absence of a check-in says nothing about its health.
+
+`unseen` exists because capacity is in-memory. On restart the router knows from the catalog which
+placements are enrolled, but it has heard from none of them yet: a channel exists, so `static` is
+wrong; nothing has arrived, so `heartbeat` is wrong; and nothing ever reported in this process, so
+`silence` is wrong too - it has nothing to retain, which is precisely what it differs from
+`silence` by. Without a fourth value that state was unrepresentable, and an implementer would have
+had to pick one of three wrong answers.
+
+### What `capacity_state` adds
+
+`router.capacity_state` changes nothing about what `unseen` means. It changes how provisional a
+caller should treat an answer built from one:
+
+- **`learning`** - the router has been up less than one heartbeat interval. An `unseen` placement
+  **may be a healthy edge node that has simply not been relearned yet**, so an unavailable
+  placement result is **provisional** and can change without anything having been fixed.
+- **`steady`** - a full interval has elapsed. An `unseen` placement **remains unavailable until
+  its first heartbeat arrives.** `steady` does not promote it and is not permission to guess: the
+  node has now had its interval and has not reported.
+
+`examples/status/status-restarted-unseen.json` is the `learning` case worked through.
+
 ## Error taxonomy
 
 Every error path, with its status, machine-readable code, and what the caller must do. The
@@ -772,7 +818,7 @@ anyway. The loop ends only on a failure the node itself must fix: `unauthenticat
 
 ## Examples
 
-30 files, every one validated in CI-shaped commands below. Every example is also referenced
+31 files, every one validated in CI-shaped commands below. Every example is also referenced
 from `openapi.yaml`, so an example that stops being reachable from the spec is visible.
 
 Each one states which catalog it is drawn against. Examples on the real 1.1.0 digest describe
@@ -828,7 +874,10 @@ visible but not selectable. `status-with-edge.json` is the same view after 35.6 
 candidate, `edge-only` resolving. Those are catalog-static facts, so it carries a placeholder
 digest and `catalog_document_version: 1.2.0` rather than pretending to be 1.1.0 with
 different contents. It is also the example that shows a heartbeat re-exposed
-verbatim inside a placement.
+verbatim inside a placement. `status-restarted-unseen.json` is the same catalog seconds after
+the router restarted: the edge node is enrolled and may well be healthy, but nothing has been
+observed in this process yet, so it is `unseen`, `OFFLINE` and not eligible, alongside
+`capacity_state: learning`.
 
 Three examples describe a world that does not exist yet, and they do not all describe the
 **same** one. `placed-warm-edge.json` and `status-with-edge.json` need only
@@ -897,8 +946,9 @@ schema permits is a rule an implementer reading only the schema will break:
   where only candidate-level codes belong;
 - a `selectable: false` harness in `/v1/status` with no `router_behaviour` saying what the
   router does instead;
-- `state_source: "heartbeat"` on a placement with no heartbeat attached, or
-  `state_source: "static"` on one that has heartbeated;
+- `state_source: "heartbeat"` on a placement with no heartbeat attached, `"static"` on one that
+  has heartbeated or on an enrolled edge placement that has a channel, `"unseen"` on anything
+  that is not OFFLINE-with-nothing-retained, or `"silence"` with no prior report to retain;
 - a heartbeat with a null `gpu.model` or `gpu.arch`, which the edge contract types as strings
   whose unmeasured form is the literal `"unmeasured"`;
 - an entitlement pool in `/v1/status` that omits any of its four declared attributes, which
