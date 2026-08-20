@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Verify that every committed example agrees with the catalog it claims.
+# Verify that every committed example agrees with the catalog it claims, and
+# with itself.
+#
+# Two families of check live here. The first is about FINGERPRINTS - which
+# catalog document a fixture claims. The second is about DERIVED STATE - fields
+# a fixture computes from other fields in the same document, which JSON Schema
+# deliberately does not police (see "why not JSON Schema" below).
 #
 # `catalog_version` exists to settle one question: which catalog document was
 # this answer computed against. That makes every fixture carrying a digest a
@@ -22,6 +28,23 @@
 #      hypothetical catalog.
 #   3. The abbreviated digest in README.md still matches the real one, since
 #      the digest table is what a reader actually consults.
+#   4. DERIVED POLICY STATE in the /v1/status fixtures. `resolves_now` is not
+#      an independent fact: it is "can this policy select anything right now",
+#      which is answerable from the same document by resolving the policy's
+#      prefer_order against each placement's `eligible`. `resolves_today` is
+#      the same question against `status`/`selectable`. A fixture that asserts
+#      either against its own placements teaches the wrong meaning for the
+#      field, which is the one thing a worked example must not do.
+#
+# WHY NOT JSON SCHEMA. This is a RELATIONAL JOIN - policies[].prefer_order
+# against placements[].name - and JSON Schema has no way to express one. It
+# could only be faked by enumerating placement names into the schema, which
+# would hard-code catalog data the contract deliberately does not carry. The
+# structural state-machine invariants (unseen implies OFFLINE and null
+# heartbeat fields and ineligible, silence requires a prior report, an enrolled
+# edge placement may not claim static, and so on) stay in status.schema.json
+# where they belong: those are single-object facts and the schema checks them
+# well. Cross-object facts are checked here instead, against the fixtures.
 #
 # Run from anywhere. Requires python3 with PyYAML, which the contract's other
 # gate commands already use.
@@ -156,6 +179,39 @@ for digest in sorted(digests(spec.read_text()) - {REAL}):
         f"    The spec illustrates the CURRENT catalog only: {REAL}."
     )
 
+# ---------------------------------------------------------------------------
+# 4. Derived policy state in the status fixtures.
+# ---------------------------------------------------------------------------
+for rel in sorted(r for r in EXPECTED if r.startswith("status/")):
+    doc = json.loads((examples / rel).read_text())
+    placements = {pl["name"]: pl for pl in doc.get("placements", [])}
+    for policy in doc.get("policies", []):
+        order = policy.get("prefer_order", [])
+        unknown = [n for n in order if n not in placements]
+        if unknown:
+            failures.append(
+                f"examples/{rel}\n"
+                f"    policy {policy['name']} prefers {', '.join(unknown)},\n"
+                f"    which this document does not list as a placement."
+            )
+            continue
+        live = [n for n in order if placements[n]["eligible"]]
+        selectable = [n for n in order
+                      if placements[n]["status"] == "available" and placements[n]["selectable"]]
+        for field, names, question in (
+            ("resolves_now", live, "eligible right now"),
+            ("resolves_today", selectable, "selectable in this catalog"),
+        ):
+            expected = bool(names)
+            if policy.get(field) is not expected:
+                detail = ", ".join(names) if names else "nothing it names is"
+                failures.append(
+                    f"examples/{rel}\n"
+                    f"    policy {policy['name']} says {field}: {str(policy.get(field)).lower()},\n"
+                    f"    but it prefers {', '.join(order)}\n"
+                    f"    and {detail} {question}. Expected {str(expected).lower()}."
+                )
+
 short = REAL[7:15] + "…" + REAL[-6:]
 if short not in (contract / "README.md").read_text():
     failures.append(
@@ -167,15 +223,20 @@ if short not in (contract / "README.md").read_text():
 print(f"catalog {DOC}, digest {REAL}")
 if failures:
     print("")
-    print("Fixtures disagree with the catalog they are bound to:")
+    print("Fixtures disagree with the catalog they are bound to, or with themselves:")
     print("")
     for failure in failures:
         print(f"  {failure}")
         print("")
-    print("Re-stamp the affected fixtures, or move one to a different")
-    print("documented placeholder AND update EXPECTED to say so. A")
-    print("fingerprint that names the wrong catalog is worse than none.")
+    print("For a fingerprint: re-stamp the fixture, or move it to a different")
+    print("documented placeholder AND update EXPECTED to say so. A fingerprint")
+    print("that names the wrong catalog is worse than none.")
+    print("")
+    print("For derived policy state: the placements are the fact and the")
+    print("resolves_* field is the summary, so fix the summary. If the summary")
+    print("looks right, the placements are what actually changed.")
     sys.exit(1)
 
-print(f"{len(EXPECTED)} fixtures + openapi.yaml agree with the catalog each is bound to")
+print(f"{len(EXPECTED)} fixtures + openapi.yaml agree with the catalog each is bound to,")
+print("and every status policy's resolves_now/resolves_today matches its own placements")
 PY

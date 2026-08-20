@@ -183,7 +183,8 @@ that are not 1.1.0's.
 
 #### What keeps this honest
 
-`./verify-digests.sh`, next to this file. Every example carrying the real digest is a
+`./verify-digests.sh`, next to this file. It checks two things: which catalog a fixture claims,
+and whether a fixture's derived fields agree with the rest of that same fixture. Every example carrying the real digest is a
 **fixture**, and fixtures rot: the first catalog change that forgets to re-stamp them leaves
 fingerprints that are confidently wrong, which is worse than carrying none at all - the field
 exists precisely to settle which catalog an answer was computed against, so a lying one
@@ -202,7 +203,20 @@ The script recomputes the digest from the committed ConfigMap and fails if:
 - **`openapi.yaml` embeds a digest that is not the real one.** The spec hard-codes the
   fingerprint in three inline examples, and those rot exactly like the JSON fixtures; the
   spec illustrates the current catalog only and never a hypothetical one;
-- the abbreviated digest in the table above has drifted from the real one.
+- the abbreviated digest in the table above has drifted from the real one;
+- **a `/v1/status` fixture's `resolves_now` or `resolves_today` disagrees with its own
+  placements.** Neither is an independent fact: `resolves_now` is "can this policy select
+  anything right now", answerable by resolving the policy's `prefer_order` against each
+  placement's `eligible` in the same document, and `resolves_today` is the same question
+  against `status`/`selectable`. A policy preferring a placement the document does not list
+  fails too.
+
+That last one is a **relational join** - `policies[].prefer_order` against
+`placements[].name` - and JSON Schema cannot express one. It could only be faked by
+enumerating placement names into the schema, which would hard-code catalog data this contract
+deliberately does not carry. So the split is: **single-object facts stay in the schema**,
+where the state-machine invariants live and are checked well; **cross-object facts are checked
+here**, against the fixtures. Neither is a substitute for the other.
 
 It exits non-zero naming the offending file and both digests. **Run it in any change that
 touches the catalog**, not only ones that touch this directory - that is the direction the
