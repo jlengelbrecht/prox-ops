@@ -102,6 +102,10 @@ PROMPT_FILE=""
 STATE_CMD=""
 GUARD_PHASE_CMD=""
 OUT_FILE=""
+# Counts trials whose request failed outright, so the documented exit status
+# (0 clean / 1 if any request failed) is actually honoured — a benchmark that
+# exits 0 through failed requests silently reports a partial dataset as complete.
+FAILED_TRIALS=0
 
 DURATION_SECONDS=600
 INTERVAL_SECONDS=2
@@ -217,7 +221,12 @@ ENDPOINT="${ENDPOINT%/}"
 
 if [ -z "$OUT_FILE" ]; then
     mkdir -p results
-    OUT_FILE="results/${MODEL}-${SUBCOMMAND}.jsonl"
+    # tool-call writes a single JSON object, not JSONL — give it the matching extension.
+    if [ "$SUBCOMMAND" = "tool-call" ]; then
+        OUT_FILE="results/${MODEL}-tool-call.json"
+    else
+        OUT_FILE="results/${MODEL}-${SUBCOMMAND}.jsonl"
+    fi
 fi
 mkdir -p "$(dirname "$OUT_FILE")"
 
@@ -392,7 +401,7 @@ run_one_trial() {
 case "$SUBCOMMAND" in
     cold)
         for i in $(seq 1 "$TRIALS"); do
-            run_one_trial cold "$i"
+            run_one_trial cold "$i" || FAILED_TRIALS=$((FAILED_TRIALS + 1))
         done
         echo "cold trials complete, appended to $OUT_FILE" >&2
         ;;
@@ -400,7 +409,7 @@ case "$SUBCOMMAND" in
         echo "warm-up request (untimed)..." >&2
         run_one_trial warmup 0 >/dev/null 2>&1 || true
         for i in $(seq 1 "$TRIALS"); do
-            run_one_trial warm "$i"
+            run_one_trial warm "$i" || FAILED_TRIALS=$((FAILED_TRIALS + 1))
         done
         echo "warm trials complete, appended to $OUT_FILE" >&2
         ;;
@@ -416,7 +425,7 @@ case "$SUBCOMMAND" in
             fi
             i=$((i + 1))
             MAX_TOKENS="$MAX_TOKENS_SAVED"
-            run_one_trial sustained "$i"
+            run_one_trial sustained "$i" || FAILED_TRIALS=$((FAILED_TRIALS + 1))
             sleep "$INTERVAL_SECONDS"
         done
         echo "sustained run complete: $i requests over ${DURATION_SECONDS}s+, appended to $OUT_FILE" >&2
@@ -442,9 +451,6 @@ case "$SUBCOMMAND" in
         else
             DETAIL="no well-formed tool_calls[0] naming get_weather with a valid JSON 'location' argument"
         fi
-        if [ -z "$OUT_FILE" ]; then
-            OUT_FILE="results/${MODEL}-tool-call.json"
-        fi
         jq -n --arg ts "$(iso_now)" --arg verdict "$VERDICT" --arg detail "$DETAIL" \
             --argjson http_code "$HTTP_CODE" --slurpfile response "$BODY_FILE" \
             '{ts: $ts, verdict: $verdict, detail: $detail, http_code: $http_code, response: $response[0]}' > "$OUT_FILE"
@@ -452,3 +458,8 @@ case "$SUBCOMMAND" in
         [ "$VERDICT" = "PASS" ]
         ;;
 esac
+
+if [ "$FAILED_TRIALS" -gt 0 ]; then
+    echo "$FAILED_TRIALS trial(s) failed outright — dataset is incomplete" >&2
+    exit 1
+fi
