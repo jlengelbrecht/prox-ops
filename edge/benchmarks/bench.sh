@@ -233,6 +233,13 @@ mkdir -p "$(dirname "$OUT_FILE")"
 SCRATCH_DIR=$(mktemp -d "${TMPDIR:-/tmp}/edge-bench.XXXXXX")
 trap 'rm -rf "$SCRATCH_DIR"' EXIT
 
+# The credential must not appear in any child process's argument list: on a shared
+# host /proc/<pid>/cmdline is world-readable, so `-H "Authorization: Bearer $KEY"`
+# leaks the key to any local user for the lifetime of the request. Write the header
+# to a private file and hand curl the file instead.
+AUTH_HEADER_FILE="$SCRATCH_DIR/auth.header"
+( umask 077; printf 'Authorization: Bearer %s\n' "$API_KEY" > "$AUTH_HEADER_FILE" )
+
 CURL_OPTS=(--silent --show-error --max-time "$TIMEOUT")
 [ -n "$RESOLVE" ] && CURL_OPTS+=(--resolve "$RESOLVE")
 [ -n "$CA_CERT" ] && CURL_OPTS+=(--cacert "$CA_CERT")
@@ -282,9 +289,9 @@ run_one_trial() {
     body_file="$SCRATCH_DIR/trial-${phase}-${trial}.sse"
     curl_meta=$(curl "${CURL_OPTS[@]}" -o "$body_file" \
         --write-out '%{http_code} %{time_starttransfer} %{time_total}' \
-        -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+        --header "@$AUTH_HEADER_FILE" -H "Content-Type: application/json" \
         -X POST "$ENDPOINT/v1/chat/completions" \
-        -d "$(jq -n --arg model "$MODEL" --arg content "$prompt_content" --argjson max_tokens "$MAX_TOKENS" \
+        -d "$(jq -cn --arg model "$MODEL" --arg content "$prompt_content" --argjson max_tokens "$MAX_TOKENS" \
             '{model: $model, messages: [{role: "user", content: $content}], max_tokens: $max_tokens, temperature: 0, stream: true, stream_options: {include_usage: true}}')" \
         2>"$SCRATCH_DIR/trial-${phase}-${trial}.err")
     CURL_STATUS=$?
@@ -292,7 +299,7 @@ run_one_trial() {
     guard_after=$(guard_phase)
 
     if [ "$CURL_STATUS" -ne 0 ]; then
-        jq -n --arg ts "$(iso_now)" --arg phase "$phase" --argjson trial "$trial" \
+        jq -cn --arg ts "$(iso_now)" --arg phase "$phase" --argjson trial "$trial" \
             --arg err "request failed (curl exit $CURL_STATUS): $(cat "$SCRATCH_DIR/trial-${phase}-${trial}.err" 2>/dev/null)" \
             '{ts: $ts, phase: $phase, trial: $trial, discarded: true, discard_reason: $err}' >> "$OUT_FILE"
         echo "TRIAL $phase#$trial: FAILED (curl exit $CURL_STATUS)" >&2
@@ -315,9 +322,13 @@ run_one_trial() {
         if [ "$state_before" != "unknown" ] && [ "$state_before" != "$phase" ]; then
             discarded=true
             discard_reason="${discard_reason:+$discard_reason; }state-cmd reported '$state_before' before a $phase trial"
-        elif [ "$state_before" = "unknown" ] && [ -n "$STATE_CMD" ]; then
+        elif [ "$state_before" = "unknown" ]; then
+            # Applies whether or not --state-cmd was supplied: an unconfirmed
+            # precondition must not silently enter a cold or warm distribution.
+            # A caller enforcing the precondition externally should say so in its
+            # own evidence rather than let the harness assume it.
             discarded=true
-            discard_reason="${discard_reason:+$discard_reason; }state-cmd did not report a usable state"
+            discard_reason="${discard_reason:+$discard_reason; }no confirmed ${phase} state before the trial (use --state-cmd)"
         fi
     fi
 
@@ -368,7 +379,7 @@ run_one_trial() {
             'BEGIN { d = tot - ttft; if (d > 0 && c > 1) printf "%.2f", (c - 1) / d; else print "null" }')
     fi
 
-    jq -n \
+    jq -cn \
         --arg ts "$(iso_now)" --arg phase "$phase" --argjson trial "$trial" \
         --argjson http_code "$http_code" --argjson ttft_s "$ttft" --argjson total_s "$total" \
         --argjson prompt_tokens "$prompt_tokens" --argjson completion_tokens "$completion_tokens" \
@@ -434,10 +445,12 @@ case "$SUBCOMMAND" in
         TOOLS_JSON='[{"type":"function","function":{"name":"get_weather","description":"Get the current weather for a location","parameters":{"type":"object","properties":{"location":{"type":"string","description":"City and state, e.g. Portland, Oregon"}},"required":["location"]}}}]'
         BODY_FILE="$SCRATCH_DIR/tool-call.json"
         CURL_META=$(curl "${CURL_OPTS[@]}" -o "$BODY_FILE" --write-out '%{http_code}' \
-            -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+            --header "@$AUTH_HEADER_FILE" -H "Content-Type: application/json" \
             -X POST "$ENDPOINT/v1/chat/completions" \
-            -d "$(jq -n --arg model "$MODEL" --arg prompt "$TOOL_PROMPT" --argjson tools "$TOOLS_JSON" \
-                '{model: $model, messages: [{role: "user", content: $prompt}], tools: $tools, max_tokens: 512, temperature: 0}')" \
+            -d "$(jq -cn --arg model "$MODEL" --arg prompt "$TOOL_PROMPT" --argjson tools "$TOOLS_JSON" \
+                '{model: $model, messages: [{role: "user", content: $prompt}], tools: $tools,
+                  tool_choice: {type: "function", function: {name: "get_weather"}},
+                  max_tokens: 512, temperature: 0}')" \
             2>"$SCRATCH_DIR/tool-call.err")
         HTTP_CODE="$CURL_META"
         VERDICT="FAIL"
@@ -451,7 +464,7 @@ case "$SUBCOMMAND" in
         else
             DETAIL="no well-formed tool_calls[0] naming get_weather with a valid JSON 'location' argument"
         fi
-        jq -n --arg ts "$(iso_now)" --arg verdict "$VERDICT" --arg detail "$DETAIL" \
+        jq -cn --arg ts "$(iso_now)" --arg verdict "$VERDICT" --arg detail "$DETAIL" \
             --argjson http_code "$HTTP_CODE" --slurpfile response "$BODY_FILE" \
             '{ts: $ts, verdict: $verdict, detail: $detail, http_code: $http_code, response: $response[0]}' > "$OUT_FILE"
         echo "TOOL-CALL: $VERDICT ($DETAIL) — written to $OUT_FILE" >&2
