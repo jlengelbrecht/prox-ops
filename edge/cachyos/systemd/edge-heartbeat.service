@@ -1,0 +1,31 @@
+[Unit]
+Description=EPIC-035 edge worker heartbeat producer (CachyOS RX 7900 XTX)
+Documentation=file:%h/repos/prox-ops/edge/cachyos/README.md
+# Deliberately not Requires= or BindsTo= the container. A withdrawn or crashed
+# endpoint is exactly when the router most needs to hear from this host — the
+# heartbeat is how INTERACTIVE and OFFLINE are distinguished from silence, and
+# a producer that stopped with the endpoint would collapse all three into one.
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/edge-cachyos/edge.env
+ExecStart=%h/repos/prox-ops/edge/cachyos/scripts/edge-heartbeat.sh --interval ${EDGE_HEARTBEAT_INTERVAL}
+Restart=always
+RestartSec=5
+
+# No credential of this unit's belongs to any other process on the box.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# The state directory is shared with the container's supervisor; read-only is
+# enough here, because publishing state is this unit's job and setting it is
+# the guard's.
+ReadOnlyPaths=%t/edge
+
+[Install]
+WantedBy=default.target

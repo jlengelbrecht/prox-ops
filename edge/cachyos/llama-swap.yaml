@@ -1,0 +1,89 @@
+# llama-swap configuration for the CachyOS RX 7900 XTX edge worker.
+#
+# Contract anchors (edge/EDGE-WORKER-CONTRACT.md):
+#   §2  bearer/API-key authentication is required on every request to the edge
+#       inference endpoint. `apiKeys` below covers GET /v1/models and every
+#       model-dispatched route including POST /v1/chat/completions; both are
+#       what conformance.sh's auth_enforced check probes.
+#   §3  llama-swap is the LAN-facing service; llama-server sits behind it and
+#       is never LAN-exposed. That is enforced twice: `--host 127.0.0.1` on the
+#       llama-server command line below, and the absence of any published port
+#       for it in docker-compose.yaml.
+#
+# Secrets: the API key is never written here. `${env.EDGE_API_KEY}` is read
+# from llama-swap's own process environment, which docker-compose populates
+# from an untracked .env file sourced from 1Password. See env.example.
+
+# Cold start budget. The 17.9 GB GGUF loads from local NVMe rather than the
+# cluster's CephFS, so this is generous rather than tight — but llama-swap
+# kills an upstream that misses this deadline, and a killed cold start looks
+# exactly like a broken model to whoever is debugging it.
+healthCheckTimeout: 900
+
+logLevel: info
+
+# llama-server's ${PORT} allocations start here. These ports exist only inside
+# the container's network namespace and are bound to 127.0.0.1 (see `cmd`).
+startPort: 10001
+
+# Graceful stop budget for an unload (manual, API, or ttl expiry). llama-server
+# answers SIGTERM promptly; this is headroom, not an expectation.
+unloadTimeout: 30
+
+# API-key enforcement. An empty list means default-allow, which would put an
+# unauthenticated LLM on the LAN — the failure mode 35.4 flagged. Keep at least
+# one entry.
+apiKeys:
+  - "${env.EDGE_API_KEY}"
+
+macros:
+  "model_file": "/models/unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"
+
+  # MTP self-speculative decoding. The draft layers are bundled in this GGUF
+  # and the cluster's CUDA placement runs with exactly these two flags, so
+  # keeping them identical is what makes 35.7's A5000-vs-7900XTX numbers
+  # comparable. Availability on the ROCm build is recorded in README.md
+  # §"Evidence baseline for 35.7"; if it ever regresses, blank this macro
+  # rather than editing the command line, so the diff says what changed.
+  "spec_args": "--spec-type draft-mtp --spec-draft-n-max 2"
+
+models:
+  # The model id is the catalog's `upstream_model_id` for qwen36-27b, which is
+  # also the `--alias` the cluster's llama-server runs with. Keeping the two
+  # placements on one upstream id means 35.8's AgentgatewayBackend can carry
+  # the same `provider.openai.model` value for both providers in a group.
+  #
+  # NOTE for the heartbeat: this is the RUNTIME id, not the catalog `model_id`.
+  # The contract (§1) requires `active_model`/`cached_models` to carry the
+  # catalog `model_id` (`qwen36-27b`), and translation is the edge producer's
+  # job — see model-id-map.json and scripts/edge-heartbeat.sh.
+  "qwen3.6-27b":
+    name: "Qwen3.6-27B UD-Q4_K_XL (llama.cpp ROCm, gfx1100)"
+    description: "EPIC-035 reference model, same GGUF artifact as the kserve-a5000 placement"
+
+    # The catalog `model_id` is accepted as an alias so a caller that speaks
+    # catalog vocabulary reaches the same served model. This does not make the
+    # placement catalog-selectable — that is 35.8's change to the catalog and
+    # the gateway, deliberately not this story's (binding constraint 9).
+    aliases:
+      - "qwen36-27b"
+
+    # Model lifecycle (AC3): started on demand by llama-swap when a request
+    # names this model, unloaded after 30 idle minutes. 1800s matches the
+    # cluster's `scale-to-zero-pod-retention-period: 30m` on the same model, so
+    # the two placements have the same warm/cold duty cycle and 35.7 is not
+    # measuring a difference this file invented.
+    ttl: 1800
+
+    cmd: |
+      /app/llama-server
+      --host 127.0.0.1
+      --port ${PORT}
+      --model ${model_file}
+      --alias qwen3.6-27b
+      --n-gpu-layers 999
+      --ctx-size 65536
+      --parallel 1
+      ${spec_args}
+      --jinja
+      --metrics

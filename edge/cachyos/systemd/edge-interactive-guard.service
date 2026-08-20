@@ -1,0 +1,36 @@
+[Unit]
+Description=EPIC-035 edge worker interactive-priority guard (CachyOS RX 7900 XTX)
+Documentation=file:%h/repos/prox-ops/edge/cachyos/README.md
+# Runs whether or not the edge container is up. A guard that stopped with the
+# container could not hold a claim across a restart, and the claim is what
+# keeps the endpoint down while the desktop has the GPU.
+After=graphical-session.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/edge-cachyos/edge.env
+ExecStart=%h/repos/prox-ops/edge/cachyos/scripts/edge-interactive-guard.sh watch
+Restart=always
+RestartSec=5
+
+# A crashed guard must not leave the node advertising itself while the desktop
+# has the GPU. Clearing the claim is a deliberate operator action
+# (`edge-interactive-guard.sh release`), never a side effect of a restart, so
+# there is no ExecStopPost that removes it.
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# The claim file is the guard's only write, and it is the whole interface to
+# the container. Note there is deliberately no docker socket here: the guard
+# never needs to drive the container runtime, which is the reason the
+# supervisor watches a file instead of the node being withdrawn by
+# `docker stop`.
+ReadWritePaths=%t/edge
+
+[Install]
+WantedBy=default.target
