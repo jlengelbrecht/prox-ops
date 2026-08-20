@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "Runtime identity -> catalog model_id translation for the CachyOS edge worker.",
+    "EDGE-WORKER-CONTRACT §1: active_model and cached_models carry the CATALOG",
+    "model_id (the key in the catalog `models` table), never the upstream_model_id",
+    "that agentgateway sends to the server. A runtime knows its own identity, not",
+    "the catalog's, so the edge producer translates before sending. The router",
+    "does not guess and keeps no alias table.",
+    "",
+    "runtime_to_catalog: llama.cpp --alias / llama-swap model id -> catalog model_id.",
+    "artifact_to_catalog: on-disk GGUF filename -> catalog model_id, which is how",
+    "cached_models is derived (artifact present on local storage, loadable without",
+    "a download).",
+    "",
+    "An id that appears in neither table is NOT sent. scripts/edge-heartbeat.sh",
+    "drops it and warns on stderr, because a value the router cannot resolve",
+    "against the catalog is an observability alarm rather than a placement input.",
+    "",
+    "Source of truth for the right-hand side: the `models` table in",
+    "kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml."
+  ],
+
+  "runtime_to_catalog": {
+    "qwen3.6-27b": "qwen36-27b"
+  },
+
+  "artifact_to_catalog": {
+    "unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf": "qwen36-27b"
+  },
+
+  "catalog_facts": {
+    "qwen36-27b": {
+      "capabilities": ["chat", "tools"],
+      "max_context": 65536
+    }
+  }
+}

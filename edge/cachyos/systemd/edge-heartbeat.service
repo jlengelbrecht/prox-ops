@@ -1,0 +1,43 @@
+[Unit]
+Description=EPIC-035 edge worker heartbeat producer (CachyOS RX 7900 XTX)
+Documentation=file:%h/repos/prox-ops/edge/cachyos/README.md
+# Deliberately not Requires= or BindsTo= the container. A withdrawn or crashed
+# endpoint is exactly when the router most needs to hear from this host — the
+# heartbeat is how INTERACTIVE and OFFLINE are distinguished from silence, and
+# a producer that stopped with the endpoint would collapse all three into one.
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/edge-cachyos/edge.env
+
+# Declared here for the same reasons as in edge-interactive-guard.service —
+# including the `-state` suffix, which keeps systemd from replacing the state
+# directory with a symlink to the identically named configuration directory.
+# It makes systemd create the shared directory before the sandbox is built, so
+# this unit starts on a fresh boot without anything having run first. Whichever
+# of the two units starts first creates it; neither removes it.
+StateDirectory=edge-cachyos-state
+StateDirectoryMode=0755
+Environment=EDGE_STATE_DIR=%S/edge-cachyos-state
+Environment=EDGE_API_KEY_FILE=%h/.config/edge-cachyos/api-key
+
+ExecStart=%h/repos/prox-ops/edge/cachyos/scripts/edge-heartbeat.sh --interval ${EDGE_HEARTBEAT_INTERVAL}
+Restart=always
+RestartSec=5
+
+# No credential of this unit's belongs to any other process on the box.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# Publishing state is this unit's job; setting it is the guard's. StateDirectory=
+# above would make the directory writable, so it is dropped back to read-only
+# here — the creation guarantee is kept, the write access is not.
+ReadOnlyPaths=%S/edge-cachyos-state
+
+[Install]
+WantedBy=default.target
