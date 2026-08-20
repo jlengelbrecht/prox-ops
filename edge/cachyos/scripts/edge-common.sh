@@ -83,10 +83,10 @@ edge_curl_opts() {
 # can tell "GPU says 0%" from "no GPU reading", which are very different facts
 # to put in a heartbeat.
 edge_gpu_sample() {
-    local raw
+    local raw parsed
     raw=$("$ROCM_SMI" --showmeminfo vram --showuse --showpids --json 2>/dev/null) || return 1
     [ -n "$raw" ] || return 1
-    printf '%s' "$raw" | jq -er --arg card "${EDGE_GPU_CARD:-}" '
+    parsed=$(printf '%s' "$raw" | jq -er --arg card "${EDGE_GPU_CARD:-}" '
         def pick($re):
             to_entries
             | map(select(.key | test($re; "i")))
@@ -108,7 +108,13 @@ edge_gpu_sample() {
               ($procs | length) ]
             | @tsv
           end
-    ' 2>/dev/null | tr '\t' ' '
+    ' 2>/dev/null | tr '\t' ' ')
+    # A filter that selected no card exits 0 with no output, which would hand
+    # callers a row of empty fields that arithmetic silently reads as zeroes —
+    # a fabricated sample, and the one thing the comment above promises this
+    # function will not do. An empty result is no reading.
+    [ -n "$parsed" ] || return 1
+    printf '%s\n' "$parsed"
 }
 
 # Static GPU identity for the heartbeat's gpu.model / gpu.arch, TAB-separated —
@@ -135,27 +141,49 @@ edge_gpu_identity() {
     ' 2>/dev/null
 }
 
-# Model ids llama-swap currently has loaded, one per line. These are RUNTIME
-# ids; translating them to catalog model_ids is the caller's job and is the
-# whole point of model-id-map.json.
+# One validated /running body, or non-zero if there was no reading at all.
 #
 # The exit status separates "llama-swap says nothing is loaded" from "llama-swap
-# did not answer", and callers depend on that: the interactive guard compares
-# compute clients against this count, so a failed query folded into zero would
-# read our own llama-server as somebody else's GPU work and withdraw a healthy
-# node. Success with no output is the empty list; non-zero means no reading.
+# did not answer", and both callers depend on that: the interactive guard
+# compares compute clients against a model count, so a failed query folded into
+# zero would read our own llama-server as somebody else's GPU work and withdraw
+# a healthy node.
 #
 # `.running` has to be present for the body to count as an answer — an error
 # page, a truncated response or a future schema change all land in the
 # no-reading branch rather than being read as an empty list.
-edge_running_models() {
+edge_running_body() {
     local body
     edge_curl_opts
     body=$(curl "${EDGE_CURL_OPTS[@]}" \
         -H "Authorization: Bearer ${EDGE_API_KEY:-}" \
         "${EDGE_ENDPOINT%/}/running" 2>/dev/null) || return 1
     printf '%s' "$body" | jq -e 'type == "object" and has("running")' >/dev/null 2>&1 || return 1
+    printf '%s' "$body"
+}
+
+# Model ids llama-swap currently SERVES, one per line — a model on its way out
+# is not one of them. These are RUNTIME ids; translating them to catalog
+# model_ids is the caller's job and is the whole point of model-id-map.json.
+# This is the heartbeat's question: which model is warm.
+edge_running_models() {
+    local body
+    body=$(edge_running_body) || return 1
     printf '%s' "$body" | jq -r '.running[]? | select(.state != "stopping") | .model' 2>/dev/null
+}
+
+# Model ids whose llama-server process is still on the card, one per line,
+# INCLUDING models in state `stopping`. This is the guard's question, and it is
+# a different one: it compares this count against the number of KFD compute
+# clients, and a model being unloaded still holds its process and its compute
+# slot for as long as llama-swap says it is stopping. Counting it as gone would
+# give compute_clients=1 against models=0 during every ordinary idle unload —
+# the node's own work read as somebody else's, and a withdrawal for the whole
+# release hold-down triggered by nothing but a model going cold on schedule.
+edge_gpu_holding_models() {
+    local body
+    body=$(edge_running_body) || return 1
+    printf '%s' "$body" | jq -r '.running[]?.model' 2>/dev/null
 }
 
 # Is the LAN-facing endpoint answering at all? /health is llama-swap's only

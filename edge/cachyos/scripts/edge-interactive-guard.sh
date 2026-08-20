@@ -100,6 +100,10 @@ mkdir -p "$EDGE_STATE_DIR"
 # where desktop_vram_mb is graphics VRAM above the measured idle baseline, and
 # models_loaded is the literal string `unknown` when llama-swap did not answer.
 #
+# models_loaded counts models that still hold their llama-server process, models
+# on their way out included, because it is compared against KFD compute clients
+# and an unloading model is still one of those.
+#
 # `unknown` rather than 0, because those are opposite facts and only one of them
 # is a reason to withdraw the node. See over_the_line().
 sample() {
@@ -110,7 +114,7 @@ sample() {
     used_mb=$((used / 1024 / 1024))
     compute_mb=$((compute / 1024 / 1024))
 
-    if running=$(edge_running_models 2>/dev/null); then
+    if running=$(edge_gpu_holding_models 2>/dev/null); then
         loaded=$(printf '%s\n' "$running" | grep -c '[^[:space:]]' || true)
     else
         loaded=unknown
