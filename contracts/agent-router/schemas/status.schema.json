@@ -408,22 +408,7 @@
             }
           },
           {
-            "description": "available and selectable stay DISTINCT, and this is where the distinction earns its keep: for a catalog-available KServe placement, eligibility follows selectability exactly. Selectable means the router may place on it, so it is eligible; not selectable means it may not, so it is not - whatever else is true. Nothing about a KServe placement varies at runtime, which is why this is decidable from the catalog fields alone here and is not for edge placements.",
-            "if": {
-              "properties": {
-                "kind": { "const": "kserve" },
-                "status": { "const": "available" },
-                "selectable": { "const": true }
-              },
-              "required": ["kind", "status", "selectable"]
-            },
-            "then": {
-              "properties": { "eligible": { "const": true } },
-              "required": ["eligible"]
-            }
-          },
-          {
-            "description": "The other half of the same rule: a catalog-available KServe placement that is NOT selectable is not eligible either.",
+            "description": "A placement the catalog does not make selectable cannot be placed on, so it is not eligible. ONE-WAY, deliberately: the converse does NOT hold, and an earlier revision of this schema asserted that it did.\n\nWHY THE CONVERSE IS WRONG. `static` says this placement has NO HEARTBEAT CHANNEL, so its STATE is CATALOG-DERIVED. It does NOT say the placement's runtime eligibility is immutable, and the two are different claims. A catalog-available, selectable KServe placement can still be ineligible right now: the node can be cordoned, the InferenceService can fail, and the router can exclude the placement itself through the AgentgatewayPolicy drain/maintenance path the README describes. The earlier justification - that nothing about a KServe placement varies at runtime - was simply untrue, and forcing eligible: true made the maintenance case unrepresentable.\n\nSo this is a VALID entry: kind kserve, status available, selectable true, state_source static, state AVAILABLE, eligible false - the router has temporarily excluded a placement whose catalog state is unchanged. Catalog facts and runtime eligibility move independently; only the direction encoded here holds in both worlds.",
             "if": {
               "properties": {
                 "kind": { "const": "kserve" },
