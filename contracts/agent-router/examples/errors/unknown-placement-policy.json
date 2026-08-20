@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": "unknown_placement_policy",
+    "message": "placement_policy \"any-24gb\" was stamped on this attempt but the loaded catalog no longer defines it; a later catalog pull request folded it into prefer-warm-local. Policies are catalog data, so they appear and disappear by pull request against the ConfigMap while this contract's enum lags by one merge - that window is exactly what this error covers. A policy name outside the contract vocabulary is a different failure: PlaceRequest.placement_policy is a closed enum, so it is rejected 400 invalid_request before any catalog lookup happens.",
+    "obligation": "re-plan",
+    "http_status": 404,
+    "endpoint": "/v1/place",
+    "details": {
+      "requested": "any-24gb",
+      "known": ["prefer-warm-local", "cluster-only", "edge-only"]
+    },
+    "catalog_version": "sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+  }
+}

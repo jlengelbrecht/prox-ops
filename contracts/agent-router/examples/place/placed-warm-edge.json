@@ -1,0 +1,29 @@
+{
+  "status": "placed",
+  "model": "qwen36-27b",
+  "placement": "cachyos-7900xtx",
+  "readiness": "warm",
+  "estimated_cold_start_s": 0,
+  "headers": {
+    "x-placement": "cachyos-7900xtx"
+  },
+  "ttl_seconds": 30,
+  "reason": {
+    "code": "placed_warm",
+    "message": "The edge node reports state AVAILABLE with qwen36-27b loaded, so it can answer with no load step. prefer-warm-local sets warm_preference: strict, which means any warm candidate beats any cold one regardless of prefer_order - so the edge wins even though kserve-a5000 is listed first."
+  },
+  "alternatives": [
+    {
+      "placement": "kserve-a5000",
+      "model": "qwen36-27b",
+      "readiness": "unknown",
+      "estimated_cold_start_s": 150,
+      "eligible": true,
+      "reason": {
+        "code": "not_selected_colder",
+        "message": "Eligible, and first in prefer_order, but not known to be warm. A strict warm preference outranks order."
+      }
+    }
+  ],
+  "catalog_version": "sha256:decafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbad"
+}

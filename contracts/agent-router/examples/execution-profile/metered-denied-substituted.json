@@ -1,0 +1,25 @@
+{
+  "harness": "devin",
+  "model_profile": "devin/free",
+  "effort": "medium",
+  "cost_class": "free",
+  "entitlement_pool": "devin-free",
+  "placement_policy": "prefer-warm-local",
+  "placement_required": false,
+  "fallbacks": [],
+  "metered": false,
+  "rationale": "Illustrative, against a hypothetical later catalog that declares a metered funding source; catalog 1.1.0 declares none, so this cannot happen today. openai/strong scored highest. In that catalog it has TWO funding candidates: openai-plus (subscription, the default) and a separately declared openai-payg (metered), reachable only with allow_metered intent AND metered-spend authorization. The openai-plus quota is exhausted for this window, so that candidate is simply unavailable - it did not turn into anything. Spillover is none: exhausting a subscription never promotes to billable spend, and no metered option was created by the exhaustion. The metered candidate exists only because the catalog independently declares openai-payg as its own funding source, with its own credential; had the catalog not declared it, the answer here would be a 409 with no billable option to withhold at all. The request carried no allow_metered, so that candidate was withheld and the best remaining non-metered option was returned. devin/free is a visible downgrade in capability, and that is the correct outcome rather than a failure (invariant 4). No fallbacks: every remaining alternative is either the withheld metered candidate or weaker than this one.",
+  "catalog_version": "sha256:cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe",
+  "catalog_document_version": "1.3.0",
+  "expires_at": "2026-08-19T15:24:30Z",
+  "metered_denied": {
+    "code": "metered_denied",
+    "message": "openai/strong scored highest. Its subscription funding source (openai-plus) is exhausted for this window and, because that pool declares spillover: none, it became unavailable rather than billable. The separately declared openai-payg funding source could have served it, but reaching a metered candidate takes allow_metered intent plus metered-spend authorization, and the request carried neither. A non-metered option was returned instead. Authorizing the spend is a human decision, per attempt.",
+    "obligation": "re-plan",
+    "withheld": {
+      "harness": "codex",
+      "model_profile": "openai/strong",
+      "cost_class": "metered"
+    }
+  }
+}

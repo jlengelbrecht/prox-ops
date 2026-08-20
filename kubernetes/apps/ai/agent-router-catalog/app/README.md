@@ -41,9 +41,16 @@ candidate as exactly `{model_id, placement}`, so `model_id` needs a referent, an
 that appears in two profiles must not be able to describe itself differently in each.
 `physical[]` entries stay exactly two keys wide, as specified.
 
+`entitlement_pools` is a sixth, added in 1.1.0 (owner ruling R17). A profile said what it
+cost but never said **where the money came from**, which is not the same question and
+cannot be derived from the first one. Without it, a consumer works out economics by
+inference - from the provider, from the harness, or worst of all from what the credential
+looks like - and every one of those inferences is wrong for at least one row in this
+catalog.
+
 Presentation order in the file is referents-before-referrers (`placements`, `models`,
-then `profiles`), which is not the order section 6 lists them in. YAML mappings are
-unordered; nothing reads meaning from it.
+`entitlement_pools`, then `profiles`), which is not the order section 6 lists them in.
+YAML mappings are unordered; nothing reads meaning from it.
 
 ### Absent keys
 
@@ -177,6 +184,56 @@ service (`qwen-tts`) and is out of scope here.
 tool-calling chat template). `qwen-coder`, `dolphin-chat` and `qwen-omni` do not have it,
 so they do not claim it.
 
+### `entitlement_pools`
+
+Keyed by pool name. A pool is a **funding source**: an entitlement the operator holds, and
+the credential used to draw on it.
+
+| field | type | notes |
+| --- | --- | --- |
+| `description` | string | required |
+| `provider` | string | required. Who is on the other end |
+| `cost_class` | enum | required. `free` \| `subscription` \| `metered`. The economics |
+| `credential_class` | string | required. The **shape and provisioning** of the secret. Never an input to a cost decision |
+| `credential_notes` | string | optional. Isolation and provisioning rules that a consumer must honour |
+| `spillover` | enum | required. `none` on every seeded pool. What happens when the entitlement runs out |
+| `spillover_notes` | string | optional |
+
+#### Billing class and credential type are independent axes
+
+This is the rule the table exists to enforce, and it is worth stating in the negative
+because the opposite heuristic is already embedded in tooling elsewhere in this estate:
+
+> **An API-key-shaped credential does not imply `cost_class: metered`.** Read economics
+> from the entitlement, never from the shape of the secret, the name of the provider, or
+> the harness that happens to be running.
+
+The seeded pools make the point on their own. `anthropic-max` and `minimax-max` are both
+`cost_class: subscription`, and their credentials could not look less alike - one is a
+signed-in subscription session, the other a provider-issued API key. MiniMax's Max Token
+Plan is a **fixed monthly subscription** that happens to be reached with a key. A consumer
+that pattern-matches on the key would bill a flat subscription as per-token spend, and
+would refuse work the operator has already paid for.
+
+The same independence runs the other way: `devin-free` is `cost_class: free` and is not a
+subscription at all, which is why this abstraction is called an **entitlement** pool
+rather than a subscription pool. A future explicitly-authorized pay-as-you-go source is a
+third shape again, and has to fit the same table without special-casing.
+
+#### Spillover, and invariant 4
+
+`spillover: none` on every seeded pool is not a default that happened to be picked. It is
+invariant 4 written as data: **exhausting an entitlement never promotes to billable
+spend.** When a pool is exhausted or unavailable it simply stops being a candidate, and
+routing falls back to another approved pool, to free, or to local compute.
+
+Specifically for MiniMax: Token Plan exhaustion **must never** spill into MiniMax
+pay-as-you-go. Those are two different credential classes for two different entitlements,
+and holding one grants nothing about the other. A pay-as-you-go path would need all three
+of a separately provisioned metered credential, `allow_metered` intent on the request, and
+independent metered-spend authorization held by the calling principal - which the ordinary
+automation principal does not have. Two of the three is a refusal.
+
 ### `profiles`
 
 Keyed by profile name. This is the only name BMAD stamps.
@@ -186,12 +243,14 @@ Keyed by profile name. This is the only name BMAD stamps.
 | `description` | string | required |
 | `cost_class` | enum | `free` \| `subscription` \| `metered` |
 | `hosting` | enum | `local` \| `vendor` |
-| `selectable` | bool | |
+| `selectable` | bool | may this profile take part in an approved execution decision? NOT "will the router pick it" - see below |
 | `capabilities` | list | the floor this profile **guarantees** |
 | `min_context` | int \| null | the context floor this profile **guarantees** |
 | `alignment` | enum | `standard` \| `unrestricted` |
 | `forbidden_for` | list | task tags this profile is never auto-selected for |
+| `entitlements` | ordered list of `{pool, cost_class}` | required. Funding candidates, first is the default |
 | `physical` | ordered list of `{model_id, placement}` | first entry is preferred |
+| `blocked_by` | list | required when `selectable: false`; what has to be true before it flips |
 | `notes` | string | optional |
 
 Semantics that are easy to get wrong:
@@ -205,6 +264,19 @@ Semantics that are easy to get wrong:
   `physical[]`. `null` means no guarantee, and a consumer must not use a null-guarantee
   profile to satisfy an explicit context requirement.
 - **`physical[]` order is the only preference expression.** There are no weights.
+- **`entitlements[]` is the funding axis, and it is a LIST for a reason.** A profile is not
+  assumed to have exactly one funding source. The first entry is the default; later entries
+  are alternatives that are reachable only under the conditions they declare. That is what
+  lets `minimax/strong` normally draw on `minimax-max` while a future `minimax-payg` entry
+  sits behind `requires: [allow_metered, metered-spend-authorization]` - one profile, one
+  model, one harness, two funding candidates, and no axis collapsed to express it. The
+  shape is shown commented out on `minimax/strong` rather than declared as data, because
+  no pay-as-you-go pool exists and declaring one would make it look approved.
+- **`profiles[].cost_class` is the cost class of the FIRST entitlement**, kept as its own
+  field because it is what a consumer reads when it only wants the default economics. It is
+  derived, not independent: the two disagreeing is a catalog bug (validation rule 19).
+- **`pool: null` is correct for local execution**, not a gap. Local compute draws on no
+  entitlement: the GPU is already paid for.
 - **`placement: null`** is correct for vendor-hosted candidates, not a gap. Placement names
   are agentgateway provider names; vendor traffic never touches agentgateway, so it has no
   placement. A local model with a null placement is an error.
@@ -217,10 +289,26 @@ Semantics that are easy to get wrong:
 refusal behaviour. Its `forbidden_for` list - `security`, `iam`, `secrets`, `prod-iac`,
 `destructive-tools` - is a minimum, extensible by catalog PR.
 
+#### What `selectable: true` means, and what it does not
+
+`selectable: true` means the profile **may participate in an approved execution decision**. It
+does **not** mean the router will auto-select it, and it is not a recommendation.
+
+`local-unrestricted` is the case that makes the distinction load-bearing: it is
+`selectable: true` and **`/v1/route` never auto-selects it**. A deliberate choice to run it
+happens outside the router - after the recommendation, before the route is stamped - and that
+choice may bypass router scoring only. It never bypasses `forbidden_for`, which stays in force
+however deliberate the choice was: **human choice is not permission to bypass that control.**
+
+The mirror case is `minimax/strong`: `selectable: false` means it may not take part in any
+execution decision at all yet, deliberate or otherwise, until its `blocked_by` list is
+satisfied.
+
 #### Vendor models
 
-`claude/strong`, `openai/strong` and `devin/free` describe work the harness does through
-its own subscription. The router does not proxy, place, or hold credentials for any of it.
+`claude/strong`, `openai/strong`, `devin/free` and `minimax/strong` describe work the
+harness does through its own entitlement. The router does not proxy, place, or hold
+credentials for any of it.
 Their `min_context` is `null` because this repository has measured nothing about vendor
 context windows and will not carry a guessed number. A real value gets in here from the
 agent-flow-kit harness registry or from the 35.16-35.18 verdicts, as a catalog PR that
@@ -235,6 +323,29 @@ Two invariants to keep in view when editing these:
 - Invariant 4 - metered API is default-deny. No seeded profile has
   `cost_class: metered`; Devin's paid on-demand tier deliberately has no profile name to
   hide behind. Billable use stays explicit, per-attempt and recorded.
+
+#### `minimax/strong`, and why MiniMax is not a harness
+
+`minimax/strong` is declared in 1.1.0 and is `selectable: false`. The name is fixed now so
+that this catalog and `contracts/agent-router/` can land together; making it selectable is
+a later story's catalog PR, once it has demonstrated everything in `blocked_by` - Token
+Plan billing rather than pay-as-you-go, Claude Code driving MiniMax M3 end to end,
+verifiable provider and model identity, tool calling, MCP compatibility, isolation from the
+normal Claude Max environment, observable quota behaviour, no automatic pay-as-you-go
+spillover, and correct fallback when MiniMax capacity is unavailable.
+
+**MiniMax gets no `harnesses` entry.** The execution path is `harness: claude` +
+`model_profile: minimax/strong`, because Claude Code reaches MiniMax through its
+Anthropic-compatible endpoint. That is the harness/model separation this catalog exists to
+preserve: a new provider is a new model and possibly a new funding pool, not automatically
+a new harness. MiniMax Code is a different harness, is not approved, and would need its own
+evaluation story.
+
+**Credential isolation is part of the contract.** The MiniMax base URL and token reach a
+MiniMax-backed worker in that worker's own process or session only. Nothing rewrites the
+machine's global Anthropic configuration; the Anthropic Max path introduces no
+`ANTHROPIC_API_KEY`; the credential lives in 1Password scoped to MiniMax-backed worker
+execution, and never in Git.
 
 ### `policies`
 
@@ -309,11 +420,29 @@ ad-hoc script when this catalog was seeded.
     `blocked_by`.
 15. Every model currently routed through the gateway appears in at least one profile.
 16. `consumers` is empty for as long as this catalog is inert.
+17. Every `profiles[].entitlements[].pool` is either `null` or a key in
+    `entitlement_pools`.
+18. Every `entitlement_pools[]` entry declares all four of `provider`, `cost_class`,
+    `credential_class` and `spillover`. A pool that omits one forces a consumer to infer
+    it, which is the failure the table exists to prevent.
+19. `profiles[].cost_class` equals the `cost_class` of the profile's FIRST
+    `entitlements[]` entry.
+20. A `hosting: local` profile has `pool: null` on every entitlement; a `hosting: vendor`
+    profile has a non-null pool on every entitlement.
+21. Any entitlement with `cost_class: metered` declares `requires` containing both
+    `allow_metered` and `metered-spend-authorization`. No seeded entitlement is metered.
+22. A profile with `selectable: false` has a non-empty `blocked_by`.
+23. Every seeded pool has `spillover: none`. Anything else is invariant 4 leaking.
 
 ## Versioning
 
 `version` is the catalog document version (semver) and `schema_version` is the structural
 version. They move independently:
+
+1.1.0 was exactly this shape: a new table, a new per-profile field, a new model and a new
+non-selectable profile. Additive, nothing removed or re-typed, so `schema_version` stayed
+1 - a consumer written against 1.0.0 still parses this document, it just cannot see the
+funding axis.
 
 - data-only change (a model swapped behind a profile, a measurement filled in): patch or
   minor `version` bump, `schema_version` unchanged;
@@ -361,6 +490,8 @@ Adding a placement is a Git change by design (section 10a). Renaming one is brea
 | Measured `capacity.vram_gb` for the edge placements | 35.6, 35.13, 35.14 |
 | Whether harness-to-profile reachability needs a field (a cloud harness reaching a LAN-only gateway is unproven) | 35.10 |
 | Whether the validation rules above become an executable check in CI | 35.9 |
+| Physical validation of `minimax/strong` against everything in its `blocked_by`, then a catalog PR flipping `selectable` and adding any capability it demonstrates | its own story |
+| Whether a pay-as-you-go entitlement pool is ever wanted, and under whose authorization | not scheduled; needs an owner decision, not a catalog PR |
 
 ## Sources
 

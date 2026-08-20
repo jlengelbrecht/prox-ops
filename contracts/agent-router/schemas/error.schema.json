@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Error",
+  "description": "The single error envelope for every agent-router error response. One shape for all four endpoints, so a client writes one error handler.\n\nEvery error carries the caller's OBLIGATION as a machine-readable field rather than leaving it to be inferred from the status code. That is the whole point of this envelope: a client that retries a 409 catalog_version_stale forever, or aborts on a 503 catalog_unavailable that would have cleared in two seconds, is a client that read the number and not the contract.\n\nNOT EVERY FAILURE IS AN ERROR ENVELOPE. `no_eligible_placement` is answered as an HTTP 200 PlaceResult with status: unavailable, deliberately - see README 'Error taxonomy'. It is not in this enum, and a client must not wait for a 4xx to discover that nothing is available.\n\nThis schema is an addition to the layout story 35.2 required. It exists so the error examples are mechanically validated like every other example, rather than being prose in a README that nothing checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["error"],
+  "properties": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "obligation", "http_status"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "invalid_request",
+            "unauthenticated",
+            "node_identity_mismatch",
+            "unknown_profile",
+            "unknown_placement_policy",
+            "metered_authorization_required",
+            "catalog_version_stale",
+            "metered_denied",
+            "no_eligible_profile",
+            "rate_limited",
+            "catalog_unavailable",
+            "catalog_schema_unsupported",
+            "internal_error"
+          ],
+          "description": "Machine-readable error code. Stable across versions: a code is never re-pointed at a different condition, only added or (with a major bump) removed. Full taxonomy with per-endpoint applicability in README 'Error taxonomy'.\n\nTwo of these separate cases that would otherwise be conflated:\n\nmetered_authorization_required (403, on /v1/route) - the request carried allow_metered: true but the AUTHENTICATED CALLER does not hold authority to approve billable spend. The flag is intent; authority is a property of the principal. The ordinary automation principal does not have it, so the flag alone can never buy a billable candidate. Distinct from metered_denied, which is the answer when no authorization was claimed at all.\n\ncatalog_schema_unsupported (503) - the router loaded a catalog whose structural schema_version it does not implement and refused it rather than best-effort parsing an unknown shape. PERMANENT: it will not clear on retry, only on an operator deploying a router that understands the catalog or reverting the catalog. Split out of catalog_unavailable, which is now strictly the transient 'no catalog loaded yet' state, because one obligation is retry and the other is abort and a client cannot be asked to guess which it got."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable explanation. Safe to log and to show an operator. Never contains credentials, bearer tokens, or the contents of a heartbeat's runtime.endpoint."
+        },
+        "obligation": {
+          "type": "string",
+          "enum": ["retry", "re-plan", "abort"],
+          "description": "What the caller must do next.\n\nretry - the same request may succeed unchanged; back off first, and honour retry_after_seconds when present. Both /v1/route and /v1/place are side-effect free and safe to retry.\nre-plan - the request as framed cannot be served; the caller must go back a step (call /v1/route again, relax a constraint, or obtain human authorization) and issue a DIFFERENT request. Re-sending the identical request is a loop.\n\n`metered_denied` is re-plan on BOTH its carriers - the in-band note and the 409 - because there genuinely is a way forward and it is a different request: one carrying explicit human metered intent, submitted by a principal that independently holds metered-spend authority. Needing two things does not make it abort; it makes it a request this caller cannot form on its own. What re-plan never licenses is the same request resent with allow_metered set automatically, which is 403 metered_authorization_required and not a route decision.\nabort - retrying cannot help, because nothing the caller controls would change the answer: it is wrong, it is unauthorized, or the condition needs an operator. Fail the attempt and surface it. Do not work around it - `metered_authorization_required` in particular must never be worked around by retrying under a different credential, and `unauthenticated` must not be retried with the credential that was just rejected."
+        },
+        "http_status": {
+          "type": "integer",
+          "minimum": 400,
+          "maximum": 599,
+          "description": "The HTTP status this envelope was served with. Duplicated into the body on purpose: these documents are also the committed fixtures, and a fixture that does not state its own status is not self-describing enough to test against."
+        },
+        "endpoint": {
+          "type": "string",
+          "enum": ["/v1/route", "/v1/place", "/v1/capacity/heartbeat", "/v1/status"],
+          "description": "Optional. Which endpoint produced this error; useful in fixtures and logs."
+        },
+        "details": {
+          "type": "object",
+          "description": "Optional, code-specific context. Open-ended by design so a code can gain detail without a contract bump, but never a place to hide a second error code - the `code` field is the only machine-readable discriminator.",
+          "properties": {
+            "field": {
+              "type": "string",
+              "description": "For invalid_request: the offending request field, in dotted path form."
+            },
+            "requested": {
+              "type": "string",
+              "description": "For unknown_profile / unknown_placement_policy: the value the caller sent."
+            },
+            "known": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "For unknown_profile / unknown_placement_policy: the names that do exist in the loaded catalog, so a caller can report the mismatch without a second round trip."
+            },
+            "expected_catalog_version": {
+              "type": "string",
+              "description": "For catalog_version_stale: the digest the router is actually serving."
+            },
+            "received_catalog_version": {
+              "type": "string",
+              "description": "For catalog_version_stale: the digest the caller asserted."
+            },
+            "received_catalog_schema_version": {
+              "type": "integer",
+              "description": "For catalog_schema_unsupported: the structural schema_version the mounted catalog declares."
+            },
+            "supported_catalog_schema_version": {
+              "type": "integer",
+              "description": "For catalog_schema_unsupported: the structural schema_version this router build implements. The pair tells an operator which side has to move."
+            },
+            "node": {
+              "type": "string",
+              "description": "For node_identity_mismatch: the node id the payload claimed. The identity the CREDENTIAL is bound to is deliberately not echoed back - telling an unauthenticated caller which node its token belongs to is a disclosure, and R9's threat model assumes edge credentials can be stolen."
+            },
+            "withheld": {
+              "$ref": "./execution-profile.schema.json#/$defs/metered_denied/properties/withheld",
+              "description": "For metered_denied with no non-metered alternative, and for metered_authorization_required: the metered option that was withheld. It names what a caller with the right authority would have been given, which is what the human deciding needs to see.\n\nThe SAME schema as ExecutionProfile.metered_denied.withheld, by reference rather than by restatement. Two carriers of one condition - the in-band note and this envelope - had two definitions of the withheld candidate, and the loose one accepted an empty object or arbitrary keys. A fixture is only worth committing if it cannot drift from the shape it claims to illustrate."
+            }
+          }
+        },
+        "retry_after_seconds": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Optional. Present when obligation is `retry` and the router can say how long to wait; mirrors the Retry-After header. null or absent means the caller picks its own backoff."
+        },
+        "catalog_version": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Optional. The catalog digest the router is serving, when it has one loaded. Absent on catalog_unavailable, which is precisely the case where it has none."
+        }
+      }
+    }
+  }
+}

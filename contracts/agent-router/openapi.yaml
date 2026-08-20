@@ -1,0 +1,1065 @@
+---
+# agent-router API v1 - SPECIFICATION ONLY.
+#
+# There is no implementation of this API. There is no Deployment, no container
+# and no handler code anywhere in this repository, and this story does not add
+# one: the point of writing the contract first is that it cannot be shaped by
+# whatever the first implementation happened to find easy. The service arrives
+# in stories 35.9 (status + heartbeat), 35.10 (/v1/route) and 35.11 (/v1/place).
+#
+# Schema files under schemas/ are the single source of truth for the four
+# payload shapes; this document references them rather than restating them, so
+# the two cannot drift.
+#
+# Story: STORY-035-2. Epic: EPIC-035 sections 4, 5, 10a, 10b, 10d.
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+
+info:
+  title: agent-router API
+  version: 1.0.0
+  summary: >-
+    Planning-time and dispatch-time control plane for agent execution: which
+    harness and model profile a task should run under, and which physical GPU
+    should serve it.
+  description: |
+    `agent-router` answers two questions and reports on a third.
+
+    - `POST /v1/route` - at planning time, given task metadata, which harness,
+      model profile and effort should this attempt use, and what does it cost?
+      The answer is stamped immutably into story frontmatter.
+    - `POST /v1/place` - at dispatch time, given a stamped profile, which
+      physical placement should serve it right now?
+    - `POST /v1/capacity/heartbeat` and `GET /v1/status` - what compute exists,
+      what state is it in, and what is loaded on it?
+
+    ## What this service is not
+
+    It **never proxies inference and never sits in the request path.** A caller
+    receives names - a model profile, a placement - and reaches the model
+    through agentgateway, which is the only model ingress (invariant 5).
+    Nothing here returns a URL to call.
+
+    It **never mutates Flux-managed gateway configuration.** Gateway topology
+    is Git-managed and stays that way; the router expresses placement per
+    request through the `x-placement` header, not by rewriting CRs.
+
+    It **introduces no CRD.** Catalog data lives in a Git-managed ConfigMap
+    until a concrete requirement forces otherwise, and that requirement gets
+    written down when it appears (invariant 11).
+
+    It **holds no persistent state.** Capacity is in-memory; a restart
+    re-learns it within one heartbeat interval. The only durable input is the
+    Git catalog.
+
+    ## Three axes, kept apart
+
+    Harness, model/capability profile and physical placement are three
+    independent axes (invariant 1) and no field in this API collapses two of
+    them. `/v1/route` decides the first two; `/v1/place` decides the third.
+    Resolving the same profile onto a different compatible GPU at dispatch time
+    is legitimate; substituting a different model is not (invariant 3).
+
+    ## Authority and enforcement
+
+    `/v1/place` returns a **binding recommendation with a safe default**. The
+    caller expresses it as `x-placement` on its gateway request. It is not
+    enforceable at the gateway - nothing stops a client calling agentgateway
+    without ever asking the router - so a missing, unknown or stale
+    `x-placement` must fall through to a grouped backend and get gateway-side
+    selection rather than an error. "You must ask the router" is a policy
+    enforced at the client/dispatcher layer.
+
+    `x-placement` is a **scheduling signal only** (owner ruling R5). It carries
+    no authorization meaning. Model authorization stays where it is: the
+    per-model CEL policy binding the request body's model to the routed backend
+    model.
+
+    ## Transport
+
+    Normative, and not a deployment detail: **every endpoint here is bearer
+    authenticated, so every path that is not pod-to-pod inside the cluster is
+    TLS or it does not ship.** That covers `POST /v1/capacity/heartbeat`
+    without exception - an edge worker is off-cluster by definition and its
+    per-node credential is long-lived, so plaintext there puts a stealable
+    withdraw-any-placement credential on the wire.
+
+    The requirement is the edge worker contract's rule R4 posture, applied in
+    the other direction (edge to router rather than gateway to edge):
+
+    - HTTPS, with no plaintext fallback, even inside the VLAN trust boundary.
+    - A certificate chaining to a real CA (`basicConstraints: CA:TRUE`); a
+      self-signed leaf used as its own anchor is not a CA.
+    - The certificate's SAN matches the hostname the client connects to. Use
+      the hostname form, never a bare address.
+    - No `insecureSkipVerify`, in any client, in any environment that is not a
+      developer's own laptop. It was proven to work in the 35.4 spike and must
+      not ship: it turns the CA into decoration.
+    - A dedicated key and certificate. Never the cluster wildcard's private key.
+
+    The plaintext `http://` server below exists for in-cluster callers only and
+    is scoped to that in its own description.
+
+    ## Economics: what it costs, and who is paying
+
+    Two fields, two different questions, and neither is derivable from the
+    other. `cost_class` is the economics of the ACTUAL ATTEMPT.
+    `entitlement_pool` is WHICH quota, subscription or funding source backs
+    it - `null` for local execution, which draws on none because the GPU is
+    already paid for.
+
+    Together they let a dispatcher select the correct ISOLATED provider
+    credential environment before an attempt starts, without inferring
+    billing or provider behaviour from the harness or from the shape of a
+    credential. Both inferences are wrong here: `claude` runs against
+    Anthropic Max on one attempt and MiniMax on another, and -
+
+    **Billing class and credential type are independent axes** (owner ruling
+    R16). A pool's economics are a fact about the ENTITLEMENT the operator
+    holds; the credential is a fact about the SHAPE of the secret used to
+    reach it. Neither implies the other. MiniMax's Max Token Plan is a FIXED
+    MONTHLY SUBSCRIPTION reached with a provider-issued, API-KEY-SHAPED
+    credential, so "it looks like an API key, therefore it is metered" is
+    **wrong by construction** - it bills a flat subscription as per-token
+    spend and refuses work already paid for. That heuristic is embedded in
+    tooling elsewhere in this estate; nothing built from this contract may
+    adopt it.
+
+    **Invariant 4 across pools.** Exhausting an entitlement never promotes to
+    billable spend. Every pool the catalog seeds declares `spillover: none`,
+    so an exhausted pool stops being a candidate and routing falls back to
+    another approved pool, to free, or to local. MiniMax Token Plan
+    exhaustion in particular must never spill into MiniMax pay-as-you-go:
+    different credential class, different entitlement, and holding one grants
+    nothing about the other. A metered path needs all three of a separately
+    provisioned metered credential, `allow_metered` intent, and independent
+    metered-spend authorization.
+
+    ## MiniMax is a model, not a harness
+
+    The first supported MiniMax path is `harness: claude` +
+    `model_profile: minimax/strong`, because Claude Code reaches MiniMax
+    through its Anthropic-compatible endpoint. The harness enum stays
+    `claude|codex|devin`: a new provider is a new model and possibly a new
+    funding pool, never automatically a new harness. This is exactly the
+    separation of axes the contract exists to preserve. MiniMax Code is a
+    different harness, is not approved, and would be evaluated on its own.
+
+    `minimax/strong` is in the profile vocabulary and is `selectable: false`
+    in catalog 1.1.0, so the router must not emit it until a later story has
+    validated it physically. The credential reaches a MiniMax-backed worker
+    in that worker's own process or session only - nothing rewrites the
+    machine's global Anthropic configuration, the Anthropic Max path keeps no
+    `ANTHROPIC_API_KEY`, and the secret lives in 1Password rather than Git.
+
+    ## Vocabulary
+
+    Harness names, profile names, placement names, policy names and
+    entitlement pool names are read verbatim from ConfigMap
+    `ai/agent-router-catalog`, catalog document version 1.1.0. See README "Vocabulary coupling" for what has to change together.
+  contact:
+    name: prox-ops
+    url: https://github.com/jlengelbrecht/prox-ops
+
+servers:
+  - url: http://agent-router.ai.svc.cluster.local:{port}
+    description: >-
+      In-cluster ClusterIP Service in namespace `ai`. Plaintext is permitted on
+      THIS path only - pod-to-pod traffic inside the cluster, never leaving it.
+      Callers outside the cluster, the edge heartbeat included, use the TLS
+      server below; see the "Transport" section of the API description, which is
+      normative.
+    variables:
+      port:
+        default: "8080"
+        description: Listen port, fixed by story 35.9.
+  - url: https://{edge_host}
+    description: >-
+      TLS-terminated path for every caller that is not a pod in this cluster.
+      Mandatory for `POST /v1/capacity/heartbeat`, which originates off-cluster
+      by definition. The hostname is provisioned with the certificate; it is not
+      fixed by this contract, and no LAN address appears here.
+    variables:
+      edge_host:
+        default: agent-router.<lan-domain>
+        description: >-
+          DNS name the certificate is issued for. Supplied by the story that
+          provisions the exposure; the placeholder is not a resolvable name.
+
+tags:
+  - name: routing
+    description: Planning-time and dispatch-time decisions.
+  - name: capacity
+    description: Edge worker capacity reporting.
+  - name: introspection
+    description: Read-only view of catalog and capacity.
+
+security:
+  - callerBearer: []
+
+paths:
+  /v1/route:
+    post:
+      operationId: route
+      tags: [routing]
+      summary: Decide harness, model profile and effort for a task.
+      description: |
+        Planning-time decision. Takes story/task metadata and returns an
+        `ExecutionProfile` that is stamped IMMUTABLY into story frontmatter
+        (invariant 2). A worker may not re-choose its model mid-attempt;
+        re-routing is a new attempt with a new call here.
+
+        **Metered is default-deny (invariant 4).** If the best option would
+        spend billable budget and the request did not set `allow_metered: true`,
+        the router does not return it. It returns the best non-metered option
+        with a `metered_denied` note (HTTP 200), or - when no non-metered option
+        exists - HTTP 409 `metered_denied` with no profile at all. It never
+        returns the metered choice with a warning attached, and a client that
+        reacts by resending with `allow_metered: true` has defeated the control:
+        that authorization is a human decision, per attempt, and is recorded.
+
+        **`allow_metered: true` is intent, not authority.** The flag asks for a
+        billable candidate to be considered; whether one may be returned
+        depends on the AUTHENTICATED CALLER independently holding permission to
+        approve billable spend. The ordinary automation principal - the
+        dispatcher that plans and stamps stories, and every machine caller like
+        it - does not hold it, and a request from one carrying the flag is
+        answered `403 metered_authorization_required`, not served. A control a
+        client can grant itself is not a control.
+
+        **`placement_required` on the response tells the client what to do
+        next.** True means the profile is local and the client must call
+        `/v1/place` and send the returned `x-placement`; false means it is
+        vendor-hosted, resolved by the harness, and the client launches the
+        harness directly. Without the field a client has to keep its own copy of
+        which profiles are local, or guess from the name prefix - both of which
+        go stale silently when the catalog moves.
+
+        **`local-agent` is never emitted** (invariant 16). It is a reserved,
+        unsupported harness value; the catalog marks it `refuse-to-emit` and the
+        response schema's harness enum cannot express it.
+
+        Side-effect free and safe to retry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteRequest'
+            examples:
+              contained-code-change:
+                summary: Low-risk single-module change
+                description: Yields examples/execution-profile/local-code-standard.json.
+                value:
+                  story_id: STORY-034-19
+                  title: Add a DNS record for the gateway hostname
+                  summary: >-
+                    Add the missing LAN DNS record so the gateway hostname
+                    resolves without a --resolve override. One manifest, one
+                    test.
+                  touched_paths:
+                    - kubernetes/apps/network/
+                  ambiguity: low
+                  blast_radius: low
+                  context_size: 12000
+                  volume_hint: low
+                  tags: [iac]
+                  repo: prox-ops
+                  requester: bmad-pm
+              security-tagged:
+                summary: Security-tagged work, hard-excludes the unrestricted profile
+                description: Yields examples/execution-profile/security-tagged-excludes-unrestricted.json.
+                value:
+                  story_id: STORY-035-21
+                  title: Implement machine identity and tool-level authz
+                  summary: >-
+                    Autonomous workers authenticate as themselves to federated
+                    MCP and see only their permitted tools.
+                  touched_paths:
+                    - kubernetes/apps/mcp/
+                  ambiguity: high
+                  blast_radius: critical
+                  context_size: 90000
+                  volume_hint: high
+                  tags: [security, iam, secrets]
+                  repo: prox-ops
+                  requester: bmad-pm
+              metered-not-authorized:
+                summary: No allow_metered, so a billable option is withheld
+                description: Yields examples/execution-profile/metered-denied-substituted.json.
+                value:
+                  story_id: STORY-035-15
+                  title: Cross-hardware benchmark matrix
+                  summary: Same metric set across every placement, one committed table.
+                  ambiguity: medium
+                  blast_radius: low
+                  context_size: 40000
+                  volume_hint: high
+                  tags: [docs]
+                  repo: prox-ops
+                  requester: bmad-pm
+                  allow_metered: false
+      responses:
+        '200':
+          description: |
+            A decision. Carries a `metered_denied` note when a billable option
+            was withheld and this is the best remaining non-metered one.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionProfile'
+              examples:
+                local-code-standard:
+                  summary: Free local profile, two fallbacks
+                  externalValue: ./examples/execution-profile/local-code-standard.json
+                security-tagged:
+                  summary: Unrestricted profile hard-excluded by tags
+                  externalValue: ./examples/execution-profile/security-tagged-excludes-unrestricted.json
+                metered-denied:
+                  summary: Billable option withheld, non-metered substitute returned
+                  externalValue: ./examples/execution-profile/metered-denied-substituted.json
+                docs-low-risk:
+                  summary: Cheapest local profile, no fallbacks on purpose
+                  externalValue: ./examples/execution-profile/docs-low-risk-cluster-only.json
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: |
+            The request set `allow_metered: true` but this caller is not
+            authorized to approve billable spend. Nothing was returned and
+            nothing was spent. The caller's obligation is to escalate to a
+            principal that holds the authority - never to retry, and never to
+            retry under a different credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                metered-authorization-required:
+                  summary: Metered intent from a principal without metered authority
+                  externalValue: ./examples/errors/metered-authorization-required.json
+        '409':
+          description: |
+            The request cannot be served as framed. `metered_denied` when every
+            option is billable and none was authorized; `no_eligible_profile`
+            when nothing satisfies the constraints; `catalog_version_stale` when
+            the caller pinned a catalog the router is no longer serving.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                metered-denied:
+                  externalValue: ./examples/errors/metered-denied-no-alternative.json
+                no-eligible-profile:
+                  externalValue: ./examples/errors/no-eligible-profile.json
+                catalog-version-stale:
+                  externalValue: ./examples/errors/catalog-version-stale.json
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/CatalogUnavailable'
+
+  /v1/place:
+    post:
+      operationId: place
+      tags: [routing]
+      summary: Resolve a stamped profile onto physical compute.
+      description: |
+        Dispatch-time decision. Takes the `model_profile` and
+        `placement_policy` that `/v1/route` stamped, and resolves them against
+        live capacity.
+
+        **Called only when the stamped profile carries
+        `placement_required: true`.** A vendor-hosted profile is resolved by the
+        harness and never touches agentgateway, so there is no placement to
+        make and this call would be a wasted round trip.
+
+        Returns a placement NAME, never an endpoint. The caller sets
+        `x-placement` on its agentgateway request and the gateway does the rest.
+        Handing back a URL would make the heartbeat's `runtime.endpoint` an
+        authoritative routing target, which owner ruling R9 forbids: a
+        compromised edge heartbeat credential must not be able to redirect
+        inference traffic by advertising an arbitrary endpoint.
+
+        **An empty result is HTTP 200, not an error.** When nothing is
+        eligible, the response is a `PlaceResult` with `status: "unavailable"`,
+        a null placement, no headers, and a reason. The caller MUST NOT dispatch
+        the inference request. This is deliberate: a policy that resolves to
+        nothing must produce an explicit empty result and must never fall
+        through to a placement the caller did not ask for - and an error status
+        would carry neither the reason nor the rejected candidates. See README
+        "Error taxonomy".
+
+        Side-effect free and safe to retry. The router does NOT probe placements
+        to answer this call; nothing here may wake a scale-to-zero KServe model
+        (invariant 7, and 35.5 case 14).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaceRequest'
+            examples:
+              stamped-profile:
+                summary: Resolve the profile a story was stamped with
+                value:
+                  model_profile: local-code-standard
+                  placement_policy: prefer-warm-local
+                  catalog_version: sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a
+              large-context:
+                summary: Request too large for same-request failover
+                description: >-
+                  estimated_request_bytes above 64 KiB tells the router the
+                  gateway cannot replay this request onto a fallback provider,
+                  so it should place conservatively rather than rely on the
+                  safety net.
+                value:
+                  model_profile: local-code-standard
+                  placement_policy: prefer-warm-local
+                  estimated_request_bytes: 180000
+              excluded-placement:
+                summary: Caller excludes a placement it already failed against
+                value:
+                  model_profile: local-general
+                  placement_policy: any-24gb
+                  exclude: [cachyos-7900xtx]
+                  min_free_vram_gb: 18
+      responses:
+        '200':
+          description: |
+            A placement, or an explicit empty result. Check `status` before
+            dispatching: `unavailable` means do not send the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaceResult'
+              examples:
+                placed-kserve:
+                  summary: Today's answer - the only candidate that exists
+                  externalValue: ./examples/place/placed-kserve-only-candidate.json
+                placed-warm-edge:
+                  summary: Warm edge beats cold cluster under a strict warm preference
+                  externalValue: ./examples/place/placed-warm-edge.json
+                unavailable-policy:
+                  summary: Policy names only placements that cannot resolve today
+                  externalValue: ./examples/place/unavailable-policy-edge-only.json
+                unavailable-withdrawn:
+                  summary: Every candidate has withdrawn itself
+                  externalValue: ./examples/place/unavailable-all-withdrawn.json
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: |
+            The request names a profile or policy that IS in this contract's
+            vocabulary but is not in the loaded catalog - the catalog dropped or
+            renamed it after the attempt was stamped, and this contract has not
+            caught up yet. That gap between two merges is the whole 404
+            condition.
+
+            A name outside the vocabulary never gets this far: both fields are
+            closed enums, so an unrecognised value is `400 invalid_request` at
+            request validation. Keeping the enums closed is deliberate - it is
+            what lets a typo fail loudly at the schema instead of arriving here
+            disguised as a catalog drift.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unknown-profile:
+                  externalValue: ./examples/errors/unknown-profile.json
+                unknown-placement-policy:
+                  externalValue: ./examples/errors/unknown-placement-policy.json
+        '409':
+          description: The caller pinned a catalog version the router is no longer serving.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                catalog-version-stale:
+                  externalValue: ./examples/errors/catalog-version-stale.json
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/CatalogUnavailable'
+
+  /v1/capacity/heartbeat:
+    post:
+      operationId: heartbeat
+      tags: [capacity]
+      summary: Report edge worker capacity and state.
+      description: |
+        Edge to router. The body is the Edge Worker Contract's heartbeat
+        payload (`edge/EDGE-WORKER-CONTRACT.md` section 1), unchanged.
+
+        Authentication is a per-node bearer credential, and it is bound to the
+        `node` field: a valid credential presenting a different node id is
+        rejected 403 `node_identity_mismatch`, because a credential that could
+        heartbeat as any node could withdraw a healthy placement or keep a dead
+        one advertised.
+
+        **TLS is required on this path, always.** An edge worker is off-cluster
+        by definition, and the credential it presents is long-lived, so this
+        call uses the `https://` server and the transport rules in the API
+        description above. There is no plaintext variant of the edge heartbeat.
+
+        **A heartbeat may narrow static authority; it may never expand it:**
+
+            effective capability = Git/catalog authority INTERSECT heartbeat observation
+
+        The payload is an observation, and observations subtract. A node can
+        report itself busy, drained, cold or short of VRAM, and the router acts
+        on that at once. It cannot report itself INTO a model, a capability, a
+        context size or any other authority the Git-managed catalog does not
+        already give that placement. `active_model` counts as warm only when
+        that model is catalog-authorized for the placement; a claim with no
+        catalog counterpart is a reconciliation alarm and is ignored for
+        eligibility. This is not a model-authorization bypass either way -
+        authorization is the per-model CEL policy, which never reads a
+        heartbeat - but an unbounded self-report would let a compromised node
+        bias placement toward itself, and placement integrity is worth
+        defending on its own.
+
+        **State ownership is local.** The host decides its own state; the
+        cluster never forces a node into `SERVING`. The response acknowledges
+        what the router recorded and tells the node how often to report - it is
+        not a command.
+
+        **A router-side failure never ends the heartbeat loop.** Recording a
+        self-reported state needs no catalog, so this endpoint returns only the
+        transient `catalog_unavailable` and never the permanent
+        `catalog_schema_unsupported`: an `abort` obligation aimed at an edge
+        node means "stop reporting", and a node that obeyed it would stay
+        invisible after an operator had fixed the router. The loop terminates
+        only on a failure the node itself has to fix - a rejected credential, a
+        node identity that is not its own.
+
+        This is withdrawal mechanism 1 of 3 (see README "Withdrawal
+        semantics"): `state: INTERACTIVE` or `DRAINING` marks the placement
+        ineligible immediately, on receipt, with no timeout involved.
+      security:
+        - edgeNodeBearer: []
+      # TLS ONLY, mechanically. The top-level `servers` list carries a
+      # plaintext ClusterIP entry for in-cluster callers, and an operation
+      # inherits that list unless it overrides it. This endpoint is called
+      # from OFF-CLUSTER by definition, with a long-lived per-node
+      # credential, so it overrides: a generated client for this operation
+      # can only be pointed at the TLS server, and the plaintext one is not
+      # an option it is offered. Prose saying "use HTTPS here" is not the
+      # same thing.
+      servers:
+        - url: https://{edge_host}
+          description: >-
+            The only server this operation may be called on. See "Transport"
+            in the API description for the certificate requirements: real CA,
+            hostname SAN, no insecureSkipVerify, dedicated key.
+          variables:
+            edge_host:
+              default: agent-router.<lan-domain>
+              description: >-
+                DNS name the certificate is issued for, provisioned with it.
+                The placeholder is not a resolvable name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Heartbeat'
+            examples:
+              available:
+                summary: Idle, model warm
+                externalValue: ./examples/heartbeat/state-available.json
+              serving:
+                summary: Handling inference
+                externalValue: ./examples/heartbeat/state-serving.json
+              draining:
+                summary: Finishing in-flight work, refusing new
+                externalValue: ./examples/heartbeat/state-draining.json
+              interactive:
+                summary: A human has claimed the GPU
+                externalValue: ./examples/heartbeat/state-interactive.json
+              offline:
+                summary: Explicit self-report before shutdown
+                externalValue: ./examples/heartbeat/state-offline.json
+              unmeasured-laptop:
+                summary: Unmeasured hardware on battery
+                externalValue: ./examples/heartbeat/unmeasured-laptop-on-battery.json
+      responses:
+        '202':
+          description: |
+            Recorded. `eligible_for_placement` is the router's answer to what
+            the node just reported, so a node can see immediately that it has
+            been taken out of the selection path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatAck'
+              examples:
+                accepted:
+                  summary: Available node, still eligible
+                  value:
+                    accepted: true
+                    node: <edge-node-1>
+                    observed_state: AVAILABLE
+                    eligible_for_placement: true
+                    next_heartbeat_after_seconds: 30
+                    offline_after_seconds: 90
+                    catalog_version: sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a
+                withdrawn:
+                  summary: Interactive node, marked ineligible on receipt
+                  value:
+                    accepted: true
+                    node: <edge-node-1>
+                    observed_state: INTERACTIVE
+                    eligible_for_placement: false
+                    next_heartbeat_after_seconds: 30
+                    offline_after_seconds: 90
+                    catalog_version: sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          description: Missing or invalid bearer credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                unauthenticated:
+                  externalValue: ./examples/errors/heartbeat-unauthenticated.json
+        '403':
+          description: >-
+            The credential is valid but is not bound to the node named in the
+            payload. The heartbeat is discarded; no capacity state changes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                node-identity-mismatch:
+                  externalValue: ./examples/errors/heartbeat-node-identity-mismatch.json
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: >-
+            The router cannot record capacity right now. Only the TRANSIENT
+            `catalog_unavailable` is served here - never
+            `catalog_schema_unsupported`, whose `abort` obligation would tell a
+            node to stop reporting for good over a condition on the router's
+            side of the wire. Back off and heartbeat again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                catalog-unavailable:
+                  summary: Transient - retry on the next interval
+                  externalValue: ./examples/errors/catalog-unavailable.json
+
+  /v1/status:
+    get:
+      operationId: status
+      tags: [introspection]
+      summary: Catalog, compute providers, health and warm-model state.
+      description: |
+        The router's whole read surface: profiles to physical models to
+        eligible placements, plus each placement's state, readiness and last
+        heartbeat. JSON is the contract; an HTML rendering may be added later
+        without a contract change.
+
+        Each edge placement re-exposes its most recent heartbeat VERBATIM in
+        the Edge Worker Contract's own shape, so there is exactly one heartbeat
+        shape in this contract rather than a second one to drift from it.
+
+        `runtime.endpoint` is visible here because this is a status surface and
+        R9 makes that field observational metadata. Reading it is its purpose.
+        Routing on it is forbidden - for the router, and for every consumer of
+        this response.
+
+        Answering this call never probes anything. A KServe placement reports
+        `readiness: "unknown"` rather than being pinged, because a status
+        endpoint that woke predictors to fill a field in would be exactly the
+        mechanism invariant 7 forbids.
+      responses:
+        '200':
+          description: Current catalog and capacity view.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+              examples:
+                today:
+                  summary: Catalog 1.1.0 as it stands - one usable placement
+                  externalValue: ./examples/status/status-today.json
+                with-edge:
+                  summary: Illustrative - the same view once an edge node heartbeats
+                  externalValue: ./examples/status/status-with-edge.json
+                restarted-unseen:
+                  summary: >-
+                    Illustrative - seconds after a router restart. The edge node
+                    is enrolled and may well be healthy, but nothing has been
+                    observed yet, so it is `unseen` and not eligible. Read with
+                    `capacity_state: learning`, which is what makes an
+                    unavailable answer provisional rather than final.
+                  externalValue: ./examples/status/status-restarted-unseen.json
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: >-
+            No usable catalog is loaded - either none yet
+            (`catalog_unavailable`, transient, retry) or one the router refused
+            because its `schema_version` major is not implemented
+            (`catalog_schema_unsupported`, permanent, abort). It refuses rather
+            than best-effort parsing an unknown shape.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                catalog-unavailable:
+                  summary: Transient - nothing loaded yet, retry
+                  externalValue: ./examples/errors/catalog-unavailable.json
+                catalog-schema-unsupported:
+                  summary: Permanent - unimplemented catalog schema_version, abort
+                  externalValue: ./examples/errors/catalog-schema-unsupported.json
+
+components:
+  securitySchemes:
+    callerBearer:
+      type: http
+      scheme: bearer
+      description: >-
+        Caller credential for planning and dispatch clients (the BMAD
+        dispatcher, an operator, a conformance client). Distinct from the edge
+        node credential: a client that can ask for a placement must not be able
+        to report capacity.
+    edgeNodeBearer:
+      type: http
+      scheme: bearer
+      description: >-
+        Per-node edge credential, bound to one `node` identifier. Provisioned
+        from 1Password - `ExternalSecret` cluster-side, `op read` host-side -
+        and never committed. Presenting it for a different node is 403, not a
+        silent accept. It is long-lived and it travels off-cluster, so it is
+        only ever sent over TLS: see "Transport" in the API description.
+
+  schemas:
+    ExecutionProfile:
+      $ref: './schemas/execution-profile.schema.json'
+    Heartbeat:
+      $ref: './schemas/heartbeat.schema.json'
+    PlaceResult:
+      $ref: './schemas/place-result.schema.json'
+    StatusResponse:
+      $ref: './schemas/status.schema.json'
+    Error:
+      $ref: './schemas/error.schema.json'
+
+    RouteRequest:
+      type: object
+      additionalProperties: false
+      required: [story_id, title, ambiguity, blast_radius]
+      description: |
+        Task metadata. Everything here is a planning-time signal; none of it
+        names a model, a harness or a placement, because choosing those is what
+        the endpoint is for.
+
+        **This shape is closed on purpose, and the omission is the design.**
+        `/v1/route` is RECOMMENDATION-ONLY: it takes task, context and policy
+        inputs and returns what the router recommends. There is no field here
+        for a caller-named `harness` or `model_profile`, and there is not going
+        to be one - a caller cannot use this endpoint to tell the router what
+        answer to return. An override field would make the recommendation
+        indistinguishable from the instruction in the router's own response and
+        logs, losing the record of what was recommended exactly when it matters.
+
+        Deliberate operator choice happens OUTSIDE the router - after the
+        recommendation, before the route is stamped - and it may bypass router
+        scoring ONLY, never `forbidden_for`, entitlement and billing
+        restrictions, metered-spend authorization, or capability and placement
+        constraints. Validating an overridden stamped route belongs to the
+        dispatcher / pre-dispatch layer. See README "`/v1/route` is
+        recommendation-only".
+      properties:
+        story_id:
+          type: string
+          minLength: 1
+          description: Stable identifier for the work item. Recorded with the decision.
+        title:
+          type: string
+          minLength: 1
+        summary:
+          type: string
+          description: What the work actually is. The strongest single signal the router has.
+        touched_paths:
+          type: array
+          items:
+            type: string
+          description: >-
+            Paths the change is expected to touch. Used for blast-radius
+            corroboration - a story that claims low risk while naming an auth
+            directory is claiming something the paths do not support.
+        ambiguity:
+          type: string
+          enum: [low, medium, high]
+          description: How much of the work is under-specified and needs judgement.
+        blast_radius:
+          type: string
+          enum: [low, medium, high, critical]
+          description: How bad a plausible-but-wrong answer would be.
+        context_size:
+          type: integer
+          minimum: 0
+          description: >-
+            Estimated context in tokens. Checked against a profile's guaranteed
+            `min_context`; a profile whose guarantee is null cannot satisfy an
+            explicit requirement here.
+        volume_hint:
+          type: string
+          enum: [low, medium, high]
+          description: >-
+            Expected output volume for the attempt - roughly, how many turns
+            and how much generated text. A cheap signal for the economics, not
+            a quota.
+        tags:
+          type: array
+          items:
+            type: string
+          description: |
+            Free-form task tags. Five of them are load-bearing rather than
+            descriptive, because they appear in a profile's catalog
+            `forbidden_for` list and are a HARD EXCLUSION when they match:
+            `security`, `iam`, `secrets`, `prod-iac`, `destructive-tools`.
+
+            Note the trap: `iac` is not `prod-iac`. Tag production
+            infrastructure work with `prod-iac` if the exclusion is meant to
+            fire. Anything else here (`docs`, `tests`, `iac`) is an ordinary
+            signal.
+        repo:
+          type: string
+        requester:
+          type: string
+          description: Who or what asked. Recorded with the decision for audit.
+        placement_policy:
+          $ref: './schemas/execution-profile.schema.json#/$defs/placement_policy'
+          description: >-
+            Optional. The policy the caller wants this attempt placed under.
+            Omitted means the catalog default (`prefer-warm-local`). The router
+            may not widen it - a caller asking for `cluster-only` gets
+            `cluster-only` or an explicit failure, never a workstation.
+        allow_metered:
+          type: boolean
+          default: false
+          description: |
+            Per-attempt INTENT to spend billable API budget. Default false, and
+            the default is the whole control (invariant 4).
+
+            **Setting it does not authorize anything.** It asks the router to
+            consider a billable candidate; the router returns one only if the
+            authenticated caller independently holds authority to approve
+            billable spend. The normal BMAD/dispatcher machine principal does
+            not hold that permission, and setting this flag from one is
+            `403 metered_authorization_required` - not a route decision, and
+            not a warning.
+
+            This is a human decision. A client that sets it automatically after
+            receiving a `metered_denied` has removed the control while leaving
+            the paperwork in place; under this contract it also simply fails.
+
+            The mechanism that carries the authority - which claim, which
+            credential, which identity provider - is finalized by the later
+            identity work and is deliberately not specified here. What is
+            specified here is that the boolean alone is never enough.
+        catalog_version:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+          description: >-
+            Optional. Assert that planning is still happening against a
+            specific catalog. A mismatch is answered 409 `catalog_version_stale`
+            rather than served against a catalog the caller has not seen.
+
+    PlaceRequest:
+      type: object
+      additionalProperties: false
+      required: [model_profile, placement_policy]
+      description: >-
+        The stamped decision, handed back for resolution. Nothing here can
+        change the model - only which physical compute serves it (invariant 3).
+      properties:
+        model_profile:
+          $ref: './schemas/execution-profile.schema.json#/$defs/model_profile'
+        placement_policy:
+          $ref: './schemas/execution-profile.schema.json#/$defs/placement_policy'
+        min_free_vram_gb:
+          type: number
+          minimum: 0
+          description: >-
+            Optional hard floor on reported free VRAM, on top of whatever the
+            policy sets. Satisfiable only from a measured heartbeat value: a
+            null measurement never satisfies a floor, and a nameplate figure is
+            never substituted for one.
+        exclude:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: './schemas/place-result.schema.json#/$defs/placement'
+          description: >-
+            Placements the caller does not want, typically because it just
+            failed against one. Excluding everything is not an error - it
+            produces an explicit unavailable result, which is the point.
+        estimated_request_bytes:
+          type: integer
+          minimum: 0
+          description: |
+            Optional. Roughly how large the inference request body will be.
+
+            Above 64 KiB the gateway cannot replay the request onto a fallback
+            provider - `MAX_BUFFERED_BYTES` caps the replay buffer, and an
+            over-cap body disables retries entirely (35.5 case 10d: a 100 KiB
+            body returned 503 with the fallback never contacted, while 2 KiB
+            through identical config returned 200 via the fallback). Long
+            context is ordinary for this workload, so this is not an edge case.
+
+            Telling the router lets it place conservatively - prefer a warm,
+            healthy placement up front - instead of relying on a safety net
+            that will not be there.
+        catalog_version:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+          description: >-
+            Optional. The catalog digest stamped on the ExecutionProfile being
+            resolved. A mismatch is 409 `catalog_version_stale`: the profile was
+            decided against a catalog that is no longer loaded, and re-planning
+            is a new attempt.
+
+    HeartbeatAck:
+      type: object
+      additionalProperties: false
+      required:
+        - accepted
+        - node
+        - observed_state
+        - eligible_for_placement
+        - next_heartbeat_after_seconds
+        - offline_after_seconds
+      description: >-
+        Acknowledgement, not an instruction. State ownership is local, so
+        nothing here tells a node what state to be in; it reports what the
+        router recorded and what it will do with it.
+      properties:
+        accepted:
+          const: true
+          description: The heartbeat was recorded. A rejected heartbeat is an error response, not an ack with accepted false.
+        node:
+          type: string
+          description: Echo of the node identifier, so a misdirected heartbeat is visible in the node's own logs.
+        observed_state:
+          type: string
+          enum: [AVAILABLE, SERVING, DRAINING, INTERACTIVE, OFFLINE]
+          description: The state the router recorded, echoed back verbatim.
+        eligible_for_placement:
+          type: boolean
+          description: >-
+            Whether /v1/place may now return this placement. False immediately
+            on an INTERACTIVE or DRAINING report - no timeout, no round trip.
+            This is how a node confirms its withdrawal was honoured.
+        next_heartbeat_after_seconds:
+          type: integer
+          minimum: 1
+          description: >-
+            The interval the node should report at. Published here because the
+            interval is a router-side constant and deliberately not a field in
+            the heartbeat payload - a node discovers it rather than hard-coding
+            it.
+        offline_after_seconds:
+          type: integer
+          minimum: 1
+          description: >-
+            Silence after which the router marks this node OFFLINE. Three times
+            the interval (EPIC-035 section 4).
+        catalog_version:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+          description: Optional. The catalog the router currently serves.
+
+  responses:
+    InvalidRequest:
+      description: The request body is malformed or a field is out of range.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalid-request:
+              externalValue: ./examples/errors/invalid-request.json
+    Unauthenticated:
+      description: >-
+        Missing or invalid CALLER bearer credential. The heartbeat endpoint has
+        its own 401 because it authenticates with the separate per-node edge
+        credential, and an example naming the wrong endpoint teaches the wrong
+        error handler.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            unauthenticated:
+              summary: Caller credential rejected; no endpoint named, since every caller endpoint serves this
+              externalValue: ./examples/errors/caller-unauthenticated.json
+    RateLimited:
+      description: >-
+        Too many requests. The router is a planning-time service; a caller
+        hitting it per inference request should be caching placements for their
+        `ttl_seconds` instead.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            rate-limited:
+              externalValue: ./examples/errors/rate-limited.json
+    InternalError:
+      description: >-
+        Unexpected router failure. Both decision endpoints are side-effect
+        free, so a retry is safe; a persistent failure fails the attempt rather
+        than degrading it onto a different profile.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            internal-error:
+              externalValue: ./examples/errors/internal-error.json
+    CatalogUnavailable:
+      description: >-
+        No usable catalog is loaded. Two codes, two obligations, and a client
+        must not have to guess which it got: `catalog_unavailable` is the
+        transient case (nothing loaded yet - retry), `catalog_schema_unsupported`
+        is permanent (the router refused a catalog `schema_version` it does not
+        implement - abort and alert; no amount of backoff fixes it).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            catalog-unavailable:
+              summary: Transient - nothing loaded yet, retry
+              externalValue: ./examples/errors/catalog-unavailable.json
+            catalog-schema-unsupported:
+              summary: Permanent - unimplemented catalog schema_version, abort
+              externalValue: ./examples/errors/catalog-schema-unsupported.json

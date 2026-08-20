@@ -1,0 +1,484 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StatusResponse",
+  "description": "Response body of GET /v1/status (HTTP 200). The model catalog as the router currently understands it - profiles to physical models to eligible placements - plus compute providers, health, warm-model state, availability and the catalog version (EPIC-035 section 4).\n\nThis endpoint is the router's whole read surface. It is how an operator answers 'why did it place there' without reading the router's logs, and how an independent client discovers the vocabulary without reading the router's source.\n\nJSON is the contract; a human-readable HTML rendering is optional and may be added later without a contract change.\n\nThis schema is an addition to the layout story 35.2 required, for the same reason as error.schema.json: it makes the /v1/status example a checked artifact instead of an illustration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalog_version",
+    "catalog_document_version",
+    "catalog_schema_version",
+    "generated_at",
+    "router",
+    "heartbeat_policy",
+    "harnesses",
+    "entitlement_pools",
+    "profiles",
+    "placements",
+    "policies"
+  ],
+  "properties": {
+    "catalog_version": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Digest of the loaded catalog document; same definition as on ExecutionProfile. This is the value a caller echoes back to assert it is still planning against the same catalog."
+    },
+    "catalog_document_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "The catalog's own semver `version` field."
+    },
+    "catalog_schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The catalog's structural `schema_version`. A router MUST refuse a major it does not implement rather than best-effort parsing an unknown shape; when it refuses it serves 503 catalog_schema_unsupported - the PERMANENT code, obligation abort - and never the transient catalog_unavailable, which would tell a client to retry a condition only an operator can clear."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 instant this response was rendered. Capacity state is in-memory and moves between calls; nothing here is cacheable past the heartbeat interval."
+    },
+    "router": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "capacity_state"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "agent-router build version."
+        },
+        "capacity_state": {
+          "type": "string",
+          "enum": ["learning", "steady"],
+          "description": "How to read an `unseen` placement, and nothing else depends on it.\n\n`learning` - the router has been up for less than one heartbeat interval and has not necessarily heard from every node yet. Capacity is in-memory only and a restart re-learns it within one interval (EPIC-035 section 4: no persistence beyond in-memory state and the Git catalog). This supplies the extra interpretation an `unseen` placement needs: it MAY BE A HEALTHY EDGE NODE THAT HAS SIMPLY NOT BEEN RELEARNED YET, so an unavailable placement result is PROVISIONAL and a caller should expect it to change without anything having been fixed.\n\n`steady` - at least one full heartbeat interval has elapsed since start. An `unseen` placement REMAINS UNAVAILABLE UNTIL ITS FIRST HEARTBEAT ARRIVES. `steady` does not promote it, does not make it eligible, and is not permission to guess: the node has now had its interval and has not reported.\n\nNeither value changes what `unseen` means. It changes only how provisional a caller should treat the answer built from it."
+        },
+        "uptime_seconds": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "heartbeat_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interval_seconds", "offline_after_seconds"],
+      "properties": {
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The interval edge nodes are expected to heartbeat at. Published here because the interval is a ROUTER-SIDE constant, not a heartbeat field: the edge worker contract's payload has no interval, and this contract does not add one to it. This is where a node discovers the value rather than hard-coding it."
+        },
+        "offline_after_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Silence after which the router transitions a node to OFFLINE. Equals 3x interval_seconds (EPIC-035 section 4). This is withdrawal mechanism 2 of 3 - silence as failure detection - and it is the SLOWEST of the three, which is why it must never be the only one relied on."
+        }
+      }
+    },
+    "harnesses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "supported", "selectable"],
+        "properties": {
+          "name": { "type": "string" },
+          "supported": { "type": "boolean" },
+          "selectable": { "type": "boolean" },
+          "router_behaviour": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Required when selectable is false, and meaningless otherwise. `refuse-to-emit` for local-agent (invariant 16). A non-selectable harness with no stated behaviour leaves a client to guess whether sending it is an error or merely unwise, so the requirement is enforced below rather than described here."
+          }
+        },
+        "allOf": [
+          {
+            "description": "A harness the router will not emit has to say what it does instead. Documented as 'present when selectable is false' and now checked, because this contract is meant to be mechanically verifiable rather than read carefully.",
+            "if": {
+              "properties": { "selectable": { "const": false } },
+              "required": ["selectable"]
+            },
+            "then": { "required": ["router_behaviour"] }
+          }
+        ]
+      },
+      "description": "The harness axis as loaded. `local-agent` appears here with supported: false / selectable: false so that a client can SEE the reserved value and its refusal behaviour rather than discovering it by having a request rejected. Its presence in this list is not permission to send it."
+    },
+    "entitlement_pools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "provider", "cost_class", "credential_class", "spillover"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Who is on the other end. Published so a client never has to infer the provider from the harness - `claude` runs against Anthropic Max on one attempt and MiniMax on another."
+          },
+          "cost_class": {
+            "type": "string",
+            "enum": ["free", "subscription", "metered"],
+            "description": "The economics of drawing on this pool. A fact about the ENTITLEMENT."
+          },
+          "credential_class": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The SHAPE and provisioning of the secret used to reach the pool: subscription-session, account-session, provider-api-key.\n\nIT IS NEVER AN INPUT TO A COST DECISION. Billing class and credential type are independent axes (owner ruling R16): minimax-max is a fixed monthly subscription reached with an API-key-shaped credential, while anthropic-max is the same cost_class reached with a signed-in session. A consumer that reads `provider-api-key` as `metered` is wrong by construction, and would bill a flat subscription as per-token spend. This field is published so a dispatcher can select the right isolated credential environment, and for no other purpose."
+          },
+          "spillover": {
+            "type": "string",
+            "enum": ["none", "metered-with-authorization"],
+            "description": "What happens when the entitlement is exhausted.\n\n`none` - the pool stops being a candidate. Routing falls back to another approved pool, to free, or to local. This is invariant 4 as data, and it is the value on every pool the catalog seeds: exhaustion NEVER promotes to billable spend, and MiniMax Token Plan exhaustion in particular must never spill into MiniMax pay-as-you-go.\n`metered-with-authorization` - reserved, and not automatic even then: it requires a separately provisioned metered credential, `allow_metered` intent on the request, AND independent metered-spend authorization held by the caller. Two of the three is a refusal."
+          },
+          "requires_authorization": {
+            "type": "boolean",
+            "description": "Optional. True when drawing on this pool at all needs metered-spend authorization. Absent or false on every seeded pool."
+          }
+        },
+        "allOf": [
+          {
+            "description": "A metered pool must say that reaching it needs authorization. Invariant 4 is not something a client should have to infer from a cost class.",
+            "if": {
+              "properties": { "cost_class": { "const": "metered" } },
+              "required": ["cost_class"]
+            },
+            "then": {
+              "properties": { "requires_authorization": { "const": true } },
+              "required": ["requires_authorization"]
+            }
+          }
+        ]
+      },
+      "description": "The funding sources the router knows about, from the catalog's `entitlement_pools` table. Published because `ExecutionProfile.entitlement_pool` is part of the vocabulary a client codes against, and a client discovering that vocabulary here would otherwise meet a pool name it has no way to interpret.\n\nEvery entry declares all four attributes so nothing is ever inferred from anything else - least of all economics from the shape of a credential."
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "cost_class", "hosting", "alignment", "capabilities", "min_context", "forbidden_for", "selectable", "entitlements", "physical"],
+        "properties": {
+          "name": { "type": "string" },
+          "cost_class": { "type": "string", "enum": ["free", "subscription", "metered"] },
+          "hosting": { "type": "string", "enum": ["local", "vendor"] },
+          "alignment": {
+            "type": "string",
+            "enum": ["standard", "unrestricted"],
+            "description": "Invariant 12: an alignment property, not a quality tier."
+          },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string", "enum": ["chat", "tools", "vision", "audio"] },
+            "description": "The capability floor this profile GUARANTEES, i.e. the intersection across its candidates - not a union. A consumer needing an optional capability filters physical[] rather than assuming the whole list has it."
+          },
+          "min_context": {
+            "type": ["integer", "null"],
+            "description": "The context floor this profile GUARANTEES. null means no guarantee, and a consumer must not use a null-guarantee profile to satisfy an explicit context requirement."
+          },
+          "forbidden_for": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Task tags this profile is never AUTO-SELECTED for. A hard exclusion, not a score or a tie-break."
+          },
+          "selectable": { "type": "boolean" },
+          "entitlements": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["pool", "cost_class"],
+              "properties": {
+                "pool": {
+                  "type": ["string", "null"],
+                  "description": "An entitlement_pools name, or null for local execution, which draws on no pool because the GPU is already paid for."
+                },
+                "cost_class": { "type": "string", "enum": ["free", "subscription", "metered"] },
+                "requires": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Preconditions for this funding candidate to be reachable at all - allow_metered and metered-spend-authorization on a metered one. Absent on a candidate with no preconditions."
+                }
+              }
+            },
+            "description": "ORDERED funding candidates for this profile, first is the default. A LIST rather than a single value because one profile may legitimately have more than one funding source: the same harness and the same model, paid for out of a different entitlement under different preconditions. Expressing that as a list is what keeps the three axes intact - a second funding source is not a second harness, not a second model, and not a placement.\n\nThe profile's own `cost_class` is the cost class of the FIRST entry."
+          },
+          "physical": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["model_id", "placement", "eligible"],
+              "properties": {
+                "model_id": { "type": "string" },
+                "placement": {
+                  "type": ["string", "null"],
+                  "description": "null is correct for vendor-hosted candidates, not a gap: placement names are agentgateway provider names and vendor traffic never touches agentgateway. A local model with a null placement is an error."
+                },
+                "eligible": {
+                  "type": "boolean",
+                  "description": "Whether /v1/place could return this candidate right now, given live capacity state."
+                },
+                "reason_code": {
+                  "$ref": "place-result.schema.json#/$defs/candidate_ineligible_reason_code",
+                  "description": "REQUIRED when eligible is false, and meaningless otherwise. Bound to the INELIGIBLE-ONLY subset of the PlaceResult candidate vocabulary, not the whole of it: not_selected_lower_rank and not_selected_colder describe a candidate that was eligible and lost the ranking, so they are not answers to why a candidate cannot be used. An ineligible candidate with no stated reason tells a reader that something is unavailable without telling them whether that is a catalog fact, a withdrawal, or a node the router has not heard from - three situations with three different responses. Its PRESENCE is a single-object fact, so the schema requires it below, and the enum keeps it inside a sane vocabulary. Whether the reason AGREES with the referenced placement is a cross-object fact - `offline` is a legal member of this enum but wrong for a node the router has simply never heard from - and verify-digests.sh checks that."
+                }
+              },
+              "allOf": [
+                {
+                  "description": "An ineligible candidate must say why. Documented as 'present when eligible is false' and now enforced, because a worked example that omits it teaches the omission.",
+                  "if": {
+                    "properties": { "eligible": { "const": false } },
+                    "required": ["eligible"]
+                  },
+                  "then": { "required": ["reason_code"] }
+                }
+              ]
+            },
+            "description": "ORDERED preference list. First entry is preferred; order is the only preference expression and there are no weights."
+          }
+        }
+      }
+    },
+    "placements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "status", "selectable", "state", "state_source", "readiness", "eligible", "last_heartbeat", "heartbeat"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "string", "enum": ["kserve", "edge"] },
+          "status": { "type": "string", "enum": ["available", "planned"] },
+          "selectable": { "type": "boolean" },
+          "state": {
+            "type": "string",
+            "enum": ["AVAILABLE", "SERVING", "DRAINING", "INTERACTIVE", "OFFLINE"],
+            "description": "Current state. READ IT TOGETHER WITH state_source, which says where it came from; on its own this field cannot be interpreted, and the sentence that used to try got the KServe case backwards.\n\nstate_source: heartbeat - the last heartbeat's self-reported state.\nstate_source: silence - OFFLINE, inferred because the node was reporting and then exceeded offline_after_seconds.\nstate_source: unseen - OFFLINE, because no heartbeat has been observed in this router process yet.\nstate_source: static - the state the CATALOG gives it. A KServe placement is AVAILABLE here and that is correct: it has no heartbeat channel, so the absence of one says nothing about its health. Reporting the cluster GPU OFFLINE because it never checks in would take the only usable placement out of service."
+          },
+          "state_source": {
+            "type": "string",
+            "enum": ["heartbeat", "silence", "unseen", "static"],
+            "description": "WHERE THIS PLACEMENT'S `state` CAME FROM. Four values, and they are exhaustive because there are exactly four ways the router can stand in relation to a placement: it was told, it was told and then the telling stopped, it is waiting to be told for the first time, or it was never going to be told at all.\n\n`heartbeat` - the current state came from an OBSERVED heartbeat. The heartbeat object and the router's receipt time are both present.\n\n`silence` - the node PREVIOUSLY REPORTED and then exceeded offline_after_seconds. state is OFFLINE, the prior heartbeat and its receipt time are RETAINED rather than cleared, and the placement is not eligible. Failure detection: something that was working stopped.\n\n`unseen` - a heartbeat channel EXISTS or is expected, and the router has NEVER OBSERVED a heartbeat from it in its CURRENT IN-MEMORY LIFETIME. state is OFFLINE, heartbeat and last_heartbeat are null, and the placement is not eligible. Capacity is in-memory and a restart re-learns it, so this is the ordinary state of a healthy edge node in the seconds after the router comes up - see router.capacity_state.\n\n`static` - NO heartbeat channel exists, so the state comes from CATALOG status alone. Two cases, both non-heartbeating by construction: a KServe placement (the cluster GPU is not a node that can withdraw itself, and it never heartbeats at all), and an edge placement still `status: planned` - the name is reserved but no node is enrolled and none can report. Both carry heartbeat: null and last_heartbeat: null.\n\nTHE DISTINCTION THAT MATTERS, IN ONE LINE EACH:\n  silence - was talking and stopped.\n  unseen  - expected to talk, but has not been observed yet.\n  static  - was never expected to talk.\n\nCollapsing any two of those loses an operational fact somebody acts on. Reporting a planned placement as `silence` invents a missed heartbeat window that never existed. Reporting a restarted-but-healthy edge node as `silence` says a node failed when nothing failed. And reporting a KServe placement as anything but `static` takes the only usable placement in catalog 1.1.0 out of service, because its state would be read as a failure rather than as a catalog fact."
+          },
+          "readiness": {
+            "type": "string",
+            "enum": ["warm", "cached", "absent", "unknown"],
+            "description": "Warm/cached/absent per owner ruling R11, derived from the heartbeat's active_model and cached_models.\n\nFor a KServe placement this is normally `unknown`, and that is correct rather than lazy: THE ROUTER DOES NOT PROBE KSERVE. 35.5 case 14 established that no mechanism may wake a scale-to-zero model merely to observe it (invariant 7), and a status endpoint that pinged predictors to fill this field in would be exactly that mechanism wearing a different hat."
+          },
+          "eligible": {
+            "type": "boolean",
+            "description": "Whether /v1/place may currently return this placement. False for status: planned placements, for withdrawn nodes, for anything the router has excluded, and for any placement whose state_source is `unseen` or `silence` - in both of those the router has no current report to place on, whether or not it once had one."
+          },
+          "cold_start_s_estimate": {
+            "type": ["number", "null"],
+            "description": "PROVISIONAL where it comes from the catalog (ruling R1); 35.7 measures it."
+          },
+          "last_heartbeat": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Router receipt time of the most recent heartbeat. null on state_source static (no channel exists) and on unseen (a channel exists, but nothing has been observed in this router process). Non-null on heartbeat and on silence - silence RETAINS the last receipt time, because when the node was last heard from is the whole content of the signal."
+          },
+          "heartbeat": {
+            "oneOf": [{ "$ref": "heartbeat.schema.json" }, { "type": "null" }],
+            "description": "The most recent heartbeat, re-exposed VERBATIM in the edge worker contract's own shape (edge/EDGE-WORKER-CONTRACT.md section 1: the heartbeat payload 'is also the shape GET /v1/status re-exposes'). null for placements that do not heartbeat, such as KServe.\n\nIt is re-exposed rather than flattened so there is exactly one heartbeat shape in this contract and no second, subtly different one to drift from it.\n\nruntime.endpoint appears here because this is a STATUS surface and R9 makes that field observational metadata. Surfacing it for a human to read is its purpose; routing on it is forbidden, for the router and for every consumer of this response alike."
+          }
+        },
+        "allOf": [
+          {
+            "description": "state_source: heartbeat means a heartbeat is what produced this state, so one has to be here. A placement claiming heartbeat-sourced state with no heartbeat attached is reporting a fact it cannot show.",
+            "if": {
+              "properties": { "state_source": { "const": "heartbeat" } },
+              "required": ["state_source"]
+            },
+            "then": {
+              "properties": {
+                "heartbeat": { "type": "object" },
+                "last_heartbeat": { "type": "string" }
+              }
+            }
+          },
+          {
+            "description": "state_source: silence is FAILURE DETECTION, and it can only be reported about a node that was enrolled and reporting: the router inferred OFFLINE because a heartbeat window it was expecting went unfilled. So it requires all three - the state it infers (OFFLINE), the prior heartbeat that proves the node was reporting, and the receipt timestamp that says when it last did. Without them the value would describe a placement that never enrolled as though it were a node that failed, which is a materially different operational fact: nobody should be paged for a host that was never built.",
+            "if": {
+              "properties": { "state_source": { "const": "silence" } },
+              "required": ["state_source"]
+            },
+            "then": {
+              "properties": {
+                "state": { "const": "OFFLINE" },
+                "heartbeat": { "type": "object" },
+                "last_heartbeat": { "type": "string" }
+              },
+              "required": ["state", "heartbeat", "last_heartbeat"]
+            }
+          },
+{
+            "description": "state_source: unseen means a heartbeat channel exists and the router has not observed it yet in this process lifetime. So: OFFLINE, because the router cannot claim a state nobody has told it; both heartbeat fields null, because there is nothing to retain - which is exactly what distinguishes it from silence, where the prior report IS retained; and not eligible, because 'probably fine' is not a placement decision. Whether it is provisional is answered by router.capacity_state, not by relaxing any of these.",
+            "if": {
+              "properties": {
+                "state_source": {
+                  "const": "unseen"
+                }
+              },
+              "required": [
+                "state_source"
+              ]
+            },
+            "then": {
+              "properties": {
+                "state": {
+                  "const": "OFFLINE"
+                },
+                "heartbeat": {
+                  "type": "null"
+                },
+                "last_heartbeat": {
+                  "type": "null"
+                },
+                "eligible": {
+                  "const": false
+                }
+              },
+              "required": [
+                "state",
+                "heartbeat",
+                "last_heartbeat",
+                "eligible"
+              ]
+            }
+          },
+          {
+            "description": "state_source: static means no heartbeat channel exists for this placement - a KServe placement, or an edge placement still status: planned. Either way nothing has ever arrived, so both heartbeat fields are null.",
+            "if": {
+              "properties": { "state_source": { "const": "static" } },
+              "required": ["state_source"]
+            },
+            "then": {
+              "properties": {
+                "heartbeat": { "type": "null" },
+                "last_heartbeat": { "type": "null" }
+              }
+            }
+          },
+          {
+            "description": "THE INVERSE, and the direction that was missing. A placement with NO heartbeat channel must SAY static: a KServe placement never heartbeats at all, and a status: planned placement has no node enrolled to do it. Without this the schema still accepted a KServe placement claiming unseen, silence or heartbeat - i.e. reporting the cluster GPU as a node that failed or went quiet, when it is neither. The other direction (an enrolled edge placement may not claim static) is the rule below; together they close the channel question in both directions.",
+            "if": {
+              "anyOf": [
+                { "properties": { "kind": { "const": "kserve" } }, "required": ["kind"] },
+                { "properties": { "status": { "const": "planned" } }, "required": ["status"] }
+              ]
+            },
+            "then": {
+              "properties": { "state_source": { "const": "static" } },
+              "required": ["state_source"]
+            }
+          },
+          {
+            "description": "The CONSEQUENCES of catalog-derived state for a planned placement, so that \"static state comes from catalog status\" is mechanically true rather than only documented. A declared-but-not-brought-up placement is not selectable, takes its state from the catalog, is OFFLINE because nothing is running, and cannot be placed on. Leaving these to prose let a fixture assert any of them freely.",
+            "if": {
+              "properties": { "status": { "const": "planned" } },
+              "required": ["status"]
+            },
+            "then": {
+              "properties": {
+                "selectable": { "const": false },
+                "state_source": { "const": "static" },
+                "state": { "const": "OFFLINE" },
+                "eligible": { "const": false }
+              },
+              "required": ["selectable", "state_source", "state", "eligible"]
+            }
+          },
+          {
+            "description": "The same for the KServe case, and the one that matters most: a catalog-available KServe placement is AVAILABLE. Its state comes from the catalog, and the catalog says it is there. Reporting it OFFLINE - which the schema permitted until now, since static only constrained the heartbeat fields - takes the only usable placement in catalog 1.1.0 out of service on the strength of a check-in that was never going to arrive.",
+            "if": {
+              "properties": { "kind": { "const": "kserve" }, "status": { "const": "available" } },
+              "required": ["kind", "status"]
+            },
+            "then": {
+              "properties": {
+                "state_source": { "const": "static" },
+                "state": { "const": "AVAILABLE" }
+              },
+              "required": ["state_source", "state"]
+            }
+          },
+          {
+            "description": "A placement the catalog does not make selectable cannot be placed on, so it is not eligible. ONE-WAY, deliberately: the converse does NOT hold, and an earlier revision of this schema asserted that it did.\n\nWHY THE CONVERSE IS WRONG. `static` says this placement has NO HEARTBEAT CHANNEL, so its STATE is CATALOG-DERIVED. It does NOT say the placement's runtime eligibility is immutable, and the two are different claims. A catalog-available, selectable KServe placement can still be ineligible right now: the node can be cordoned, the InferenceService can fail, and the router can exclude the placement itself through the AgentgatewayPolicy drain/maintenance path the README describes. The earlier justification - that nothing about a KServe placement varies at runtime - was simply untrue, and forcing eligible: true made the maintenance case unrepresentable.\n\nSo this is a VALID entry: kind kserve, status available, selectable true, state_source static, state AVAILABLE, eligible false - the router has temporarily excluded a placement whose catalog state is unchanged. Catalog facts and runtime eligibility move independently; only the direction encoded here holds in both worlds.",
+            "if": {
+              "properties": {
+                "kind": { "const": "kserve" },
+                "status": { "const": "available" },
+                "selectable": { "const": false }
+              },
+              "required": ["kind", "status", "selectable"]
+            },
+            "then": {
+              "properties": { "eligible": { "const": false } },
+              "required": ["eligible"]
+            }
+          },
+          {
+            "description": "An ENROLLED edge placement - kind edge, status available - has a heartbeat channel by definition, so its state can never come from the catalog alone: static is not available to it. Without this rule static and unseen would both accept that placement and the new value would settle nothing, since the two differ precisely in whether a channel exists and that is not otherwise visible in the payload.",
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "edge"
+                },
+                "status": {
+                  "const": "available"
+                }
+              },
+              "required": [
+                "kind",
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "state_source": {
+                  "not": {
+                    "const": "static"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "prefer_order", "warm_preference", "allow_cold_start", "resolves_today", "resolves_now"],
+        "properties": {
+          "name": { "type": "string" },
+          "prefer_order": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Placement names, best first."
+          },
+          "warm_preference": { "type": "string", "enum": ["strict", "weighted", "ignored"] },
+          "warm_bonus_rank_shift": { "type": ["integer", "null"] },
+          "allow_cold_start": { "type": "boolean" },
+          "min_vram_gb": { "type": ["number", "null"] },
+          "min_free_vram_gb": { "type": ["number", "null"] },
+          "resolves_today": {
+            "type": "boolean",
+            "description": "The catalog's own static claim: can this policy select anything given today's placement statuses and constraints, ignoring live capacity."
+          },
+          "resolves_now": {
+            "type": "boolean",
+            "description": "The live answer: can it select anything given current capacity state. A policy with resolves_today: true and resolves_now: false is the normal shape of 'every candidate is INTERACTIVE right now' - and the pair is worth reporting separately, because one is a Git-level fact and the other is a runtime one."
+          }
+        }
+      }
+    }
+  }
+}

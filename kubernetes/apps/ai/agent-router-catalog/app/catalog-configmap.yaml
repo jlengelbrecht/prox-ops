@@ -69,7 +69,17 @@ data:
     # =====================================================================
 
     # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
-    version: "1.0.0"
+    #
+    # 1.1.0 (STORY-035-2, owner rulings R16/R17) - ADDITIVE ONLY:
+    #   - TABLE 4 entitlement_pools: where the money comes from, and the
+    #     rule that billing class and credential type are INDEPENDENT.
+    #   - profiles[].entitlements[]: ordered funding candidates per profile.
+    #   - model minimax/m3 and profile minimax/strong, selectable: false
+    #     until a later story validates them physically.
+    #   Nothing was removed or re-typed, so schema_version stays 1: a
+    #   consumer written against 1.0.0 still reads this document correctly,
+    #   it just cannot see the funding axis.
+    version: "1.1.0"
     # Structural schema version. Consumers MUST refuse a major they do not
     # implement rather than best-effort parsing an unknown shape.
     schema_version: 1
@@ -91,6 +101,13 @@ data:
     # says whether the axis value exists and whether the router may emit it.
     # Nothing else, so that no harness field can smuggle in a model or a
     # placement (invariant 1).
+    #
+    # MINIMAX IS NOT HERE, AND THAT IS THE POINT. The MiniMax M3 execution
+    # path is `harness: claude` + `model_profile: minimax/strong`, because
+    # Claude Code reaches MiniMax through its Anthropic-compatible endpoint.
+    # Harness and model are independent axes; a new provider does not earn a
+    # harness entry. MiniMax Code is a DIFFERENT harness, is not approved,
+    # and gets evaluated in its own story if it ever is.
     # =====================================================================
     harnesses:
       claude:
@@ -467,6 +484,27 @@ data:
         cold_start_source: n-a
         source: EPIC-035 section 11 route table
 
+      "minimax/m3":
+        description: >-
+          MiniMax M3 on the MiniMax Max Token Plan, reached by the `claude`
+          harness through MiniMax's Anthropic-compatible endpoint. DECLARED,
+          NOT YET USABLE - see profiles["minimax/strong"].blocked_by.
+        hosting: vendor
+        upstream_model_id: null
+        resolved_by: harness
+        placements: []
+        # `chat` ONLY, deliberately. Tool calling is one of the things the
+        # validation story has to DEMONSTRATE before it can be claimed here;
+        # capabilities are sourced, not assumed, exactly like capacity
+        # numbers. Adding `tools` is that story's catalog PR, with evidence.
+        capabilities: [chat]
+        max_context: null
+        max_context_source: unmeasured
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: owner ruling R16
+
       swe-1-7-medium:
         description: Free-tier Devin model, larger sibling of swe-1-7.
         hosting: vendor
@@ -482,7 +520,114 @@ data:
         source: EPIC-035 section 11 route table
 
     # =====================================================================
-    # TABLE 4 - profiles
+    # TABLE 4 - entitlement_pools
+    # WHERE THE MONEY COMES FROM. Added in 1.1.0 (owner ruling R17).
+    #
+    # BILLING CLASS AND CREDENTIAL TYPE ARE INDEPENDENT AXES.
+    #   `cost_class` is a fact about the ENTITLEMENT the operator holds.
+    #   `credential_class` is a fact about the SHAPE of the secret used to
+    #   reach it. NEITHER IMPLIES THE OTHER. A consumer reads economics from
+    #   this table and from nowhere else - never from what a credential
+    #   looks like, never from the provider's name, never from the harness.
+    #
+    #   The concrete case this table exists for: MiniMax's Max Token Plan is
+    #   a FIXED MONTHLY SUBSCRIPTION reached with a provider-issued,
+    #   API-KEY-SHAPED credential. "It looks like an API key, therefore it
+    #   is metered" is WRONG BY CONSTRUCTION. That heuristic is embedded in
+    #   tooling elsewhere in this estate, so it is called out rather than
+    #   left to be re-derived: a consumer that adopts it will bill a
+    #   subscription as per-token spend, and will refuse work the operator
+    #   has already paid for.
+    #
+    #   Four attributes, declared on every pool, so nothing is ever inferred
+    #   from anything else:
+    #     provider         - who is on the other end of the connection.
+    #     cost_class       - free | subscription | metered. The economics.
+    #     credential_class - the shape and provisioning of the secret.
+    #                        NEVER an input to a cost decision.
+    #     spillover        - what happens when the entitlement runs out.
+    #
+    # INVARIANT 4, WRITTEN AS DATA. `spillover: none` on every seeded pool
+    # is not a default that happened to be chosen - it IS the invariant.
+    # Exhaustion never promotes to billable spend; the pool simply becomes
+    # unavailable and routing falls back to another approved pool, to free,
+    # or to local. A metered path needs THREE things at once: a separately
+    # provisioned metered credential, `allow_metered` intent on the request,
+    # and independent metered-spend authorization held by the caller. Two of
+    # the three is a refusal, and the ordinary automation principal does not
+    # hold the third.
+    # =====================================================================
+    entitlement_pools:
+      anthropic-max:
+        description: >-
+          The operator's own Anthropic Max subscription, consumed by Claude
+          Code sessions.
+        provider: anthropic
+        cost_class: subscription
+        credential_class: subscription-session
+        credential_notes: >-
+          The harness's own signed-in subscription session. Invariant 10 - a
+          subscription is NOT an API key. Nothing here authorises
+          introducing ANTHROPIC_API_KEY or centralising an OAuth token as a
+          provider credential.
+        spillover: none
+
+      openai-plus:
+        description: >-
+          The operator's own ChatGPT subscription, consumed by Codex CLI
+          sessions.
+        provider: openai
+        cost_class: subscription
+        credential_class: subscription-session
+        credential_notes: >-
+          Signed-in session held by the harness. Not an API key, and not
+          proxied through the cluster.
+        spillover: none
+
+      devin-free:
+        description: >-
+          The free `swe-1-7*` tier on the existing Devin Teams account.
+        provider: cognition
+        cost_class: free
+        credential_class: account-session
+        credential_notes: >-
+          Account session on a team the operator already has. Free is not a
+          subscription: this pool consumes no pot and no metered spend, and
+          that distinction is exactly why this abstraction is called an
+          ENTITLEMENT pool rather than a subscription pool.
+        spillover: none
+
+      minimax-max:
+        description: >-
+          MiniMax Max Token Plan - a fixed monthly subscription against
+          MiniMax's Anthropic-compatible endpoint (owner ruling R16).
+        provider: minimax
+        cost_class: subscription
+        # READ THIS ONE TWICE. The credential is API-KEY-SHAPED and the
+        # entitlement behind it is a FIXED SUBSCRIPTION. The shape says
+        # nothing about the economics.
+        credential_class: provider-api-key
+        credential_notes: >-
+          A provider-issued key plus a base URL. It is a DIFFERENT
+          CREDENTIAL CLASS from MiniMax's pay-as-you-go credential:
+          different secret, different entitlement, and holding one never
+          grants the other. It reaches a MiniMax-backed worker in that
+          worker's own process or session ONLY - it must never rewrite the
+          machine's global Anthropic configuration, and the Anthropic Max
+          path continues to use no ANTHROPIC_API_KEY at all. Stored in
+          1Password, scoped to MiniMax-backed worker execution, never in Git.
+        spillover: none
+        spillover_notes: >-
+          Token Plan exhaustion MUST NEVER spill into MiniMax pay-as-you-go.
+          When the entitlement is unavailable or exhausted this pool is
+          simply unavailable, and routing falls back to another approved
+          subscription pool, to free, or to local compute. A PAYG pool would
+          be a separate entry with its own credential and
+          `cost_class: metered`; none exists, and adding one does not by
+          itself make it reachable.
+
+    # =====================================================================
+    # TABLE 5 - profiles
     # Logical, stable, and the ONLY thing BMAD stamps. A profile name
     # outlives the model behind it - that is the entire contract.
     #
@@ -512,6 +657,12 @@ data:
         min_context: 8192
         alignment: standard
         forbidden_for: []
+        # Local execution draws on no entitlement pool: the GPU is
+        # already paid for. `pool: null` is the correct value here,
+        # not a gap.
+        entitlements:
+          - pool: null
+            cost_class: free
         physical:
           - model_id: qwen-coder
             placement: kserve-a5000
@@ -531,6 +682,12 @@ data:
         min_context: 65536
         alignment: standard
         forbidden_for: []
+        # Local execution draws on no entitlement pool: the GPU is
+        # already paid for. `pool: null` is the correct value here,
+        # not a gap.
+        entitlements:
+          - pool: null
+            cost_class: free
         physical:
           - model_id: qwen36-27b
             placement: kserve-a5000
@@ -555,6 +712,12 @@ data:
         min_context: 8192
         alignment: standard
         forbidden_for: []
+        # Local execution draws on no entitlement pool: the GPU is
+        # already paid for. `pool: null` is the correct value here,
+        # not a gap.
+        entitlements:
+          - pool: null
+            cost_class: free
         physical:
           - model_id: qwen36-27b
             placement: kserve-a5000
@@ -589,6 +752,12 @@ data:
           - secrets
           - prod-iac
           - destructive-tools
+        # Local execution draws on no entitlement pool: the GPU is
+        # already paid for. `pool: null` is the correct value here,
+        # not a gap.
+        entitlements:
+          - pool: null
+            cost_class: free
         physical:
           - model_id: dolphin-chat
             placement: kserve-a5000
@@ -605,6 +774,9 @@ data:
         min_context: null
         alignment: standard
         forbidden_for: []
+        entitlements:
+          - pool: anthropic-max
+            cost_class: subscription
         physical:
           - model_id: "claude/opus"
             placement: null
@@ -628,6 +800,9 @@ data:
         min_context: null
         alignment: standard
         forbidden_for: []
+        entitlements:
+          - pool: openai-plus
+            cost_class: subscription
         physical:
           - model_id: "openai/gpt-5.6-sol"
             placement: null
@@ -643,6 +818,9 @@ data:
         min_context: null
         alignment: standard
         forbidden_for: []
+        entitlements:
+          - pool: devin-free
+            cost_class: free
         physical:
           - model_id: swe-1-7
             placement: null
@@ -653,8 +831,76 @@ data:
           metered use is explicit, per-attempt and recorded, so it does not
           get a free-looking profile name to hide behind.
 
+      "minimax/strong":
+        description: >-
+          Strong vendor model on the MiniMax Max Token Plan, executed by the
+          `claude` harness against MiniMax's Anthropic-compatible endpoint.
+          DECLARED, NOT YET USABLE (owner ruling R16).
+        # SUBSCRIPTION, not metered - and note how that is established: from
+        # the entitlement pool below, which says the Token Plan is a fixed
+        # monthly subscription. It is NOT established from the credential,
+        # which is API-key-shaped. Reading the shape instead of the
+        # entitlement is the error TABLE 4 exists to prevent.
+        cost_class: subscription
+        hosting: vendor
+        # Non-selectable until a later story validates it PHYSICALLY. The
+        # name is fixed now so the contract and this catalog can land
+        # together and no drift window opens between them.
+        selectable: false
+        # `chat` only until tool calling is demonstrated - see
+        # models["minimax/m3"].capabilities.
+        capabilities: [chat]
+        min_context: null
+        alignment: standard
+        forbidden_for: []
+        entitlements:
+          - pool: minimax-max
+            cost_class: subscription
+          # A SECOND funding candidate would be written exactly like this,
+          # and is shown commented out because the shape is the point: one
+          # profile may have several funding sources, ordered, each with its
+          # own economics and its own preconditions. No PAYG pool exists, so
+          # this is not reachable and is not declared as data:
+          #
+          #   - pool: minimax-payg
+          #     cost_class: metered
+          #     requires: [allow_metered, metered-spend-authorization]
+          #
+          # Note what that entry does NOT do: it does not let exhaustion of
+          # minimax-max slide into it. Spillover is `none`; reaching a
+          # metered candidate takes a separate credential, explicit intent,
+          # and an authorized principal, every time.
+        physical:
+          - model_id: "minimax/m3"
+            placement: null
+        blocked_by:
+          - Token Plan billing proven in practice rather than pay-as-you-go
+          - Claude Code to MiniMax M3 execution demonstrated end to end
+          - provider and model identity verifiable from a live response
+          - tool calling exercised
+          - MCP compatibility exercised
+          - isolation from the normal Claude Max environment demonstrated
+          - quota behaviour observable
+          - no automatic pay-as-you-go spillover, demonstrated
+          - correct fallback when MiniMax capacity is unavailable
+        notes: >-
+          MiniMax is NOT a harness entry, deliberately. The execution path
+          is `harness: claude` + `model_profile: minimax/strong`, which is
+          the harness/model separation this catalog exists to preserve:
+          Claude Code is the harness, MiniMax M3 is the model it is pointed
+          at. MiniMax Code is a different harness, is not approved, and
+          would need its own evaluation story.
+
+          Credential isolation is part of the contract, not an
+          implementation detail: the MiniMax base URL and token reach a
+          MiniMax-backed worker in that worker's own process or session
+          only. Nothing rewrites the machine's global Anthropic
+          configuration, and the Anthropic Max path keeps no
+          ANTHROPIC_API_KEY. The credential lives in 1Password, scoped to
+          MiniMax-backed worker execution, and never in Git.
+
     # =====================================================================
-    # TABLE 5 - policies
+    # TABLE 6 - policies
     # placement_policy definitions: an ordered placement preference, how
     # hard to prefer an already-warm GPU, and hard constraints.
     #
