@@ -224,9 +224,20 @@
                 },
                 "reason_code": {
                   "type": "string",
-                  "description": "Present when eligible is false; same vocabulary as PlaceResult reason codes."
+                  "minLength": 1,
+                  "description": "REQUIRED when eligible is false, and meaningless otherwise; same vocabulary as PlaceResult reason codes. An ineligible candidate with no stated reason tells a reader that something is unavailable without telling them whether that is a catalog fact, a withdrawal, or a node the router has not heard from - three situations with three different responses. This is a single-object fact, so the schema checks it below; whether the reason AGREES with the referenced placement is a cross-object fact and is checked by verify-digests.sh instead."
                 }
-              }
+              },
+              "allOf": [
+                {
+                  "description": "An ineligible candidate must say why. Documented as 'present when eligible is false' and now enforced, because a worked example that omits it teaches the omission.",
+                  "if": {
+                    "properties": { "eligible": { "const": false } },
+                    "required": ["eligible"]
+                  },
+                  "then": { "required": ["reason_code"] }
+                }
+              ]
             },
             "description": "ORDERED preference list. First entry is preferred; order is the only preference expression and there are no weights."
           }
@@ -352,6 +363,79 @@
                 "heartbeat": { "type": "null" },
                 "last_heartbeat": { "type": "null" }
               }
+            }
+          },
+          {
+            "description": "THE INVERSE, and the direction that was missing. A placement with NO heartbeat channel must SAY static: a KServe placement never heartbeats at all, and a status: planned placement has no node enrolled to do it. Without this the schema still accepted a KServe placement claiming unseen, silence or heartbeat - i.e. reporting the cluster GPU as a node that failed or went quiet, when it is neither. The other direction (an enrolled edge placement may not claim static) is the rule below; together they close the channel question in both directions.",
+            "if": {
+              "anyOf": [
+                { "properties": { "kind": { "const": "kserve" } }, "required": ["kind"] },
+                { "properties": { "status": { "const": "planned" } }, "required": ["status"] }
+              ]
+            },
+            "then": {
+              "properties": { "state_source": { "const": "static" } },
+              "required": ["state_source"]
+            }
+          },
+          {
+            "description": "The CONSEQUENCES of catalog-derived state for a planned placement, so that \"static state comes from catalog status\" is mechanically true rather than only documented. A declared-but-not-brought-up placement is not selectable, takes its state from the catalog, is OFFLINE because nothing is running, and cannot be placed on. Leaving these to prose let a fixture assert any of them freely.",
+            "if": {
+              "properties": { "status": { "const": "planned" } },
+              "required": ["status"]
+            },
+            "then": {
+              "properties": {
+                "selectable": { "const": false },
+                "state_source": { "const": "static" },
+                "state": { "const": "OFFLINE" },
+                "eligible": { "const": false }
+              },
+              "required": ["selectable", "state_source", "state", "eligible"]
+            }
+          },
+          {
+            "description": "The same for the KServe case, and the one that matters most: a catalog-available KServe placement is AVAILABLE. Its state comes from the catalog, and the catalog says it is there. Reporting it OFFLINE - which the schema permitted until now, since static only constrained the heartbeat fields - takes the only usable placement in catalog 1.1.0 out of service on the strength of a check-in that was never going to arrive.",
+            "if": {
+              "properties": { "kind": { "const": "kserve" }, "status": { "const": "available" } },
+              "required": ["kind", "status"]
+            },
+            "then": {
+              "properties": {
+                "state_source": { "const": "static" },
+                "state": { "const": "AVAILABLE" }
+              },
+              "required": ["state_source", "state"]
+            }
+          },
+          {
+            "description": "available and selectable stay DISTINCT, and this is where the distinction earns its keep: for a catalog-available KServe placement, eligibility follows selectability exactly. Selectable means the router may place on it, so it is eligible; not selectable means it may not, so it is not - whatever else is true. Nothing about a KServe placement varies at runtime, which is why this is decidable from the catalog fields alone here and is not for edge placements.",
+            "if": {
+              "properties": {
+                "kind": { "const": "kserve" },
+                "status": { "const": "available" },
+                "selectable": { "const": true }
+              },
+              "required": ["kind", "status", "selectable"]
+            },
+            "then": {
+              "properties": { "eligible": { "const": true } },
+              "required": ["eligible"]
+            }
+          },
+          {
+            "description": "The other half of the same rule: a catalog-available KServe placement that is NOT selectable is not eligible either.",
+            "if": {
+              "properties": {
+                "kind": { "const": "kserve" },
+                "status": { "const": "available" },
+                "selectable": { "const": false }
+              },
+              "required": ["kind", "status", "selectable"]
+            },
+            "then": {
+              "properties": { "eligible": { "const": false } },
+              "required": ["eligible"]
             }
           },
           {

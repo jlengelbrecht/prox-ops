@@ -36,6 +36,11 @@
 #      either against its own placements teaches the wrong meaning for the
 #      field, which is the one thing a worked example must not do.
 #
+#   5. PROFILE CANDIDATES against the placements they name, one-way: a
+#      candidate may not claim `eligible: true` on a placement the same
+#      document reports `eligible: false`. Not an equality - an eligible host
+#      may carry an ineligible candidate for candidate-specific reasons.
+#
 # WHY NOT JSON SCHEMA. This is a RELATIONAL JOIN - policies[].prefer_order
 # against placements[].name - and JSON Schema has no way to express one. It
 # could only be faked by enumerating placement names into the schema, which
@@ -212,6 +217,49 @@ for rel in sorted(r for r in EXPECTED if r.startswith("status/")):
                     f"    and {detail} {question}. Expected {str(expected).lower()}."
                 )
 
+# ---------------------------------------------------------------------------
+# 5. Profile candidates against the placements they name.
+#
+# ONE-WAY ON PURPOSE. A candidate may not claim to be usable on a placement the
+# same document reports as unusable - that is a straight contradiction, and a
+# client acting on it dispatches to a host that cannot serve it. The converse
+# is NOT enforced: an eligible placement may legitimately carry an INELIGIBLE
+# candidate, because eligibility is answered per candidate as well as per host.
+# The GPU can be up and healthy while that particular model is not loadable on
+# it - wrong VRAM footprint, a capability the profile needs that this runtime
+# does not provide, a model not resident. Requiring equality would forbid all
+# of that and force fixtures to lie in the other direction.
+#
+# Vendor candidates (placement: null) are outside the join entirely: they name
+# no placement because vendor traffic never touches agentgateway, so there is
+# nothing to join against.
+# ---------------------------------------------------------------------------
+for rel in sorted(r for r in EXPECTED if r.startswith("status/")):
+    doc = json.loads((examples / rel).read_text())
+    placements = {pl["name"]: pl for pl in doc.get("placements", [])}
+    for profile in doc.get("profiles", []):
+        for candidate in profile.get("physical", []):
+            named = candidate.get("placement")
+            if named is None:
+                continue
+            if named not in placements:
+                failures.append(
+                    f"examples/{rel}\n"
+                    f"    profile {profile['name']} has a candidate on placement {named},\n"
+                    f"    which this document does not list as a placement."
+                )
+                continue
+            if candidate.get("eligible") and not placements[named]["eligible"]:
+                failures.append(
+                    f"examples/{rel}\n"
+                    f"    profile {profile['name']} says its {candidate['model_id']} candidate on\n"
+                    f"    {named} is eligible, but that placement is reported eligible: false\n"
+                    f"    ({placements[named]['state_source']}/{placements[named]['state']}). A candidate\n"
+                    f"    cannot be usable on a host the same document says is unusable.\n"
+                    f"    (The reverse is fine: an eligible placement may carry an\n"
+                    f"    ineligible candidate.)"
+                )
+
 short = REAL[7:15] + "…" + REAL[-6:]
 if short not in (contract / "README.md").read_text():
     failures.append(
@@ -238,5 +286,6 @@ if failures:
     sys.exit(1)
 
 print(f"{len(EXPECTED)} fixtures + openapi.yaml agree with the catalog each is bound to,")
-print("and every status policy's resolves_now/resolves_today matches its own placements")
+print("every status policy's resolves_now/resolves_today matches its own placements,")
+print("and no profile candidate claims to be usable on an unusable placement")
 PY

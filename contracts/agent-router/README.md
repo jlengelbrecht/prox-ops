@@ -150,12 +150,12 @@ document (ConfigMap key `catalog.yaml`) exactly as mounted, before any parsing. 
 computes it at load time. It is not the catalog's semver `version` field, and it is never
 written by hand.
 
-**Four digests appear in these examples, and only one of them is real.**
+**Five digests appear in these examples, and only one of them is real.**
 
 | Digest | What it is | Used by |
 | --- | --- | --- |
 | `sha256:fd8c4c31…50667a` | The **real** digest of catalog 1.1.0 exactly as committed - `sha256` over `data["catalog.yaml"]` of `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml`. Reproducible from the repository today. | every example describing the cluster as it is |
-| `sha256:decafbad…decafbad` | Placeholder, obviously fabricated. A later catalog in which `cachyos-7900xtx` has been brought up and is selectable; the other two edge placements are still planned. | `placed-warm-edge.json`, `status-with-edge.json` (`catalog_document_version: 1.2.0`) |
+| `sha256:decafbad…decafbad` | Placeholder, obviously fabricated. A later catalog in which `cachyos-7900xtx` has been brought up and is selectable; the other two edge placements are still planned. | `placed-warm-edge.json`, `status-with-edge.json` and `status-restarted-unseen.json` (both `catalog_document_version: 1.2.0`) |
 | `sha256:f00dface…f00dface` | Placeholder. A **further** catalog in which all three edge placements are selectable - which is what "every candidate has withdrawn itself" needs, since a placement that was never selectable cannot withdraw. | `unavailable-all-withdrawn.json` |
 | `sha256:deadbeef…deadbeef` | Placeholder. A later catalog that retired `local-unrestricted` and folded the `any-24gb` policy into `prefer-warm-local`. | `unknown-profile.json`, `unknown-placement-policy.json`, `catalog-version-stale.json` (as the digest the router now serves) |
 | `sha256:cafebabe…cafebabe` | Placeholder. A later catalog that **declares a metered funding source** in its own right - a pay-as-you-go pool with its own credential, added as a second entitlement on `openai/strong` and gated behind explicit intent plus metered-spend authority. | the three metered fixtures: `metered-denied-substituted.json` (`catalog_document_version: 1.3.0`), `metered-denied-no-alternative.json`, and the 403 one |
@@ -893,9 +893,10 @@ the router restarted: the edge node is enrolled and may well be healthy, but not
 observed in this process yet, so it is `unseen`, `OFFLINE` and not eligible, alongside
 `capacity_state: learning`.
 
-Three examples describe a world that does not exist yet, and they do not all describe the
-**same** one. `placed-warm-edge.json` and `status-with-edge.json` need only
-`cachyos-7900xtx` to have been brought up, and share a digest.
+Four examples describe a world that does not exist yet, and they do not all describe the
+**same** one. `placed-warm-edge.json`, `status-with-edge.json` and `status-restarted-unseen.json`
+need only `cachyos-7900xtx` to have been brought up, and share a digest - the last two differ
+from each other in live capacity only, which is exactly what may differ under one digest.
 `unavailable-all-withdrawn.json` needs all three edge placements to be selectable - a node
 that was never selectable cannot withdraw itself - so it describes a further catalog again
 and carries its own. In catalog 1.1.0 all three edge placements are `status: planned` /
