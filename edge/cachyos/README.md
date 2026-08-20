@@ -484,6 +484,37 @@ never passed through. `scripts/edge-heartbeat.sh --self-test` asserts exactly
 that, plus that the map is one-directional and that every catalog id it can
 produce has capabilities and a context length to advertise.
 
+**`capabilities` and `max_context` describe what this deployment can serve**,
+and are derived from the models it is configured with — the catalog ids in
+`model-id-map.json`'s `runtime_to_catalog`, with their facts from the same file.
+Deliberately not from `cached_models`: with the shipped default the model store
+is a docker volume this daemon cannot read, so a cache-derived answer advertised
+a warm, serving node as capable of nothing with a zero-length context window,
+which a router can only read as "never pick me". An unobservable cache is not an
+incapable node. It stays an advertisement rather than an authority — the router
+intersects it with the real catalog under R14, so facts that drifted here narrow
+placement instead of widening it.
+
+**`cached_models` stays a filesystem observation, and stays pessimistic.** It is
+positive evidence that an artifact is on local storage, so with the volume-backed
+default it is reported empty even while the model is warm. That combination is
+honest rather than contradictory: `active_model` says the model is loaded now,
+`cached_models` says nothing can be proven about what is on disk. Neither is
+inferred from the other, and neither is inferred from configuration — claiming
+disk-cache knowledge from `model-id-map.json` would promise the router a load
+time nobody measured.
+
+```json
+{"active_model": "qwen36-27b", "cached_models": [],
+ "capabilities": ["chat", "tools"], "max_context": 65536}
+```
+
+Making the cache observable for an *unloaded* model — so the router can tell a
+cold-but-cached node from a cold-and-empty one — is a readiness and economics
+follow-up, worth doing before 35.11. It needs either the model store on a
+host-readable path or a cache observer that can see inside the volume, and it is
+deliberately not built here.
+
 Two other fields deserve a note:
 
 - **`runtime.endpoint` is observational metadata only.** It is not service

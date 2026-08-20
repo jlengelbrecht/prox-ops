@@ -24,6 +24,15 @@
 # in neither column of model-id-map.json is dropped with a warning rather than
 # guessed at. Run with --self-test to exercise exactly that.
 #
+# capabilities and max_context describe what this deployment can SERVE, so they
+# come from the models it is configured with (model-id-map.json's
+# runtime_to_catalog, whose facts come from the catalog), never from
+# cached_models. A node that cannot see its own model store is not a node that
+# cannot do chat, and the shipped default cannot see it — the store is a docker
+# volume this daemon does not have access to. The router intersects what is
+# advertised here with the real catalog under R14, so this is an advertisement
+# and not an authority.
+#
 # One line of the payload deserves its own warning. `runtime.endpoint` is
 # observational status metadata only (§2). It is not service discovery, it
 # never becomes a routing target, and it must never trigger gateway
@@ -122,9 +131,40 @@ derive_cached_models() {
     done < <(jq -er '.artifact_to_catalog | keys[]' "$MODEL_MAP" 2>/dev/null)
 }
 
+# Catalog model_ids this deployment is CONFIGURED to serve, one per line — the
+# right-hand side of runtime_to_catalog, which mirrors the models llama-swap.yaml
+# defines. Not a filesystem question and deliberately not the same question as
+# cached_models.
+served_catalog_ids() {
+    jq -er '[ (.runtime_to_catalog // {}) | values[] ] | unique | .[]' "$MODEL_MAP" 2>/dev/null
+}
+
+# capabilities + max_context for a JSON array of catalog model_ids, as
+# {"capabilities": [...], "max_context": N}.
+#
+# These describe what this deployment is able to SERVE, so they are derived from
+# the configured models and never from cached_models. Deriving them from the
+# cache was wrong in both directions: with EDGE_MODEL_DIR unset — the shipped
+# default, because the model store is a docker volume this host daemon cannot
+# read — a warm node serving requests advertised no capabilities and a zero
+# context window, which is an eligibility answer of "never pick me". A node that
+# cannot see its own disk is not a node that cannot do chat.
+#
+# This is an advertisement, not an authority: the router intersects it with the
+# real catalog under R14, so an id whose facts here drifted from the catalog
+# narrows placement rather than widening it. The facts themselves come from
+# model-id-map.json, whose source of truth is the catalog ConfigMap.
+derive_served_facts() {
+    jq -e --argjson ids "$1" '
+        (.catalog_facts // {}) as $facts
+        | { capabilities: ([ $ids[] | $facts[.].capabilities // [] ] | add // [] | unique),
+            max_context:  ([ $ids[] | $facts[.].max_context  // empty ] | max // 0) }
+    ' "$MODEL_MAP" 2>/dev/null
+}
+
 # --- self test --------------------------------------------------------------
 run_self_test() {
-    local failures=0 tmp got
+    local failures=0 tmp got served_json
 
     check() {
         local what="$1" want="$2" have="$3"
@@ -173,6 +213,34 @@ run_self_test() {
         | join(",")
     ' --argjson facts "$(jq -c '.catalog_facts' "$MODEL_MAP")" "$MODEL_MAP" 2>/dev/null)
     check "every mapped catalog id has facts" "" "$got"
+
+    # 6. What this deployment advertises it can serve comes from the models it is
+    #    configured with, not from anything on disk.
+    got=$(served_catalog_ids | tr '\n' ',')
+    check "served ids are the configured models" "qwen36-27b," "$got"
+
+    served_json=$(served_catalog_ids | jq -R . | jq -sc 'unique')
+
+    # 7. The regression this pair of tests exists for. capabilities/max_context
+    #    used to be derived from cached_models, so the shipped default —
+    #    EDGE_MODEL_DIR unset, because the model store is a docker volume the
+    #    host daemon cannot read — advertised a warm, serving node as capable of
+    #    nothing with a zero-length context window, which the router can only
+    #    read as "never pick me". An unobservable cache is not an incapable node.
+    MODEL_DIR=""
+    got=$(derive_cached_models 2>/dev/null | tr '\n' ',')
+    check "unset model dir caches nothing" "" "$got"
+    got=$(derive_served_facts "$served_json" | jq -c . 2>/dev/null)
+    check "unset model dir keeps capabilities" \
+        '{"capabilities":["chat","tools"],"max_context":65536}' "$got"
+
+    # 8. Same for a configured directory that is not there at all.
+    MODEL_DIR="${TMPDIR:-/tmp}/edge-hb-test-absent.$$"
+    got=$(derive_cached_models 2>/dev/null | tr '\n' ',')
+    check "unreadable model dir caches nothing" "" "$got"
+    got=$(derive_served_facts "$served_json" | jq -c . 2>/dev/null)
+    check "unreadable model dir keeps capabilities" \
+        '{"capabilities":["chat","tools"],"max_context":65536}' "$got"
 
     echo
     if [ "$failures" -eq 0 ]; then
@@ -282,6 +350,7 @@ derive_state() {
 emit_heartbeat() {
     local gpu total used pct total_gib free_gib identity gpu_model gpu_arch
     local phase claim alive running active_runtime active_model cached state loaded
+    local served served_facts
 
     if gpu=$(edge_gpu_sample); then
         # Field 4 is compute-client VRAM, which only the interactive guard
@@ -322,6 +391,12 @@ emit_heartbeat() {
     done <<<"$running"
 
     cached=$(derive_cached_models | jq -R . | jq -sc 'unique')
+    served=$(served_catalog_ids | jq -R . | jq -sc 'unique')
+    served_facts=$(derive_served_facts "$served") || served_facts=''
+    if [ -z "$served_facts" ]; then
+        edge_log "ALARM no catalog facts for the configured models; advertising no capabilities"
+        served_facts='{"capabilities":[],"max_context":0}'
+    fi
     state=$(derive_state "$phase" "$claim" "$alive" "$loaded" "${pct:-0}")
 
     jq -n \
@@ -336,15 +411,14 @@ emit_heartbeat() {
         --arg endpoint "${EDGE_ENDPOINT:-}" \
         --arg active "$active_model" \
         --argjson cached "$cached" \
+        --argjson served_facts "$served_facts" \
         --argjson preemptible "${EDGE_PREEMPTIBLE:-true}" \
         --argjson interactive "$([ "$claim" = yes ] && echo true || echo false)" \
         --argjson ac_power "$(ac_power)" \
         --argjson cluster_reachable "$(cluster_reachable)" \
         --arg last_heartbeat "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        --slurpfile map "$MODEL_MAP" \
         '
-        ($map[0].catalog_facts // {}) as $facts
-        | {
+        {
             node: $node,
             state: $state,
             gpu: {
@@ -367,8 +441,8 @@ emit_heartbeat() {
             ac_power: $ac_power,
             cluster_reachable: $cluster_reachable,
             last_heartbeat: $last_heartbeat,
-            capabilities: ([ $cached[] | $facts[.].capabilities // [] ] | add // [] | unique),
-            max_context: ([ $cached[] | $facts[.].max_context // empty ] | max // 0)
+            capabilities: $served_facts.capabilities,
+            max_context: $served_facts.max_context
           }
         '
 }
