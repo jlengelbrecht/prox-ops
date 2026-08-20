@@ -34,6 +34,10 @@ Checker: [`edge/conformance.sh`](../conformance.sh).
   │ (systemctl --user)      │        │ (systemctl --user)                  │
   │ writes interactive-claim│        │ reads claim + phase; posts to 35.9  │
   └─────────────────────────┘        └─────────────────────────────────────┘
+
+  interactive-claim and phase live in ONE host directory,
+  ~/.local/state/edge-cachyos-state, bind-mounted into the container at
+  /edge/state — all three processes open the same files
 ```
 
 Three processes, three jobs, and the split is not arbitrary:
@@ -48,6 +52,49 @@ Three processes, three jobs, and the split is not arbitrary:
   keep running when it is down. That is the point: `INTERACTIVE` and `OFFLINE`
   have to be distinguishable, and a heartbeat producer that stopped with the
   endpoint would collapse "withdrawn on purpose" and "died" into one signal.
+- **All three share one directory on the host**, and it has to be one. See
+  [Shared state directory](#shared-state-directory).
+
+## Shared state directory
+
+Two files carry the whole interactive-priority mechanism: `interactive-claim`,
+written by the guard, and `phase`, written by the supervisor. The guard and the
+heartbeat are `systemctl --user` units on the host; the supervisor is PID 1
+inside a container. They must all open the same directory or the mechanism does
+nothing while every log line still looks right — the guard says `CLAIM`, and the
+endpoint stays up.
+
+So the directory is a **host path**, `~/.local/state/edge-cachyos-state`, and
+the container bind-mounts it:
+
+| Who | How it gets there |
+|---|---|
+| `edge-interactive-guard.service` | `StateDirectory=edge-cachyos-state`, `EDGE_STATE_DIR=%S/edge-cachyos-state` |
+| `edge-heartbeat.service` | the same, plus `ReadOnlyPaths=` — it only reads |
+| the container | bind mount `${EDGE_STATE_HOST_DIR}` → `/edge/state`, `create_host_path: false` |
+
+`StateDirectory=` is what makes it deterministic. systemd creates the directory
+before it builds the unit's sandbox, so `ReadWritePaths=`/`ReadOnlyPaths=` have
+something to bind and both units start on a fresh boot with nothing having run
+first. A unit that instead named a directory some other process was expected to
+create would not start at all until that process had — and the process in
+question is the guard, which is the one that needs the directory.
+
+It is deliberately **not** under `%t` (`/run/user/<uid>`). That is a tmpfs
+logind mounts when the user manager starts, while docker starts the container
+independently and can get there first; a bind mount taken before the tmpfs
+appears stays attached to what was underneath it, and the container and the
+host daemons end up in two different directories — with no error
+anywhere. `%S` is an ordinary directory that exists before either.
+
+The one thing to keep in step is `EDGE_STATE_HOST_DIR` in `.env`, because
+Compose cannot read a systemd specifier. Derive it, do not type it:
+
+```sh
+echo "EDGE_STATE_HOST_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/edge-cachyos-state"
+```
+
+and step 7 below checks the two sides really did land on the same directory.
 
 ## Files
 
@@ -123,12 +170,6 @@ One file, mode 0600, whose copy of record is a 1Password item — the same shape
 
 ```sh
 docker volume create edge-secrets
-
-# The guard and heartbeat share phase/claim state through this one. All four
-# volumes are declared `external: true` in docker-compose.yaml, so Compose
-# will refuse to start if any is missing rather than silently creating an
-# empty project-prefixed replacement — create it here.
-docker volume create edge-state
 op read 'op://<vault>/edge-cachyos-7900xtx/credential' |
   docker run --rm -i --user 0:0 -v edge-secrets:/secrets alpine:3.20 sh -c \
     'umask 077; tr -d "\r\n" > /secrets/api-key'
@@ -136,13 +177,17 @@ op read 'op://<vault>/edge-cachyos-7900xtx/credential' |
 
 To mint one first: `printf 'sk-%s\n' "$(head -c 48 /dev/urandom | base64)"`.
 
-### 4. Configure and start
+### 4. Configure
 
 ```sh
 cp env.example .env && chmod 600 .env
 $EDITOR .env                    # address, hostname, measured VRAM baseline
-docker compose up -d --build
-docker compose logs -f
+
+# EDGE_STATE_HOST_DIR must be the directory the systemd units use. Derive it
+# rather than typing it — the container mount is `create_host_path: false`, so
+# if this is wrong the container fails to start instead of running against an
+# empty directory nothing else can see.
+sed -i "s|^EDGE_STATE_HOST_DIR=.*|EDGE_STATE_HOST_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/edge-cachyos-state|" .env
 ```
 
 ### 5. Install the host-side daemons
@@ -150,24 +195,66 @@ docker compose logs -f
 ```sh
 mkdir -p ~/.config/edge-cachyos ~/.config/systemd/user
 
-# Copy .env, MINUS the container-only paths. EDGE_STATE_DIR names the path the
-# daemons see *inside the container* (/edge/state); the host units are sandboxed
-# with ReadWritePaths=%t/edge and can only write /run/user/<uid>/edge. Letting
-# that value through leaves the guard and heartbeat unable to create their state
-# directory. Dropping it makes edge-common.sh fall back to its correct host
-# default, ${XDG_RUNTIME_DIR:-/tmp}/edge.
-grep -v '^EDGE_STATE_DIR=' .env > ~/.config/edge-cachyos/edge.env
-chmod 600 ~/.config/edge-cachyos/edge.env
+# Copied as-is. Neither the state directory nor the credential path is in it —
+# each means something different inside and outside the container, so the units
+# and docker-compose state their own. That is also why they must not be in
+# .env: EnvironmentFile= overrides Environment= whatever the order in a unit.
+install -m 600 .env ~/.config/edge-cachyos/edge.env
+
+# A host copy of the same bearer credential the container mounts. llama-swap
+# requires it on /running, so without it the guard cannot count loaded models
+# and loses its compute-client rule; the units point EDGE_API_KEY_FILE here.
+( umask 077
+  op read 'op://<vault>/edge-cachyos-7900xtx/credential' |
+    tr -d '\r\n' > ~/.config/edge-cachyos/api-key )
+
+# And a host copy of the edge CA. The daemons verify the certificate chain like
+# everything else here, and /pki exists only inside the container. This is the
+# path EDGE_CA_CERT points at in .env.
+docker run --rm -v edge-pki:/pki:ro alpine:3.20 cat /pki/edge-ca.crt \
+  > ~/.config/edge-cachyos/edge-ca.crt
+
 cp systemd/*.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now edge-interactive-guard.service edge-heartbeat.service
 loginctl enable-linger "$USER"   # so they survive logout
 ```
 
+`StateDirectory=edge-cachyos-state` means the units create the shared directory
+themselves, before their sandbox is built. Nothing here needs a `mkdir`, and
+nothing breaks after a reboot. The name carries the `-state` suffix on purpose:
+when a user unit's state directory is missing and a *configuration* directory of
+the same name exists — and `~/.config/edge-cachyos` is created at the top of
+this step —
+systemd reads that as a pre-v254 migration and replaces the state directory with
+a symlink to the configuration one, which would put the claim file, the phase
+file and a container bind mount on top of the credential.
+
 The unit files assume the repo is at `~/repos/prox-ops`; adjust `ExecStart` if
 it is not.
 
-### 6. Verify
+### 6. Start the container
+
+The daemons come first because the units are what create the shared state
+directory, and the container bind-mounts it with `create_host_path: false`.
+
+```sh
+docker compose up -d --build
+docker compose logs -f
+```
+
+### 7. Verify
+
+The two halves of the shared directory, first — this is the thing that has no
+error message of its own when it is wrong:
+
+```sh
+scripts/edge-interactive-guard.sh claim
+docker compose exec llama-swap ls -l /edge/state   # the claim must be here
+scripts/edge-interactive-guard.sh release
+```
+
+Then the contract checker:
 
 ```sh
 EDGE_API_KEY=$(op read 'op://<vault>/edge-cachyos-7900xtx/credential') \
@@ -260,7 +347,8 @@ announces its own state and stops accepting work — it does not ask permission.
 ### Mechanism
 
 `edge-interactive-guard.sh` samples the GPU. When it decides the desktop wants
-the card, it writes one file: `$EDGE_STATE_DIR/interactive-claim`.
+the card, it writes one file: `interactive-claim`, in the
+[shared state directory](#shared-state-directory).
 `edge-supervisor.sh`, PID 1 inside the container, sees it and sends llama-swap
 `SIGTERM`, which closes the listener immediately and drains in-flight requests
 for up to 40 s. `edge-heartbeat.sh` sees the same file and publishes `DRAINING`
@@ -296,6 +384,15 @@ that needs authority.
   HIP/OpenCL process → claim. This rule needs no size estimate, so it does not
   drift when the model, its quant or its context size changes.
 - **the card busy with nothing of ours on it at all** → claim.
+
+When the loaded-model query does not answer, that reading is **unknown**, not
+zero, and the rule that needs it is skipped for that sample. Zero would mean
+"nothing of ours is on the card", which is the opposite of what a failed query
+tells you: our own `llama-server` would be counted as a foreign compute client
+and a healthy node would take itself out of service for the whole release
+hold-down over a few seconds of telemetry trouble. The other two rules keep
+working on their own terms — and so does the release path, which matters,
+because a withdrawn node has no llama-swap to answer the query at all.
 
 The only calibrated number is the idle compositor footprint
 (`EDGE_DESKTOP_BASELINE_MB`), measured on this host at ~1.1 GB. Re-measure it
@@ -454,10 +551,22 @@ scripts/edge-heartbeat.sh --self-test          # is the id translation still rig
 ```
 
 The daemons read their settings from the environment, so run these with the
-same `.env` the units use: `set -a; . ~/.config/edge-cachyos/edge.env; set +a`.
+same settings the units use — the env file, plus the two paths the units state
+themselves:
 
-- **Rotate the token**: replace the `api-key` file, then restart the container.
-  Nothing else holds a copy.
+```sh
+set -a; . ~/.config/edge-cachyos/edge.env; set +a
+export EDGE_API_KEY_FILE=~/.config/edge-cachyos/api-key
+```
+
+`EDGE_STATE_DIR` needs no export: `scripts/edge-common.sh` defaults to the same
+`${XDG_STATE_HOME:-$HOME/.local/state}/edge-cachyos-state` the units resolve
+`%S/edge-cachyos-state` to.
+
+- **Rotate the token**: replace the `api-key` file in the secrets volume and
+  the host copy at `~/.config/edge-cachyos/api-key`, then restart the container
+  and the two user units. Those two files and the 1Password item are the only
+  copies.
 - **Rotate the host certificate**: `issue-edge-pki.sh --leaf-only --force`,
   then restart the container. The CA and therefore the cluster side are
   untouched.

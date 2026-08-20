@@ -26,7 +26,7 @@
 // so building and drilling can happen in one container:
 //
 //   docker run --rm --network host --device /dev/kfd --device /dev/dri \
-//     -v edge-state:/edge/state:ro -v "$PWD":/work -w /work \
+//     -v "$EDGE_STATE_HOST_DIR":/edge/state:ro -v "$PWD":/work -w /work \
 //     -e EDGE_BIND_ADDR=<edge-lan-ip> -e EDGE_PORT=8443 \
 //     -e EDGE_STATE_DIR=/edge/state -e GPU_LOAD_BIN=/tmp/gpu-load \
 //     --entrypoint bash ghcr.io/ggml-org/llama.cpp:server-rocm-b9917 -c \

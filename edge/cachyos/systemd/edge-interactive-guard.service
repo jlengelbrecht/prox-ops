@@ -9,6 +9,44 @@ After=graphical-session.target
 [Service]
 Type=simple
 EnvironmentFile=%h/.config/edge-cachyos/edge.env
+
+# systemd creates this before the sandbox is set up, owns it, and does not
+# remove it when the unit stops — so the guard starts from a fresh boot with no
+# manual mkdir, and the directory the container bind-mounts does not disappear
+# under it on `systemctl --user restart`.
+#
+# It is deliberately NOT %t/edge. /run/user/<uid> is a tmpfs that logind mounts
+# when the user manager starts; docker starts the container independently and
+# earlier, so a bind mount of a path under it can end up attached to whatever
+# was there before logind mounted over it — the container writing into one
+# directory and the guard into another, which is the split this shared state
+# exists to avoid. %S is an ordinary directory that exists before either.
+#
+# The `-state` suffix is not decoration. When a user unit's state directory is
+# missing and a CONFIGURATION directory of the same name exists, systemd assumes
+# it is migrating a pre-v254 unit and replaces the state directory with a symlink
+# to the configuration one. This unit's configuration directory is
+# ~/.config/edge-cachyos, so a StateDirectory named `edge-cachyos` gets replaced
+# by a symlink to it — putting claim and phase files, and a container bind
+# mount, on top of the credential. A distinct name avoids the whole rule.
+StateDirectory=edge-cachyos-state
+StateDirectoryMode=0755
+
+# The two paths that mean different things on the two sides of the container
+# boundary. Neither appears in .env, and that is the mechanism, not tidiness:
+# EnvironmentFile= is applied after Environment= whatever the order in this
+# file, so a value in .env would silently win. docker-compose.yaml states the
+# container's view of the same two the same way.
+#
+# EDGE_STATE_DIR is the one directory the guard, the heartbeat and the
+# container's supervisor must agree on; the container reaches it through the
+# bind mount in docker-compose.yaml, whose source is EDGE_STATE_HOST_DIR.
+Environment=EDGE_STATE_DIR=%S/edge-cachyos-state
+# llama-swap requires the bearer credential on /running as well as on the
+# inference routes, and without it this daemon's loaded-model count is
+# permanently unknown. Seed the file in step 5 of README.md.
+Environment=EDGE_API_KEY_FILE=%h/.config/edge-cachyos/api-key
+
 ExecStart=%h/repos/prox-ops/edge/cachyos/scripts/edge-interactive-guard.sh watch
 Restart=always
 RestartSec=5
@@ -26,11 +64,11 @@ ProtectControlGroups=true
 ProtectKernelTunables=true
 RestrictSUIDSGID=true
 # The claim file is the guard's only write, and it is the whole interface to
-# the container. Note there is deliberately no docker socket here: the guard
-# never needs to drive the container runtime, which is the reason the
-# supervisor watches a file instead of the node being withdrawn by
+# the container. StateDirectory= already grants write access to it, so there is
+# no ReadWritePaths= line; note there is deliberately no docker socket here
+# either. The guard never needs to drive the container runtime, which is the
+# reason the supervisor watches a file instead of the node being withdrawn by
 # `docker stop`.
-ReadWritePaths=%t/edge
 
 [Install]
 WantedBy=default.target

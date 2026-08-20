@@ -53,7 +53,13 @@ services:
       # the value to llama-swap through its process environment, where the
       # config's ${env.EDGE_API_KEY} macro picks it up. Setting the credential
       # here instead would publish it to anyone who can run `docker inspect`.
-      EDGE_API_KEY_FILE: ${EDGE_API_KEY_FILE:-/edge/secrets/api-key}
+      #
+      # Stated literally, not read from .env, and so is EDGE_STATE_DIR below.
+      # Both name a path that differs on the two sides of this boundary: the
+      # host units point them at the host copy of the credential and at
+      # EDGE_STATE_HOST_DIR. A single value in .env would have to be wrong for
+      # one side, so neither is in there.
+      EDGE_API_KEY_FILE: /edge/secrets/api-key
       EDGE_STATE_DIR: /edge/state
       LLAMA_SWAP_BIN: /usr/local/bin/llama-swap
       # Consumed by the healthcheck below, which resolves it through the
@@ -69,9 +75,28 @@ services:
       - ${EDGE_PKI_SOURCE:?set EDGE_PKI_SOURCE in .env}:/pki:ro
       # One file, `api-key`, sourced from 1Password.
       - ${EDGE_SECRETS_SOURCE:?set EDGE_SECRETS_SOURCE in .env}:/edge/secrets:ro
-      # Read-write, and shared with the host-side guard: the guard writes the
-      # interactive claim, the supervisor writes the phase.
-      - ${EDGE_STATE_SOURCE:?set EDGE_STATE_SOURCE in .env}:/edge/state
+      # Read-write, and shared with the host-side guard and heartbeat: the
+      # guard writes the interactive claim, the supervisor writes the phase.
+      #
+      # A bind mount of a real host directory, not a named volume, and that is
+      # the whole point. The guard and the heartbeat are `systemctl --user`
+      # units on the host; they cannot open a docker volume. A volume here
+      # would give the supervisor one claim/phase directory and the host
+      # daemons another, so the guard's claim would never withdraw the endpoint
+      # and the supervisor's phase would never reach the heartbeat — with both
+      # sides logging as if they were working. EDGE_STATE_HOST_DIR must be the
+      # same path the units use (%S/edge-cachyos-state, i.e.
+      # ~/.local/state/edge-cachyos-state); see env.example and README.md
+      # §"Shared state directory".
+      #
+      # create_host_path: false so a wrong or missing path fails the container
+      # loudly instead of docker silently creating an empty root-owned
+      # directory that the units will never write to.
+      - type: bind
+        source: ${EDGE_STATE_HOST_DIR:?set EDGE_STATE_HOST_DIR in .env}
+        target: /edge/state
+        bind:
+          create_host_path: false
       # Mounted rather than baked in, so a guard or supervisor fix is a file
       # edit and a restart instead of an image rebuild, and so the code the
       # container runs is the code in Git.
@@ -114,20 +139,28 @@ services:
         max-size: "10m"
         max-file: "5"
 
-# The four state-bearing volumes are declared EXTERNAL on purpose. They are
-# created once by the bring-up in README.md and they hold things that must
-# survive a `docker compose down` and must never be silently recreated empty:
-# the ~17 GB model cache, the edge CA and host key, the bearer credential, and
-# the guard/heartbeat state. Without `external: true` Compose would create
-# project-prefixed volumes of its own (cachyos_edge-model-cache and friends),
-# the container would come up against empty mounts, and the model would be
-# re-downloaded while the PKI and credential silently vanished.
+# These three volume NAMES are declared EXTERNAL on purpose. Compose creates a
+# project-prefixed volume for any name it declares itself, so without
+# `external: true` a `docker compose up` on a host that had never run the
+# bring-up would come up against empty mounts: the ~17 GB model would be
+# re-downloaded and the PKI and the bearer credential would silently be gone.
+# Declared external, Compose refuses to start until they exist.
+#
+# What that protects is exactly these three names, and nothing more. The mounts
+# above are written as ${EDGE_*_SOURCE}, so the protection applies only while
+# those variables hold these names. Point one at some other volume name and
+# Compose will happily create it empty; point it at a host path and docker will
+# use whatever is there. If you override them, you own the "does the data exist"
+# question yourself.
+#
+# The claim/phase state is deliberately not in this list: it is a host-directory
+# bind mount, because the host-side guard and heartbeat have to read and write
+# the same files and cannot open a docker volume. That mount states
+# `create_host_path: false`, which is how it fails loudly in the same way.
 volumes:
   edge-model-cache:
     external: true
   edge-pki:
     external: true
   edge-secrets:
-    external: true
-  edge-state:
     external: true

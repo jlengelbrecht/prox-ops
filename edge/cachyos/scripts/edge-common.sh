@@ -9,7 +9,13 @@
 
 # shellcheck shell=bash
 
-EDGE_STATE_DIR="${EDGE_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/edge}"
+# The claim/phase directory, as this side sees it. The systemd units set it
+# explicitly (Environment=EDGE_STATE_DIR=%S/edge-cachyos-state) and docker-compose
+# sets it to /edge/state inside the container; this default is what a manual
+# invocation on the host gets, and it is the same rule systemd resolves %S by,
+# so `scripts/edge-interactive-guard.sh status` from a shell sees exactly what
+# the running unit sees.
+EDGE_STATE_DIR="${EDGE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/edge-cachyos-state}"
 EDGE_CLAIM_FILE="$EDGE_STATE_DIR/interactive-claim"
 EDGE_PHASE_FILE="$EDGE_STATE_DIR/phase"
 
@@ -18,6 +24,23 @@ ROCM_SMI="${ROCM_SMI:-rocm-smi}"
 edge_log() {
     printf '%s %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${EDGE_LOG_TAG:-edge}" "$*" >&2
 }
+
+# The bearer credential these daemons need for their read-only llama-swap
+# queries. llama-swap requires it on /running and /api/version, not only on the
+# inference routes, so without it the loaded-model count reads as unknown and
+# the guard loses its compute-client rule entirely.
+#
+# A file rather than a value in the environment, for the reason the supervisor
+# prefers one: an environment variable is inherited by every child these scripts
+# spawn and is readable from /proc, a file is read once here. The systemd units
+# point EDGE_API_KEY_FILE at the host copy; EDGE_API_KEY still works if
+# something sets it directly.
+if [ -z "${EDGE_API_KEY:-}" ] && [ -n "${EDGE_API_KEY_FILE:-}" ] && [ -r "$EDGE_API_KEY_FILE" ]; then
+    EDGE_API_KEY=$(tr -d '\r\n' <"$EDGE_API_KEY_FILE")
+fi
+if [ -z "${EDGE_API_KEY:-}" ]; then
+    edge_log "WARN no EDGE_API_KEY and no readable EDGE_API_KEY_FILE; llama-swap queries will be unauthenticated, so the loaded-model count reads as unknown"
+fi
 
 edge_die() {
     edge_log "FATAL $1"
@@ -115,13 +138,24 @@ edge_gpu_identity() {
 # Model ids llama-swap currently has loaded, one per line. These are RUNTIME
 # ids; translating them to catalog model_ids is the caller's job and is the
 # whole point of model-id-map.json.
+#
+# The exit status separates "llama-swap says nothing is loaded" from "llama-swap
+# did not answer", and callers depend on that: the interactive guard compares
+# compute clients against this count, so a failed query folded into zero would
+# read our own llama-server as somebody else's GPU work and withdraw a healthy
+# node. Success with no output is the empty list; non-zero means no reading.
+#
+# `.running` has to be present for the body to count as an answer — an error
+# page, a truncated response or a future schema change all land in the
+# no-reading branch rather than being read as an empty list.
 edge_running_models() {
     local body
     edge_curl_opts
     body=$(curl "${EDGE_CURL_OPTS[@]}" \
         -H "Authorization: Bearer ${EDGE_API_KEY:-}" \
         "${EDGE_ENDPOINT%/}/running" 2>/dev/null) || return 1
-    printf '%s' "$body" | jq -er '.running[]? | select(.state != "stopping") | .model' 2>/dev/null
+    printf '%s' "$body" | jq -e 'type == "object" and has("running")' >/dev/null 2>&1 || return 1
+    printf '%s' "$body" | jq -r '.running[]? | select(.state != "stopping") | .model' 2>/dev/null
 }
 
 # Is the LAN-facing endpoint answering at all? /health is llama-swap's only

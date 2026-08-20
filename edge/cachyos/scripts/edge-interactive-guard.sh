@@ -97,16 +97,24 @@ mkdir -p "$EDGE_STATE_DIR"
 
 # One sample, as:
 #   "<desktop_vram_mb> <gpu_pct> <models_loaded> <used_mb> <total_mb> <compute_mb> <compute_clients>"
-# where desktop_vram_mb is graphics VRAM above the measured idle baseline.
+# where desktop_vram_mb is graphics VRAM above the measured idle baseline, and
+# models_loaded is the literal string `unknown` when llama-swap did not answer.
+#
+# `unknown` rather than 0, because those are opposite facts and only one of them
+# is a reason to withdraw the node. See over_the_line().
 sample() {
-    local gpu total used pct compute procs total_mb used_mb compute_mb loaded desktop
+    local gpu total used pct compute procs total_mb used_mb compute_mb loaded desktop running
     gpu=$(edge_gpu_sample) || return 1
     read -r total used pct compute procs <<<"$gpu"
     total_mb=$((total / 1024 / 1024))
     used_mb=$((used / 1024 / 1024))
     compute_mb=$((compute / 1024 / 1024))
 
-    loaded=$(edge_running_models 2>/dev/null | grep -c . || true)
+    if running=$(edge_running_models 2>/dev/null); then
+        loaded=$(printf '%s\n' "$running" | grep -c '[^[:space:]]' || true)
+    else
+        loaded=unknown
+    fi
 
     desktop=$((used_mb - compute_mb - BASELINE_MB))
     [ "$desktop" -lt 0 ] && desktop=0
@@ -117,17 +125,40 @@ sample() {
 # True when this sample says something other than our inference wants the GPU.
 # Three independent reasons, because the three ways to use this card look
 # nothing like each other in telemetry.
+#
+# `loaded` may be the string `unknown`, meaning llama-swap did not answer. The
+# rules that need it are skipped for that sample rather than evaluated against a
+# stand-in zero: a zero would make rule 2 read our own llama-server as a foreign
+# compute client and withdraw a perfectly healthy node for the whole release
+# hold-down, on nothing but a telemetry blip — inverting the rule exactly when
+# its input is least reliable. Missing telemetry must not manufacture a claim.
+#
+# What it must not do either is manufacture a RELEASE, and it does not: a
+# withdrawn node has no llama-swap to answer /running, so `unknown` is the
+# normal reading while a claim is held. The other two rules keep evaluating on
+# their own terms, and a quiet card still cools off into the release hold-down.
+# That is why an unknown reading skips a rule rather than freezing the state
+# machine.
 over_the_line() {
     local desktop="$1" pct="$2" loaded="$3" procs="$4"
     # 1. A graphics client holds VRAM beyond the idle compositor: a game, a
-    #    video editor, a browser compositing hardware-accelerated video.
+    #    video editor, a browser compositing hardware-accelerated video. Needs
+    #    no loaded-model reading at all.
     [ "$desktop" -gt "$TRIP_VRAM_MB" ] && return 0
     # 2. More compute clients than llama-swap has models loaded: somebody
     #    else's HIP/OpenCL process. Needs no size estimate, so it holds
-    #    whatever the model or its context size is.
-    [ "$procs" -gt "$loaded" ] && return 0
-    # 3. The card is busy while nothing of ours is on it at all.
-    [ "$loaded" -eq 0 ] && [ "$procs" -eq 0 ] && [ "$pct" -gt "$TRIP_GPU_PCT" ] && return 0
+    #    whatever the model or its context size is — but it does need a real
+    #    count to compare against, so an unknown reading skips it.
+    if [ "$loaded" != unknown ] && [ "$procs" -gt "$loaded" ]; then
+        return 0
+    fi
+    # 3. The card is busy while nothing of ours is on it at all. Zero compute
+    #    clients is itself proof that no llama-server is computing, so this rule
+    #    stands on its own when the loaded-model count is unknown.
+    if [ "$procs" -eq 0 ] && [ "$pct" -gt "$TRIP_GPU_PCT" ]; then
+        [ "$loaded" = unknown ] && return 0
+        [ "$loaded" -eq 0 ] && return 0
+    fi
     return 1
 }
 
@@ -178,12 +209,25 @@ cmd_status() {
 }
 
 cmd_watch() {
-    local over=0 under=0 s desktop pct loaded procs
+    local over=0 under=0 s desktop pct loaded procs last_loaded_known=yes loaded_known
     edge_log "watching: interval=${INTERVAL}s trip=${TRIP_SAMPLES} release=${RELEASE_SAMPLES}" \
         "baseline=${BASELINE_MB}MB vram_trip=${TRIP_VRAM_MB}MB gpu_trip=${TRIP_GPU_PCT}%"
     while true; do
         if s=$(sample); then
             read -r desktop pct loaded _ _ _ procs <<<"$s"
+            # Logged on the edge only. While a claim is held there is no
+            # llama-swap to ask, so an unknown reading is the steady state and
+            # logging every sample would bury everything else.
+            loaded_known=yes
+            [ "$loaded" = unknown ] && loaded_known=no
+            if [ "$loaded_known" != "$last_loaded_known" ]; then
+                if [ "$loaded_known" = no ]; then
+                    edge_log "WARN llama-swap /running unreadable; the compute-client rule is suspended until it answers"
+                else
+                    edge_log "llama-swap /running readable again (models_loaded=$loaded)"
+                fi
+                last_loaded_known="$loaded_known"
+            fi
             if over_the_line "$desktop" "$pct" "$loaded" "$procs"; then
                 under=0
                 over=$((over + 1))

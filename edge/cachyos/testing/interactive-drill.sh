@@ -26,7 +26,8 @@
 # Environment:
 #   EDGE_BIND_ADDR    address the endpoint is published on (required)
 #   EDGE_PORT         port it is published on (default 8443)
-#   EDGE_STATE_DIR    state directory shared with the container
+#   EDGE_STATE_DIR    shared claim/phase directory (default: the host path the
+#                     systemd units use, ${XDG_STATE_HOME:-$HOME/.local/state}/edge-cachyos-state)
 #   GPU_LOAD_BIN      compiled testing/gpu-load.cpp (default: ./gpu-load)
 
 set -uo pipefail
@@ -49,7 +50,7 @@ done
 
 ADDR="${EDGE_BIND_ADDR:?EDGE_BIND_ADDR is required}"
 PORT="${EDGE_PORT:-8443}"
-STATE_DIR="${EDGE_STATE_DIR:-/edge/state}"
+STATE_DIR="${EDGE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/edge-cachyos-state}"
 LOAD_BIN="${GPU_LOAD_BIN:-./gpu-load}"
 
 CLAIM_FILE="$STATE_DIR/interactive-claim"
@@ -67,6 +68,18 @@ endpoint_open() {
 
 phase() {
     [ -r "$PHASE_FILE" ] && tr -d '[:space:]' <"$PHASE_FILE" || echo unknown
+}
+
+# `kill -0` still succeeds for a child that has exited but not been reaped, so
+# on its own it would report the workload as running until the drill reaps it —
+# and the drill reaps it only after the loop, so "workload end" would never be
+# observed and the recovery timing would be measured against nothing.
+# edge-supervisor.sh reads the same thing out of /proc for the same reason.
+load_running() {
+    kill -0 "$LOAD_PID" 2>/dev/null || return 1
+    local state
+    state=$(awk '/^State:/ {print $2}' "/proc/$LOAD_PID/status" 2>/dev/null)
+    [ "$state" != "Z" ]
 }
 
 mark() {
@@ -103,7 +116,7 @@ while [ "$(elapsed)" -lt "$DRILL_TIMEOUT" ]; do
         T_DOWN=$(elapsed)
         mark "ENDPOINT REFUSING connections, phase=$(phase) (withdrawal latency ${T_DOWN}s)"
     fi
-    if [ -z "$T_LOADEND" ] && ! kill -0 "$LOAD_PID" 2>/dev/null; then
+    if [ -z "$T_LOADEND" ] && ! load_running; then
         T_LOADEND=$(elapsed)
         mark "competing workload finished"
     fi
