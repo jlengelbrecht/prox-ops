@@ -243,7 +243,7 @@ Keyed by profile name. This is the only name BMAD stamps.
 | `description` | string | required |
 | `cost_class` | enum | `free` \| `subscription` \| `metered` |
 | `hosting` | enum | `local` \| `vendor` |
-| `selectable` | bool | |
+| `selectable` | bool | may this profile take part in an approved execution decision? NOT "will the router pick it" - see below |
 | `capabilities` | list | the floor this profile **guarantees** |
 | `min_context` | int \| null | the context floor this profile **guarantees** |
 | `alignment` | enum | `standard` \| `unrestricted` |
@@ -288,6 +288,21 @@ Semantics that are easy to get wrong:
 `local-unrestricted` is a weaker model than `local-code-standard` in every respect except
 refusal behaviour. Its `forbidden_for` list - `security`, `iam`, `secrets`, `prod-iac`,
 `destructive-tools` - is a minimum, extensible by catalog PR.
+
+#### What `selectable: true` means, and what it does not
+
+`selectable: true` means the profile **may participate in an approved execution decision**. It
+does **not** mean the router will auto-select it, and it is not a recommendation.
+
+`local-unrestricted` is the case that makes the distinction load-bearing: it is
+`selectable: true` and **`/v1/route` never auto-selects it**. A deliberate choice to run it
+happens outside the router - after the recommendation, before the route is stamped - and that
+choice may bypass router scoring only. It never bypasses `forbidden_for`, which stays in force
+however deliberate the choice was: **human choice is not permission to bypass that control.**
+
+The mirror case is `minimax/strong`: `selectable: false` means it may not take part in any
+execution decision at all yet, deliberate or otherwise, until its `blocked_by` list is
+satisfied.
 
 #### Vendor models
 

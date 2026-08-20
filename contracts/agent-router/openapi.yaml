@@ -321,9 +321,6 @@ paths:
                 docs-low-risk:
                   summary: Cheapest local profile, no fallbacks on purpose
                   externalValue: ./examples/execution-profile/docs-low-risk-cluster-only.json
-                unrestricted-explicit:
-                  summary: Unrestricted chosen explicitly by an operator
-                  externalValue: ./examples/execution-profile/unrestricted-operator-choice.json
         '400':
           $ref: '#/components/responses/InvalidRequest'
         '401':
@@ -769,10 +766,27 @@ components:
       type: object
       additionalProperties: false
       required: [story_id, title, ambiguity, blast_radius]
-      description: >-
+      description: |
         Task metadata. Everything here is a planning-time signal; none of it
         names a model, a harness or a placement, because choosing those is what
         the endpoint is for.
+
+        **This shape is closed on purpose, and the omission is the design.**
+        `/v1/route` is RECOMMENDATION-ONLY: it takes task, context and policy
+        inputs and returns what the router recommends. There is no field here
+        for a caller-named `harness` or `model_profile`, and there is not going
+        to be one - a caller cannot use this endpoint to tell the router what
+        answer to return. An override field would make the recommendation
+        indistinguishable from the instruction in the router's own response and
+        logs, losing the record of what was recommended exactly when it matters.
+
+        Deliberate operator choice happens OUTSIDE the router - after the
+        recommendation, before the route is stamped - and it may bypass router
+        scoring ONLY, never `forbidden_for`, entitlement and billing
+        restrictions, metered-spend authorization, or capability and placement
+        constraints. Validating an overridden stamped route belongs to the
+        dispatcher / pre-dispatch layer. See README "`/v1/route` is
+        recommendation-only".
       properties:
         story_id:
           type: string

@@ -23,7 +23,7 @@ contracts/agent-router/
     error.schema.json               the error envelope, every endpoint
     status.schema.json              GET /v1/status response
   examples/
-    execution-profile/  5 files     incl. the metered refusal
+    execution-profile/  4 files     incl. the metered refusal
     heartbeat/          6 files     one per state, plus unmeasured hardware
     place/              4 files     placed and unavailable
     errors/            14 files     one per error code, plus both metered refusals
@@ -83,6 +83,12 @@ document version **1.1.0**, `schema_version: 1`:
 | entitlement_pool | `anthropic-max`, `openai-plus`, `devin-free`, `minimax-max` (or `null`) | `execution-profile.schema.json#/$defs/entitlement_pool` |
 | placement_policy | `prefer-warm-local`, `cluster-only`, `edge-only`, `any-24gb` | `execution-profile.schema.json#/$defs/placement_policy` |
 | placement | `kserve-a5000`, `cachyos-7900xtx`, `bazzite-5090`, `laptop-rtx5000` | `place-result.schema.json#/$defs/placement` |
+
+**`selectable: true` in the catalog means a profile MAY TAKE PART IN AN APPROVED EXECUTION
+DECISION.** It does not mean the router will auto-select it, and it is not a recommendation.
+`local-unrestricted` is `selectable: true` and is never auto-selected by `/v1/route`; see
+"`/v1/route` is recommendation-only" below for where a deliberate choice happens and what it
+still may not bypass.
 
 **`minimax/strong` is in the enum but is not selectable.** Catalog 1.1.0 declares it with
 `selectable: false` and a `blocked_by` list, so the router must not emit it until a later
@@ -221,9 +227,58 @@ production infrastructure work with `prod-iac` if the exclusion is meant to fire
 
 `alignment: unrestricted` is an alignment property, not a quality tier. `local-unrestricted`
 is a weaker model than `local-code-standard` in every respect except refusal behaviour, so
-"it refuses less" is never a reason to prefer it. It is never auto-selected; an operator can
-still choose it explicitly and own that, which is what
-`examples/execution-profile/unrestricted-operator-choice.json` shows.
+"it refuses less" is never a reason to prefer it. **`/v1/route` never auto-selects it**, and
+it never returns it because a caller asked for it either - see the next section for where a
+deliberate choice actually happens.
+
+### `/v1/route` is recommendation-only
+
+**This endpoint recommends. It does not take instructions.** It accepts task, context and
+policy inputs and returns the router's recommended `ExecutionProfile`. It **never** accepts a
+caller-specified `harness` or `model_profile`, and a caller cannot use it to tell the router
+what answer to give back. `RouteRequest` being closed - `additionalProperties: false`, with
+nothing in it naming a model, a harness or a placement - is the design, not an omission.
+
+The reason is worth stating, because the alternative looks harmless: an override field on the
+request would make the router's recommendation indistinguishable from the caller's instruction
+in the router's own logs and in the response. The record of *what was recommended* would be
+gone at the moment it started to matter.
+
+**Explicit operator override happens outside the router**, after the recommendation and before
+the route is stamped:
+
+```text
+/v1/route  ->  recommendation  ->  PM/operator accepts OR deliberately overrides
+           ->  final route stamped into the story  ->  immutable execution attempt
+```
+
+**What an override may and may not do.** It may bypass **router scoring and preference only**.
+It **must not** bypass hard catalog or policy constraints. An operator-selected route still has
+to satisfy every one of these:
+
+- the profile and harness exist, and are `supported` / `selectable`;
+- `forbidden_for` exclusions;
+- entitlement and billing restrictions;
+- metered-spend authorization;
+- capability and placement constraints.
+
+**So `local-unrestricted` remains a deliberate, manual profile - and its hard `forbidden_for`
+exclusions remain in force.** This is the point most likely to be misread, so it is stated
+flatly: **human choice is not permission to bypass those controls.** An operator may decide to
+run that profile on work it is allowed to run. An operator may not use "I chose it deliberately"
+to put it on work tagged `security`, `iam`, `secrets`, `prod-iac` or `destructive-tools`. The
+exclusion is not advice the router offers, and overriding the recommendation does not reach it.
+
+**Where the enforcement lives.** Validating and auditing a manually overridden stamped route is
+the **dispatcher / pre-dispatch integration layer's** job, not `/v1/route`'s - the router is not
+in that path and cannot be. That is a requirement to carry into 35.12 and the later kit work,
+recorded here so it is not discovered late.
+
+One thing for that work to keep in view, noted rather than designed here: the dispatcher should
+record enough route provenance to tell **"router recommendation accepted"** from **"explicit
+operator override"**, preserving the recommendation itself alongside the override's identity and
+reason. The final stamped-frontmatter shape is not this story's to invent, and nothing here
+requires it yet.
 
 ### Metered is default-deny
 
@@ -242,8 +297,13 @@ One condition, two carriers:
   returned alongside the note *is* that option. Proceeding with it is the expected path.
 - **HTTP 409 `metered_denied` with no profile** when none exists.
 
-Either way the obligation is the same: authorizing the spend is a human decision, made by
-re-submitting with `allow_metered: true` **from a principal that is allowed to make it**.
+**Both carriers say `re-plan`**, and the 409 is not an exception dressed up as one. There is a
+way forward; it is simply a *different request* than the one that was sent - one carrying
+explicit human metered intent, submitted by a principal that independently holds metered-spend
+authority. Needing two things does not make the condition unrecoverable, which is what `abort`
+would claim. Either way the obligation is the same: authorizing the spend is a human decision,
+made by re-submitting with `allow_metered: true` **from a principal that is allowed to make
+it**.
 **A client that reacts to a refusal by resending with `allow_metered: true` has removed the
 control while leaving the paperwork in place** - and under this contract it also just fails.
 
@@ -678,7 +738,7 @@ that would have cleared in two seconds, read the number instead of the contract.
 | `unknown_profile` | 404 | place | `re-plan` | The stamp names a profile that is in this contract's vocabulary but not in the loaded catalog. Call `/v1/route` again - a new attempt, not a repair of this one. A name outside the vocabulary is `400`, not this. |
 | `unknown_placement_policy` | 404 | place | `re-plan` | Same, for a policy name. Policies are catalog data, not request parameters. |
 | `catalog_version_stale` | 409 | route, place | `re-plan` | The catalog moved between planning and dispatch. Re-run `/v1/route`; a stamped profile is immutable for its attempt. |
-| `metered_denied` | 409 | route | `abort` | Every option is billable and none was authorized. Escalate to a human. **Never resend with `allow_metered: true` automatically.** |
+| `metered_denied` | 409 | route | `re-plan` | Every option is billable and none was authorized. Escalate to a human. The way forward is a DIFFERENT request: explicit metered intent, from a principal that holds metered-spend authority. Both, or neither works. **Never resend this request with `allow_metered: true` automatically** - that is not re-planning, and it answers 403. |
 | `metered_denied` | 200 (in-band note) | route | `re-plan` | A billable option was withheld and a non-metered substitute was returned. Proceed with it, or seek authorization. |
 | `no_eligible_profile` | 409 | route | `re-plan` | Nothing satisfies the constraints. Relax one, wait for a pool, or authorize spend. Resending unchanged is a loop. |
 | `no_eligible_placement` | **200**, `status: "unavailable"` | place | do not dispatch | Not an error envelope. See "An empty result is HTTP 200" above. Reason codes: `no_eligible_placement`, `policy_resolves_to_nothing`, `all_candidates_withdrawn`, `constraint_unsatisfiable`. |
@@ -712,7 +772,7 @@ anyway. The loop ends only on a failure the node itself must fix: `unauthenticat
 
 ## Examples
 
-31 files, every one validated in CI-shaped commands below. Every example is also referenced
+30 files, every one validated in CI-shaped commands below. Every example is also referenced
 from `openapi.yaml`, so an example that stops being reachable from the spec is visible.
 
 Each one states which catalog it is drawn against. Examples on the real 1.1.0 digest describe
@@ -727,7 +787,6 @@ each says which one below.
 | `security-tagged-excludes-unrestricted.json` | `forbidden_for` firing as a hard exclusion on a critical-blast-radius task. **`placement_required: false`** - the vendor-hosted result: no placement call, the harness resolves it. |
 | `metered-denied-substituted.json` | **The refusal case**, on the metered placeholder catalog (`cafebabe…`): a billable option withheld, a non-metered substitute returned, `metered_denied` note attached. The billable candidate exists because that catalog declares a pay-as-you-go funding source, **not** because a subscription ran out. |
 | `docs-low-risk-cluster-only.json` | Cheapest profile, empty `fallbacks` on purpose. |
-| `unrestricted-operator-choice.json` | The only way `local-unrestricted` is ever reached: named explicitly, no forbidden tag present. |
 
 **`examples/heartbeat/`** - one per state, plus unmeasured hardware.
 

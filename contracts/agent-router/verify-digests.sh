@@ -80,7 +80,6 @@ EXPECTED = {
     "execution-profile/local-code-standard.json": ({REAL}, DOC),
     "execution-profile/metered-denied-substituted.json": ({METERED}, "1.3.0"),
     "execution-profile/security-tagged-excludes-unrestricted.json": ({REAL}, DOC),
-    "execution-profile/unrestricted-operator-choice.json": ({REAL}, DOC),
     "heartbeat/state-available.json": (set(), None),
     "heartbeat/state-draining.json": (set(), None),
     "heartbeat/state-interactive.json": (set(), None),
