@@ -2,23 +2,26 @@
 # Verify that every committed example agrees with the catalog it claims.
 #
 # `catalog_version` exists to settle one question: which catalog document was
-# this answer computed against. That makes every example carrying the REAL
-# digest a fixture, and fixtures rot. The first catalog change that forgets to
-# re-stamp them leaves behind fingerprints that are confidently wrong, which is
-# worse than carrying none at all - a reader has no way to tell.
+# this answer computed against. That makes every fixture carrying a digest a
+# claim about a specific document, and claims rot. The first catalog change
+# that forgets to re-stamp them leaves fingerprints that are confidently wrong,
+# which is worse than carrying none - a reader has no way to tell.
 #
-# So this script checks three things and exits non-zero on any of them:
+# WHAT IS CHECKED
 #
-#   1. Every digest in examples/ is either the real digest of the committed
-#      catalog, or one of the documented placeholders that mark an example as
-#      depicting a catalog which does not exist yet.
-#   2. No example carries the real digest while naming a different
-#      catalog_document_version.
-#   3. The abbreviated digest in README.md still matches the real one.
-#
-# Rule 1 is deliberately a whitelist rather than a "looks like a digest" check:
-# a hand-edited fixture with a plausible but invented fingerprint is exactly
-# the failure this is meant to catch.
+#   1. Every example file is listed in EXPECTED below, with the EXACT set of
+#      digests it may carry and the exact catalog_document_version it may name.
+#      Not a global whitelist: the placeholders each stand for a DIFFERENT
+#      hypothetical catalog, so a fixture assigned to one of them must fail if
+#      it is switched to another, even though both are documented. An
+#      unlisted or missing example is also a failure - a new fixture has to be
+#      given an owner here, deliberately.
+#   2. openapi.yaml embeds the real digest inline in its request and response
+#      examples. Those rot exactly like the JSON fixtures do, so every digest
+#      in the spec must be the real one; the spec never illustrates a
+#      hypothetical catalog.
+#   3. The abbreviated digest in README.md still matches the real one, since
+#      the digest table is what a reader actually consults.
 #
 # Run from anywhere. Requires python3 with PyYAML, which the contract's other
 # gate commands already use.
@@ -42,59 +45,137 @@ import yaml
 
 root = pathlib.Path(sys.argv[1])
 catalog_path = root / "kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml"
-examples = root / "contracts/agent-router/examples"
-readme = root / "contracts/agent-router/README.md"
+contract = root / "contracts/agent-router"
+examples = contract / "examples"
 
 catalog = yaml.safe_load(catalog_path.read_text())["data"]["catalog.yaml"]
-real = "sha256:" + hashlib.sha256(catalog.encode()).hexdigest()
-document_version = str(yaml.safe_load(catalog)["version"])
+REAL = "sha256:" + hashlib.sha256(catalog.encode()).hexdigest()
+DOC = str(yaml.safe_load(catalog)["version"])
 
-# Documented placeholders. Each marks a DIFFERENT hypothetical catalog; see the
-# digest table in README.md. They are obviously fabricated on purpose.
-placeholders = {"sha256:" + word * 8 for word in ("decafbad", "f00dface", "deadbeef")}
+# The documented placeholders. Each stands for a DIFFERENT hypothetical
+# catalog; see the digest table in README.md. Obviously fabricated on purpose.
+EDGE = "sha256:" + "decafbad" * 8      # cachyos-7900xtx brought up
+ALL_EDGE = "sha256:" + "f00dface" * 8  # all three edge placements brought up
+RETIRED = "sha256:" + "deadbeef" * 8   # local-unrestricted and any-24gb retired
+METERED = "sha256:" + "cafebabe" * 8   # a metered funding source declared
+
+# path -> (digests the file may carry, catalog_document_version it may name)
+# An empty digest set means the file must carry no digest at all.
+EXPECTED = {
+    "errors/caller-unauthenticated.json": (set(), None),
+    "errors/catalog-schema-unsupported.json": (set(), None),
+    "errors/catalog-unavailable.json": (set(), None),
+    "errors/catalog-version-stale.json": ({REAL, RETIRED}, None),
+    "errors/heartbeat-node-identity-mismatch.json": (set(), None),
+    "errors/heartbeat-unauthenticated.json": (set(), None),
+    "errors/internal-error.json": ({REAL}, None),
+    "errors/invalid-request.json": (set(), None),
+    "errors/metered-authorization-required.json": ({METERED}, None),
+    "errors/metered-denied-no-alternative.json": ({METERED}, None),
+    "errors/no-eligible-profile.json": ({REAL}, None),
+    "errors/rate-limited.json": (set(), None),
+    "errors/unknown-placement-policy.json": ({RETIRED}, None),
+    "errors/unknown-profile.json": ({RETIRED}, None),
+    "execution-profile/docs-low-risk-cluster-only.json": ({REAL}, DOC),
+    "execution-profile/local-code-standard.json": ({REAL}, DOC),
+    "execution-profile/metered-denied-substituted.json": ({METERED}, "1.3.0"),
+    "execution-profile/security-tagged-excludes-unrestricted.json": ({REAL}, DOC),
+    "execution-profile/unrestricted-operator-choice.json": ({REAL}, DOC),
+    "heartbeat/state-available.json": (set(), None),
+    "heartbeat/state-draining.json": (set(), None),
+    "heartbeat/state-interactive.json": (set(), None),
+    "heartbeat/state-offline.json": (set(), None),
+    "heartbeat/state-serving.json": (set(), None),
+    "heartbeat/unmeasured-laptop-on-battery.json": (set(), None),
+    "place/placed-kserve-only-candidate.json": ({REAL}, None),
+    "place/placed-warm-edge.json": ({EDGE}, None),
+    "place/unavailable-all-withdrawn.json": ({ALL_EDGE}, None),
+    "place/unavailable-policy-edge-only.json": ({REAL}, None),
+    "status/status-today.json": ({REAL}, DOC),
+    "status/status-with-edge.json": ({EDGE}, "1.2.0"),
+}
+
+NAMES = {REAL: "the real digest", EDGE: "the cachyos-brought-up placeholder",
+         ALL_EDGE: "the all-edge-brought-up placeholder",
+         RETIRED: "the retirements placeholder",
+         METERED: "the metered-funding placeholder"}
+
+
+def name(digest):
+    return NAMES.get(digest, "an undocumented digest")
+
+
+def digests(text):
+    return set(re.findall(r"sha256:[0-9a-f]{64}", text))
+
 
 failures = []
+found = {str(p.relative_to(examples)) for p in examples.rglob("*.json")}
 
-for path in sorted(examples.rglob("*.json")):
-    text = path.read_text()
-    rel = path.relative_to(root)
-    for digest in sorted(set(re.findall(r"sha256:[0-9a-f]{64}", text))):
-        if digest == real or digest in placeholders:
-            continue
+for missing in sorted(found - set(EXPECTED)):
+    failures.append(
+        f"examples/{missing}\n"
+        f"    is not listed in EXPECTED in this script. Every fixture is bound\n"
+        f"    to the catalog it depicts on purpose; add it there."
+    )
+for gone in sorted(set(EXPECTED) - found):
+    failures.append(f"examples/{gone}\n    is listed in EXPECTED but does not exist.")
+
+for rel in sorted(found & set(EXPECTED)):
+    want_digests, want_doc = EXPECTED[rel]
+    text = (examples / rel).read_text()
+    have = digests(text)
+    if have != want_digests:
+        for extra in sorted(have - want_digests):
+            failures.append(
+                f"examples/{rel}\n"
+                f"    carries {extra}\n"
+                f"      which is {name(extra)},\n"
+                f"    but this fixture is bound to "
+                f"{', '.join(sorted(name(d) for d in want_digests)) or 'no digest at all'}."
+            )
+        for absent in sorted(want_digests - have):
+            failures.append(
+                f"examples/{rel}\n"
+                f"    no longer carries {absent}\n"
+                f"      which is {name(absent)}, the digest this fixture is bound to."
+            )
+    have_doc = json.loads(text).get("catalog_document_version")
+    if have_doc != want_doc:
         failures.append(
-            f"{rel}\n"
-            f"    carries   {digest}\n"
-            f"    committed {real}\n"
-            f"    ...and it is not one of the documented placeholders either."
-        )
-    claimed = json.loads(text).get("catalog_document_version")
-    if claimed is not None and real in text and claimed != document_version:
-        failures.append(
-            f"{rel}\n"
-            f"    carries the real digest but claims catalog {claimed},\n"
-            f"    while the committed catalog is {document_version}."
+            f"examples/{rel}\n"
+            f"    names catalog document version {have_doc!r}, expected {want_doc!r}."
         )
 
-short = real[7:15] + "…" + real[-6:]
-if short not in readme.read_text():
+spec = contract / "openapi.yaml"
+for digest in sorted(digests(spec.read_text()) - {REAL}):
+    failures.append(
+        f"contracts/agent-router/openapi.yaml\n"
+        f"    embeds {digest}\n"
+        f"      which is {name(digest)}.\n"
+        f"    The spec illustrates the CURRENT catalog only: {REAL}."
+    )
+
+short = REAL[7:15] + "…" + REAL[-6:]
+if short not in (contract / "README.md").read_text():
     failures.append(
         f"contracts/agent-router/README.md\n"
         f"    the digest table does not mention sha256:{short},\n"
         f"    which is the committed catalog's abbreviated digest."
     )
 
-print(f"catalog {document_version}, digest {real}")
+print(f"catalog {DOC}, digest {REAL}")
 if failures:
     print("")
-    print("Examples disagree with the committed catalog:")
+    print("Fixtures disagree with the catalog they are bound to:")
     print("")
     for failure in failures:
         print(f"  {failure}")
         print("")
-    print("Re-stamp the affected examples, or give an illustrative one a")
-    print("documented placeholder digest. A fingerprint that names the wrong")
-    print("catalog is worse than none.")
+    print("Re-stamp the affected fixtures, or move one to a different")
+    print("documented placeholder AND update EXPECTED to say so. A")
+    print("fingerprint that names the wrong catalog is worse than none.")
     sys.exit(1)
 
-print("every example agrees with the catalog it claims")
+print(f"{len(EXPECTED)} fixtures + openapi.yaml agree with the catalog each is bound to")
 PY

@@ -152,13 +152,24 @@ written by hand.
 | `sha256:decafbad…decafbad` | Placeholder, obviously fabricated. A later catalog in which `cachyos-7900xtx` has been brought up and is selectable; the other two edge placements are still planned. | `placed-warm-edge.json`, `status-with-edge.json` (`catalog_document_version: 1.2.0`) |
 | `sha256:f00dface…f00dface` | Placeholder. A **further** catalog in which all three edge placements are selectable - which is what "every candidate has withdrawn itself" needs, since a placement that was never selectable cannot withdraw. | `unavailable-all-withdrawn.json` |
 | `sha256:deadbeef…deadbeef` | Placeholder. A later catalog that retired `local-unrestricted` and folded the `any-24gb` policy into `prefer-warm-local`. | `unknown-profile.json`, `unknown-placement-policy.json`, `catalog-version-stale.json` (as the digest the router now serves) |
+| `sha256:cafebabe…cafebabe` | Placeholder. A later catalog that **declares a metered funding source** in its own right - a pay-as-you-go pool with its own credential, added as a second entitlement on `openai/strong` and gated behind explicit intent plus metered-spend authority. | the three metered fixtures: `metered-denied-substituted.json` (`catalog_document_version: 1.3.0`), `metered-denied-no-alternative.json`, and the 403 one |
 
 The placeholders exist because a digest is a content commitment: two documents showing
 different catalog contents cannot honestly share one. That rule applies to the placeholders
-as much as to the real digest, which is why there are three of them rather than one - the
-"edge brought up" catalog, the "all edge placements brought up" catalog and the "things were
-retired" catalog are three different documents, and giving them one digest would have taught
-the opposite of the rule the field exists to enforce.
+as much as to the real digest, which is why there are four of them rather than one - "edge
+brought up", "all edge placements brought up", "things were retired" and "a metered funding
+source exists" are four different documents, and giving them one digest would have taught the
+opposite of the rule the field exists to enforce.
+
+The metered one earns its own catalog for a reason worth stating plainly. **Catalog 1.1.0
+declares no metered funding source at all**, and every pool it does declare says
+`spillover: none`. So a fixture showing a billable option, pinned to the real digest, would
+be teaching that an exhausted subscription turns into per-token spend - which is precisely
+the promotion invariant 4 forbids. A metered candidate can only exist where some catalog
+**declares that funding source in its own right**, which is what `cafebabe…` depicts. The
+three metered fixtures say so in their own text as well: exhausting `openai-plus` makes that
+candidate unavailable and nothing more; the billable candidate is a separate entitlement
+that was there all along, gated behind intent plus authorization.
 
 Real-digest examples also carry `catalog_document_version: "1.1.0"`; the illustrative ones
 carry a higher version where they have one, so no example claims to be 1.1.0 with contents
@@ -174,10 +185,17 @@ removes the only way a reader could tell.
 
 The script recomputes the digest from the committed ConfigMap and fails if:
 
-- an example carries a digest that is neither the real one nor a documented placeholder - a
-  whitelist rather than a shape check, so a hand-edited fixture with a plausible but invented
-  fingerprint cannot slip through;
-- an example carries the real digest while naming a different `catalog_document_version`;
+- an example carries anything other than **the exact digests that fixture is bound to**.
+  Binding is per file, not a global whitelist: each placeholder stands for a different
+  hypothetical catalog, so moving `placed-warm-edge.json` onto the retirements digest fails
+  even though both digests are documented. A fixture with a plausible but invented
+  fingerprint fails for the same reason;
+- an example is not listed in the script's expectations at all, or is listed and missing -
+  a new fixture has to be given an owner deliberately rather than inheriting permission;
+- an example names a `catalog_document_version` other than the one its catalog carries;
+- **`openapi.yaml` embeds a digest that is not the real one.** The spec hard-codes the
+  fingerprint in three inline examples, and those rot exactly like the JSON fixtures; the
+  spec illustrates the current catalog only and never a hypothetical one;
 - the abbreviated digest in the table above has drifted from the real one.
 
 It exits non-zero naming the offending file and both digests. **Run it in any change that
@@ -260,9 +278,13 @@ The caller's obligation on a 403 is `abort`: escalate to a human, and specifical
 retry under a different credential**. A client that goes looking for a token that works has
 turned a control into an obstacle course.
 
-Worth recording: catalog 1.1.0 contains no `cost_class: metered` profile at all - Devin's
-paid on-demand tier deliberately has no profile name to hide behind. So this path cannot fire
-today. The shape is specified now so that it exists before the money does.
+Worth recording: catalog 1.1.0 contains no `cost_class: metered` profile and no metered
+funding source at all - Devin's paid on-demand tier deliberately has no profile name to hide
+behind, and every declared pool says `spillover: none`. **So this path cannot fire today**,
+and the three fixtures that show it are pinned to the `cafebabe…` placeholder catalog rather
+than to the real digest. Showing a billable option against catalog 1.1.0 would teach that an
+exhausted subscription becomes per-token spend, which is the exact promotion invariant 4
+exists to forbid. The shape is specified now so that it exists before the money does.
 
 ### Economics: what it costs, and who is paying
 
@@ -553,11 +575,13 @@ heartbeat carrying the upstream id makes a warm node look cold and hands the wor
 placement that has to load from scratch. A node whose runtime only knows its upstream id
 translates before it reports; that is the node's job, not the router's guesswork.
 
-The heartbeat examples in this directory therefore say `qwen36-27b`. The illustrative JSON
-blob in `edge/EDGE-WORKER-CONTRACT.md` §1 still shows `qwen3.6-27b` there; its field table
-types the field as an unqualified string and says nothing about which namespace, so this is
-a namespace the edge contract left open rather than a rule it set. Correcting that example
-belongs to 35.6, and is listed in the open items below.
+`edge/EDGE-WORKER-CONTRACT.md` §1 now carries the same rule, in the document that is
+authoritative for heartbeat semantics: its field table types both fields as catalog
+`model_id`, its example says `qwen36-27b`, and it assigns the translation explicitly. **The
+edge producer translates**, because a runtime knows its own identity and not the catalog's -
+llama.cpp reports whatever `--alias` it was started with, vLLM reports the filesystem path it
+was launched from. The router keeps no alias table and does no fuzzy matching; a value it
+cannot resolve against the catalog is an alarm, ignored for eligibility.
 
 KServe placements normally report `unknown`, and that is correct rather than lazy: the router
 does not probe KServe. Waking a scale-to-zero predictor to observe it would be exactly the
@@ -701,7 +725,7 @@ each says which one below.
 | --- | --- |
 | `local-code-standard.json` | The ordinary case: free local profile, two fallbacks. **`placement_required: true`** - a local result, so the client places it - with both vendor fallbacks at `false`. |
 | `security-tagged-excludes-unrestricted.json` | `forbidden_for` firing as a hard exclusion on a critical-blast-radius task. **`placement_required: false`** - the vendor-hosted result: no placement call, the harness resolves it. |
-| `metered-denied-substituted.json` | **The refusal case.** Billable option withheld, non-metered substitute returned, `metered_denied` note attached. |
+| `metered-denied-substituted.json` | **The refusal case**, on the metered placeholder catalog (`cafebabe…`): a billable option withheld, a non-metered substitute returned, `metered_denied` note attached. The billable candidate exists because that catalog declares a pay-as-you-go funding source, **not** because a subscription ran out. |
 | `docs-low-risk-cluster-only.json` | Cheapest profile, empty `fallbacks` on purpose. |
 | `unrestricted-operator-choice.json` | The only way `local-unrestricted` is ever reached: named explicitly, no forbidden tag present. |
 
@@ -725,11 +749,18 @@ each says which one below.
 | `unavailable-policy-edge-only.json` | `edge-only` on catalog **1.1.0** - every placement it names is `status: planned`. Explicit empty result, not a fall-through. |
 | `unavailable-all-withdrawn.json` | **Further catalog** (`f00dface…`, all three edge placements brought up): interactive, draining and silent candidates; note the warm-but-ineligible one. Withdrawal is only meaningful for a placement that was selectable in the first place. |
 
-**`examples/errors/`** - one file per envelope code, 14 in total. Three of them carry the
-`deadbeef…` placeholder because they are about a catalog that has moved on:
-`unknown-profile.json` and `unknown-placement-policy.json` show a stamped name the loaded
-catalog has dropped, and `catalog-version-stale.json` shows the caller's 1.1.0 digest against
-the newer one the router is serving.
+**`examples/errors/`** - one file per envelope code, 14 in total. Five sit on a placeholder
+catalog. `unknown-profile.json` and `unknown-placement-policy.json` show a stamped name the
+loaded catalog has dropped, and `catalog-version-stale.json` shows the caller's 1.1.0 digest
+against the newer one the router is serving - all three on `deadbeef…`.
+`metered-denied-no-alternative.json` and `metered-authorization-required.json` sit on
+`cafebabe…`, the catalog that declares a metered funding source, because catalog 1.1.0
+declares none and a billable candidate cannot honestly be shown against it.
+
+The two shared catalog-failure fixtures - `catalog-unavailable.json` and
+`catalog-schema-unsupported.json` - name **no** endpoint. Both are served from every
+endpoint, so a fixture claiming one would teach a caller the wrong error path for its own
+call.
 
 **`examples/status/`** - `status-today.json` is catalog 1.1.0 exactly as it stands, on the
 real digest, with one usable placement, the four entitlement pools, and `minimax/strong`
@@ -873,12 +904,6 @@ Recorded rather than resolved, because each belongs to a story that has not run 
    behaviour, no automatic pay-as-you-go spillover, and correct fallback when MiniMax
    capacity is unavailable. Its catalog model claims `chat` only; tool calling gets claimed
    when it is demonstrated, not before.
-14. **The edge contract's example still shows the upstream model id.** Its §1 JSON blob has
-   `active_model: "qwen3.6-27b"`; the canonical rule frozen here is that the field carries the
-   catalog `model_id` (`qwen36-27b`). The field table types it as an unqualified string and
-   never states a namespace, so this is a gap being filled rather than a contradiction — but
-   the example should be corrected when 35.6 next touches that document.
-
 ## Sources
 
 - `.claude/.ai-docs/epics/EPIC-035-unified-agent-control-plane.md` - §3 invariants, §4 the

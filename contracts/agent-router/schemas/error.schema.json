@@ -89,8 +89,8 @@
               "description": "For node_identity_mismatch: the node id the payload claimed. The identity the CREDENTIAL is bound to is deliberately not echoed back - telling an unauthenticated caller which node its token belongs to is a disclosure, and R9's threat model assumes edge credentials can be stolen."
             },
             "withheld": {
-              "type": "object",
-              "description": "For metered_denied with no non-metered alternative, and for metered_authorization_required: the metered option that was withheld, in the same shape as ExecutionProfile.metered_denied.withheld. It names what a caller with the right authority would have been given, which is what the human deciding needs to see."
+              "$ref": "./execution-profile.schema.json#/$defs/metered_denied/properties/withheld",
+              "description": "For metered_denied with no non-metered alternative, and for metered_authorization_required: the metered option that was withheld. It names what a caller with the right authority would have been given, which is what the human deciding needs to see.\n\nThe SAME schema as ExecutionProfile.metered_denied.withheld, by reference rather than by restatement. Two carriers of one condition - the in-band note and this envelope - had two definitions of the withheld candidate, and the loose one accepted an empty object or arbitrary keys. A fixture is only worth committing if it cannot drift from the shape it claims to illustrate."
             }
           }
         },

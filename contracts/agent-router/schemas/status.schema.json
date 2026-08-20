@@ -292,6 +292,21 @@
             }
           },
           {
+            "description": "state_source: silence is FAILURE DETECTION, and it can only be reported about a node that was enrolled and reporting: the router inferred OFFLINE because a heartbeat window it was expecting went unfilled. So it requires all three - the state it infers (OFFLINE), the prior heartbeat that proves the node was reporting, and the receipt timestamp that says when it last did. Without them the value would describe a placement that never enrolled as though it were a node that failed, which is a materially different operational fact: nobody should be paged for a host that was never built.",
+            "if": {
+              "properties": { "state_source": { "const": "silence" } },
+              "required": ["state_source"]
+            },
+            "then": {
+              "properties": {
+                "state": { "const": "OFFLINE" },
+                "heartbeat": { "type": "object" },
+                "last_heartbeat": { "type": "string" }
+              },
+              "required": ["state", "heartbeat", "last_heartbeat"]
+            }
+          },
+          {
             "description": "state_source: static means no heartbeat channel exists for this placement - a KServe placement, or an edge placement still status: planned. Either way nothing has ever arrived, so both heartbeat fields are null.",
             "if": {
               "properties": { "state_source": { "const": "static" } },

@@ -552,6 +552,26 @@ paths:
         ineligible immediately, on receipt, with no timeout involved.
       security:
         - edgeNodeBearer: []
+      # TLS ONLY, mechanically. The top-level `servers` list carries a
+      # plaintext ClusterIP entry for in-cluster callers, and an operation
+      # inherits that list unless it overrides it. This endpoint is called
+      # from OFF-CLUSTER by definition, with a long-lived per-node
+      # credential, so it overrides: a generated client for this operation
+      # can only be pointed at the TLS server, and the plaintext one is not
+      # an option it is offered. Prose saying "use HTTPS here" is not the
+      # same thing.
+      servers:
+        - url: https://{edge_host}
+          description: >-
+            The only server this operation may be called on. See "Transport"
+            in the API description for the certificate requirements: real CA,
+            hostname SAN, no insecureSkipVerify, dedicated key.
+          variables:
+            edge_host:
+              default: agent-router.<lan-domain>
+              description: >-
+                DNS name the certificate is issued for, provisioned with it.
+                The placeholder is not a resolvable name.
       requestBody:
         required: true
         content:

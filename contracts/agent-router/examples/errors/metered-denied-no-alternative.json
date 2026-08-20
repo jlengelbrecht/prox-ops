@@ -1,7 +1,7 @@
 {
   "error": {
     "code": "metered_denied",
-    "message": "Every option that could serve this request is billable, and the request did not set allow_metered: true. No non-metered profile was substituted because none exists for this request. Authorizing spend is a human decision, per attempt, and is recorded; a client that resends this request with allow_metered: true on its own has defeated the control (invariant 4).",
+    "message": "Illustrative, against a hypothetical later catalog that declares a metered funding source; catalog 1.1.0 declares none. Every option that could serve this request is billable, and the request did not set allow_metered. No non-metered profile was substituted because none exists for this request. Read the origin of the billable option carefully: it is NOT an exhausted subscription that turned into per-token spend. Subscription pools declare spillover: none, so exhausting one makes it unavailable and nothing else. The billable candidate here exists only because this catalog independently declares openai-payg as its own funding source, with its own credential, gated behind allow_metered intent plus metered-spend authorization. Authorizing that spend is a human decision, per attempt, and is recorded; a client that resends with allow_metered on its own has defeated the control (invariant 4).",
     "obligation": "abort",
     "http_status": 409,
     "endpoint": "/v1/route",
@@ -12,6 +12,6 @@
         "cost_class": "metered"
       }
     },
-    "catalog_version": "sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a"
+    "catalog_version": "sha256:cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe"
   }
 }

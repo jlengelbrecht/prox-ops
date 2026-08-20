@@ -29,8 +29,8 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
     "version": "…",
     "endpoint": "https://<edge-host>:<edge-port>"
   },
-  "active_model": "qwen3.6-27b",
-  "cached_models": ["qwen3.6-27b"],
+  "active_model": "qwen36-27b",
+  "cached_models": ["qwen36-27b"],
   "preemptible": true,
   "interactive": false,
   "ac_power": true,
@@ -53,8 +53,8 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
 | `runtime.kind` | string | e.g. `llama-swap+llama.cpp` |
 | `runtime.version` | string | runtime/daemon version string |
 | `runtime.endpoint` | string | reachable-from-cluster endpoint, e.g. `https://<edge-host>:<edge-port>`. **Observational status metadata only — never an authoritative routing target; see §2** |
-| `active_model` | string \| null | the model currently **loaded and warm** in the inference runtime, if any |
-| `cached_models` | string[] | model artifacts already **present on local storage**, so loadable without a download — but still possibly needing model/VRAM load time |
+| `active_model` | string \| null | the model currently **loaded and warm** in the inference runtime, if any. Carries the **catalog `model_id`** — see below |
+| `cached_models` | string[] | model artifacts already **present on local storage**, so loadable without a download — but still possibly needing model/VRAM load time. Catalog `model_id` values |
 | `preemptible` | bool | true if local interactive use can evict AI work |
 | `interactive` | bool | true while a human is actively using the host |
 | `ac_power` | bool | false disqualifies laptop placements — see §4 |
@@ -62,6 +62,24 @@ Edge → router, `POST /v1/capacity/heartbeat` (EPIC-035 §4). This is also the 
 | `last_heartbeat` | RFC3339 | stamped by the edge host, not the router |
 | `capabilities` | string[] | e.g. `chat`, `tools`, `vision` |
 | `max_context` | number | tokens |
+
+**Which name goes in these two fields.** The **catalog `model_id`** — the key in the catalog
+`models` table, which for local models is the gateway-facing alias, e.g. `qwen36-27b`. **Never
+the `upstream_model_id`** (`qwen3.6-27b`), which is the different string agentgateway sends to
+the upstream server; the catalog says outright that the two must not be swapped.
+
+This is forced by what the values are for: the router derives readiness by joining them against
+the catalog's `profiles[].physical[].model_id`. A heartbeat reporting the upstream id joins
+against nothing, so a warm node looks cold and the work goes to a placement that has to load
+from scratch — the exact cost distinction the two fields exist to preserve.
+
+**Translation is the edge producer's job.** A runtime knows its own identity, not the
+catalog's: llama.cpp reports whatever `--alias` it was started with, vLLM reports the
+filesystem path it was launched from. The daemon emitting the heartbeat maps that runtime
+identity onto the catalog `model_id` **before sending**. The router does not guess, does not
+keep an alias table, and does not fall back to fuzzy matching — a value it cannot resolve
+against the catalog is an observability alarm, and is ignored for eligibility rather than
+acted on.
 
 **`active_model` vs `cached_models` — why both exist.** They describe three different costs,
 and `/v1/place` economics consume the distinction later:
