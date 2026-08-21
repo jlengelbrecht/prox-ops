@@ -174,6 +174,9 @@ LOCK_FILE="${TMPDIR:-/tmp}/edge-lease-drill.lock"
 AUTH_HEADER_FILE=$(mktemp "${TMPDIR:-/tmp}/edge-lease-drill-auth.XXXXXX")
 chmod 600 "$AUTH_HEADER_FILE"
 printf 'Authorization: Bearer %s\n' "$API_KEY" >"$AUTH_HEADER_FILE"
+# Reused across every client_probe() call to capture curl's --show-error
+# diagnostics, which are otherwise generated and silently thrown away.
+CURL_ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/edge-lease-drill-curl-err.XXXXXX")
 LEASE_FILE="$STATE_DIR/guard-lease"
 PHASE_FILE="$STATE_DIR/phase"
 
@@ -199,8 +202,15 @@ client_probe() {
     # promises the credential is never passed on the command line, and
     # -H "Authorization: Bearer $API_KEY" would break that promise --
     # /proc/<pid>/cmdline is world-readable for the life of the request.
-    code=$(curl "${opts[@]}" --header "@$AUTH_HEADER_FILE" "$ENDPOINT$PROBE_PATH" 2>/dev/null)
+    code=$(curl "${opts[@]}" --header "@$AUTH_HEADER_FILE" "$ENDPOINT$PROBE_PATH" 2>"$CURL_ERR_FILE")
     rc=$?
+    # --show-error only earns its keep if something reads what it produces:
+    # surface it on this script's own stderr (never mixed into the "<rc>
+    # <code>" stdout contract callers parse with `read`), and only when the
+    # request actually failed -- a healthy probe has nothing worth printing.
+    if [ "$rc" -ne 0 ] && [ -s "$CURL_ERR_FILE" ]; then
+        printf 'client_probe: %s\n' "$(cat "$CURL_ERR_FILE")" >&2
+    fi
     printf '%s %s\n' "$rc" "${code:-000}"
 }
 
@@ -407,7 +417,17 @@ assert_serving() {
 
 # shellcheck disable=SC2329  # invoked indirectly via `trap cleanup ...` below
 cleanup() {
-    rm -f "$LOCK_FILE" "${AUTH_HEADER_FILE:-}"
+    rm -f "${AUTH_HEADER_FILE:-}" "${CURL_ERR_FILE:-}"
+    # The trap is armed before the lock is acquired (so a failed acquisition
+    # still cleans up AUTH_HEADER_FILE above), which means a losing run's own
+    # exit reaches this function too. Everything below this point -- removing
+    # the lock file, restoring ENV_BACKUP, and restarting the guard/container
+    # -- must run only for the process that actually acquired the lock.
+    # Otherwise a losing run deletes the winning run's lock and restarts the
+    # guard/container the in-flight drill deliberately stopped, corrupting it
+    # and defeating the lock entirely.
+    [ "${LOCK_ACQUIRED:-0}" -eq 1 ] || return 0
+    rm -f "$LOCK_FILE"
     # Scenario e leaves ENV_BACKUP set for as long as $ENV_FILE holds the
     # broken ROCM_SMI value. If the script dies or is interrupted before the
     # scenario restores it itself, restore it here too, before touching the
@@ -420,12 +440,14 @@ cleanup() {
     guard_active || systemctl --user start "$GUARD_UNIT" >/dev/null 2>&1
     container_running || docker start "$CONTAINER" >/dev/null 2>&1
 }
+LOCK_ACQUIRED=0
 trap cleanup EXIT INT TERM
 
 if ! ( set -o noclobber; : >"$LOCK_FILE" ) 2>/dev/null; then
     echo "FATAL another lease-drill.sh run appears to be in progress ($LOCK_FILE exists)" >&2
     exit 2
 fi
+LOCK_ACQUIRED=1
 
 # --- preconditions ------------------------------------------------------------
 guard_active || { echo "FATAL $GUARD_UNIT is not active; bring the node to a healthy baseline before drilling" >&2; exit 2; }

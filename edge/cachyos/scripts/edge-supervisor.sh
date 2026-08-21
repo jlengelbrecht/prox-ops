@@ -141,14 +141,20 @@ swap_running() {
 # use would be caught," which is reason enough to close the listener
 # regardless of what interactive-claim says.
 lease_fresh() {
-    local lease now
+    local lease now age
     [ -r "$LEASE_FILE" ] || return 1
     lease=$(cat "$LEASE_FILE" 2>/dev/null) || return 1
     case "$lease" in
         ''|*[!0-9]*) return 1 ;;
     esac
     now=$(date -u +%s)
-    [ "$((now - lease))" -le "$LEASE_TTL" ]
+    age=$((now - lease))
+    # A lease timestamped in the future (host clock stepped backward after the
+    # guard wrote it) must never read as fresh: a negative age would otherwise
+    # satisfy `<= LEASE_TTL` and keep serving indefinitely -- the fail-open
+    # this check exists to prevent, just reached through the clock instead of
+    # through the guard.
+    [ "$age" -ge 0 ] && [ "$age" -le "$LEASE_TTL" ]
 }
 
 start_swap() {

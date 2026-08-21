@@ -14,7 +14,7 @@ Checker: [`edge/conformance.sh`](../conformance.sh).
 
 ## Shape
 
-```
+```text
                     LAN (cluster VLAN)
                           │
                           │  https://<edge-hostname>:8443
@@ -194,8 +194,11 @@ sed -i "s|^EDGE_STATE_HOST_DIR=.*|EDGE_STATE_HOST_DIR=${XDG_STATE_HOME:-$HOME/.l
 # EDGE_LIBEXEC_DIR must be the directory scripts/install.sh installs into
 # (step 5 below), for the same reason: the container mounts it with
 # `create_host_path: false`, so a mismatch fails loudly instead of running the
-# container against an empty directory.
-sed -i "s|^EDGE_LIBEXEC_DIR=.*|EDGE_LIBEXEC_DIR=${XDG_LIBEXEC_HOME:-$HOME/.local/libexec}/edge-cachyos|" .env
+# container against an empty directory. install.sh always installs to
+# ~/.local/libexec/edge-cachyos -- fixed, not derived from XDG_LIBEXEC_HOME,
+# because the units' ExecStart= hardcodes the same fixed path and systemd
+# specifiers cannot read arbitrary environment variables.
+sed -i "s|^EDGE_LIBEXEC_DIR=.*|EDGE_LIBEXEC_DIR=$HOME/.local/libexec/edge-cachyos|" .env
 ```
 
 `ROCM_SMI` must stay an absolute path (the default, `/opt/rocm/bin/rocm-smi`,
@@ -561,7 +564,7 @@ lease" as one undifferentiated fact:
   the supervisor withdraws exactly as it would for a hung or crashed guard.
   Running is not authorization; only seeing is.
 
-```
+```text
 valid sample                  -> lease refreshed
 one/transient failed sample   -> lease NOT refreshed; previous lease valid only
                                   for its remaining TTL
@@ -775,7 +778,7 @@ the only intended difference between the two is the backend.
 around 0.91–0.95 on short prompts. The invocation is identical to the cluster's
 apart from the bind address:
 
-```
+```sh
 --n-gpu-layers 999 --ctx-size 65536 --parallel 1
 --spec-type draft-mtp --spec-draft-n-max 2 --jinja --metrics
 ```

@@ -45,12 +45,18 @@
 #
 # Usage: scripts/install.sh
 
-set -uo pipefail
+set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 CACHYOS_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
-LIBEXEC_DIR="${XDG_LIBEXEC_HOME:-$HOME/.local/libexec}/edge-cachyos"
+# Fixed, not derived from XDG_LIBEXEC_HOME: the units' ExecStart= hardcodes
+# %h/.local/libexec/edge-cachyos (systemd specifiers cannot read arbitrary
+# env vars), so honouring XDG_LIBEXEC_HOME here would let this script install
+# to one directory while both daemons execute from another -- stale or
+# missing scripts, a guard that can never renew its lease, a node stuck
+# withdrawn. This path is the single authority both sides agree on.
+LIBEXEC_DIR="$HOME/.local/libexec/edge-cachyos"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 # Preflight: GPU sensor binary (STORY-035-6a cycle 5)
@@ -72,13 +78,32 @@ HOST_ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/edge-cachyos/edge.env"
 ROCM_SMI_PATH="/opt/rocm/bin/rocm-smi"
 if [ -r "$HOST_ENV_FILE" ]; then
     configured=$(sed -n 's/^ROCM_SMI=//p' "$HOST_ENV_FILE" | tail -n1)
-    [ -n "$configured" ] && ROCM_SMI_PATH="$configured"
+    # An `if`, not `[ -n ... ] && ROCM_SMI_PATH=...`: under `set -e`, a bare
+    # `&&` list outside a conditional's own test propagates its left side's
+    # failure and would abort the script whenever the env file exists but
+    # does not set ROCM_SMI, instead of falling back to the default.
+    if [ -n "$configured" ]; then
+        ROCM_SMI_PATH="$configured"
+    fi
 fi
-if [ ! -x "$ROCM_SMI_PATH" ]; then
-    echo "FATAL: GPU sensor binary '$ROCM_SMI_PATH' does not exist or is not executable." >&2
+# Must be an absolute path to a regular, executable file. `-x` alone is not
+# enough: it is also true for a directory (ROCM_SMI=/usr/bin would pass) and
+# for a relative path that happens to resolve against wherever this script is
+# run from -- neither is a binary the boot-time unit can actually execute.
+case "$ROCM_SMI_PATH" in
+    /*) ;;
+    *)
+        echo "FATAL: ROCM_SMI '$ROCM_SMI_PATH' is not an absolute path." >&2
+        echo "A bare command name or relative path is not resolved the same way at boot as it is" >&2
+        echo "from an interactive shell (STORY-035-6a cycle 5). Fix ROCM_SMI in $HOST_ENV_FILE" >&2
+        echo "to an absolute path, then re-run install.sh." >&2
+        exit 1
+        ;;
+esac
+if [ ! -f "$ROCM_SMI_PATH" ] || [ ! -x "$ROCM_SMI_PATH" ]; then
+    echo "FATAL: GPU sensor binary '$ROCM_SMI_PATH' does not exist or is not an executable file." >&2
     echo "A guard that cannot sample the GPU can never renew its lease and can never serve (STORY-035-6a)." >&2
-    echo "Fix ROCM_SMI in $HOST_ENV_FILE (must be an absolute path; a bare command name" >&2
-    echo "is not resolved through PATH at boot), or install rocm-smi at that path, then re-run install.sh." >&2
+    echo "Fix ROCM_SMI in $HOST_ENV_FILE, or install rocm-smi at that path, then re-run install.sh." >&2
     exit 1
 fi
 echo "GPU sensor binary OK: $ROCM_SMI_PATH"
