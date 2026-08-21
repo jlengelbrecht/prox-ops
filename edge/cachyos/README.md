@@ -110,7 +110,7 @@ and step 7 below checks the two sides really did land on the same directory.
 | `scripts/edge-interactive-guard.sh` | detects desktop GPU use; claims the GPU |
 | `scripts/edge-heartbeat.sh` | builds and posts the contract heartbeat |
 | `scripts/edge-common.sh` | shared GPU sampling and llama-swap calls |
-| `scripts/install.sh` | idempotent install/refresh into `~/.local/libexec/edge-cachyos/` |
+| `scripts/install.sh` | idempotent install/refresh into `~/.local/libexec/edge-cachyos/`; reports `ACTIVATION REQUIRED` if guard/heartbeat/container are already running (see [Activating an install](#activating-an-install)) |
 | `systemd/*.service` | user units for the two host-side daemons |
 | `testing/gpu-load.cpp` | a competing GPU workload, for drilling the guard |
 | `testing/interactive-drill.sh` | times detection, withdrawal and recovery |
@@ -294,6 +294,54 @@ a pull is what updates a deployed node — for the host daemons *and* for the
 container: `docker compose restart` (or the next `docker restart`/reboot)
 picks up the refreshed files without a rebuild, because they are bind-mounted,
 not baked into the image.
+
+### Activating an install
+
+`scripts/install.sh` only ever rewrites files on disk — it never restarts
+anything itself, on purpose, because turning an idempotent file install into a
+runtime operation would be a much bigger thing to run casually. That means a
+successful install and a live fix are two different states, and none of this
+directory's three runtime consumers collapses them for you:
+
+- `edge-interactive-guard.sh` and `edge-heartbeat.sh` are `systemctl --user`
+  units that hold their script in memory from process start.
+- `edge-supervisor.sh` is PID 1 **inside the container**; it holds its own
+  copy the same way, from whenever that container was last started or
+  recreated.
+
+None of the three watches its file for changes or reloads on `SIGHUP` — each
+keeps running whatever it loaded until it is explicitly restarted or
+recreated. So after a pull that touches `scripts/`, `systemd/`,
+`model-id-map.json` or `llama-swap.yaml`, re-running `scripts/install.sh`
+refreshes `~/.local/libexec/edge-cachyos/` and `~/.config/systemd/user/`, and
+then prints one of two things:
+
+```text
+INSTALL COMPLETE      runtime files updated on disk
+ACTIVATION REQUIRED   running processes must be restarted/recreated
+```
+
+If the guard, the heartbeat, or the container were already running when
+install ran, the second line lists exactly which ones and is not
+optional — those processes are still executing what they had loaded
+*before* this install ran, including a safety fix, until the canonical
+activation procedure below is followed:
+
+```sh
+systemctl --user restart edge-interactive-guard.service edge-heartbeat.service
+docker compose up -d --force-recreate   # or: docker compose restart
+```
+
+This is the fix for the failure mode this story hit during its own review
+cycle: an operator ran `install.sh`, saw it report success, and kept testing
+against the still-running, unpatched supervisor — which made a real fix look
+like a false failure. `install.sh` reporting `INSTALL COMPLETE` was never a
+claim that a running safety fix is active; it is a claim about the files on
+disk only. `ACTIVATION REQUIRED` is what closes that gap without making the
+installer decide, on its own, to restart a serving node.
+
+On a fresh host with nothing running yet, `install.sh` instead prints the
+normal next step — enabling the two units for the first time (step 5 below).
 
 **Migrating off the checkout-path drop-in.** Before this fix, the only thing
 that made the hardcoded `ExecStart=` work on a checkout other than

@@ -37,6 +37,12 @@
 #      made executable
 #   2. installs systemd/*.service to ~/.config/systemd/user/
 #   3. daemon-reload
+#   4. reports whether the guard, the heartbeat and the container are
+#      currently running, and if so prints ACTIVATION REQUIRED with the
+#      canonical restart/recreate procedure (STORY-035-6a cycle 8) -- this
+#      step only ever rewrites files on disk, it never restarts anything
+#      itself, so a running process keeps executing what it loaded before
+#      this ran until that procedure is followed
 #
 # It does NOT enable, start, or touch .env / secrets / PKI, and it does not
 # remove the pre-fix checkout-path drop-in if one is present on this host --
@@ -125,5 +131,67 @@ else
     echo "WARN systemctl not found on PATH; run 'systemctl --user daemon-reload' yourself" >&2
 fi
 
-echo "done. review $UNIT_DIR/edge-*.service, then:"
-echo "  systemctl --user enable --now edge-interactive-guard.service edge-heartbeat.service"
+# Activation-boundary messaging (STORY-035-6a cycle 8)
+# ----------------------------------------------------
+# This install step only ever rewrites files on disk. None of the three
+# runtime consumers reload their script/config from disk once running --
+# edge-interactive-guard.sh and edge-heartbeat.sh are systemd units that hold
+# their code from process start, and edge-supervisor.sh is PID 1 inside a
+# running container, which keeps its own copy the same way -- so a plain
+# "done" here is misleading: it reads as "the fix is live" when a running
+# process is still executing whatever it had loaded before this install ran.
+# An unqualified "done" is exactly what let cycle 7's install look successful
+# while the running supervisor kept serving a future-dated lease. This does
+# NOT restart anything itself -- that would turn an idempotent file install
+# into a disruptive runtime operation -- it only tells the operator, plainly,
+# which of the two states they are actually in.
+echo
+echo "INSTALL COMPLETE      runtime files updated on disk"
+
+running_guard=0
+running_heartbeat=0
+running_container=0
+
+if command -v systemctl >/dev/null 2>&1; then
+    if systemctl --user is-active --quiet edge-interactive-guard.service 2>/dev/null; then
+        running_guard=1
+    fi
+    if systemctl --user is-active --quiet edge-heartbeat.service 2>/dev/null; then
+        running_heartbeat=1
+    fi
+fi
+
+if command -v docker >/dev/null 2>&1; then
+    container_state=$(docker inspect -f '{{.State.Running}}' edge-llama-swap 2>/dev/null || true)
+    if [ "$container_state" = "true" ]; then
+        running_container=1
+    fi
+fi
+
+if [ "$running_guard" -eq 1 ] || [ "$running_heartbeat" -eq 1 ] || [ "$running_container" -eq 1 ]; then
+    echo "ACTIVATION REQUIRED   running processes must be restarted/recreated"
+    echo
+    echo "The following are still running and hold their PREVIOUS code/config in"
+    echo "memory -- none of them reload from disk on their own:"
+    # `if`, not a bare `[ ... ] && echo ...`: under `set -e`, a standalone
+    # command's overall exit status is the `&&` list's, so a false test
+    # (nothing to print) would abort the whole script instead of just
+    # skipping the line -- same trap as the ROCM_SMI fallback above.
+    if [ "$running_guard" -eq 1 ]; then
+        echo "  - edge-interactive-guard.service"
+    fi
+    if [ "$running_heartbeat" -eq 1 ]; then
+        echo "  - edge-heartbeat.service"
+    fi
+    if [ "$running_container" -eq 1 ]; then
+        echo "  - edge-llama-swap container (edge-supervisor.sh, PID 1)"
+    fi
+    echo
+    echo "Canonical activation procedure (see README.md 'Activating an install'):"
+    echo "  systemctl --user restart edge-interactive-guard.service edge-heartbeat.service"
+    echo "  docker compose up -d --force-recreate   # from the deployment's compose invocation"
+else
+    echo "ACTIVATION REQUIRED   none -- guard, heartbeat and the container are not currently running"
+    echo "review $UNIT_DIR/edge-*.service, then:"
+    echo "  systemctl --user enable --now edge-interactive-guard.service edge-heartbeat.service"
+fi
