@@ -80,7 +80,14 @@ UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 # actually feeds the running guard. Falls back to the documented absolute
 # default if the file does not exist yet or does not set ROCM_SMI, so a
 # fresh clone with no host config yet still gets checked against something.
-HOST_ENV_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/edge-cachyos/edge.env"
+# Canonical, not XDG-derived: the units hardcode
+# EnvironmentFile=%h/.config/edge-cachyos/edge.env and systemd's %h cannot
+# expand XDG_CONFIG_HOME, so honouring it here would let the preflight
+# validate a file the guard never reads -- the sensor-validation guarantee
+# would pass while the running guard loaded an unvalidated ROCM_SMI. Same
+# reasoning as LIBEXEC_DIR above: installer path authority == systemd
+# runtime path authority.
+HOST_ENV_FILE="$HOME/.config/edge-cachyos/edge.env"
 ROCM_SMI_PATH="/opt/rocm/bin/rocm-smi"
 if [ -r "$HOST_ENV_FILE" ]; then
     configured=$(sed -n 's/^ROCM_SMI=//p' "$HOST_ENV_FILE" | tail -n1)
