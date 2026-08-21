@@ -19,7 +19,14 @@ EDGE_STATE_DIR="${EDGE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/edge-cac
 EDGE_CLAIM_FILE="$EDGE_STATE_DIR/interactive-claim"
 EDGE_PHASE_FILE="$EDGE_STATE_DIR/phase"
 
-ROCM_SMI="${ROCM_SMI:-rocm-smi}"
+# Absolute path, not a bare command name (STORY-035-6a cycle 5): a bare name
+# resolves through PATH, and the systemd user manager's boot-time PATH
+# (/usr/local/bin:/usr/bin) does not include rocm-smi's install location,
+# unlike an interactive login shell's -- the root cause of a guard that ran
+# from boot while never once successfully sampling the GPU. env.example
+# documents this default and scripts/install.sh refuses to install if the
+# configured path is not an existing, executable file.
+ROCM_SMI="${ROCM_SMI:-/opt/rocm/bin/rocm-smi}"
 
 edge_log() {
     printf '%s %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${EDGE_LOG_TAG:-edge}" "$*" >&2

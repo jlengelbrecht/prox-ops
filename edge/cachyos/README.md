@@ -110,9 +110,11 @@ and step 7 below checks the two sides really did land on the same directory.
 | `scripts/edge-interactive-guard.sh` | detects desktop GPU use; claims the GPU |
 | `scripts/edge-heartbeat.sh` | builds and posts the contract heartbeat |
 | `scripts/edge-common.sh` | shared GPU sampling and llama-swap calls |
+| `scripts/install.sh` | idempotent install/refresh into `~/.local/libexec/edge-cachyos/` |
 | `systemd/*.service` | user units for the two host-side daemons |
 | `testing/gpu-load.cpp` | a competing GPU workload, for drilling the guard |
 | `testing/interactive-drill.sh` | times detection, withdrawal and recovery |
+| `testing/lease-drill.sh` | proves the guard-ready lease fails closed at the socket (reboot race, container restart, guard crash, guard restart) |
 
 ## Bring-up
 
@@ -188,12 +190,27 @@ $EDITOR .env                    # address, hostname, measured VRAM baseline
 # if this is wrong the container fails to start instead of running against an
 # empty directory nothing else can see.
 sed -i "s|^EDGE_STATE_HOST_DIR=.*|EDGE_STATE_HOST_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/edge-cachyos-state|" .env
+
+# EDGE_LIBEXEC_DIR must be the directory scripts/install.sh installs into
+# (step 5 below), for the same reason: the container mounts it with
+# `create_host_path: false`, so a mismatch fails loudly instead of running the
+# container against an empty directory.
+sed -i "s|^EDGE_LIBEXEC_DIR=.*|EDGE_LIBEXEC_DIR=${XDG_LIBEXEC_HOME:-$HOME/.local/libexec}/edge-cachyos|" .env
 ```
+
+`ROCM_SMI` must stay an absolute path (the default, `/opt/rocm/bin/rocm-smi`,
+is correct on this host). It must not be edited down to a bare command name
+— PATH resolution works from an interactive shell but not from the systemd
+user manager at boot, which is how the guard ran blind through an entire
+cold boot before this was caught; see ["A blind guard is not a live
+guard"](#a-blind-guard-is-not-a-live-guard-cycle-5). `scripts/install.sh`
+(next step) refuses to install if this does not point at a real, executable
+file.
 
 ### 5. Install the host-side daemons
 
 ```sh
-mkdir -p ~/.config/edge-cachyos ~/.config/systemd/user
+mkdir -p ~/.config/edge-cachyos
 
 # Copied as-is. Neither the state directory nor the credential path is in it —
 # each means something different inside and outside the container, so the units
@@ -214,8 +231,16 @@ install -m 600 .env ~/.config/edge-cachyos/edge.env
 docker run --rm -v edge-pki:/pki:ro alpine:3.20 cat /pki/edge-ca.crt \
   > ~/.config/edge-cachyos/edge-ca.crt
 
-cp systemd/*.service ~/.config/systemd/user/
-systemctl --user daemon-reload
+# Validates ROCM_SMI in the edge.env just installed above (exits 1 if it is
+# not an existing, executable path — see "A blind guard is not a live
+# guard"), then copies scripts/, model-id-map.json and README.md to
+# ~/.local/libexec/edge-cachyos/ and the two unit files to
+# ~/.config/systemd/user/, then daemon-reloads. See "Layout independence"
+# below for why the units point there instead of at this checkout, and
+# re-run this after every pull that touches scripts/, systemd/ or
+# model-id-map.json — it is idempotent.
+scripts/install.sh
+
 systemctl --user enable --now edge-interactive-guard.service edge-heartbeat.service
 loginctl enable-linger "$USER"   # so they survive logout
 ```
@@ -230,13 +255,81 @@ systemd reads that as a pre-v254 migration and replaces the state directory with
 a symlink to the configuration one, which would put the claim file, the phase
 file and a container bind mount on top of the credential.
 
-The unit files assume the repo is at `~/repos/prox-ops`; adjust `ExecStart` if
-it is not.
+### Layout independence
+
+The units shipped before this fix hardcoded `ExecStart=%h/repos/prox-ops/...`,
+so they only ever worked on the one checkout that path happened to match —
+anywhere else, `203/EXEC`. `ExecStart=` does **not** expand environment
+variables in the binary path (`ExecStart=$SOMEVAR/script.sh` is silently
+wrong, not merely unsupported), so a fixed, checkout-independent path is the
+only shape that works without a wrapper.
+
+`scripts/install.sh` is that fixed point: it copies the runtime scripts,
+`model-id-map.json`, `llama-swap.yaml` and this README to
+`~/.local/libexec/edge-cachyos/` (mirroring this directory's own layout, so
+`edge-heartbeat.sh`'s default model-map lookup keeps resolving unmodified),
+and copies the two unit files — which point `ExecStart=` and `Documentation=`
+at that libexec copy, never at this checkout — to `~/.config/systemd/user/`.
+Run it once after cloning, and again after every pull that touches
+`scripts/`, `systemd/`, `model-id-map.json` or `llama-swap.yaml`; it is
+idempotent and does not touch `.env`, secrets, or PKI.
+
+**The container consumes the same installed copy, not this checkout.**
+`docker-compose.yaml` bind-mounts `${EDGE_LIBEXEC_DIR}/scripts` and
+`${EDGE_LIBEXEC_DIR}/llama-swap.yaml` — never `./scripts` or
+`./llama-swap.yaml` relative to wherever `docker compose` is invoked from.
+That distinction is not cosmetic: a relative mount ties the running container
+to whatever directory happened to be current when it was brought up, which is
+how a live node ended up bound to a disposable Orca worktree — and, once that
+worktree was deleted, one `docker restart` away from failing to start, because
+its `/edge/scripts` was already empty. `EDGE_LIBEXEC_DIR` (see `env.example`)
+must be the same path `install.sh` installs to, and both compose bind mounts
+declare `create_host_path: false`, so a wrong or not-yet-installed value fails
+the container loudly instead of docker silently creating an empty directory
+the entrypoint then cannot find itself in. Running `scripts/install.sh` after
+a pull is what updates a deployed node — for the host daemons *and* for the
+container: `docker compose restart` (or the next `docker restart`/reboot)
+picks up the refreshed files without a rebuild, because they are bind-mounted,
+not baked into the image.
+
+**Migrating off the checkout-path drop-in.** Before this fix, the only thing
+that made the hardcoded `ExecStart=` work on a checkout other than
+`~/repos/prox-ops` was an untracked, host-local systemd drop-in —
+`~/.config/systemd/user/edge-*.service.d/10-repo-path.conf` — silently
+overriding `ExecStart=` back to wherever this host's checkout actually is. If
+this host has one, remove it explicitly; leaving it in place is not harmless,
+because a drop-in always wins over the unit file underneath it, so the fixed
+`ExecStart=` above would silently never take effect:
+
+```sh
+rm -f ~/.config/systemd/user/edge-heartbeat.service.d/10-repo-path.conf \
+      ~/.config/systemd/user/edge-interactive-guard.service.d/10-repo-path.conf
+rmdir --ignore-fail-on-non-empty \
+      ~/.config/systemd/user/edge-heartbeat.service.d \
+      ~/.config/systemd/user/edge-interactive-guard.service.d 2>/dev/null || true
+
+scripts/install.sh
+systemctl --user daemon-reload
+systemctl --user restart edge-interactive-guard.service edge-heartbeat.service
+```
+
+Verify the drop-in is gone and the fixed path is what actually runs:
+
+```sh
+systemctl --user cat edge-heartbeat.service | grep '^ExecStart='
+# expect: ExecStart=/home/<user>/.local/libexec/edge-cachyos/scripts/edge-heartbeat.sh ...
+```
 
 ### 6. Start the container
 
 The daemons come first because the units are what create the shared state
-directory, and the container bind-mounts it with `create_host_path: false`.
+directory, and step 5's `scripts/install.sh` is what populates
+`EDGE_LIBEXEC_DIR` — both are bind-mounted with `create_host_path: false`, so
+the container refuses to start against a missing or empty one rather than
+silently running with no scripts and no llama-swap config. Run
+`docker compose` from this checkout or from anywhere else; nothing about the
+running container depends on which directory `docker compose up` was invoked
+from, only on `.env` pointing `EDGE_LIBEXEC_DIR` at the installed copy.
 
 ```sh
 docker compose up -d --build
@@ -373,6 +466,116 @@ drive docker can start a privileged container. Watching a file keeps the guard
 unprivileged; the supervisor, already inside the blast radius, does the part
 that needs authority.
 
+### Guard-ready lease (fail-closed)
+
+`interactive-claim` answers "does the desktop want the GPU back." It cannot
+answer a different question that turned out to matter just as much: "is the
+guard that would notice even alive." A guard that has crashed or hung writes
+no claim, so the endpoint that infers safety purely from claim-presence reads
+a dead detector identically to a quiet desktop — and that is exactly what
+happened in production. After a reboot, docker's `restart: unless-stopped`
+policy brought the container back before `graphical-session.target` had
+started `edge-interactive-guard.service`; nothing was checking that the guard
+had ever run, so the endpoint served with no interlock watching it at all.
+
+The fix is a second file, `guard-lease`, in the same
+[shared state directory](#shared-state-directory). `edge-interactive-guard.sh`
+writes the current UTC epoch second to it at the end of every pass of its
+`watch` loop — a **positive, continuously renewed** assertion, not a one-shot
+flag a dead process's last write would keep "proving" forever. `edge-supervisor.sh`
+enforces it **at the listener**, independent of `interactive-claim` entirely:
+
+- no lease file, an unparseable one, or one older than `EDGE_GUARD_LEASE_TTL`
+  (default 6s) → the listener is closed, exactly like an interactive claim;
+- a fresh lease and no claim → serving is permitted;
+- the lease goes stale (guard crashes or hangs) → the listener is withdrawn
+  again, on the supervisor's own poll, with no dependency on the guard
+  process, systemd, or anything cluster-side.
+
+**This makes "starting closed" the actual default, not an aspiration.** On
+container boot the supervisor checks the lease before ever starting
+`llama-swap` — so a container that comes up before its guard (the reboot
+race, and a plain `docker restart` too) stays withdrawn until a fresh lease
+appears, however that container came to be running. No Kubernetes,
+agentgateway, heartbeat, or network round-trip is consulted anywhere in this
+path: every check is a local file read against `EDGE_STATE_DIR`, which is why
+this still fails closed on a node that is entirely offline.
+
+**The TTL and the residual exposure, stated plainly.** `EDGE_GUARD_LEASE_TTL`
+defaults to 6s — three times the guard's own default 2s sampling interval, so
+one slow `rocm-smi` call does not trip a false withdrawal, while a genuinely
+dead or hung guard is still caught inside two of its own sampling periods.
+The supervisor polls every `EDGE_POLL_INTERVAL` (default 1s). Worst case, a
+guard dies the instant after renewing, so its lease reads as fresh for the
+entire TTL before going stale, and the supervisor takes up to one more poll
+to notice: **`EDGE_GUARD_LEASE_TTL + EDGE_POLL_INTERVAL` = 7s by default**
+between guard death and listener withdrawal. That 7s window is the residual
+exposure this design accepts, named rather than hidden — a shorter
+interval/TTL shrinks it at the cost of more sensitivity to a single slow GPU
+sample. `testing/lease-drill.sh` measures the real number on this host; see
+its output in the story's Dev Agent Record for the values actually observed.
+
+`EDGE_GUARD_LEASE_TTL` is read by the container (`docker-compose.yaml`, with
+the same default) and must agree with the interval the host guard actually
+runs at — the two are not derived from each other automatically, so changing
+`EDGE_GUARD_INTERVAL` without reviewing this value can silently widen or
+narrow the window above.
+
+### A blind guard is not a live guard (cycle 5)
+
+The first cold boot this story ran proved the mechanism above — units
+activated and service answered before login, with no manual fix-up — but it
+also surfaced a defect the mechanism did not cover: `rocm-smi` lives at
+`/opt/rocm/bin/rocm-smi`, the systemd **user manager's** PATH at boot is
+`/usr/local/bin:/usr/bin`, and the shipped default (`ROCM_SMI=rocm-smi`) is a
+bare name resolved through PATH. Every sample failed, silently, from the
+moment the unit started — invisible to every earlier check in this story,
+because every earlier guard restart was `systemctl --user restart` from an
+interactive shell, which inherits a login PATH that does include
+`/opt/rocm/bin`. Only a real cold boot exposed it.
+
+The guard kept renewing its lease throughout, because the original design
+renewed on every loop pass regardless of whether the sample it just took
+meant anything — the loop was alive, so the lease said "safe", while the
+guard could not see the GPU at all. **Fail-closed on process liveness,
+fail-open on detection** — the exact failure mode this story exists to
+remove, one layer down.
+
+Two changes close it, both scoped to the guard; `edge-supervisor.sh`'s
+enforcement did not need to change, since it already treats "no fresh
+lease" as one undifferentiated fact:
+
+- **`ROCM_SMI` must be an absolute path.** `env.example` defaults it to
+  `/opt/rocm/bin/rocm-smi`, and `scripts/install.sh` reads the value from
+  the deployed `~/.config/edge-cachyos/edge.env` and refuses to install —
+  `exit 1`, before touching the units — if that path does not exist or is
+  not executable. A bad or missing sensor binary is a deployment failure now,
+  not a warning buried in `journalctl`.
+- **A lease renewal means "the guard just completed a valid GPU sample"**,
+  not "the process looped". `edge-interactive-guard.sh`'s `cmd_watch` calls
+  `renew_lease` only from the branch where `sample()` succeeded; a failed,
+  malformed, or missing sample skips it entirely. There is deliberately no
+  second failure-count timer — `EDGE_GUARD_LEASE_TTL` is still the only
+  grace period, so one transient failure does not withdraw service, but
+  sampling broken for longer than the TTL lets the existing lease expire and
+  the supervisor withdraws exactly as it would for a hung or crashed guard.
+  Running is not authorization; only seeing is.
+
+```
+valid sample                  -> lease refreshed
+one/transient failed sample   -> lease NOT refreshed; previous lease valid only
+                                  for its remaining TTL
+sampling broken > TTL         -> lease expires -> supervisor withdraws llama-swap
+                                  -> client cannot obtain inference
+valid sampling returns        -> fresh lease -> autonomous recovery
+```
+
+`testing/lease-drill.sh`'s sensor-blindness scenario reproduces this without
+waiting for a real cold boot: it points a running guard's `ROCM_SMI` at a
+path that does not exist, proves the client-observed outage and phase
+`withdrawn` within ~TTL, then restores it and proves autonomous recovery to
+an authenticated 200.
+
 ### What the guard actually measures
 
 `rocm-smi`'s KFD process table reports VRAM held by *compute* clients, so:
@@ -434,6 +637,15 @@ that it says so.
 
 Re-run the drill after changing any threshold. The latency numbers are the
 acceptance criterion; the thresholds are just how they were reached.
+
+This drill exercises the VRAM/compute detector and `interactive-claim` only.
+The [guard-ready lease](#guard-ready-lease-fail-closed) — the fail-closed
+interlock that also has to survive the guard itself crashing or a reboot
+racing the container — is a different failure mode with its own proof:
+`testing/lease-drill.sh`. It cannot be exercised from a checkout with no
+`docker`/`systemctl` access; run it on the host with both units installed and
+the container up. See its own `--help` and the story's Dev Agent Record for
+what it proved and what, if anything, still needs a human to run it.
 
 ## Model lifecycle
 
