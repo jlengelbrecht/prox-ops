@@ -46,6 +46,21 @@
 # running that exact PID -- the scenario FAILs if the guard exited or
 # restarted instead of merely going blind.
 #
+# CYCLE 10 addition: scenario f proves a different regression than a-e --
+# not that the interlock fails closed, but that it must NOT fail closed when
+# nothing is actually wrong. The guard used to query llama-swap's /running
+# inline, inside the same loop pass that renews the lease; a reachable-but-
+# slow /running could consume close to the guard's own HTTP timeout on that
+# pass and starve the lease TTL even though the GPU sensor -- what the lease
+# is actually supposed to attest -- was perfectly healthy throughout. The fix
+# (edge-interactive-guard.sh's "Cycle 10" comment) moves /running onto its
+# own background clock. Scenario f proves it by making /running genuinely
+# hang -- a small Python listener that accepts the TCP connection and never
+# answers, so every curl call through it blocks for the guard's own HTTP
+# timeout before failing -- for well over one TTL, and asserting CONTINUOUS
+# service throughout: unlike a-e, a single missed poll during the window is
+# itself the failure, not merely the end state.
+#
 # CANNOT run inside the dev-agent sandbox that authored it — no docker, no
 # systemctl, no reads outside the worktree (see the story's EXECUTION
 # SPLIT). Run this on the real host, as the user the systemd --user units
@@ -54,14 +69,16 @@
 #
 # Idempotent: every scenario, and the script's own exit trap, leave the
 # guard unit and the container running — a failed or interrupted run does
-# not leave the node withdrawn. Scenario e's env-file edit is likewise
-# restored unconditionally, including from the exit trap on an interrupted
-# run, so a killed drill never leaves the host's ROCM_SMI pointed at a path
-# that does not exist. A lock file refuses a second concurrent run rather
+# not leave the node withdrawn. Scenarios e and f's env-file edits are
+# likewise restored unconditionally, including from the exit trap on an
+# interrupted run, so a killed drill never leaves the host's ROCM_SMI
+# pointed at a path that does not exist, or EDGE_CURL_RESOLVE pointed at a
+# /running target that will never answer. Scenario f's blackhole listener is
+# killed the same way. A lock file refuses a second concurrent run rather
 # than interleaving two drills' kills and restarts.
 #
 # Requires: docker, systemctl, curl, ss (informational only), date, awk,
-# sed, grep, and
+# sed, grep, python3 (scenario f's blackhole /running listener), and
 # passwordless `systemctl --user` / `docker` for the invoking user — both
 # already assumed by normal operation of this node.
 #
@@ -168,7 +185,7 @@ fi
 [ -n "$CA_CERT" ] && [ -r "$CA_CERT" ] || { echo "FATAL --ca-cert '$CA_CERT' (or EDGE_CA_CERT) must be a readable file" >&2; exit 2; }
 [ -n "$API_KEY" ] || { echo "FATAL no bearer credential: set EDGE_API_KEY_FILE or EDGE_API_KEY (never pass one as a flag)" >&2; exit 2; }
 
-for bin in ss docker systemctl curl date awk sed grep; do
+for bin in ss docker systemctl curl date awk sed grep python3; do
     command -v "$bin" >/dev/null 2>&1 || { echo "FATAL required tool '$bin' not found on PATH" >&2; exit 2; }
 done
 
@@ -187,8 +204,13 @@ printf 'Authorization: Bearer %s\n' "$API_KEY" >"$AUTH_HEADER_FILE"
 # Reused across every client_probe() call to capture curl's --show-error
 # diagnostics, which are otherwise generated and silently thrown away.
 CURL_ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/edge-lease-drill-curl-err.XXXXXX")
+# Scenario f's blackhole listener writes "ready" here once it has bound its
+# port, so the scenario can wait for that instead of racing a fixed sleep
+# against Python's startup time.
+BLACKHOLE_READY_FILE=$(mktemp "${TMPDIR:-/tmp}/edge-lease-drill-blackhole.XXXXXX")
 LEASE_FILE="$STATE_DIR/guard-lease"
 PHASE_FILE="$STATE_DIR/phase"
+RUNNING_CACHE_FILE="$STATE_DIR/running-cache"
 
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -245,6 +267,24 @@ read_phase() {
     else
         echo unknown
     fi
+}
+
+# Age and value of the guard's background /running cache (STORY-035-6a cycle
+# 10) -- see edge-interactive-guard.sh's cached_loaded(). Prints "<age>
+# <value>"; a missing or unparseable file reads as "missing unknown" /
+# "invalid unknown", matching what cached_loaded() itself would return.
+read_running_cache() {
+    if [ ! -r "$RUNNING_CACHE_FILE" ]; then
+        echo "missing unknown"
+        return
+    fi
+    local ts loaded now
+    read -r ts loaded <"$RUNNING_CACHE_FILE" 2>/dev/null
+    case "$ts" in
+        ''|*[!0-9]*) echo "invalid unknown"; return ;;
+    esac
+    now=$(date -u +%s)
+    printf '%s %s\n' "$((now - ts))" "${loaded:-unknown}"
 }
 
 # Evidence about the service itself, independent of the phase file the
@@ -446,9 +486,79 @@ assert_serving() {
     fi
 }
 
+# Polls the client AND the guard's on-disk state continuously across a
+# window, failing the instant any single observation breaks. This is the
+# opposite shape from assert_fail_closed/assert_serving, which poll UNTIL a
+# target state is reached: STORY-035-6a cycle 10's required proof is "never
+# withdraws for the whole window", so a single bad poll in the middle is
+# itself the failure, not something later polling should be allowed to paper
+# over.
+#
+# $5: seconds after $3 before the running-cache is required to already read
+# `unknown`. The guard's first /running call through the blackhole blocks
+# for its own HTTP timeout before failing, so the cache cannot possibly show
+# `unknown` before roughly that long; see the call site for the value used.
+assert_serving_continuously() {
+    local scenario="$1" action="$2" since_epoch="$3" window_s="$4" cache_settle_s="$5"
+    local start_wall now elapsed rc code lease_age phase swap_state
+    local cache_age cache_loaded ok=1 reasons="" checks=0
+
+    echo
+    echo "=== scenario $scenario: $action ==="
+    printf 'timestamp (UTC)        : %s\n' "$(now_utc)"
+    printf 'action                  : %s\n' "$action"
+    printf 'window                  : %ss, polled every %ss\n' "$window_s" "$POLL_INTERVAL"
+
+    start_wall=$(date +%s)
+    while :; do
+        elapsed=$(($(date +%s) - start_wall))
+        checks=$((checks + 1))
+        read -r rc code <<<"$(client_probe)"
+        lease_age=$(read_lease_age)
+        phase=$(read_phase)
+        if swap_process_present; then swap_state=present; else swap_state=absent; fi
+        read -r cache_age cache_loaded <<<"$(read_running_cache)"
+
+        if [ "$rc" -ne 0 ] || [ "$code" != 200 ]; then
+            ok=0; reasons+="client request failed at t=+${elapsed}s (rc=$rc code=$code); "
+        fi
+        if [ "$phase" != serving ]; then
+            ok=0; reasons+="phase was '$phase' at t=+${elapsed}s, not serving; "
+        fi
+        if [ "$swap_state" != present ]; then
+            ok=0; reasons+="llama-swap process absent at t=+${elapsed}s; "
+        fi
+        case "$lease_age" in
+            missing|invalid) ok=0; reasons+="lease age is $lease_age at t=+${elapsed}s; " ;;
+            *) [ "$lease_age" -le "$LEASE_TTL" ] || { ok=0; reasons+="lease age ${lease_age}s exceeds TTL ${LEASE_TTL}s at t=+${elapsed}s; "; } ;;
+        esac
+        if [ "$elapsed" -ge "$cache_settle_s" ] && [ "$cache_loaded" != unknown ]; then
+            ok=0; reasons+="running-cache still reads '$cache_loaded' (not unknown) at t=+${elapsed}s, ${cache_settle_s}s after the block started; "
+        fi
+
+        [ "$ok" -eq 1 ] || break
+        [ "$elapsed" -ge "$window_s" ] && break
+        sleep "$POLL_INTERVAL"
+    done
+
+    printf 'checks performed        : %s over %ss\n' "$checks" "$elapsed"
+    printf 'last lease age          : %s (TTL=%ss)\n' "$lease_age" "$LEASE_TTL"
+    printf 'last phase              : %s (expected serving throughout)\n' "$phase"
+    printf 'last llama-swap process : %s (expected present throughout)\n' "$swap_state"
+    printf 'last running-cache      : age=%s value=%s (expected unknown from t=+%ss on)\n' \
+        "$cache_age" "$cache_loaded" "$cache_settle_s"
+
+    if [ "$ok" -eq 1 ]; then
+        printf 'RESULT                  : PASS -- served continuously for %ss with a fresh lease; models_loaded read unknown once the block took effect\n' "$elapsed"
+    else
+        printf 'RESULT                  : FAIL — %s\n' "$reasons"
+        FAILURES=$((FAILURES + 1))
+    fi
+}
+
 # shellcheck disable=SC2329  # invoked indirectly via `trap cleanup ...` below
 cleanup() {
-    rm -f "${AUTH_HEADER_FILE:-}" "${CURL_ERR_FILE:-}"
+    rm -f "${AUTH_HEADER_FILE:-}" "${CURL_ERR_FILE:-}" "${BLACKHOLE_READY_FILE:-}"
     # The trap is armed before the lock is acquired (so a failed acquisition
     # still cleans up AUTH_HEADER_FILE above), which means a losing run's own
     # exit reaches this function too. Everything below this point -- removing
@@ -459,11 +569,19 @@ cleanup() {
     # and defeating the lock entirely.
     [ "${LOCK_ACQUIRED:-0}" -eq 1 ] || return 0
     rm -f "$LOCK_FILE"
-    # Scenario e leaves ENV_BACKUP set for as long as $ENV_FILE holds the
-    # broken ROCM_SMI value. If the script dies or is interrupted before the
-    # scenario restores it itself, restore it here too, before touching the
-    # guard unit, so a killed drill never leaves the deployed host config
-    # pointed at a sensor binary that does not exist.
+    # Scenario f's blackhole /running listener has no reason to keep running
+    # once the drill is done or dies -- it is this run's own child, never
+    # shared with anything else.
+    if [ -n "${BLACKHOLE_PID:-}" ]; then
+        kill "$BLACKHOLE_PID" 2>/dev/null
+        wait "$BLACKHOLE_PID" 2>/dev/null
+    fi
+    # Scenarios e and f leave ENV_BACKUP set for as long as $ENV_FILE holds
+    # the broken ROCM_SMI or EDGE_CURL_RESOLVE value. If the script dies or
+    # is interrupted before the scenario restores it itself, restore it here
+    # too, before touching the guard unit, so a killed drill never leaves the
+    # deployed host config pointed at a sensor binary that does not exist or
+    # a /running target that will never answer.
     if [ -n "${ENV_BACKUP:-}" ] && [ -r "$ENV_BACKUP" ]; then
         mv -f "$ENV_BACKUP" "$ENV_FILE"
         systemctl --user restart "$GUARD_UNIT" >/dev/null 2>&1
@@ -614,6 +732,91 @@ assert_serving e-recovery \
     "ROCM_SMI restored and guard restarted" \
     "$sensor_restored_epoch" \
     "recovery latency (sensor restored -> first successful authenticated request)"
+
+# --- scenario f: /running slow while the GPU sensor stays healthy (STORY-035-6a cycle 10) --
+# See the CYCLE 10 header comment. The blackhole is a real network
+# intervention -- a Python listener that accepts the TCP connection and never
+# answers -- not a stub inside the guard, so every curl call through it
+# blocks for the guard's own HTTP timeout before failing, exactly the
+# reachable-but-slow case that starved the lease before the fix.
+guard_active || { echo "FATAL guard did not come back before scenario f" >&2; exit 1; }
+[ -r "$ENV_FILE" ] || { echo "FATAL host env file '$ENV_FILE' (--env-file / EDGE_HOST_ENV_FILE) is not readable; cannot drill /running latency" >&2; exit 1; }
+
+ENDPOINT_HOST=$(printf '%s' "$ENDPOINT" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#[:/].*$##')
+[ -n "$ENDPOINT_HOST" ] || { echo "FATAL could not parse a hostname out of --endpoint '$ENDPOINT'" >&2; exit 1; }
+
+echo
+echo "starting a blackhole /running listener on 127.0.0.1:$PORT (accepts connections, never answers)"
+python3 -c '
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(5)
+sys.stdout.write("ready\n")
+sys.stdout.flush()
+while True:
+    conn, _ = s.accept()
+    # Deliberately never read or write: the TLS handshake, and therefore
+    # every curl call through this listener, hangs until the caller times out.
+' "$PORT" >"$BLACKHOLE_READY_FILE" 2>/dev/null &
+BLACKHOLE_PID=$!
+
+blackhole_wait_start=$(date +%s)
+while [ ! -s "$BLACKHOLE_READY_FILE" ]; do
+    if ! kill -0 "$BLACKHOLE_PID" 2>/dev/null; then
+        echo "FATAL blackhole listener exited before it was ready (port $PORT already bound on 127.0.0.1?)" >&2
+        exit 1
+    fi
+    if [ "$(($(date +%s) - blackhole_wait_start))" -ge 10 ]; then
+        kill "$BLACKHOLE_PID" 2>/dev/null
+        echo "FATAL blackhole listener did not become ready within 10s" >&2
+        exit 1
+    fi
+    sleep 0.2
+done
+
+ENV_BACKUP="${ENV_FILE}.lease-drill.bak.$$"
+cp -p "$ENV_FILE" "$ENV_BACKUP"
+RESOLVE_OVERRIDE="$ENDPOINT_HOST:$PORT:127.0.0.1"
+if grep -q '^EDGE_CURL_RESOLVE=' "$ENV_FILE"; then
+    sed -i "s|^EDGE_CURL_RESOLVE=.*|EDGE_CURL_RESOLVE=$RESOLVE_OVERRIDE|" "$ENV_FILE"
+else
+    printf 'EDGE_CURL_RESOLVE=%s\n' "$RESOLVE_OVERRIDE" >>"$ENV_FILE"
+fi
+systemctl --user restart "$GUARD_UNIT"
+if ! guard_active; then
+    kill "$BLACKHOLE_PID" 2>/dev/null
+    echo "FATAL guard did not come back after pointing it at the blackhole listener" >&2
+    exit 1
+fi
+
+slow_running_epoch=$(date -u +%s)
+echo "guard restarted at $(now_utc) with EDGE_CURL_RESOLVE=$RESOLVE_OVERRIDE; every /running call now hangs until the guard's own HTTP timeout, then fails"
+
+# The guard's first blocked /running call cannot fail (and so cannot write
+# `unknown` to the cache) before its own HTTP timeout elapses. PROBE_TIMEOUT
+# stands in for that value here -- both default to 5s; override
+# --probe-timeout if a deployment changed the guard's EDGE_HTTP_TIMEOUT
+# without also changing this drill's.
+assert_serving_continuously f \
+    "llama-swap /running made unreachable (blackhole listener) while the GPU sensor stays healthy" \
+    "$slow_running_epoch" \
+    "$((LEASE_TTL * 3 + POLL_INTERVAL * 2))" \
+    "$((PROBE_TIMEOUT + POLL_INTERVAL + 5))"
+
+mv -f "$ENV_BACKUP" "$ENV_FILE"
+unset ENV_BACKUP
+kill "$BLACKHOLE_PID" 2>/dev/null
+wait "$BLACKHOLE_PID" 2>/dev/null
+unset BLACKHOLE_PID
+running_restored_epoch=$(date -u +%s)
+systemctl --user restart "$GUARD_UNIT"
+assert_serving f-recovery \
+    "/running unblocked and guard restarted" \
+    "$running_restored_epoch" \
+    "recovery latency (running restored -> first successful authenticated request)"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

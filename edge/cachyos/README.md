@@ -628,6 +628,38 @@ path that does not exist, proves the client-observed outage and phase
 `withdrawn` within ~TTL, then restores it and proves autonomous recovery to
 an authenticated 200.
 
+### Lease cadence does not depend on /running (cycle 10)
+
+The compute-client rule (below) needs a loaded-model count from llama-swap's
+`/running`, and the guard used to fetch it inline, inside the same loop pass
+that renews the lease — a reachable-but-slow `/running` could therefore push
+one pass past `EDGE_GUARD_LEASE_TTL` on its own: worst case
+`EDGE_HTTP_TIMEOUT` (default 5s) plus the previous pass's `EDGE_GUARD_INTERVAL`
+sleep (default 2s) is ~7s against a 6s TTL, starving a *healthy* guard's lease
+and withdrawing a healthy node — flapping caused by network latency in a
+query the lease was never supposed to depend on.
+
+`/running` now runs on its own background clock (`running_poller_loop()` in
+`edge-interactive-guard.sh`), started once by `watch` and never awaited. It
+writes its answer to `$EDGE_STATE_DIR/running-cache`; the GPU-sampling loop
+reads that file — a local, non-blocking read — instead of querying live. The
+loop's only remaining blocking call is `rocm-smi` itself: local, no HTTP, no
+`--max-time`. Worst-case interval between two successful lease renewals is
+therefore `EDGE_GUARD_INTERVAL + T_rocm_smi`, where `T_rocm_smi` is typically
+well under a second — at the documented defaults that leaves at least 4s of
+margin before `rocm-smi`'s own cost even enters the arithmetic, whatever
+`/running` does: slow, hung, or wrong.
+
+The trade: `models_loaded` can lag the poller's own cadence by up to
+`EDGE_RUNNING_CACHE_MAX_AGE` (default 15s) before a stuck `/running` reads as
+`unknown` instead of an increasingly stale count. That only ever suspends the
+compute-client rule below (it already treats `unknown` as "skip this rule")
+— it can never touch the lease or the other two rules, which is the property
+this fix exists to guarantee. `testing/lease-drill.sh`'s slow-`/running`
+scenario proves the node keeps serving, with a fresh lease throughout, while
+`/running` is deliberately made slow or unresponsive against a healthy GPU
+sensor.
+
 ### What the guard actually measures
 
 `rocm-smi`'s KFD process table reports VRAM held by *compute* clients, so:
