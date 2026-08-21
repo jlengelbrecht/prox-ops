@@ -24,13 +24,54 @@
 # and removes one path, and this process, already inside the blast radius, does
 # the rest.
 #
+# The guard-ready lease (STORY-035-6a Part 2)
+# ---------------------------------------------
+# interactive-claim alone made the interlock fail OPEN in one specific way:
+# it is a positive assertion the guard makes when it wants the GPU back, and
+# a guard that has crashed or hung makes no assertions at all -- absence of a
+# claim looks identical whether the desktop is quiet or the detector is dead.
+# That is exactly what happened in production: the container came back after
+# a reboot on its own restart policy, the guard did not, and the endpoint
+# served with no interlock watching it, because nothing was checking that the
+# guard was actually alive to watch.
+#
+# guard-lease flips that: it is a POSITIVE, continuously-renewed assertion of
+# guard liveness (edge-interactive-guard.sh's `watch` loop renews it every
+# EDGE_GUARD_INTERVAL), and this process treats it exactly like
+# interactive-claim's opposite -- no fresh lease closes the listener, with no
+# distinction made between "guard never started", "guard crashed" and "guard
+# is hung". All three mean the same thing here: nothing can currently prove a
+# human wanting the GPU back would be noticed, so the safe default is closed.
+# This is enforced independently of interactive-claim and requires no
+# Kubernetes, no agentgateway, no heartbeat and no network round-trip --
+# EDGE_STATE_DIR is a local bind mount and every check below is a local file
+# read, which is what keeps this working on a node that is entirely offline.
+#
 # Environment:
 #   EDGE_STATE_DIR      state directory shared with the host guard (default /edge/state)
 #   EDGE_CONFIG         llama-swap config path (default /etc/llama-swap/config.yaml)
 #   EDGE_TLS_CERT       server certificate (default /pki/edge-host.crt)
 #   EDGE_TLS_KEY        server key (default /pki/edge-host.key)
 #   EDGE_LISTEN         in-container listen address (default :8443)
-#   EDGE_POLL_INTERVAL  seconds between claim-file checks (default 1)
+#   EDGE_POLL_INTERVAL  seconds between claim-file/lease checks (default 1)
+#   EDGE_GUARD_LEASE_TTL
+#                       seconds a guard lease stays fresh (default 6) --
+#                       three times the guard's own default 2s sampling
+#                       interval, chosen so one slow rocm-smi call does not
+#                       trip a false withdrawal, while a genuinely dead or
+#                       hung guard is still caught inside two of its own
+#                       sampling periods. MUST match the value
+#                       edge-interactive-guard.sh's host units run with, or
+#                       one side's idea of "fresh" disagrees with the other's.
+#                       The worst-case exposure this design accepts -- guard
+#                       dies the instant after renewing, so its lease reads
+#                       as fresh for the full TTL -- is
+#                       EDGE_GUARD_LEASE_TTL + EDGE_POLL_INTERVAL (default
+#                       6s + 1s = 7s) between guard death and listener
+#                       withdrawal. That 7s window is the residual exposure;
+#                       see README.md "Guard-ready lease" for the measured
+#                       drill numbers and for what shrinks it (a shorter
+#                       interval/TTL trades false-positive risk for it).
 #   EDGE_DRAIN_TIMEOUT  seconds to let in-flight requests finish (default 40)
 #   LLAMA_SWAP_BIN      llama-swap binary (default /usr/local/bin/llama-swap)
 #   EDGE_API_KEY_FILE   file holding the edge bearer credential. Preferred over
@@ -42,6 +83,12 @@
 #
 # Files it reads and writes under EDGE_STATE_DIR:
 #   interactive-claim   (read)  present = the host wants the GPU back
+#   guard-lease          (read)  epoch seconds, renewed by the host guard's
+#                                `watch` loop every EDGE_GUARD_INTERVAL;
+#                                missing or older than EDGE_GUARD_LEASE_TTL
+#                                means "the guard cannot currently prove it is
+#                                alive" and closes the listener regardless of
+#                                interactive-claim.
 #   phase               (write) serving | draining | withdrawn — what this
 #                               process is actually doing right now, which is
 #                               what scripts/edge-heartbeat.sh turns into
@@ -55,10 +102,12 @@ TLS_CERT="${EDGE_TLS_CERT:-/pki/edge-host.crt}"
 TLS_KEY="${EDGE_TLS_KEY:-/pki/edge-host.key}"
 LISTEN="${EDGE_LISTEN:-:8443}"
 POLL_INTERVAL="${EDGE_POLL_INTERVAL:-1}"
+LEASE_TTL="${EDGE_GUARD_LEASE_TTL:-6}"
 DRAIN_TIMEOUT="${EDGE_DRAIN_TIMEOUT:-40}"
 SWAP_BIN="${LLAMA_SWAP_BIN:-/usr/local/bin/llama-swap}"
 
 CLAIM_FILE="$STATE_DIR/interactive-claim"
+LEASE_FILE="$STATE_DIR/guard-lease"
 PHASE_FILE="$STATE_DIR/phase"
 
 SWAP_PID=""
@@ -81,6 +130,31 @@ swap_running() {
     local state
     state=$(awk '/^State:/ {print $2}' "/proc/$SWAP_PID/status" 2>/dev/null)
     [ "$state" != "Z" ]
+}
+
+# Freshness of the host-side guard's lease -- see edge-interactive-guard.sh's
+# renew_lease(). A missing file, an unparseable one, or one older than
+# LEASE_TTL are all "not fresh": the guard might never have started, might
+# have crashed, or might be hung inside a syscall that stopped it renewing.
+# This process cannot tell those apart from here, and it does not need to --
+# every one of them means "nothing can currently prove a human's interactive
+# use would be caught," which is reason enough to close the listener
+# regardless of what interactive-claim says.
+lease_fresh() {
+    local lease now age
+    [ -r "$LEASE_FILE" ] || return 1
+    lease=$(cat "$LEASE_FILE" 2>/dev/null) || return 1
+    case "$lease" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    now=$(date -u +%s)
+    age=$((now - lease))
+    # A lease timestamped in the future (host clock stepped backward after the
+    # guard wrote it) must never read as fresh: a negative age would otherwise
+    # satisfy `<= LEASE_TTL` and keep serving indefinitely -- the fail-open
+    # this check exists to prevent, just reached through the clock instead of
+    # through the guard.
+    [ "$age" -ge 0 ] && [ "$age" -le "$LEASE_TTL" ]
 }
 
 start_swap() {
@@ -158,19 +232,29 @@ for required in "$CONFIG" "$TLS_CERT" "$TLS_KEY"; do
 done
 
 # A claim left behind by a crash must not be inherited silently: it would look
-# like a healthy edge that never serves. Start withdrawn, say so, and let the
-# guard clear it.
+# like a healthy edge that never serves. Likewise a missing or stale lease --
+# on a fresh boot the guard has not run even once yet, and starting the
+# listener open on that gap is precisely the production defect this story
+# fixes. Start withdrawn, say so, and let the guard prove itself before
+# serving.
 if [ -e "$CLAIM_FILE" ]; then
     log "interactive claim present at startup; staying withdrawn"
+    set_phase withdrawn
+elif ! lease_fresh; then
+    log "no fresh guard lease at startup (TTL=${LEASE_TTL}s); staying withdrawn until the guard proves it is alive"
     set_phase withdrawn
 else
     start_swap
 fi
 
 while [ "$SHUTTING_DOWN" -eq 0 ]; do
-    if [ -e "$CLAIM_FILE" ]; then
+    if [ -e "$CLAIM_FILE" ] || ! lease_fresh; then
         if swap_running; then
-            stop_swap "interactive claim"
+            if [ -e "$CLAIM_FILE" ]; then
+                stop_swap "interactive claim"
+            else
+                stop_swap "guard lease stale or absent (TTL=${LEASE_TTL}s)"
+            fi
             set_phase withdrawn
         fi
     else

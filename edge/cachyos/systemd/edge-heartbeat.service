@@ -1,6 +1,9 @@
 [Unit]
 Description=EPIC-035 edge worker heartbeat producer (CachyOS RX 7900 XTX)
-Documentation=file:%h/repos/prox-ops/edge/cachyos/README.md
+# The libexec copy, not a checkout path: scripts/install.sh mirrors this
+# repo's edge/cachyos/README.md there on every install/refresh, and ExecStart
+# below runs from the same directory. See "Layout independence" in that file.
+Documentation=file:%h/.local/libexec/edge-cachyos/README.md
 # Deliberately not Requires= or BindsTo= the container. A withdrawn or crashed
 # endpoint is exactly when the router most needs to hear from this host — the
 # heartbeat is how INTERACTIVE and OFFLINE are distinguished from silence, and
@@ -22,7 +25,13 @@ StateDirectoryMode=0755
 Environment=EDGE_STATE_DIR=%S/edge-cachyos-state
 Environment=EDGE_API_KEY_FILE=%h/.config/edge-cachyos/api-key
 
-ExecStart=%h/repos/prox-ops/edge/cachyos/scripts/edge-heartbeat.sh --interval ${EDGE_HEARTBEAT_INTERVAL}
+
+# Checkout-independent: scripts/install.sh copies scripts/ and
+# model-id-map.json here, mirroring their relative layout in the repo, so
+# edge-heartbeat.sh's default "$SCRIPT_DIR/../model-id-map.json" still
+# resolves correctly after install. Run install.sh again after every pull
+# that touches either.
+ExecStart=%h/.local/libexec/edge-cachyos/scripts/edge-heartbeat.sh --interval ${EDGE_HEARTBEAT_INTERVAL}
 Restart=always
 RestartSec=5
 

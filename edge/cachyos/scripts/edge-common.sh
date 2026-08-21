@@ -19,7 +19,14 @@ EDGE_STATE_DIR="${EDGE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/edge-cac
 EDGE_CLAIM_FILE="$EDGE_STATE_DIR/interactive-claim"
 EDGE_PHASE_FILE="$EDGE_STATE_DIR/phase"
 
-ROCM_SMI="${ROCM_SMI:-rocm-smi}"
+# Absolute path, not a bare command name (STORY-035-6a cycle 5): a bare name
+# resolves through PATH, and the systemd user manager's boot-time PATH
+# (/usr/local/bin:/usr/bin) does not include rocm-smi's install location,
+# unlike an interactive login shell's -- the root cause of a guard that ran
+# from boot while never once successfully sampling the GPU. env.example
+# documents this default and scripts/install.sh refuses to install if the
+# configured path is not an existing, executable file.
+ROCM_SMI="${ROCM_SMI:-/opt/rocm/bin/rocm-smi}"
 
 edge_log() {
     printf '%s %s: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${EDGE_LOG_TAG:-edge}" "$*" >&2
@@ -60,8 +67,15 @@ edge_require_tools() {
 # and a daemon that quietly skipped it would be testing something the cluster
 # will never do. EDGE_CURL_RESOLVE covers the interim where the edge hostname
 # has no LAN DNS record yet (34.19b), exactly as conformance.sh's --resolve does.
+#
+# $1 (optional): override --max-time in seconds, for a caller that needs a
+# tighter bound than EDGE_HTTP_TIMEOUT -- STORY-035-6a cycle 11's guard-side
+# /running query is the reason this exists, see edge-interactive-guard.sh.
+# Unset or empty falls back to EDGE_HTTP_TIMEOUT (default 5), i.e. every
+# pre-cycle-11 caller is unaffected.
 edge_curl_opts() {
-    EDGE_CURL_OPTS=(--silent --show-error --max-time "${EDGE_HTTP_TIMEOUT:-5}")
+    local timeout="${1:-${EDGE_HTTP_TIMEOUT:-5}}"
+    EDGE_CURL_OPTS=(--silent --show-error --max-time "$timeout")
     [ -n "${EDGE_CA_CERT:-}" ] && EDGE_CURL_OPTS+=(--cacert "$EDGE_CA_CERT")
     [ -n "${EDGE_CURL_RESOLVE:-}" ] && EDGE_CURL_OPTS+=(--resolve "$EDGE_CURL_RESOLVE")
     return 0
@@ -152,9 +166,12 @@ edge_gpu_identity() {
 # `.running` has to be present for the body to count as an answer — an error
 # page, a truncated response or a future schema change all land in the
 # no-reading branch rather than being read as an empty list.
+#
+# $1 (optional): passed straight through to edge_curl_opts as a --max-time
+# override; see its comment.
 edge_running_body() {
-    local body
-    edge_curl_opts
+    local timeout="${1:-}" body
+    edge_curl_opts "$timeout"
     body=$(curl "${EDGE_CURL_OPTS[@]}" \
         -H "Authorization: Bearer ${EDGE_API_KEY:-}" \
         "${EDGE_ENDPOINT%/}/running" 2>/dev/null) || return 1
@@ -180,9 +197,12 @@ edge_running_models() {
 # give compute_clients=1 against models=0 during every ordinary idle unload —
 # the node's own work read as somebody else's, and a withdrawal for the whole
 # release hold-down triggered by nothing but a model going cold on schedule.
+#
+# $1 (optional): passed straight through to edge_running_body as a --max-time
+# override; see edge_curl_opts.
 edge_gpu_holding_models() {
-    local body
-    body=$(edge_running_body) || return 1
+    local timeout="${1:-}" body
+    body=$(edge_running_body "$timeout") || return 1
     printf '%s' "$body" | jq -r '.running[]?.model' 2>/dev/null
 }
 

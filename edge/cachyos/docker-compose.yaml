@@ -62,6 +62,12 @@ services:
       EDGE_API_KEY_FILE: /edge/secrets/api-key
       EDGE_STATE_DIR: /edge/state
       LLAMA_SWAP_BIN: /usr/local/bin/llama-swap
+      # Same value on both sides of the container boundary, unlike the two
+      # paths above -- read from .env with a default so a host that has not
+      # added it yet still gets the documented default (see env.example and
+      # README.md "Guard-ready lease") instead of the container failing to
+      # start.
+      EDGE_GUARD_LEASE_TTL: ${EDGE_GUARD_LEASE_TTL:-6}
       # Consumed by the healthcheck below, which resolves it through the
       # extra_hosts entry so it verifies the leaf's SAN rather than skipping it.
       EDGE_HOSTNAME: ${EDGE_HOSTNAME:?set EDGE_HOSTNAME in .env}
@@ -100,8 +106,32 @@ services:
       # Mounted rather than baked in, so a guard or supervisor fix is a file
       # edit and a restart instead of an image rebuild, and so the code the
       # container runs is the code in Git.
-      - ./scripts:/edge/scripts:ro
-      - ./llama-swap.yaml:/etc/llama-swap/config.yaml:ro
+      #
+      # From the INSTALLED copy at EDGE_LIBEXEC_DIR (scripts/install.sh),
+      # never from a path relative to this checkout. `docker compose` resolves
+      # relative volume paths against the directory it is invoked from, which
+      # is how a live node ended up bound to a disposable Orca worktree: once
+      # that worktree was deleted, the next `docker restart` had nothing to
+      # mount. EDGE_LIBEXEC_DIR is a fixed, checkout-independent location that
+      # install.sh refreshes on every pull — see README.md "Layout
+      # independence".
+      #
+      # create_host_path: false, same reasoning as EDGE_STATE_HOST_DIR above:
+      # a wrong or not-yet-installed path fails the container loudly instead
+      # of docker silently creating an empty directory that the entrypoint
+      # then can't find itself in.
+      - type: bind
+        source: ${EDGE_LIBEXEC_DIR:?set EDGE_LIBEXEC_DIR in .env}/scripts
+        target: /edge/scripts
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${EDGE_LIBEXEC_DIR:?set EDGE_LIBEXEC_DIR in .env}/llama-swap.yaml
+        target: /etc/llama-swap/config.yaml
+        read_only: true
+        bind:
+          create_host_path: false
 
     # The leaf's SAN is the edge hostname, so the in-container healthcheck has
     # to reach itself by that name for certificate validation to mean anything.

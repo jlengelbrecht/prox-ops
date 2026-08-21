@@ -1,6 +1,9 @@
 [Unit]
 Description=EPIC-035 edge worker interactive-priority guard (CachyOS RX 7900 XTX)
-Documentation=file:%h/repos/prox-ops/edge/cachyos/README.md
+# The libexec copy, not a checkout path: scripts/install.sh mirrors this
+# repo's edge/cachyos/README.md there on every install/refresh, and ExecStart
+# below runs from the same directory. See "Layout independence" in that file.
+Documentation=file:%h/.local/libexec/edge-cachyos/README.md
 # Runs whether or not the edge container is up. A guard that stopped with the
 # container could not hold a claim across a restart, and the claim is what
 # keeps the endpoint down while the desktop has the GPU.
@@ -47,7 +50,10 @@ Environment=EDGE_STATE_DIR=%S/edge-cachyos-state
 # permanently unknown. Seed the file in step 5 of README.md.
 Environment=EDGE_API_KEY_FILE=%h/.config/edge-cachyos/api-key
 
-ExecStart=%h/repos/prox-ops/edge/cachyos/scripts/edge-interactive-guard.sh watch
+
+# Checkout-independent: scripts/install.sh copies scripts/ here. Run it again
+# after every pull that touches scripts/.
+ExecStart=%h/.local/libexec/edge-cachyos/scripts/edge-interactive-guard.sh watch
 Restart=always
 RestartSec=5
 
