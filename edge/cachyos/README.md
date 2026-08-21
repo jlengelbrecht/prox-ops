@@ -628,7 +628,7 @@ path that does not exist, proves the client-observed outage and phase
 `withdrawn` within ~TTL, then restores it and proves autonomous recovery to
 an authenticated 200.
 
-### Lease cadence does not depend on /running (cycle 10)
+### Lease cadence does not depend on /running (cycles 10–11)
 
 The compute-client rule (below) needs a loaded-model count from llama-swap's
 `/running`, and the guard used to fetch it inline, inside the same loop pass
@@ -639,26 +639,41 @@ sleep (default 2s) is ~7s against a 6s TTL, starving a *healthy* guard's lease
 and withdrawing a healthy node — flapping caused by network latency in a
 query the lease was never supposed to depend on.
 
-`/running` now runs on its own background clock (`running_poller_loop()` in
-`edge-interactive-guard.sh`), started once by `watch` and never awaited. It
-writes its answer to `$EDGE_STATE_DIR/running-cache`; the GPU-sampling loop
-reads that file — a local, non-blocking read — instead of querying live. The
-loop's only remaining blocking call is `rocm-smi` itself: local, no HTTP, no
-`--max-time`. Worst-case interval between two successful lease renewals is
-therefore `EDGE_GUARD_INTERVAL + T_rocm_smi`, where `T_rocm_smi` is typically
-well under a second — at the documented defaults that leaves at least 4s of
-margin before `rocm-smi`'s own cost even enters the arithmetic, whatever
-`/running` does: slow, hung, or wrong.
+Cycle 10's first fix moved `/running` onto a background poller writing a
+cache file, decoupling it from the sampling loop entirely. That closed the
+starvation but opened a subtler seam: `over_the_line()` then compared a
+*live* compute-client count against a *stale, differently-timed*
+`models_loaded` reading, which could manufacture a false `INTERACTIVE` claim
+when the two numbers stopped describing the same observation window — a
+worse abstraction than the flapping it fixed.
 
-The trade: `models_loaded` can lag the poller's own cadence by up to
-`EDGE_RUNNING_CACHE_MAX_AGE` (default 15s) before a stuck `/running` reads as
-`unknown` instead of an increasingly stale count. That only ever suspends the
-compute-client rule below (it already treats `unknown` as "skip this rule")
-— it can never touch the lease or the other two rules, which is the property
-this fix exists to guarantee. `testing/lease-drill.sh`'s slow-`/running`
-scenario proves the node keeps serving, with a fresh lease throughout, while
-`/running` is deliberately made slow or unresponsive against a healthy GPU
-sensor.
+Cycle 11 replaced the cache with a bounded synchronous query instead. Each
+guard pass still does exactly one `rocm-smi` sample and, on success, still
+renews the lease immediately — **before** `/running` is queried at all, so
+`/running` can never delay a renewal, only the next sample's start. Only
+after the lease is renewed does the guard query `/running` synchronously,
+bounded by a dedicated `EDGE_GUARD_RUNNING_TIMEOUT` (default 1s) instead of
+the general `EDGE_HTTP_TIMEOUT` (default 5s) other callers use. A timeout or
+failure there reads as `models_loaded=unknown` for that pass, exactly like
+any other failed query — GPU sight and model telemetry are read together, in
+the same pass, so they always describe the same observation window again.
+
+Worst-case interval between two successful lease renewals is therefore
+`EDGE_GUARD_RUNNING_TIMEOUT + EDGE_GUARD_INTERVAL + T_rocm_smi`, where
+`T_rocm_smi` is typically well under a second — at the documented defaults
+(1s + 2s + <1s against a 6s TTL) that is comfortably inside the TTL whatever
+`/running` does: slow, hung, or wrong. `edge-interactive-guard.sh` validates
+this arithmetic at `watch` startup and refuses to run if
+`EDGE_GUARD_RUNNING_TIMEOUT` plus a margin of `2 × EDGE_GUARD_INTERVAL` is
+not strictly below `EDGE_GUARD_LEASE_TTL`, rather than trusting an operator
+not to configure an unsafe combination.
+
+There is deliberately no cache, no cache-age timer, and no second clock —
+one guard pass, one bounded synchronous `/running` call, one TTL.
+`testing/lease-drill.sh`'s slow-`/running` scenario proves the node keeps
+serving continuously, with a fresh lease and the *same* guard process
+throughout (not a crash that happened to recover), while `/running` is
+deliberately blackholed for well over one TTL against a healthy GPU sensor.
 
 ### What the guard actually measures
 

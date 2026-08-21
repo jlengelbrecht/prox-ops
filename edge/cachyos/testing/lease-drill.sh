@@ -52,14 +52,26 @@
 # inline, inside the same loop pass that renews the lease; a reachable-but-
 # slow /running could consume close to the guard's own HTTP timeout on that
 # pass and starve the lease TTL even though the GPU sensor -- what the lease
-# is actually supposed to attest -- was perfectly healthy throughout. The fix
-# (edge-interactive-guard.sh's "Cycle 10" comment) moves /running onto its
-# own background clock. Scenario f proves it by making /running genuinely
-# hang -- a small Python listener that accepts the TCP connection and never
-# answers, so every curl call through it blocks for the guard's own HTTP
-# timeout before failing -- for well over one TTL, and asserting CONTINUOUS
-# service throughout: unlike a-e, a single missed poll during the window is
-# itself the failure, not merely the end state.
+# is actually supposed to attest -- was perfectly healthy throughout. Scenario
+# f proves it by making /running genuinely hang -- a small Python listener
+# that accepts the TCP connection and never answers, so every curl call
+# through it blocks until it times out -- for well over one TTL, and
+# asserting CONTINUOUS service throughout: unlike a-e, a single missed poll
+# during the window is itself the failure, not merely the end state.
+#
+# CYCLE 11 update to scenario f: the guard's first fix (a background /running
+# poller writing a cache file) was replaced by a bounded synchronous query
+# against a dedicated short timeout (edge-interactive-guard.sh's "Cycle 11"
+# comment), because the cache introduced its own regression -- a live
+# compute-client count compared against a stale cached model count could
+# manufacture a false claim. There is no cache file left to read, so this
+# scenario now corroborates "models_loaded went unknown" via the guard's own
+# log line instead, and -- since a crashed/restarted guard would produce
+# identical continuous-200/fresh-lease symptoms while proving nothing about
+# slow-/running handling -- it captures the guard's MainPID right after
+# pointing it at the blackhole and asserts that PID is unchanged at every
+# poll of the window, the same "alive, not merely replaced" check cycle 9
+# added to scenario e.
 #
 # CANNOT run inside the dev-agent sandbox that authored it — no docker, no
 # systemctl, no reads outside the worktree (see the story's EXECUTION
@@ -77,10 +89,11 @@
 # killed the same way. A lock file refuses a second concurrent run rather
 # than interleaving two drills' kills and restarts.
 #
-# Requires: docker, systemctl, curl, ss (informational only), date, awk,
-# sed, grep, python3 (scenario f's blackhole /running listener), and
-# passwordless `systemctl --user` / `docker` for the invoking user — both
-# already assumed by normal operation of this node.
+# Requires: docker, systemctl, journalctl (scenario f's /running-unreadable
+# log corroboration), curl, ss (informational only), date, awk, sed, grep,
+# python3 (scenario f's blackhole /running listener), and passwordless
+# `systemctl --user` / `docker` for the invoking user — both already assumed
+# by normal operation of this node.
 #
 # Usage:
 #   lease-drill.sh --endpoint URL --ca-cert PATH [options]
@@ -185,7 +198,7 @@ fi
 [ -n "$CA_CERT" ] && [ -r "$CA_CERT" ] || { echo "FATAL --ca-cert '$CA_CERT' (or EDGE_CA_CERT) must be a readable file" >&2; exit 2; }
 [ -n "$API_KEY" ] || { echo "FATAL no bearer credential: set EDGE_API_KEY_FILE or EDGE_API_KEY (never pass one as a flag)" >&2; exit 2; }
 
-for bin in ss docker systemctl curl date awk sed grep python3; do
+for bin in ss docker systemctl journalctl curl date awk sed grep python3; do
     command -v "$bin" >/dev/null 2>&1 || { echo "FATAL required tool '$bin' not found on PATH" >&2; exit 2; }
 done
 
@@ -210,7 +223,7 @@ CURL_ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/edge-lease-drill-curl-err.XXXXXX")
 BLACKHOLE_READY_FILE=$(mktemp "${TMPDIR:-/tmp}/edge-lease-drill-blackhole.XXXXXX")
 LEASE_FILE="$STATE_DIR/guard-lease"
 PHASE_FILE="$STATE_DIR/phase"
-RUNNING_CACHE_FILE="$STATE_DIR/running-cache"
+CLAIM_FILE="$STATE_DIR/interactive-claim"
 
 now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -269,22 +282,22 @@ read_phase() {
     fi
 }
 
-# Age and value of the guard's background /running cache (STORY-035-6a cycle
-# 10) -- see edge-interactive-guard.sh's cached_loaded(). Prints "<age>
-# <value>"; a missing or unparseable file reads as "missing unknown" /
-# "invalid unknown", matching what cached_loaded() itself would return.
-read_running_cache() {
-    if [ ! -r "$RUNNING_CACHE_FILE" ]; then
-        echo "missing unknown"
-        return
-    fi
-    local ts loaded now
-    read -r ts loaded <"$RUNNING_CACHE_FILE" 2>/dev/null
-    case "$ts" in
-        ''|*[!0-9]*) echo "invalid unknown"; return ;;
-    esac
-    now=$(date -u +%s)
-    printf '%s %s\n' "$((now - ts))" "${loaded:-unknown}"
+claim_present() {
+    [ -e "$CLAIM_FILE" ]
+}
+
+# Corroborating evidence that the guard observed /running as unreadable at
+# some point at or after $1 (an epoch second) -- STORY-035-6a cycle 11
+# removed the running-cache file scenario f used to read directly, so this is
+# the closest black-box substitute: edge-interactive-guard.sh logs exactly
+# once per transition into that state (see cmd_watch's loaded_known
+# tracking). This is corroboration, never the scenario's primary pass/fail
+# signal -- that remains the client-boundary probe, the lease, the phase file
+# and the unchanged guard PID, all of which are asserted independently.
+running_unreadable_logged_since() {
+    local since_epoch="$1"
+    journalctl --user -u "$GUARD_UNIT" --since "@$since_epoch" 2>/dev/null \
+        | grep -q 'llama-swap /running unreadable'
 }
 
 # Evidence about the service itself, independent of the phase file the
@@ -486,7 +499,7 @@ assert_serving() {
     fi
 }
 
-# Polls the client AND the guard's on-disk state continuously across a
+# Polls the client AND the guard's on-disk/unit state continuously across a
 # window, failing the instant any single observation breaks. This is the
 # opposite shape from assert_fail_closed/assert_serving, which poll UNTIL a
 # target state is reached: STORY-035-6a cycle 10's required proof is "never
@@ -494,14 +507,16 @@ assert_serving() {
 # itself the failure, not something later polling should be allowed to paper
 # over.
 #
-# $5: seconds after $3 before the running-cache is required to already read
-# `unknown`. The guard's first /running call through the blackhole blocks
-# for its own HTTP timeout before failing, so the cache cannot possibly show
-# `unknown` before roughly that long; see the call site for the value used.
+# $5: the guard's MainPID, captured by the caller right after it was pointed
+# at the blackhole -- checked at every poll, not just once, for the same
+# reason scenario e's assert_fail_closed checks it (STORY-035-6a cycle 9): an
+# exited/restarted guard would still leave the client served by whatever
+# started it back up, but that proves nothing about a slow-but-alive guard,
+# which is the only case this scenario exists to demonstrate.
 assert_serving_continuously() {
-    local scenario="$1" action="$2" since_epoch="$3" window_s="$4" cache_settle_s="$5"
-    local start_wall now elapsed rc code lease_age phase swap_state
-    local cache_age cache_loaded ok=1 reasons="" checks=0
+    local scenario="$1" action="$2" since_epoch="$3" window_s="$4" expected_guard_pid="$5"
+    local start_wall elapsed rc code lease_age phase swap_state
+    local guard_pid_now guard_state claim_state ok=1 reasons="" checks=0
 
     echo
     echo "=== scenario $scenario: $action ==="
@@ -517,7 +532,9 @@ assert_serving_continuously() {
         lease_age=$(read_lease_age)
         phase=$(read_phase)
         if swap_process_present; then swap_state=present; else swap_state=absent; fi
-        read -r cache_age cache_loaded <<<"$(read_running_cache)"
+        guard_pid_now=$(guard_pid)
+        if guard_active; then guard_state=active; else guard_state=inactive; fi
+        if claim_present; then claim_state=present; else claim_state=absent; fi
 
         if [ "$rc" -ne 0 ] || [ "$code" != 200 ]; then
             ok=0; reasons+="client request failed at t=+${elapsed}s (rc=$rc code=$code); "
@@ -532,24 +549,33 @@ assert_serving_continuously() {
             missing|invalid) ok=0; reasons+="lease age is $lease_age at t=+${elapsed}s; " ;;
             *) [ "$lease_age" -le "$LEASE_TTL" ] || { ok=0; reasons+="lease age ${lease_age}s exceeds TTL ${LEASE_TTL}s at t=+${elapsed}s; "; } ;;
         esac
-        if [ "$elapsed" -ge "$cache_settle_s" ] && [ "$cache_loaded" != unknown ]; then
-            ok=0; reasons+="running-cache still reads '$cache_loaded' (not unknown) at t=+${elapsed}s, ${cache_settle_s}s after the block started; "
-        fi
+        [ "$guard_state" = active ] || { ok=0; reasons+="guard unit is not active at t=+${elapsed}s; "; }
+        [ "$guard_pid_now" = "$expected_guard_pid" ] || { ok=0; reasons+="guard PID changed from $expected_guard_pid to ${guard_pid_now:-<unknown>} at t=+${elapsed}s (guard crashed/restarted -- this does not prove 'slow but alive'); "; }
+        [ "$claim_state" = absent ] || { ok=0; reasons+="an interactive claim appeared at t=+${elapsed}s -- slow /running telemetry must not manufacture one; "; }
 
         [ "$ok" -eq 1 ] || break
         [ "$elapsed" -ge "$window_s" ] && break
         sleep "$POLL_INTERVAL"
     done
 
+    local running_unreadable_logged=no
+    running_unreadable_logged_since "$since_epoch" && running_unreadable_logged=yes
+    if [ "$running_unreadable_logged" != yes ]; then
+        ok=0; reasons+="the guard never logged /running as unreadable -- models_loaded=unknown was not observed; "
+    fi
+
     printf 'checks performed        : %s over %ss\n' "$checks" "$elapsed"
     printf 'last lease age          : %s (TTL=%ss)\n' "$lease_age" "$LEASE_TTL"
     printf 'last phase              : %s (expected serving throughout)\n' "$phase"
     printf 'last llama-swap process : %s (expected present throughout)\n' "$swap_state"
-    printf 'last running-cache      : age=%s value=%s (expected unknown from t=+%ss on)\n' \
-        "$cache_age" "$cache_loaded" "$cache_settle_s"
+    printf 'guard PID               : %s (expected unchanged from %s, unit %s)\n' \
+        "${guard_pid_now:-<unknown>}" "$expected_guard_pid" "$guard_state"
+    printf 'interactive claim       : %s (expected absent throughout)\n' "$claim_state"
+    printf 'guard log (models_loaded=unknown observed): %s\n' "$running_unreadable_logged"
 
     if [ "$ok" -eq 1 ]; then
-        printf 'RESULT                  : PASS -- served continuously for %ss with a fresh lease; models_loaded read unknown once the block took effect\n' "$elapsed"
+        printf 'RESULT                  : PASS -- served continuously for %ss with a fresh lease and unchanged guard PID %s; models_loaded read unknown while /running was blackholed, and no interactive claim was manufactured\n' \
+            "$elapsed" "$expected_guard_pid"
     else
         printf 'RESULT                  : FAIL — %s\n' "$reasons"
         FAILURES=$((FAILURES + 1))
@@ -733,12 +759,16 @@ assert_serving e-recovery \
     "$sensor_restored_epoch" \
     "recovery latency (sensor restored -> first successful authenticated request)"
 
-# --- scenario f: /running slow while the GPU sensor stays healthy (STORY-035-6a cycle 10) --
-# See the CYCLE 10 header comment. The blackhole is a real network
-# intervention -- a Python listener that accepts the TCP connection and never
-# answers -- not a stub inside the guard, so every curl call through it
-# blocks for the guard's own HTTP timeout before failing, exactly the
-# reachable-but-slow case that starved the lease before the fix.
+# --- scenario f: /running slow while the GPU sensor stays healthy (STORY-035-6a cycles 10/11) --
+# See the CYCLE 10 and CYCLE 11 header comments. The blackhole is a real
+# network intervention -- a Python listener that accepts the TCP connection
+# and never answers -- not a stub inside the guard, so every curl call
+# through it blocks until it times out, exactly the reachable-but-slow case
+# that starved the lease before the cycle-10 fix. Since cycle 11 the guard's
+# own /running call is bounded by EDGE_GUARD_RUNNING_TIMEOUT (default 1s,
+# much tighter than curl's general default), so a blackholed /running now
+# fails fast on the guard's own clock -- the lease and phase should never
+# waver at all, which this scenario asserts continuously throughout.
 guard_active || { echo "FATAL guard did not come back before scenario f" >&2; exit 1; }
 [ -r "$ENV_FILE" ] || { echo "FATAL host env file '$ENV_FILE' (--env-file / EDGE_HOST_ENV_FILE) is not readable; cannot drill /running latency" >&2; exit 1; }
 
@@ -791,20 +821,31 @@ if ! guard_active; then
     echo "FATAL guard did not come back after pointing it at the blackhole listener" >&2
     exit 1
 fi
+# Captured immediately after the restart settles, so assert_serving_continuously
+# can prove throughout the window that this is still the SAME process -- a
+# slow-but-alive guard, not one that crashed and was respawned (STORY-035-6a
+# cycle 11, same "blind/slow but alive" proof cycle 9 required for scenario e).
+slow_guard_pid=$(guard_pid)
+if [ -z "$slow_guard_pid" ] || [ "$slow_guard_pid" = 0 ]; then
+    kill "$BLACKHOLE_PID" 2>/dev/null
+    echo "FATAL could not read $GUARD_UNIT's MainPID after restart for scenario f" >&2
+    exit 1
+fi
 
 slow_running_epoch=$(date -u +%s)
-echo "guard restarted at $(now_utc) with EDGE_CURL_RESOLVE=$RESOLVE_OVERRIDE; every /running call now hangs until the guard's own HTTP timeout, then fails"
+echo "guard restarted at $(now_utc) with EDGE_CURL_RESOLVE=$RESOLVE_OVERRIDE; PID=$slow_guard_pid; every /running call now hangs until it times out, then fails"
 
-# The guard's first blocked /running call cannot fail (and so cannot write
-# `unknown` to the cache) before its own HTTP timeout elapses. PROBE_TIMEOUT
-# stands in for that value here -- both default to 5s; override
-# --probe-timeout if a deployment changed the guard's EDGE_HTTP_TIMEOUT
-# without also changing this drill's.
+# STORY-035-6a cycle 11 requires the blackhole window to run for >=20s;
+# LEASE_TTL*3 + POLL_INTERVAL*2 already clears that at documented defaults
+# (6*3+1*2=20) but the floor is enforced explicitly so a deployment with a
+# smaller TTL still exercises a real >=20s window.
+f_window="$((LEASE_TTL * 3 + POLL_INTERVAL * 2))"
+[ "$f_window" -ge 20 ] || f_window=20
 assert_serving_continuously f \
     "llama-swap /running made unreachable (blackhole listener) while the GPU sensor stays healthy" \
     "$slow_running_epoch" \
-    "$((LEASE_TTL * 3 + POLL_INTERVAL * 2))" \
-    "$((PROBE_TIMEOUT + POLL_INTERVAL + 5))"
+    "$f_window" \
+    "$slow_guard_pid"
 
 mv -f "$ENV_BACKUP" "$ENV_FILE"
 unset ENV_BACKUP

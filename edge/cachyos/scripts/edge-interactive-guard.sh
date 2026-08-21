@@ -101,29 +101,37 @@
 # lease and withdrawing a healthy node -- flapping caused by network latency
 # in a query the lease was never supposed to depend on.
 #
-# The fix: /running is answered by running_poller_loop(), a single
-# background job cmd_watch starts once and never waits on. It writes its
-# answer (a model count, or `unknown` if the query failed) to
-# $EDGE_STATE_DIR/running-cache; sample() reads that file through
-# cached_loaded() instead of querying live -- a local file read, no network
-# round-trip, no blocking. The main loop's only remaining blocking call is
-# edge_gpu_sample() (a local rocm-smi invocation -- no HTTP, no --max-time),
-# so the worst-case interval between two successful lease renewals is now
-# INTERVAL + T_sample, where T_sample is rocm-smi's own execution time --
-# typically well under a second, and never influenced by how /running is
-# behaving. At the documented defaults (INTERVAL=2s, EDGE_GUARD_LEASE_TTL=6s)
-# that leaves at least 4s of margin before rocm-smi's own cost even enters
-# the arithmetic, whatever /running does: slow, hung, or simply wrong.
+# Cycle 10's first fix moved /running onto a background poller writing a
+# cache file, decoupling it from the sampling loop entirely. That solved the
+# starvation but introduced a worse seam: the loop then compared a
+# *live* compute-client count against a *stale, differently-timed*
+# models_loaded reading, which could manufacture a false INTERACTIVE claim
+# (over_the_line() rule 2) when the two numbers stopped describing the same
+# observation window. Cycle 11 replaces the cache with a bounded synchronous
+# query instead, so GPU sight and model telemetry are read in the same guard
+# pass again -- see below.
 #
-# What this costs: models_loaded can lag the poller's own cadence (about
-# INTERVAL, when /running answers promptly) by up to RUNNING_CACHE_MAX_AGE
-# (default 15s) before a stuck /running reads as `unknown` instead of an
-# increasingly stale number. That is the correct trade -- over_the_line()'s
-# rule 2 (compute clients vs. models loaded) already treats `unknown` as
-# "skip this rule", so a slow /running suspends the compute-client rule
-# rather than manufacturing a false claim or a false release. It can never
-# touch the lease or the other two rules, which is the property cycle 10
-# exists to guarantee.
+# Cycle 11 (replaces the cycle-10 cache with a bounded synchronous query).
+# renew_lease() is called immediately after a successful GPU sample, before
+# /running is ever queried, so /running cannot delay renewal at all -- only
+# the *next* sample's start. /running is then queried synchronously, but
+# against EDGE_GUARD_RUNNING_TIMEOUT (default 1s) rather than the general
+# EDGE_HTTP_TIMEOUT (default 5s): a dedicated, short, guard-only bound, never
+# used for anything else that talks to llama-swap. A timeout or failure reads
+# as models_loaded=unknown for that pass, exactly as a failed live query
+# always has -- see over_the_line()'s comment on why `unknown` skips rule 2
+# rather than standing in for zero.
+#
+# Worst case between two successful lease renewals is therefore
+# EDGE_GUARD_RUNNING_TIMEOUT + INTERVAL + T_sample, where T_sample is
+# rocm-smi's own execution time (typically well under a second). At the
+# documented defaults (1s + 2s + <1s against a 6s TTL) that is comfortably
+# inside the TTL whatever /running does: slow, hung, or simply wrong. cmd_watch
+# validates this arithmetic at startup rather than trusting an operator not to
+# misconfigure it -- see the check right before the case statement below.
+#
+# There is deliberately no cache, no cache-age timer, and no second clock:
+# one guard pass, one bounded synchronous /running call, one TTL.
 #
 # Usage:
 #   edge-interactive-guard.sh watch      # default: sample, decide, renew the
@@ -155,10 +163,11 @@
 #                                  (default 512 — it has to fit inside the ~2 GB
 #                                  a loaded model leaves free)
 #   EDGE_INTERACTIVE_GPU_PCT       trip level for busy-with-nothing-loaded (default 25)
-#   EDGE_RUNNING_CACHE_MAX_AGE     seconds before a stuck background /running
-#                                  poll reads as `unknown` instead of an
-#                                  increasingly stale model count (default 15
-#                                  -- see "Cycle 10" above)
+#   EDGE_GUARD_RUNNING_TIMEOUT     dedicated --max-time bound, in seconds, for
+#                                  the guard's own synchronous /running query
+#                                  (default 1) -- see "Cycle 11" above. Kept
+#                                  far below EDGE_GUARD_LEASE_TTL on purpose;
+#                                  cmd_watch refuses to start if it is not.
 
 set -uo pipefail
 
@@ -177,6 +186,12 @@ BASELINE_MB="${EDGE_DESKTOP_BASELINE_MB:-1200}"
 TRIP_VRAM_MB="${EDGE_INTERACTIVE_VRAM_MB:-512}"
 TRIP_GPU_PCT="${EDGE_INTERACTIVE_GPU_PCT:-25}"
 
+# Dedicated, short --max-time bound for the guard's own /running query
+# (STORY-035-6a cycle 11) -- never EDGE_HTTP_TIMEOUT, which is the general
+# 5s default other callers use. Validated against INTERVAL and
+# EDGE_GUARD_LEASE_TTL at the top of cmd_watch.
+RUNNING_TIMEOUT="${EDGE_GUARD_RUNNING_TIMEOUT:-1}"
+
 # Marks a claim this process made, so an operator's manual claim is never
 # released by the detector cooling off.
 AUTO_MARKER="$EDGE_STATE_DIR/interactive-claim.auto"
@@ -188,54 +203,62 @@ AUTO_MARKER="$EDGE_STATE_DIR/interactive-claim.auto"
 # claim file as the only signal a desktop-sharing safety control has.
 LEASE_FILE="$EDGE_STATE_DIR/guard-lease"
 
-# The background /running poller's answer (STORY-035-6a cycle 10) -- see
-# poll_running_once(), running_poller_loop() and cached_loaded() below, and
-# the "Cycle 10" comment above for why this exists.
-RUNNING_CACHE_FILE="$EDGE_STATE_DIR/running-cache"
-RUNNING_CACHE_MAX_AGE="${EDGE_RUNNING_CACHE_MAX_AGE:-15}"
-RUNNING_POLLER_PID=""
-
-edge_require_tools jq curl date
+edge_require_tools jq curl date awk
 
 mkdir -p "$EDGE_STATE_DIR"
 
-# One sample, as:
-#   "<desktop_vram_mb> <gpu_pct> <models_loaded> <used_mb> <total_mb> <compute_mb> <compute_clients>"
-# where desktop_vram_mb is graphics VRAM above the measured idle baseline, and
-# models_loaded is the literal string `unknown` when llama-swap did not answer.
-#
-# models_loaded counts models that still hold their llama-server process, models
-# on their way out included, because it is compared against KFD compute clients
-# and an unloading model is still one of those.
-#
-# `unknown` rather than 0, because those are opposite facts and only one of them
-# is a reason to withdraw the node. See over_the_line().
-#
-# $1 (optional): "cached" reads the last background-polled models-loaded
-# reading via cached_loaded() -- a local file read, never blocking on
-# /running (STORY-035-6a cycle 10; cmd_watch uses this). Anything else (the
-# default) queries /running live, i.e. this command's pre-cycle-10 one-shot
-# behaviour, which is what cmd_status still wants for a diagnostic snapshot.
-sample() {
-    local mode="${1:-live}"
-    local gpu total used pct compute procs total_mb used_mb compute_mb loaded desktop running
+# One GPU-only reading, as:
+#   "<desktop_vram_mb> <gpu_pct> <used_mb> <total_mb> <compute_mb> <compute_clients>"
+# where desktop_vram_mb is graphics VRAM above the measured idle baseline.
+# Deliberately does not touch /running or models_loaded at all (STORY-035-6a
+# cycle 11) -- this is exactly the call cmd_watch renews the lease on, and it
+# must be able to succeed and return in local-rocm-smi time, never blocked on
+# a network round-trip.
+gpu_reading() {
+    local gpu total used pct compute procs total_mb used_mb compute_mb desktop
     gpu=$(edge_gpu_sample) || return 1
     read -r total used pct compute procs <<<"$gpu"
     total_mb=$((total / 1024 / 1024))
     used_mb=$((used / 1024 / 1024))
     compute_mb=$((compute / 1024 / 1024))
+    desktop=$((used_mb - compute_mb - BASELINE_MB))
+    [ "$desktop" -lt 0 ] && desktop=0
+    printf '%s %s %s %s %s %s\n' "$desktop" "$pct" "$used_mb" "$total_mb" "$compute_mb" "$procs"
+}
 
-    if [ "$mode" = cached ]; then
-        loaded=$(cached_loaded)
-    elif running=$(edge_gpu_holding_models 2>/dev/null); then
+# models_loaded for one guard pass: the literal string `unknown` when
+# llama-swap did not answer within $1 seconds, otherwise a count of models
+# that still hold their llama-server process (models on their way out
+# included, because it is compared against KFD compute clients and an
+# unloading model is still one of those).
+#
+# `unknown` rather than 0, because those are opposite facts and only one of
+# them is a reason to withdraw the node. See over_the_line().
+#
+# $1: --max-time bound in seconds, passed straight to edge_gpu_holding_models.
+# cmd_watch always passes RUNNING_TIMEOUT (the short, dedicated bound);
+# cmd_status passes nothing, which falls back to EDGE_HTTP_TIMEOUT -- a
+# one-shot diagnostic snapshot has no lease-renewal timing to protect.
+models_loaded_reading() {
+    local timeout="${1:-}" running loaded
+    if running=$(edge_gpu_holding_models "$timeout" 2>/dev/null); then
         loaded=$(printf '%s\n' "$running" | grep -c '[^[:space:]]' || true)
     else
         loaded=unknown
     fi
+    printf '%s' "$loaded"
+}
 
-    desktop=$((used_mb - compute_mb - BASELINE_MB))
-    [ "$desktop" -lt 0 ] && desktop=0
-
+# Combined GPU + models_loaded sample, as:
+#   "<desktop_vram_mb> <gpu_pct> <models_loaded> <used_mb> <total_mb> <compute_mb> <compute_clients>"
+# Used by cmd_status only -- a one-shot diagnostic snapshot, not the loop
+# cmd_watch runs. cmd_watch calls gpu_reading() and models_loaded_reading()
+# separately so it can renew the lease between them; see "Cycle 11" above.
+sample() {
+    local g desktop pct used_mb total_mb compute_mb procs loaded
+    g=$(gpu_reading) || return 1
+    read -r desktop pct used_mb total_mb compute_mb procs <<<"$g"
+    loaded=$(models_loaded_reading)
     printf '%s %s %s %s %s %s %s\n' "$desktop" "$pct" "$loaded" "$used_mb" "$total_mb" "$compute_mb" "$procs"
 }
 
@@ -308,55 +331,6 @@ do_release() {
     edge_log "RELEASE ($why) — endpoint returning to service"
 }
 
-# One /running query, on the poller's own clock, never the GPU-sampling
-# loop's (STORY-035-6a cycle 10). Writes "<epoch> <count-or-unknown>" via
-# temp-file + rename, the same pattern renew_lease() uses, so a reader never
-# observes a partial write. $BASHPID, not $$: this runs inside a backgrounded
-# subshell, where $$ still names the parent shell, not this one.
-poll_running_once() {
-    local running loaded tmp
-    if running=$(edge_gpu_holding_models 2>/dev/null); then
-        loaded=$(printf '%s\n' "$running" | grep -c '[^[:space:]]' || true)
-    else
-        loaded=unknown
-    fi
-    tmp="$RUNNING_CACHE_FILE.tmp.$BASHPID"
-    printf '%s %s\n' "$(date -u +%s)" "$loaded" >"$tmp" 2>/dev/null && mv -f "$tmp" "$RUNNING_CACHE_FILE" 2>/dev/null
-}
-
-# Runs as a single persistent background job for the lifetime of `watch`,
-# started once by cmd_watch. Entirely decoupled from the GPU-sampling loop
-# below: however long a slow or hung /running takes (up to
-# EDGE_HTTP_TIMEOUT per call), it only ever delays this loop's own next
-# iteration, never the main loop's next GPU sample or lease renewal.
-running_poller_loop() {
-    while true; do
-        poll_running_once
-        sleep "$INTERVAL"
-    done
-}
-
-# Non-blocking read of the poller's last answer. Missing, unparseable, or
-# older than RUNNING_CACHE_MAX_AGE all read as unknown -- the same "missing
-# telemetry must not manufacture a claim" rule sample() has always applied to
-# a failed live query, just fed from a cache instead of a call made on this
-# loop's own clock. The max-age bound keeps a permanently stuck /running from
-# serving one stale number forever; see the "Cycle 10" comment above for why
-# it defaults to 15s.
-cached_loaded() {
-    local ts loaded
-    if [ -r "$RUNNING_CACHE_FILE" ] && read -r ts loaded <"$RUNNING_CACHE_FILE" 2>/dev/null; then
-        case "$ts" in
-            ''|*[!0-9]*) printf unknown; return ;;
-        esac
-        if [ $(( $(date -u +%s) - ts )) -le "$RUNNING_CACHE_MAX_AGE" ]; then
-            printf '%s' "$loaded"
-            return
-        fi
-    fi
-    printf unknown
-}
-
 # Positive, continuously-renewed proof that THIS loop iteration completed a
 # VALID GPU sample -- not merely that the process is alive (STORY-035-6a
 # cycle 5). Called only from the success branch of cmd_watch's loop, on
@@ -402,23 +376,43 @@ cmd_status() {
         "$verdict" "$(edge_claim_present && echo present || echo absent)" "$(edge_phase)"
 }
 
-cmd_watch() {
-    local over=0 under=0 s desktop pct loaded procs last_loaded_known=yes loaded_known
-    edge_log "watching: interval=${INTERVAL}s trip=${TRIP_SAMPLES} release=${RELEASE_SAMPLES}" \
-        "baseline=${BASELINE_MB}MB vram_trip=${TRIP_VRAM_MB}MB gpu_trip=${TRIP_GPU_PCT}%"
+# Refuses to start `watch` if RUNNING_TIMEOUT + INTERVAL is not comfortably
+# inside EDGE_GUARD_LEASE_TTL (STORY-035-6a cycle 11: "validate the timing
+# relationship at startup rather than letting an operator configure an
+# obviously unsafe combination"). The host guard does not otherwise need
+# EDGE_GUARD_LEASE_TTL -- renewal cadence, not the TTL, is what it controls --
+# but reads it here purely for this sanity check, with the same default
+# (6) the container and README document. A margin of one more INTERVAL beyond
+# RUNNING_TIMEOUT + INTERVAL is required so one slow-but-under-timeout
+# /running call still leaves real headroom before the TTL, not just enough
+# to avoid failing by a hair. Arithmetic goes through awk, not bash `$(())`,
+# because EDGE_GUARD_INTERVAL may legitimately be fractional (see do_release's
+# call site below) and bash integer arithmetic rejects that outright.
+check_running_timeout_safety() {
+    local lease_ttl="${EDGE_GUARD_LEASE_TTL:-6}"
+    awk -v rt="$RUNNING_TIMEOUT" -v iv="$INTERVAL" -v ttl="$lease_ttl" \
+        'BEGIN { exit !(rt + iv + iv < ttl) }' \
+        || edge_die "EDGE_GUARD_RUNNING_TIMEOUT ($RUNNING_TIMEOUT) + EDGE_GUARD_INTERVAL ($INTERVAL), with a margin of one more INTERVAL, must be less than EDGE_GUARD_LEASE_TTL ($lease_ttl) -- that is not the case, which lets a slow-but-answering /running call starve lease renewal exactly like STORY-035-6a cycle 10's regression"
+}
 
-    # STORY-035-6a cycle 10: /running runs on its own background clock so it
-    # can never delay a GPU sample or a lease renewal -- see
-    # running_poller_loop() above. systemd's default KillMode=control-group
-    # reaps this alongside the main process on a normal stop/restart; the
-    # trap below additionally covers a bare `kill` of just this process.
-    running_poller_loop &
-    RUNNING_POLLER_PID=$!
-    trap '[ -n "$RUNNING_POLLER_PID" ] && kill "$RUNNING_POLLER_PID" 2>/dev/null' EXIT
+cmd_watch() {
+    local over=0 under=0 g desktop pct procs loaded
+    local last_loaded_known=yes loaded_known
+    check_running_timeout_safety
+    edge_log "watching: interval=${INTERVAL}s trip=${TRIP_SAMPLES} release=${RELEASE_SAMPLES}" \
+        "baseline=${BASELINE_MB}MB vram_trip=${TRIP_VRAM_MB}MB gpu_trip=${TRIP_GPU_PCT}% running_timeout=${RUNNING_TIMEOUT}s"
 
     while true; do
-        if s=$(sample cached); then
-            read -r desktop pct loaded _ _ _ procs <<<"$s"
+        if g=$(gpu_reading); then
+            read -r desktop pct _ _ _ procs <<<"$g"
+            # Renewed immediately on a valid sample, BEFORE /running is ever
+            # queried (STORY-035-6a cycle 11) -- see renew_lease()'s comment
+            # for why "the loop executed" is not good enough, and the "Cycle
+            # 11" header comment for why /running must never sit between a
+            # successful sample and its renewal.
+            renew_lease
+
+            loaded=$(models_loaded_reading "$RUNNING_TIMEOUT")
             # Logged on the edge only. While a claim is held there is no
             # llama-swap to ask, so an unknown reading is the steady state and
             # logging every sample would bury everything else.
@@ -450,10 +444,6 @@ cmd_watch() {
                     do_release "quiet for $under samples"
                 fi
             fi
-            # Renewed only on a valid sample (STORY-035-6a cycle 5) -- see
-            # renew_lease()'s comment for why "the loop executed" is not
-            # good enough and why this is not a second failure-count timer.
-            renew_lease
         else
             # No reading is not the same as a quiet GPU. Refusing to release on
             # a blind sample keeps the failure one-way: a broken rocm-smi can
