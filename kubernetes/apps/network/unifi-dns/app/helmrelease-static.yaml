@@ -1,0 +1,128 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: unifi-dns-static
+  namespace: network
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: external-dns
+      version: 1.21.1
+      sourceRef:
+        kind: HelmRepository
+        name: external-dns
+        namespace: network
+      interval: 30m
+  values:
+    fullnameOverride: unifi-dns-static
+
+    # Log level
+    logLevel: info
+    logFormat: json
+
+    # Provider configuration — reuses the unifi-dns-secret credential and
+    # webhook image. Do not introduce a second credential path.
+    provider:
+      name: webhook
+      webhook:
+        image:
+          repository: ghcr.io/kashalls/external-dns-unifi-webhook
+          # renovate: datasource=docker depName=ghcr.io/kashalls/external-dns-unifi-webhook
+          tag: v0.9.0
+        env:
+          - name: UNIFI_USER
+            valueFrom:
+              secretKeyRef:
+                name: unifi-dns-secret
+                key: UNIFI_USER
+          - name: UNIFI_PASS
+            valueFrom:
+              secretKeyRef:
+                name: unifi-dns-secret
+                key: UNIFI_PASS
+          - name: UNIFI_HOST
+            valueFrom:
+              secretKeyRef:
+                name: unifi-dns-secret
+                key: UNIFI_HOST
+          # SECURITY: TLS verification disabled for UDM self-signed cert
+          # UDM cert only includes 127.0.0.1/fe80::1 in SAN, not 10.20.66.1
+          # Risk: Vulnerable to MITM on 10.20.66.0/24 network segment
+          # Acceptable for homelab with network segmentation + physical control
+          - name: UNIFI_SKIP_TLS_VERIFY
+            value: "true"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http-webhook
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http-webhook
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+
+    # External-DNS configuration
+    interval: 5m
+
+    # Domain filter
+    domainFilters:
+      - homelab0.org
+
+    # Sources to watch: CRD only. This instance manages static LAN records
+    # authored as DNSEndpoint objects for hosts that are not Kubernetes
+    # objects. It must NOT watch gateway-httproute/service — that combination
+    # belongs solely to the unifi-dns HelmRelease, which is deliberately
+    # scoped to --gateway-name=envoy-internal as a fix for a real outage
+    # (PR #1215 / F2: two CNAME candidates for one name caused the planner to
+    # flap the surviving answer, which Android's resolver failed outright).
+    # Widening this instance's sources would reintroduce that blast radius.
+    sources:
+      - crd
+
+    # Namespace-scoped: only watch DNSEndpoint objects in the network
+    # namespace. Combined with sources: [crd] above, the chart grants exactly
+    # the RBAC needed (Role, not ClusterRole) to read
+    # dnsendpoints.externaldns.k8s.io in this namespace.
+    namespaced: true
+    sourceNamespace: network
+
+    # Only manage endpoints explicitly opted in via this annotation. Scope
+    # convention defined here: prox-ops.io/dns-scope: unifi-static.
+    annotationFilter: prox-ops.io/dns-scope=unifi-static
+
+    # Policy
+    policy: sync
+
+    # Registry — txtOwnerId MUST differ from k8s-unifi-dns (the existing
+    # instance's owner ID) so the two instances never contend over the same
+    # TXT registry entries. This is the critical field: getting it wrong is
+    # the one change here that could delete live LAN records.
+    registry: txt
+    # This controller has a distinct TXT owner ID and must only manage
+    # static hostnames that are not emitted by the primary unifi-dns
+    # Service/gateway-httproute sources. Do not create a DNSEndpoint for
+    # an existing LAN Service/HTTPRoute hostname.
+    txtOwnerId: k8s-unifi-dns-static
+    txtPrefix: k8s.
+
+    # ServiceAccount — own name; the chart's default would collide with the
+    # unifi-dns instance's ServiceAccount.
+    serviceAccount:
+      create: true
+      name: unifi-dns-static
+
+    # Resources
+    resources:
+      requests:
+        cpu: 10m
+        memory: 50Mi
+      limits:
+        cpu: 100m
+        memory: 100Mi
