@@ -36,6 +36,16 @@
 # withdraw service within the lease TTL, because a lease renewal now means
 # "the guard can see the GPU", not merely "the process is looping".
 #
+# CYCLE 9 addition: scenario e alone was not sufficient proof of "blind but
+# alive" -- an exited or restarted guard produces the identical expired
+# lease, `withdrawn` phase, absent llama-swap and refused client as a guard
+# that is merely blind, so the prior version could not tell a crash apart
+# from the intended case. It now captures the guard's MainPID right after
+# the restart that breaks the sampler, and assert_fail_closed re-checks at
+# the end of the blindness window that the unit is still active and still
+# running that exact PID -- the scenario FAILs if the guard exited or
+# restarted instead of merely going blind.
+#
 # CANNOT run inside the dev-agent sandbox that authored it — no docker, no
 # systemctl, no reads outside the worktree (see the story's EXECUTION
 # SPLIT). Run this on the real host, as the user the systemd --user units
@@ -310,9 +320,18 @@ wait_for_phase() {
 
 # One fail-closed evidence block. ALL FOUR of lease/phase/process/client-probe
 # must independently show withdrawal for the scenario to PASS.
+#
+# $5 (optional): a guard PID captured by the caller before this scenario's
+# fail-closed window began. When given, the scenario also asserts the guard
+# unit is still active AND still running that exact PID at the end of the
+# window -- the "blind but alive" proof scenario e needs. Without this check,
+# an exited/restarted guard produces the identical expired lease, `withdrawn`
+# phase, absent llama-swap and refused client as a guard that is merely blind,
+# so the evidence could not tell a crash apart from the intended case.
 assert_fail_closed() {
-    local scenario="$1" action="$2" since_epoch="$3" latency_label="$4"
+    local scenario="$1" action="$2" since_epoch="$3" latency_label="$4" expected_guard_pid="${5:-}"
     local ss_before ss_after rc code elapsed lease_age phase phase_elapsed swap_state ok=1 reasons=""
+    local guard_pid_now="" guard_state=""
 
     ss_before=$(ss_snapshot)
     echo
@@ -333,6 +352,10 @@ assert_fail_closed() {
     lease_age=$(read_lease_age)
     if swap_process_present; then swap_state=present; else swap_state=absent; fi
     ss_after=$(ss_snapshot)
+    if [ -n "$expected_guard_pid" ]; then
+        guard_pid_now=$(guard_pid)
+        if guard_active; then guard_state=active; else guard_state=inactive; fi
+    fi
 
     printf 'curl exit code        : %s (must be non-zero)\n' "$rc"
     printf 'HTTP code             : %s (expected 000 / no application response)\n' "$code"
@@ -343,6 +366,10 @@ assert_fail_closed() {
         "${ss_before:-<no listener>}" "${ss_after:-<no listener>}"
     printf '%s: %ss\n' "$latency_label" "$elapsed"
     printf 'phase-settle latency (same reference point -> phase file reached withdrawn): %ss\n' "$phase_elapsed"
+    if [ -n "$expected_guard_pid" ]; then
+        printf 'guard PID             : %s (expected unchanged from %s, unit %s)\n' \
+            "${guard_pid_now:-<unknown>}" "$expected_guard_pid" "${guard_state:-unknown}"
+    fi
 
     [ "$rc" -ne 0 ] || { ok=0; reasons+="client request succeeded (curl exit 0); "; }
     [ "$code" = 000 ] || { ok=0; reasons+="HTTP code was '$code', not a transport failure; "; }
@@ -357,6 +384,10 @@ assert_fail_closed() {
             fi
             ;;
     esac
+    if [ -n "$expected_guard_pid" ]; then
+        [ "$guard_state" = active ] || { ok=0; reasons+="guard unit is not active (expected it to keep running, merely blind); "; }
+        [ "$guard_pid_now" = "$expected_guard_pid" ] || { ok=0; reasons+="guard PID changed from $expected_guard_pid to ${guard_pid_now:-<unknown>} (guard crashed/restarted -- this does not prove 'blind but alive'); "; }
+    fi
 
     if [ "$ok" -eq 1 ]; then
         printf 'RESULT                : PASS\n'
@@ -559,12 +590,21 @@ else
 fi
 blind_epoch=$(date -u +%s)
 systemctl --user restart "$GUARD_UNIT"
+# Captured immediately after the restart settles, so assert_fail_closed can
+# prove at the end of the blindness window that this is still the SAME
+# process -- not a crash that happens to produce identical symptoms.
+guard_blind_pid=$(guard_pid)
+if [ -z "$guard_blind_pid" ] || [ "$guard_blind_pid" = 0 ]; then
+    echo "FATAL could not read $GUARD_UNIT's MainPID after restart for scenario e" >&2
+    exit 1
+fi
 echo
-echo "guard restarted at $(now_utc) with ROCM_SMI=$BROKEN_ROCM_SMI; the process keeps running (guard_active=$(guard_active && echo yes || echo no)) but every sample now fails"
+echo "guard restarted at $(now_utc) with ROCM_SMI=$BROKEN_ROCM_SMI; PID=$guard_blind_pid keeps running (guard_active=$(guard_active && echo yes || echo no)) but every sample now fails"
 assert_fail_closed e \
     "GPU sensor unreachable (ROCM_SMI points at a nonexistent path) while the guard process keeps running; lease left to expire (TTL=${LEASE_TTL}s)" \
     "$blind_epoch" \
-    "withdrawal latency (sampler broken -> first client-observed unavailable request)"
+    "withdrawal latency (sampler broken -> first client-observed unavailable request)" \
+    "$guard_blind_pid"
 
 mv -f "$ENV_BACKUP" "$ENV_FILE"
 unset ENV_BACKUP

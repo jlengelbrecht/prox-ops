@@ -377,10 +377,11 @@ The daemons come first because the units are what create the shared state
 directory, and step 5's `scripts/install.sh` is what populates
 `EDGE_LIBEXEC_DIR` — both are bind-mounted with `create_host_path: false`, so
 the container refuses to start against a missing or empty one rather than
-silently running with no scripts and no llama-swap config. Run
-`docker compose` from this checkout or from anywhere else; nothing about the
-running container depends on which directory `docker compose up` was invoked
-from, only on `.env` pointing `EDGE_LIBEXEC_DIR` at the installed copy.
+silently running with no scripts and no llama-swap config. Run `docker
+compose` from **this directory** (`edge/cachyos/`), where `.env` lives — the
+command below omits `-f`, so Compose resolves `docker-compose.yaml` by
+searching the current directory and its parents, and only finds it if you are
+here. There is no other supported invocation directory.
 
 ```sh
 docker compose up -d --build
