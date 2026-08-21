@@ -3,6 +3,8 @@ apiVersion: externaldns.k8s.io/v1alpha1
 kind: DNSEndpoint
 metadata:
   name: cloudflare-tunnel
+  labels:
+    k8s-gateway.dns/ignore: "true"
 spec:
   endpoints:
     - dnsName: "external.${SECRET_DOMAIN}"
