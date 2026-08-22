@@ -1,0 +1,48 @@
+---
+# yaml-language-server: $schema=https://kubernetes-schemas.pages.dev/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+#
+# STORY-035-9b: deploys the already-published, already-verified 35.9a image
+# pinned by digest. No service code, no new endpoints, no contract changes.
+#
+# dependsOn namespace note (2 prior incidents, see memory): the value here is
+# the DEPENDENCY'S OWN Kustomization CR namespace, never this object's
+# targetNamespace and never flux-system by reflex.
+#   - external-secrets-operator lives under kubernetes/apps/external-secrets/,
+#     whose top-level kustomization.yaml carries no `namespace:` transform, so
+#     its Kustomization CR stays in the flux-system namespace it declares.
+#   - agent-router-catalog lives under kubernetes/apps/ai/, whose top-level
+#     kustomization.yaml transforms every Kustomization CR in it to
+#     `namespace: ai` (kubernetes/apps/ai/kustomization.yaml) - agentgateway-
+#     wake-gate/ks.yaml depends on it the same way, for the same reason.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agent-router
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: external-secrets-operator
+      namespace: flux-system
+    # dependsOn addresses the dependency's Kustomization CR in the namespace
+    # it FINALLY lands in - which, for anything under kubernetes/apps/ai/, is
+    # `ai`, because the tree's kustomization.yaml applies `namespace: ai` and
+    # the transform overrides each file's literal metadata.namespace. Reading
+    # the file alone misleads here: agent-router-catalog/ks.yaml SAYS
+    # flux-system, renders to ai, and the live CR is in ai. When in doubt,
+    # trust `kustomize build kubernetes/apps/ai` over the file.
+    - name: agent-router-catalog
+      namespace: ai
+  interval: 1h
+  path: ./kubernetes/apps/ai/agent-router/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: ai
+  wait: true
+  retryInterval: 1m
+  timeout: 5m
+  # No decryption block: this Kustomization ships no SOPS files - both
+  # credentials arrive via ExternalSecret from 1Password, not sops-age.
+  # Matches agent-router-catalog/ks.yaml's reasoning for the same omission.

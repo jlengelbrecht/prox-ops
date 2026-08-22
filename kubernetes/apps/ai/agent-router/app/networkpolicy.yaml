@@ -1,0 +1,45 @@
+---
+# Ai-namespace precedent: ingress from the network-namespace gateway (the TLS
+# path) and in-namespace callers, to 8080 only.
+#
+# Egress is deliberately empty, not just DNS-only like most apps in this
+# namespace: the service makes no outbound calls of any kind - it reads its
+# catalog, caller token and node credentials from mounted files and never
+# resolves a hostname or opens a connection itself. `egress: []` turns on
+# Cilium's default-deny for the egress direction with zero allow rules, which
+# is the correct expression of "no egress requirement beyond none".
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: agent-router
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: agent-router
+    app.kubernetes.io/component: networkpolicy
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: agent-router
+
+  ingress:
+    # TLS path: envoy-internal gateway (edge heartbeat, and any off-cluster
+    # caller of the status endpoint).
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # Plaintext in-cluster path: callers within the ai namespace.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  egress: []

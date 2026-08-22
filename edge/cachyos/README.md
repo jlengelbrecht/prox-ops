@@ -179,6 +179,23 @@ op read 'op://<vault>/edge-cachyos-7900xtx/credential' |
 
 To mint one first: `printf 'sk-%s\n' "$(head -c 48 /dev/urandom | base64)"`.
 
+### 3a. Seed the router credential (STORY-035-9b)
+
+A second, unrelated credential: the raw bearer token `edge-heartbeat.service`
+presents to `agent-router`'s `POST /v1/capacity/heartbeat`. It is a DIFFERENT
+1Password property from the one above - `router-credential` on the same
+`edge-cachyos-7900xtx` item, not `credential` - because it asserts a
+different authority (capacity state, not "call the edge's model"). See the
+`agent-router` ExternalSecret in `kubernetes/apps/ai/agent-router/app/` for
+the cluster side of the same split.
+
+```sh
+op read 'op://<vault>/edge-cachyos-7900xtx/router-credential'
+```
+
+Raw token, no `Bearer ` prefix - the heartbeat script adds that itself. This
+value is installed into its own file in step 5, never into `edge.env`.
+
 ### 4. Configure
 
 ```sh
@@ -234,14 +251,22 @@ install -m 600 .env ~/.config/edge-cachyos/edge.env
 docker run --rm -v edge-pki:/pki:ro alpine:3.20 cat /pki/edge-ca.crt \
   > ~/.config/edge-cachyos/edge-ca.crt
 
+# The router credential from step 3a, in its own mode-0600 file - never in
+# edge.env (STORY-035-9b). EDGE_ROUTER_URL may also be set here to override
+# the empty value in edge.env, though it is not secret and usually isn't.
+( umask 077
+  printf 'EDGE_ROUTER_TOKEN=%s\n' "$(op read 'op://<vault>/edge-cachyos-7900xtx/router-credential')" \
+    > ~/.config/edge-cachyos/router.env )
+
 # Validates ROCM_SMI in the edge.env just installed above (exits 1 if it is
 # not an existing, executable path — see "A blind guard is not a live
 # guard"), then copies scripts/, model-id-map.json and README.md to
-# ~/.local/libexec/edge-cachyos/ and the two unit files to
-# ~/.config/systemd/user/, then daemon-reloads. See "Layout independence"
-# below for why the units point there instead of at this checkout, and
-# re-run this after every pull that touches scripts/, systemd/ or
-# model-id-map.json — it is idempotent.
+# ~/.local/libexec/edge-cachyos/, the unit files to ~/.config/systemd/user/
+# (including the edge-heartbeat.service.d/router-token.conf drop-in that
+# points the heartbeat unit at ~/.config/edge-cachyos/router.env), then
+# daemon-reloads. See "Layout independence" below for why the units point
+# there instead of at this checkout, and re-run this after every pull that
+# touches scripts/, systemd/ or model-id-map.json — it is idempotent.
 scripts/install.sh
 
 systemctl --user enable --now edge-interactive-guard.service edge-heartbeat.service
@@ -909,6 +934,14 @@ export EDGE_API_KEY_FILE=~/.config/edge-cachyos/api-key
   the host copy at `~/.config/edge-cachyos/api-key`, then restart the container
   and the two user units. Those two files and the 1Password item are the only
   copies.
+- **Rotate the router credential** (STORY-035-9b): update
+  `router-credential` on the `edge-cachyos-7900xtx` 1Password item, re-run
+  step 3a/5's `router.env` write, then `systemctl --user restart
+  edge-heartbeat.service`. Cluster-side, the matching `ExternalSecret`
+  (`agent-router-node-credentials`) picks up the new value on its next
+  refresh and the Stakater Reloader annotation on the `agent-router`
+  Deployment rolls the pod so it stops accepting the old token - rotation is
+  not complete on either side until both have happened.
 - **Rotate the host certificate**: `issue-edge-pki.sh --leaf-only --force`,
   then restart the container. The CA and therefore the cluster side are
   untouched.
