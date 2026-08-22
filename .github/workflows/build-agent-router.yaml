@@ -138,9 +138,17 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.9.0
         with:
           images: ${{ env.IMAGE_NAME }}
+          # The sha tag is given the higher priority deliberately. This
+          # action's `version` output is whichever tag ranks highest, and
+          # `type=raw` outranks `type=sha` by default - which would bake
+          # VERSION=latest into the binary on main while pull-request builds
+          # reported a real commit. "latest" identifies nothing: an operator
+          # reading /health could not tell which build is running without
+          # resolving the digest elsewhere. Both tags are still published;
+          # only which one names the build changes.
           tags: |
-            type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long,priority=900
+            type=raw,value=latest,enable={{is_default_branch}},priority=100
 
       - name: Build and push
         id: build
