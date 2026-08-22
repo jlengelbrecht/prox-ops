@@ -82,36 +82,6 @@ data:
       # Actual cold start measured: ~100-420s depending on model
       # =====================================================
 
-      - model_name: "qwen-coder"
-        litellm_params:
-          # Note: vLLM exposes model as "/models/..." path, must match exactly
-          model: "openai//models/Qwen/Qwen2.5-Coder-7B-Instruct"
-          api_base: "http://qwen-coder-predictor.ai.svc.cluster.local/v1"
-          api_key: "dummy"
-          timeout: 180        # STORY-150: Increased from 120 for cold start
-        model_info:
-          description: "KServe Qwen2.5-Coder-7B (~100s cold start)"
-
-      - model_name: "dolphin-chat"
-        litellm_params:
-          # Note: vLLM exposes model as "/models/..." path, must match exactly
-          model: "openai//models/cognitivecomputations/Dolphin3.0-Llama3.1-8B"
-          api_base: "http://dolphin-chat-predictor.ai.svc.cluster.local/v1"
-          api_key: "dummy"
-          timeout: 180        # STORY-150: Keep at 180 (actual cold start ~109s)
-        model_info:
-          description: "KServe Dolphin3.0 uncensored (~100s cold start)"
-
-      - model_name: "qwen-omni"
-        litellm_params:
-          # Note: vLLM exposes model as "/models/..." path, must match exactly
-          model: "openai//models/Qwen/Qwen2.5-Omni-7B"
-          api_base: "http://qwen-omni-predictor.ai.svc.cluster.local/v1"
-          api_key: "dummy"
-          timeout: 300        # STORY-150: Keep at 300 for multimodal
-        model_info:
-          description: "KServe Qwen2.5-Omni multimodal (~150s cold start)"
-
       - model_name: "qwen36-27b"
         litellm_params:
           # llama.cpp exposes the model under its --alias, not a /models/... path
@@ -181,16 +151,6 @@ data:
           timeout: 420        # STORY-150: Increased from 300 for video model
         model_info:
           description: "KServe Wan2.2 video generation (~240s cold start)"
-
-      - model_name: "hermes-jarvis"
-        litellm_params:
-          # Note: vLLM exposes model as "/models/..." path, must match exactly
-          model: "openai//models/NousResearch/Hermes-3-Llama-3.1-8B"
-          api_base: "http://hermes-jarvis-predictor.ai.svc.cluster.local/v1"
-          api_key: "dummy"
-          timeout: 180        # STORY-150: Similar to other 8B models (~97s cold start)
-        model_info:
-          description: "KServe Hermes-3 Jarvis assistant (~97s cold start, function calling enabled)"
 
       # =====================================================
       # STORY-030-4: Whisper STT for Voice Calling

@@ -146,7 +146,7 @@ info:
     different harness, is not approved, and would be evaluated on its own.
 
     `minimax/strong` is in the profile vocabulary and is `selectable: false`
-    in catalog 1.2.0, so the router must not emit it until a later story has
+    in catalog 1.3.0, so the router must not emit it until a later story has
     validated it physically. The credential reaches a MiniMax-backed worker
     in that worker's own process or session only - nothing rewrites the
     machine's global Anthropic configuration, the Anthropic Max path keeps no
@@ -156,7 +156,7 @@ info:
 
     Harness names, profile names, placement names, policy names and
     entitlement pool names are read verbatim from ConfigMap
-    `ai/agent-router-catalog`, catalog document version 1.2.0. See README "Vocabulary coupling" for what has to change together.
+    `ai/agent-router-catalog`, catalog document version 1.3.0. See README "Vocabulary coupling" for what has to change together.
   contact:
     name: prox-ops
     url: https://github.com/jlengelbrecht/prox-ops
@@ -319,7 +319,7 @@ paths:
                   summary: Billable option withheld, non-metered substitute returned
                   externalValue: ./examples/execution-profile/metered-denied-substituted.json
                 docs-low-risk:
-                  summary: Cheapest local profile, no fallbacks on purpose
+                  summary: Non-code local profile, no fallbacks on purpose
                   externalValue: ./examples/execution-profile/docs-low-risk-cluster-only.json
         '400':
           $ref: '#/components/responses/InvalidRequest'
@@ -410,7 +410,7 @@ paths:
                 value:
                   model_profile: local-code-standard
                   placement_policy: prefer-warm-local
-                  catalog_version: sha256:134a633f984001a8753952514ab1d642c9bf089c160d5f53c1355535bcae7041
+                  catalog_version: sha256:2fd681e0e988bf6be94b8923b1485a0aa174a4e66aec580a2d383c764b60e229
               large-context:
                 summary: Request too large for same-request failover
                 description: >-
@@ -620,7 +620,7 @@ paths:
                     eligible_for_placement: true
                     next_heartbeat_after_seconds: 30
                     offline_after_seconds: 90
-                    catalog_version: sha256:134a633f984001a8753952514ab1d642c9bf089c160d5f53c1355535bcae7041
+                    catalog_version: sha256:2fd681e0e988bf6be94b8923b1485a0aa174a4e66aec580a2d383c764b60e229
                 withdrawn:
                   summary: Interactive node, marked ineligible on receipt
                   value:
@@ -630,7 +630,7 @@ paths:
                     eligible_for_placement: false
                     next_heartbeat_after_seconds: 30
                     offline_after_seconds: 90
-                    catalog_version: sha256:134a633f984001a8753952514ab1d642c9bf089c160d5f53c1355535bcae7041
+                    catalog_version: sha256:2fd681e0e988bf6be94b8923b1485a0aa174a4e66aec580a2d383c764b60e229
         '400':
           $ref: '#/components/responses/InvalidRequest'
         '401':
@@ -707,9 +707,10 @@ paths:
               examples:
                 today:
                   summary: >-
-                    Catalog 1.2.0 as it stands - cachyos-7900xtx selectable
+                    Catalog 1.3.0 as it stands - cachyos-7900xtx selectable
                     and heartbeating, local-code-standard with a second
-                    physical candidate
+                    physical candidate, and the four retired local models
+                    gone from local-code-fast/local-general/local-unrestricted
                   externalValue: ./examples/status/status-today.json
                 pre-edge:
                   summary: >-

@@ -70,6 +70,24 @@ data:
 
     # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
     #
+    # 1.3.0 (STORY-035-8c, owner-directed retirement) - REMOVES MODELS, unlike
+    # 1.1.0/1.2.0 which were purely additive:
+    #   - qwen-coder, dolphin-chat, hermes-jarvis and qwen-omni are deleted
+    #     from `models` outright. qwen36-27b becomes the only deployed KServe
+    #     model. No replacement model was selected or evaluated - that is
+    #     explicitly out of scope for the MVP.
+    #   - local-code-fast and local-unrestricted each lost their only
+    #     candidate and flip to selectable: false with an empty physical[]
+    #     and a blocked_by entry; they are not broken, they are awaiting a
+    #     post-MVP model decision.
+    #   - local-general drops hermes-jarvis and qwen-omni, retaining
+    #     qwen36-27b as its sole candidate; its capabilities/min_context floor
+    #     is recomputed accordingly ([chat, tools] / 65536).
+    #   - local-code-standard is unaffected: it already named qwen36-27b only.
+    #   - qwen36-27b's own placements/policies/prefer_order are untouched;
+    #     the R25 frozen placement table for it does not move.
+    #   Fields were removed, not re-typed, so schema_version stays 1.
+    #
     # 1.2.0 (STORY-035-8, R25 frozen rulings) - ADDITIVE ONLY:
     #   - cachyos-7900xtx flips from planned/not-selectable to
     #     available/selectable: 35.6/35.6a/35.7 measured and hardened it, the
@@ -83,7 +101,7 @@ data:
     #     the edge as a second candidate, physical ordered edge-before-KServe
     #     to match prefer_order.
     #   Nothing was removed or re-typed, so schema_version stays 1.
-    version: "1.2.0"
+    version: "1.3.0"
     # Structural schema version. Consumers MUST refuse a major they do not
     # implement rather than best-effort parsing an unknown shape.
     schema_version: 1
@@ -353,90 +371,6 @@ data:
         idle_retention_min: 30
         source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
 
-      qwen-coder:
-        description: Qwen2.5-Coder-7B-Instruct on vLLM. Code-specialised, small, fast.
-        hosting: local
-        upstream_model_id: /models/Qwen/Qwen2.5-Coder-7B-Instruct
-        upstream_id_form: >-
-          vLLM --model filesystem path. No --served-model-name, so the
-          leading /models/... must be sent upstream verbatim.
-        runtime: vLLM
-        placements: [kserve-a5000]
-        # No tool calling: the InferenceService runs without
-        # --enable-auto-tool-choice / --tool-call-parser.
-        capabilities: [chat]
-        max_context: 8192
-        alignment: standard
-        vram_gb_estimate: 14
-        vram_estimate_source: InferenceService record ("~14GB VRAM").
-        cold_start_s_estimate: 100
-        cold_start_source: measured
-        idle_retention_min: 5
-        source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
-
-      dolphin-chat:
-        description: >-
-          Dolphin3.0-Llama3.1-8B on vLLM. Deployed and documented in this
-          repo as an uncensored chat model - that is why it is the only
-          `unrestricted` model here.
-        hosting: local
-        upstream_model_id: /models/cognitivecomputations/Dolphin3.0-Llama3.1-8B
-        upstream_id_form: vLLM --model filesystem path.
-        runtime: vLLM
-        placements: [kserve-a5000]
-        capabilities: [chat]
-        max_context: 8192
-        # Invariant 12: this is an ALIGNMENT property, not a quality tier.
-        alignment: unrestricted
-        vram_gb_estimate: 16
-        vram_estimate_source: InferenceService record ("~16GB VRAM").
-        cold_start_s_estimate: 100
-        cold_start_source: measured
-        idle_retention_min: 5
-        source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
-
-      hermes-jarvis:
-        description: >-
-          Hermes-3-Llama-3.1-8B on vLLM, deployed as the assistant model.
-          Native function calling is enabled on this InferenceService
-          (--enable-auto-tool-choice --tool-call-parser=hermes).
-        hosting: local
-        upstream_model_id: /models/NousResearch/Hermes-3-Llama-3.1-8B
-        upstream_id_form: vLLM --model filesystem path.
-        runtime: vLLM
-        placements: [kserve-a5000]
-        capabilities: [chat, tools]
-        max_context: 8192
-        alignment: standard
-        vram_gb_estimate: 16
-        vram_estimate_source: InferenceService record ("~16GB VRAM").
-        cold_start_s_estimate: 97
-        cold_start_source: measured
-        idle_retention_min: 5
-        source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
-
-      qwen-omni:
-        description: >-
-          Qwen2.5-Omni-7B on the vLLM-Omni fork. Multimodal INPUT
-          (text/audio/vision) through /v1/chat/completions; text output.
-          Audio OUTPUT is a different service (qwen-tts) and is not in this
-          catalog's scope.
-        hosting: local
-        upstream_model_id: /models/Qwen/Qwen2.5-Omni-7B
-        upstream_id_form: vLLM --model filesystem path.
-        runtime: vLLM-Omni
-        placements: [kserve-a5000]
-        # vision/audio are INPUT modalities. No tool calling is configured.
-        capabilities: [chat, vision, audio]
-        max_context: 8192
-        alignment: standard
-        vram_gb_estimate: 17
-        vram_estimate_source: InferenceService record ("~17GB VRAM").
-        cold_start_s_estimate: 150
-        cold_start_source: measured
-        idle_retention_min: 5
-        source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
-
       # --- vendor-hosted -------------------------------------------------
       # These are NOT wire-level model ids and NOT placed by the router.
       # They are the selector a harness resolves against its own
@@ -660,12 +594,19 @@ data:
       local-code-fast:
         description: >-
           Cheap, quick, code-shaped local work where latency matters more
-          than depth. Smallest cold start of the local set.
+          than depth. NON-SELECTABLE as of STORY-035-8c: its only model
+          (qwen-coder) was retired and no substitute was chosen - that
+          decision is explicitly out of scope for the MVP and is a
+          post-MVP follow-up.
         cost_class: free
         hosting: local
-        selectable: true
-        capabilities: [chat]
-        min_context: 8192
+        selectable: false
+        # Empty, not [chat]/8192: rules 5 and 6 define capabilities/
+        # min_context as the intersection/minimum over physical[], which is
+        # undefined over an empty set. A non-selectable profile with no
+        # candidates guarantees nothing - see README rules 5 and 6.
+        capabilities: []
+        min_context: null
         alignment: standard
         forbidden_for: []
         # Local execution draws on no entitlement pool: the GPU is
@@ -674,13 +615,14 @@ data:
         entitlements:
           - pool: null
             cost_class: free
-        physical:
-          - model_id: qwen-coder
-            placement: kserve-a5000
+        physical: []
+        blocked_by:
+          - a post-MVP catalog PR selects and validates a replacement model
         notes: >-
-          Guarantees `chat` only: qwen-coder has no tool calling configured
-          today. A caller that needs tools must not be routed here - use
-          local-code-standard.
+          Retired STORY-035-8c: qwen-coder was removed from models[] and no
+          replacement was selected. This profile is awaiting a post-MVP
+          model decision, not broken - do not route to it and do not
+          auto-substitute another model in its place.
 
       local-code-standard:
         description: >-
@@ -713,18 +655,17 @@ data:
 
       local-general:
         description: >-
-          Non-code local work: chat, summarisation, assistant tasks,
-          multimodal input. Broadest candidate list of any profile.
+          Non-code local work: chat, summarisation, assistant tasks. Its two
+          other candidates (hermes-jarvis, qwen-omni) were retired in
+          STORY-035-8c with no substitute selected, leaving qwen36-27b as the
+          sole candidate.
         cost_class: free
         hosting: local
         selectable: true
-        # Floor only. qwen36-27b and hermes-jarvis also provide `tools`,
-        # qwen-omni also provides `vision`/`audio` input - a router that
-        # needs an optional capability filters physical[] against models[]
-        # rather than assuming the whole list has it.
-        capabilities: [chat]
-        # min(65536, 8192, 8192) = 8192.
-        min_context: 8192
+        # qwen36-27b is the only remaining candidate, so the floor is exactly
+        # what it provides.
+        capabilities: [chat, tools]
+        min_context: 65536
         alignment: standard
         forbidden_for: []
         # Local execution draws on no entitlement pool: the GPU is
@@ -736,25 +677,29 @@ data:
         physical:
           - model_id: qwen36-27b
             placement: kserve-a5000
-          - model_id: hermes-jarvis
-            placement: kserve-a5000
-          - model_id: qwen-omni
-            placement: kserve-a5000
         notes: >-
-          Ordered by capability breadth, not by size: qwen36-27b first
-          (tools + 64k), hermes-jarvis second (tools), qwen-omni last (the
-          only multimodal-input option, but no tool calling).
+          Retired STORY-035-8c: hermes-jarvis and qwen-omni were removed from
+          models[] and no replacement was selected for either. qwen36-27b
+          remains as the sole candidate.
 
       local-unrestricted:
         description: >-
           Local model with no refusal training. This is an ALIGNMENT
-          property, NOT a quality tier - it is a weaker model than
-          local-code-standard in every respect except refusal behaviour.
+          property, NOT a quality tier. NON-SELECTABLE as of STORY-035-8c:
+          its only model (dolphin-chat) was retired and no substitute was
+          chosen - that decision is explicitly out of scope for the MVP and
+          is a post-MVP follow-up.
         cost_class: free
         hosting: local
-        selectable: true
-        capabilities: [chat]
-        min_context: 8192
+        selectable: false
+        # Empty, not [chat]/8192: rules 5 and 6 define capabilities/
+        # min_context as the intersection/minimum over physical[], which is
+        # undefined over an empty set. A non-selectable profile with no
+        # candidates guarantees nothing - see README rules 5 and 6. Rule 8
+        # still applies below: non-selectable does not make this profile
+        # safe, so forbidden_for stays non-empty.
+        capabilities: []
+        min_context: null
         alignment: unrestricted
         # Invariant 12. This list is a MINIMUM, extensible by catalog PR,
         # and it is a hard exclusion: it is not a score, a tie-break or a
@@ -773,9 +718,14 @@ data:
         entitlements:
           - pool: null
             cost_class: free
-        physical:
-          - model_id: dolphin-chat
-            placement: kserve-a5000
+        physical: []
+        blocked_by:
+          - a post-MVP catalog PR selects and validates a replacement model
+        notes: >-
+          Retired STORY-035-8c: dolphin-chat was removed from models[] and no
+          replacement was selected. This profile is awaiting a post-MVP
+          model decision, not broken - do not route to it and do not
+          auto-substitute another model in its place.
 
       "claude/strong":
         description: >-
