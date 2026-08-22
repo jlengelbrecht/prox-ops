@@ -1,0 +1,60 @@
+---
+name: "Contract Checks"
+
+# STORY-035-1b. Wires the three committed agent-router contract guards into CI.
+# Path filter covers everything the checks READ, not just where they live: a
+# catalog-only edit (no contracts/ change) must still trigger verify-digests.sh
+# and verify-placement-cases.sh.
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "contracts/agent-router/**"
+      - "kubernetes/apps/ai/agent-router-catalog/**"
+      - "kubernetes/apps/ai/agentgateway-pilot/app/httproute.yaml"
+      - ".github/workflows/contract-checks.yaml"
+  push:
+    branches: ["main"]
+    paths:
+      - "contracts/agent-router/**"
+      - "kubernetes/apps/ai/agent-router-catalog/**"
+      - "kubernetes/apps/ai/agentgateway-pilot/app/httproute.yaml"
+      - ".github/workflows/contract-checks.yaml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=pypi depName=pyyaml
+  PYYAML_VERSION: "6.0.3"
+
+jobs:
+  contract-checks:
+    name: Contract Checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+
+      - name: Install PyYAML
+        run: pip install pyyaml==${{ env.PYYAML_VERSION }}
+
+      - name: verify-digests
+        run: ./contracts/agent-router/verify-digests.sh
+
+      - name: verify-placement-cases
+        run: ./contracts/agent-router/verify-placement-cases.sh
+
+      - name: verify-ade-boundary
+        run: ./contracts/agent-router/verify-ade-boundary.sh
