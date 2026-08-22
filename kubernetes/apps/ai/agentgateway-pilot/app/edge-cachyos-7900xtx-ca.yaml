@@ -1,0 +1,38 @@
+---
+# STORY-035-8: the CachyOS edge worker's dedicated PKI trust anchor
+# (edge/cachyos/README.md "Issue the PKI" - scripts/issue-edge-pki.sh,
+# CN "homelab0 edge CA"). Public trust material, not a credential: this is
+# the CA certificate itself, never a private key, so it is committed to Git
+# like any other ConfigMap - contrast with the bearer credential in
+# edge-cachyos-7900xtx-externalsecret.yaml, which never is.
+#
+# Provenance (verified 2026-08-21 on the edge host itself): read from the
+# `edge-pki` Docker volume the edge server serves from, and confirmed to be
+# the real anchor by validating the LIVE leaf -
+#   openssl s_client -connect cachyos-7900xtx.homelab0.org:8443 \
+#     -servername cachyos-7900xtx.homelab0.org -CAfile edge-ca.crt
+#     -> Verification: OK, Verify return code: 0
+# Self-signed root, CA:TRUE pathlen:0, expires 2036-08-17, no private key.
+#
+# Rotation: reissuing the edge PKI invalidates this ConfigMap. A stale CA
+# here fails CLOSED (TLS handshake error, curl rc=60 - proven by 35.8pre's
+# wrong-CA test), never silently, so rotation surfaces as a hard 5xx rather
+# than as an unverified connection.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: edge-cachyos-7900xtx-ca
+  namespace: ai
+data:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIBnTCCAUSgAwIBAgIUZRYfUMlKOmUMcwtKm97Lche0wE8wCgYIKoZIzj0EAwIw
+    GzEZMBcGA1UEAwwQaG9tZWxhYjAgZWRnZSBDQTAeFw0yNjA4MjAwMjU2MjJaFw0z
+    NjA4MTcwMjU2MjJaMBsxGTAXBgNVBAMMEGhvbWVsYWIwIGVkZ2UgQ0EwWTATBgcq
+    hkjOPQIBBggqhkjOPQMBBwNCAAQ7utMF6zjkcf6XYCymtyISVJtjfR5q1KoJvp3x
+    KNSux3XRUkDLf2KMGOsgX7o8pPrFSKf+XKt9Wf+0LB9KCfR0o2YwZDAfBgNVHSME
+    GDAWgBQ27sCMt0cIqvr7fS8W1MQlutAhMTASBgNVHRMBAf8ECDAGAQH/AgEAMA4G
+    A1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUNu7AjLdHCKr6+30vFtTEJbrQITEwCgYI
+    KoZIzj0EAwIDRwAwRAIgBVBOKnM2vfvj0pk0nY00t5ShVq8pGstd5fEjtaAHh0sC
+    IDlHjDxpjseIFbAXbkPyL9I/OwMEpNouYAcRRTAmuTvx
+    -----END CERTIFICATE-----

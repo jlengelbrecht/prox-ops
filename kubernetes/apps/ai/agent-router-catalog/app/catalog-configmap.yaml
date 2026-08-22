@@ -70,20 +70,24 @@ data:
 
     # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
     #
-    # 1.1.0 (STORY-035-2, owner rulings R16/R17) - ADDITIVE ONLY:
-    #   - TABLE 4 entitlement_pools: where the money comes from, and the
-    #     rule that billing class and credential type are INDEPENDENT.
-    #   - profiles[].entitlements[]: ordered funding candidates per profile.
-    #   - model minimax/m3 and profile minimax/strong, selectable: false
-    #     until a later story validates them physically.
-    #   Nothing was removed or re-typed, so schema_version stays 1: a
-    #   consumer written against 1.0.0 still reads this document correctly,
-    #   it just cannot see the funding axis.
-    version: "1.1.0"
+    # 1.2.0 (STORY-035-8, R25 frozen rulings) - ADDITIVE ONLY:
+    #   - cachyos-7900xtx flips from planned/not-selectable to
+    #     available/selectable: 35.6/35.6a/35.7 measured and hardened it, the
+    #     35.8pre DNS/TLS proof closed the last reachability gap, and the R25
+    #     owner review froze the routing numbers below.
+    #   - prefer-warm-local.prefer_order now leads with cachyos-7900xtx: the
+    #     measured ~6s edge cold start beats the (deliberately conservative)
+    #     150s KServe estimate, so preferring the edge whenever both are cold
+    #     or unknown is the right default, not just the warm-preference case.
+    #   - qwen36-27b.placements and local-code-standard.physical both gain
+    #     the edge as a second candidate, physical ordered edge-before-KServe
+    #     to match prefer_order.
+    #   Nothing was removed or re-typed, so schema_version stays 1.
+    version: "1.2.0"
     # Structural schema version. Consumers MUST refuse a major they do not
     # implement rather than best-effort parsing an unknown shape.
     schema_version: 1
-    updated: "2026-08-19"
+    updated: "2026-08-21"
     epic: EPIC-035
     story: STORY-035-1
     # Consumers: none. This is asserted, not implied - see README "Inert".
@@ -205,15 +209,17 @@ data:
 
       cachyos-7900xtx:
         description: >-
-          Planned LAN edge worker on the operator's CachyOS workstation.
-          Declared here so the placement name is fixed before anything
-          depends on it - it is not reachable, not configured, not usable.
-        status: planned
-        selectable: false
+          LAN edge worker on the operator's CachyOS workstation. Brought up
+          by 35.6/35.6a, physically validated against kserve-a5000 by 35.7,
+          and proven reachable by name with strict TLS+bearer by 35.8pre
+          (cachyos-7900xtx.homelab0.org, 200 / 401 / 401 / TLS rc=60). Wired
+          into agentgateway as a second grouped-backend placement by 35.8.
+        status: available
+        selectable: true
         kind: edge
-        # Physical hostname deliberately not recorded here: this repo is public
-        # and the placement is not yet selectable. 35.6 supplies the reachable
-        # endpoint as a DNS name; the OS hostname is not needed by any consumer.
+        # Physical hostname deliberately not recorded here: this repo is
+        # public. 35.6 supplies the reachable endpoint as a DNS name; the OS
+        # hostname is not needed by any consumer.
         node: null
         gpu:
           vendor: amd
@@ -232,15 +238,20 @@ data:
         preemptible: true
         scale_to_zero: null
         concurrent_models: null
-        cold_start_s_estimate: null
-        cold_start_source: unmeasured
-        blocked_by: ["35.6", "35.7", "35.8"]
+        cold_start_s_estimate: 6
+        cold_start_source: measured
+        cold_start_evidence: >-
+          35.7 edge cold-load benchmark (unloaded model -> first token), N=5:
+          min 5.491s, median 5.520s, max 5.547s, spread 0.056s - two orders of
+          magnitude tighter than kserve-a5000's cold-start spread. Rounded up
+          for the estimate field; the distribution itself is the evidence.
         notes: >-
           Invariant 8: the machine's interactive desktop work outranks AI,
           absolutely and without a cluster round-trip. Withdrawal is by
-          silence and by 503. Ruling R4 sets the transport bar before this
-          may go selectable: HTTPS, bearer auth, a real CA, a hostname SAN,
-          a dedicated host key, no insecureSkipVerify, secrets outside Git.
+          silence and by 503. Ruling R4's transport bar (HTTPS, bearer auth,
+          a real CA, a hostname SAN, a dedicated host key, no
+          insecureSkipVerify, secrets outside Git) is met - see 35.8's
+          agentgateway wiring in agentgateway-pilot/app.
 
       bazzite-5090:
         description: >-
@@ -329,7 +340,7 @@ data:
         upstream_model_id: qwen3.6-27b
         upstream_id_form: llama-server --alias
         runtime: llama.cpp (server-cuda)
-        placements: [kserve-a5000]
+        placements: [kserve-a5000, cachyos-7900xtx]
         capabilities: [chat, tools]
         max_context: 65536
         alignment: standard
@@ -690,11 +701,15 @@ data:
             cost_class: free
         physical:
           - model_id: qwen36-27b
+            placement: cachyos-7900xtx
+          - model_id: qwen36-27b
             placement: kserve-a5000
         notes: >-
-          Single candidate today. When the 7900 XTX lands (35.6/35.8) the
-          expected change is a SECOND physical entry for the same profile -
-          a catalog PR, nothing else moves.
+          Two candidates as of 35.8: the edge (cachyos-7900xtx) is listed
+          first to match policies.placement_policy.prefer-warm-local's
+          prefer_order, but ordering here is a preference hint only - the
+          placement_policy on the request is what actually decides, per
+          profile/policy/placement being independent axes.
 
       local-general:
         description: >-
@@ -931,11 +946,19 @@ data:
         prefer-warm-local:
           description: >-
             Default. Take whatever is already warm; otherwise prefer the
-            cluster GPU, then the edge hosts in order of expected
-            availability.
+            edge (cachyos-7900xtx measures a ~6s cold start against
+            kserve-a5000's conservative 150s estimate), then the cluster
+            GPU, then the remaining edge hosts in order of expected
+            availability. R25 frozen decision table: edge warm/KServe cold
+            -> edge; edge cold/KServe warm -> KServe; both warm -> edge;
+            both cold or unknown -> edge; edge ineligible -> KServe. The
+            first two rows follow from warm_preference: strict alone (any
+            warm candidate beats any cold one, regardless of prefer_order);
+            the last three follow from prefer_order alone, once no candidate
+            is known-warm - which is why cachyos-7900xtx leads it.
           prefer_order:
-            - kserve-a5000
             - cachyos-7900xtx
+            - kserve-a5000
             - bazzite-5090
             - laptop-rtx5000
           warm_preference: strict
@@ -971,11 +994,11 @@ data:
           allow_cold_start: true
           min_vram_gb: null
           min_free_vram_gb: null
-          # Every placement it names is `status: planned`. A request for
-          # this policy today MUST return an explicit empty placement -
-          # never a silent fall-through to the cluster. See README
-          # "Empty candidate sets".
-          resolves_today: false
+          # cachyos-7900xtx (first in prefer_order) is available/selectable
+          # as of 35.8, so this now resolves - to the edge, live capacity
+          # permitting. bazzite-5090 and laptop-rtx5000 remain
+          # status: planned and contribute nothing yet.
+          resolves_today: true
 
         any-24gb:
           description: >-

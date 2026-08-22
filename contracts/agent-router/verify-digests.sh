@@ -86,7 +86,13 @@ DOC = str(yaml.safe_load(catalog)["version"])
 
 # The documented placeholders. Each stands for a DIFFERENT hypothetical
 # catalog; see the digest table in README.md. Obviously fabricated on purpose.
-EDGE = "sha256:" + "decafbad" * 8      # cachyos-7900xtx brought up
+#
+# PRE_EDGE is the one exception: it is not fabricated. It is the REAL digest
+# of catalog 1.1.0 as committed before STORY-035-8 brought cachyos-7900xtx
+# up - frozen here, by value, the moment it stopped being "real" so the
+# fixtures that depict that now-historical snapshot keep an honest fingerprint
+# instead of silently inheriting whatever REAL computes to next.
+PRE_EDGE = "sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a"
 ALL_EDGE = "sha256:" + "f00dface" * 8  # all three edge placements brought up
 RETIRED = "sha256:" + "deadbeef" * 8   # local-unrestricted and any-24gb retired
 METERED = "sha256:" + "cafebabe" * 8   # a metered funding source declared
@@ -97,7 +103,7 @@ EXPECTED = {
     "errors/caller-unauthenticated.json": (set(), None),
     "errors/catalog-schema-unsupported.json": (set(), None),
     "errors/catalog-unavailable.json": (set(), None),
-    "errors/catalog-version-stale.json": ({REAL, RETIRED}, None),
+    "errors/catalog-version-stale.json": ({PRE_EDGE, RETIRED}, None),
     "errors/heartbeat-node-identity-mismatch.json": (set(), None),
     "errors/heartbeat-unauthenticated.json": (set(), None),
     "errors/internal-error.json": ({REAL}, None),
@@ -118,16 +124,17 @@ EXPECTED = {
     "heartbeat/state-offline.json": (set(), None),
     "heartbeat/state-serving.json": (set(), None),
     "heartbeat/unmeasured-laptop-on-battery.json": (set(), None),
-    "place/placed-kserve-only-candidate.json": ({REAL}, None),
-    "place/placed-warm-edge.json": ({EDGE}, None),
+    "place/placed-kserve-only-candidate.json": ({PRE_EDGE}, None),
+    "place/placed-warm-edge.json": ({REAL}, None),
     "place/unavailable-all-withdrawn.json": ({ALL_EDGE}, None),
-    "place/unavailable-policy-edge-only.json": ({REAL}, None),
+    "place/unavailable-policy-edge-only.json": ({PRE_EDGE}, None),
     "status/status-today.json": ({REAL}, DOC),
-    "status/status-restarted-unseen.json": ({EDGE}, "1.2.0"),
-    "status/status-with-edge.json": ({EDGE}, "1.2.0"),
+    "status/status-restarted-unseen.json": ({REAL}, DOC),
+    "status/status-pre-edge-1.1.0.json": ({PRE_EDGE}, "1.1.0"),
 }
 
-NAMES = {REAL: "the real digest", EDGE: "the cachyos-brought-up placeholder",
+NAMES = {REAL: "the real digest",
+         PRE_EDGE: "the pre-edge historical placeholder (catalog 1.1.0)",
          ALL_EDGE: "the all-edge-brought-up placeholder",
          RETIRED: "the retirements placeholder",
          METERED: "the metered-funding placeholder"}

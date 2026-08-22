@@ -146,7 +146,7 @@ info:
     different harness, is not approved, and would be evaluated on its own.
 
     `minimax/strong` is in the profile vocabulary and is `selectable: false`
-    in catalog 1.1.0, so the router must not emit it until a later story has
+    in catalog 1.2.0, so the router must not emit it until a later story has
     validated it physically. The credential reaches a MiniMax-backed worker
     in that worker's own process or session only - nothing rewrites the
     machine's global Anthropic configuration, the Anthropic Max path keeps no
@@ -156,7 +156,7 @@ info:
 
     Harness names, profile names, placement names, policy names and
     entitlement pool names are read verbatim from ConfigMap
-    `ai/agent-router-catalog`, catalog document version 1.1.0. See README "Vocabulary coupling" for what has to change together.
+    `ai/agent-router-catalog`, catalog document version 1.2.0. See README "Vocabulary coupling" for what has to change together.
   contact:
     name: prox-ops
     url: https://github.com/jlengelbrecht/prox-ops
@@ -410,7 +410,7 @@ paths:
                 value:
                   model_profile: local-code-standard
                   placement_policy: prefer-warm-local
-                  catalog_version: sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a
+                  catalog_version: sha256:134a633f984001a8753952514ab1d642c9bf089c160d5f53c1355535bcae7041
               large-context:
                 summary: Request too large for same-request failover
                 description: >-
@@ -440,13 +440,19 @@ paths:
                 $ref: '#/components/schemas/PlaceResult'
               examples:
                 placed-kserve:
-                  summary: Today's answer - the only candidate that exists
+                  summary: >-
+                    Historical (catalog 1.1.0) - the only candidate that
+                    existed before the edge placement was brought up
                   externalValue: ./examples/place/placed-kserve-only-candidate.json
                 placed-warm-edge:
-                  summary: Warm edge beats cold cluster under a strict warm preference
+                  summary: >-
+                    Today's answer - warm edge beats cold cluster under a
+                    strict warm preference (and is first in prefer_order too)
                   externalValue: ./examples/place/placed-warm-edge.json
                 unavailable-policy:
-                  summary: Policy names only placements that cannot resolve today
+                  summary: >-
+                    Historical (catalog 1.1.0) - edge-only resolved to nothing
+                    before the edge placement was selectable
                   externalValue: ./examples/place/unavailable-policy-edge-only.json
                 unavailable-withdrawn:
                   summary: Every candidate has withdrawn itself
@@ -614,7 +620,7 @@ paths:
                     eligible_for_placement: true
                     next_heartbeat_after_seconds: 30
                     offline_after_seconds: 90
-                    catalog_version: sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a
+                    catalog_version: sha256:134a633f984001a8753952514ab1d642c9bf089c160d5f53c1355535bcae7041
                 withdrawn:
                   summary: Interactive node, marked ineligible on receipt
                   value:
@@ -624,7 +630,7 @@ paths:
                     eligible_for_placement: false
                     next_heartbeat_after_seconds: 30
                     offline_after_seconds: 90
-                    catalog_version: sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed3303150667a
+                    catalog_version: sha256:134a633f984001a8753952514ab1d642c9bf089c160d5f53c1355535bcae7041
         '400':
           $ref: '#/components/responses/InvalidRequest'
         '401':
@@ -700,17 +706,22 @@ paths:
                 $ref: '#/components/schemas/StatusResponse'
               examples:
                 today:
-                  summary: Catalog 1.1.0 as it stands - one usable placement
+                  summary: >-
+                    Catalog 1.2.0 as it stands - cachyos-7900xtx selectable
+                    and heartbeating, local-code-standard with a second
+                    physical candidate
                   externalValue: ./examples/status/status-today.json
-                with-edge:
-                  summary: Illustrative - the same view once an edge node heartbeats
-                  externalValue: ./examples/status/status-with-edge.json
+                pre-edge:
+                  summary: >-
+                    Historical - catalog 1.1.0 before cachyos-7900xtx was
+                    brought up, one usable placement
+                  externalValue: ./examples/status/status-pre-edge-1.1.0.json
                 restarted-unseen:
                   summary: >-
-                    Illustrative - seconds after a router restart. The edge node
-                    is enrolled and may well be healthy, but nothing has been
-                    observed yet, so it is `unseen` and not eligible. Read with
-                    `capacity_state: learning`, which is what makes an
+                    Today's catalog, seconds after a router restart. The edge
+                    node is enrolled and may well be healthy, but nothing has
+                    been observed yet, so it is `unseen` and not eligible. Read
+                    with `capacity_state: learning`, which is what makes an
                     unavailable answer provisional rather than final.
                   externalValue: ./examples/status/status-restarted-unseen.json
         '401':

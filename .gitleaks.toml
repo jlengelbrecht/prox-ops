@@ -245,6 +245,21 @@ entropy = 4.5
 keywords = ["secret", "token", "key", "password", "credential"]
 tags = ["low", "entropy"]
 
+  # A PEM certificate is base64 by definition, so every line of one trips this
+  # rule. Committed CA certificates are PUBLIC trust anchors - they are what
+  # lets a client verify a server, and they carry no key material.
+  #
+  # Scoped deliberately to this ONE rule rather than to the file, so the
+  # private-key rules (ssh-private-key, oci-private-key, private-key-file,
+  # pem-private-key-file) still fire on these paths. If someone ever pastes a
+  # PRIVATE key into one of these files, it is still caught. Add a path here
+  # only for a file that holds a certificate and nothing else.
+  [rules.allowlist]
+  description = "Public CA certificates committed as trust anchors"
+  paths = [
+      '''kubernetes/apps/ai/agentgateway-pilot/app/edge-cachyos-7900xtx-ca\.yaml$''',
+  ]
+
 [[rules]]
 id = "unifi-credentials"
 description = "UniFi Network Controller Credentials"

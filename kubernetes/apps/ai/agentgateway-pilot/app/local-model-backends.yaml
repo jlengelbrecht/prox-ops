@@ -38,6 +38,31 @@
 # and "modalities": ["text"] for text-only output - a genuine
 # chat-completions endpoint, not a TTS/audio/vision-output modality. It
 # belongs in the 5-model chat scope, not 34.12's non-chat bucket.
+# STORY-035-8: qwen36-27b becomes a GROUPED backend - the 35.5-proven
+# `spec.ai.groups` shape (b): a passive safety net beneath proactive
+# agent-router placement, never the placement mechanism itself). Two
+# AgentgatewayBackend objects below, not one, because `x-placement` has to
+# realize an EDGE-preferred order as well as a KServe-preferred one
+# (httproute.yaml picks between them on that header) - each retains the
+# other placement as its own R6 fallback group, so a header-pinned rule
+# never terminates in a single-provider backend (measured 3/3 503s
+# otherwise). This is the R6 atomic unit: grouped backend + passive health
+# (local-model-policies.yaml) + route retry (httproute.yaml) ship together.
+#
+# `qwen36-27b` keeps its name and is the FROZEN SAFE GROUPED DEFAULT:
+# kserve-a5000 first, cachyos-7900xtx as fallback. Every existing caller
+# that sends no `x-placement` (Claude Code's zero-config path included)
+# keeps landing here unchanged - production traffic never gets silently
+# redirected onto a human's desktop by an absent header. It also answers
+# `x-placement: kserve-a5000`.
+#
+# `qwen36-27b-edge-preferred` is new and answers
+# `x-placement: cachyos-7900xtx`:
+# cachyos-7900xtx first, kserve-a5000 as fallback.
+#
+# Every other local model (qwen-coder, dolphin-chat, hermes-jarvis,
+# qwen-omni) is explicitly OUT OF SCOPE for 35.8 (R6 names qwen36-27b only)
+# and is untouched below.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend
 metadata:
@@ -45,11 +70,65 @@ metadata:
   namespace: ai
 spec:
   ai:
-    provider:
-      openai:
-        model: qwen3.6-27b
-      host: qwen36-27b-predictor.ai.svc.cluster.local
-      port: 80
+    groups:
+      - providers:
+          - name: kserve-a5000
+            openai:
+              model: qwen3.6-27b
+            host: qwen36-27b-predictor.ai.svc.cluster.local
+            port: 80
+      - providers:
+          # Edge transport per R4/35.4: HTTPS, a dedicated CA (never the
+          # cluster wildcard), a hostname SAN, bearer auth via secretRef -
+          # no TLS verification bypass, no wildcard SAN, no plaintext
+          # fallback. Reuses the 35.6/35.6a identity material; nothing here
+          # mints a new credential or a new CA.
+          - name: cachyos-7900xtx
+            openai:
+              model: qwen3.6-27b
+            host: cachyos-7900xtx.homelab0.org
+            port: 8443
+            policies:
+              tls:
+                caCertificateRefs:
+                  - name: edge-cachyos-7900xtx-ca
+                sni: cachyos-7900xtx.homelab0.org
+                verifySubjectAltNames:
+                  - cachyos-7900xtx.homelab0.org
+              auth:
+                secretRef:
+                  name: agentgateway-pilot-edge-cachyos-7900xtx
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: qwen36-27b-edge-preferred
+  namespace: ai
+spec:
+  ai:
+    groups:
+      - providers:
+          - name: cachyos-7900xtx
+            openai:
+              model: qwen3.6-27b
+            host: cachyos-7900xtx.homelab0.org
+            port: 8443
+            policies:
+              tls:
+                caCertificateRefs:
+                  - name: edge-cachyos-7900xtx-ca
+                sni: cachyos-7900xtx.homelab0.org
+                verifySubjectAltNames:
+                  - cachyos-7900xtx.homelab0.org
+              auth:
+                secretRef:
+                  name: agentgateway-pilot-edge-cachyos-7900xtx
+      - providers:
+          - name: kserve-a5000
+            openai:
+              model: qwen3.6-27b
+            host: qwen36-27b-predictor.ai.svc.cluster.local
+            port: 80
 ---
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend

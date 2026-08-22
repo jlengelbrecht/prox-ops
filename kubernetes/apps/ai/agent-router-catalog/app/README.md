@@ -444,6 +444,12 @@ non-selectable profile. Additive, nothing removed or re-typed, so `schema_versio
 1 - a consumer written against 1.0.0 still parses this document, it just cannot see the
 funding axis.
 
+1.2.0 (STORY-035-8) flips `cachyos-7900xtx` from `status: planned` / `selectable: false` to
+`available` / `true`, reorders `prefer-warm-local.prefer_order` to put it first, and adds it
+as a second `qwen36-27b` / `local-code-standard` physical candidate. No field was added,
+removed or re-typed - every changed value already had a place in the 1.1.0 shape - so
+`schema_version` stayed 1 too.
+
 - data-only change (a model swapped behind a profile, a measurement filled in): patch or
   minor `version` bump, `schema_version` unchanged;
 - new optional field: minor `version` bump, `schema_version` unchanged;

@@ -102,6 +102,65 @@ spec:
     # derived from the header or any other client input - so whichever
     # rule a request actually lands on, that rule's fixed truth is what
     # gets checked against the requesting key's `apiKey.models`.
+    # STORY-035-8: x-placement dispatch for qwen36-27b ONLY (R6 names this
+    # model alone). Same mechanism as x-model above - Gateway API ranks a
+    # header-matched rule above the headerless one below it, so
+    # `x-placement: cachyos-7900xtx` and `x-placement: kserve-a5000` each
+    # pick a dedicated rule and anything else (missing, unknown, or a stale
+    # name) falls through to the headerless default. The values are the
+    # placement names verbatim, because that is what the router hands the
+    # caller to copy - an abbreviation here would match nothing. Every
+    # rule below - default included - terminates in a GROUPED backend
+    # (local-model-backends.yaml), never a single-provider one, so the
+    # worst case for an uncooperative caller is gateway-side selection
+    # rather than an error.
+    #
+    # Access control is unaffected. The qwen36-27b authz CEL defined
+    # alongside the other model policies is copied onto these same four
+    # section names verbatim: x-placement never touches authorization.
+    - name: qwen36-27b-chat-edge
+      matches:
+        - path:
+            type: Exact
+            value: /v1/chat/completions
+          method: POST
+          headers:
+            - name: x-placement
+              value: cachyos-7900xtx
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: qwen36-27b-edge-preferred
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 1
+        backoff: 50ms
+        codes: [503]
+    - name: qwen36-27b-chat-kserve
+      matches:
+        - path:
+            type: Exact
+            value: /v1/chat/completions
+          method: POST
+          headers:
+            - name: x-placement
+              value: kserve-a5000
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: qwen36-27b
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 1
+        backoff: 50ms
+        codes: [503]
+    # Frozen safe grouped default: headerless, so missing/unknown/stale
+    # `x-placement` lands here. Same backend as the kserve-a5000 rule
+    # above - production traffic (Claude Code's zero-config path included)
+    # never gets silently redirected onto a human's desktop by an absent
+    # header.
     - name: qwen36-27b-chat
       matches:
         - path:
@@ -115,7 +174,47 @@ spec:
       timeouts:
         request: 240s
       retry:
-        attempts: 0
+        attempts: 1
+        backoff: 50ms
+        codes: [503]
+    - name: qwen36-27b-messages-edge
+      matches:
+        - path:
+            type: Exact
+            value: /v1/messages
+          method: POST
+          headers:
+            - name: x-placement
+              value: cachyos-7900xtx
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: qwen36-27b-edge-preferred
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 1
+        backoff: 50ms
+        codes: [503]
+    - name: qwen36-27b-messages-kserve
+      matches:
+        - path:
+            type: Exact
+            value: /v1/messages
+          method: POST
+          headers:
+            - name: x-placement
+              value: kserve-a5000
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: qwen36-27b
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 1
+        backoff: 50ms
+        codes: [503]
     - name: qwen36-27b-messages
       matches:
         - path:
@@ -129,7 +228,9 @@ spec:
       timeouts:
         request: 240s
       retry:
-        attempts: 0
+        attempts: 1
+        backoff: 50ms
+        codes: [503]
     - name: qwen-coder-chat
       matches:
         - path:
