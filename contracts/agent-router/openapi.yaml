@@ -52,6 +52,39 @@ info:
     re-learns it within one heartbeat interval. The only durable input is the
     Git catalog.
 
+    ## Ownership boundary: the router recommends, the ADE executes
+
+    Normative, and the reason several shapes below are closed. **Orca is the
+    Agent Development Environment (ADE)** and owns coding-session mechanics:
+    worktree, terminal and process lifecycle, execution environment, and the
+    agent-process host. **`agent-router` is recommendation and policy only.**
+    It names a harness, a model/intelligence profile, an entitlement decision
+    and - when `placement_required` - the placement policy `/v1/place` later
+    resolves under. It never manages a session, never chooses where an agent
+    process runs, and holds no session state.
+
+    **The seam is one-way.** The router recommends; the ADE consumes and
+    executes. There is no router-to-session control channel, no execution
+    callback, no session registration, and no router-side knowledge that a
+    recommendation was acted on. The only inbound operational signal is
+    `POST /v1/capacity/heartbeat`, which is about GPUs, not sessions.
+
+    **Native harnesses own their own authentication.** Claude Code (Anthropic
+    Max) and Codex (ChatGPT subscription) run as native CLIs inside ADE-owned
+    sessions carrying their own account/session auth. No request or response
+    in this API transports provider credentials or personal OAuth/session
+    material, and no shape here can express one. `entitlement_pool` names an
+    approved funding decision - it is not an instruction to inject a
+    credential.
+
+    `x-placement` is a **model-inference scheduling header** consumed by
+    agentgateway. It is never an agent-execution instruction.
+
+    `contracts/agent-router/ADE-BOUNDARY.md` is authoritative for this
+    boundary, including what a future change may not add without an explicit
+    owner reversal. `verify-ade-boundary.sh` enforces the `/v1/route`
+    input/output half of it mechanically.
+
     ## Three axes, kept apart
 
     Harness, model/capability profile and physical placement are three
@@ -68,7 +101,7 @@ info:
     without ever asking the router - so a missing, unknown or stale
     `x-placement` must fall through to a grouped backend and get gateway-side
     selection rather than an error. "You must ask the router" is a policy
-    enforced at the client/dispatcher layer.
+    enforced at the calling and routing-policy layer.
 
     `x-placement` is a **scheduling signal only** (owner ruling R5). It carries
     no authorization meaning. Model authorization stays where it is: the
@@ -108,10 +141,13 @@ info:
     it - `null` for local execution, which draws on none because the GPU is
     already paid for.
 
-    Together they let a dispatcher select the correct ISOLATED provider
-    credential environment before an attempt starts, without inferring
-    billing or provider behaviour from the harness or from the shape of a
-    credential. Both inferences are wrong here: `claude` runs against
+    Naming both makes the funding decision explicit, so policy-side
+    validation can confirm a stamped decision without inferring billing or
+    provider behaviour from the harness or from the shape of a secret.
+    Acting on that decision - provisioning and isolating the environment the
+    attempt actually runs in - is the ADE's job, not the router's; these two
+    fields identify a decision, carry no credential, and instruct no
+    injection. Both inferences are wrong here: `claude` runs against
     Anthropic Max on one attempt and MiniMax on another, and -
 
     **Billing class and credential type are independent axes** (owner ruling
@@ -147,10 +183,12 @@ info:
 
     `minimax/strong` is in the profile vocabulary and is `selectable: false`
     in catalog 1.3.0, so the router must not emit it until a later story has
-    validated it physically. The credential reaches a MiniMax-backed worker
-    in that worker's own process or session only - nothing rewrites the
-    machine's global Anthropic configuration, the Anthropic Max path keeps no
-    `ANTHROPIC_API_KEY`, and the secret lives in 1Password rather than Git.
+    validated it physically. The ADE gives a MiniMax-backed session its base
+    URL and token in that session's own process environment only - nothing
+    rewrites the machine's global Anthropic configuration, the Anthropic Max
+    path keeps no `ANTHROPIC_API_KEY`, and the secret lives in 1Password
+    rather than Git. None of it travels through this API: the router names
+    the pool and never sees the secret.
 
     ## Vocabulary
 
@@ -222,18 +260,22 @@ paths:
         billable candidate to be considered; whether one may be returned
         depends on the AUTHENTICATED CALLER independently holding permission to
         approve billable spend. The ordinary automation principal - the
-        dispatcher that plans and stamps stories, and every machine caller like
+        planning flow that stamps stories, and every machine caller like
         it - does not hold it, and a request from one carrying the flag is
         answered `403 metered_authorization_required`, not served. A control a
         client can grant itself is not a control.
 
-        **`placement_required` on the response tells the client what to do
-        next.** True means the profile is local and the client must call
-        `/v1/place` and send the returned `x-placement`; false means it is
-        vendor-hosted, resolved by the harness, and the client launches the
-        harness directly. Without the field a client has to keep its own copy of
-        which profiles are local, or guess from the name prefix - both of which
-        go stale silently when the catalog moves.
+        **`placement_required` on the response tells the client whether an
+        inference placement is still owed.** True means the profile is local
+        and the client must call `/v1/place` and send the returned
+        `x-placement`; false means it is vendor-hosted, resolved by the
+        harness, and there is no placement to make. Without the field a client
+        has to keep its own copy of which profiles are local, or guess from the
+        name prefix - both of which go stale silently when the catalog moves.
+
+        It is a MODEL-INFERENCE placement, and only that. Nothing here decides
+        where the agent process itself runs, or starts anything: running the
+        session is the ADE's, per the ownership boundary above.
 
         **`local-agent` is never emitted** (invariant 16). It is a reserved,
         unsupported harness value; the catalog marks it `refuse-to-emit` and the
@@ -756,10 +798,10 @@ components:
       type: http
       scheme: bearer
       description: >-
-        Caller credential for planning and dispatch clients (the BMAD
-        dispatcher, an operator, a conformance client). Distinct from the edge
-        node credential: a client that can ask for a placement must not be able
-        to report capacity.
+        Caller credential for planning and dispatch clients (the BMAD planning
+        flow, an operator, a conformance client). Distinct from the edge node
+        credential: a client that can ask for a placement must not be able to
+        report capacity.
     edgeNodeBearer:
       type: http
       scheme: bearer
@@ -786,10 +828,22 @@ components:
       type: object
       additionalProperties: false
       required: [story_id, title, ambiguity, blast_radius]
+      $comment: >-
+        The property set is CLOSED (additionalProperties: false) and exhaustive
+        by design: see ADE-BOUNDARY.md, which declares this list as everything a
+        caller may tell the router about a task. Everything absent from it -
+        session identity, worktree, process/host, callbacks, credentials - is
+        absent because the Agent Development Environment owns it, not because
+        nobody has needed it yet. Adding a property means amending
+        ADE-BOUNDARY.md's allowlist and this shape in the same change;
+        verify-ade-boundary.sh fails until both move together.
       description: |
         Task metadata. Everything here is a planning-time signal; none of it
         names a model, a harness or a placement, because choosing those is what
-        the endpoint is for.
+        the endpoint is for. None of it describes a session, a worktree, a
+        process or a host either: those belong to the ADE, which is not a
+        party to this request (see "Ownership boundary" in the API
+        description, and `ADE-BOUNDARY.md`).
 
         **This shape is closed on purpose, and the omission is the design.**
         `/v1/route` is RECOMMENDATION-ONLY: it takes task, context and policy
@@ -804,9 +858,10 @@ components:
         recommendation, before the route is stamped - and it may bypass router
         scoring ONLY, never `forbidden_for`, entitlement and billing
         restrictions, metered-spend authorization, or capability and placement
-        constraints. Validating an overridden stamped route belongs to the
-        dispatcher / pre-dispatch layer. See README "`/v1/route` is
-        recommendation-only".
+        constraints. Validating an overridden stamped route is routing-policy
+        validation performed before dispatch - not this endpoint's job, and not
+        the ADE's session mechanics either. See README "`/v1/route` is
+        recommendation-only" and `ADE-BOUNDARY.md`.
       properties:
         story_id:
           type: string
@@ -884,7 +939,7 @@ components:
             **Setting it does not authorize anything.** It asks the router to
             consider a billable candidate; the router returns one only if the
             authenticated caller independently holds authority to approve
-            billable spend. The normal BMAD/dispatcher machine principal does
+            billable spend. The normal BMAD planning-automation principal does
             not hold that permission, and setting this flag from one is
             `403 metered_authorization_required` - not a route decision, and
             not a warning.

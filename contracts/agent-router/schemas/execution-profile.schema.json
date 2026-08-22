@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ExecutionProfile",
-  "description": "Response body of POST /v1/route (HTTP 200). The planning-time decision, stamped IMMUTABLY into story frontmatter.\n\nINVARIANT 2 (planning-time immutability): the profile chosen for an execution attempt is frozen. A worker may not re-choose its model mid-attempt; re-routing requires a NEW attempt with a new call to /v1/route.\n\nINVARIANT 1 (three independent axes): harness, model_profile and placement_policy are three separate fields on purpose. No consumer may collapse two of them into one, and nothing here names a physical model or an endpoint - resolving a profile onto physical compute is /v1/place's job, and substituting a different model is never legitimate (invariant 3).\n\nVOCABULARY: harness, model_profile and placement_policy are closed enums taken verbatim from ConfigMap ai/agent-router-catalog, catalog document version 1.2.0, schema_version 1. They are not restated from memory. See README 'Vocabulary coupling' for the change protocol that keeps this file and the catalog in step.",
+  "$comment": "The property set is CLOSED (additionalProperties: false) and exhaustive by design: see ADE-BOUNDARY.md, which declares this list as the router's entire vocabulary for a routing recommendation. Everything absent from it - session identity, worktree, process/host, callbacks, credentials - is absent because the Agent Development Environment owns it, not because nobody has needed it yet. Adding a property means amending ADE-BOUNDARY.md's allowlist and this schema in the same change; verify-ade-boundary.sh fails until both move together.",
+  "description": "Response body of POST /v1/route (HTTP 200). The planning-time decision, stamped IMMUTABLY into story frontmatter.\n\nOWNERSHIP: this is a RECOMMENDATION, not an instruction to run anything. The router names a harness, a model/intelligence profile, an entitlement decision and - when placement_required - the placement policy /v1/place later resolves under. It never manages a session, never chooses where an agent process runs, and holds no session state; the Agent Development Environment (Orca) owns worktree, terminal/process lifecycle, execution environment and the agent-process host. The seam is one-way: the router recommends, the ADE consumes and executes, and nothing flows back. See ADE-BOUNDARY.md.\n\nINVARIANT 2 (planning-time immutability): the profile chosen for an execution attempt is frozen. A worker may not re-choose its model mid-attempt; re-routing requires a NEW attempt with a new call to /v1/route.\n\nINVARIANT 1 (three independent axes): harness, model_profile and placement_policy are three separate fields on purpose. No consumer may collapse two of them into one, and nothing here names a physical model or an endpoint - resolving a profile onto physical compute is /v1/place's job, and substituting a different model is never legitimate (invariant 3).\n\nVOCABULARY: harness, model_profile and placement_policy are closed enums taken verbatim from ConfigMap ai/agent-router-catalog, catalog document version 1.3.0, schema_version 1. They are not restated from memory. See README 'Vocabulary coupling' for the change protocol that keeps this file and the catalog in step.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -29,17 +30,33 @@
     },
     "effort": {
       "type": "string",
-      "enum": ["low", "medium", "high", "xhigh"],
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
       "description": "Reasoning-effort tier for the harness session."
     },
     "cost_class": {
       "type": "string",
-      "enum": ["free", "subscription", "metered"],
+      "enum": [
+        "free",
+        "subscription",
+        "metered"
+      ],
       "description": "How THIS ATTEMPT will be paid for. Invariant 4 is written per-attempt (\"Billable use is explicit, per-attempt, and recorded\"), so this is a property of the attempt, not a copy of the catalog field.\n\n`free` - local GPU, or a free vendor tier.\n`subscription` - a seat the operator already pays for (invariant 10: a subscription is NOT an API key, and nothing here authorises centralising an OAuth token or introducing ANTHROPIC_API_KEY).\n`metered` - billable per-token spend. DEFAULT-DENY (invariant 4).\n\nIt normally equals the selected profile's catalog cost_class, and differs exactly when the profile's usual payment path is unavailable and a billable one exists for the same profile - a subscription pool exhausted for the window, say. That case is the reason the distinction matters: it is where an unguarded router would quietly start spending money."
     },
     "entitlement_pool": {
-      "oneOf": [{ "$ref": "#/$defs/entitlement_pool" }, { "type": "null" }],
-      "description": "WHICH funding source backs this attempt. `cost_class` says what the attempt costs; this says where that money comes from. They are different questions and neither is derivable from the other.\n\nnull is a legitimate value, not a gap: local execution draws on no entitlement pool, because the GPU is already paid for.\n\nWHY A CONSUMER NEEDS IT. The dispatcher has to place the attempt in the correct, ISOLATED provider credential environment before it starts, and the only alternatives to being told are guesses: infer the provider from the harness (wrong - `claude` runs against Anthropic Max on one attempt and against MiniMax on another), or infer it from the credential the environment happens to hold (wrong, and dangerous - see below). Naming the pool removes both guesses.\n\nBILLING CLASS AND CREDENTIAL TYPE ARE INDEPENDENT AXES (owner ruling R16). A pool's economics are a fact about the ENTITLEMENT; the credential is a fact about the SHAPE of the secret used to reach it. NEITHER IMPLIES THE OTHER. Concretely: MiniMax's Max Token Plan is a FIXED MONTHLY SUBSCRIPTION reached with a provider-issued, API-KEY-SHAPED credential. `looks like an API key, therefore cost_class: metered` is WRONG BY CONSTRUCTION - a consumer that reasons that way bills a flat subscription as per-token spend and refuses work the operator has already paid for. The heuristic is embedded in tooling elsewhere in this estate, so it is contradicted here explicitly rather than left to be re-derived.\n\nThis schema deliberately does NOT constrain cost_class against entitlement_pool. Encoding a pool-to-cost mapping here would be the same mistake in a different place: deriving economics from a name this contract happens to enumerate, rather than from the catalog entry that declares them. The catalog is authoritative (`entitlement_pools`, four declared attributes per pool), and this being a MUST the schema cannot check is recorded in the README's open items.\n\nINVARIANT 4. Exhausting a pool NEVER promotes to billable spend: every seeded pool declares `spillover: none`, so an exhausted pool simply stops being a candidate and routing falls back to another approved pool, to free, or to local. In particular MiniMax Token Plan exhaustion must never spill into MiniMax pay-as-you-go - those are two credential classes for two entitlements, and holding one grants nothing about the other. A metered path requires all three of a separately provisioned metered credential, `allow_metered` intent, and independent metered-spend authorization held by the caller."
+      "oneOf": [
+        {
+          "$ref": "#/$defs/entitlement_pool"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "WHICH funding source backs this attempt. `cost_class` says what the attempt costs; this says where that money comes from. They are different questions and neither is derivable from the other.\n\nnull is a legitimate value, not a gap: local execution draws on no entitlement pool, because the GPU is already paid for.\n\nIT NAMES A DECISION, NOT AN ACTION. This field identifies the approved funding/entitlement decision for the attempt. It does not instruct anything to inject a credential or to manage a provider session, and it transports no secret: the value is a pool NAME from a closed enum. Selecting, creating and isolating the environment an attempt actually runs in is the Agent Development Environment's job (ADE-BOUNDARY.md), and native harnesses carry their own account/session auth inside it.\n\nWHY A CONSUMER NEEDS IT. Whoever validates or executes a stamped route has to know which entitlement was approved, and the only alternatives to being told are guesses: infer the provider from the harness (wrong - `claude` runs against Anthropic Max on one attempt and against MiniMax on another), or infer it from whatever credential is lying around (wrong, and dangerous - see below). Naming the pool removes both guesses without the router holding any of them.\n\nBILLING CLASS AND CREDENTIAL TYPE ARE INDEPENDENT AXES (owner ruling R16). A pool's economics are a fact about the ENTITLEMENT; the credential is a fact about the SHAPE of the secret used to reach it. NEITHER IMPLIES THE OTHER. Concretely: MiniMax's Max Token Plan is a FIXED MONTHLY SUBSCRIPTION reached with a provider-issued, API-KEY-SHAPED credential. `looks like an API key, therefore cost_class: metered` is WRONG BY CONSTRUCTION - a consumer that reasons that way bills a flat subscription as per-token spend and refuses work the operator has already paid for. The heuristic is embedded in tooling elsewhere in this estate, so it is contradicted here explicitly rather than left to be re-derived.\n\nThis schema deliberately does NOT constrain cost_class against entitlement_pool. Encoding a pool-to-cost mapping here would be the same mistake in a different place: deriving economics from a name this contract happens to enumerate, rather than from the catalog entry that declares them. The catalog is authoritative (`entitlement_pools`, four declared attributes per pool), and this being a MUST the schema cannot check is recorded in the README's open items.\n\nINVARIANT 4. Exhausting a pool NEVER promotes to billable spend: every seeded pool declares `spillover: none`, so an exhausted pool simply stops being a candidate and routing falls back to another approved pool, to free, or to local. In particular MiniMax Token Plan exhaustion must never spill into MiniMax pay-as-you-go - those are two credential classes for two entitlements, and holding one grants nothing about the other. A metered path requires all three of a separately provisioned metered credential, `allow_metered` intent, and independent metered-spend authorization held by the caller."
     },
     "placement_policy": {
       "$ref": "#/$defs/placement_policy",
@@ -47,16 +64,18 @@
     },
     "placement_required": {
       "type": "boolean",
-      "description": "Does this attempt need a physical placement decision before it can be dispatched?\n\ntrue - a LOCAL profile. The model is served through agentgateway on a specific GPU, so the client MUST call /v1/place with the stamped model_profile and placement_policy, and MUST send the returned x-placement header. Dispatching without placing means gateway-side selection, which may be exactly the compute the stamped policy excluded.\nfalse - a VENDOR profile, resolved by the harness itself (the catalog records these as resolved_by: harness). There is no placement to make: the traffic never touches agentgateway, and calling /v1/place for it would be a meaningless round trip. Launch the harness directly.\n\nWHY IT IS A FIELD RATHER THAN SOMETHING THE CLIENT WORKS OUT: without it a client has to carry its own copy of which profiles are local - either by duplicating catalog knowledge that is deliberately not published in this contract, or by inferring from the `local-` name prefix, which is a naming convention and not a guarantee. Both go stale the moment the catalog moves, and both fail silently. The router already knows the answer; it says so.\n\nIt equals `hosting: local` for the SELECTED profile in the loaded catalog. That equality is a MUST on the router which this schema cannot check, because model/profile hosting is catalog data and this contract deliberately does not enumerate it (README 'Vocabulary coupling')."
+      "description": "Does this attempt need a MODEL-INFERENCE placement decision before it can be dispatched? It says nothing about where the agent process itself runs - that is the ADE's, and only the ADE's (ADE-BOUNDARY.md).\n\ntrue - a LOCAL profile. The model is served through agentgateway on a specific GPU, so the client MUST call /v1/place with the stamped model_profile and placement_policy, and MUST send the returned x-placement header on its inference requests. Dispatching without placing means gateway-side selection, which may be exactly the compute the stamped policy excluded.\nfalse - a VENDOR profile, resolved by the harness itself (the catalog records these as resolved_by: harness). There is no placement to make: the traffic never touches agentgateway, and calling /v1/place for it would be a meaningless round trip.\n\nWHY IT IS A FIELD RATHER THAN SOMETHING THE CLIENT WORKS OUT: without it a client has to carry its own copy of which profiles are local - either by duplicating catalog knowledge that is deliberately not published in this contract, or by inferring from the `local-` name prefix, which is a naming convention and not a guarantee. Both go stale the moment the catalog moves, and both fail silently. The router already knows the answer; it says so.\n\nIt equals `hosting: local` for the SELECTED profile in the loaded catalog. That equality is a MUST on the router which this schema cannot check, because model/profile hosting is catalog data and this contract deliberately does not enumerate it (README 'Vocabulary coupling')."
     },
     "fallbacks": {
       "type": "array",
-      "items": { "$ref": "#/$defs/fallback" },
+      "items": {
+        "$ref": "#/$defs/fallback"
+      },
       "description": "Ordered alternatives, most preferred first, for use when the primary choice cannot start AT ALL (e.g. the harness pool is exhausted). Empty array is legal and means 'no fallback: fail the attempt instead'.\n\nA fallback is a NEW ATTEMPT, not a mid-attempt swap (invariant 2). Every entry obeys the same rules as the primary: no metered entry may appear unless the request set allow_metered: true, and the harness enum is equally closed."
     },
     "metered": {
       "type": "boolean",
-      "description": "True only when this attempt is authorized to spend billable API budget. INVARIANT 4 - metered API is default-deny: absence of subscription or local capacity never silently promotes to billable API. True here requires allow_metered: true on the /v1/route request; the router refuses otherwise (see metered_denied).\n\nallow_metered: true IS NOT ITSELF AUTHORIZATION. It expresses INTENT - the caller is asking for a billable option to be considered - and the router grants it only if the AUTHENTICATED CALLER independently holds authority to approve metered spend. The ordinary automation principal (the BMAD dispatcher and every machine caller like it) does NOT hold that authority, and a request from one carrying allow_metered: true is refused 403 metered_authorization_required rather than served. A boolean a client can set for itself is a request, not a control."
+      "description": "True only when this attempt is authorized to spend billable API budget. INVARIANT 4 - metered API is default-deny: absence of subscription or local capacity never silently promotes to billable API. True here requires allow_metered: true on the /v1/route request; the router refuses otherwise (see metered_denied).\n\nallow_metered: true IS NOT ITSELF AUTHORIZATION. It expresses INTENT - the caller is asking for a billable option to be considered - and the router grants it only if the AUTHENTICATED CALLER independently holds authority to approve metered spend. The ordinary automation principal (the BMAD planning flow that stamps routes, and every machine caller like it) does NOT hold that authority, and a request from one carrying allow_metered: true is refused 403 metered_authorization_required rather than served. A boolean a client can set for itself is a request, not a control."
     },
     "rationale": {
       "type": "string",
@@ -84,25 +103,53 @@
     {
       "description": "INVARIANT 4, mechanically: `metered` is true exactly when the selected cost_class is metered. A profile that claims cost_class=metered with metered=false would spend money without authorization; the reverse would record an authorization that bought nothing.",
       "if": {
-        "properties": { "cost_class": { "const": "metered" } },
-        "required": ["cost_class"]
+        "properties": {
+          "cost_class": {
+            "const": "metered"
+          }
+        },
+        "required": [
+          "cost_class"
+        ]
       },
       "then": {
-        "properties": { "metered": { "const": true } },
-        "required": ["metered"]
+        "properties": {
+          "metered": {
+            "const": true
+          }
+        },
+        "required": [
+          "metered"
+        ]
       },
       "else": {
-        "properties": { "metered": { "const": false } },
-        "required": ["metered"]
+        "properties": {
+          "metered": {
+            "const": false
+          }
+        },
+        "required": [
+          "metered"
+        ]
       }
     },
     {
       "description": "The metered_denied note is only meaningful on a substituted, non-metered result: it says 'the best option was withheld and this is the best remaining one'. It can never accompany a profile that is itself metered.",
-      "if": { "required": ["metered_denied"] },
+      "if": {
+        "required": [
+          "metered_denied"
+        ]
+      },
       "then": {
         "properties": {
-          "metered": { "const": false },
-          "cost_class": { "not": { "const": "metered" } }
+          "metered": {
+            "const": false
+          },
+          "cost_class": {
+            "not": {
+              "const": "metered"
+            }
+          }
         }
       }
     }
@@ -110,10 +157,18 @@
   "$defs": {
     "harness": {
       "type": "string",
-      "enum": ["claude", "codex", "devin"],
-      "not": { "enum": ["local-agent"] },
+      "enum": [
+        "claude",
+        "codex",
+        "devin"
+      ],
+      "not": {
+        "enum": [
+          "local-agent"
+        ]
+      },
       "description": "INVARIANT 16 - the harness axis accepts claude|codex|devin ONLY. `local-agent` exists in the catalog as a RESERVED, supported:false / selectable:false placeholder so the axis is future-proof, and the catalog states router_behaviour: refuse-to-emit. A router that emits it is wrong and must refuse loudly rather than degrade.\n\nllama.cpp, vLLM and llama-swap are INFERENCE RUNTIME, not autonomous coding harnesses, and no harness may be adopted merely to fill an architectural slot. Making `local-agent` selectable requires its own story evaluating a specific harness; no story in EPIC-035 does that.\n\nThe redundant `not` clause is deliberate belt-and-braces: it keeps the refusal true even if somebody later widens the enum without reading this description.",
-      "$comment": "Vocabulary source: catalog v1.2.0 harnesses table, entries with selectable: true."
+      "$comment": "Vocabulary source: catalog v1.3.0 harnesses table, entries with selectable: true."
     },
     "model_profile": {
       "type": "string",
@@ -127,20 +182,30 @@
         "devin/free",
         "minimax/strong"
       ],
-      "description": "Profile names read verbatim from catalog v1.2.0.\n\nSEVEN ARE SELECTABLE; `minimax/strong` IS NOT. It is declared in catalog 1.2.0 with selectable: false and a blocked_by list, so the router must not emit it today. It is in this enum anyway, exactly as the placement enum carries `status: planned` placement names: the name is frozen now so the catalog and this contract land together, and flipping it to selectable is then a catalog change alone. Excluding it would mean a contract PR had to accompany that flip, which is the catalog-versus-contract drift window the 404 taxonomy exists to describe. It is NOT `local-agent`: that one is refuse-to-emit permanently by invariant 16 and is excluded from the harness enum on purpose. Whether a profile is selectable today is catalog state, and no schema here can check it.\n\nINVARIANT 12 - `local-unrestricted` is an ALIGNMENT property, not a quality tier: it is a weaker model than local-code-standard in every respect except refusal behaviour. Its catalog forbidden_for list (security, iam, secrets, prod-iac, destructive-tools) is a HARD EXCLUSION, not a score or a tie-break: a /v1/route request carrying any of those tags must never be auto-selected onto it, however well it otherwise fits.\n\n/v1/route IS RECOMMENDATION-ONLY. It never accepts a caller-named harness or model_profile, so this profile is not reachable by asking for it here either. A deliberate choice happens OUTSIDE the router - after the recommendation, before the route is stamped - and it may bypass router scoring ONLY. It may never bypass forbidden_for: human choice is not permission to bypass that control. Validating an overridden stamped route belongs to the dispatcher, not to this endpoint. See README '/v1/route is recommendation-only'.",
-      "$comment": "Vocabulary source: catalog v1.2.0 profiles table."
+      "description": "Profile names read verbatim from catalog v1.3.0.\n\nFIVE ARE SELECTABLE as of catalog 1.3.0. `minimax/strong` is not (declared with selectable: false pending its validation), and `local-code-fast` and `local-unrestricted` are not - each lost its only model in the 1.3.0 retirement and awaits a deliberate replacement decision rather than a silent substitute, so the router must not emit it today. It is in this enum anyway, exactly as the placement enum carries `status: planned` placement names: the name is frozen now so the catalog and this contract land together, and flipping it to selectable is then a catalog change alone. Excluding it would mean a contract PR had to accompany that flip, which is the catalog-versus-contract drift window the 404 taxonomy exists to describe. It is NOT `local-agent`: that one is refuse-to-emit permanently by invariant 16 and is excluded from the harness enum on purpose. Whether a profile is selectable today is catalog state, and no schema here can check it.\n\nINVARIANT 12 - `local-unrestricted` is an ALIGNMENT property, not a quality tier: it is a weaker model than local-code-standard in every respect except refusal behaviour. Its catalog forbidden_for list (security, iam, secrets, prod-iac, destructive-tools) is a HARD EXCLUSION, not a score or a tie-break: a /v1/route request carrying any of those tags must never be auto-selected onto it, however well it otherwise fits.\n\n/v1/route IS RECOMMENDATION-ONLY. It never accepts a caller-named harness or model_profile, so this profile is not reachable by asking for it here either. A deliberate choice happens OUTSIDE the router - after the recommendation, before the route is stamped - and it may bypass router scoring ONLY. It may never bypass forbidden_for: human choice is not permission to bypass that control. Validating an overridden stamped route is ROUTING-POLICY validation performed before dispatch - not this endpoint's job, and not session mechanics either, so it belongs to neither the router nor the ADE's worktree/process layer. See README '/v1/route is recommendation-only' and ADE-BOUNDARY.md.",
+      "$comment": "Vocabulary source: catalog v1.3.0 profiles table."
     },
     "entitlement_pool": {
       "type": "string",
-      "enum": ["anthropic-max", "openai-plus", "devin-free", "minimax-max"],
-      "description": "Funding-source names read verbatim from catalog v1.2.0 `entitlement_pools`. Each pool declares four attributes there - provider, cost_class, credential_class and spillover - so a consumer never infers one from another.\n\nThe seeded set makes the independence of billing and credential concrete: `anthropic-max` and `minimax-max` are both subscriptions with completely different credential shapes (a signed-in subscription session versus a provider-issued API key), and `devin-free` is free rather than a subscription at all - which is why this is an ENTITLEMENT pool and not a subscription pool. A future explicitly-authorized pay-as-you-go source would be a fifth entry with `cost_class: metered`, and adding it is an additive minor bump here plus a catalog PR; no such pool exists.",
-      "$comment": "Vocabulary source: catalog v1.2.0 entitlement_pools table."
+      "enum": [
+        "anthropic-max",
+        "openai-plus",
+        "devin-free",
+        "minimax-max"
+      ],
+      "description": "Funding-source names read verbatim from catalog v1.3.0 `entitlement_pools`. Each pool declares four attributes there - provider, cost_class, credential_class and spillover - so a consumer never infers one from another.\n\nThe seeded set makes the independence of billing and credential concrete: `anthropic-max` and `minimax-max` are both subscriptions with completely different credential shapes (a signed-in subscription session versus a provider-issued API key), and `devin-free` is free rather than a subscription at all - which is why this is an ENTITLEMENT pool and not a subscription pool. A future explicitly-authorized pay-as-you-go source would be a fifth entry with `cost_class: metered`, and adding it is an additive minor bump here plus a catalog PR; no such pool exists.",
+      "$comment": "Vocabulary source: catalog v1.3.0 entitlement_pools table."
     },
     "placement_policy": {
       "type": "string",
-      "enum": ["prefer-warm-local", "cluster-only", "edge-only", "any-24gb"],
-      "description": "Policy names read verbatim from catalog v1.2.0 policies.placement_policy. `prefer-warm-local` is the catalog default applied when a caller names none. `edge-only` has resolves_today: true as of 1.2.0 - cachyos-7900xtx (first in its prefer_order) is status: available / selectable: true, though bazzite-5090 and laptop-rtx5000 remain status: planned.",
-      "$comment": "Vocabulary source: catalog v1.2.0 policies.placement_policy table."
+      "enum": [
+        "prefer-warm-local",
+        "cluster-only",
+        "edge-only",
+        "any-24gb"
+      ],
+      "description": "Policy names read verbatim from catalog v1.3.0 policies.placement_policy. `prefer-warm-local` is the catalog default applied when a caller names none. `edge-only` has resolves_today: true as of 1.2.0 (and still in 1.3.0) - cachyos-7900xtx (first in its prefer_order) is status: available / selectable: true, though bazzite-5090 and laptop-rtx5000 remain status: planned.",
+      "$comment": "Vocabulary source: catalog v1.3.0 policies.placement_policy table."
     },
     "catalog_version": {
       "type": "string",
@@ -150,21 +215,42 @@
     "fallback": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["harness", "model_profile", "cost_class", "entitlement_pool", "placement_required"],
+      "required": [
+        "harness",
+        "model_profile",
+        "cost_class",
+        "entitlement_pool",
+        "placement_required"
+      ],
       "properties": {
-        "harness": { "$ref": "#/$defs/harness" },
-        "model_profile": { "$ref": "#/$defs/model_profile" },
+        "harness": {
+          "$ref": "#/$defs/harness"
+        },
+        "model_profile": {
+          "$ref": "#/$defs/model_profile"
+        },
         "cost_class": {
           "type": "string",
-          "enum": ["free", "subscription", "metered"]
+          "enum": [
+            "free",
+            "subscription",
+            "metered"
+          ]
         },
         "entitlement_pool": {
-          "oneOf": [{ "$ref": "#/$defs/entitlement_pool" }, { "type": "null" }],
-          "description": "Which funding source would back this alternative. Carried per entry, and required, for the same reason the primary carries it: the economics of EVERY candidate must be auditable BEFORE anything runs, not discovered when a fallback is taken. A fallback routinely crosses funding sources - a local attempt falling back to a subscription pool is the ordinary shape - and a client that has just failed over is the last one that should be inferring which credential environment to use."
+          "oneOf": [
+            {
+              "$ref": "#/$defs/entitlement_pool"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Which funding source would back this alternative. Carried per entry, and required, for the same reason the primary carries it: the economics of EVERY candidate must be auditable BEFORE anything runs, not discovered when a fallback is taken. A fallback routinely crosses funding sources - a local attempt falling back to a subscription pool is the ordinary shape - and whoever has just failed over is the last one that should be inferring which entitlement now applies. Like the primary, this names a funding decision only; provisioning and isolating the environment that honours it stays with the ADE (ADE-BOUNDARY.md)."
         },
         "placement_required": {
           "type": "boolean",
-          "description": "Same meaning as on the profile itself, for this alternative: true means the client calls /v1/place before dispatching it, false means it launches the harness directly. Carried per entry because a fallback can cross the local/vendor line - a local primary falling back to a vendor profile is the ordinary case - and a client that has just failed over is exactly the client that should not be guessing."
+          "description": "Same meaning as on the profile itself, for this alternative: true means a /v1/place call is required before the attempt starts, false means there is no placement to make and the ADE runs the harness with no inference-placement round trip. Carried per entry because a fallback can cross the local/vendor line - a local primary falling back to a vendor profile is the ordinary case - and a client that has just failed over is exactly the client that should not be guessing."
         }
       },
       "description": "One alternative attempt: the axes a fallback may change, plus whether it needs placing. It deliberately cannot carry an effort tier or a placement policy - those stay as stamped, so a fallback cannot quietly widen the attempt's blast radius."
@@ -172,7 +258,12 @@
     "metered_denied": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "message", "obligation", "withheld"],
+      "required": [
+        "code",
+        "message",
+        "obligation",
+        "withheld"
+      ],
       "properties": {
         "code": {
           "const": "metered_denied",
@@ -190,13 +281,23 @@
         "withheld": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["harness", "model_profile", "cost_class"],
+          "required": [
+            "harness",
+            "model_profile",
+            "cost_class"
+          ],
           "properties": {
-            "harness": { "$ref": "#/$defs/harness" },
-            "model_profile": { "$ref": "#/$defs/model_profile" },
-            "cost_class": { "const": "metered" }
+            "harness": {
+              "$ref": "#/$defs/harness"
+            },
+            "model_profile": {
+              "$ref": "#/$defs/model_profile"
+            },
+            "cost_class": {
+              "const": "metered"
+            }
           },
-          "description": "The metered option the router would have returned had the request carried allow_metered: true, AND had the caller held authority to approve it. Recorded so the human authorizing the spend can see exactly what they are authorizing.\n\nIt carries no entitlement_pool, and the reason is the vocabulary rather than the semantics: entitlement_pool is a closed enum taken from catalog 1.2.0, which declares NO metered funding source, so there is no legal value to put here. A metered candidate therefore only exists in an illustrative fixture pinned to a hypothetical later catalog, and that fixture states the funding source in its message. When a metered pool is really declared, adding it here is an additive minor bump alongside the catalog PR.\n\nWhat this object must never be read as: evidence that a subscription running out turned into billable spend. Pools declare spillover: none. A withheld metered candidate exists because some catalog declared that funding source in its own right, never because another one was exhausted."
+          "description": "The metered option the router would have returned had the request carried allow_metered: true, AND had the caller held authority to approve it. Recorded so the human authorizing the spend can see exactly what they are authorizing.\n\nIt carries no entitlement_pool, and the reason is the vocabulary rather than the semantics: entitlement_pool is a closed enum taken from catalog 1.3.0, which declares NO metered funding source, so there is no legal value to put here. A metered candidate therefore only exists in an illustrative fixture pinned to a hypothetical later catalog, and that fixture states the funding source in its message. When a metered pool is really declared, adding it here is an additive minor bump alongside the catalog PR.\n\nWhat this object must never be read as: evidence that a subscription running out turned into billable spend. Pools declare spillover: none. A withheld metered candidate exists because some catalog declared that funding source in its own right, never because another one was exhausted."
         }
       },
       "description": "INVARIANT 4 refusal note. Present on a 200 response when the best option was metered, the request did not set allow_metered: true, and a non-metered option existed; the profile carried alongside it IS that non-metered option. When no non-metered option exists the router returns 409 metered_denied with no profile instead - it never returns the metered choice with a warning attached."

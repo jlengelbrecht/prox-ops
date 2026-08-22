@@ -126,7 +126,7 @@
           "credential_class": {
             "type": "string",
             "minLength": 1,
-            "description": "The SHAPE and provisioning of the secret used to reach the pool: subscription-session, account-session, provider-api-key.\n\nIT IS NEVER AN INPUT TO A COST DECISION. Billing class and credential type are independent axes (owner ruling R16): minimax-max is a fixed monthly subscription reached with an API-key-shaped credential, while anthropic-max is the same cost_class reached with a signed-in session. A consumer that reads `provider-api-key` as `metered` is wrong by construction, and would bill a flat subscription as per-token spend. This field is published so a dispatcher can select the right isolated credential environment, and for no other purpose."
+            "description": "The SHAPE and provisioning of the secret used to reach the pool: subscription-session, account-session, provider-api-key.\n\nIT IS NEVER AN INPUT TO A COST DECISION. Billing class and credential type are independent axes (owner ruling R16): minimax-max is a fixed monthly subscription reached with an API-key-shaped credential, while anthropic-max is the same cost_class reached with a signed-in session. A consumer that reads `provider-api-key` as `metered` is wrong by construction, and would bill a flat subscription as per-token spend. It is published so the Agent Development Environment can provision the right isolated execution environment for a session it owns, and for no other purpose. It is a description of a credential's SHAPE; no credential material appears here or anywhere else in this API (ADE-BOUNDARY.md)."
           },
           "spillover": {
             "type": "string",
