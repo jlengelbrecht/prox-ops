@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // States a node may self-report. State ownership is local: the host
@@ -167,13 +168,21 @@ func (hb *Heartbeat) validateFields() error {
 	if hb.Runtime.Endpoint == "" {
 		return &InvalidError{Field: "runtime.endpoint", Message: "must not be empty"}
 	}
+	if _, err := time.Parse(time.RFC3339, hb.LastHeartbeat); err != nil {
+		return &InvalidError{Field: "last_heartbeat", Message: "must be an RFC 3339 timestamp"}
+	}
 	if hb.Capabilities == nil {
 		return &InvalidError{Field: "capabilities", Message: "must be an array, not null"}
 	}
+	seenCapabilities := make(map[string]bool, len(hb.Capabilities))
 	for i, c := range hb.Capabilities {
 		if !validCapabilities[c] {
 			return &InvalidError{Field: fmt.Sprintf("capabilities[%d]", i), Message: "must be one of chat, tools, vision, audio"}
 		}
+		if seenCapabilities[c] {
+			return &InvalidError{Field: "capabilities", Message: "must not contain duplicate entries"}
+		}
+		seenCapabilities[c] = true
 	}
 	if hb.MaxContext < 1 {
 		return &InvalidError{Field: "max_context", Message: "must be at least 1"}
@@ -181,10 +190,15 @@ func (hb *Heartbeat) validateFields() error {
 	if hb.CachedModels == nil {
 		return &InvalidError{Field: "cached_models", Message: "must be an array, not null"}
 	}
+	seenCachedModels := make(map[string]bool, len(hb.CachedModels))
 	for i, m := range hb.CachedModels {
 		if m == "" {
 			return &InvalidError{Field: fmt.Sprintf("cached_models[%d]", i), Message: "must not be empty"}
 		}
+		if seenCachedModels[m] {
+			return &InvalidError{Field: "cached_models", Message: "must not contain duplicate entries"}
+		}
+		seenCachedModels[m] = true
 	}
 	return nil
 }

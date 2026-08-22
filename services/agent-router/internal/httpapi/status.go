@@ -17,6 +17,11 @@ type placementResolution struct {
 	eligible bool
 	source   string
 	state    string
+	// Retained so reasonCodeFor can distinguish a node that is alive and
+	// heartbeating but reports it cannot reach the cluster from one the
+	// catalog simply does not select. Those are different answers to
+	// "why can I not use this?" and must not share a reason code.
+	heartbeat *heartbeat.Heartbeat
 }
 
 // buildStatus renders the GET /v1/status response
@@ -76,7 +81,11 @@ func buildStatus(cat *catalog.Catalog, digest string, store *capacity.Store, cfg
 		}
 
 		readiness := "unknown"
-		if p.Kind == "edge" {
+		if p.Kind == "edge" && state != heartbeat.StateOffline {
+			// An OFFLINE placement (silence or a self-reported OFFLINE
+			// heartbeat) is not servable now. The retained heartbeat stays
+			// attached below for diagnostics, but readiness must not claim
+			// warm/cached for a node that cannot currently serve anything.
 			readiness = computeReadiness(cat, name, hb, logger)
 		}
 
@@ -93,7 +102,7 @@ func buildStatus(cat *catalog.Catalog, digest string, store *capacity.Store, cfg
 			LastHeartbeat:      lastHeartbeat,
 			Heartbeat:          hb,
 		})
-		resolved[name] = placementResolution{eligible: eligible, source: source, state: state}
+		resolved[name] = placementResolution{eligible: eligible, source: source, state: state, heartbeat: hb}
 	}
 
 	profiles := make([]profileDTO, 0, len(cat.Profiles))
@@ -245,8 +254,20 @@ func reasonCodeFor(res placementResolution) string {
 			return "withdrawn_interactive"
 		case heartbeat.StateDraining:
 			return "withdrawn_draining"
-		default:
+		case heartbeat.StateOffline:
 			return "offline"
+		default:
+			// AVAILABLE or SERVING but resolved ineligible: the remaining
+			// cause is a node that reports it cannot reach the cluster. It
+			// is unusable to us exactly as an absent node is, and the
+			// heartbeat schema says to treat it as ineligible until a
+			// heartbeat reports true again, so "offline" is the honest code
+			// from the frozen vocabulary. "not_selectable" would be a lie -
+			// the catalog does select this placement; the node is cut off.
+			if res.heartbeat != nil && !res.heartbeat.ClusterReachable {
+				return "offline"
+			}
+			return "not_selectable"
 		}
 	default: // "static": planned, or a catalog-ineligible kserve placement.
 		return "not_selectable"

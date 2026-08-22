@@ -31,7 +31,7 @@ func TestResolve_HeartbeatAvailable(t *testing.T) {
 	clock := time.Now()
 	store := capacity.NewStore(func() time.Time { return clock })
 
-	store.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateAvailable})
+	store.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateAvailable, ClusterReachable: true})
 
 	res := store.Resolve("cachyos-7900xtx", 90*time.Second)
 	if res.Source != capacity.SourceHeartbeat {
@@ -54,7 +54,7 @@ func TestResolve_StaleGoesOffline(t *testing.T) {
 	store := capacity.NewStore(func() time.Time { return clock })
 	offlineAfter := 90 * time.Second
 
-	store.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateAvailable})
+	store.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateAvailable, ClusterReachable: true})
 
 	// Just under the threshold: still heartbeat-sourced.
 	clock = clock.Add(89 * time.Second)
@@ -87,7 +87,7 @@ func TestResolve_StaleGoesOffline(t *testing.T) {
 func TestRestart_ReLearns(t *testing.T) {
 	clock := time.Now()
 	before := capacity.NewStore(func() time.Time { return clock })
-	before.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateAvailable})
+	before.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateAvailable, ClusterReachable: true})
 	if res := before.Resolve("cachyos-7900xtx", 90*time.Second); res.Source != capacity.SourceHeartbeat {
 		t.Fatalf("pre-restart Source = %q, want %q", res.Source, capacity.SourceHeartbeat)
 	}
@@ -105,7 +105,7 @@ func TestRestart_ReLearns(t *testing.T) {
 func TestResolve_InteractiveIsIneligible(t *testing.T) {
 	clock := time.Now()
 	store := capacity.NewStore(func() time.Time { return clock })
-	store.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateInteractive, Interactive: true})
+	store.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateInteractive, Interactive: true, ClusterReachable: true})
 
 	res := store.Resolve("cachyos-7900xtx", 90*time.Second)
 	if res.Eligible {
@@ -119,10 +119,45 @@ func TestResolve_InteractiveIsIneligible(t *testing.T) {
 func TestResolve_DrainingIsIneligible(t *testing.T) {
 	clock := time.Now()
 	store := capacity.NewStore(func() time.Time { return clock })
-	store.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateDraining})
+	store.Record(heartbeat.Heartbeat{Node: "cachyos-7900xtx", State: heartbeat.StateDraining, ClusterReachable: true})
 
 	res := store.Resolve("cachyos-7900xtx", 90*time.Second)
 	if res.Eligible {
 		t.Error("Eligible = true, want false for a DRAINING node")
+	}
+}
+
+// A node that reports it cannot reach the cluster has narrowed itself, and
+// the router must honour that - observations subtract. Without this the node
+// stays advertised as eligible while being unable to serve, which is the
+// failure mode the intersect rule exists to prevent.
+//
+// The contrast case matters: the SAME node, same AVAILABLE state, differing
+// only in cluster_reachable, must be eligible. Otherwise this test would
+// still pass if eligibility were broken for an unrelated reason.
+func TestResolve_UnreachableIsIneligible(t *testing.T) {
+	clock := time.Now()
+	store := capacity.NewStore(func() time.Time { return clock })
+
+	store.Record(heartbeat.Heartbeat{
+		Node:             "cachyos-7900xtx",
+		State:            heartbeat.StateAvailable,
+		ClusterReachable: false,
+	})
+	res := store.Resolve("cachyos-7900xtx", 90*time.Second)
+	if res.Eligible {
+		t.Error("Eligible = true for a node reporting cluster_reachable:false; want false")
+	}
+	if res.State != heartbeat.StateAvailable {
+		t.Errorf("State = %q, want the reported AVAILABLE preserved", res.State)
+	}
+
+	store.Record(heartbeat.Heartbeat{
+		Node:             "cachyos-7900xtx",
+		State:            heartbeat.StateAvailable,
+		ClusterReachable: true,
+	})
+	if res := store.Resolve("cachyos-7900xtx", 90*time.Second); !res.Eligible {
+		t.Error("Eligible = false once the node reports cluster_reachable:true again; want true")
 	}
 }

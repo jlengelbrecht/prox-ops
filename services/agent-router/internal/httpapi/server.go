@@ -217,13 +217,17 @@ func (s *Server) writeCatalogError(w http.ResponseWriter, endpoint string, allow
 		"retry", endpoint, nil, &retry, nil)
 }
 
+// bearerToken extracts the credential from an Authorization header. RFC
+// 7235 makes the auth-scheme token case-insensitive, so "bearer", "Bearer"
+// and "BEARER" are all accepted; the credential itself is matched
+// case-sensitively by the auth package.
 func bearerToken(r *http.Request) string {
 	h := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(h, prefix) {
+	scheme, credential, found := strings.Cut(h, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
 		return ""
 	}
-	return strings.TrimSpace(strings.TrimPrefix(h, prefix))
+	return strings.TrimSpace(credential)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

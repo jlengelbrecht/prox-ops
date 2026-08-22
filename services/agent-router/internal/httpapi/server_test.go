@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,9 +23,14 @@ const (
 	nodeName    = "cachyos-7900xtx"
 )
 
+// env's clock is guarded by mu because it is written by the test goroutine
+// (advance) and read from the HTTP server's own goroutine(s) via the
+// capacity.Store's injected now func - concurrent, unsynchronized access to
+// the same *time.Time would be a data race.
 type env struct {
 	server *httptest.Server
-	clock  *time.Time
+	mu     sync.Mutex
+	clock  time.Time
 }
 
 func realCatalogState(t *testing.T) httpapi.CatalogState {
@@ -39,9 +45,8 @@ func realCatalogState(t *testing.T) httpapi.CatalogState {
 
 func newEnv(t *testing.T, cs httpapi.CatalogState) *env {
 	t.Helper()
-	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
-	clock := &now
-	store := capacity.NewStore(func() time.Time { return *clock })
+	e := &env{clock: time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)}
+	store := capacity.NewStore(e.now)
 
 	callerAuth := auth.NewCallerAuth([]string{callerToken})
 	nodeAuth := auth.NewNodeAuth(map[string]string{nodeToken: nodeName})
@@ -51,12 +56,20 @@ func newEnv(t *testing.T, cs httpapi.CatalogState) *env {
 
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &env{server: ts, clock: clock}
+	e.server = ts
+	return e
+}
+
+func (e *env) now() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.clock
 }
 
 func (e *env) advance(d time.Duration) {
-	t := e.clock.Add(d)
-	*e.clock = t
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.clock = e.clock.Add(d)
 }
 
 func (e *env) do(t *testing.T, method, path, token string, body []byte) *http.Response {
@@ -193,6 +206,34 @@ func heartbeatBody(node, state string, activeModel *string, cachedModels []strin
 	return raw
 }
 
+// heartbeatBodyUnreachable is heartbeatBody with cluster_reachable forced to
+// false, for TestNarrowingApplies_ClusterUnreachable: the one field that
+// test needs to vary independently of state.
+func heartbeatBodyUnreachable(node, state string) []byte {
+	body := map[string]any{
+		"node":  node,
+		"state": state,
+		"gpu": map[string]any{
+			"vendor": "amd", "model": "RX 7900 XTX", "arch": "gfx1100",
+			"vram_total_gb": 24, "vram_free_gb": 21.9, "utilization_pct": 3,
+		},
+		"runtime": map[string]any{
+			"kind": "llama-swap+llama.cpp", "version": "1.0", "endpoint": "https://edge:8443",
+		},
+		"active_model":      nil,
+		"cached_models":     []string{},
+		"preemptible":       true,
+		"interactive":       state == "INTERACTIVE",
+		"ac_power":          true,
+		"cluster_reachable": false,
+		"last_heartbeat":    "2026-08-21T12:00:00Z",
+		"capabilities":      []string{"chat", "tools"},
+		"max_context":       65536,
+	}
+	raw, _ := json.Marshal(body)
+	return raw
+}
+
 func strp(s string) *string { return &s }
 
 // --- Auth ---------------------------------------------------------------
@@ -218,6 +259,30 @@ func TestHeartbeat_Unauthenticated(t *testing.T) {
 	body := decode[errorResponse](t, resp)
 	if body.Error.Code != "unauthenticated" {
 		t.Errorf("code = %q, want unauthenticated", body.Error.Code)
+	}
+}
+
+// TestBearerScheme_CaseInsensitive: RFC 7235 makes the auth-scheme token
+// case-insensitive, so "bearer" and "BEARER" must be accepted exactly like
+// "Bearer" - only the scheme is case-insensitive, not the credential.
+func TestBearerScheme_CaseInsensitive(t *testing.T) {
+	e := newEnv(t, realCatalogState(t))
+	for _, scheme := range []string{"bearer", "Bearer", "BEARER"} {
+		t.Run(scheme, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, e.server.URL+"/v1/status", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			req.Header.Set("Authorization", scheme+" "+callerToken)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("scheme %q: status = %d, want 200", scheme, resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -352,6 +417,29 @@ func TestNarrowingApplies(t *testing.T) {
 	}
 }
 
+// TestNarrowingApplies_ClusterUnreachable: a node reporting AVAILABLE but
+// cluster_reachable: false is narrowing itself, same as INTERACTIVE or
+// DRAINING - heartbeat.schema.json says the router SHOULD treat it as
+// ineligible until a heartbeat reports true again.
+func TestNarrowingApplies_ClusterUnreachable(t *testing.T) {
+	e := newEnv(t, realCatalogState(t))
+	e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken, heartbeatBodyUnreachable(nodeName, "AVAILABLE"))
+
+	s := decode[statusResp](t, e.do(t, http.MethodGet, "/v1/status", callerToken, nil))
+	p := findPlacement(t, s, nodeName)
+	if p.Eligible {
+		t.Error("Eligible = true, want false: cluster_reachable=false must narrow eligibility even while state is AVAILABLE")
+	}
+
+	// Contrast: the same state with cluster_reachable=true is eligible. This
+	// is the base case the narrowing is defined relative to.
+	e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken, heartbeatBody(nodeName, "AVAILABLE", nil, nil))
+	s2 := decode[statusResp](t, e.do(t, http.MethodGet, "/v1/status", callerToken, nil))
+	if !findPlacement(t, s2, nodeName).Eligible {
+		t.Error("Eligible = false, want true once cluster_reachable is true again with state AVAILABLE")
+	}
+}
+
 // TestExpandingRejected: a heartbeat claiming an active_model the catalog
 // does not authorize for this placement must never be treated as warm -
 // the router may not let a node grant itself capability the Git catalog
@@ -377,6 +465,33 @@ func TestExpandingRejected(t *testing.T) {
 	s2 := decode[statusResp](t, e.do(t, http.MethodGet, "/v1/status", callerToken, nil))
 	if got := findPlacement(t, s2, nodeName).Readiness; got != "warm" {
 		t.Errorf("Readiness = %q, want warm for a catalog-authorized active_model", got)
+	}
+}
+
+// TestStatus_OfflineNeverReportsWarm: once a placement's state is OFFLINE
+// (here via silence), readiness must not claim warm or cached even though
+// the retained heartbeat still lists an authorized active_model - retaining
+// the heartbeat for diagnostics is intentional, but an OFFLINE node is not
+// servable now and readiness must not assert otherwise.
+func TestStatus_OfflineNeverReportsWarm(t *testing.T) {
+	e := newEnv(t, realCatalogState(t))
+	e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+		heartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}))
+
+	s1 := decode[statusResp](t, e.do(t, http.MethodGet, "/v1/status", callerToken, nil))
+	if got := findPlacement(t, s1, nodeName).Readiness; got != "warm" {
+		t.Fatalf("Readiness = %q before going offline, want warm", got)
+	}
+
+	e.advance(91 * time.Second)
+
+	s2 := decode[statusResp](t, e.do(t, http.MethodGet, "/v1/status", callerToken, nil))
+	p := findPlacement(t, s2, nodeName)
+	if p.State != "OFFLINE" {
+		t.Fatalf("State = %q, want OFFLINE after silence", p.State)
+	}
+	if p.Readiness == "warm" || p.Readiness == "cached" {
+		t.Errorf("Readiness = %q, want neither warm nor cached for an OFFLINE placement", p.Readiness)
 	}
 }
 

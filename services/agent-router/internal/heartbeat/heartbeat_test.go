@@ -113,6 +113,103 @@ func TestParse_InteractiveStateRequiresInteractiveFlag(t *testing.T) {
 	}
 }
 
+// TestParse_DuplicateCapabilities: heartbeat.schema.json declares
+// capabilities uniqueItems: true. A duplicate entry must be rejected at
+// parse - accepting it would let /v1/status re-emit a response that fails
+// its own schema.
+func TestParse_DuplicateCapabilities(t *testing.T) {
+	body := []byte(`{
+		"node": "n1",
+		"state": "AVAILABLE",
+		"gpu": {"vendor":"amd","model":"RX 7900 XTX","arch":"gfx1100","vram_total_gb":24,"vram_free_gb":21.9,"utilization_pct":3},
+		"runtime": {"kind":"llama-swap","version":"1.0","endpoint":"https://x"},
+		"active_model": null,
+		"cached_models": [],
+		"preemptible": true,
+		"interactive": false,
+		"ac_power": true,
+		"cluster_reachable": true,
+		"last_heartbeat": "2026-08-19T15:00:12Z",
+		"capabilities": ["chat", "chat"],
+		"max_context": 8192
+	}`)
+	_, err := heartbeat.Parse(body)
+	if err == nil {
+		t.Fatal("Parse: expected an error for duplicate capabilities entries, got nil")
+	}
+	var ierr *heartbeat.InvalidError
+	if !asInvalid(err, &ierr) {
+		t.Fatalf("Parse: got %v (%T), want *heartbeat.InvalidError", err, err)
+	}
+	if ierr.Field != "capabilities" {
+		t.Errorf("InvalidError.Field = %q, want %q", ierr.Field, "capabilities")
+	}
+}
+
+// TestParse_DuplicateCachedModels: same rule as capabilities, for
+// cached_models.
+func TestParse_DuplicateCachedModels(t *testing.T) {
+	body := []byte(`{
+		"node": "n1",
+		"state": "AVAILABLE",
+		"gpu": {"vendor":"amd","model":"RX 7900 XTX","arch":"gfx1100","vram_total_gb":24,"vram_free_gb":21.9,"utilization_pct":3},
+		"runtime": {"kind":"llama-swap","version":"1.0","endpoint":"https://x"},
+		"active_model": null,
+		"cached_models": ["qwen36-27b", "qwen36-27b"],
+		"preemptible": true,
+		"interactive": false,
+		"ac_power": true,
+		"cluster_reachable": true,
+		"last_heartbeat": "2026-08-19T15:00:12Z",
+		"capabilities": [],
+		"max_context": 8192
+	}`)
+	_, err := heartbeat.Parse(body)
+	if err == nil {
+		t.Fatal("Parse: expected an error for duplicate cached_models entries, got nil")
+	}
+	var ierr *heartbeat.InvalidError
+	if !asInvalid(err, &ierr) {
+		t.Fatalf("Parse: got %v (%T), want *heartbeat.InvalidError", err, err)
+	}
+	if ierr.Field != "cached_models" {
+		t.Errorf("InvalidError.Field = %q, want %q", ierr.Field, "cached_models")
+	}
+}
+
+// TestParse_LastHeartbeatMustBeRFC3339: heartbeat.schema.json declares
+// last_heartbeat format: date-time, a real constraint beyond bare type (the
+// schema explicitly contrasts this with runtime.endpoint, where "no format
+// is asserted").
+func TestParse_LastHeartbeatMustBeRFC3339(t *testing.T) {
+	body := []byte(`{
+		"node": "n1",
+		"state": "AVAILABLE",
+		"gpu": {"vendor":"amd","model":"RX 7900 XTX","arch":"gfx1100","vram_total_gb":24,"vram_free_gb":21.9,"utilization_pct":3},
+		"runtime": {"kind":"llama-swap","version":"1.0","endpoint":"https://x"},
+		"active_model": null,
+		"cached_models": [],
+		"preemptible": true,
+		"interactive": false,
+		"ac_power": true,
+		"cluster_reachable": true,
+		"last_heartbeat": "not-a-timestamp",
+		"capabilities": [],
+		"max_context": 8192
+	}`)
+	_, err := heartbeat.Parse(body)
+	if err == nil {
+		t.Fatal("Parse: expected an error for a non-RFC3339 last_heartbeat, got nil")
+	}
+	var ierr *heartbeat.InvalidError
+	if !asInvalid(err, &ierr) {
+		t.Fatalf("Parse: got %v (%T), want *heartbeat.InvalidError", err, err)
+	}
+	if ierr.Field != "last_heartbeat" {
+		t.Errorf("InvalidError.Field = %q, want %q", ierr.Field, "last_heartbeat")
+	}
+}
+
 func asInvalid(err error, target **heartbeat.InvalidError) bool {
 	ierr, ok := err.(*heartbeat.InvalidError)
 	if !ok {

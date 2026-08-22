@@ -128,7 +128,11 @@ func (s *Store) Resolve(node string, offlineAfter time.Duration) Resolved {
 			LastHeartbeat: &receivedAt,
 		}
 	}
-	eligible := hb.State == heartbeat.StateAvailable || hb.State == heartbeat.StateServing
+	// heartbeat.schema.json cluster_reachable: a node reporting it cannot
+	// reach the cluster is narrowing itself, same as INTERACTIVE/DRAINING -
+	// observations subtract. It stays ineligible until a heartbeat reports
+	// true again.
+	eligible := hb.ClusterReachable && (hb.State == heartbeat.StateAvailable || hb.State == heartbeat.StateServing)
 	return Resolved{
 		Source:        SourceHeartbeat,
 		State:         hb.State,

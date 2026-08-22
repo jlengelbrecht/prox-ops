@@ -77,7 +77,11 @@ func run(logger *slog.Logger) error {
 		logger.Info("catalog loaded", "digest", digest, "document_version", cat.DocumentVersion, "schema_version", cat.SchemaVersion)
 	}
 
-	callerAuth := auth.NewCallerAuth(loadCallerTokens())
+	callerTokens, err := loadCallerTokens()
+	if err != nil {
+		return fmt.Errorf("loading caller tokens: %w", err)
+	}
+	callerAuth := auth.NewCallerAuth(callerTokens)
 	nodeCreds, err := loadNodeCredentials()
 	if err != nil {
 		return fmt.Errorf("loading node credentials: %w", err)
@@ -93,6 +97,9 @@ func run(logger *slog.Logger) error {
 		Addr:              listenAddr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -130,7 +137,12 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
-func loadCallerTokens() []string {
+// loadCallerTokens returns an error when AGENT_ROUTER_CALLER_TOKEN_FILE is
+// set but cannot be read. A configured-but-broken credential source is a
+// startup error, not silently an empty set: the alternative is a service
+// that starts, accepts no caller token, and returns 401 on every
+// /v1/status request with no indication why.
+func loadCallerTokens() ([]string, error) {
 	var tokens []string
 	if v := os.Getenv("AGENT_ROUTER_CALLER_TOKENS"); v != "" {
 		for _, t := range strings.Split(v, ",") {
@@ -142,16 +154,17 @@ func loadCallerTokens() []string {
 	}
 	if path := os.Getenv("AGENT_ROUTER_CALLER_TOKEN_FILE"); path != "" {
 		raw, err := os.ReadFile(path)
-		if err == nil {
-			for _, line := range strings.Split(string(raw), "\n") {
-				line = strings.TrimSpace(line)
-				if line != "" {
-					tokens = append(tokens, line)
-				}
+		if err != nil {
+			return nil, fmt.Errorf("reading AGENT_ROUTER_CALLER_TOKEN_FILE %q: %w", path, err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				tokens = append(tokens, line)
 			}
 		}
 	}
-	return tokens
+	return tokens, nil
 }
 
 // loadNodeCredentials reads AGENT_ROUTER_NODE_CREDENTIALS_DIR, a mounted
@@ -180,9 +193,18 @@ func loadNodeCredentials() (map[string]string, error) {
 			return nil, fmt.Errorf("reading credential file %q: %w", e.Name(), err)
 		}
 		token := strings.TrimSpace(string(raw))
-		if token != "" {
-			creds[token] = e.Name()
+		if token == "" {
+			continue
 		}
+		// The token-to-node binding is a security control - it is the
+		// entire mechanism behind node_identity_mismatch. Two files sharing
+		// a token value would make that binding non-deterministic (whichever
+		// is read last silently wins), so this is a startup error naming
+		// both nodes rather than a silent overwrite.
+		if existing, ok := creds[token]; ok {
+			return nil, fmt.Errorf("node credential files %q and %q share the same token value; each edge node must have a distinct credential", existing, e.Name())
+		}
+		creds[token] = e.Name()
 	}
 	return creds, nil
 }
