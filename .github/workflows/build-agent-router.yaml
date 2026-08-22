@@ -1,0 +1,163 @@
+---
+name: Build agent-router
+
+# STORY-035-9a. Publishes a container image; deploys nothing (35.9b pins a
+# Kubernetes Deployment to the digest this workflow emits).
+#
+#   pull_request -> test, vet, container build. NO push.
+#   push (main)  -> test, build, publish to GHCR.
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "services/agent-router/**"
+      - ".github/workflows/build-agent-router.yaml"
+  push:
+    branches: ["main"]
+    paths:
+      - "services/agent-router/**"
+      - ".github/workflows/build-agent-router.yaml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/agent-router
+
+jobs:
+  test:
+    name: Test, vet, format
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: services/agent-router
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.5.0
+        with:
+          go-version-file: services/agent-router/go.mod
+          cache-dependency-path: services/agent-router/go.sum
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: gofmt check
+        run: |
+          fmt_out="$(gofmt -l .)"
+          if [ -n "$fmt_out" ]; then
+            echo "::error::gofmt would reformat the following files:"
+            echo "$fmt_out"
+            exit 1
+          fi
+
+      - name: go test
+        run: go test ./... -count=1
+
+  # Two jobs, not one, purely for least privilege. This one runs on pull
+  # requests as well as pushes and only ever BUILDS, so it is granted
+  # contents: read and nothing else - packages: write does not exist in the
+  # pull-request job graph at all, rather than existing-but-unused. Actions
+  # permissions cannot be made conditional per step, so separating the jobs
+  # is the only way to express that.
+  build:
+    name: Build container image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.11.1
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.9.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: type=sha,format=long
+
+      # Build only. No registry login exists in this job, so it cannot push
+      # even if this step were changed to try.
+      - name: Build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.18.0
+        with:
+          context: services/agent-router
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
+
+  publish:
+    name: Publish image to GHCR
+    needs: build
+    # Never runs for a pull request. 35.9b pins its Deployment to the digest
+    # this job emits.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.11.1
+
+      # GITHUB_TOKEN only - no PAT, no private registry credential. Only
+      # authenticated on push, since a PR build never pushes.
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.9.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.18.0
+        with:
+          context: services/agent-router
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
+
+      - name: Publish summary
+        run: |
+          {
+            echo "### agent-router published"
+            echo ""
+            echo "- image: \`${IMAGE_NAME}\`"
+            echo "- digest: \`${DIGEST}\`"
+            echo "- tags: \`${TAGS}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
