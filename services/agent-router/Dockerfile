@@ -26,7 +26,7 @@ RUN CGO_ENABLED=0 go build \
     ./cmd/agent-router
 
 # renovate: datasource=docker depName=gcr.io/distroless/static
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=build /out/agent-router /agent-router
 
