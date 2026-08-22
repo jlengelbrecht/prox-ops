@@ -1,10 +1,10 @@
 {
   "error": {
     "code": "no_eligible_profile",
-    "message": "No profile satisfies this request. The task is tagged secrets and prod-iac, which excludes local-unrestricted outright; the remaining profiles that guarantee a 64k context are subscription-backed and both pools are exhausted for this window. Relax a constraint, wait for the pool, or obtain authorization for billable spend - but not by retrying this request unchanged.",
+    "message": "No profile satisfies this request. The task needs a guaranteed 128k context floor. local-code-standard and local-general are the only selectable profiles that guarantee any context floor at all, and both cap at 65536; every vendor profile's min_context is null, which cannot satisfy an explicit context requirement even though the harness behind it may well support more. Relax the context requirement, or supply a real vendor context measurement in the catalog - but not by retrying this request unchanged.",
     "obligation": "re-plan",
     "http_status": 409,
     "endpoint": "/v1/route",
-    "catalog_version": "sha256:134a633f984001a8753952514ab1d642c9bf089c160d5f53c1355535bcae7041"
+    "catalog_version": "sha256:2fd681e0e988bf6be94b8923b1485a0aa174a4e66aec580a2d383c764b60e229"
   }
 }

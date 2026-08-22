@@ -143,10 +143,10 @@ Both are copied verbatim from
 (`metadata.name` and `spec.ai.provider.openai.model` respectively). Neither is invented.
 Swapping them breaks authorization in one direction and upstream resolution in the other:
 
-- a client that sends `/models/Qwen/Qwen2.5-Coder-7B-Instruct` as its body model is
-  rejected by the CEL policy, which expects `qwen-coder`;
-- vLLM identifies these models by the filesystem path it was started with (no
-  `--served-model-name`), so the leading `/models/...` has to reach it verbatim.
+- a client that sends `qwen3.6-27b` (the upstream identifier) as its body model is
+  rejected by the CEL policy, which expects `qwen36-27b` (the gateway-facing alias);
+- llama.cpp identifies `qwen36-27b` by its `--alias`, so the exact string in
+  `upstream_model_id` has to reach it verbatim.
 
 LiteLLM's legacy catalogue writes the same upstream identifiers with an `openai/` provider
 prefix. That prefix is LiteLLM's, not the model's, and is not used here.
@@ -176,13 +176,12 @@ server, no local runtime and no GPU footprint to describe: `upstream_id_form`, `
 `vram_gb_estimate`, `vram_estimate_source` and `idle_retention_min` are absent on all four
 rather than set to `null`.
 
-`vision` and `audio` on `qwen-omni` are **input** modalities. Audio output is a separate
-service (`qwen-tts`) and is out of scope here.
+STORY-035-8c retired the other four local models (`qwen-coder`, `dolphin-chat`,
+`hermes-jarvis`, `qwen-omni`) outright - see Versioning below. `qwen36-27b` is now the only
+local model in this table.
 
-`tools` is set only where the deployment actually enables tool calling: `hermes-jarvis`
-(`--enable-auto-tool-choice --tool-call-parser=hermes`) and `qwen36-27b` (`--jinja` with a
-tool-calling chat template). `qwen-coder`, `dolphin-chat` and `qwen-omni` do not have it,
-so they do not claim it.
+`tools` is set only where the deployment actually enables tool calling: `qwen36-27b`
+(`--jinja` with a tool-calling chat template) has it.
 
 ### `entitlement_pools`
 
@@ -256,10 +255,10 @@ Keyed by profile name. This is the only name BMAD stamps.
 Semantics that are easy to get wrong:
 
 - **`capabilities` is a guarantee, not a union.** Every candidate in `physical[]` provides
-  at least these. Individual candidates may provide more - `local-general` guarantees
-  `chat` because `qwen-omni` has no tool calling, even though two of its three candidates
-  do. A consumer that needs an optional capability filters `physical[]` against
-  `models[].capabilities` instead of assuming the whole list has it.
+  at least these. `local-general` guarantees `[chat, tools]` because its sole candidate,
+  `qwen36-27b`, provides both. A consumer that needs an optional capability still filters
+  `physical[]` against `models[].capabilities` instead of assuming a profile's guarantee is
+  the ceiling - a future second candidate could narrow the guarantee again.
 - **`min_context` is a guarantee too**, equal to the minimum `max_context` across
   `physical[]`. `null` means no guarantee, and a consumer must not use a null-guarantee
   profile to satisfy an explicit context requirement.
@@ -402,9 +401,14 @@ ad-hoc script when this catalog was seeded.
    model's own `placements` list.
 4. A null `physical[].placement` occurs only on a model with `hosting: vendor`.
 5. Every capability in `profiles[].capabilities` is provided by every candidate, and the
-   set equals the intersection of the candidates' capabilities.
+   set equals the intersection of the candidates' capabilities. With an empty `physical[]`
+   the intersection is undefined, so `capabilities` MUST be `[]` - a profile with no
+   candidates guarantees nothing. This is the expected shape of a non-selectable profile
+   awaiting a model decision, not a violation of the rule.
 6. `profiles[].min_context`, when not null, equals the minimum `max_context` across the
-   profile's candidates, and no candidate falls below it.
+   profile's candidates, and no candidate falls below it. With an empty `physical[]` the
+   minimum is undefined, so `min_context` MUST be `null` - the same non-selectable,
+   awaiting-a-model-decision shape as rule 5.
 7. No `alignment: unrestricted` model appears in an `alignment: standard` profile.
 8. An `alignment: unrestricted` profile has a non-empty `forbidden_for`, and
    `local-unrestricted` covers at least `security`, `iam`, `secrets`, `prod-iac`,
@@ -449,6 +453,17 @@ funding axis.
 as a second `qwen36-27b` / `local-code-standard` physical candidate. No field was added,
 removed or re-typed - every changed value already had a place in the 1.1.0 shape - so
 `schema_version` stayed 1 too.
+
+1.3.0 (STORY-035-8c, owner-directed retirement) **removes models**, unlike 1.1.0/1.2.0 which
+were purely additive: `qwen-coder`, `dolphin-chat`, `hermes-jarvis` and `qwen-omni` are
+deleted from `models` outright, and `qwen36-27b` becomes the only deployed local model. No
+replacement was selected or evaluated - that is out of scope for the MVP. `local-code-fast`
+and `local-unrestricted` each lost their only candidate and flip to `selectable: false` with
+an empty `physical[]` and a `blocked_by` entry describing what has to happen before either
+can be reselected; `local-general` drops `hermes-jarvis` and `qwen-omni`, retaining
+`qwen36-27b` as its sole candidate, with `capabilities`/`min_context` recomputed to match
+(`[chat, tools]` / `65536`). `local-code-standard` is unaffected. Fields were removed, not
+re-typed, so `schema_version` stayed 1.
 
 - data-only change (a model swapped behind a profile, a measurement filled in): patch or
   minor `version` bump, `schema_version` unchanged;
@@ -498,6 +513,7 @@ Adding a placement is a Git change by design (section 10a). Renaming one is brea
 | Whether the validation rules above become an executable check in CI | 35.9 |
 | Physical validation of `minimax/strong` against everything in its `blocked_by`, then a catalog PR flipping `selectable` and adding any capability it demonstrates | its own story |
 | Whether a pay-as-you-go entitlement pool is ever wanted, and under whose authorization | not scheduled; needs an owner decision, not a catalog PR |
+| Replacement model selection for `local-code-fast` and `local-unrestricted` (STORY-035-8c retired their only candidates, `qwen-coder` and `dolphin-chat`, with no substitute) | post-MVP; not scheduled |
 
 ## Sources
 

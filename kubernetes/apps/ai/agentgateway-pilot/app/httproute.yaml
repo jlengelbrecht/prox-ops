@@ -51,7 +51,10 @@ spec:
           name: agentgateway-pilot-openai
 
     # -----------------------------------------------------------------
-    # STORY-034-11: five local chat models. Every rule below is an Exact
+    # STORY-034-11: originally five local chat models (see history for the
+    # `x-model` dispatch mechanism); STORY-035-8c retired the four non-
+    # qwen36-27b models and their rules, so qwen36-27b's `x-placement`
+    # rules below are what remains. Every rule below is an Exact
     # path match on one of the two canonical AI paths agentgateway
     # recognises (/v1/chat/completions, /v1/messages) - finding F3 (no
     # PathPrefix "/" catch-all fronting a GPU). The real, unmodified
@@ -83,11 +86,13 @@ spec:
     # to reach (local-model-policies.yaml) - so Claude Code's existing
     # zero-config usage (ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, no
     # custom headers, exactly as G2-c proved) keeps working unchanged.
-    # The other four are reached by setting `x-model: <alias>`, which
-    # Open WebUI's per-connection custom-header support can do natively;
+    # The other four were reached by setting `x-model: <alias>`, which
+    # Open WebUI's per-connection custom-header support could do natively;
     # documented as a carried finding in the completion report since it
-    # is a real (if minor) UX divergence from LiteLLM's single implicit
-    # endpoint.
+    # was a real (if minor) UX divergence from LiteLLM's single implicit
+    # endpoint. Those four models and their `x-model` rules were retired
+    # in STORY-035-8c; the header dispatch mechanism itself lives on below
+    # for qwen36-27b's `x-placement` rules.
     #
     # AUTHORIZATION (which key may reach which model) is a SEPARATE
     # concern from this dispatch header - see local-model-policies.yaml.
@@ -231,143 +236,6 @@ spec:
         attempts: 1
         backoff: 50ms
         codes: [503]
-    - name: qwen-coder-chat
-      matches:
-        - path:
-            type: Exact
-            value: /v1/chat/completions
-          method: POST
-          headers:
-            - name: x-model
-              value: qwen-coder
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: qwen-coder
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 0
-    - name: qwen-coder-messages
-      matches:
-        - path:
-            type: Exact
-            value: /v1/messages
-          method: POST
-          headers:
-            - name: x-model
-              value: qwen-coder
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: qwen-coder
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 0
-    - name: dolphin-chat-chat
-      matches:
-        - path:
-            type: Exact
-            value: /v1/chat/completions
-          method: POST
-          headers:
-            - name: x-model
-              value: dolphin-chat
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: dolphin-chat
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 0
-    - name: dolphin-chat-messages
-      matches:
-        - path:
-            type: Exact
-            value: /v1/messages
-          method: POST
-          headers:
-            - name: x-model
-              value: dolphin-chat
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: dolphin-chat
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 0
-    - name: hermes-jarvis-chat
-      matches:
-        - path:
-            type: Exact
-            value: /v1/chat/completions
-          method: POST
-          headers:
-            - name: x-model
-              value: hermes-jarvis
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: hermes-jarvis
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 0
-    - name: hermes-jarvis-messages
-      matches:
-        - path:
-            type: Exact
-            value: /v1/messages
-          method: POST
-          headers:
-            - name: x-model
-              value: hermes-jarvis
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: hermes-jarvis
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 0
-    - name: qwen-omni-chat
-      matches:
-        - path:
-            type: Exact
-            value: /v1/chat/completions
-          method: POST
-          headers:
-            - name: x-model
-              value: qwen-omni
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: qwen-omni
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 0
-    - name: qwen-omni-messages
-      matches:
-        - path:
-            type: Exact
-            value: /v1/messages
-          method: POST
-          headers:
-            - name: x-model
-              value: qwen-omni
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: qwen-omni
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 0
-
     - name: pilot
       matches:
         - path:

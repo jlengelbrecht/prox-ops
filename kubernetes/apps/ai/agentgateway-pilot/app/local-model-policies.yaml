@@ -1,16 +1,19 @@
 ---
-# STORY-034-11: auth + authorization for the five local chat-model rules
-# added to the agentgateway-pilot route in httproute.yaml.
+# STORY-034-11: auth + authorization for the local chat-model rules added
+# to the agentgateway-pilot route in httproute.yaml. Originally five
+# models/ten rules; STORY-035-8c retired four of the five models, leaving
+# qwen36-27b's six sections below (see git history for the retired
+# per-model authz policies that used to follow this one).
 #
 # Two objects, one concern each - same reasoning as 34.3's auth-matrix
 # split (auth-matrix-policies.yaml): apiKeyAuthentication carries no CEL
-# and so can never fail to compile, keeping every one of these ten
-# GPU-fronting rules reachable-only-with-a-key even if the CEL in the
-# second object were ever rejected by the controller.
+# and so can never fail to compile, keeping every one of these GPU-fronting
+# rules reachable-only-with-a-key even if the CEL in the second object were
+# ever rejected by the controller.
 #
 # These are Route-Rule-scoped (sectionName per targetRef), which is MORE
 # PRECISE than agentgateway-pilot-apikey's whole-route policy (policy.yaml)
-# and so wins on the `apiKeyAuthentication` field for exactly these ten
+# and so wins on the `apiKeyAuthentication` field for exactly these
 # sections (v1.3.1 CRD doc-string: "Precedence is given to more precise
 # policies: Gateway < Listener < Route < Route Rule"), while leaving the
 # spike key policy fully in force on models-stub and the pilot catch-all,
@@ -49,38 +52,6 @@ spec:
       kind: HTTPRoute
       name: agentgateway-pilot
       sectionName: qwen36-27b-messages-kserve
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen-coder-chat
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen-coder-messages
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: dolphin-chat-chat
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: dolphin-chat-messages
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: hermes-jarvis-chat
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: hermes-jarvis-messages
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen-omni-chat
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen-omni-messages
   traffic:
     apiKeyAuthentication:
       mode: Strict
@@ -216,94 +187,6 @@ spec:
       policy:
         matchExpressions:
           - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'qwen36-27b')) && json(request.body).model in ['qwen36-27b', 'claude-sonnet-5']
----
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
-metadata:
-  name: agentgateway-pilot-qwen-coder-authz
-  namespace: ai
-spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen-coder-chat
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen-coder-messages
-  traffic:
-    authorization:
-      action: Allow
-      policy:
-        matchExpressions:
-          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'qwen-coder')) && json(request.body).model == 'qwen-coder'
----
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
-metadata:
-  name: agentgateway-pilot-dolphin-chat-authz
-  namespace: ai
-spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: dolphin-chat-chat
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: dolphin-chat-messages
-  traffic:
-    authorization:
-      action: Allow
-      policy:
-        matchExpressions:
-          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'dolphin-chat')) && json(request.body).model == 'dolphin-chat'
----
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
-metadata:
-  name: agentgateway-pilot-hermes-jarvis-authz
-  namespace: ai
-spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: hermes-jarvis-chat
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: hermes-jarvis-messages
-  traffic:
-    authorization:
-      action: Allow
-      policy:
-        matchExpressions:
-          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'hermes-jarvis')) && json(request.body).model == 'hermes-jarvis'
----
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
-metadata:
-  name: agentgateway-pilot-qwen-omni-authz
-  namespace: ai
-spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen-omni-chat
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen-omni-messages
-  traffic:
-    authorization:
-      action: Allow
-      policy:
-        matchExpressions:
-          - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'qwen-omni')) && json(request.body).model == 'qwen-omni'
 ---
 # STORY-035-8: R6 passive health, the second third of the atomic unit
 # (grouped backend in local-model-backends.yaml + this + route retry in
