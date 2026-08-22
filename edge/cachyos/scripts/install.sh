@@ -35,7 +35,8 @@
 #   1. copies scripts/*.sh, model-id-map.json, llama-swap.yaml and README.md
 #      to ~/.local/libexec/edge-cachyos/ (scripts/ subdirectory for the *.sh),
 #      made executable
-#   2. installs systemd/*.service to ~/.config/systemd/user/
+#   2. installs systemd/*.service, and any systemd/<unit>.service.d/*.conf
+#      drop-ins, to ~/.config/systemd/user/
 #   3. daemon-reload
 #   4. reports whether the guard, the heartbeat and the container are
 #      currently running, and if so prints ACTIVATION REQUIRED with the
@@ -131,6 +132,16 @@ install -m 644 "$CACHYOS_DIR/llama-swap.yaml" "$LIBEXEC_DIR/llama-swap.yaml"
 echo "installing user units to $UNIT_DIR"
 mkdir -p "$UNIT_DIR"
 install -m 644 "$CACHYOS_DIR"/systemd/*.service "$UNIT_DIR/"
+
+# Drop-ins (systemd/<unit>.service.d/*.conf), e.g. edge-heartbeat.service.d's
+# router-token.conf (STORY-035-9b). Guarded with -d so an unmatched glob
+# (no drop-ins present) is a silent no-op rather than an install error.
+for dropin_dir in "$CACHYOS_DIR"/systemd/*.service.d; do
+    [ -d "$dropin_dir" ] || continue
+    unit_dropin_dir="$UNIT_DIR/$(basename "$dropin_dir")"
+    mkdir -p "$unit_dropin_dir"
+    install -m 644 "$dropin_dir"/*.conf "$unit_dropin_dir/"
+done
 
 if command -v systemctl >/dev/null 2>&1; then
     systemctl --user daemon-reload

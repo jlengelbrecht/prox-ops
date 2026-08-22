@@ -1,0 +1,127 @@
+---
+# STORY-035-9b: deploy the already-published, already-verified 35.9a image.
+# Pinned by immutable digest, never a tag - see verify-digests.sh and gate 2.
+#
+# 1 replica, deliberately, and frozen: capacity is in-memory by design, a
+# restart re-learns within one heartbeat interval, so no PDB, no HA
+# machinery, no persistence of any kind.
+#
+# Runtime hardening exactly as proven in 35.9a: the image serves with a fully
+# read-only root, so no volume mounts beyond the catalog and the two
+# credential mounts - no scratch emptyDir, none needed.
+#
+# Restart contract (owner amendment 1): every startup-loaded input rolls the
+# pod. The service reads the catalog, the caller token and the node
+# credentials ONCE at process start, so all three objects are named EXPLICITLY
+# below via the named-object Stakater annotations, not the unconstrained
+# auto-discovery form - what rolls the pod must stay auditable. This is
+# load-bearing twice over: a catalog change must not leave a stale router,
+# and credential rotation must not leave a running router accepting an old
+# token indefinitely.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-router
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: agent-router
+    app.kubernetes.io/component: router
+    app.kubernetes.io/part-of: agent-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-router
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent-router
+        app.kubernetes.io/component: router
+        app.kubernetes.io/part-of: agent-router
+      annotations:
+        configmap.reloader.stakater.com/reload: "agent-router-catalog"
+        secret.reloader.stakater.com/reload: "agent-router-caller-token,agent-router-node-credentials"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent-router
+          image: ghcr.io/jlengelbrecht/agent-router@sha256:de4c7ef4b7a55a79ece11e996d9c6956addabb8f16c08ed25bf3ba374131d0a4
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: AGENT_ROUTER_CATALOG_PATH
+              value: /etc/agent-router/catalog/catalog.yaml
+            - name: AGENT_ROUTER_CALLER_TOKEN_FILE
+              value: /etc/agent-router/secrets/caller-token/token
+            - name: AGENT_ROUTER_NODE_CREDENTIALS_DIR
+              value: /etc/agent-router/secrets/node-credentials
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: catalog
+              mountPath: /etc/agent-router/catalog
+              readOnly: true
+            - name: caller-token
+              mountPath: /etc/agent-router/secrets/caller-token
+              readOnly: true
+            - name: node-credentials
+              mountPath: /etc/agent-router/secrets/node-credentials
+              readOnly: true
+      volumes:
+        - name: catalog
+          configMap:
+            name: agent-router-catalog
+            items:
+              - key: catalog.yaml
+                path: catalog.yaml
+        - name: caller-token
+          secret:
+            secretName: agent-router-caller-token
+            items:
+              - key: token
+                path: token
+        - name: node-credentials
+          secret:
+            secretName: agent-router-node-credentials
