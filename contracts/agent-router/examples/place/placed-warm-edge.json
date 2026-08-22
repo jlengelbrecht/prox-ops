@@ -10,7 +10,7 @@
   "ttl_seconds": 30,
   "reason": {
     "code": "placed_warm",
-    "message": "The edge node reports state AVAILABLE with qwen36-27b loaded, so it can answer with no load step. prefer-warm-local sets warm_preference: strict, which means any warm candidate beats any cold one regardless of prefer_order - so the edge wins even though kserve-a5000 is listed first."
+    "message": "The edge node reports state AVAILABLE with qwen36-27b loaded, so it can answer with no load step. prefer-warm-local sets warm_preference: strict, which means any warm candidate beats any cold one regardless of prefer_order - the edge wins both on warmth and on being first in prefer_order here, but the warm rule is what would decide it even if the order were reversed."
   },
   "alternatives": [
     {
@@ -21,9 +21,9 @@
       "eligible": true,
       "reason": {
         "code": "not_selected_colder",
-        "message": "Eligible, and first in prefer_order, but not known to be warm. A strict warm preference outranks order."
+        "message": "Eligible, second in prefer_order, and not known to be warm - KServe is never probed, so its readiness is unknown rather than warm or cold by construction. A strict warm preference outranks order regardless."
       }
     }
   ],
-  "catalog_version": "sha256:decafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbaddecafbad"
+  "catalog_version": "sha256:134a633f984001a8753952514ab1d642c9bf089c160d5f53c1355535bcae7041"
 }

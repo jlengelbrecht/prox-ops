@@ -27,7 +27,7 @@ contracts/agent-router/
     heartbeat/          6 files     one per state, plus unmeasured hardware
     place/              4 files     placed and unavailable
     errors/            14 files     one per error code, plus both metered refusals
-    status/             3 files     today, after an edge node exists, and after a restart
+    status/             3 files     today, before the edge existed, and after a restart
   verify-digests.sh                 fails if an example's catalog fingerprint has rotted
   README.md                         this file
 ```
@@ -74,7 +74,7 @@ Funding is a fourth thing these three do not answer - *who is paying for this at
 it gets its own field rather than being inferred from any of them. See "Economics" below.
 
 Five vocabularies are read verbatim from ConfigMap `ai/agent-router-catalog`, catalog
-document version **1.1.0**, `schema_version: 1`:
+document version **1.2.0**, `schema_version: 1`:
 
 | Vocabulary | Values | Where it is pinned |
 | --- | --- | --- |
@@ -90,7 +90,7 @@ DECISION.** It does not mean the router will auto-select it, and it is not a rec
 "`/v1/route` is recommendation-only" below for where a deliberate choice happens and what it
 still may not bypass.
 
-**`minimax/strong` is in the enum but is not selectable.** Catalog 1.1.0 declares it with
+**`minimax/strong` is in the enum but is not selectable.** Catalog 1.2.0 declares it with
 `selectable: false` and a `blocked_by` list, so the router must not emit it until a later
 story has validated it physically. It is in the vocabulary anyway, exactly as the placement
 enum carries `status: planned` placement names: the name is frozen now so the catalog and
@@ -154,20 +154,25 @@ written by hand.
 
 | Digest | What it is | Used by |
 | --- | --- | --- |
-| `sha256:fd8c4c31…50667a` | The **real** digest of catalog 1.1.0 exactly as committed - `sha256` over `data["catalog.yaml"]` of `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml`. Reproducible from the repository today. | every example describing the cluster as it is |
-| `sha256:decafbad…decafbad` | Placeholder, obviously fabricated. A later catalog in which `cachyos-7900xtx` has been brought up and is selectable; the other two edge placements are still planned. | `placed-warm-edge.json`, `status-with-edge.json` and `status-restarted-unseen.json` (both `catalog_document_version: 1.2.0`) |
-| `sha256:f00dface…f00dface` | Placeholder. A **further** catalog in which all three edge placements are selectable - which is what "every candidate has withdrawn itself" needs, since a placement that was never selectable cannot withdraw. | `unavailable-all-withdrawn.json` |
+| `sha256:134a633f…ae7041` | The **real** digest of catalog 1.2.0 exactly as committed - `sha256` over `data["catalog.yaml"]` of `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml`. Reproducible from the repository today. | every example describing the cluster as it is |
+| `sha256:fd8c4c31…50667a` | Not fabricated - the **former real** digest of catalog 1.1.0, frozen by value as a historical placeholder the moment STORY-035-8 brought `cachyos-7900xtx` up and it stopped being real. Depicts the world before the edge placement existed: one usable placement, `edge-only` resolving to nothing. | `placed-kserve-only-candidate.json`, `unavailable-policy-edge-only.json`, `status-pre-edge-1.1.0.json`, and (as the caller's stale claim) `catalog-version-stale.json` |
+| `sha256:f00dface…f00dface` | Placeholder, obviously fabricated. A **further** catalog in which all three edge placements are selectable - which is what "every candidate has withdrawn itself" needs, since a placement that was never selectable cannot withdraw. | `unavailable-all-withdrawn.json` |
 | `sha256:deadbeef…deadbeef` | Placeholder. A later catalog that retired `local-unrestricted` and folded the `any-24gb` policy into `prefer-warm-local`. | `unknown-profile.json`, `unknown-placement-policy.json`, `catalog-version-stale.json` (as the digest the router now serves) |
 | `sha256:cafebabe…cafebabe` | Placeholder. A later catalog that **declares a metered funding source** in its own right - a pay-as-you-go pool with its own credential, added as a second entitlement on `openai/strong` and gated behind explicit intent plus metered-spend authority. | the three metered fixtures: `metered-denied-substituted.json` (`catalog_document_version: 1.3.0`), `metered-denied-no-alternative.json`, and the 403 one |
 
 The placeholders exist because a digest is a content commitment: two documents showing
 different catalog contents cannot honestly share one. That rule applies to the placeholders
-as much as to the real digest, which is why there are four of them rather than one - "edge
-brought up", "all edge placements brought up", "things were retired" and "a metered funding
-source exists" are four different documents, and giving them one digest would have taught the
-opposite of the rule the field exists to enforce.
+as much as to the real digest, which is why there are four of them rather than one - "the
+world before the edge existed", "all edge placements brought up", "things were retired" and "a
+metered funding source exists" are four different documents, and giving them one digest would
+have taught the opposite of the rule the field exists to enforce.
 
-The metered one earns its own catalog for a reason worth stating plainly. **Catalog 1.1.0
+`fd8c4c31…50667a` is the odd one out: every other placeholder depicts a catalog that does not
+exist yet, but this one depicts one that **did** exist and was superseded. It stays useful for
+exactly the same reason the others do - it is a real, specific set of catalog contents, and
+the fixtures bound to it are honest about which contents those are.
+
+The metered one earns its own catalog for a reason worth stating plainly. **Catalog 1.2.0
 declares no metered funding source at all**, and every pool it does declare says
 `spillover: none`. So a fixture showing a billable option, pinned to the real digest, would
 be teaching that an exhausted subscription turns into per-token spend - which is precisely
@@ -177,9 +182,9 @@ three metered fixtures say so in their own text as well: exhausting `openai-plus
 candidate unavailable and nothing more; the billable candidate is a separate entitlement
 that was there all along, gated behind intent plus authorization.
 
-Real-digest examples also carry `catalog_document_version: "1.1.0"`; the illustrative ones
-carry a higher version where they have one, so no example claims to be 1.1.0 with contents
-that are not 1.1.0's.
+Real-digest examples also carry `catalog_document_version: "1.2.0"`; the still-hypothetical
+ones carry a higher version where they have one, and the historical `fd8c4c31…` fixtures carry
+`"1.1.0"` - so no example claims a document version its contents do not match.
 
 #### What keeps this honest
 
@@ -352,11 +357,11 @@ The caller's obligation on a 403 is `abort`: escalate to a human, and specifical
 retry under a different credential**. A client that goes looking for a token that works has
 turned a control into an obstacle course.
 
-Worth recording: catalog 1.1.0 contains no `cost_class: metered` profile and no metered
+Worth recording: catalog 1.2.0 contains no `cost_class: metered` profile and no metered
 funding source at all - Devin's paid on-demand tier deliberately has no profile name to hide
 behind, and every declared pool says `spillover: none`. **So this path cannot fire today**,
 and the three fixtures that show it are pinned to the `cafebabe…` placeholder catalog rather
-than to the real digest. Showing a billable option against catalog 1.1.0 would teach that an
+than to the real digest. Showing a billable option against catalog 1.2.0 would teach that an
 exhausted subscription becomes per-token spend, which is the exact promotion invariant 4
 exists to forbid. The shape is specified now so that it exists before the money does.
 
@@ -758,8 +763,11 @@ The distinction in one line each:
 Collapsing any two loses a fact somebody acts on. A planned placement reported as `silence`
 invents a missed heartbeat window that never existed. A restarted-but-healthy edge node reported
 as `silence` says a node failed when nothing did. And **a KServe placement reported as anything
-but `static` takes the only usable placement in catalog 1.1.0 out of service** - it never checks
-in by design, so the absence of a check-in says nothing about its health.
+but `static` takes kserve-a5000 out of service on a false signal** - it never checks in by
+design, so the absence of a check-in says nothing about its health. That mistake used to zero
+out local capacity entirely; as of catalog 1.2.0 cachyos-7900xtx would still be there, but the
+`static` rule protects kserve-a5000 for exactly the same reason regardless of how many other
+placements exist.
 
 `unseen` exists because capacity is in-memory. On restart the router knows from the catalog which
 placements are enrolled, but it has heard from none of them yet: a channel exists, so `static` is
@@ -835,9 +843,9 @@ anyway. The loop ends only on a failure the node itself must fix: `unauthenticat
 31 files, every one validated in CI-shaped commands below. Every example is also referenced
 from `openapi.yaml`, so an example that stops being reachable from the spec is visible.
 
-Each one states which catalog it is drawn against. Examples on the real 1.1.0 digest describe
-the cluster as it is today; those carrying a placeholder digest describe a later catalog, and
-each says which one below.
+Each one states which catalog it is drawn against. Examples on the real 1.2.0 digest describe
+the cluster as it is today; those carrying a placeholder digest describe either a later catalog
+or, for the frozen `fd8c4c31…` value, an earlier one - and each says which below.
 
 **`examples/execution-profile/`** - `/v1/route` responses.
 
@@ -863,17 +871,18 @@ each says which one below.
 
 | File | Shows |
 | --- | --- |
-| `placed-kserve-only-candidate.json` | Today's real answer: one candidate, readiness `unknown` because KServe is not probed. |
-| `placed-warm-edge.json` | **Later catalog** (`decafbad…`, cachyos brought up): a strict warm preference beats `prefer_order` once an edge placement is selectable. |
-| `unavailable-policy-edge-only.json` | `edge-only` on catalog **1.1.0** - every placement it names is `status: planned`. Explicit empty result, not a fall-through. |
-| `unavailable-all-withdrawn.json` | **Further catalog** (`f00dface…`, all three edge placements brought up): interactive, draining and silent candidates; note the warm-but-ineligible one. Withdrawal is only meaningful for a placement that was selectable in the first place. |
+| `placed-kserve-only-candidate.json` | **Historical** (`fd8c4c31…`, catalog 1.1.0, before the edge existed): one candidate, readiness `unknown` because KServe is not probed. |
+| `placed-warm-edge.json` | Today's real answer: cachyos-7900xtx is warm, first in `prefer_order`, and wins on both counts under a strict warm preference. |
+| `unavailable-policy-edge-only.json` | **Historical** (`fd8c4c31…`, catalog 1.1.0): `edge-only` resolved to nothing - every placement it named was `status: planned`. Explicit empty result, not a fall-through. Catalog 1.2.0 resolves this policy; see `status-today.json`. |
+| `unavailable-all-withdrawn.json` | **Further catalog** (`f00dface…`, the remaining two edge placements also brought up): interactive, draining and silent candidates; note the warm-but-ineligible one. Withdrawal is only meaningful for a placement that was selectable in the first place. |
 
 **`examples/errors/`** - one file per envelope code, 14 in total. Five sit on a placeholder
 catalog. `unknown-profile.json` and `unknown-placement-policy.json` show a stamped name the
-loaded catalog has dropped, and `catalog-version-stale.json` shows the caller's 1.1.0 digest
-against the newer one the router is serving - all three on `deadbeef…`.
+loaded catalog has dropped, and `catalog-version-stale.json` shows the caller's stale
+`fd8c4c31…` digest (catalog 1.1.0, before the edge existed) against the `deadbeef…` retirements
+catalog the router is serving now.
 `metered-denied-no-alternative.json` and `metered-authorization-required.json` sit on
-`cafebabe…`, the catalog that declares a metered funding source, because catalog 1.1.0
+`cafebabe…`, the catalog that declares a metered funding source, because catalog 1.2.0
 declares none and a billable candidate cannot honestly be shown against it.
 
 The two shared catalog-failure fixtures - `catalog-unavailable.json` and
@@ -881,27 +890,25 @@ The two shared catalog-failure fixtures - `catalog-unavailable.json` and
 endpoint, so a fixture claiming one would teach a caller the wrong error path for its own
 call.
 
-**`examples/status/`** - `status-today.json` is catalog 1.1.0 exactly as it stands, on the
-real digest, with one usable placement, the four entitlement pools, and `minimax/strong`
-visible but not selectable. `status-with-edge.json` is the same view after 35.6 has landed:
-`cachyos-7900xtx` selectable and heartbeating, `local-code-standard` with a second physical
-candidate, `edge-only` resolving. Those are catalog-static facts, so it carries a placeholder
-digest and `catalog_document_version: 1.2.0` rather than pretending to be 1.1.0 with
-different contents. It is also the example that shows a heartbeat re-exposed
-verbatim inside a placement. `status-restarted-unseen.json` is the same catalog seconds after
-the router restarted: the edge node is enrolled and may well be healthy, but nothing has been
-observed in this process yet, so it is `unseen`, `OFFLINE` and not eligible, alongside
-`capacity_state: learning`.
+**`examples/status/`** - `status-today.json` is catalog 1.2.0 exactly as it stands, on the
+real digest: `cachyos-7900xtx` selectable and heartbeating, `local-code-standard` with a
+second physical candidate, `edge-only` resolving, the four entitlement pools, and
+`minimax/strong` visible but not selectable. It is also the example that shows a heartbeat
+re-exposed verbatim inside a placement. `status-pre-edge-1.1.0.json` is the same view as it
+stood before 35.6-35.8 landed: one usable placement, `edge-only` resolving to nothing. Its
+contents did not change - only its role did, from "today" to "history" - so it keeps the
+`fd8c4c31…` digest that was once real and now names exactly that snapshot.
+`status-restarted-unseen.json` is today's catalog seconds after the router restarted: the edge
+node is enrolled and may well be healthy, but nothing has been observed in this process yet, so
+it is `unseen`, `OFFLINE` and not eligible, alongside `capacity_state: learning`.
 
-Four examples describe a world that does not exist yet, and they do not all describe the
-**same** one. `placed-warm-edge.json`, `status-with-edge.json` and `status-restarted-unseen.json`
-need only `cachyos-7900xtx` to have been brought up, and share a digest - the last two differ
-from each other in live capacity only, which is exactly what may differ under one digest.
-`unavailable-all-withdrawn.json` needs all three edge placements to be selectable - a node
-that was never selectable cannot withdraw itself - so it describes a further catalog again
-and carries its own. In catalog 1.1.0 all three edge placements are `status: planned` /
-`selectable: false` and cannot be returned by `/v1/place` at all, which is why none of these
-sits on the real digest.
+Two examples describe a world that does not exist yet. `unavailable-all-withdrawn.json` needs
+the remaining two edge placements (`bazzite-5090`, `laptop-rtx5000`) to also be selectable - a
+node that was never selectable cannot withdraw itself - so it describes a further catalog and
+carries its own placeholder digest, `f00dface…`. In catalog 1.2.0 those two placements are
+still `status: planned` / `selectable: false` and cannot be returned by `/v1/place` at all,
+which is why this fixture cannot sit on the real digest. The `cafebabe…` metered fixtures are
+the other still-hypothetical world, described where they are introduced above.
 
 ## Validating this contract
 
@@ -948,7 +955,7 @@ literal LAN address - placeholders such as `<edge-host>` and `<node-id>` are use
 matching the edge worker contract.
 
 The schemas do real work rather than describing the examples back to themselves. They reject,
-among others: `harness: local-agent`; a profile or placement name not in catalog 1.1.0;
+among others: `harness: local-agent`; a profile or placement name not in catalog 1.2.0;
 `cost_class: metered` with `metered: false` and the reverse; a `metered_denied` note on a
 metered profile; `state: INTERACTIVE` with `interactive: false`; a header other than
 `x-placement` in a `PlaceResult`; an `unavailable` result that still carries a placement; and
@@ -980,7 +987,7 @@ Recorded rather than resolved, because each belongs to a story that has not run 
    edge contract's field table says, and where the two could drift the edge contract wins, so
    the schema follows it. A node that genuinely cannot read utilization is out of contract
    today; 35.6 is where that gets found out.
-2. **No metered profile exists in catalog 1.1.0**, so `/v1/route` cannot emit `metered: true`
+2. **No metered profile exists in catalog 1.2.0**, so `/v1/route` cannot emit `metered: true`
    at all right now. The refusal shape is specified ahead of the money on purpose.
 3. **The heartbeat interval is router-side** and deliberately not added to the payload. 35.9
    sets the real value; 30 s / 90 s in these examples is a starting point, not a measurement.
@@ -1039,6 +1046,6 @@ Recorded rather than resolved, because each belongs to a story that has not run 
 - `edge/EDGE-WORKER-CONTRACT.md` - authoritative for heartbeat field semantics, transport
   requirements and per-host preemption rules. Merged; read the file, not this summary of it.
 - `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml` and its `README.md` -
-  the five vocabularies, catalog document version 1.1.0, the entitlement pools, and the
+  the five vocabularies, catalog document version 1.2.0, the entitlement pools, and the
   change protocol this
   directory has to stay in step with.

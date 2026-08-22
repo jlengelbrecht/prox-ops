@@ -30,6 +30,25 @@ spec:
       kind: HTTPRoute
       name: agentgateway-pilot
       sectionName: qwen36-27b-messages
+    # STORY-035-8: the four x-placement-scoped rules are additional
+    # sections on the SAME two paths, not new models - same key
+    # requirement as the two above.
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-chat-edge
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-chat-kserve
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-messages-edge
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-messages-kserve
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: agentgateway-pilot
@@ -170,6 +189,27 @@ spec:
       kind: HTTPRoute
       name: agentgateway-pilot
       sectionName: qwen36-27b-messages
+    # STORY-035-8: same model, same authorization rule, on the four
+    # x-placement-scoped sections. Per ruling R5, x-placement is
+    # scheduling metadata only and must never touch this decision - so
+    # this CEL is copied verbatim onto the new sections, not derived from
+    # the header in any way.
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-chat-edge
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-chat-kserve
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-messages-edge
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-messages-kserve
   traffic:
     authorization:
       action: Allow
@@ -264,3 +304,40 @@ spec:
       policy:
         matchExpressions:
           - (apiKey.models == 'any' || apiKey.models.split(',').exists(m, m == 'qwen-omni')) && json(request.body).model == 'qwen-omni'
+---
+# STORY-035-8: R6 passive health, the second third of the atomic unit
+# (grouped backend in local-model-backends.yaml + this + route retry in
+# httproute.yaml). Backend-scoped `spec.backend.health` (not
+# `spec.traffic`), targeting the GROUP-0 provider of each of qwen36-27b's
+# two backend variants by `sectionName` - kserve-a5000 in the default/
+# KServe-preferred backend, cachyos-7900xtx in the edge-preferred one. One
+# policy, two targetRefs, since the frozen values (duration: 30s,
+# consecutiveFailures: 1) are identical either way.
+#
+# Passive only: this reacts to real request outcomes on the provider it
+# targets. It is not an active probe and cannot be one - `health.eviction`
+# has no polling/interval field, only `duration` (the backoff once a
+# provider is marked unhealthy) and `consecutiveFailures` (the trigger).
+# Case 14 holds: nothing here can wake the scale-to-zero KServe backend,
+# because eviction only ever observes a response to a request agent-router
+# or a caller already sent.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: qwen36-27b-passive-health
+  namespace: ai
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: qwen36-27b
+      sectionName: kserve-a5000
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: qwen36-27b-edge-preferred
+      sectionName: cachyos-7900xtx
+  backend:
+    health:
+      eviction:
+        duration: 30s
+        consecutiveFailures: 1
