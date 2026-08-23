@@ -196,7 +196,21 @@ func isDocsOnly(paths []string) bool {
 
 func looksLikeDocs(p string) bool {
 	lower := strings.ToLower(p)
-	return strings.Contains(lower, "docs/") || strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".mdx") || strings.Contains(lower, "readme")
+	if strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".mdx") {
+		return true
+	}
+	// A directory literally named docs, at root or nested - not any path that
+	// merely contains the substring (cmd/docsync/... is code).
+	if strings.HasPrefix(lower, "docs/") || strings.Contains(lower, "/docs/") {
+		return true
+	}
+	// README detection is on the BASENAME only: internal/readme_generator.go
+	// is source code, not documentation.
+	base := lower
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	return base == "readme" || strings.HasPrefix(base, "readme.")
 }
 
 // effortFor maps the selected band, and blast_radius within the strong

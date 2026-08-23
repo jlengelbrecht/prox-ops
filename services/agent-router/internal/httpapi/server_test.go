@@ -664,6 +664,7 @@ func TestHeartbeatRequest_SchemaConformance(t *testing.T) {
 
 func readAll(t *testing.T, resp *http.Response) []byte {
 	t.Helper()
+	defer resp.Body.Close()
 	buf := new(bytes.Buffer)
 	if _, err := buf.ReadFrom(resp.Body); err != nil {
 		t.Fatalf("reading response body: %v", err)

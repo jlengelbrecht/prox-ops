@@ -5,6 +5,7 @@ import (
 
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/catalog"
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/routing"
+	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/testutil"
 )
 
 func strp(s string) *string { return &s }
@@ -13,6 +14,18 @@ func intp(i int) *int       { return &i }
 // minimalCatalog builds a Go-literal catalog with exactly the profiles the
 // real catalog declares that routing.ApprovedPairs references, so pure
 // Decide tests do not depend on loading or parsing YAML.
+
+// mustRealCatalog loads the committed production catalog, the same document
+// the deployed router serves, so band behavior is proven against reality.
+func mustRealCatalog(t *testing.T) *catalog.Catalog {
+	t.Helper()
+	cat, _, err := catalog.Load(testutil.ExtractCatalogYAML(t))
+	if err != nil {
+		t.Fatalf("loading real catalog: %v", err)
+	}
+	return cat
+}
+
 func minimalCatalog() *catalog.Catalog {
 	return &catalog.Catalog{
 		DocumentVersion:        "9.9.9",
@@ -303,3 +316,64 @@ func TestDecide_Deterministic(t *testing.T) {
 type excludeSet map[string]bool
 
 func (e excludeSet) Available(pool string) bool { return !e[pool] }
+
+// Fix-round regression: the old substring heuristic classified
+// internal/readme_generator.go as documentation. README detection is
+// basename-only now. Proven through the public surface: identical requests
+// differing only in that path must not land in the docs band.
+func TestRoute_docs_band_readme_generator_is_code(t *testing.T) {
+	cat := mustRealCatalog(t)
+	base := routing.Input{
+		Tags: []string{"code"}, BlastRadius: "low", Ambiguity: "low",
+		ContextSize: intp(4000),
+	}
+	code := base
+	code.TouchedPaths = []string{"internal/readme_generator.go"}
+	docs := base
+	docs.TouchedPaths = []string{"README.md"}
+	rc := routing.Decide(cat, code, false, routing.AlwaysAvailable{})
+	rd := routing.Decide(cat, docs, false, routing.AlwaysAvailable{})
+	if rc.Outcome != routing.OutcomeOK || rd.Outcome != routing.OutcomeOK {
+		t.Fatalf("outcomes: code=%v docs=%v, want OK/OK", rc.Outcome, rd.Outcome)
+	}
+	if rc.Decision.ModelProfile == "local-general" && rc.Decision.Effort == "low" &&
+		rc.Decision.ModelProfile == rd.Decision.ModelProfile && rc.Decision.Effort == rd.Decision.Effort {
+		t.Fatalf("readme_generator.go routed identically to README.md (docs band): profile=%s effort=%s",
+			rc.Decision.ModelProfile, rc.Decision.Effort)
+	}
+	// cmd/docsync is code too: the substring "docs" inside a segment is not a directory named docs.
+	seg := base
+	seg.TouchedPaths = []string{"cmd/docsync/main.go"}
+	rs := routing.Decide(cat, seg, false, routing.AlwaysAvailable{})
+	if rs.Decision.ModelProfile == rd.Decision.ModelProfile && rs.Decision.Effort == rd.Decision.Effort && rd.Decision.Effort == "low" {
+		t.Fatalf("cmd/docsync/main.go landed in the docs band")
+	}
+}
+
+// Direct docs-band unit coverage: genuine docs paths route to local-general
+// at effort low, and non-selectable profiles never appear in the fallbacks.
+func TestRoute_docs_band_direct(t *testing.T) {
+	cat := mustRealCatalog(t)
+	in := routing.Input{
+		Tags:         []string{"docs"},
+		TouchedPaths: []string{"docs/architecture.md", "README.md"},
+		BlastRadius:  "low",
+		Ambiguity:    "low",
+		ContextSize:  intp(4000),
+	}
+	res := routing.Decide(cat, in, false, routing.AlwaysAvailable{})
+	if res.Outcome != routing.OutcomeOK {
+		t.Fatalf("outcome = %v, want OK", res.Outcome)
+	}
+	if res.Decision.ModelProfile != "local-general" {
+		t.Fatalf("profile = %q, want local-general for a docs-only change", res.Decision.ModelProfile)
+	}
+	if res.Decision.Effort != "low" {
+		t.Fatalf("effort = %q, want low", res.Decision.Effort)
+	}
+	for _, f := range res.Decision.Fallbacks {
+		if f.Pair.ModelProfile == "local-code-fast" || f.Pair.ModelProfile == "local-unrestricted" {
+			t.Fatalf("non-selectable profile %q in docs-band fallbacks", f.Pair.ModelProfile)
+		}
+	}
+}

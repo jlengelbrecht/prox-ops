@@ -90,12 +90,6 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 
 	allowMetered := req.AllowMetered != nil && *req.AllowMetered
 	authorized := allowMetered && s.meteredAuthority.Authorized(token)
-	if allowMetered && !authorized {
-		writeError(w, http.StatusForbidden, "metered_authorization_required",
-			"The request set allow_metered: true, but the authenticated caller does not hold authority to approve billable spend. The flag is intent, not authority. Escalate to a principal that holds metered-spend authority; do not retry, and do not retry under a different credential.",
-			"abort", "/v1/route", nil, nil, &digest)
-		return
-	}
 
 	placementPolicy := cat.DefaultPlacementPolicy
 	if req.PlacementPolicy != nil {
@@ -110,6 +104,29 @@ func (s *Server) handleRoute(w http.ResponseWriter, r *http.Request) {
 		Tags:            req.Tags,
 		TouchedPaths:    req.TouchedPaths,
 		PlacementPolicy: placementPolicy,
+	}
+	if allowMetered && !authorized {
+		// The refusal is unconditional - authorization is decided before
+		// routing ever selects anything. details.withheld, when present, is
+		// a PURE COUNTERFACTUAL: this same request and catalog routed AS IF
+		// authorized, reported only when that run selects a genuinely
+		// catalog-declared metered candidate. Catalog 1.3.0 declares none,
+		// so live 403s legitimately omit it; nothing is fabricated and the
+		// shape carries harness/profile/cost class only - never credential
+		// material. Decide is pure, so this has no side effects and cannot
+		// weaken the refusal it decorates.
+		var details map[string]any
+		if cf := routing.Decide(cat, in, true, s.entitlementAvailability); cf.Outcome == routing.OutcomeOK && cf.Decision != nil && cf.Decision.CostClass == "metered" {
+			details = map[string]any{"withheld": map[string]any{
+				"harness":       cf.Decision.Harness,
+				"model_profile": cf.Decision.ModelProfile,
+				"cost_class":    cf.Decision.CostClass,
+			}}
+		}
+		writeError(w, http.StatusForbidden, "metered_authorization_required",
+			"The request set allow_metered: true, but the authenticated caller does not hold authority to approve billable spend. The flag is intent, not authority. Escalate to a principal that holds metered-spend authority; do not retry, and do not retry under a different credential.",
+			"abort", "/v1/route", details, nil, &digest)
+		return
 	}
 
 	result := routing.Decide(cat, in, authorized, s.entitlementAvailability)
@@ -160,7 +177,12 @@ func parseRouteRequest(body []byte) (*routeRequestWire, *invalidRequestError) {
 		}
 		return nil, &invalidRequestError{Message: fmt.Sprintf("could not parse request body: %v", err)}
 	}
-	if extra := dec.More(); extra {
+	// Decoder.More() does not reliably report trailing non-whitespace after a
+	// top-level object; the correct proof of "nothing follows" is a second
+	// decode that must fail with io.EOF. `{...} true` and `{...}{...}` both
+	// land here.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
 		return nil, &invalidRequestError{Message: "request body contains trailing data after the JSON object"}
 	}
 

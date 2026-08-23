@@ -580,3 +580,93 @@ func TestRoute_oversized_body_rejected(t *testing.T) {
 		t.Fatalf("oversized body: status = %d, want 400 or 413", resp.StatusCode)
 	}
 }
+
+// Trailing-data proof is a second decode requiring io.EOF - Decoder.More()
+// misses `{...} true` and `{...}{...}`. Both must be 400 invalid_request.
+func TestRoute_trailing_json_rejected(t *testing.T) {
+	e := newEnv(t, realCatalogState(t))
+	for _, tc := range []struct{ name, suffix string }{
+		{"object_then_true", " true"},
+		{"object_then_object", ` {"x":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := append(routeRequestBody(t, contained200()), []byte(tc.suffix)...)
+			resp := postRoute(t, e, callerToken, body)
+			raw := readAll(t, resp)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body: %.120s", resp.StatusCode, raw)
+			}
+		})
+	}
+}
+
+// Fix-round: the frozen fixture's 403 carries details.withheld naming the
+// counterfactual metered candidate. Against the hypothetical metered catalog
+// an unauthorized allow_metered:true caller gets the 403 AND the withheld
+// harness/profile/cost class; the production catalog declares no metered
+// pool, so the live 403 legitimately omits it (never fabricated).
+func TestRoute_metered_403_includes_withheld_counterfactual(t *testing.T) {
+	// hypothetical metered catalog, UNAUTHORIZED seam (nil -> production
+	// deny-all), so the 403 fires while the counterfactual has a real
+	// metered candidate to name.
+	// Subscription funding outranks metered, so the counterfactual only
+	// selects the metered pool when the subscription pool is unavailable -
+	// the same injected-availability seam the other metered tests use, and
+	// the same seam the handler's counterfactual consults.
+	cs := httpapi.CatalogState{Catalog: meteredCatalog(false), Digest: fakeDigest("cafe")}
+	e := newEnvFull(t, cs, nil, excludePools{"openai-plus": true})
+	body := contained200()
+	body["catalog_version"] = fakeDigest("cafe")
+	body["allow_metered"] = true
+	// The hypothetical metered candidate serves the strong band; drive the
+	// request there so the counterfactual genuinely selects it.
+	body["ambiguity"] = "high"
+	body["blast_radius"] = "high"
+	resp := postRoute(t, e, callerToken, routeRequestBody(t, body))
+	raw := readAll(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body %.150s", resp.StatusCode, raw)
+	}
+	type withheldT struct {
+		Harness      string `json:"harness"`
+		ModelProfile string `json:"model_profile"`
+		CostClass    string `json:"cost_class"`
+	}
+	type errT struct {
+		Error struct {
+			Code    string `json:"code"`
+			Details struct {
+				Withheld withheldT `json:"withheld"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	er := decodeRaw[errT](t, raw)
+	if er.Error.Code != "metered_authorization_required" {
+		t.Fatalf("code = %q", er.Error.Code)
+	}
+	w := er.Error.Details.Withheld
+	if w.CostClass != "metered" || w.Harness == "" || w.ModelProfile == "" {
+		t.Fatalf("withheld = %+v, want the counterfactual metered candidate (cost_class=metered, harness+profile set)", w)
+	}
+}
+
+// And on the PRODUCTION catalog the same 403 carries no fabricated withheld.
+func TestRoute_metered_403_production_omits_withheld(t *testing.T) {
+	e := newEnv(t, realCatalogState(t))
+	req := contained200()
+	req["allow_metered"] = true
+	resp := postRoute(t, e, callerToken, routeRequestBody(t, req))
+	raw := readAll(t, resp)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	type errT struct {
+		Error struct {
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	er := decodeRaw[errT](t, raw)
+	if _, has := er.Error.Details["withheld"]; has {
+		t.Fatal("production 403 fabricated a withheld candidate; catalog 1.3.0 declares no metered pool")
+	}
+}
