@@ -810,10 +810,11 @@ exist to preserve.
 `model-id-map.json` holds both directions the producer needs:
 
 - `runtime_to_catalog` — what llama-swap calls a model → what the catalog does.
-- `artifact_to_catalog` — a GGUF path under `$EDGE_MODEL_DIR` → catalog id.
-  `cached_models` is derived from the **filesystem**, not from llama-swap's
-  configuration, because a model can be configured and its artifact absent, and
-  reporting that as cached promises the router a load time it cannot deliver.
+- `artifact_to_catalog` — a GGUF path (relative to the model store) → catalog
+  id. `cached_models` is derived from **filesystem presence**, not from
+  llama-swap's configuration, because a model can be configured and its
+  artifact absent, and reporting that as cached promises the router a load
+  time it cannot deliver.
 
 An id in neither table is **dropped with a warning**, never guessed at and
 never passed through. `scripts/edge-heartbeat.sh --self-test` asserts exactly
@@ -823,33 +824,51 @@ produce has capabilities and a context length to advertise.
 **`capabilities` and `max_context` describe what this deployment can serve**,
 and are derived from the models it is configured with — the catalog ids in
 `model-id-map.json`'s `runtime_to_catalog`, with their facts from the same file.
-Deliberately not from `cached_models`: with the shipped default the model store
-is a docker volume this daemon cannot read, so a cache-derived answer advertised
-a warm, serving node as capable of nothing with a zero-length context window,
-which a router can only read as "never pick me". An unobservable cache is not an
-incapable node. It stays an advertisement rather than an authority — the router
-intersects it with the real catalog under R14, so facts that drifted here narrow
-placement instead of widening it.
+Deliberately not from `cached_models`: an unobservable or momentarily stale
+cache must never make a warm, serving node advertise itself as capable of
+nothing with a zero-length context window, which a router can only read as
+"never pick me". An unobservable cache is not an incapable node. It stays an
+advertisement rather than an authority — the router intersects it with the
+real catalog under R14, so facts that drifted here narrow placement instead of
+widening it.
 
-**`cached_models` stays a filesystem observation, and stays pessimistic.** It is
-positive evidence that an artifact is on local storage, so with the volume-backed
-default it is reported empty even while the model is warm. That combination is
-honest rather than contradictory: `active_model` says the model is loaded now,
-`cached_models` says nothing can be proven about what is on disk. Neither is
-inferred from the other, and neither is inferred from configuration — claiming
-disk-cache knowledge from `model-id-map.json` would promise the router a load
-time nobody measured.
+**`cached_models` is a filesystem observation, and it is derived without this
+daemon ever reading the model store itself (STORY-035-9c Part A).** The store
+(`edge-model-cache`) is a Docker-managed volume whose mountpoint requires root;
+the host user cannot read it. `docker exec` from this daemon was considered and
+**rejected** (owner security ruling): a process that can drive Docker can start
+a privileged container, which is exactly what `scripts/edge-supervisor.sh`
+exists to keep away from the host. Instead, observation happens over the
+*existing* shared-state boundary: the supervisor — which already has the real
+store mounted read-only at `/models` and already writes `EDGE_STATE_DIR`, which
+this daemon already reads claim/lease/phase from — periodically writes a
+filenames/existence scan of `/models` to `$EDGE_STATE_DIR/cache-manifest.json`,
+atomically (temp file, then rename), never opening or reading a model's
+contents. `edge-heartbeat.sh` reads that manifest read-only and translates its
+relative artifact paths through `model-id-map.json`'s `artifact_to_catalog`,
+exactly as it translates llama-swap's runtime model ids. An artifact the
+manifest reports with no catalog counterpart is dropped with a warning, never
+guessed at — see `scripts/edge-heartbeat.sh --self-test`.
+
+**Fail-to-empty, always, and never a stale claim.** A missing or unreadable
+manifest, a malformed one, one whose scan did not complete
+(`complete: false` — the supervisor's own signal that `/models` was not
+present when it last tried), or one older than `EDGE_CACHE_MANIFEST_MAX_AGE`
+(default 180s, 3x the supervisor's default scan interval) all report
+`cached_models` empty rather than repeating whatever was last observed. The
+supervisor also removes the manifest on a graceful container stop, so a
+deliberate `docker compose down`/restart is reflected immediately rather than
+only after the manifest ages out — a crash skips that and falls back to the
+freshness bound, the same shape as the guard-ready lease's own crash case.
+
+`active_model` and `cached_models` stay honest independently: `active_model`
+says the model is loaded now, `cached_models` says an artifact is provably on
+disk, and neither is inferred from the other or from configuration.
 
 ```json
-{"active_model": "qwen36-27b", "cached_models": [],
+{"active_model": "qwen36-27b", "cached_models": ["qwen36-27b"],
  "capabilities": ["chat", "tools"], "max_context": 65536}
 ```
-
-Making the cache observable for an *unloaded* model — so the router can tell a
-cold-but-cached node from a cold-and-empty one — is a readiness and economics
-follow-up, worth doing before 35.11. It needs either the model store on a
-host-readable path or a cache observer that can see inside the volume, and it is
-deliberately not built here.
 
 Two other fields deserve a note:
 

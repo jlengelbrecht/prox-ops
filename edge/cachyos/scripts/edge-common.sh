@@ -18,6 +18,16 @@
 EDGE_STATE_DIR="${EDGE_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/edge-cachyos-state}"
 EDGE_CLAIM_FILE="$EDGE_STATE_DIR/interactive-claim"
 EDGE_PHASE_FILE="$EDGE_STATE_DIR/phase"
+# Cache-observation manifest (STORY-035-9c Part A): scripts/edge-supervisor.sh
+# writes it from its already-mounted /models:ro, atomically, and
+# scripts/edge-heartbeat.sh reads it read-only to derive cached_models. Same
+# shared-state boundary as CLAIM_FILE/PHASE_FILE above, one more file on it —
+# no new mount, no new daemon.
+# Overridable like every other default here: the heartbeat's own self-tests
+# and the live evidence harness point this at crafted manifests, and an
+# unconditional assignment silently defeated exactly that during 35.9c's
+# acceptance.
+EDGE_CACHE_MANIFEST_FILE="${EDGE_CACHE_MANIFEST_FILE:-$EDGE_STATE_DIR/cache-manifest.json}"
 
 # Absolute path, not a bare command name (STORY-035-6a cycle 5): a bare name
 # resolves through PATH, and the systemd user manager's boot-time PATH

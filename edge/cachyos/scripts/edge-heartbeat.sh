@@ -28,10 +28,27 @@
 # come from the models it is configured with (model-id-map.json's
 # runtime_to_catalog, whose facts come from the catalog), never from
 # cached_models. A node that cannot see its own model store is not a node that
-# cannot do chat, and the shipped default cannot see it — the store is a docker
-# volume this daemon does not have access to. The router intersects what is
-# advertised here with the real catalog under R14, so this is an advertisement
-# and not an authority.
+# cannot do chat. The router intersects what is advertised here with the real
+# catalog under R14, so this is an advertisement and not an authority.
+#
+# cached_models (STORY-035-9c Part A): the model store is a docker volume this
+# host daemon cannot read directly -- its mountpoint requires root. Rather than
+# grant this daemon Docker control-plane authority (docker exec was considered
+# and REJECTED, owner security ruling: a process that can drive Docker can
+# start a privileged container), cached_models is derived from a
+# cache-observation manifest that scripts/edge-supervisor.sh writes into the
+# shared EDGE_STATE_DIR from its own already-mounted /models:ro -- the same
+# boundary this daemon already reads claim/lease/phase over, carrying one more
+# file. The manifest publishes relative artifact PATHS, never a catalog id;
+# translating them through model-id-map.json's artifact_to_catalog is this
+# script's job, exactly as it already translates llama-swap's runtime model
+# ids. See derive_cached_models() below and README.md "Heartbeat and the
+# model-id translation".
+#
+# Fail-to-empty, always: a missing, unreadable, malformed, incomplete or stale
+# (older than EDGE_CACHE_MANIFEST_MAX_AGE) manifest reports cached_models as
+# empty rather than reusing whatever was last observed. Loss of observability
+# is never promoted to a stale claim of presence.
 #
 # One line of the payload deserves its own warning. `runtime.endpoint` is
 # observational status metadata only (§2). It is not service discovery, it
@@ -55,9 +72,15 @@
 #   EDGE_API_KEY              bearer credential for llama-swap
 #   EDGE_CA_CERT              dedicated edge CA bundle
 #   EDGE_CURL_RESOLVE         optional curl --resolve, while LAN DNS is missing
-#   EDGE_MODEL_DIR            directory holding the GGUF artifacts
 #   EDGE_MODEL_MAP            model-id-map.json (default: next to this script)
 #   EDGE_STATE_DIR            state directory shared with the container
+#   EDGE_CACHE_MANIFEST_MAX_AGE
+#                             seconds a cache-observation manifest stays fresh
+#                             (default 180 -- 3x edge-supervisor.sh's default
+#                             EDGE_CACHE_SCAN_INTERVAL of 60s, the same 3x
+#                             relationship the router uses for offline
+#                             detection). Older, missing, unreadable, malformed
+#                             or incomplete => cached_models reports empty.
 #   EDGE_LLAMACPP_BUILD       llama.cpp build id, for runtime.version
 #   EDGE_ROUTER_URL           agent-router base URL; unset = print only
 #   EDGE_ROUTER_TOKEN         bearer credential for the router
@@ -78,7 +101,7 @@ export EDGE_LOG_TAG=heartbeat
 
 NODE_ID="${EDGE_NODE_ID:-cachyos-7900xtx}"
 MODEL_MAP="${EDGE_MODEL_MAP:-$SCRIPT_DIR/../model-id-map.json}"
-MODEL_DIR="${EDGE_MODEL_DIR:-}"
+CACHE_MANIFEST_MAX_AGE="${EDGE_CACHE_MANIFEST_MAX_AGE:-180}"
 SERVING_GPU_PCT="${EDGE_SERVING_GPU_PCT:-20}"
 
 MODE=once
@@ -113,22 +136,78 @@ translate_runtime_id() {
     printf '%s' "$catalog_id"
 }
 
-# Artifacts on local storage -> catalog model_ids, one per line. "cached" in
+# Cache-observation manifest -> catalog model_ids, one per line. "cached" in
 # the contract means the artifact is present so no download is needed, which is
 # a question about the filesystem, not about llama-swap's configuration — a
 # model can be configured and its GGUF absent, and reporting that as cached
 # would promise the router a load time it cannot deliver.
+#
+# This host cannot read the model store itself (STORY-035-9c Part A: it is a
+# docker volume that requires root, and `docker exec` was rejected as an
+# observation mechanism -- see the header comment). scripts/edge-supervisor.sh
+# publishes a filenames/existence scan of that store into
+# EDGE_CACHE_MANIFEST_FILE, over the same shared-state boundary this script
+# already reads claim/lease/phase over, and this function is the translation
+# half: relative artifact path -> catalog model_id, via model-id-map.json's
+# artifact_to_catalog, exactly as translate_runtime_id() does for llama-swap's
+# runtime ids. An artifact path with no catalog counterpart is dropped with a
+# warning, never guessed at.
+#
+# Fail-to-empty on every form of lost observability, and NEVER a stale
+# last-known-good claim: a missing/unreadable file, a malformed one, one whose
+# scan did not complete (complete != true), or one older than
+# CACHE_MANIFEST_MAX_AGE all report no cached models. A manifest timestamped in
+# the future (clock skew) is treated exactly like the guard-lease check in
+# scripts/edge-supervisor.sh treats it: not fresh, so as not to fail open on a
+# clock instead of on the scan itself.
 derive_cached_models() {
-    local rel catalog_id
-    [ -n "$MODEL_DIR" ] || { edge_log "WARN EDGE_MODEL_DIR unset; reporting no cached models"; return 0; }
-    [ -d "$MODEL_DIR" ] || { edge_log "WARN EDGE_MODEL_DIR '$MODEL_DIR' is not a directory; reporting no cached models"; return 0; }
+    local manifest complete scanned_at scanned_epoch now age rel catalog_id
+
+    manifest="$EDGE_CACHE_MANIFEST_FILE"
+    if [ ! -r "$manifest" ]; then
+        edge_log "WARN cache manifest '$manifest' not readable; reporting no cached models"
+        return 0
+    fi
+    if ! jq -e 'type == "object"
+            and (.scanned_at | type == "string")
+            and (.complete   | type == "boolean")
+            and (.artifacts  | type == "array" and all(type == "string"))' \
+        "$manifest" >/dev/null 2>&1; then
+        edge_log "WARN cache manifest '$manifest' is malformed; reporting no cached models"
+        return 0
+    fi
+
+    complete=$(jq -r '.complete' "$manifest" 2>/dev/null)
+    if [ "$complete" != "true" ]; then
+        edge_log "WARN cache manifest reports an incomplete or failed scan; reporting no cached models"
+        return 0
+    fi
+
+    scanned_at=$(jq -r '.scanned_at' "$manifest" 2>/dev/null)
+    scanned_epoch=$(date -u -d "$scanned_at" +%s 2>/dev/null) || {
+        edge_log "WARN cache manifest scanned_at '$scanned_at' is unparseable; reporting no cached models"
+        return 0
+    }
+    now=$(date -u +%s)
+    age=$((now - scanned_epoch))
+    if [ "$age" -lt 0 ]; then
+        edge_log "WARN cache manifest scanned_at is ${age#-}s in the FUTURE (clock skew between container and host?); reporting no cached models"
+        return 0
+    fi
+    if [ "$age" -gt "$CACHE_MANIFEST_MAX_AGE" ]; then
+        edge_log "WARN cache manifest is stale (age ${age}s > ${CACHE_MANIFEST_MAX_AGE}s); reporting no cached models"
+        return 0
+    fi
+
     while IFS= read -r rel; do
         [ -n "$rel" ] || continue
-        if [ -f "$MODEL_DIR/$rel" ]; then
-            catalog_id=$(jq -er --arg p "$rel" '.artifact_to_catalog[$p] // empty' "$MODEL_MAP" 2>/dev/null) || continue
-            [ -n "$catalog_id" ] && printf '%s\n' "$catalog_id"
+        catalog_id=$(jq -er --arg p "$rel" '.artifact_to_catalog[$p] // empty' "$MODEL_MAP" 2>/dev/null) || catalog_id=""
+        if [ -n "$catalog_id" ]; then
+            printf '%s\n' "$catalog_id"
+        else
+            edge_log "WARN cache manifest artifact '$rel' has no catalog mapping; ignoring"
         fi
-    done < <(jq -er '.artifact_to_catalog | keys[]' "$MODEL_MAP" 2>/dev/null)
+    done < <(jq -er '.artifacts[]? // empty' "$manifest" 2>/dev/null)
 }
 
 # Catalog model_ids this deployment is CONFIGURED to serve, one per line — the
@@ -144,11 +223,11 @@ served_catalog_ids() {
 #
 # These describe what this deployment is able to SERVE, so they are derived from
 # the configured models and never from cached_models. Deriving them from the
-# cache was wrong in both directions: with EDGE_MODEL_DIR unset — the shipped
-# default, because the model store is a docker volume this host daemon cannot
-# read — a warm node serving requests advertised no capabilities and a zero
-# context window, which is an eligibility answer of "never pick me". A node that
-# cannot see its own disk is not a node that cannot do chat.
+# cache was wrong in both directions: the model store is a docker volume this
+# host daemon cannot read directly, so a cache-derived answer advertised a
+# warm, serving node as capable of nothing with a zero-length context window,
+# which is an eligibility answer of "never pick me". A node that cannot see
+# its own disk is not a node that cannot do chat.
 #
 # This is an advertisement, not an authority: the router intersects it with the
 # real catalog under R14, so an id whose facts here drifted from the catalog
@@ -164,7 +243,7 @@ derive_served_facts() {
 
 # --- self test --------------------------------------------------------------
 run_self_test() {
-    local failures=0 tmp got served_json
+    local failures=0 tmp got served_json NOW_RFC3339 STALE_RFC3339
 
     check() {
         local what="$1" want="$2" have="$3"
@@ -192,19 +271,56 @@ run_self_test() {
     got=$(translate_runtime_id "qwen3.6-27b-instruct-q4" || echo "<none>")
     check "unmapped runtime id is dropped" "<none>" "$got"
 
-    # 4. cached_models follows the filesystem, not the configuration.
+    # 4. No manifest at all -- the container has never scanned, or the state
+    #    directory this daemon reads is not the one the supervisor writes.
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/edge-hb-test.XXXXXX")
-    MODEL_DIR="$tmp"
-    got=$(derive_cached_models 2>/dev/null | tr '\n' ',' )
-    check "absent artifact is not cached" "" "$got"
+    EDGE_CACHE_MANIFEST_FILE="$tmp/cache-manifest.json"
+    got=$(derive_cached_models 2>/dev/null | tr '\n' ',')
+    check "no manifest is not cached" "" "$got"
 
-    mkdir -p "$tmp/unsloth/Qwen3.6-27B-MTP-GGUF"
-    : >"$tmp/unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"
-    got=$(derive_cached_models 2>/dev/null | tr '\n' ',' )
-    check "present artifact maps to catalog id" "qwen36-27b," "$got"
+    # A manifest is exactly what scripts/edge-supervisor.sh's
+    # write_cache_manifest() produces: scanned_at, complete, artifacts[].
+    write_manifest() {
+        local scanned_at="$1" complete="$2" artifacts_json="$3"
+        jq -n --arg scanned_at "$scanned_at" --argjson complete "$complete" \
+            --argjson artifacts "$artifacts_json" \
+            '{scanned_at: $scanned_at, complete: $complete, artifacts: $artifacts}' \
+            >"$EDGE_CACHE_MANIFEST_FILE"
+    }
+    NOW_RFC3339=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # 5. A fresh, complete manifest naming the real artifact translates to the
+    #    catalog id -- the manifest's whole purpose.
+    write_manifest "$NOW_RFC3339" true \
+        '["unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"]'
+    got=$(derive_cached_models 2>/dev/null | tr '\n' ',')
+    check "manifest artifact maps to catalog id" "qwen36-27b," "$got"
+
+    # 6. No guessing here either: an artifact the manifest reports that
+    #    model-id-map.json does not recognise is dropped, not passed through.
+    write_manifest "$NOW_RFC3339" true '["unsloth/some-other-model/weights.gguf"]'
+    got=$(derive_cached_models 2>/dev/null | tr '\n' ',')
+    check "unmapped manifest artifact is dropped" "" "$got"
+
+    # 7. complete: false is the supervisor's own signal that its scan did not
+    #    finish (STORY-035-9c Part A) -- honoured even when the timestamp is
+    #    fresh and the artifact list is otherwise correct, because a
+    #    known-incomplete scan is not evidence of anything.
+    write_manifest "$NOW_RFC3339" false \
+        '["unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"]'
+    got=$(derive_cached_models 2>/dev/null | tr '\n' ',')
+    check "incomplete scan reports nothing cached" "" "$got"
+
+    # 8. Loss/staleness: an old scan is never treated as still true. Chosen
+    #    comfortably past the default EDGE_CACHE_MANIFEST_MAX_AGE (180s).
+    STALE_RFC3339=$(date -u -d "@$(( $(date -u +%s) - 3600 ))" +%Y-%m-%dT%H:%M:%SZ)
+    write_manifest "$STALE_RFC3339" true \
+        '["unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"]'
+    got=$(derive_cached_models 2>/dev/null | tr '\n' ',')
+    check "stale manifest reports nothing cached" "" "$got"
     rm -rf "$tmp"
 
-    # 5. Every catalog id the map can produce must have catalog facts, or the
+    # 9. Every catalog id the map can produce must have catalog facts, or the
     #    heartbeat would advertise a model with no capabilities or context.
     got=$(jq -er '
         [ (.runtime_to_catalog | values[]), (.artifact_to_catalog | values[]) ]
@@ -214,32 +330,24 @@ run_self_test() {
     ' --argjson facts "$(jq -c '.catalog_facts' "$MODEL_MAP")" "$MODEL_MAP" 2>/dev/null)
     check "every mapped catalog id has facts" "" "$got"
 
-    # 6. What this deployment advertises it can serve comes from the models it is
-    #    configured with, not from anything on disk.
+    # 10. What this deployment advertises it can serve comes from the models it
+    #     is configured with, not from anything on disk.
     got=$(served_catalog_ids | tr '\n' ',')
     check "served ids are the configured models" "qwen36-27b," "$got"
 
     served_json=$(served_catalog_ids | jq -R . | jq -sc 'unique')
 
-    # 7. The regression this pair of tests exists for. capabilities/max_context
-    #    used to be derived from cached_models, so the shipped default —
-    #    EDGE_MODEL_DIR unset, because the model store is a docker volume the
-    #    host daemon cannot read — advertised a warm, serving node as capable of
-    #    nothing with a zero-length context window, which the router can only
-    #    read as "never pick me". An unobservable cache is not an incapable node.
-    MODEL_DIR=""
+    # 11. The regression this pair of tests exists for. capabilities/max_context
+    #     used to be derived from cached_models, so an unobservable cache —
+    #     no manifest, exactly test 4's fixture — advertised a warm, serving
+    #     node as capable of nothing with a zero-length context window, which
+    #     the router can only read as "never pick me". An unobservable cache is
+    #     not an incapable node.
+    EDGE_CACHE_MANIFEST_FILE="${TMPDIR:-/tmp}/edge-hb-test-no-manifest.$$"
     got=$(derive_cached_models 2>/dev/null | tr '\n' ',')
-    check "unset model dir caches nothing" "" "$got"
+    check "no manifest caches nothing" "" "$got"
     got=$(derive_served_facts "$served_json" | jq -c . 2>/dev/null)
-    check "unset model dir keeps capabilities" \
-        '{"capabilities":["chat","tools"],"max_context":65536}' "$got"
-
-    # 8. Same for a configured directory that is not there at all.
-    MODEL_DIR="${TMPDIR:-/tmp}/edge-hb-test-absent.$$"
-    got=$(derive_cached_models 2>/dev/null | tr '\n' ',')
-    check "unreadable model dir caches nothing" "" "$got"
-    got=$(derive_served_facts "$served_json" | jq -c . 2>/dev/null)
-    check "unreadable model dir keeps capabilities" \
+    check "no manifest keeps capabilities" \
         '{"capabilities":["chat","tools"],"max_context":65536}' "$got"
 
     echo
