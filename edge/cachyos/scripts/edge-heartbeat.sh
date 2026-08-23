@@ -168,7 +168,10 @@ derive_cached_models() {
         edge_log "WARN cache manifest '$manifest' not readable; reporting no cached models"
         return 0
     fi
-    if ! jq -e 'type == "object" and has("scanned_at") and has("complete") and has("artifacts")' \
+    if ! jq -e 'type == "object"
+            and (.scanned_at | type == "string")
+            and (.complete   | type == "boolean")
+            and (.artifacts  | type == "array" and all(type == "string"))' \
         "$manifest" >/dev/null 2>&1; then
         edge_log "WARN cache manifest '$manifest' is malformed; reporting no cached models"
         return 0
@@ -187,7 +190,11 @@ derive_cached_models() {
     }
     now=$(date -u +%s)
     age=$((now - scanned_epoch))
-    if [ "$age" -lt 0 ] || [ "$age" -gt "$CACHE_MANIFEST_MAX_AGE" ]; then
+    if [ "$age" -lt 0 ]; then
+        edge_log "WARN cache manifest scanned_at is ${age#-}s in the FUTURE (clock skew between container and host?); reporting no cached models"
+        return 0
+    fi
+    if [ "$age" -gt "$CACHE_MANIFEST_MAX_AGE" ]; then
         edge_log "WARN cache manifest is stale (age ${age}s > ${CACHE_MANIFEST_MAX_AGE}s); reporting no cached models"
         return 0
     fi

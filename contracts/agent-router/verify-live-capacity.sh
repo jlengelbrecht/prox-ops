@@ -119,6 +119,8 @@ EDGE_LOCAL=0
 KUBE_CONTEXT=""
 NAMESPACE="ai"
 INTERVAL_MARGIN=10
+# Container restart + one supervisor cache-scan cycle, for the recovery bound.
+CACHE_SCAN_ALLOWANCE="${CACHE_SCAN_ALLOWANCE:-70}"
 TIMEOUT=15
 
 usage() {
@@ -158,7 +160,11 @@ if [ -z "$ROUTER_URL" ] || [ -z "$ROUTER_TOKEN" ] || [ -z "$EDGE_NODE_TOKEN" ]; 
     exit 2
 fi
 
-for bin in curl jq kubectl ssh; do
+# ssh is only exercised in --edge-ssh mode; a minimal host running with
+# --edge-local must not be failed for lacking a tool the run never uses.
+REQUIRED_TOOLS="curl jq kubectl"
+[ "$EDGE_LOCAL" = 1 ] || REQUIRED_TOOLS="$REQUIRED_TOOLS ssh"
+for bin in $REQUIRED_TOOLS; do
     if ! command -v "$bin" >/dev/null 2>&1; then
         echo "FATAL: required tool '$bin' not found on PATH" >&2
         exit 2
@@ -178,7 +184,10 @@ restore_production() {
         ssh_edge "docker start edge-llama-swap" >/dev/null 2>&1 || true
     fi
 }
-trap 'echo "  interrupted - restoring production state ..." >&2; restore_production' INT TERM
+# Restore AND exit: bash resumes the interrupted command's successor after a
+# trap handler returns, which would let a "stopped" run continue the
+# destructive suite after restoration. An interrupt terminates the run.
+trap 'echo "  interrupted - restoring production state, then exiting ..." >&2; restore_production; exit 130' INT TERM
 
 SCRATCH_DIR=$(mktemp -d "${TMPDIR:-/tmp}/verify-live-capacity.XXXXXX")
 trap 'rm -rf "$SCRATCH_DIR"' EXIT
@@ -271,9 +280,13 @@ ssh_edge() {
 kserve_ready_replicas() {
     local ctx_args=()
     [ -n "$KUBE_CONTEXT" ] && ctx_args=(--context "$KUBE_CONTEXT")
+    # name + readyReplicas per line: at zero replicas the readyReplicas FIELD
+    # IS OMITTED from status, so a bare-number jsonpath emits an empty line
+    # and "2 matched, both zero" becomes indistinguishable from "nothing
+    # matched". The name column proves the match; an absent number means 0.
     kubectl "${ctx_args[@]}" get deployment -n "$NAMESPACE" \
-        -l "serving.kserve.io/inferenceservice=qwen36-27b,component=predictor" \
-        -o jsonpath='{range .items[*]}{.status.readyReplicas}{"\n"}{end}' 2>/dev/null
+        -l "serving.kserve.io/inferenceservice=qwen36-27b" \
+        -o jsonpath='{range .items[*]}{.metadata.name} {.status.readyReplicas}{"\n"}{end}' 2>/dev/null
 }
 
 check_kserve_no_wake() {
@@ -282,11 +295,22 @@ check_kserve_no_wake() {
         report FAIL "kserve-no-wake:$label" "kubectl query failed"
         return
     }
+    local matched=0 nm num
     while IFS= read -r line; do
         [ -n "$line" ] || continue
-        case "$line" in ''|*[!0-9]*) continue ;; esac
-        total=$((total + line))
+        nm=${line%% *}; num=${line#* }
+        [ -n "$nm" ] || continue
+        matched=$((matched + 1))
+        case "$num" in ''|"$nm"|*[!0-9]*) num=0 ;; esac
+        total=$((total + num))
     done <<<"$replicas"
+    if [ "$matched" -eq 0 ]; then
+        # kubectl exits 0 and prints nothing when a selector matches nothing;
+        # a wrong namespace or a renamed InferenceService would then "prove"
+        # no-wake forever. Nothing matched is not evidence.
+        report FAIL "kserve-no-wake:$label" "label selector matched ZERO predictor deployments -- not evidence of anything; check --namespace/selector"
+        return
+    fi
     if [ "$total" -ne 0 ]; then
         report FAIL "kserve-no-wake:$label" "predictor readyReplicas=$total, expected 0"
         return
@@ -569,18 +593,40 @@ check_cached_model_contrast() {
     #    lists an unmapped path. Same deployed code path
     #    (manifest -> model-id-map translation), zero mutation anywhere.
     echo "  synthetic translation test: unmapped path through the installed heartbeat script ..."
+    # The installed heartbeat script runs ON THE EDGE HOST, so the crafted
+    # manifest must exist there too: created and removed via ssh_edge, which
+    # in --edge-local mode is simply the local filesystem.
     local tmpm out
-    tmpm=$(mktemp) && printf '{"scanned_at":"%s","complete":true,"artifacts":["totally/unmapped-035-9c.gguf","unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"]}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$tmpm"
+    tmpm=$(ssh_edge "mktemp") || { report FAIL "cached-model-contrast:unknown-unmapped" "cannot create temp manifest on the edge host"; failed=1; tmpm=""; }
+    if [ -n "$tmpm" ]; then
+        # Content built HERE and piped over stdin - ssh and local mode both
+        # pass stdin through, and it sidesteps nested-quote mangling entirely.
+        jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{scanned_at:$ts, complete:true,
+              artifacts:["totally/unmapped-035-9c.gguf",
+                         "unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"]}' \
+            | ssh_edge "cat > '$tmpm'"
+    fi
     # Runs the INSTALLED script under the unit's own environment (edge.env),
     # with the router URL blanked so it prints instead of posting, and the
     # crafted manifest substituted through the overridable
     # EDGE_CACHE_MANIFEST_FILE (edge-common.sh honours the override; an
     # unconditional assignment there defeated this exact test once).
-    out=$(ssh_edge "set -a; . \$HOME/.config/edge-cachyos/edge.env; set +a; EDGE_ROUTER_URL= EDGE_CACHE_MANIFEST_FILE='$tmpm' \$HOME/.local/libexec/edge-cachyos/scripts/edge-heartbeat.sh --once 2>&1") || out=""
-    rm -f "$tmpm"
+    run_translation() {
+        ssh_edge "set -a; . \$HOME/.config/edge-cachyos/edge.env; set +a; EDGE_ROUTER_URL= EDGE_CACHE_MANIFEST_FILE='$tmpm' \$HOME/.local/libexec/edge-cachyos/scripts/edge-heartbeat.sh --once 2>&1" || true
+    }
+    out=$(run_translation)
+    # The payload ends with a closing brace; a truncated capture (observed
+    # once mid-suite) is retried a single time, disclosed rather than hidden.
+    if ! printf '%s' "$out" | tail -c 3 | grep -q '}'; then
+        echo "  (truncated capture, retrying once)"
+        out=$(run_translation)
+    fi
+    [ -n "$tmpm" ] && ssh_edge "rm -f '$tmpm'"
+    # jq sees only the JSON payload: the WARN line the test itself requires
+    # precedes it on the same stream, and feeding both would fail parsing.
     if printf '%s' "$out" | grep -q "no catalog mapping" \
-        && printf '%s' "$out" | jq -e 'try (.cached_models == ["qwen36-27b"]) catch false' >/dev/null 2>&1; then
+        && printf '%s' "$out" | sed -n '/^{/,$p' | jq -e 'try (.cached_models == ["qwen36-27b"]) catch false' >/dev/null 2>&1; then
         report PASS "cached-model-contrast:unknown-unmapped" "synthetic labeled translation test: unmapped path warned+ignored, mapped path translated (cached_models=[qwen36-27b])"
     else
         report FAIL "cached-model-contrast:unknown-unmapped" "translation did not behave: $(printf '%s' "$out" | tail -c 200)"
@@ -589,15 +635,28 @@ check_cached_model_contrast() {
 
     # 3. Staleness/loss via container stop, and recovery on restart.
     echo "  stopping the edge container on $EDGE_SSH ..."
+    # Waits are DERIVED, not fixed: the router only changes on the producer's
+    # next beat, so a fixed sleep shorter than the live interval races correct
+    # behavior. Loss bound = one heartbeat interval (next beat carries the
+    # empty observation) + margin; recovery bound additionally allows a
+    # container restart and one cache-scan cycle.
+    local hb_interval loss_bound rec_bound waited
+    hb_interval=$(status_get | jq -er '.heartbeat_policy.interval_seconds' 2>/dev/null) || hb_interval=30
+    loss_bound=$((hb_interval + INTERVAL_MARGIN))
+    rec_bound=$((hb_interval * 2 + CACHE_SCAN_ALLOWANCE + INTERVAL_MARGIN))
     if ssh_edge "docker stop edge-llama-swap"; then
-        sleep "$INTERVAL_MARGIN"
-        body=$(status_get) || body=""
-        plc=$(placement_of "$body")
-        cached=$(printf '%s' "$plc" | jq -c '.heartbeat.cached_models // []' 2>/dev/null)
+        waited=0; cached="unset"
+        while [ "$waited" -lt "$loss_bound" ]; do
+            sleep 5; waited=$((waited + 5))
+            body=$(status_get) || body=""
+            plc=$(placement_of "$body")
+            cached=$(printf '%s' "$plc" | jq -c '.heartbeat.cached_models // []' 2>/dev/null)
+            [ "$cached" = "[]" ] && break
+        done
         if [ "$cached" = "[]" ]; then
-            report PASS "cached-model-contrast:loss" "cached_models empty after the container stopped: $cached"
+            report PASS "cached-model-contrast:loss" "cached_models empty ${waited}s after the container stopped (bound ${loss_bound}s)"
         else
-            report FAIL "cached-model-contrast:loss" "cached_models still non-empty after the container stopped: $cached"
+            report FAIL "cached-model-contrast:loss" "cached_models still non-empty ${loss_bound}s after the container stopped: $cached"
             failed=1
         fi
 
@@ -606,7 +665,14 @@ check_cached_model_contrast() {
             report FAIL "cached-model-contrast:recovery" "could not restart edge-llama-swap over ssh -- MANUAL RECOVERY NEEDED"
             failed=1
         }
-        sleep $((INTERVAL_MARGIN * 3))
+        waited=0; cached="[]"
+        while [ "$waited" -lt "$rec_bound" ]; do
+            sleep 5; waited=$((waited + 5))
+            body=$(status_get) || body=""
+            plc=$(placement_of "$body")
+            cached=$(printf '%s' "$plc" | jq -c '.heartbeat.cached_models // []' 2>/dev/null)
+            [ "$cached" != "[]" ] && break
+        done
         body=$(status_get) || body=""
         plc=$(placement_of "$body")
         cached=$(printf '%s' "$plc" | jq -c '.heartbeat.cached_models // []' 2>/dev/null)

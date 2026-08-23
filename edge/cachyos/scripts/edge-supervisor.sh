@@ -127,7 +127,7 @@
 # The approved mechanism observes over the EXISTING shared-state boundary
 # instead of opening a new one: this process already has the real store at
 # EDGE_MODELS_DIR (:ro) and already writes EDGE_STATE_DIR, which the host
-# heartbeat already reads. write_cache_manifest() below does nothing but a
+# heartbeat already reads. the cache scan below does nothing but a
 # filenames/existence scan of EDGE_MODELS_DIR — it never opens, reads or hints
 # at the CONTENTS of a model artifact, and it never loads anything — and
 # writes the result to cache-manifest.json, ATOMICALLY (temp file in the same
@@ -201,13 +201,25 @@ json_escape_path() {
 # manifest" above for why this exists and what it must never do. `find
 # -type f` and `-printf` stat directory entries; neither opens a file's
 # contents.
-write_cache_manifest() {
+# The scan runs as a BACKGROUND CHILD of this supervisor (owner ruling,
+# 35.9c review): a synchronous walk of the model store in the main loop sat
+# in front of the claim/lease safety check, so a slow or stalled volume scan
+# could stretch the frozen withdrawal bound (EDGE_GUARD_LEASE_TTL +
+# EDGE_POLL_INTERVAL) by the scan's own duration - and moving it below the
+# check would not help a claim that arrives DURING a scan. Rules: at most one
+# child at a time; the main loop never waits on it; the supervisor owns and
+# reaps it (no orphan); a hung scan is never overlapped - the previously
+# published manifest simply ages past the host's freshness bound and the
+# heartbeat fails to empty; shutdown terminates and reaps the child.
+CACHE_SCAN_PID=0
+
+do_cache_scan() {
     local scanned_at tmp complete=true rel first=1
 
     scanned_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     tmp=$(mktemp "$STATE_DIR/.cache-manifest.XXXXXX" 2>/dev/null) || {
         log "WARN cannot create temp file for cache manifest"
-        return
+        return 1
     }
 
     {
@@ -231,15 +243,46 @@ write_cache_manifest() {
     fi
 
     # mktemp creates the file 0600, and this process's uid is not the host
-    # user's - published that way, the host heartbeat cannot read it and would
-    # (correctly, fail-closed) report empty cached_models forever. The manifest
-    # is a list of filenames, not a secret: make it world-readable BEFORE the
-    # atomic rename so no reader ever sees a permission flap either.
-    chmod 644 "$tmp" 2>/dev/null
-    mv -f "$tmp" "$CACHE_MANIFEST_FILE" 2>/dev/null || {
-        log "WARN failed to publish cache manifest"
-        rm -f "$tmp"
-    }
+    # user's - published that way, the host heartbeat cannot read it. The
+    # manifest is a list of filenames, not a secret: make it world-readable
+    # BEFORE the atomic rename so no reader ever sees a permission flap.
+    #
+    # A FAILED publication means observability is LOST, immediately: both a
+    # chmod failure (would publish unreadable) and an mv failure remove the
+    # temp file AND the previously published manifest, so a known-failed
+    # refresh can never leave an old cache claim standing until the freshness
+    # bound happens to notice.
+    if ! chmod 644 "$tmp" 2>/dev/null; then
+        log "WARN cannot set cache manifest permissions; removing stale manifest - cache observability lost until the next successful scan"
+        rm -f "$tmp" "$CACHE_MANIFEST_FILE"
+        return 1
+    fi
+    if ! mv -f "$tmp" "$CACHE_MANIFEST_FILE" 2>/dev/null; then
+        log "WARN failed to publish cache manifest; removing stale manifest - cache observability lost until the next successful scan"
+        rm -f "$tmp" "$CACHE_MANIFEST_FILE"
+        return 1
+    fi
+    return 0
+}
+
+# Reap a finished scan child (non-blocking: only waits on a pid that already
+# exited) and start a new one when the interval has passed and none is live.
+maybe_cache_scan() {
+    local now_epoch="$1"
+    if [ "$CACHE_SCAN_PID" -ne 0 ]; then
+        if kill -0 "$CACHE_SCAN_PID" 2>/dev/null; then
+            # Still running. Never overlap; if it is hung, the published
+            # manifest ages out and the heartbeat fails to empty on its own.
+            return
+        fi
+        wait "$CACHE_SCAN_PID" 2>/dev/null
+        CACHE_SCAN_PID=0
+    fi
+    if [ $((now_epoch - LAST_CACHE_SCAN)) -ge "$CACHE_SCAN_INTERVAL" ]; then
+        do_cache_scan &
+        CACHE_SCAN_PID=$!
+        LAST_CACHE_SCAN=$now_epoch
+    fi
 }
 
 # A dead-but-unreaped child still answers `kill -0`, so a plain signal probe
@@ -314,6 +357,15 @@ stop_swap() {
 
 on_signal() {
     SHUTTING_DOWN=1
+    # Terminate and reap any in-flight cache scan first: no orphan may outlive
+    # this supervisor, and a scan racing shutdown must not republish a
+    # manifest after the removal below.
+    if [ "$CACHE_SCAN_PID" -ne 0 ] && kill -0 "$CACHE_SCAN_PID" 2>/dev/null; then
+        kill "$CACHE_SCAN_PID" 2>/dev/null
+        wait "$CACHE_SCAN_PID" 2>/dev/null
+    fi
+    CACHE_SCAN_PID=0
+    rm -f "$STATE_DIR"/.cache-manifest.* 2>/dev/null
     stop_swap "container shutdown"
     set_phase withdrawn
     # A deliberate, graceful stop is removed immediately rather than left to
@@ -380,10 +432,7 @@ fi
 # first heartbeat can see anything.
 while [ "$SHUTTING_DOWN" -eq 0 ]; do
     now_epoch=$(date -u +%s)
-    if [ $((now_epoch - LAST_CACHE_SCAN)) -ge "$CACHE_SCAN_INTERVAL" ]; then
-        write_cache_manifest
-        LAST_CACHE_SCAN=$now_epoch
-    fi
+    maybe_cache_scan "$now_epoch"
 
     if [ -e "$CLAIM_FILE" ] || ! lease_fresh; then
         if swap_running; then
