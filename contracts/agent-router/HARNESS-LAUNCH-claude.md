@@ -98,7 +98,8 @@ NARROWER than an inheritance rule, because only one store shape was actually val
 supported credential/config store for this launch path is Claude's DEFAULT store under the
 invoking operator's explicitly resolved and approved `HOME`.* The launcher resolves and
 validates that `HOME` outside the sanitized child environment, then launches with
-`env -i HOME="$APPROVED_HOME" ...`. `CLAUDE_CONFIG_DIR` is never propagated. If
+`env -i HOME=<approvedHome> ...` with the resolved value encoded as a literal.
+`CLAUDE_CONFIG_DIR` is never propagated. If
 `CLAUDE_CONFIG_DIR` is set to a non-default value in the launcher's environment, or an
 Orca-managed Claude account/store is selected for the path, the launch FAILS CLOSED as
 unsupported by this contract — it never silently falls back to another store. Supporting
@@ -201,7 +202,7 @@ orca repo list --json | jq '.[] | select(.id == "<repoId>") | .hookSettings'
 #    wait-for-setup (or equivalent) => STOP
 
 # 0b. settings preflight: the sanitizer cannot strip what lives in FILES.
-#     Inspect the effective settings tree of $APPROVED_HOME - user,
+#     Inspect the effective settings tree of <approvedHome> - user,
 #     project and managed layers - and REFUSE
 #     to launch if any of them defines apiKeyHelper, an env block, a
 #     forceLoginMethod other than the subscription login, or any provider/
@@ -223,17 +224,30 @@ orca worktree create --repo id:<repoId> --name <taskTitle> \
 # the shell command: a double quote or shell metacharacter inside <task>
 # would otherwise execute in the terminal shell, outside claude's
 # restricted tool set, and could forge the CLAUDE_EXIT line.
-# PROMPT_FILE is a fixed, launcher-generated path inside the Orca worktree;
-# the terminal command below is FIXED shell text - the task never appears in it.
-printf '%s' <task> > "$PROMPT_FILE"                # launcher-side write, argv-safe
+# <promptFile> is a fixed, launcher-chosen path inside the Orca worktree.
+printf '%s' <task> > <promptFile>                  # launcher-side write, argv-safe
 
+# The launcher resolves and validates every launcher-owned value BEFORE it
+# creates the terminal command, then constructs the command from a fixed
+# template. <approvedHome>, <approvedPath>, <approvedUser> and <promptFile>
+# below are launcher-supplied, shell-safe-encoded LITERALS baked into the
+# generated command text - they are NOT runtime shell variables and are
+# never looked up from the terminal's ambient environment (that would
+# reintroduce an inherited-state dependency the sanitizer exists to remove).
 orca terminal create --worktree id:<repoId>::<worktreePath> --title <taskTitle> \
-  --command 'env -i HOME="$APPROVED_HOME" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb \
-    claude -p "$(cat -- "$PROMPT_FILE")" --model opus --effort <stampEffort> \
+  --command 'env -i HOME=<approvedHome> PATH=<approvedPath> USER=<approvedUser> \
+      LANG=C.UTF-8 TERM=dumb \
+    claude -p "$(cat -- <promptFile>)" --model opus --effort <stampEffort> \
       --permission-mode acceptEdits --tools "Read,Glob,Grep,Write" \
       --strict-mcp-config --output-format json < /dev/null > .claude-result.json; \
     echo "CLAUDE_EXIT=$?"'
 ```
+
+**The invariant:** the launcher may embed its own resolved control values into generated
+command text only after shell-safe encoding; untrusted task/persona/story content is data and
+never shell source. The two categories never mix: control values are launcher-resolved
+literals inside the fixed template, and everything task-shaped travels through the prompt
+file inside the Orca worktree.
 
 `<stampEffort>` is the effort from the immutable execution stamp, passed through the frozen
 one-to-one mapping (§4) after the step-0c validation — never a hard-coded value. The live
@@ -248,13 +262,14 @@ writes the result document to stdout, and an `echo` on the same stream would cor
 any consumer parsing `is_error`/`modelUsage`. The `CLAUDE_EXIT=` line stays on the terminal as
 the completion signal; the result document is read from the file.
 
-`$APPROVED_HOME` is the operator's explicitly resolved and approved home — resolved and
-validated by the launcher OUTSIDE the sanitized child environment, never the ambient `$HOME`
-passed through blind, and never a hard-coded path. It is the ONLY supported store selector on
-this path: `CLAUDE_CONFIG_DIR` is never propagated, and a non-default `CLAUDE_CONFIG_DIR` or
-a selected Orca-managed Claude store fails the launch closed as unsupported (§3). The
-command-substituted prompt-file read happens inside single quotes, so the task text itself
-is never parsed by the outer shell.
+`<approvedHome>` is the operator's explicitly resolved and approved home — resolved and
+validated by the launcher before the command is generated, inserted as a shell-safe-encoded
+literal, never the ambient `$HOME` passed through blind, and never a hard-coded path. It is
+the ONLY supported store selector on this path: `CLAUDE_CONFIG_DIR` is never propagated, and
+a non-default `CLAUDE_CONFIG_DIR` or a selected Orca-managed Claude store fails the launch
+closed as unsupported (§3). The command-substituted prompt-file read happens inside single
+quotes with a launcher-literal path, so the task text itself is never parsed by the outer
+shell.
 
 **Why the two-step custom-command shape rather than `--agent claude`:** `orca worktree create`
 accepts only `--agent <id>` and `--prompt <text>`. Its full option list, read from the
@@ -401,7 +416,7 @@ sanitizes by **allowlist**, starting from an empty environment and admitting onl
 process needs:
 
 ```shell
-env -i HOME="$APPROVED_HOME" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb claude ...
+env -i HOME=<approvedHome> PATH=<approvedPath> USER=<approvedUser> LANG=C.UTF-8 TERM=dumb claude ...
 ```
 
 Verified: with this sanitizer, **zero** `ANTHROPIC_*` or `CLAUDE_*` variables survive into the
