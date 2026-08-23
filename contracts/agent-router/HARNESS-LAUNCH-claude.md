@@ -253,7 +253,7 @@ file inside the Orca worktree.
 one-to-one mapping (§4) after the step-0c validation — never a hard-coded value. The live
 validation exercised `high`; the route authority emits `xhigh` for `claude/strong` strong-band
 decisions, and a launcher that pins any single effort executes other stamped decisions at the
-wrong effort, violating stamp immutability. (`xhigh`/`medium`/`low` acceptance by this Claude
+wrong effort, violating stamp immutability. (`xhigh`/`medium` acceptance by this Claude
 version remains UNVERIFIED, §4 — a launcher meeting an unverified effort validates the string,
 attempts the launch, and treats the fail-open warning as failure.)
 
