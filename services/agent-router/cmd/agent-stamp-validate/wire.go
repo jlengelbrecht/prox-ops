@@ -248,6 +248,16 @@ func parseStamp(raw []byte) (stampvalidate.Stamp, error) {
 	); err != nil {
 		return stampvalidate.Stamp{}, err
 	}
+	// Required BOOLEAN presence is not enough: encoding/json accepts JSON
+	// null into a non-pointer bool without error, leaving the zero value
+	// false - so an explicit null would silently read as a legal false.
+	// The frozen schemas type these members as boolean, not boolean|null.
+	if isRawNull(top["metered"]) {
+		return stampvalidate.Stamp{}, newInputError("stamp.metered must be a boolean, not null")
+	}
+	if isRawNull(top["placement_required"]) {
+		return stampvalidate.Stamp{}, newInputError("stamp.placement_required must be a boolean, not null")
+	}
 	taskObj, err := rawObject(top["task"])
 	if err != nil {
 		return stampvalidate.Stamp{}, newInputError("task must be an object: %v", err)
@@ -515,6 +525,12 @@ func parseAlternatives(typed []placeAlternativeWire, raw json.RawMessage) ([]sta
 		}
 		if err := requireKeys(obj, context, "placement", "model", "readiness", "eligible", "reason"); err != nil {
 			return nil, err
+		}
+		// Same null-masking hole as the stamp's required booleans: null
+		// decodes into bool as false, and eligible: false is a LEGAL value
+		// here, so only the raw bytes can tell the two apart.
+		if isRawNull(obj["eligible"]) {
+			return nil, newInputError("%s.eligible must be a boolean, not null", context)
 		}
 		if !validPlacementName[a.Placement] {
 			return nil, newInputError("%s.placement must be one of the closed placement vocabulary", context)

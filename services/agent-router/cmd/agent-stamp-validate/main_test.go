@@ -190,6 +190,14 @@ func Test_evidence_structural_validation(t *testing.T) {
 			delete(alt, "eligible")
 			r["alternatives"] = []any{alt}
 		}},
+		{"alternative_eligible_null", func(r map[string]any) {
+			// Null decodes into a non-pointer bool as false, and
+			// eligible: false is a LEGAL value - only the raw-presence
+			// layer can tell them apart.
+			alt := validAlternativeWire()
+			alt["eligible"] = nil
+			r["alternatives"] = []any{alt}
+		}},
 		{"alternative_invalid_placement", func(r map[string]any) {
 			alt := validAlternativeWire()
 			alt["placement"] = "made-up-placement"
@@ -254,6 +262,24 @@ func Test_evidence_structural_validation(t *testing.T) {
 			t.Fatalf("exit code = %d, want %d or %d (well-formed evidence must parse): stderr=%s", code, exitValid, exitPolicyInvalid, stderr.String())
 		}
 	})
+
+	t.Run("alternative_eligible_false_is_accepted", func(t *testing.T) {
+		// Control for alternative_eligible_null: an ordinary false is a
+		// legal, meaningful value (an ineligible alternative) and must
+		// still parse - the null rejection is about the raw bytes, not
+		// about the boolean's value.
+		ev := validEvidenceWire(now)
+		alt := validAlternativeWire()
+		alt["eligible"] = false
+		alt["reason"] = map[string]any{"code": "offline", "message": "silent past the offline window"}
+		ev["result"].(map[string]any)["alternatives"] = []any{alt}
+		evPath := writeJSON(t, t.TempDir(), "evidence.json", ev)
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"--catalog", catalogPath, "--stamp", stampPath, "--evidence", evPath}, &stdout, &stderr, now)
+		if code != exitValid && code != exitPolicyInvalid {
+			t.Fatalf("exit code = %d, want %d or %d (eligible: false is legal): stderr=%s", code, exitValid, exitPolicyInvalid, stderr.String())
+		}
+	})
 }
 
 // Test_stamp_required_field_presence proves the CLI parser rejects a stamp
@@ -278,6 +304,14 @@ func Test_stamp_required_field_presence(t *testing.T) {
 		{"task_tags_null", func(wire map[string]any) {
 			task := wire["task"].(map[string]any)
 			task["tags"] = nil
+		}},
+		// Required booleans: encoding/json accepts null into a non-pointer
+		// bool as false, so only the raw-presence layer can reject it.
+		{"metered_null", func(wire map[string]any) {
+			wire["metered"] = nil
+		}},
+		{"placement_required_null", func(wire map[string]any) {
+			wire["placement_required"] = nil
 		}},
 	}
 	for _, tc := range cases {
