@@ -65,7 +65,21 @@ type Input struct {
 	// dropped before candidate construction, same as if the policy's
 	// prefer_order never named them.
 	Exclude []string
+	// EstimatedRequestBytes is the caller's own estimate of the request
+	// payload (PlaceRequest.estimated_request_bytes). Above
+	// replayBufferBytes, Agentgateway cannot replay the request to its
+	// passive fallback, so Decide places conservatively up front: any
+	// known-warm eligible candidate is preferred over every non-warm one,
+	// within the policy's unchanged candidate universe. nil means no
+	// estimate was given.
+	EstimatedRequestBytes *int
 }
+
+// replayBufferBytes is Agentgateway's replay-buffer limit: a request
+// estimated larger than this cannot be replayed to a fallback if dispatch
+// fails, which is exactly the extra risk estimated_request_bytes exists to
+// express.
+const replayBufferBytes = 64 * 1024
 
 // Outcome enumerates what Decide can produce.
 type Outcome int
@@ -153,6 +167,15 @@ func Decide(cat *catalog.Catalog, facts map[string]Facts, in Input) Result {
 		if !ok || excluded[name] {
 			continue
 		}
+		if _, declared := findPlacement(cat, name); !declared {
+			// The profile/policy intersection names a placement the loaded
+			// catalog does not declare. Manufacturing zero-value facts for
+			// it would emit an alternative with an empty reason code (and
+			// not_selectable would lie - that code describes a DECLARED
+			// placement that is non-selectable), so the invalid candidate
+			// is skipped for placement purposes entirely.
+			continue
+		}
 		f := facts[name]
 		elig, reason, msg := evaluate(cat, pol, in, modelID, name, f)
 		cands = append(cands, candidate{
@@ -180,10 +203,36 @@ func Decide(cat *catalog.Catalog, facts map[string]Facts, in Input) Result {
 	}
 
 	ranked := reorderByWarmPreference(eligible, pol)
+
+	// Large-request conservative preference: when the estimated payload
+	// exceeds the replay buffer, a failed dispatch cannot be replayed, so
+	// any KNOWN-warm eligible candidate outranks every non-warm one -
+	// intentionally stronger than weighted/ignored warmth for this one
+	// request. This is a pure stable reorder of the already-filtered
+	// eligible list: it never adds a candidate the policy did not rank,
+	// never resurrects an excluded or ineligible one, and cached, absent
+	// and unknown are not warm. With no known-warm eligible candidate the
+	// ordinary policy ranking stands.
+	largeRequest := in.EstimatedRequestBytes != nil && *in.EstimatedRequestBytes > replayBufferBytes
+	if largeRequest {
+		var warm, rest []candidate
+		for _, c := range ranked {
+			if c.facts.Readiness == ReadinessWarm {
+				warm = append(warm, c)
+			} else {
+				rest = append(rest, c)
+			}
+		}
+		ranked = append(warm, rest...)
+	}
 	winner := ranked[0]
 
 	code := placedReasonCode(winner, len(eligible))
 	msg := placedMessage(code, winner)
+	if largeRequest && winner.facts.Readiness == ReadinessWarm {
+		msg += fmt.Sprintf(" Selected conservatively: the estimated request size (%d bytes) exceeds the %d-byte replay buffer, so a warm candidate is preferred.",
+			*in.EstimatedRequestBytes, replayBufferBytes)
+	}
 
 	// Alternatives: the rest of the ranked eligible list, then every
 	// ineligible candidate, both in the order this run considered them.
@@ -388,6 +437,12 @@ func reorderByWarmPreference(list []candidate, pol catalog.Policy) []candidate {
 		shift := 0
 		if pol.WarmBonusRankShift != nil {
 			shift = *pol.WarmBonusRankShift
+		}
+		if shift < 0 {
+			// A promotion can only move a warm candidate left; a negative
+			// decoded value must never move it backward. Normalized to no
+			// promotion, defensively.
+			shift = 0
 		}
 		type keyed struct {
 			c        candidate

@@ -124,10 +124,11 @@ func (s *Server) handlePlace(w http.ResponseWriter, r *http.Request) {
 	}
 	facts := resolvePlaceFacts(cat, s.store, s.cfg, modelFor, s.logger)
 	result := placement.Decide(cat, facts, placement.Input{
-		ModelProfile:    req.ModelProfile,
-		PlacementPolicy: req.PlacementPolicy,
-		MinFreeVramGB:   req.MinFreeVramGB,
-		Exclude:         req.Exclude,
+		ModelProfile:          req.ModelProfile,
+		PlacementPolicy:       req.PlacementPolicy,
+		MinFreeVramGB:         req.MinFreeVramGB,
+		Exclude:               req.Exclude,
+		EstimatedRequestBytes: req.EstimatedRequestBytes,
 	})
 
 	wire := buildPlaceResultWire(result, digest)

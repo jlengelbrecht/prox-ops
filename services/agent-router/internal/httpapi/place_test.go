@@ -51,6 +51,16 @@ func placeRequestBody(t *testing.T, fields map[string]any) []byte {
 	return raw
 }
 
+// discard closes a response consumed only for its side effect (test
+// setup), keeping the bodyclose lint gate green without sprinkling raw
+// Close calls around.
+func discard(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("closing response body: %v", err)
+	}
+}
+
 func postPlace(t *testing.T, e *env, token string, body []byte) *http.Response {
 	t.Helper()
 	return e.do(t, http.MethodPost, "/v1/place", token, body)
@@ -157,10 +167,11 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// warm edge over prefer_order alone (examples/place/placed-warm-edge.json).
 	t.Run("warm_edge", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
 
 		resp := postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))
+		defer discard(t, resp)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want 200", resp.StatusCode)
 		}
@@ -196,8 +207,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// readiness values, never collapsed (owner ruling R11).
 	t.Run("cached_vs_absent", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "AVAILABLE", nil, []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "AVAILABLE", nil, []string{"qwen36-27b"}, 24)))
 		pCached := decodeRaw[placeResult](t, readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))))
 		if pCached.Readiness == nil || *pCached.Readiness != "cached" {
 			t.Fatalf("readiness = %v, want cached", pCached.Readiness)
@@ -209,8 +220,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 			t.Errorf("estimated_cold_start_s = %v, want 6 (cachyos-7900xtx catalog estimate)", pCached.EstimatedColdStartS)
 		}
 
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "AVAILABLE", nil, nil, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "AVAILABLE", nil, nil, 24)))
 		pAbsent := decodeRaw[placeResult](t, readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))))
 		if pAbsent.Readiness == nil || *pAbsent.Readiness != "absent" {
 			t.Fatalf("readiness = %v, want absent", pAbsent.Readiness)
@@ -227,8 +238,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// timeout.
 	t.Run("interactive_withdraw", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "INTERACTIVE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "INTERACTIVE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
 
 		raw := readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local"))))
 		testutil.ValidateJSON(t, schema, raw)
@@ -248,8 +259,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// offline_stale: silence past the offline window removes a placement.
 	t.Run("offline_stale", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
 		e.advance(91 * time.Second)
 
 		raw := readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local"))))
@@ -268,7 +279,7 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// state is AVAILABLE - a different mechanism from silence, same code.
 	t.Run("unreachable", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken, heartbeatBodyUnreachable(nodeName, "AVAILABLE"))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken, heartbeatBodyUnreachable(nodeName, "AVAILABLE")))
 
 		p := decodeRaw[placeResult](t, readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))))
 		if p.Status != "placed" || p.Placement == nil || *p.Placement != "kserve-a5000" {
@@ -284,8 +295,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// eligible - the edge is never even a candidate under this policy.
 	t.Run("cluster_only", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
 
 		raw := readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("cluster-only"))))
 		testutil.ValidateJSON(t, schema, raw)
@@ -302,8 +313,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// under edge-only is an explicit empty result, not a KServe fallback.
 	t.Run("edge_only", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "INTERACTIVE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "INTERACTIVE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
 
 		raw := readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("edge-only"))))
 		testutil.ValidateJSON(t, schema, raw)
@@ -311,7 +322,7 @@ func TestPlaceDecisionTable(t *testing.T) {
 		if p.Status != "unavailable" || p.Placement != nil {
 			t.Fatalf("result = %+v, want an explicit unavailable result, never a substitute placement", p)
 		}
-		if p.Headers != nil && len(p.Headers) != 0 {
+		if len(p.Headers) != 0 {
 			t.Errorf("headers = %+v, want empty", p.Headers)
 		}
 		for _, a := range p.Alternatives {
@@ -325,8 +336,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// the unmeasured edge card does not qualify merely because it is warm.
 	t.Run("any24", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
 
 		raw := readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("any-24gb"))))
 		testutil.ValidateJSON(t, schema, raw)
@@ -345,8 +356,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// substitute.
 	t.Run("unavailable", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "DRAINING", strp("qwen36-27b"), []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "DRAINING", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
 
 		raw := readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("edge-only"))))
 		testutil.ValidateJSON(t, schema, raw)
@@ -371,6 +382,7 @@ func TestPlaceDecisionTable(t *testing.T) {
 		cs := httpapi.CatalogState{Catalog: catalogMissingProfile(), Digest: fakeDigest("aaaa")}
 		e := newEnvFull(t, cs, nil, nil)
 		resp := postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))
+		defer discard(t, resp)
 		raw := readAll(t, resp)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404; body %.200s", resp.StatusCode, raw)
@@ -388,6 +400,7 @@ func TestPlaceDecisionTable(t *testing.T) {
 		cs := httpapi.CatalogState{Catalog: catalogMissingPolicy(), Digest: fakeDigest("bbbb")}
 		e := newEnvFull(t, cs, nil, nil)
 		resp := postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))
+		defer discard(t, resp)
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", resp.StatusCode)
 		}
@@ -406,6 +419,7 @@ func TestPlaceDecisionTable(t *testing.T) {
 		body := localCodeStandardBody("prefer-warm-local")
 		body["catalog_version"] = fakeDigest("dead")
 		resp := postPlace(t, e, callerToken, placeRequestBody(t, body))
+		defer discard(t, resp)
 		if resp.StatusCode != http.StatusConflict {
 			t.Fatalf("status = %d, want 409", resp.StatusCode)
 		}
@@ -422,8 +436,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// byte-identical serialized response - repeated.
 	t.Run("determinism", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
 		body := placeRequestBody(t, localCodeStandardBody("prefer-warm-local"))
 		raw1 := readAll(t, postPlace(t, e, callerToken, body))
 		raw2 := readAll(t, postPlace(t, e, callerToken, body))
@@ -436,8 +450,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// warm, in either direction - contrast with the authorized case.
 	t.Run("no_expand", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "AVAILABLE", strp("a-model-the-catalog-never-placed-here"), nil, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "AVAILABLE", strp("a-model-the-catalog-never-placed-here"), nil, 24)))
 
 		p1 := decodeRaw[placeResult](t, readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))))
 		if p1.Readiness == nil || *p1.Readiness == "warm" {
@@ -447,8 +461,8 @@ func TestPlaceDecisionTable(t *testing.T) {
 			t.Error("reason.code = placed_warm, want anything else: an unauthorized claim must not expand eligibility")
 		}
 
-		e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+			placeHeartbeatBody(nodeName, "AVAILABLE", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
 		p2 := decodeRaw[placeResult](t, readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))))
 		if p2.Readiness == nil || *p2.Readiness != "warm" {
 			t.Errorf("readiness = %v, want warm for a catalog-authorized active_model claim (contrast case)", p2.Readiness)
@@ -465,6 +479,7 @@ func TestPlaceDecisionTable(t *testing.T) {
 func TestPlace_role_separation_node_token_cannot_place(t *testing.T) {
 	e := newEnv(t, realCatalogState(t))
 	resp := postPlace(t, e, nodeToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))
+	defer discard(t, resp)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("node credential placed: status = %d, want 401", resp.StatusCode)
 	}
@@ -479,6 +494,7 @@ func TestPlace_oversized_body_rejected(t *testing.T) {
 		big[i] = 'a'
 	}
 	resp := postPlace(t, e, callerToken, big)
+	defer discard(t, resp)
 	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized body: status = %d, want 400 or 413", resp.StatusCode)
 	}
@@ -491,6 +507,7 @@ func TestPlace_unknown_field_rejected(t *testing.T) {
 	body := localCodeStandardBody("prefer-warm-local")
 	body["bogus_field"] = 1
 	resp := postPlace(t, e, callerToken, placeRequestBody(t, body))
+	defer discard(t, resp)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown field: status = %d, want 400", resp.StatusCode)
 	}
@@ -542,8 +559,8 @@ func catalogTwoModelsOnePlacement() *catalog.Catalog {
 // load estimate - never to warm.
 func TestPlace_readiness_is_per_model_not_per_placement(t *testing.T) {
 	e := newEnv(t, httpapi.CatalogState{Catalog: catalogTwoModelsOnePlacement(), Digest: "sha256:synthetic-two-models"})
-	e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-		placeHeartbeatBody(nodeName, "AVAILABLE", strp("model-a"), []string{"model-a"}, 24))
+	discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+		placeHeartbeatBody(nodeName, "AVAILABLE", strp("model-a"), []string{"model-a"}, 24)))
 
 	p := decodeRaw[placeResult](t, readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))))
 	if p.Status != "placed" || p.Placement == nil || *p.Placement != nodeName {
@@ -565,8 +582,8 @@ func TestPlace_readiness_is_per_model_not_per_placement(t *testing.T) {
 		t.Errorf("estimated_cold_start_s = %v, want null for absent", p.EstimatedColdStartS)
 	}
 
-	e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
-		placeHeartbeatBody(nodeName, "AVAILABLE", strp("model-a"), []string{"model-a", "model-b"}, 24))
+	discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
+		placeHeartbeatBody(nodeName, "AVAILABLE", strp("model-a"), []string{"model-a", "model-b"}, 24)))
 	p2 := decodeRaw[placeResult](t, readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("prefer-warm-local")))))
 	if p2.Readiness == nil || *p2.Readiness != "cached" {
 		t.Fatalf("cached model-b: readiness = %v, want cached", p2.Readiness)
