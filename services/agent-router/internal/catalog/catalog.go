@@ -79,16 +79,30 @@ type Harness struct {
 	RouterBehaviour string `yaml:"router_behaviour"`
 }
 
+// Capacity is a placement's catalog table 2 `capacity` block. VramGB is only
+// ever a number this repo can stand behind - nil means no measurement
+// exists, and a hard VRAM floor (policy min_vram_gb) must never be
+// satisfied from anything else, in particular never from a SKU nameplate
+// figure (contracts/agent-router/README.md placements table notes).
+type Capacity struct {
+	VramGB *float64 `yaml:"vram_gb"`
+}
+
 // Placement is one row of catalog table 2 (placements). Only the fields
-// /v1/status renders or that capacity computation needs are decoded; the
-// full catalog carries more (gpu, node, capacity) that this story's scope
+// /v1/status and /v1/place render or that capacity computation needs are
+// decoded; the full catalog carries more (gpu, node) that this story's scope
 // does not consume.
 type Placement struct {
 	Description        string   `yaml:"description"`
 	Status             string   `yaml:"status"` // available | planned
 	Selectable         bool     `yaml:"selectable"`
 	Kind               string   `yaml:"kind"` // kserve | edge
+	Capacity           Capacity `yaml:"capacity"`
 	ColdStartSEstimate *float64 `yaml:"cold_start_s_estimate"`
+	// ScaleToZero is the placement's own declaration that idle means scaled
+	// to zero (catalog table 2). It is what allow_cold_start: false forbids
+	// waking - nil (undeclared) placements are unaffected by that rule.
+	ScaleToZero *bool `yaml:"scale_to_zero"`
 }
 
 // Model is one row of catalog table 3 (models), the referent for every
@@ -98,6 +112,11 @@ type Model struct {
 	Placements   []string `yaml:"placements"`
 	Capabilities []string `yaml:"capabilities"`
 	MaxContext   *int     `yaml:"max_context"`
+	// VramGbEstimate is the minimum load requirement /v1/place uses for VRAM
+	// feasibility (owner clarification 3, STORY-035-11): budgeted VRAM to
+	// load and run this model, not a measurement of any specific placement.
+	// nil for vendor-hosted models, which never touch this check.
+	VramGbEstimate *float64 `yaml:"vram_gb_estimate"`
 }
 
 // EntitlementPool is one row of catalog table 4 (entitlement_pools).

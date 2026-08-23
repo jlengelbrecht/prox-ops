@@ -1,8 +1,7 @@
 // Package httpapi implements the agent-router HTTP surface: GET /v1/status,
-// POST /v1/capacity/heartbeat and POST /v1/route (35.9a, 35.10), plus the
-// credential-free /health and /ready endpoints. /v1/place is out of scope
-// (35.11) and this package does not stub it - an endpoint that exists but
-// lies is worse than a 404.
+// POST /v1/capacity/heartbeat, POST /v1/route (35.9a, 35.10) and
+// POST /v1/place (35.11), plus the credential-free /health and /ready
+// endpoints.
 package httpapi
 
 import (
@@ -101,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("POST /v1/capacity/heartbeat", s.handleHeartbeat)
 	mux.HandleFunc("POST /v1/route", s.handleRoute)
+	mux.HandleFunc("POST /v1/place", s.handlePlace)
 	return mux
 }
 
