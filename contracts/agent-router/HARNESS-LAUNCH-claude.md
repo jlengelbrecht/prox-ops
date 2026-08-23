@@ -184,7 +184,7 @@ terminal command records the Claude exit status in-band, because `orca terminal 
 does not fire (the terminal outlives its command) — the `CLAUDE_EXIT=` line is the launcher's
 only reliable completion signal.
 
-```
+```shell
 # 0. setup-policy gate: stop unless the repo starts immediately
 orca repo list --json    # read hookSettings only; wait-for-setup => STOP
                          # do not log the raw object (§3 logging hazard)
@@ -192,13 +192,27 @@ orca repo list --json    # read hookSettings only; wait-for-setup => STOP
 # 1-2. lifecycle + sanitized, fail-closed launch
 orca worktree create --repo id:<repoId> --name <task> \
   --parent-worktree worktree:<callerWorktreeId> --json
-orca terminal create --worktree id:<repoId>::<worktreePath> --title <task> \
-  --command 'env -i HOME="$HOME" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb \
-    claude -p "<task>" --model opus --effort high \
+# task text is written to a file by the LAUNCHER, never interpolated into
+# the shell command: a double quote or shell metacharacter inside <task>
+# would otherwise execute in the terminal shell, outside claude's
+# restricted tool set, and could forge the CLAUDE_EXIT line.
+printf '%s' <task> > <worktreePath>/.task-prompt   # launcher-side write, argv-safe
+
+orca terminal create --worktree id:<repoId>::<worktreePath> --title <taskTitle> \
+  --command 'env -i HOME="<intendedHome>" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb \
+    claude -p "$(cat .task-prompt)" --model opus --effort high \
       --permission-mode acceptEdits --tools "Read,Glob,Grep,Write" \
       --strict-mcp-config --output-format json < /dev/null; \
     echo "CLAUDE_EXIT=$?"'
 ```
+
+`<intendedHome>` is the explicit, launcher-configured home whose `.claude` tree carries the
+credential store this launch is meant to use — never the ambient `$HOME` passed through
+blind. `env -i` strips `CLAUDE_CONFIG_DIR`, so whatever `HOME` survives silently selects the
+store; pinning it makes the credential-store choice an explicit launcher decision instead of
+an inherited accident, and keeps the §3 store-per-path rule enforceable. The command-substituted
+`.task-prompt` read happens inside single quotes, so the task text itself is never parsed by
+the outer shell.
 
 **Why the two-step custom-command shape rather than `--agent claude`:** `orca worktree create`
 accepts only `--agent <id>` and `--prompt <text>`. Its full option list, read from the
@@ -240,7 +254,7 @@ this because an Orca terminal starts in its worktree; Claude reported
 
 The tested and frozen posture is:
 
-```
+```text
 --permission-mode acceptEdits
 --tools "Read,Glob,Grep,Write"
 --strict-mcp-config
@@ -344,15 +358,18 @@ silently stop being fail-closed the first time a new variable ships. The launche
 sanitizes by **allowlist**, starting from an empty environment and admitting only what the
 process needs:
 
-```
-env -i HOME="$HOME" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb claude ...
+```shell
+env -i HOME="<intendedHome>" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb claude ...
 ```
 
 Verified: with this sanitizer, **zero** `ANTHROPIC_*` or `CLAUDE_*` variables survive into the
 child, checked by name against a deliberately polluted parent environment. The same check
 without the sanitizer showed all of them visible, including the `CLAUDE_EFFORT` that was
-genuinely set on this host. `HOME` is deliberately preserved: it is what carries the native
-credential store (§3).
+genuinely set on this host. `HOME` is deliberately present — it is what
+carries the native credential store (§3) — but it is set EXPLICITLY to the launcher's intended
+home, never passed through from the ambient environment: `env -i` removes `CLAUDE_CONFIG_DIR`,
+so the surviving `HOME` alone selects the credential/settings tree, and an inherited `HOME`
+would make that selection an accident.
 
 Explicit `--model` and `--effort` arguments do NOT constrain auth or provider selection. The
 command otherwise inherits the terminal environment and the effective settings files, and an
