@@ -73,6 +73,18 @@
 #                       drill numbers and for what shrinks it (a shorter
 #                       interval/TTL trades false-positive risk for it).
 #   EDGE_DRAIN_TIMEOUT  seconds to let in-flight requests finish (default 40)
+#   EDGE_MODELS_DIR     read-only mount of the model store to scan for the
+#                       cache-observation manifest (default /models)
+#   EDGE_CACHE_SCAN_INTERVAL
+#                       seconds between manifest refreshes (default 60) --
+#                       independent of EDGE_POLL_INTERVAL because a filesystem
+#                       walk of the model store is far more expensive than a
+#                       claim/lease file read and does not need that cadence.
+#                       Must stay comfortably below the freshness bound
+#                       scripts/edge-heartbeat.sh's EDGE_CACHE_MANIFEST_MAX_AGE
+#                       enforces on the host side (see env.example), the same
+#                       relationship EDGE_GUARD_LEASE_TTL has to
+#                       EDGE_GUARD_INTERVAL above.
 #   LLAMA_SWAP_BIN      llama-swap binary (default /usr/local/bin/llama-swap)
 #   EDGE_API_KEY_FILE   file holding the edge bearer credential. Preferred over
 #                       EDGE_API_KEY: an env var set through compose is readable
@@ -93,6 +105,53 @@
 #                               process is actually doing right now, which is
 #                               what scripts/edge-heartbeat.sh turns into
 #                               SERVING/AVAILABLE, DRAINING and INTERACTIVE.
+#   cache-manifest.json (write) STORY-035-9c Part A. Which model artifacts are
+#                               present under EDGE_MODELS_DIR right now, plus
+#                               freshness/completeness metadata, so the host
+#                               can derive cached_models without ever reading
+#                               the docker-volume-backed model store itself —
+#                               see "Cache-observation manifest" below.
+#
+# Cache-observation manifest (STORY-035-9c Part A)
+# --------------------------------------------------
+# The model store (`edge-model-cache`) is a Docker-managed volume; its
+# mountpoint requires root and the host user cannot read it, so
+# scripts/edge-heartbeat.sh cannot derive cached_models from the filesystem
+# the way it derives everything else. `docker exec` from the host was
+# considered and REJECTED (owner security ruling): a heartbeat unit that can
+# exec into a container has Docker control-plane authority, and a process that
+# can drive Docker can start a privileged container — the exact threat this
+# supervisor exists to keep away from the host daemons. A read-only /models
+# mount does not make `docker exec` a read-only capability.
+#
+# The approved mechanism observes over the EXISTING shared-state boundary
+# instead of opening a new one: this process already has the real store at
+# EDGE_MODELS_DIR (:ro) and already writes EDGE_STATE_DIR, which the host
+# heartbeat already reads. write_cache_manifest() below does nothing but a
+# filenames/existence scan of EDGE_MODELS_DIR — it never opens, reads or hints
+# at the CONTENTS of a model artifact, and it never loads anything — and
+# writes the result to cache-manifest.json, ATOMICALLY (temp file in the same
+# directory, then `mv`) so the host can never observe a partially-written
+# scan. It runs on the same cadence as the claim/lease poll, gated by
+# EDGE_CACHE_SCAN_INTERVAL so a large model tree is not restatted every
+# EDGE_POLL_INTERVAL.
+#
+# The manifest publishes relative artifact PATHS / presence only — never a
+# catalog model_id. Translating a path to a catalog id through
+# model-id-map.json is scripts/edge-heartbeat.sh's job on the host side,
+# exactly as it already translates llama-swap's runtime model ids; this
+# process has no need of, and is never given, that map. An artifact this scan
+# finds that the host-side map does not recognise is the host's problem to
+# warn about and ignore, not this process's to guess at.
+#
+# Failure is always published, never hidden: if EDGE_MODELS_DIR is not a
+# directory (mount missing, volume not attached), the manifest is written with
+# `complete: false` and an empty artifact list rather than left stale or
+# skipped — a host reading a fresh-but-incomplete manifest must report no
+# cached models, the same as it must for a stale one. on_signal() below also
+# removes the manifest on a graceful stop, so a deliberately stopped container
+# is reflected at the host immediately rather than only after the manifest
+# ages past the host's freshness bound.
 
 set -uo pipefail
 
@@ -105,13 +164,17 @@ POLL_INTERVAL="${EDGE_POLL_INTERVAL:-1}"
 LEASE_TTL="${EDGE_GUARD_LEASE_TTL:-6}"
 DRAIN_TIMEOUT="${EDGE_DRAIN_TIMEOUT:-40}"
 SWAP_BIN="${LLAMA_SWAP_BIN:-/usr/local/bin/llama-swap}"
+MODELS_DIR="${EDGE_MODELS_DIR:-/models}"
+CACHE_SCAN_INTERVAL="${EDGE_CACHE_SCAN_INTERVAL:-60}"
 
 CLAIM_FILE="$STATE_DIR/interactive-claim"
 LEASE_FILE="$STATE_DIR/guard-lease"
 PHASE_FILE="$STATE_DIR/phase"
+CACHE_MANIFEST_FILE="$STATE_DIR/cache-manifest.json"
 
 SWAP_PID=""
 SHUTTING_DOWN=0
+LAST_CACHE_SCAN=0
 
 log() {
     printf '%s supervisor: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
@@ -119,6 +182,64 @@ log() {
 
 set_phase() {
     printf '%s\n' "$1" >"$PHASE_FILE" 2>/dev/null || log "WARN cannot write $PHASE_FILE"
+}
+
+# Minimal JSON string escaping for the two characters that can appear in a
+# filesystem path and would otherwise break the hand-built JSON below. No jq
+# dependency in this image on purpose -- the manifest's shape is fixed and
+# small enough that adding one would be a container-image change to buy
+# nothing scripts/edge-heartbeat.sh's own jq parsing does not already give the
+# host side.
+json_escape_path() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '%s' "$s"
+}
+
+# Filenames/existence scan of EDGE_MODELS_DIR ONLY -- see "Cache-observation
+# manifest" above for why this exists and what it must never do. `find
+# -type f` and `-printf` stat directory entries; neither opens a file's
+# contents.
+write_cache_manifest() {
+    local scanned_at tmp complete=true rel first=1
+
+    scanned_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    tmp=$(mktemp "$STATE_DIR/.cache-manifest.XXXXXX" 2>/dev/null) || {
+        log "WARN cannot create temp file for cache manifest"
+        return
+    }
+
+    {
+        printf '{\n  "scanned_at": "%s",\n' "$scanned_at"
+        if [ -d "$MODELS_DIR" ]; then
+            printf '  "complete": true,\n  "artifacts": [\n'
+            while IFS= read -r rel; do
+                [ -n "$rel" ] || continue
+                if [ "$first" -eq 1 ]; then first=0; else printf ',\n'; fi
+                printf '    "%s"' "$(json_escape_path "$rel")"
+            done < <(cd "$MODELS_DIR" 2>/dev/null && find . -type f -printf '%P\n' 2>/dev/null | LC_ALL=C sort)
+            printf '\n  ]\n}\n'
+        else
+            complete=false
+            printf '  "complete": false,\n  "artifacts": []\n}\n'
+        fi
+    } >"$tmp"
+
+    if [ "$complete" = false ]; then
+        log "WARN models directory '$MODELS_DIR' is not present; publishing an incomplete cache manifest"
+    fi
+
+    # mktemp creates the file 0600, and this process's uid is not the host
+    # user's - published that way, the host heartbeat cannot read it and would
+    # (correctly, fail-closed) report empty cached_models forever. The manifest
+    # is a list of filenames, not a secret: make it world-readable BEFORE the
+    # atomic rename so no reader ever sees a permission flap either.
+    chmod 644 "$tmp" 2>/dev/null
+    mv -f "$tmp" "$CACHE_MANIFEST_FILE" 2>/dev/null || {
+        log "WARN failed to publish cache manifest"
+        rm -f "$tmp"
+    }
 }
 
 # A dead-but-unreaped child still answers `kill -0`, so a plain signal probe
@@ -195,6 +316,12 @@ on_signal() {
     SHUTTING_DOWN=1
     stop_swap "container shutdown"
     set_phase withdrawn
+    # A deliberate, graceful stop is removed immediately rather than left to
+    # age out: the host must never treat a stopped container's last-known-good
+    # scan as still current. A crash (SIGKILL, no trap) skips this and falls
+    # back to the freshness bound in scripts/edge-heartbeat.sh, which is the
+    # same fail-to-empty guarantee on a longer, unavoidable timer.
+    rm -f "$CACHE_MANIFEST_FILE"
     exit 0
 }
 
@@ -247,7 +374,17 @@ else
     start_swap
 fi
 
+# First scan happens immediately (LAST_CACHE_SCAN=0 makes the loop's own
+# freshness check fire on its first pass), so a freshly started container does
+# not report an empty cache for a whole EDGE_CACHE_SCAN_INTERVAL before its
+# first heartbeat can see anything.
 while [ "$SHUTTING_DOWN" -eq 0 ]; do
+    now_epoch=$(date -u +%s)
+    if [ $((now_epoch - LAST_CACHE_SCAN)) -ge "$CACHE_SCAN_INTERVAL" ]; then
+        write_cache_manifest
+        LAST_CACHE_SCAN=$now_epoch
+    fi
+
     if [ -e "$CLAIM_FILE" ] || ! lease_fresh; then
         if swap_running; then
             if [ -e "$CLAIM_FILE" ]; then

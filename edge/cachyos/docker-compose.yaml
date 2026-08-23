@@ -71,6 +71,11 @@ services:
       # Consumed by the healthcheck below, which resolves it through the
       # extra_hosts entry so it verifies the leaf's SAN rather than skipping it.
       EDGE_HOSTNAME: ${EDGE_HOSTNAME:?set EDGE_HOSTNAME in .env}
+      # How often the supervisor rescans /models for the cache-observation
+      # manifest (STORY-035-9c Part A). Keep comfortably below the host-side
+      # edge-heartbeat.sh's EDGE_CACHE_MANIFEST_MAX_AGE, the same relationship
+      # EDGE_GUARD_LEASE_TTL above has to the guard's own sampling interval.
+      EDGE_CACHE_SCAN_INTERVAL: ${EDGE_CACHE_SCAN_INTERVAL:-60}
 
     volumes:
       # The GGUF cache. Read-only: llama.cpp only ever reads the model, and the
