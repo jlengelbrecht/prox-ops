@@ -93,11 +93,19 @@ Claude here.**
 
 It can be created. `orca account add` exists and manages Claude accounts. The moment someone
 adds one, Orca's launcher path and the native default home become independent stores, and
-authenticating one will not authenticate the other. The rule this contract freezes is therefore
-the same one the Codex contract freezes, stated so it holds either way: *the launch path uses
-whatever config directory its process inherits, and whoever operates that path is responsible
-for that specific store being live.* Orca's internal directory layout is Orca's, may change, and
-is not an interface. Do not hard-code it.
+authenticating one will not authenticate the other. The rule this contract freezes is
+NARROWER than an inheritance rule, because only one store shape was actually validated: *the
+supported credential/config store for this launch path is Claude's DEFAULT store under the
+invoking operator's explicitly resolved and approved `HOME`.* The launcher resolves and
+validates that `HOME` outside the sanitized child environment, then launches with
+`env -i HOME="$APPROVED_HOME" ...`. `CLAUDE_CONFIG_DIR` is never propagated. If
+`CLAUDE_CONFIG_DIR` is set to a non-default value in the launcher's environment, or an
+Orca-managed Claude account/store is selected for the path, the launch FAILS CLOSED as
+unsupported by this contract — it never silently falls back to another store. Supporting
+alternate or managed Claude stores requires its own live validation and a contract amendment.
+(The rule is about the resolved operator `HOME`, not any particular workstation's path — do
+not hard-code one. Orca's internal directory layout is Orca's, may change, and is not an
+interface.)
 
 ### A logging hazard for launcher authors
 
@@ -193,8 +201,8 @@ orca repo list --json | jq '.[] | select(.id == "<repoId>") | .hookSettings'
 #    wait-for-setup (or equivalent) => STOP
 
 # 0b. settings preflight: the sanitizer cannot strip what lives in FILES.
-#     Inspect the effective settings tree of <intendedHome> (or
-#     <intendedConfigDir>) - user, project and managed layers - and REFUSE
+#     Inspect the effective settings tree of $APPROVED_HOME - user,
+#     project and managed layers - and REFUSE
 #     to launch if any of them defines apiKeyHelper, an env block, a
 #     forceLoginMethod other than the subscription login, or any provider/
 #     base-URL redirection (§7's surface). Requirement: the launch MUST
@@ -202,7 +210,7 @@ orca repo list --json | jq '.[] | select(.id == "<repoId>") | .hookSettings'
 
 # 0c. effort preflight: validate the STAMPED effort string against the
 #     closed set (low|medium|high|xhigh) BEFORE launch. --effort fails
-#     OPEN (§6): an unknown value warns on stderr, runs at the default
+#     OPEN (§4): an unknown value warns on stderr, runs at the default
 #     effort, and exits 0, and the effective effort is unobservable. The
 #     launcher MUST refuse an effort outside the closed set, and MUST
 #     treat the "unknown effort" warning as a launch failure, not a
@@ -215,22 +223,24 @@ orca worktree create --repo id:<repoId> --name <taskTitle> \
 # the shell command: a double quote or shell metacharacter inside <task>
 # would otherwise execute in the terminal shell, outside claude's
 # restricted tool set, and could forge the CLAUDE_EXIT line.
-printf '%s' <task> > <worktreePath>/.task-prompt   # launcher-side write, argv-safe
+# PROMPT_FILE is a fixed, launcher-generated path inside the Orca worktree;
+# the terminal command below is FIXED shell text - the task never appears in it.
+printf '%s' <task> > "$PROMPT_FILE"                # launcher-side write, argv-safe
 
 orca terminal create --worktree id:<repoId>::<worktreePath> --title <taskTitle> \
-  --command 'env -i HOME="<intendedHome>" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb \
-    claude -p "$(cat .task-prompt)" --model opus --effort <stampEffort> \
+  --command 'env -i HOME="$APPROVED_HOME" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb \
+    claude -p "$(cat -- "$PROMPT_FILE")" --model opus --effort <stampEffort> \
       --permission-mode acceptEdits --tools "Read,Glob,Grep,Write" \
       --strict-mcp-config --output-format json < /dev/null > .claude-result.json; \
     echo "CLAUDE_EXIT=$?"'
 ```
 
 `<stampEffort>` is the effort from the immutable execution stamp, passed through the frozen
-one-to-one mapping (§6) after the step-0c validation — never a hard-coded value. The live
+one-to-one mapping (§4) after the step-0c validation — never a hard-coded value. The live
 validation exercised `high`; the route authority emits `xhigh` for `claude/strong` strong-band
 decisions, and a launcher that pins any single effort executes other stamped decisions at the
 wrong effort, violating stamp immutability. (`xhigh`/`medium`/`low` acceptance by this Claude
-version remains UNVERIFIED, §9 — a launcher meeting an unverified effort validates the string,
+version remains UNVERIFIED, §4 — a launcher meeting an unverified effort validates the string,
 attempts the launch, and treats the fail-open warning as failure.)
 
 The JSON result goes to `.claude-result.json`, NOT the terminal stream: `--output-format json`
@@ -238,13 +248,12 @@ writes the result document to stdout, and an `echo` on the same stream would cor
 any consumer parsing `is_error`/`modelUsage`. The `CLAUDE_EXIT=` line stays on the terminal as
 the completion signal; the result document is read from the file.
 
-`<intendedHome>` is the explicit, launcher-configured home whose `.claude` tree carries the
-credential store this launch is meant to use — never the ambient `$HOME` passed through
-blind. A launch path that deliberately targets a MANAGED store (§3) instead sets an explicit
-`CLAUDE_CONFIG_DIR="<intendedConfigDir>"` in the same allowlist position — the rule is that
-the store selection is always an explicit launcher decision: exactly one of the two variables
-is SET by the launcher, and neither is ever inherited from the ambient environment. The
-command-substituted `.task-prompt` read happens inside single quotes, so the task text itself
+`$APPROVED_HOME` is the operator's explicitly resolved and approved home — resolved and
+validated by the launcher OUTSIDE the sanitized child environment, never the ambient `$HOME`
+passed through blind, and never a hard-coded path. It is the ONLY supported store selector on
+this path: `CLAUDE_CONFIG_DIR` is never propagated, and a non-default `CLAUDE_CONFIG_DIR` or
+a selected Orca-managed Claude store fails the launch closed as unsupported (§3). The
+command-substituted prompt-file read happens inside single quotes, so the task text itself
 is never parsed by the outer shell.
 
 **Why the two-step custom-command shape rather than `--agent claude`:** `orca worktree create`
@@ -392,17 +401,18 @@ sanitizes by **allowlist**, starting from an empty environment and admitting onl
 process needs:
 
 ```shell
-env -i HOME="<intendedHome>" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb claude ...
+env -i HOME="$APPROVED_HOME" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb claude ...
 ```
 
 Verified: with this sanitizer, **zero** `ANTHROPIC_*` or `CLAUDE_*` variables survive into the
 child, checked by name against a deliberately polluted parent environment. The same check
 without the sanitizer showed all of them visible, including the `CLAUDE_EFFORT` that was
 genuinely set on this host. `HOME` is deliberately present — it is what
-carries the native credential store (§3) — but it is set EXPLICITLY to the launcher's intended
-home, never passed through from the ambient environment: `env -i` removes `CLAUDE_CONFIG_DIR`,
-so the surviving `HOME` alone selects the credential/settings tree, and an inherited `HOME`
-would make that selection an accident.
+carries the native credential store (§3) — but it is set EXPLICITLY to the operator's resolved
+and approved home, never passed through from the ambient environment: `env -i` removes
+`CLAUDE_CONFIG_DIR`, so the surviving `HOME` alone selects the credential/settings tree, an
+inherited `HOME` would make that selection an accident, and a non-default `CLAUDE_CONFIG_DIR`
+in the launcher's own environment fails the launch closed as unsupported (§3).
 
 Explicit `--model` and `--effort` arguments do NOT constrain auth or provider selection. The
 command otherwise inherits the terminal environment and the effective settings files, and an
