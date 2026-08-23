@@ -165,7 +165,7 @@ to stderr, silently substitutes the default effort, completes the turn, and exit
 A launcher that passes a typo, a stale value, or an effort this CLI version has dropped will get
 a clean, successful-looking run **at the wrong effort**, with nothing in the machine-readable
 output to reveal it. The launcher must therefore validate the effort string against the
-enumerated set before launching, and should treat that stderr warning as a failure if it appears.
+enumerated set before launching, and MUST treat that stderr warning as a launch failure if it appears — allowing it is a false-success path at the wrong stamped effort.
 
 `--model` behaves the opposite way and fails closed: an unrecognized model exits `1` with
 `unrecognized_model` and `api_error_status: 404`, having consumed no tokens. Do not generalize
@@ -185,12 +185,31 @@ does not fire (the terminal outlives its command) — the `CLAUDE_EXIT=` line is
 only reliable completion signal.
 
 ```shell
-# 0. setup-policy gate: stop unless the repo starts immediately
-orca repo list --json    # read hookSettings only; wait-for-setup => STOP
-                         # do not log the raw object (§3 logging hazard)
+# 0. setup-policy gate: stop unless the repo starts immediately.
+#    Extract ONLY the policy field - the raw repo object embeds a live
+#    credential in gitRemoteIdentity.remoteUrl (§3), so it must never
+#    reach a log, a terminal buffer, or a file.
+orca repo list --json | jq '.[] | select(.id == "<repoId>") | .hookSettings'
+#    wait-for-setup (or equivalent) => STOP
+
+# 0b. settings preflight: the sanitizer cannot strip what lives in FILES.
+#     Inspect the effective settings tree of <intendedHome> (or
+#     <intendedConfigDir>) - user, project and managed layers - and REFUSE
+#     to launch if any of them defines apiKeyHelper, an env block, a
+#     forceLoginMethod other than the subscription login, or any provider/
+#     base-URL redirection (§7's surface). Requirement: the launch MUST
+#     fail closed here; env -i alone does not cover settings files.
+
+# 0c. effort preflight: validate the STAMPED effort string against the
+#     closed set (low|medium|high|xhigh) BEFORE launch. --effort fails
+#     OPEN (§6): an unknown value warns on stderr, runs at the default
+#     effort, and exits 0, and the effective effort is unobservable. The
+#     launcher MUST refuse an effort outside the closed set, and MUST
+#     treat the "unknown effort" warning as a launch failure, not a
+#     warning.
 
 # 1-2. lifecycle + sanitized, fail-closed launch
-orca worktree create --repo id:<repoId> --name <task> \
+orca worktree create --repo id:<repoId> --name <taskTitle> \
   --parent-worktree worktree:<callerWorktreeId> --json
 # task text is written to a file by the LAUNCHER, never interpolated into
 # the shell command: a double quote or shell metacharacter inside <task>
@@ -200,19 +219,33 @@ printf '%s' <task> > <worktreePath>/.task-prompt   # launcher-side write, argv-s
 
 orca terminal create --worktree id:<repoId>::<worktreePath> --title <taskTitle> \
   --command 'env -i HOME="<intendedHome>" PATH="$PATH" USER="$USER" LANG=C.UTF-8 TERM=dumb \
-    claude -p "$(cat .task-prompt)" --model opus --effort high \
+    claude -p "$(cat .task-prompt)" --model opus --effort <stampEffort> \
       --permission-mode acceptEdits --tools "Read,Glob,Grep,Write" \
-      --strict-mcp-config --output-format json < /dev/null; \
+      --strict-mcp-config --output-format json < /dev/null > .claude-result.json; \
     echo "CLAUDE_EXIT=$?"'
 ```
 
+`<stampEffort>` is the effort from the immutable execution stamp, passed through the frozen
+one-to-one mapping (§6) after the step-0c validation — never a hard-coded value. The live
+validation exercised `high`; the route authority emits `xhigh` for `claude/strong` strong-band
+decisions, and a launcher that pins any single effort executes other stamped decisions at the
+wrong effort, violating stamp immutability. (`xhigh`/`medium`/`low` acceptance by this Claude
+version remains UNVERIFIED, §9 — a launcher meeting an unverified effort validates the string,
+attempts the launch, and treats the fail-open warning as failure.)
+
+The JSON result goes to `.claude-result.json`, NOT the terminal stream: `--output-format json`
+writes the result document to stdout, and an `echo` on the same stream would corrupt it for
+any consumer parsing `is_error`/`modelUsage`. The `CLAUDE_EXIT=` line stays on the terminal as
+the completion signal; the result document is read from the file.
+
 `<intendedHome>` is the explicit, launcher-configured home whose `.claude` tree carries the
 credential store this launch is meant to use — never the ambient `$HOME` passed through
-blind. `env -i` strips `CLAUDE_CONFIG_DIR`, so whatever `HOME` survives silently selects the
-store; pinning it makes the credential-store choice an explicit launcher decision instead of
-an inherited accident, and keeps the §3 store-per-path rule enforceable. The command-substituted
-`.task-prompt` read happens inside single quotes, so the task text itself is never parsed by
-the outer shell.
+blind. A launch path that deliberately targets a MANAGED store (§3) instead sets an explicit
+`CLAUDE_CONFIG_DIR="<intendedConfigDir>"` in the same allowlist position — the rule is that
+the store selection is always an explicit launcher decision: exactly one of the two variables
+is SET by the launcher, and neither is ever inherited from the ambient environment. The
+command-substituted `.task-prompt` read happens inside single quotes, so the task text itself
+is never parsed by the outer shell.
 
 **Why the two-step custom-command shape rather than `--agent claude`:** `orca worktree create`
 accepts only `--agent <id>` and `--prompt <text>`. Its full option list, read from the
