@@ -30,12 +30,12 @@ launch path must reach a live ChatGPT-authenticated Codex session, and nothing e
 Confirmed live behaviour: an authenticated run transports over
 `wss://chatgpt.com/backend-api/codex/responses` — the subscription endpoint. An unauthenticated
 run falls through to `https://api.openai.com/v1/responses` and is rejected. The endpoint
-difference is the cleanest available signal that a run used the subscription and not API
+difference is the direct signal that a run used the subscription and not API
 billing.
 
 ### `codex login status` is not a liveness check
 
-This is the single most important operational finding in this file.
+This is the key operational finding in this file.
 
 `codex login status` reported `Logged in using ChatGPT` (exit 0) for two credential stores
 that both failed on the first real turn with a spent refresh token. The command confirms that
@@ -107,12 +107,23 @@ behaviour; in particular `xhigh` acceptance by this Codex version is unverified.
 
 ## 5. The launch sequence
 
-Orca owns the worktree and the terminal; Codex runs natively inside them.
+Orca owns the worktree and the terminal; Codex runs natively inside them. Step 0 is the
+setup-policy gate from below — it runs BEFORE anything is created, because a repository
+wait-for-setup policy makes the whole path unsafe and stopping after worktree-create is
+already too late. The terminal command records the Codex exit status in-band, because
+`orca terminal wait --for exit` does not fire (the terminal outlives its command) — the
+`CODEX_EXIT=` line is the launcher's only reliable completion signal.
 
 ```
+# 0. setup-policy gate: stop unless the repo starts immediately
+orca repo show id:<repoId> --json   # inspect hookSettings; wait-for-setup => STOP
+
+# 1-2. lifecycle + sanitized, fail-closed launch
 orca worktree create --repo id:<repoId> --name <task> --parent-worktree active --json
 orca terminal create --worktree id:<repoId>::<worktreePath> --title <task> \
-  --command 'codex exec --model gpt-5.6-sol -c model_reasoning_effort="high" -s workspace-write "<task>"'
+  --command 'env -u OPENAI_API_KEY -u CODEX_API_KEY \
+    codex exec --model gpt-5.6-sol -c model_reasoning_effort="high" -s workspace-write "<task>"; \
+    echo "CODEX_EXIT=$?"'
 ```
 
 **Why the two-step custom-command shape rather than `--agent codex`:** Orca's own
@@ -162,12 +173,22 @@ on the workstation.
 
 ---
 
-## 7. API keys are forbidden
+## 7. API keys are forbidden — and the launch fails closed
 
-The launch environment must not define `OPENAI_API_KEY`, and no custom `model_provider`, base
-URL or provider `env_key` may be configured. The native OpenAI provider is used as shipped;
-Codex reported `provider: openai` on the validated run, and neither config file declared a
-provider override.
+The launch environment must not define `OPENAI_API_KEY` or `CODEX_API_KEY`, and no custom
+`model_provider`, `model_providers`, `openai_base_url` or provider `env_key` may be configured.
+The native OpenAI provider is used as shipped; Codex reported `provider: openai` on the
+validated run, and neither config file declared a provider override.
+
+Explicit `--model` and effort arguments do NOT constrain auth or provider selection: the
+command inherits the terminal environment and the effective `config.toml`, and an API-key
+variable or provider override there can redirect authentication away from the subscription
+session. The launcher therefore fails closed rather than trusting the environment: it launches
+through a sanitizer that unsets `OPENAI_API_KEY` and `CODEX_API_KEY` (the `env -u` form in
+§5's canonical command), and it must refuse to launch when the effective Codex config declares
+any non-default provider setting. Requirement, not tested evidence: the validated run confirmed
+`OPENAI_API_KEY` unset and no config overrides; API-key-precedence behaviour itself was not
+exercised and must never be.
 
 `OPENAI_API_KEY` absence was confirmed in the launch environment. It is a necessary check, not a
 sufficient one — §2's endpoint evidence is what actually distinguishes the subscription path.
