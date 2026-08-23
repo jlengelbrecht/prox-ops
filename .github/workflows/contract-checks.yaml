@@ -1,10 +1,15 @@
 ---
 name: "Contract Checks"
 
-# STORY-035-1b. Wires the three committed agent-router contract guards into CI.
-# Path filter covers everything the checks READ, not just where they live: a
-# catalog-only edit (no contracts/ change) must still trigger verify-digests.sh
-# and verify-placement-cases.sh.
+# STORY-035-1b. Wires the committed agent-router contract guards into CI.
+# STORY-035-12 adds verify-stamp-cases.sh, which builds agent-stamp-validate
+# from services/agent-router/** and runs it against the committed
+# examples/stamp/ fixtures - so the path filter now covers that source tree
+# too, not just contracts/agent-router/**. Path filter covers everything the
+# checks READ, not just where they live: a catalog-only edit (no contracts/
+# change) must still trigger verify-digests.sh and verify-placement-cases.sh,
+# and a services/agent-router/** edit (no contracts/ change) must still
+# trigger verify-stamp-cases.sh.
 
 on:
   pull_request:
@@ -13,6 +18,7 @@ on:
       - "contracts/agent-router/**"
       - "kubernetes/apps/ai/agent-router-catalog/**"
       - "kubernetes/apps/ai/agentgateway-pilot/app/httproute.yaml"
+      - "services/agent-router/**"
       - ".github/workflows/contract-checks.yaml"
   push:
     branches: ["main"]
@@ -20,6 +26,7 @@ on:
       - "contracts/agent-router/**"
       - "kubernetes/apps/ai/agent-router-catalog/**"
       - "kubernetes/apps/ai/agentgateway-pilot/app/httproute.yaml"
+      - "services/agent-router/**"
       - ".github/workflows/contract-checks.yaml"
 
 concurrency:
@@ -50,6 +57,14 @@ jobs:
       - name: Install PyYAML
         run: pip install pyyaml==${{ env.PYYAML_VERSION }}
 
+      # STORY-035-12: verify-stamp-cases.sh builds agent-stamp-validate from
+      # services/agent-router before running it against fixtures.
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.5.0
+        with:
+          go-version-file: services/agent-router/go.mod
+          cache-dependency-path: services/agent-router/go.sum
+
       - name: verify-digests
         run: ./contracts/agent-router/verify-digests.sh
 
@@ -58,3 +73,6 @@ jobs:
 
       - name: verify-ade-boundary
         run: ./contracts/agent-router/verify-ade-boundary.sh
+
+      - name: verify-stamp-cases
+        run: ./contracts/agent-router/verify-stamp-cases.sh

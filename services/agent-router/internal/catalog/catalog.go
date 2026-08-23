@@ -198,6 +198,14 @@ type Catalog struct {
 	EntitlementPools       []Entry[EntitlementPool]
 	Profiles               []Entry[Profile]
 	Policies               []Entry[Policy]
+	// Digest is this catalog's own content digest (see Digest below), carried
+	// on the parsed value itself rather than only as Load's second return.
+	// STORY-035-12 needs it: stampvalidate.ValidateFinal's frozen signature is
+	// (cat *catalog.Catalog, stamp, vctx, now) with no separate digest
+	// parameter, so the loaded catalog has to be able to answer "what is my
+	// own digest" for the catalog_drift_fails_closed check. httpapi's
+	// existing CatalogState.Digest is unaffected - this is purely additive.
+	Digest string
 }
 
 // ModelAuthorizedOnPlacement reports whether the catalog places modelID on
@@ -269,6 +277,7 @@ func Load(path string) (*Catalog, string, error) {
 		EntitlementPools:       doc.EntitlementPools,
 		Profiles:               doc.Profiles,
 		Policies:               doc.Policies.PlacementPolicy,
+		Digest:                 digest,
 	}
 	return cat, digest, nil
 }

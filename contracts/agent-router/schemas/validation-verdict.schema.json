@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ValidationVerdict",
+  "description": "STORY-035-12. The output of stampvalidate.ValidateFinal, and the exact stdout shape the agent-stamp-validate CLI prints on exit codes 0 (valid) and 1 (well-formed but policy-invalid) alike. Exit code 2 (malformed input/catalog/tool failure) prints no Verdict at all.\n\n`checks` always carries all eight frozen rules, in this fixed order, regardless of outcome (\"every check evaluated; Verdict lists all\") - there is no short-circuit and no rule a failure elsewhere skips. `valid` is the AND of every `checks[].passed`; there is no separate bypass field.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["valid", "checks", "catalog_version"],
+  "properties": {
+    "valid": {
+      "type": "boolean",
+      "description": "True iff every entry in `checks` passed. This is the sole authority for whether execution may proceed - a caller must not derive it by re-inspecting individual checks."
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/check" },
+      "description": "Exactly the eight frozen rules (STORY-035-12 'Frozen validation rules'), each evaluated unconditionally: approved_pair, forbidden_for, entitlement_permitted, metered_dual_key, placement, catalog_drift_fails_closed, not_expired, override_within_policy."
+    },
+    "catalog_version": {
+      "allOf": [{ "$ref": "execution-profile.schema.json#/$defs/catalog_version" }],
+      "description": "The digest of the catalog ValidateFinal actually loaded and validated against - independent of, and compared against, the stamp's own catalog_version by the catalog_drift_fails_closed check."
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "passed", "reason_code", "message"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "approved_pair",
+            "forbidden_for",
+            "entitlement_permitted",
+            "metered_dual_key",
+            "placement",
+            "catalog_drift_fails_closed",
+            "not_expired",
+            "override_within_policy"
+          ],
+          "description": "The frozen rule name. Stable: never re-pointed at a different rule."
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "reason_code": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "pair_not_approved",
+            "forbidden_for_tag",
+            "profile_unknown_in_catalog",
+            "entitlement_not_permitted",
+            "metered_authority_missing",
+            "metered_intent_missing",
+            "not_applicable",
+            "vendor_profile_with_placement",
+            "placement_evidence_missing",
+            "placement_not_placed",
+            "placement_header_mismatch",
+            "placement_not_authorized",
+            "placement_catalog_version_mismatch",
+            "placement_evidence_expired",
+            "placed_and_fresh",
+            "catalog_version_stale",
+            "stamp_expired",
+            "no_override",
+            "override_recorded"
+          ],
+          "description": "Frozen reason-code enumeration (STORY-035-12: 'incl. placement_evidence_expired, catalog_version_stale, stamp_expired, vendor_profile_with_placement, metered_authority_missing' - all five present here, alongside every other code this build can emit). A passed check still carries a reason_code (usually \"ok\", or a more specific pass-side code such as placed_and_fresh, not_applicable, no_override or override_recorded) so a reader never has to infer why a check passed from its name alone."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable explanation naming the deciding facts - read by whoever is debugging a refused launch."
+        }
+      },
+      "allOf": [
+        {
+          "description": "reason_code \"ok\" is legal only on a passed check - it is a generic pass marker, never a way to report a failure without naming a specific reason.",
+          "if": { "properties": { "reason_code": { "const": "ok" } }, "required": ["reason_code"] },
+          "then": { "properties": { "passed": { "const": true } } }
+        },
+        {
+          "description": "Every failure-side reason_code implies passed: false - none of these codes describes a passing check.",
+          "if": {
+            "properties": {
+              "reason_code": {
+                "enum": [
+                  "pair_not_approved",
+                  "forbidden_for_tag",
+                  "profile_unknown_in_catalog",
+                  "entitlement_not_permitted",
+                  "metered_authority_missing",
+                  "metered_intent_missing",
+                  "vendor_profile_with_placement",
+                  "placement_evidence_missing",
+                  "placement_not_placed",
+                  "placement_header_mismatch",
+                  "placement_not_authorized",
+                  "placement_catalog_version_mismatch",
+                  "placement_evidence_expired",
+                  "catalog_version_stale",
+                  "stamp_expired"
+                ]
+              }
+            },
+            "required": ["reason_code"]
+          },
+          "then": { "properties": { "passed": { "const": false } } }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlacementEvidence",
+  "description": "STORY-035-12. The separate, ephemeral evidence a caller supplies at final validation time when a stamp's placement_required is true - never part of the immutable ExecutionStamp itself (amendment 2).\n\nOWNER APPROVAL clarification 1 (2026-08-23, NORMATIVE): this shape carries EXACTLY TWO members, and there is ONE authoritative copy of placement data. `result` is the UNMODIFIED, FROZEN PlaceResult (place-result.schema.json) - the same shape POST /v1/place already returns. stampvalidate.ValidateFinal reads catalog_version, ttl_seconds, status, placement, headers, readiness and model from the NESTED result, never from a restatement at this level: two values that could disagree is a failing design, so none of PlaceResult's fields are duplicated here. `resolved_at` is the one thing PlaceResult deliberately does not carry (it is a response body, not a record of when it was fetched), so it lives on this wrapper alone.\n\nFreshness (owner-frozen boundary): evidence is valid only while `now < resolved_at + result.ttl_seconds`. Equality at the exact expiry instant is INVALID, not a grace instant - this is deliberately a strict `<`, tested at the boundary with injected clocks only.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["resolved_at", "result"],
+  "properties": {
+    "resolved_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339. When the caller obtained `result` (i.e., when its own POST /v1/place call returned). Freshness is judged as `now < resolved_at + result.ttl_seconds` - the same ttl_seconds /v1/place already stamped on the result, read from the nested object rather than repeated here."
+    },
+    "result": {
+      "$ref": "place-result.schema.json",
+      "description": "The UNCHANGED PlaceResult from a POST /v1/place call (place-result.schema.json, frozen and unmodified by this story). Every field this validator reads for the placement rules - status, model, placement, readiness, headers, ttl_seconds, catalog_version - comes from here, not from a restatement at the PlacementEvidence level."
+    }
+  }
+}

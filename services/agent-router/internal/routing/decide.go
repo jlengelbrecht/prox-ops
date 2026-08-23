@@ -297,6 +297,17 @@ func buildCandidates(cat *catalog.Catalog, in Input, band Band, avail Entitlemen
 }
 
 func tagsForbidden(forbidden, tags []string) bool {
+	return TagsForbidden(forbidden, tags)
+}
+
+// TagsForbidden reports whether any of tags appears in forbidden - the exact
+// hard-exclusion test buildCandidates applies at route time (invariant 12: a
+// forbidden_for match is a hard exclusion, never a score or a tie-break).
+// Exported so STORY-035-12's stampvalidate package reuses this predicate
+// rather than reinterpreting catalog.Profile.ForbiddenFor semantics a second
+// time (amendment 5: "no second hard-coded pair matrix... likewise reuse
+// existing catalog/routing semantics where practical").
+func TagsForbidden(forbidden, tags []string) bool {
 	if len(forbidden) == 0 {
 		return false
 	}
