@@ -105,6 +105,20 @@ func validUnavailableEvidenceWire(resolvedAt time.Time) map[string]any {
 	}
 }
 
+// validAlternativeWire is a well-formed alternatives[] entry - the baseline
+// the alternative-focused structural-validation cases below each mutate one
+// field of.
+func validAlternativeWire() map[string]any {
+	return map[string]any{
+		"placement":              "kserve-a5000",
+		"model":                  "qwen36-27b",
+		"readiness":              "cached",
+		"estimated_cold_start_s": 5,
+		"eligible":               true,
+		"reason":                 map[string]any{"code": "not_selected_lower_rank", "message": "ranked below the chosen candidate"},
+	}
+}
+
 // cloneJSON deep-copies a JSON-shaped map via a marshal/unmarshal round trip,
 // so each structural-validation test case mutates its own private copy of
 // the baseline fixture rather than sharing nested maps across subtests.
@@ -163,6 +177,53 @@ func Test_evidence_structural_validation(t *testing.T) {
 			// reason.code enum overall.
 			r["reason"] = map[string]any{"code": "no_eligible_placement", "message": "wrong subset for a placed result"}
 		}},
+		// --- required-member PRESENCE (owner directive, 2026-08-23 FINAL
+		// round): a decode gap, not a value-range gap - the zero value a
+		// missing/null field decodes to would otherwise look legal. ---
+		{"missing_catalog_version", func(r map[string]any) { delete(r, "catalog_version") }},
+		{"missing_alternatives", func(r map[string]any) { delete(r, "alternatives") }},
+		{"null_alternatives", func(r map[string]any) { r["alternatives"] = nil }},
+		// --- alternatives[] entries, previously copied through with NO
+		// validation at all. ---
+		{"alternative_missing_eligible", func(r map[string]any) {
+			alt := validAlternativeWire()
+			delete(alt, "eligible")
+			r["alternatives"] = []any{alt}
+		}},
+		{"alternative_invalid_placement", func(r map[string]any) {
+			alt := validAlternativeWire()
+			alt["placement"] = "made-up-placement"
+			r["alternatives"] = []any{alt}
+		}},
+		{"alternative_empty_model", func(r map[string]any) {
+			alt := validAlternativeWire()
+			alt["model"] = ""
+			r["alternatives"] = []any{alt}
+		}},
+		{"alternative_invalid_readiness", func(r map[string]any) {
+			alt := validAlternativeWire()
+			alt["readiness"] = "kinda-warm"
+			r["alternatives"] = []any{alt}
+		}},
+		{"alternative_negative_cold_start", func(r map[string]any) {
+			alt := validAlternativeWire()
+			alt["estimated_cold_start_s"] = -1
+			r["alternatives"] = []any{alt}
+		}},
+		{"alternative_reason_code_placed_warm", func(r map[string]any) {
+			// placed_warm is a RESULT-LEVEL "placed" code, illegal inside any
+			// alternative regardless of the result's own status.
+			alt := validAlternativeWire()
+			alt["reason"] = map[string]any{"code": "placed_warm", "message": "wrong vocabulary for a candidate"}
+			r["alternatives"] = []any{alt}
+		}},
+		{"alternative_reason_code_no_eligible_placement", func(r map[string]any) {
+			// no_eligible_placement is a RESULT-LEVEL "unavailable" code,
+			// equally illegal inside an alternative.
+			alt := validAlternativeWire()
+			alt["reason"] = map[string]any{"code": "no_eligible_placement", "message": "wrong vocabulary for a candidate"}
+			r["alternatives"] = []any{alt}
+		}},
 	}
 	for _, tc := range placedCases {
 		t.Run("placed_"+tc.name, func(t *testing.T) {
@@ -193,6 +254,48 @@ func Test_evidence_structural_validation(t *testing.T) {
 			t.Fatalf("exit code = %d, want %d or %d (well-formed evidence must parse): stderr=%s", code, exitValid, exitPolicyInvalid, stderr.String())
 		}
 	})
+}
+
+// Test_stamp_required_field_presence proves the CLI parser rejects a stamp
+// that OMITS a required member or supplies an explicit null where the
+// schema does not allow one, even when the resulting Go zero value would
+// otherwise look like a legal value - task.tags in particular: an omitted
+// or null tags array must never be silently treated as "no tags", since
+// tags is policy input to the forbidden_for check (owner directive,
+// 2026-08-23 FINAL round).
+func Test_stamp_required_field_presence(t *testing.T) {
+	now := fixedNow(t)
+	catalogPath := realCatalogPath(t)
+
+	cases := []struct {
+		name   string
+		mutate func(wire map[string]any)
+	}{
+		{"missing_task_tags", func(wire map[string]any) {
+			task := wire["task"].(map[string]any)
+			delete(task, "tags")
+		}},
+		{"task_tags_null", func(wire map[string]any) {
+			task := wire["task"].(map[string]any)
+			task["tags"] = nil
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wire := cloneJSON(t, validStampWire(now))
+			tc.mutate(wire)
+			stampPath := writeJSON(t, t.TempDir(), "stamp.json", wire)
+
+			var stdout, stderr bytes.Buffer
+			code := run([]string{"--catalog", catalogPath, "--stamp", stampPath}, &stdout, &stderr, now)
+			if code != exitToolFailure {
+				t.Fatalf("exit code = %d, want %d (malformed stamp): stderr=%s", code, exitToolFailure, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty: malformed stamp must print no Verdict", stdout.String())
+			}
+		})
+	}
 }
 
 // Test_metered_cannot_self_authorize proves the MVP CLI has no code path
