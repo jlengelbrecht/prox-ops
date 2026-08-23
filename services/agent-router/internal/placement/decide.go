@@ -231,6 +231,22 @@ func evaluate(cat *catalog.Catalog, pol catalog.Policy, in Input, modelID, place
 		return false, f.HardReasonCode, hardReasonMessage(f.HardReasonCode, placementName)
 	}
 
+	// allow_cold_start: false forbids waking a scaled-to-zero placement
+	// (catalog policy vocabulary). Only a placement that DECLARES
+	// scale_to_zero: true is governed by this rule, and only known-warm
+	// proves no wake is required - cached, absent and unknown all fail
+	// closed (unknown cannot prove the placement is not scaled to zero
+	// right now, and cached/absent are never treated as warm).
+	if !pol.AllowColdStart {
+		if pl, ok := findPlacement(cat, placementName); ok && pl.ScaleToZero != nil && *pl.ScaleToZero {
+			if f.Readiness != ReadinessWarm {
+				return false, "constraint_unsatisfiable", fmt.Sprintf(
+					"the policy forbids cold starts and %s is declared scale-to-zero; only a known-warm placement satisfies that, and %s is %s.",
+					placementName, placementName, f.Readiness)
+			}
+		}
+	}
+
 	// Policy's own min_vram_gb: a hard floor on MEASURED catalog capacity,
 	// satisfiable only by a real measurement (catalog README "Capacity
 	// numbers are sourced, not assumed").
@@ -385,9 +401,21 @@ func reorderByWarmPreference(list []candidate, pol catalog.Policy) []candidate {
 			}
 			arr[i] = keyed{c, key, i}
 		}
+		// A promoted warm candidate must land exactly shift positions to
+		// the left (bounded at index 0), so on a key TIE the warm candidate
+		// wins - tie-breaking by original index instead would leave the
+		// cold incumbent ahead and the promotion would move zero positions
+		// ([A,B,C] with B warm and shift 1 must yield [B,A,C], not [A,B,C]).
+		// Warm-vs-warm and cold-vs-cold ties keep original order, so the
+		// result stays deterministic and relative order is preserved.
 		sort.SliceStable(arr, func(i, j int) bool {
 			if arr[i].key != arr[j].key {
 				return arr[i].key < arr[j].key
+			}
+			iw := arr[i].c.facts.Readiness == ReadinessWarm
+			jw := arr[j].c.facts.Readiness == ReadinessWarm
+			if iw != jw {
+				return iw
 			}
 			return arr[i].idx < arr[j].idx
 		})
@@ -490,4 +518,13 @@ func findPolicy(cat *catalog.Catalog, name string) (catalog.Policy, bool) {
 		}
 	}
 	return catalog.Policy{}, false
+}
+
+func findPlacement(cat *catalog.Catalog, name string) (catalog.Placement, bool) {
+	for _, e := range cat.Placements {
+		if e.Name == name {
+			return e.Value, true
+		}
+	}
+	return catalog.Placement{}, false
 }

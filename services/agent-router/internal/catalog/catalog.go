@@ -99,6 +99,10 @@ type Placement struct {
 	Kind               string   `yaml:"kind"` // kserve | edge
 	Capacity           Capacity `yaml:"capacity"`
 	ColdStartSEstimate *float64 `yaml:"cold_start_s_estimate"`
+	// ScaleToZero is the placement's own declaration that idle means scaled
+	// to zero (catalog table 2). It is what allow_cold_start: false forbids
+	// waking - nil (undeclared) placements are unaffected by that rule.
+	ScaleToZero *bool `yaml:"scale_to_zero"`
 }
 
 // Model is one row of catalog table 3 (models), the referent for every
