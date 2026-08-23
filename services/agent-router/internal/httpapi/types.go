@@ -112,6 +112,68 @@ type placementDTO struct {
 	Heartbeat          *heartbeat.Heartbeat `json:"heartbeat"`
 }
 
+// routeRequestWire mirrors contracts/agent-router/openapi.yaml
+// components.schemas.RouteRequest field-for-field. Decoded with
+// DisallowUnknownFields so an unrecognized property is rejected at the
+// wire, matching the schema's additionalProperties: false closure.
+type routeRequestWire struct {
+	StoryID         string   `json:"story_id"`
+	Title           string   `json:"title"`
+	Summary         string   `json:"summary"`
+	TouchedPaths    []string `json:"touched_paths"`
+	Ambiguity       string   `json:"ambiguity"`
+	BlastRadius     string   `json:"blast_radius"`
+	ContextSize     *int     `json:"context_size"`
+	VolumeHint      string   `json:"volume_hint"`
+	Tags            []string `json:"tags"`
+	Repo            string   `json:"repo"`
+	Requester       string   `json:"requester"`
+	PlacementPolicy *string  `json:"placement_policy"`
+	AllowMetered    *bool    `json:"allow_metered"`
+	CatalogVersion  *string  `json:"catalog_version"`
+}
+
+// executionProfileWire mirrors
+// contracts/agent-router/schemas/execution-profile.schema.json
+// field-for-field. Field order and names are the frozen contract.
+type executionProfileWire struct {
+	Harness                string            `json:"harness"`
+	ModelProfile           string            `json:"model_profile"`
+	Effort                 string            `json:"effort"`
+	CostClass              string            `json:"cost_class"`
+	EntitlementPool        *string           `json:"entitlement_pool"`
+	PlacementPolicy        string            `json:"placement_policy"`
+	PlacementRequired      bool              `json:"placement_required"`
+	Fallbacks              []fallbackWire    `json:"fallbacks"`
+	Metered                bool              `json:"metered"`
+	Rationale              string            `json:"rationale"`
+	CatalogVersion         string            `json:"catalog_version"`
+	CatalogDocumentVersion string            `json:"catalog_document_version,omitempty"`
+	ExpiresAt              string            `json:"expires_at"`
+	MeteredDenied          *meteredDeniedDTO `json:"metered_denied,omitempty"`
+}
+
+type fallbackWire struct {
+	Harness           string  `json:"harness"`
+	ModelProfile      string  `json:"model_profile"`
+	CostClass         string  `json:"cost_class"`
+	EntitlementPool   *string `json:"entitlement_pool"`
+	PlacementRequired bool    `json:"placement_required"`
+}
+
+type meteredDeniedDTO struct {
+	Code       string               `json:"code"`
+	Message    string               `json:"message"`
+	Obligation string               `json:"obligation"`
+	Withheld   withheldCandidateDTO `json:"withheld"`
+}
+
+type withheldCandidateDTO struct {
+	Harness      string `json:"harness"`
+	ModelProfile string `json:"model_profile"`
+	CostClass    string `json:"cost_class"`
+}
+
 type policyDTO struct {
 	Name               string   `json:"name"`
 	PreferOrder        []string `json:"prefer_order"`

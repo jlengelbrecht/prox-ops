@@ -3,11 +3,12 @@
 Specification for the `agent-router` control plane: OpenAPI 3.1 plus JSON Schemas for every
 payload, with a worked example for each endpoint and each error class.
 
-**There is no implementation.** No service, no Deployment, no container, no handler code -
-this directory is documents only. That is the point: the contract is frozen before an
-implementation exists to bias it. The service arrives in stories 35.9 (`/v1/status` +
-heartbeat), 35.10 (`/v1/route`) and 35.11 (`/v1/place`); story 35.12 freezes the final
-wording against what those three learn.
+**This directory is documents only; the contract was frozen before any implementation
+existed to bias it.** `agent-router` itself lives at `services/agent-router/` and is
+deployed: 35.9 shipped `/v1/status` and the capacity heartbeat, and 35.10 added
+`POST /v1/route`. `/v1/place` (35.11) is still open; story 35.12 freezes the final wording
+against what all three learn. Wire semantics here have not changed - implementation
+conforms to this contract, never the reverse.
 
 Story 35.2 of EPIC-035. Sources at the bottom.
 

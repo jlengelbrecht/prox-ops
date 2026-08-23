@@ -14,6 +14,7 @@ import (
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/capacity"
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/catalog"
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/httpapi"
+	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/routing"
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/testutil"
 )
 
@@ -45,6 +46,15 @@ func realCatalogState(t *testing.T) httpapi.CatalogState {
 
 func newEnv(t *testing.T, cs httpapi.CatalogState) *env {
 	t.Helper()
+	return newEnvFull(t, cs, nil, nil)
+}
+
+// newEnvFull is newEnv with the metered-authorization and entitlement-
+// availability seams exposed, so route tests can exercise the authorized-
+// principal and pool-exhaustion branches without a real identity provider
+// or a real quota source (amendment 1).
+func newEnvFull(t *testing.T, cs httpapi.CatalogState, meteredAuthority httpapi.MeteredAuthority, entitlementAvailability routing.EntitlementAvailability) *env {
+	t.Helper()
 	e := &env{clock: time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)}
 	store := capacity.NewStore(e.now)
 
@@ -52,7 +62,7 @@ func newEnv(t *testing.T, cs httpapi.CatalogState) *env {
 	nodeAuth := auth.NewNodeAuth(map[string]string{nodeToken: nodeName})
 
 	cfg := httpapi.Config{Version: "test", HeartbeatInterval: 30 * time.Second, OfflineAfter: 90 * time.Second}
-	srv := httpapi.NewServer(cfg, cs, store, callerAuth, nodeAuth, nil)
+	srv := httpapi.NewServer(cfg, cs, store, callerAuth, nodeAuth, meteredAuthority, entitlementAvailability, nil)
 
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -654,6 +664,7 @@ func TestHeartbeatRequest_SchemaConformance(t *testing.T) {
 
 func readAll(t *testing.T, resp *http.Response) []byte {
 	t.Helper()
+	defer resp.Body.Close()
 	buf := new(bytes.Buffer)
 	if _, err := buf.ReadFrom(resp.Body); err != nil {
 		t.Fatalf("reading response body: %v", err)

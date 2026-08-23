@@ -1,8 +1,8 @@
-// Package httpapi implements the agent-router HTTP surface in scope for
-// story 35.9a: GET /v1/status and POST /v1/capacity/heartbeat, plus the
-// credential-free /health and /ready endpoints. /v1/route and /v1/place are
-// out of scope (35.10, 35.11) and this package never stubs them - an
-// endpoint that exists but lies is worse than a 404.
+// Package httpapi implements the agent-router HTTP surface: GET /v1/status,
+// POST /v1/capacity/heartbeat and POST /v1/route (35.9a, 35.10), plus the
+// credential-free /health and /ready endpoints. /v1/place is out of scope
+// (35.11) and this package does not stub it - an endpoint that exists but
+// lies is worse than a 404.
 package httpapi
 
 import (
@@ -20,6 +20,7 @@ import (
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/capacity"
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/catalog"
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/heartbeat"
+	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/routing"
 )
 
 // maxHeartbeatBodyBytes bounds how much of a heartbeat request body this
@@ -53,26 +54,40 @@ type CatalogState struct {
 // once at startup and held fixed for this story's scope; there is no
 // hot-reload requirement here.
 type Server struct {
-	cfg        Config
-	catalog    CatalogState
-	store      *capacity.Store
-	callerAuth *auth.CallerAuth
-	nodeAuth   *auth.NodeAuth
-	logger     *slog.Logger
+	cfg                     Config
+	catalog                 CatalogState
+	store                   *capacity.Store
+	callerAuth              *auth.CallerAuth
+	nodeAuth                *auth.NodeAuth
+	meteredAuthority        MeteredAuthority
+	entitlementAvailability routing.EntitlementAvailability
+	logger                  *slog.Logger
 }
 
 // NewServer builds a Server. logger defaults to slog.Default() when nil.
-func NewServer(cfg Config, cs CatalogState, store *capacity.Store, callerAuth *auth.CallerAuth, nodeAuth *auth.NodeAuth, logger *slog.Logger) *Server {
+// meteredAuthority defaults to DenyAllMeteredAuthority (production posture:
+// no caller today independently holds metered-spend authority) when nil.
+// entitlementAvailability defaults to routing.AlwaysAvailable (production
+// has no live signal for entitlement exhaustion) when nil.
+func NewServer(cfg Config, cs CatalogState, store *capacity.Store, callerAuth *auth.CallerAuth, nodeAuth *auth.NodeAuth, meteredAuthority MeteredAuthority, entitlementAvailability routing.EntitlementAvailability, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if meteredAuthority == nil {
+		meteredAuthority = DenyAllMeteredAuthority{}
+	}
+	if entitlementAvailability == nil {
+		entitlementAvailability = routing.AlwaysAvailable{}
+	}
 	return &Server{
-		cfg:        cfg,
-		catalog:    cs,
-		store:      store,
-		callerAuth: callerAuth,
-		nodeAuth:   nodeAuth,
-		logger:     logger,
+		cfg:                     cfg,
+		catalog:                 cs,
+		store:                   store,
+		callerAuth:              callerAuth,
+		nodeAuth:                nodeAuth,
+		meteredAuthority:        meteredAuthority,
+		entitlementAvailability: entitlementAvailability,
+		logger:                  logger,
 	}
 }
 
@@ -85,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("POST /v1/capacity/heartbeat", s.handleHeartbeat)
+	mux.HandleFunc("POST /v1/route", s.handleRoute)
 	return mux
 }
 

@@ -91,7 +91,7 @@ func run(logger *slog.Logger) error {
 	store := capacity.NewStore(nil)
 
 	cfg := httpapi.Config{Version: buildVersion, HeartbeatInterval: interval, OfflineAfter: offlineAfter}
-	srv := httpapi.NewServer(cfg, catalogState, store, callerAuth, nodeAuth, logger)
+	srv := httpapi.NewServer(cfg, catalogState, store, callerAuth, nodeAuth, nil, nil, logger)
 
 	httpServer := &http.Server{
 		Addr:              listenAddr,
