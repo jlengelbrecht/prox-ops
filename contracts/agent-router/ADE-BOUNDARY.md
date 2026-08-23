@@ -255,6 +255,17 @@ router's either: the router is not in that path and cannot be.
 become the routing-policy authority. Collapsing either direction loses the separation this
 document exists to hold.
 
+### STORY-035-12 amendment: the stamp validator names who does this
+
+STORY-035-12 names the component this section otherwise left unnamed. It changes nothing
+above - it only says who performs "routing-policy validation performed before dispatch":
+
+- agent-router service recommends;
+- the stamp validator enforces the immutable decision immediately before execution;
+- Orca invokes the validator but does not own or reimplement policy;
+- no runtime network call exists between Orca and agent-router for validation;
+- the validator owns no session/process/worktree lifecycle.
+
 ---
 
 ## Sources

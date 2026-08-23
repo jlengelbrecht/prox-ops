@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExecutionStamp",
+  "description": "STORY-035-12. The immutable execution stamp: the final accepted ROUTE decision plus task-policy inputs, stamped into a story before an attempt runs. It carries the accepted or deliberately-overridden ExecutionProfile (execution-profile.schema.json) fields that stampvalidate.ValidateFinal needs to re-check every hard rule against, plus enough task identity to check forbidden_for. It does NOT carry a resolved physical placement - that is a separate, ephemeral PlacementEvidence supplied at validation time (placement-evidence.schema.json), never part of this document (amendment 2).\n\nThe property set is CLOSED (additionalProperties: false) and frozen by STORY-035-12 amendment 4. `expires_at` MUST be copied UNCHANGED from the accepted /v1/route decision: creating or overriding a stamp never grants a fresh validity window. `override`, when present, is AUDIT PROVENANCE ONLY - it grants no bypass of any rule; the final stamped fields here are validated on their own merits regardless of whether an override produced them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "harness",
+    "model_profile",
+    "effort",
+    "cost_class",
+    "entitlement_pool",
+    "metered",
+    "placement_policy",
+    "placement_required",
+    "catalog_version",
+    "expires_at",
+    "task",
+    "override"
+  ],
+  "properties": {
+    "harness": {
+      "allOf": [{ "$ref": "execution-profile.schema.json#/$defs/harness" }],
+      "description": "Same vocabulary and meaning as ExecutionProfile.harness. This is the FINAL stamped value - after any override - not necessarily what the router itself recommended."
+    },
+    "model_profile": {
+      "allOf": [{ "$ref": "execution-profile.schema.json#/$defs/model_profile" }],
+      "description": "Same vocabulary and meaning as ExecutionProfile.model_profile. The FINAL stamped value."
+    },
+    "effort": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "xhigh"],
+      "description": "Same vocabulary as ExecutionProfile.effort."
+    },
+    "cost_class": {
+      "type": "string",
+      "enum": ["free", "subscription", "metered"],
+      "description": "Same vocabulary and meaning as ExecutionProfile.cost_class: the economics of THIS ATTEMPT."
+    },
+    "entitlement_pool": {
+      "oneOf": [
+        { "$ref": "execution-profile.schema.json#/$defs/entitlement_pool" },
+        { "type": "null" }
+      ],
+      "description": "Same vocabulary and meaning as ExecutionProfile.entitlement_pool. null for local execution, which draws on no pool."
+    },
+    "metered": {
+      "type": "boolean",
+      "description": "States INTENT ONLY (STORY-035-12 amendment 3). This field alone never authorizes billable spend; spend authority is established independently, at validation time, in ValidationContext - never derived from this stamp. A stamp cannot mint its own authority by setting this true."
+    },
+    "placement_policy": {
+      "allOf": [{ "$ref": "execution-profile.schema.json#/$defs/placement_policy" }],
+      "description": "Same vocabulary and meaning as ExecutionProfile.placement_policy: which policy a later /v1/place call (and the placement rules in the frozen validation-verdict) must resolve this attempt under."
+    },
+    "placement_required": {
+      "type": "boolean",
+      "description": "Same meaning as ExecutionProfile.placement_required. When true, validation requires a matching, fresh PlacementEvidence; when false (every vendor-hosted profile), PlacementEvidence must be ABSENT - its presence is itself a validation failure (vendor_profile_with_placement)."
+    },
+    "catalog_version": {
+      "allOf": [{ "$ref": "execution-profile.schema.json#/$defs/catalog_version" }],
+      "description": "The catalog digest this stamp was computed against. Validation fails closed (catalog_version_stale) the instant this differs from the digest of the catalog actually loaded at validation time - never re-interpreted against a newer catalog, even when the stamped pair also exists there."
+    },
+    "catalog_document_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Additive, optional, audit-only (present exactly when ExecutionProfile carried it). No frozen validation rule reads this field; catalog_version (the digest) is the only value ever compared for drift."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339. Copied UNCHANGED from the accepted /v1/route decision's own expires_at (STORY-035-12 amendment 4) - stamping or overriding a route never computes a fresh 24-hour window. Validation's not_expired check compares the injected `now` against this value alone; `created_at` below never extends it."
+    },
+    "task": {
+      "$ref": "#/$defs/task_identity",
+      "description": "Task/story identity and the policy-bearing tags forbidden_for is checked against (STORY-035-12 amendment 4)."
+    },
+    "override": {
+      "oneOf": [{ "$ref": "#/$defs/override" }, { "type": "null" }],
+      "description": "Nullable pre-stamp override audit record (STORY-035-12 amendment 4). null when the stamp is the router's own unmodified recommendation. Present when a human deliberately overrode the recommendation before stamping (ADE-BOUNDARY.md §7) - PROVENANCE ONLY: it grants no bypass of any validation rule. An override that would produce a combination the router itself could never emit (a forbidden_for match, an unapproved pair, an undeclared entitlement) fails validation exactly as if the router had proposed it directly."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional, audit only (STORY-035-12 amendment 4). Records when this stamp document was written. It does NOT reset or extend route validity - only expires_at governs the not_expired check, however recently created_at claims the stamp to be."
+    }
+  },
+  "allOf": [
+    {
+      "description": "Same invariant as execution-profile.schema.json: `metered` is true exactly when the stamped cost_class is metered. A stamp cannot claim cost_class=metered with metered=false (spend without stated intent) or the reverse (stated intent recording a cost_class that never bought it) - both are exactly the tamper shape amendment 3's dual-key check exists to catch, but at the schema layer, not just at validation time.",
+      "if": {
+        "properties": { "cost_class": { "const": "metered" } },
+        "required": ["cost_class"]
+      },
+      "then": {
+        "properties": { "metered": { "const": true } },
+        "required": ["metered"]
+      },
+      "else": {
+        "properties": { "metered": { "const": false } },
+        "required": ["metered"]
+      }
+    }
+  ],
+  "$defs": {
+    "task_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["story_id", "tags"],
+      "properties": {
+        "story_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifies which attempt this is - the same story_id RouteRequest carried when this stamp's route was decided."
+        },
+        "title": {
+          "type": "string",
+          "description": "Optional human-readable task title, carried for audit legibility only."
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The task's tags, exactly as RouteRequest.tags carried them. Checked against the stamped profile's catalog forbidden_for list (rule 2, forbidden_for): a match is a hard exclusion regardless of how the stamp came to name that profile, override included."
+        },
+        "context_size": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+          ],
+          "description": "Copied unchanged from the original RouteRequest.task.context_size that produced this stamp's route decision - the same hard candidate filter /v1/route already applies (openapi.yaml: checked against a profile's guaranteed min_context; a profile whose guarantee is null cannot satisfy an explicit requirement). Optional/null when the original request carried none. An override cannot select a profile that fails this filter any more than the router itself could have offered it."
+        }
+      }
+    },
+    "override": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor", "at", "original", "reason"],
+      "properties": {
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Who performed the override - a human identity, for audit."
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339. When the override decision was made - distinct from, and never a substitute for, this stamp's own expires_at or created_at."
+        },
+        "original": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["harness", "model_profile"],
+          "properties": {
+            "harness": { "allOf": [{ "$ref": "execution-profile.schema.json#/$defs/harness" }] },
+            "model_profile": { "allOf": [{ "$ref": "execution-profile.schema.json#/$defs/model_profile" }] }
+          },
+          "description": "What the router itself recommended before the override - preserved so a reader can tell \"router recommendation accepted\" from \"explicit operator override\" (contracts/agent-router/README.md, '/v1/route is recommendation-only')."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the operator overrode the recommendation - required, because an unexplained override is exactly the audit gap this record exists to close."
+        }
+      },
+      "description": "Pre-stamp override audit record. Grants no bypass of any validation rule (STORY-035-12 amendment 4/6): the FINAL stamped harness/model_profile/etc. fields at the top level of this document are what every rule validates, on their own merits."
+    }
+  }
+}

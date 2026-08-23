@@ -96,6 +96,10 @@ PRE_EDGE = "sha256:fd8c4c31d595c733d81084f8243446302df5fac58c39e6b0f12ed33031506
 ALL_EDGE = "sha256:" + "f00dface" * 8  # all three edge placements brought up
 RETIRED = "sha256:" + "deadbeef" * 8   # local-unrestricted and any-24gb retired
 METERED = "sha256:" + "cafebabe" * 8   # a metered funding source declared
+# STORY-035-12: an obviously-synthetic digest bound to stale-catalog.stamp.json
+# alone. It does not depict any documented hypothetical catalog above - it
+# only has to differ from REAL, to prove catalog_drift_fails_closed.
+STAMP_STALE = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 # path -> (digests the file may carry, catalog_document_version it may name)
 # An empty digest set means the file must carry no digest at all.
@@ -131,6 +135,33 @@ EXPECTED = {
     "status/status-today.json": ({REAL}, DOC),
     "status/status-restarted-unseen.json": ({REAL}, DOC),
     "status/status-pre-edge-1.1.0.json": ({PRE_EDGE}, "1.1.0"),
+    # STORY-035-12 stamp-validation fixtures. Most carry the real digest and
+    # (where the stamp includes the optional field at all) the real document
+    # version; stale-catalog.stamp.json deliberately carries neither - it
+    # exists to prove catalog_drift_fails_closed, so its digest is bound to
+    # an obviously-synthetic value that is not one of the documented
+    # placeholders above (it does not depict any of those hypothetical
+    # catalogs - it only has to differ from REAL).
+    "stamp/valid-router-stamp.stamp.json": ({REAL}, DOC),
+    "stamp/valid-override.stamp.json": ({REAL}, DOC),
+    "stamp/invalid-pairing.stamp.json": ({REAL}, DOC),
+    "stamp/stale-catalog.stamp.json": ({STAMP_STALE}, None),
+    "stamp/local-placement-missing.stamp.json": ({REAL}, DOC),
+    "stamp/local-placement.stamp.json": ({REAL}, DOC),
+    "stamp/local-placement-expired.evidence.json": ({REAL}, None),
+    "stamp/expires-at-not-reset.stamp.json": ({REAL}, DOC),
+    "stamp/metered-intent-only.stamp.json": ({REAL}, DOC),
+    # forbidden-override.stamp.json is deliberately validated (by
+    # verify-stamp-cases.sh) against a SYNTHETIC catalog derived from the
+    # real one at run time (real catalog + local-code-standard.forbidden_for
+    # = ["security"]) - the real catalog has no approved-pair profile with a
+    # non-empty forbidden_for to demonstrate the case against. That synthetic
+    # catalog's digest therefore differs from REAL, so catalog_drift_fails_
+    # closed also fails on this fixture - expected, and not what the case
+    # proves (it proves forbidden_for alone). The committed fixture still
+    # states the REAL digest here because it depicts the real catalog's
+    # content plus that one addition, not a hypothetical catalog of its own.
+    "stamp/forbidden-override.stamp.json": ({REAL}, None),
 }
 
 NAMES = {REAL: "the real digest",
