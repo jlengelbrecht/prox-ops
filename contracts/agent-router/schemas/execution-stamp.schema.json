@@ -84,6 +84,23 @@
       "description": "Optional, audit only (STORY-035-12 amendment 4). Records when this stamp document was written. It does NOT reset or extend route validity - only expires_at governs the not_expired check, however recently created_at claims the stamp to be."
     }
   },
+  "allOf": [
+    {
+      "description": "Same invariant as execution-profile.schema.json: `metered` is true exactly when the stamped cost_class is metered. A stamp cannot claim cost_class=metered with metered=false (spend without stated intent) or the reverse (stated intent recording a cost_class that never bought it) - both are exactly the tamper shape amendment 3's dual-key check exists to catch, but at the schema layer, not just at validation time.",
+      "if": {
+        "properties": { "cost_class": { "const": "metered" } },
+        "required": ["cost_class"]
+      },
+      "then": {
+        "properties": { "metered": { "const": true } },
+        "required": ["metered"]
+      },
+      "else": {
+        "properties": { "metered": { "const": false } },
+        "required": ["metered"]
+      }
+    }
+  ],
   "$defs": {
     "task_identity": {
       "type": "object",
@@ -103,6 +120,13 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "The task's tags, exactly as RouteRequest.tags carried them. Checked against the stamped profile's catalog forbidden_for list (rule 2, forbidden_for): a match is a hard exclusion regardless of how the stamp came to name that profile, override included."
+        },
+        "context_size": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+          ],
+          "description": "Copied unchanged from the original RouteRequest.task.context_size that produced this stamp's route decision - the same hard candidate filter /v1/route already applies (openapi.yaml: checked against a profile's guaranteed min_context; a profile whose guarantee is null cannot satisfy an explicit requirement). Optional/null when the original request carried none. An override cannot select a profile that fails this filter any more than the router itself could have offered it."
         }
       }
     },

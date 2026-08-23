@@ -258,6 +258,7 @@ func Test_unauthorized_metered_fails(t *testing.T) {
 
 	intentOnly := vendorStamp(now)
 	intentOnly.Metered = true
+	intentOnly.CostClass = "metered" // keep cost_class/metered internally consistent so this isolates authority, not the mismatch check
 	v1 := stampvalidate.ValidateFinal(cat, intentOnly, stampvalidate.ValidationContext{MeteredSpendAuthorized: false}, now)
 	if v1.Valid {
 		t.Fatalf("intent without authority: verdict = %+v, want Valid=false", v1)
@@ -274,6 +275,127 @@ func Test_unauthorized_metered_fails(t *testing.T) {
 	}
 	if c := mustCheck(t, v2, stampvalidate.CheckMeteredDualKey); c.Passed || c.ReasonCode != stampvalidate.ReasonMeteredIntentMissing {
 		t.Errorf("metered_dual_key = %+v, want failed with %q", c, stampvalidate.ReasonMeteredIntentMissing)
+	}
+}
+
+// Test_metered_cost_class_mismatch_fails proves the schema-mirrored
+// cost_class<->metered invariant is ALSO enforced inside ValidateFinal
+// itself (owner directive, 2026-08-23 correctness round: "direct Go callers
+// don't pass through CLI schema parsing"), in both directions, and that the
+// mismatch is reported under its own dedicated reason code - never
+// misreported as missing/extra metered-spend authority.
+func Test_metered_cost_class_mismatch_fails(t *testing.T) {
+	cat := realCatalog(t)
+	now := fixedNow(t)
+
+	t.Run("cost_class_metered_but_metered_false", func(t *testing.T) {
+		stamp := vendorStamp(now)
+		stamp.CostClass = "metered"
+		stamp.Metered = false
+		v := stampvalidate.ValidateFinal(cat, stamp, stampvalidate.ValidationContext{}, now)
+		if v.Valid {
+			t.Fatalf("verdict = %+v, want Valid=false", v)
+		}
+		if c := mustCheck(t, v, stampvalidate.CheckMeteredDualKey); c.Passed || c.ReasonCode != stampvalidate.ReasonMeteredCostClassMismatch {
+			t.Errorf("metered_dual_key = %+v, want failed with %q", c, stampvalidate.ReasonMeteredCostClassMismatch)
+		}
+	})
+
+	t.Run("metered_true_but_cost_class_not_metered", func(t *testing.T) {
+		// Even WITH context authority present, the internal-consistency check
+		// runs first: this must still report the mismatch, never dual-key
+		// authority semantics.
+		stamp := vendorStamp(now)
+		stamp.CostClass = "subscription"
+		stamp.Metered = true
+		v := stampvalidate.ValidateFinal(cat, stamp, stampvalidate.ValidationContext{MeteredSpendAuthorized: true}, now)
+		if v.Valid {
+			t.Fatalf("verdict = %+v, want Valid=false", v)
+		}
+		if c := mustCheck(t, v, stampvalidate.CheckMeteredDualKey); c.Passed || c.ReasonCode != stampvalidate.ReasonMeteredCostClassMismatch {
+			t.Errorf("metered_dual_key = %+v, want failed with %q", c, stampvalidate.ReasonMeteredCostClassMismatch)
+		}
+	})
+}
+
+// Test_placement_requirement_not_self_assertable_fails proves
+// placement_required is derived from the loaded catalog's hosting
+// declaration for the stamped profile, never trusted from the stamp's own
+// flag - in BOTH directions: a local profile cannot claim
+// placement_required:false, and a vendor profile cannot claim
+// placement_required:true.
+func Test_placement_requirement_not_self_assertable_fails(t *testing.T) {
+	cat := realCatalog(t)
+	now := fixedNow(t)
+
+	t.Run("local_profile_claims_not_required", func(t *testing.T) {
+		stamp := localStamp(now) // local-code-standard: hosting local
+		stamp.PlacementRequired = false
+		v := stampvalidate.ValidateFinal(cat, stamp, stampvalidate.ValidationContext{}, now)
+		if v.Valid {
+			t.Fatalf("verdict = %+v, want Valid=false: a local profile must not be able to self-assert placement_required:false", v)
+		}
+		if c := mustCheck(t, v, stampvalidate.CheckPlacement); c.Passed || c.ReasonCode != stampvalidate.ReasonPlacementRequirementMismatch {
+			t.Errorf("placement = %+v, want failed with %q", c, stampvalidate.ReasonPlacementRequirementMismatch)
+		}
+	})
+
+	t.Run("vendor_profile_claims_required", func(t *testing.T) {
+		stamp := vendorStamp(now) // claude/strong: hosting vendor
+		stamp.PlacementRequired = true
+		v := stampvalidate.ValidateFinal(cat, stamp, stampvalidate.ValidationContext{}, now)
+		if v.Valid {
+			t.Fatalf("verdict = %+v, want Valid=false: a vendor profile must not be able to self-assert placement_required:true", v)
+		}
+		if c := mustCheck(t, v, stampvalidate.CheckPlacement); c.Passed || c.ReasonCode != stampvalidate.ReasonPlacementRequirementMismatch {
+			t.Errorf("placement = %+v, want failed with %q", c, stampvalidate.ReasonPlacementRequirementMismatch)
+		}
+	})
+}
+
+// Test_pair_currently_ineligible_fails proves ApprovedPairs membership alone
+// is not sufficient: claude+minimax/strong is intentionally listed in
+// routing.ApprovedPairs for when the catalog flips, but minimax/strong is
+// selectable:false in catalog 1.3.0 today, so this pair must fail final
+// validation closed even though the {harness, model_profile} table itself
+// approves it.
+func Test_pair_currently_ineligible_fails(t *testing.T) {
+	cat := realCatalog(t)
+	now := fixedNow(t)
+	stamp := vendorStamp(now)
+	stamp.Harness = "claude"
+	stamp.ModelProfile = "minimax/strong"
+	stamp.CostClass = "subscription"
+	stamp.EntitlementPool = strp("minimax-max")
+	stamp.PlacementRequired = false // minimax/strong: hosting vendor
+
+	v := stampvalidate.ValidateFinal(cat, stamp, stampvalidate.ValidationContext{}, now)
+	if v.Valid {
+		t.Fatalf("verdict = %+v, want Valid=false: minimax/strong is selectable:false in catalog 1.3.0", v)
+	}
+	if c := mustCheck(t, v, stampvalidate.CheckApprovedPair); c.Passed || c.ReasonCode != stampvalidate.ReasonPairCurrentlyIneligible {
+		t.Errorf("approved_pair = %+v, want failed with %q", c, stampvalidate.ReasonPairCurrentlyIneligible)
+	}
+}
+
+// Test_context_size_not_satisfied_fails proves an otherwise approved,
+// currently-eligible pairing still fails when the stamped task's explicit
+// context_size exceeds the profile's guaranteed min_context in the loaded
+// catalog - the same hard candidate filter /v1/route itself applies, reused
+// rather than reinterpreted (routing.ContextSatisfied).
+func Test_context_size_not_satisfied_fails(t *testing.T) {
+	cat := realCatalog(t)
+	now := fixedNow(t)
+	stamp := localStamp(now) // local-code-standard: min_context 65536, approved + selectable
+	tooLarge := 100000
+	stamp.Task.ContextSize = &tooLarge
+
+	v := stampvalidate.ValidateFinal(cat, stamp, stampvalidate.ValidationContext{PlacementEvidence: freshEvidence(now.Add(-5 * time.Second))}, now)
+	if v.Valid {
+		t.Fatalf("verdict = %+v, want Valid=false: local-code-standard's min_context (65536) cannot satisfy task.context_size (100000)", v)
+	}
+	if c := mustCheck(t, v, stampvalidate.CheckApprovedPair); c.Passed || c.ReasonCode != stampvalidate.ReasonContextSizeNotSatisfied {
+		t.Errorf("approved_pair = %+v, want failed with %q", c, stampvalidate.ReasonContextSizeNotSatisfied)
 	}
 }
 

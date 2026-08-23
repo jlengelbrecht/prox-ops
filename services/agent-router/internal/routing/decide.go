@@ -270,21 +270,14 @@ func buildCandidates(cat *catalog.Catalog, in Input, band Band, avail Entitlemen
 		if !pair.inBand(band) {
 			continue
 		}
-		h, ok := harnesses[pair.Harness]
-		if !ok || !h.Supported || !h.Selectable || h.RouterBehaviour == "refuse-to-emit" {
+		if !pairCatalogEligible(harnesses, profiles, pair) {
 			continue
 		}
-		p, ok := profiles[pair.ModelProfile]
-		if !ok || !p.Selectable {
-			continue
-		}
+		p := profiles[pair.ModelProfile] // pairCatalogEligible already proved this exists
 		if tagsForbidden(p.ForbiddenFor, in.Tags) {
 			continue
 		}
-		if !contextSatisfied(in.ContextSize, p.MinContext) {
-			continue
-		}
-		if !capabilitiesSatisfied(p.Capabilities) {
+		if !ContextSatisfied(in.ContextSize, p.MinContext) {
 			continue
 		}
 		costClass, pool, ok := resolveEntitlement(p, pools, avail)
@@ -294,6 +287,43 @@ func buildCandidates(cat *catalog.Catalog, in Input, band Band, avail Entitlemen
 		out = append(out, Candidate{Pair: pair, CostClass: costClass, EntitlementPool: pool, PlacementRequired: p.Hosting == "local"})
 	}
 	return out
+}
+
+// PairCatalogEligible reports whether {pair.Harness, pair.ModelProfile} is
+// eligible per the catalog's OWN current static declarations, independent of
+// any request (band, tags, context_size): the harness must exist, be
+// supported, selectable, and not refuse-to-emit; the profile must exist and
+// be selectable; and the profile must still declare the router's fixed
+// required capabilities. Membership in ApprovedPairs alone is NOT
+// sufficient - a pair can be committed to the approved-pairs table (amendment
+// 2: "no Cartesian product... the catalog stays the authority on
+// selectability") while the catalog currently marks one side of it
+// nonselectable. claude+minimax/strong is exactly this case in catalog
+// 1.3.0 today (minimax/strong: selectable: false) - it is intentionally
+// listed in ApprovedPairs for when the catalog flips, but is NOT currently
+// eligible.
+//
+// Exported and reused by stampvalidate.ValidateFinal's approved_pair check
+// (owner directive, 2026-08-23 correctness round: "factor the relevant
+// static pair/catalog eligibility into SHARED routing code... reuse it from
+// BOTH the router's candidate construction AND stampvalidate") so a stamp
+// naming an ApprovedPairs member that has since gone nonselectable in the
+// catalog fails validation exactly as buildCandidates would refuse to
+// construct it as a route-time candidate at all.
+func PairCatalogEligible(cat *catalog.Catalog, pair Pair) bool {
+	return pairCatalogEligible(harnessIndex(cat), profileIndex(cat), pair)
+}
+
+func pairCatalogEligible(harnesses map[string]catalog.Harness, profiles map[string]catalog.Profile, pair Pair) bool {
+	h, ok := harnesses[pair.Harness]
+	if !ok || !h.Supported || !h.Selectable || h.RouterBehaviour == "refuse-to-emit" {
+		return false
+	}
+	p, ok := profiles[pair.ModelProfile]
+	if !ok || !p.Selectable {
+		return false
+	}
+	return capabilitiesSatisfied(p.Capabilities)
 }
 
 func tagsForbidden(forbidden, tags []string) bool {
@@ -323,11 +353,16 @@ func TagsForbidden(forbidden, tags []string) bool {
 	return false
 }
 
-// contextSatisfied implements the RouteRequest.context_size rule verbatim:
+// ContextSatisfied implements the RouteRequest.context_size rule verbatim:
 // "checked against a profile's guaranteed min_context; a profile whose
 // guarantee is null cannot satisfy an explicit requirement here." No
-// requirement (want == nil) always passes.
-func contextSatisfied(want, guarantee *int) bool {
+// requirement (want == nil) always passes. Exported so STORY-035-12's
+// stampvalidate package reuses this exact predicate for its own
+// context_size check rather than reinterpreting the same rule a second
+// time (amendment 5 / owner directive 2026-08-23: "reuse/export the
+// EXISTING routing context-satisfaction predicate rather than duplicating
+// semantics").
+func ContextSatisfied(want, guarantee *int) bool {
 	if want == nil {
 		return true
 	}

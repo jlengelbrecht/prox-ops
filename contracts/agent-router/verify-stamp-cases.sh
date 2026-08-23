@@ -70,9 +70,40 @@ cat["profiles"]["local-code-standard"]["forbidden_for"] = ["security"]
 yaml.safe_dump(cat, open(sys.argv[2], "w"), sort_keys=False)
 PY
 
-echo "== generating the time-sensitive fresh-evidence fixtures =="
-FRESH_EVIDENCE="$WORK/fresh.evidence.json"
-python3 - "$FRESH_EVIDENCE" <<'PY'
+# forbidden-override.stamp.json's committed catalog_version is the REAL
+# catalog's digest, but the forbidden_override_fails case below validates it
+# against SYNTHETIC_CATALOG (a different byte stream, hence a different
+# digest) - agent-stamp-validate hashes exactly the raw bytes it loads
+# (catalog.Digest), the same as this script's own digest math. Left as
+# committed, that mismatch trips catalog_drift_fails_closed ALONGSIDE
+# forbidden_for, which is not what this case exists to isolate. Rewrite a
+# WORK-local copy of the fixture bound to the synthetic catalog's own
+# just-computed digest instead of editing the committed fixture.
+echo "== binding a runtime copy of forbidden-override.stamp.json to the synthetic catalog's own digest =="
+SYNTHETIC_DIGEST="$(python3 - "$SYNTHETIC_CATALOG" <<'PY'
+import hashlib, sys
+print("sha256:" + hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+PY
+)"
+SYNTHETIC_FORBIDDEN_OVERRIDE_STAMP="$WORK/forbidden-override.synthetic.stamp.json"
+python3 - "$FIXTURES/forbidden-override.stamp.json" "$SYNTHETIC_FORBIDDEN_OVERRIDE_STAMP" "$SYNTHETIC_DIGEST" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["catalog_version"] = sys.argv[3]
+json.dump(doc, open(sys.argv[2], "w"))
+PY
+
+# gen_fresh_evidence <output-path>: writes a "placed", matching, authorized
+# PlacementEvidence document with resolved_at a few seconds before THIS
+# call - not a single fixture generated once at script startup and reused
+# across every case that needs valid evidence. ttl_seconds stays the frozen
+# 30; freshness comes from resolved_at being just-in-time, so a slow CI
+# runner can never turn an intended-valid case into
+# placement_evidence_expired by the time a later case in the script runs
+# the binary.
+gen_fresh_evidence() {
+  local out="$1"
+  python3 - "$out" <<'PY'
 import json, sys
 from datetime import datetime, timedelta, timezone
 
@@ -94,6 +125,7 @@ doc = {
 }
 json.dump(doc, open(sys.argv[1], "w"))
 PY
+}
 
 failed=0
 run_case() {
@@ -164,7 +196,9 @@ run_case local_placement_missing_fails "$REAL_CATALOG" "$FIXTURES/local-placemen
 check_reason local_placement_missing_fails placement false placement_evidence_missing
 
 # --- case: local_placement_fresh_passes ---
-run_case local_placement_fresh_passes "$REAL_CATALOG" "$FIXTURES/local-placement.stamp.json" "$FRESH_EVIDENCE" 0
+FRESH_EVIDENCE_1="$WORK/fresh-1.evidence.json"
+gen_fresh_evidence "$FRESH_EVIDENCE_1"
+run_case local_placement_fresh_passes "$REAL_CATALOG" "$FIXTURES/local-placement.stamp.json" "$FRESH_EVIDENCE_1" 0
 check_reason local_placement_fresh_passes placement true placed_and_fresh
 
 # --- case: placement_evidence_expired_fails ---
@@ -172,7 +206,11 @@ run_case placement_evidence_expired_fails "$REAL_CATALOG" "$FIXTURES/local-place
 check_reason placement_evidence_expired_fails placement false placement_evidence_expired
 
 # --- case: reuse_stamp_fresh_evidence_passes (SAME stamp as the expired case above, only the evidence changes) ---
-run_case reuse_stamp_fresh_evidence_passes "$REAL_CATALOG" "$FIXTURES/local-placement.stamp.json" "$FRESH_EVIDENCE" 0
+# Freshly regenerated here too, not reused from local_placement_fresh_passes
+# above - resolved_at must be just-in-time for THIS invocation.
+FRESH_EVIDENCE_2="$WORK/fresh-2.evidence.json"
+gen_fresh_evidence "$FRESH_EVIDENCE_2"
+run_case reuse_stamp_fresh_evidence_passes "$REAL_CATALOG" "$FIXTURES/local-placement.stamp.json" "$FRESH_EVIDENCE_2" 0
 check_reason reuse_stamp_fresh_evidence_passes placement true placed_and_fresh
 
 # --- case: vendor_fabricated_placement_fails (a vendor stamp with ANY placement evidence attached) ---
@@ -187,9 +225,13 @@ check_reason expires_at_not_reset not_expired false stamp_expired
 run_case metered_cannot_self_authorize "$REAL_CATALOG" "$FIXTURES/metered-intent-only.stamp.json" "" 1
 check_reason metered_cannot_self_authorize metered_dual_key false metered_authority_missing
 
-# --- case: forbidden_override_fails (SYNTHETIC catalog: local-code-standard given a forbidden_for) ---
-run_case forbidden_override_fails "$SYNTHETIC_CATALOG" "$FIXTURES/forbidden-override.stamp.json" "" 1
+# --- case: forbidden_override_fails (SYNTHETIC catalog: local-code-standard
+# given a forbidden_for; the fixture used here is the WORK-local copy bound
+# to the synthetic catalog's own digest, so catalog_drift_fails_closed
+# passes and this case isolates forbidden_for as the sole failure) ---
+run_case forbidden_override_fails "$SYNTHETIC_CATALOG" "$SYNTHETIC_FORBIDDEN_OVERRIDE_STAMP" "" 1
 check_reason forbidden_override_fails forbidden_for false forbidden_for_tag
+check_reason forbidden_override_fails catalog_drift_fails_closed true ok
 
 # --- case: determinism (shell-level smoke check; internal/stampvalidate's
 # Test_determinism proves this exhaustively under -race with concurrent

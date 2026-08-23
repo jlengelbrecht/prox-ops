@@ -37,6 +37,29 @@ var (
 	validEffort = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true}
 	validCost   = map[string]bool{"free": true, "subscription": true, "metered": true}
 	validStatus = map[string]bool{"placed": true, "unavailable": true}
+
+	// The four vocabularies below restate contracts/agent-router/schemas/
+	// place-result.schema.json's closed enums for the SAME reason: this
+	// binary must not import httpapi, so PlacementEvidence.result - the
+	// frozen PlaceResult shape, unmodified (owner clarification 1) - gets
+	// its own structural validation here rather than a loose subset decode
+	// (owner directive, 2026-08-23 correctness round).
+	validPlacementName = map[string]bool{
+		"kserve-a5000": true, "cachyos-7900xtx": true, "bazzite-5090": true, "laptop-rtx5000": true,
+	}
+	validReadiness = map[string]bool{"warm": true, "cached": true, "absent": true, "unknown": true}
+	// validPlacedReasonCode / validUnavailableReasonCode are the two
+	// disjoint call-level subsets of place-result.schema.json's reason.code
+	// enum that are legal on result.reason depending on status - a placed_*
+	// code on an unavailable result (or vice versa) is a schema violation,
+	// not a policy question.
+	validPlacedReasonCode = map[string]bool{
+		"placed_warm": true, "placed_cached": true, "placed_cold": true, "placed_only_candidate": true,
+	}
+	validUnavailableReasonCode = map[string]bool{
+		"no_eligible_placement": true, "policy_resolves_to_nothing": true,
+		"all_candidates_withdrawn": true, "constraint_unsatisfiable": true,
+	}
 )
 
 // stampWire mirrors contracts/agent-router/schemas/execution-stamp.schema.json
@@ -60,9 +83,10 @@ type stampWire struct {
 }
 
 type taskWire struct {
-	StoryID string   `json:"story_id"`
-	Title   string   `json:"title,omitempty"`
-	Tags    []string `json:"tags"`
+	StoryID     string   `json:"story_id"`
+	Title       string   `json:"title,omitempty"`
+	Tags        []string `json:"tags"`
+	ContextSize *int     `json:"context_size,omitempty"`
 }
 
 type overrideOriginalWire struct {
@@ -185,6 +209,9 @@ func parseStamp(raw []byte) (stampvalidate.Stamp, error) {
 	if strings.TrimSpace(w.Task.StoryID) == "" {
 		return stampvalidate.Stamp{}, newInputError("task.story_id is required and must not be empty")
 	}
+	if w.Task.ContextSize != nil && *w.Task.ContextSize < 0 {
+		return stampvalidate.Stamp{}, newInputError("task.context_size must be >= 0")
+	}
 
 	stamp := stampvalidate.Stamp{
 		Harness:                w.Harness,
@@ -198,7 +225,7 @@ func parseStamp(raw []byte) (stampvalidate.Stamp, error) {
 		CatalogVersion:         w.CatalogVersion,
 		CatalogDocumentVersion: w.CatalogDocumentVersion,
 		ExpiresAt:              expiresAt,
-		Task:                   stampvalidate.TaskIdentity{StoryID: w.Task.StoryID, Title: w.Task.Title, Tags: w.Task.Tags},
+		Task:                   stampvalidate.TaskIdentity{StoryID: w.Task.StoryID, Title: w.Task.Title, Tags: w.Task.Tags, ContextSize: w.Task.ContextSize},
 	}
 
 	if w.CreatedAt != nil {
@@ -220,6 +247,19 @@ func parseStamp(raw []byte) (stampvalidate.Stamp, error) {
 		if strings.TrimSpace(w.Override.Reason) == "" {
 			return stampvalidate.Stamp{}, newInputError("override.reason is required and must not be empty")
 		}
+		// override.original.{harness,model_profile} decode to the zero value
+		// ("") when absent from the input, which would otherwise sail past
+		// validation silently. They carry the same closed vocabularies as the
+		// top-level harness/model_profile fields (execution-stamp.schema.json
+		// #/$defs/override), so a malformed or missing original record must be
+		// rejected here exactly like the top-level fields are, not decoded into
+		// an unvalidated audit record.
+		if !validHarness[w.Override.Original.Harness] {
+			return stampvalidate.Stamp{}, newInputError("override.original.harness %q is not in the closed harness vocabulary", w.Override.Original.Harness)
+		}
+		if !validProfile[w.Override.Original.ModelProfile] {
+			return stampvalidate.Stamp{}, newInputError("override.original.model_profile %q is not in the closed model_profile vocabulary", w.Override.Original.ModelProfile)
+		}
 		stamp.Override = &stampvalidate.Override{
 			Actor: w.Override.Actor,
 			At:    at,
@@ -232,6 +272,81 @@ func parseStamp(raw []byte) (stampvalidate.Stamp, error) {
 	}
 
 	return stamp, nil
+}
+
+// validatePlaceResult enforces the structural invariants of the FROZEN
+// place-result.schema.json that a generic strict-decode cannot express on
+// its own: the closed header-key set, the ttl_seconds floor, the readiness/
+// reason-code vocabularies, and the status-DEPENDENT {placed, unavailable}
+// shape (owner directive, 2026-08-23 correctness round: "make the CLI
+// parser honor that nested contract... do NOT change the frozen
+// place-result.schema.json"). A result that violates any of these is
+// malformed input (exit 2) exactly like a decode failure - these are
+// schema-shape facts, not policy verdicts, and stampvalidate.checkPlacement
+// must never be asked to reason about placement evidence that could not
+// have come from a real /v1/place response in the first place.
+func validatePlaceResult(w placeResultWire) error {
+	// The allowed header key set is closed to "x-placement" regardless of
+	// status (place-result.schema.json headers.propertyNames) - this is the
+	// one channel a forged evidence document could otherwise use to smuggle
+	// an arbitrary header past the caller into an agentgateway request.
+	for key := range w.Headers {
+		if key != "x-placement" {
+			return newInputError("result.headers contains key %q: only \"x-placement\" is ever a legal header name", key)
+		}
+	}
+	if w.TTLSeconds < 1 {
+		return newInputError("result.ttl_seconds must be >= 1, got %d", w.TTLSeconds)
+	}
+	if w.EstimatedColdStartS != nil && *w.EstimatedColdStartS < 0 {
+		return newInputError("result.estimated_cold_start_s must be >= 0 when present")
+	}
+	if strings.TrimSpace(w.Reason.Message) == "" {
+		return newInputError("result.reason.message is required and must not be empty")
+	}
+
+	switch w.Status {
+	case "placed":
+		if w.Model == nil || strings.TrimSpace(*w.Model) == "" {
+			return newInputError("result.model is required and must be non-empty when status is \"placed\"")
+		}
+		if w.Placement == nil || !validPlacementName[*w.Placement] {
+			return newInputError("result.placement must be one of the closed placement vocabulary when status is \"placed\"")
+		}
+		if w.Readiness == nil || !validReadiness[*w.Readiness] {
+			return newInputError("result.readiness must be one of warm, cached, absent, unknown when status is \"placed\"")
+		}
+		if _, ok := w.Headers["x-placement"]; !ok {
+			return newInputError("result.headers must contain \"x-placement\" when status is \"placed\"")
+		}
+		if !validPlacedReasonCode[w.Reason.Code] {
+			return newInputError("result.reason.code %q is not a legal reason on a \"placed\" result", w.Reason.Code)
+		}
+	case "unavailable":
+		// An unavailable result is an EXPLICIT EMPTY PLACEMENT
+		// (place-result.schema.json): every one of these fields is REQUIRED
+		// to be absent/empty, never a silent fall-through a caller could
+		// mistake for a real placement.
+		if w.Model != nil {
+			return newInputError("result.model must be null when status is \"unavailable\"")
+		}
+		if w.Placement != nil {
+			return newInputError("result.placement must be null when status is \"unavailable\"")
+		}
+		if w.Readiness != nil {
+			return newInputError("result.readiness must be null when status is \"unavailable\"")
+		}
+		if w.EstimatedColdStartS != nil {
+			return newInputError("result.estimated_cold_start_s must be null when status is \"unavailable\"")
+		}
+		if len(w.Headers) != 0 {
+			return newInputError("result.headers must be empty when status is \"unavailable\"")
+		}
+		if !validUnavailableReasonCode[w.Reason.Code] {
+			return newInputError("result.reason.code %q is not a legal reason on an \"unavailable\" result", w.Reason.Code)
+		}
+	}
+	return nil
 }
 
 // parseEvidence strictly decodes and validates a placement-evidence JSON
@@ -251,6 +366,9 @@ func parseEvidence(raw []byte) (*stampvalidate.PlacementEvidence, error) {
 	}
 	if w.Result.CatalogVersion != "" && !catalogVersionPattern.MatchString(w.Result.CatalogVersion) {
 		return nil, newInputError("result.catalog_version must match ^sha256:[0-9a-f]{64}$")
+	}
+	if err := validatePlaceResult(w.Result); err != nil {
+		return nil, err
 	}
 
 	alts := make([]stampvalidate.PlaceAlternative, 0, len(w.Result.Alternatives))

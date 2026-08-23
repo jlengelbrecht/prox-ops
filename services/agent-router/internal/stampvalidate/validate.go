@@ -1,6 +1,7 @@
 package stampvalidate
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/catalog"
@@ -25,26 +26,30 @@ const (
 // complete set this build emits, and validation-verdict.schema.json's enum
 // must be kept in lockstep with it.
 const (
-	ReasonOK                          = "ok"
-	ReasonPairNotApproved             = "pair_not_approved"
-	ReasonForbiddenForTag             = "forbidden_for_tag"
-	ReasonProfileUnknownInCatalog     = "profile_unknown_in_catalog"
-	ReasonEntitlementNotPermitted     = "entitlement_not_permitted"
-	ReasonMeteredAuthorityMissing     = "metered_authority_missing"
-	ReasonMeteredIntentMissing        = "metered_intent_missing"
-	ReasonNotApplicable               = "not_applicable"
-	ReasonVendorProfileWithPlacement  = "vendor_profile_with_placement"
-	ReasonPlacementEvidenceMissing    = "placement_evidence_missing"
-	ReasonPlacementNotPlaced          = "placement_not_placed"
-	ReasonPlacementHeaderMismatch     = "placement_header_mismatch"
-	ReasonPlacementNotAuthorized      = "placement_not_authorized"
-	ReasonPlacementCatalogVersionDiff = "placement_catalog_version_mismatch"
-	ReasonPlacementEvidenceExpired    = "placement_evidence_expired"
-	ReasonPlacedAndFresh              = "placed_and_fresh"
-	ReasonCatalogVersionStale         = "catalog_version_stale"
-	ReasonStampExpired                = "stamp_expired"
-	ReasonNoOverride                  = "no_override"
-	ReasonOverrideRecorded            = "override_recorded"
+	ReasonOK                           = "ok"
+	ReasonPairNotApproved              = "pair_not_approved"
+	ReasonPairCurrentlyIneligible      = "pair_currently_ineligible"
+	ReasonContextSizeNotSatisfied      = "context_size_not_satisfied"
+	ReasonForbiddenForTag              = "forbidden_for_tag"
+	ReasonProfileUnknownInCatalog      = "profile_unknown_in_catalog"
+	ReasonEntitlementNotPermitted      = "entitlement_not_permitted"
+	ReasonMeteredAuthorityMissing      = "metered_authority_missing"
+	ReasonMeteredIntentMissing         = "metered_intent_missing"
+	ReasonNotApplicable                = "not_applicable"
+	ReasonVendorProfileWithPlacement   = "vendor_profile_with_placement"
+	ReasonPlacementRequirementMismatch = "placement_requirement_mismatch"
+	ReasonMeteredCostClassMismatch     = "metered_cost_class_mismatch"
+	ReasonPlacementEvidenceMissing     = "placement_evidence_missing"
+	ReasonPlacementNotPlaced           = "placement_not_placed"
+	ReasonPlacementHeaderMismatch      = "placement_header_mismatch"
+	ReasonPlacementNotAuthorized       = "placement_not_authorized"
+	ReasonPlacementCatalogVersionDiff  = "placement_catalog_version_mismatch"
+	ReasonPlacementEvidenceExpired     = "placement_evidence_expired"
+	ReasonPlacedAndFresh               = "placed_and_fresh"
+	ReasonCatalogVersionStale          = "catalog_version_stale"
+	ReasonStampExpired                 = "stamp_expired"
+	ReasonNoOverride                   = "no_override"
+	ReasonOverrideRecorded             = "override_recorded"
 )
 
 // ValidateFinal is the final pre-execution policy validator (STORY-035-12).
@@ -66,10 +71,32 @@ func ValidateFinal(cat *catalog.Catalog, stamp Stamp, vctx ValidationContext, no
 	// for which {harness, model_profile} pairs the router itself may ever
 	// emit (amendment 5). A validator that kept its own copy could disagree
 	// with /v1/route about what is approved; this reads the same table.
-	pairOK := approvedPair(stamp.Harness, stamp.ModelProfile)
-	checks = append(checks, mkCheck(CheckApprovedPair, pairOK, ReasonOK, ReasonPairNotApproved,
-		"the stamped {harness, model_profile} pair is in routing.ApprovedPairs",
-		"the stamped {harness, model_profile} pair does not appear in routing.ApprovedPairs at all"))
+	//
+	// ApprovedPairs membership alone is NOT enough (owner directive,
+	// 2026-08-23 correctness round): a pair can be committed to that table
+	// while the catalog currently marks one side of it nonselectable -
+	// claude+minimax/strong today. routing.PairCatalogEligible re-runs the
+	// EXACT static catalog-eligibility filter buildCandidates applies at
+	// route time (harness supported/selectable/not-refuse-to-emit; profile
+	// exists/selectable; required capabilities), shared rather than
+	// reimplemented. And a stamped profile that cannot satisfy the task's
+	// own explicit context_size requirement is exactly as ineligible as one
+	// the router could never have offered in the first place -
+	// routing.ContextSatisfied is the same predicate buildCandidates applies
+	// for that hard filter.
+	pairOK, pairReason := true, ReasonOK
+	switch {
+	case !approvedPair(stamp.Harness, stamp.ModelProfile):
+		pairOK, pairReason = false, ReasonPairNotApproved
+	case !routing.PairCatalogEligible(cat, routing.Pair{Harness: stamp.Harness, ModelProfile: stamp.ModelProfile}):
+		pairOK, pairReason = false, ReasonPairCurrentlyIneligible
+	case !routing.ContextSatisfied(stamp.Task.ContextSize, profile.MinContext):
+		pairOK, pairReason = false, ReasonContextSizeNotSatisfied
+	}
+	checks = append(checks, CheckResult{
+		Name: CheckApprovedPair, Passed: pairOK, ReasonCode: pairReason,
+		Message: approvedPairMessage(pairOK, pairReason, stamp),
+	})
 
 	// 2. forbidden_for - profile.ForbiddenFor ∩ stamp.Task.Tags must be
 	// empty. A hard exclusion, never a score, and never bypassable by an
@@ -117,6 +144,14 @@ func ValidateFinal(cat *catalog.Catalog, stamp Stamp, vctx ValidationContext, no
 	// tests must prove both directions).
 	meteredOK, meteredReason := true, ReasonOK
 	switch {
+	case stamp.Metered != (stamp.CostClass == "metered"):
+		// A forged stamp could claim cost_class:"metered" with metered:false
+		// (or the reverse) to skew this dual-key rule, which keys off
+		// stamp.Metered - the schema-layer invariant (execution-stamp.schema.json)
+		// guards this too, but a tampered/hand-built stamp bypasses schema
+		// validation entirely, so ValidateFinal fails closed on the same
+		// mismatch here.
+		meteredOK, meteredReason = false, ReasonMeteredCostClassMismatch
 	case stamp.Metered && !vctx.MeteredSpendAuthorized:
 		meteredOK, meteredReason = false, ReasonMeteredAuthorityMissing
 	case !stamp.Metered && vctx.MeteredSpendAuthorized:
@@ -185,13 +220,6 @@ func ValidateFinal(cat *catalog.Catalog, stamp Stamp, vctx ValidationContext, no
 	}
 
 	return Verdict{Valid: valid, Checks: checks, CatalogVersion: cat.Digest}
-}
-
-func mkCheck(name string, ok bool, okReason, failReason, okMsg, failMsg string) CheckResult {
-	if ok {
-		return CheckResult{Name: name, Passed: true, ReasonCode: okReason, Message: okMsg}
-	}
-	return CheckResult{Name: name, Passed: false, ReasonCode: failReason, Message: failMsg}
 }
 
 // approvedPair reports whether {harness, modelProfile} appears in
@@ -269,6 +297,23 @@ func poolDeclared(cat *catalog.Catalog, name string) bool {
 // (owner preference: valid iff now < resolved_at + ttl_seconds; equality at
 // expiry is INVALID).
 func checkPlacement(cat *catalog.Catalog, profile catalog.Profile, profileOK bool, stamp Stamp, ev *PlacementEvidence, now time.Time) (ok bool, reason, message string) {
+	// placement_required is NOT self-assertable (STORY-035-12 README
+	// "It equals hosting: local for the SELECTED profile in the loaded
+	// catalog"). A tampered stamp could set placement_required:false on a
+	// local profile to skip every check below, or the reverse on a
+	// vendor-hosted profile. The validator derives the true requirement from
+	// the loaded catalog and fails closed the instant the stamped flag
+	// disagrees with it - it never trusts stamp.PlacementRequired on its own
+	// say-so. Only checked when the profile itself is known; an unknown
+	// profile already fails forbidden_for/entitlement_permitted closed.
+	if profileOK {
+		derivedRequired := profile.Hosting == "local"
+		if stamp.PlacementRequired != derivedRequired {
+			return false, ReasonPlacementRequirementMismatch,
+				fmt.Sprintf("stamp.placement_required (%t) does not match the catalog's hosting declaration for model_profile %q (hosting: %q, so placement_required must be %t) - a stamp cannot self-assert its own placement requirement", stamp.PlacementRequired, stamp.ModelProfile, profile.Hosting, derivedRequired)
+		}
+	}
+
 	if !stamp.PlacementRequired {
 		if ev != nil {
 			return false, ReasonVendorProfileWithPlacement,
@@ -339,6 +384,19 @@ func checkPlacement(cat *catalog.Catalog, profile catalog.Profile, profileOK boo
 	return true, ReasonPlacedAndFresh, "placement_required is true and the supplied PlacementEvidence is placed, matching, authorized, on the loaded catalog, and unexpired"
 }
 
+func approvedPairMessage(ok bool, reason string, stamp Stamp) string {
+	switch {
+	case ok:
+		return "the stamped {harness, model_profile} pair is in routing.ApprovedPairs, currently eligible per the loaded catalog, and (when stamped) satisfies the task's context_size requirement"
+	case reason == ReasonPairNotApproved:
+		return "the stamped {harness, model_profile} pair does not appear in routing.ApprovedPairs at all"
+	case reason == ReasonPairCurrentlyIneligible:
+		return "the stamped {harness, model_profile} pair is listed in routing.ApprovedPairs, but is not currently eligible per the loaded catalog (harness unsupported/nonselectable/refuse-to-emit, or profile unknown/nonselectable, or the profile no longer declares the router's required capabilities)"
+	default:
+		return fmt.Sprintf("the stamped model_profile %q cannot satisfy the task's explicit context_size requirement against the profile's min_context in the loaded catalog", stamp.ModelProfile)
+	}
+}
+
 func forbiddenForMessage(ok bool, reason string, profile catalog.Profile, stamp Stamp) string {
 	if ok {
 		return "no tag in task.tags appears in the profile's forbidden_for list"
@@ -361,6 +419,8 @@ func entitlementMessage(ok bool, reason string, stamp Stamp) string {
 
 func meteredMessage(reason string, stamp Stamp, vctx ValidationContext) string {
 	switch reason {
+	case ReasonMeteredCostClassMismatch:
+		return fmt.Sprintf("stamp.metered (%t) disagrees with stamp.cost_class (%q) - metered must be true iff cost_class is \"metered\"; a stamp cannot self-assert one without the other", stamp.Metered, stamp.CostClass)
 	case ReasonMeteredAuthorityMissing:
 		return "the stamp states metered intent (metered: true), but ValidationContext carries no metered-spend authority"
 	case ReasonMeteredIntentMissing:

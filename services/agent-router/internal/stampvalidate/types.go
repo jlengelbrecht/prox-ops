@@ -39,6 +39,13 @@ type TaskIdentity struct {
 	StoryID string
 	Title   string
 	Tags    []string
+	// ContextSize is copied unchanged from the original RouteRequest.task.
+	// context_size that produced this stamp's route decision (owner
+	// directive, 2026-08-23 correctness round). nil when the original
+	// request carried none - ValidateFinal's context_size check treats that
+	// as "no requirement", exactly as routing.ContextSatisfied does at route
+	// time (they are the same function).
+	ContextSize *int
 }
 
 // OverrideOriginal is the pre-override values an audit record remembers -
