@@ -174,6 +174,46 @@ type withheldCandidateDTO struct {
 	CostClass    string `json:"cost_class"`
 }
 
+// placeRequestWire mirrors contracts/agent-router/openapi.yaml
+// components.schemas.PlaceRequest field-for-field.
+type placeRequestWire struct {
+	ModelProfile          string   `json:"model_profile"`
+	PlacementPolicy       string   `json:"placement_policy"`
+	MinFreeVramGB         *float64 `json:"min_free_vram_gb"`
+	Exclude               []string `json:"exclude"`
+	EstimatedRequestBytes *int     `json:"estimated_request_bytes"`
+	CatalogVersion        *string  `json:"catalog_version"`
+}
+
+// placeResultWire mirrors
+// contracts/agent-router/schemas/place-result.schema.json field-for-field.
+type placeResultWire struct {
+	Status              string                 `json:"status"`
+	Model               *string                `json:"model"`
+	Placement           *string                `json:"placement"`
+	Readiness           *string                `json:"readiness"`
+	EstimatedColdStartS *float64               `json:"estimated_cold_start_s"`
+	Headers             map[string]string      `json:"headers"`
+	TTLSeconds          int                    `json:"ttl_seconds"`
+	Reason              placeReasonWire        `json:"reason"`
+	Alternatives        []placeAlternativeWire `json:"alternatives"`
+	CatalogVersion      string                 `json:"catalog_version"`
+}
+
+type placeReasonWire struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type placeAlternativeWire struct {
+	Placement           string          `json:"placement"`
+	Model               string          `json:"model"`
+	Readiness           string          `json:"readiness"`
+	EstimatedColdStartS *float64        `json:"estimated_cold_start_s"`
+	Eligible            bool            `json:"eligible"`
+	Reason              placeReasonWire `json:"reason"`
+}
+
 type policyDTO struct {
 	Name               string   `json:"name"`
 	PreferOrder        []string `json:"prefer_order"`

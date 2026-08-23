@@ -282,6 +282,35 @@ func reasonCodeFor(res placementResolution) string {
 // A claim the catalog does not authorize is logged and never treated as
 // warm or cached - this is where "a heartbeat may narrow static authority;
 // it may never expand it" is enforced.
+// computeReadinessForModel answers warm/cached/absent/unknown for ONE
+// specific model on a placement. computeReadiness above answers for the
+// placement as a whole - correct for /v1/status, which reports what a node
+// is doing - but /v1/place evaluates a CANDIDATE (placement, model) pair,
+// and on a catalog that ever authorizes two models on one placement, model
+// A being active must not let model B claim "warm, no load step". Warm
+// means THIS model is the active one; cached means THIS model's artifact is
+// present; authorization is still required for either (narrow, never
+// expand).
+func computeReadinessForModel(cat *catalog.Catalog, placementName, modelID string, hb *heartbeat.Heartbeat, logger *slog.Logger) string {
+	if hb == nil {
+		return "unknown"
+	}
+	if hb.ActiveModel != nil && *hb.ActiveModel == modelID {
+		if cat.ModelAuthorizedOnPlacement(modelID, placementName) {
+			return "warm"
+		}
+		logger.Warn("heartbeat claims an active_model the catalog does not authorize on this placement; ignored for eligibility",
+			"placement", placementName, "active_model", modelID)
+		return "absent"
+	}
+	for _, m := range hb.CachedModels {
+		if m == modelID && cat.ModelAuthorizedOnPlacement(modelID, placementName) {
+			return "cached"
+		}
+	}
+	return "absent"
+}
+
 func computeReadiness(cat *catalog.Catalog, placementName string, hb *heartbeat.Heartbeat, logger *slog.Logger) string {
 	if hb == nil {
 		return "unknown"
