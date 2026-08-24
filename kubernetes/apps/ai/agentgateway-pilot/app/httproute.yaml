@@ -161,6 +161,30 @@ spec:
         attempts: 1
         backoff: 50ms
         codes: [503]
+    # EPIC-035 (bazzite bring-up): `x-placement: bazzite-5090` dispatch,
+    # additive alongside the two 35.8 placement rules above. Reachable only
+    # via the explicit header, which agent-router only emits once the
+    # catalog makes bazzite-5090 selectable; the headerless default below
+    # is untouched.
+    - name: qwen36-27b-chat-bazzite
+      matches:
+        - path:
+            type: Exact
+            value: /v1/chat/completions
+          method: POST
+          headers:
+            - name: x-placement
+              value: bazzite-5090
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: qwen36-27b-bazzite-preferred
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 1
+        backoff: 50ms
+        codes: [503]
     # Frozen safe grouped default: headerless, so missing/unknown/stale
     # `x-placement` lands here. Same backend as the kserve-a5000 rule
     # above - production traffic (Claude Code's zero-config path included)
@@ -214,6 +238,27 @@ spec:
         - group: agentgateway.dev
           kind: AgentgatewayBackend
           name: qwen36-27b
+      timeouts:
+        request: 240s
+      retry:
+        attempts: 1
+        backoff: 50ms
+        codes: [503]
+    # EPIC-035 (bazzite bring-up): same dispatch as qwen36-27b-chat-bazzite,
+    # for the /v1/messages surface.
+    - name: qwen36-27b-messages-bazzite
+      matches:
+        - path:
+            type: Exact
+            value: /v1/messages
+          method: POST
+          headers:
+            - name: x-placement
+              value: bazzite-5090
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: qwen36-27b-bazzite-preferred
       timeouts:
         request: 240s
       retry:

@@ -1,0 +1,40 @@
+---
+# EPIC-035 (bazzite bring-up): the Bazzite edge worker's dedicated PKI trust
+# anchor (edge/bazzite/README.md "Bring-up" step 2 - scripts/issue-edge-pki.sh,
+# CN "homelab0 edge CA"; a SEPARATE per-host CA keypair from the CachyOS one,
+# same CN by the shared script's design). Public trust material, not a
+# credential: this is the CA certificate itself, never a private key, so it is
+# committed to Git like any other ConfigMap - contrast with the bearer
+# credential in edge-bazzite-5090-externalsecret.yaml, which never is.
+#
+# Provenance (issued 2026-08-24 on the edge host itself, keys in
+# ~/.config/edge-bazzite/pki, mode 0700, outside any checkout): confirmed to
+# be the real anchor by validating the LIVE leaf -
+#   openssl s_client -connect 10.20.65.98:8443 \
+#     -servername bazzite-5090.homelab0.org -CAfile edge-ca.crt
+#     -> Verification: OK, Verify return code: 0
+# Self-signed root, CA:TRUE pathlen:0, expires 2036-08-21, no private key.
+# sha256 fingerprint 57:0D:D7:27:61:03:98:DD:A9:3B:CF:32:45:09:46:2A:
+#                    5A:74:53:B8:C6:0B:64:85:4E:4D:EC:00:D8:F8:C6:6A
+#
+# Rotation: reissuing the edge PKI invalidates this ConfigMap. A stale CA
+# here fails CLOSED (TLS handshake error), never silently. Leaf-only renewal
+# (issue-edge-pki.sh --leaf-only) does not touch this ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: edge-bazzite-5090-ca
+  namespace: ai
+data:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIBnjCCAUSgAwIBAgIUJ6lwA1G6prE8VAIJ9o29WA37n+4wCgYIKoZIzj0EAwIw
+    GzEZMBcGA1UEAwwQaG9tZWxhYjAgZWRnZSBDQTAeFw0yNjA4MjQxNjQ4MDlaFw0z
+    NjA4MjExNjQ4MDlaMBsxGTAXBgNVBAMMEGhvbWVsYWIwIGVkZ2UgQ0EwWTATBgcq
+    hkjOPQIBBggqhkjOPQMBBwNCAATCUL7bDjcJRGzvjX4Ggq/23/kT6RCARmOjIAUY
+    pt5zh8wxeaKWoOdBXTeIZnRzcOTEVvwp5f4dgEAZmXceKlOro2YwZDAfBgNVHSME
+    GDAWgBQi7zmLsnQ0IGJg7vjNu28sg5iiszASBgNVHRMBAf8ECDAGAQH/AgEAMA4G
+    A1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUIu85i7J0NCBiYO74zbtvLIOYorMwCgYI
+    KoZIzj0EAwIDSAAwRQIgFEuJnDyQtunA51Y9tP1i5Be95tdTxh9rtGmTGAki4SAC
+    IQDA3QyVBBY/lqFHv1ExcHn5qi0QCo2hUbjyR7fLVe9UYQ==
+    -----END CERTIFICATE-----

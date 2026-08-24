@@ -52,6 +52,16 @@ spec:
       kind: HTTPRoute
       name: agentgateway-pilot
       sectionName: qwen36-27b-messages-kserve
+    # EPIC-035 (bazzite bring-up): the two bazzite x-placement sections -
+    # same key requirement, same paths, not new models.
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-chat-bazzite
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-messages-bazzite
   traffic:
     apiKeyAuthentication:
       mode: Strict
@@ -181,6 +191,17 @@ spec:
       kind: HTTPRoute
       name: agentgateway-pilot
       sectionName: qwen36-27b-messages-kserve
+    # EPIC-035 (bazzite bring-up): same model, same rule, on the two
+    # bazzite x-placement sections - the CEL below stays copied verbatim,
+    # never derived from the header (ruling R5).
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-chat-bazzite
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: agentgateway-pilot
+      sectionName: qwen36-27b-messages-bazzite
   traffic:
     authorization:
       action: Allow
@@ -219,6 +240,15 @@ spec:
       kind: AgentgatewayBackend
       name: qwen36-27b-edge-preferred
       sectionName: cachyos-7900xtx
+    # EPIC-035 (bazzite bring-up): the bazzite-preferred backend's group-0
+    # provider. Passive health matters MOST here - abrupt interactive
+    # withdrawal is this host's contract (§4), and eviction plus the route
+    # retry is what turns a mid-withdrawal wire failure into a kserve
+    # fallback instead of a caller-visible error on the next request.
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: qwen36-27b-bazzite-preferred
+      sectionName: bazzite-5090
   backend:
     health:
       eviction:
