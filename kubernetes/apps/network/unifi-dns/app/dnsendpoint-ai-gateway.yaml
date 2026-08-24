@@ -27,3 +27,14 @@ spec:
     - dnsName: ai-gateway.homelab0.org
       recordType: A
       targets: ["10.20.67.27"]
+      # cloudflare-dns (sources: crd) publishes DNSEndpoints to the public
+      # zone, which is how this hostname class actually resolves for LAN
+      # clients: the UDM intercepts port-53 and answers from public DNS, so
+      # k8s-gateway's own (verified, in-cluster) answer never reaches LAN
+      # hosts. The runner defaults records to proxied
+      # (--cloudflare-proxied), and Cloudflare rejects proxying RFC1918
+      # targets (error 9003), so the record must opt out per-record - the
+      # same reason its sibling records exist unproxied.
+      providerSpecific:
+        - name: external-dns.alpha.kubernetes.io/cloudflare-proxied
+          value: "false"
