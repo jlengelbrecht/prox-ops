@@ -52,6 +52,8 @@ CASES=(
   "physical-add|base.yaml|physical-add-new.yaml|expanding|narrowing|a physical candidate is a grant"
   "capability-raise|base.yaml|capability-raise-new.yaml|expanding|narrowing|a bigger guarantee satisfies more requests"
   "constraint-raise|base.yaml|constraint-raise-new.yaml|narrowing|expanding|a higher hard floor admits fewer candidates"
+  "alignment-open|base.yaml|alignment-open-new.yaml|expanding|narrowing|the alignment lattice: standard is ranked below unrestricted"
+  "cost-class-meter|base.yaml|cost-class-meter-new.yaml|narrowing|expanding|the cost_class lattice: metered, subscription, free - ranked by reachability"
   "entitlement-add|base.yaml|entitlement-add-new.yaml|expanding|narrowing|a funding candidate is a way to run"
   "spillover-open|base.yaml|spillover-open-new.yaml|expanding|narrowing|invariant 4: 'none' is the closed value"
   "status-withdraw|base.yaml|status-withdraw-new.yaml|narrowing|expanding|'available' is the admitting status"
@@ -62,10 +64,17 @@ CASES=(
 
 # Classes that must stay covered. Deleting a case is allowed; deleting one of
 # these is a taxonomy change and has to be argued in AUTHORITY-DIFF.md first.
+#
+# The two lattice classes are both listed and they point OPPOSITE ways on
+# purpose: alignment-open is expanding forward, cost-class-meter is narrowing
+# forward. A rule that inverted the lattice ranks, or that lost the lattice
+# branch and fell through to the conservative default, would fail both rather
+# than quietly passing one.
 REQUIRED=(
   identical selectable-enable forbidden-add            # the PM-frozen semantics
   placement-add physical-add prefer-order-reorder      # the catalog's own shapes
   planned-entry                                        # status gates the entry rule
+  alignment-open cost-class-meter                      # both ranked lattices
   mixed unknown-key unknown-empty                      # dominance and the default
 )
 

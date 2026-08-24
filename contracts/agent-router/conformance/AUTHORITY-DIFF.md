@@ -18,8 +18,8 @@ the whole ConfigMap that ships one; the envelope is unwrapped and never
 appears in a verdict. The tool reads two files and nothing else - no network,
 no cluster, no credential, and no dependency on the live catalog.
 
-`verify-authority-diff.sh` beside it asserts every rule below against seeded
-fixture pairs in `fixtures/authority-diff/`, in both directions.
+`verify-authority-diff.sh` beside it asserts every rule family below against
+seeded fixture pairs in `fixtures/authority-diff/`, in both directions.
 
 Both scripts are invoked as `bash <script>`; if you add them to a workflow that
 runs `./<script>`, set the executable bit first.
@@ -105,6 +105,27 @@ applies is what separates the two numeric families:
 The same literal `null`, opposite meanings, which is why
 `capability-raise-new.yaml` and `constraint-raise-new.yaml` are separate
 fixtures asserting opposite verdicts for the same numeric shape.
+
+### The lattices are ranked by reachability, not by risk
+
+Both lattice fields are ordinal rather than boolean, and both are ranked by how
+much has to be true before an attempt can run, which is the same thing
+`Authority(C)` measures everywhere else in this document:
+
+- `cost_class`: `metered` < `subscription` < `free`. A metered pool needs budget
+  to exist before anything can be run against it; a subscription needs a live
+  plan; free needs neither. Moving a pool DOWN this lattice therefore reads as
+  `narrowing` even though it is the direction that costs money. That is not an
+  oversight and it is not the classifier being relaxed about spend - money
+  arriving where it could not before is what `spillover` is for, and
+  `spillover` is a closed value with its own rule and its own fixture.
+- `alignment`: `standard` < `unrestricted`. An unrestricted profile admits work
+  a refusal-trained model would decline, so it admits strictly more.
+
+Absence is the permissive end of both, by the second absence rule above: an
+undeclared alignment restricts nothing. A value on neither rank map is not
+guessed at - it falls through to the conservative default and reads `expanding`
+in both directions, like any other surface nobody has classified.
 
 ### The conservative default
 
@@ -216,12 +237,13 @@ every caller.
 
 ## Fixture coverage
 
-Every rule family above is asserted by `verify-authority-diff.sh`, in both
-directions, against `fixtures/authority-diff/`. `base.yaml` is the old side of
-every case that does not name its own; each `*-new.yaml` is `base.yaml` plus the
-one edit named in its own header. Forward is that edit applied; reverse is the
-same edit undone, which is how the removal half of every add/remove rule gets
-tested without a second fixture.
+Every rule FAMILY in the taxonomy table above has at least one case in
+`verify-authority-diff.sh`, and every case is asserted in both directions
+against `fixtures/authority-diff/`. `base.yaml` is the old side of every case
+that does not name its own; each `*-new.yaml` is `base.yaml` plus the one edit
+named in its own header. Forward is that edit applied; reverse is the same edit
+undone, which is how the removal half of every add/remove rule gets tested
+without a second fixture.
 
 | Case | Fixture (vs `base.yaml`) | Forward / reverse | Family |
 | --- | --- | --- | --- |
@@ -239,6 +261,8 @@ tested without a second fixture.
 | `entitlement-add` | `entitlement-add-new.yaml` | expanding / narrowing | admitting entry + grant record list |
 | `capability-raise` | `capability-raise-new.yaml` | expanding / narrowing | capability claim |
 | `constraint-raise` | `constraint-raise-new.yaml` | narrowing / expanding | hard constraint |
+| `alignment-open` | `alignment-open-new.yaml` | expanding / narrowing | lattice (`alignment`) |
+| `cost-class-meter` | `cost-class-meter-new.yaml` | narrowing / expanding | lattice (`cost_class`) |
 | `spillover-open` | `spillover-open-new.yaml` | expanding / narrowing | closed value |
 | `mixed` | `mixed-new.yaml` | expanding / expanding | dominance |
 | `unknown-key` | `unknown-key-new.yaml` | expanding / expanding | conservative default, scalar value |
@@ -252,6 +276,14 @@ mixed case to test is the combination rule - and putting the expansion on an
 entry that admits keeps the fixture consistent with the entry rule above,
 rather than claiming an expansion for an entry that admits nothing either way.
 
+The two lattice cases point opposite ways on purpose: `alignment-open` moves up
+its lattice and `cost-class-meter` moves down its own, both on entries that
+admit on both sides of the diff (`profiles.local-code-standard`, which is
+`selectable: true`, and `entitlement_pools.anthropic-max`, which declares no
+gate). A rule that inverted the rank maps, or that lost the lattice branch and
+fell through to the conservative default, fails both rather than quietly
+passing one.
+
 Plus four tool-error paths - no arguments, one argument, a missing file, and
 `broken.yaml` - each of which must **exit non-zero and print no verdict at all**.
 A classifier that answered `neutral` because it could not read its input would
@@ -262,6 +294,32 @@ the router may do.
 The verifier also fails if a committed fixture is not read by any case, and if
 one of the required classes loses its case. A suite that can pass vacuously is
 worse than no suite.
+
+### What the coverage claim does NOT say
+
+The claim above is at FAMILY level, and it is worth being exact about the gap,
+because "every family is covered" reads like "every field is covered" and is
+not the same sentence. Rules are keyed on the leaf field name and every member
+of a family shares one code path, so a case pins the family's rule for all of
+its fields - but only the field the fixture actually edits is executed. These
+fields ride on a family rule that a sibling field pins:
+
+| Family | Pinned by a case | Riding on the family rule |
+| --- | --- | --- |
+| gate | `selectable`, `status` | `supported`, `allow_cold_start` |
+| closed value | `spillover` | `router_behaviour` |
+| restriction list | `forbidden_for` | `blocked_by`, `requires` |
+| grant list | `placements`, `prefer_order`, `physical`, `entitlements` | `capabilities` |
+| capability claim | `min_context`, `max_context` | `vram_gb`, `concurrent_models` |
+| hard constraint | `min_vram_gb` | `min_free_vram_gb` |
+| lattice | `alignment`, `cost_class` | - |
+
+Two within-family branches are also unasserted: an unrecognized value on either
+lattice, and a re-typed field (a scalar becoming a mapping), both of which fall
+through to the conservative default that `unknown-key` and `unknown-empty`
+already pin from the other side. Adding a case for any row above is welcome and
+costs one fixture; none of them is a hole in the taxonomy, only in the
+execution trace.
 
 ## Adding a field to the catalog
 
