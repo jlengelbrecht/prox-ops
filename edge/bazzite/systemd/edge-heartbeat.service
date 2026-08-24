@@ -1,0 +1,42 @@
+[Unit]
+Description=EPIC-035 edge worker heartbeat producer (Bazzite RTX 5090)
+Documentation=file:%h/.local/libexec/edge-bazzite/README.md
+# Deliberately not Requires= or BindsTo= the container. A withdrawn or
+# crashed endpoint is exactly when the router most needs to hear from this
+# host — the heartbeat is how INTERACTIVE and OFFLINE are distinguished from
+# silence, and a producer that stopped with the endpoint would collapse all
+# three into one.
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/edge-bazzite/edge.env
+
+# Same StateDirectory as the guard — whichever unit starts first creates it;
+# neither removes it. See edge-interactive-guard.service for the `-state`
+# suffix rationale.
+StateDirectory=edge-bazzite-state
+StateDirectoryMode=0755
+Environment=EDGE_STATE_DIR=%S/edge-bazzite-state
+Environment=EDGE_API_KEY_FILE=%h/.config/edge-bazzite/secrets/api-key
+
+ExecStart=%h/.local/libexec/edge-bazzite/scripts/edge-heartbeat.sh --interval ${EDGE_HEARTBEAT_INTERVAL}
+Restart=always
+RestartSec=5
+
+# No credential of this unit's belongs to any other process on the box.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# Publishing state is this unit's job; setting it is the guard's.
+# StateDirectory= above would make the directory writable, so it is dropped
+# back to read-only here — the creation guarantee is kept, the write access
+# is not.
+ReadOnlyPaths=%S/edge-bazzite-state
+
+[Install]
+WantedBy=default.target

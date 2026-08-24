@@ -1,0 +1,62 @@
+[Unit]
+Description=EPIC-035 edge worker interactive-priority guard (Bazzite RTX 5090)
+# The libexec copy, not a checkout path: scripts/install.sh mirrors this
+# repo's edge/bazzite/README.md there on every install/refresh, and ExecStart
+# below runs from the same directory. See "Layout independence" in
+# edge/cachyos/README.md — the rule is inherited unchanged.
+Documentation=file:%h/.local/libexec/edge-bazzite/README.md
+# Runs whether or not the edge container is up. A guard that stopped with the
+# container could not hold a claim across a restart, and the claim is what
+# keeps the endpoint down while the desktop has the GPU.
+After=graphical-session.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/edge-bazzite/edge.env
+
+# systemd creates this before the sandbox is set up, owns it, and does not
+# remove it when the unit stops — the guard starts from a fresh boot with no
+# manual mkdir, and the directory the container bind-mounts does not
+# disappear under it on restart. The `-state` suffix is not decoration: with
+# a same-named CONFIGURATION directory present (~/.config/edge-bazzite),
+# systemd would treat a missing state directory named `edge-bazzite` as a
+# pre-v254 migration and symlink it onto the config dir — putting claim and
+# phase files, and a container bind mount, on top of the credential.
+StateDirectory=edge-bazzite-state
+StateDirectoryMode=0755
+
+# The two paths that mean different things on the two sides of the container
+# boundary. Neither appears in edge.env, and that is the mechanism, not
+# tidiness: EnvironmentFile= is applied after Environment= whatever the order
+# in this file, so a value in edge.env would silently win. The quadlet states
+# the container's view of the same two.
+Environment=EDGE_STATE_DIR=%S/edge-bazzite-state
+# llama-swap requires the bearer credential on /running as well as on the
+# inference routes, and without it this daemon's loaded-model count is
+# permanently unknown. One on-disk copy, shared with the container mount.
+Environment=EDGE_API_KEY_FILE=%h/.config/edge-bazzite/secrets/api-key
+
+# Checkout-independent: scripts/install.sh copies scripts/ here. Run it again
+# after every pull that touches scripts/.
+ExecStart=%h/.local/libexec/edge-bazzite/scripts/edge-interactive-guard.sh watch
+Restart=always
+RestartSec=5
+
+# A crashed guard must not leave the node advertising itself while the
+# desktop has the GPU. Clearing the claim is a deliberate operator action
+# (`edge-interactive-guard.sh release`), never a side effect of a restart, so
+# there is no ExecStopPost that removes it.
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+# No podman socket, no container-runtime authority: the guard writes one
+# claim file and one lease file, and the supervisor — already inside the
+# blast radius — does the part that needs authority.
+
+[Install]
+WantedBy=default.target

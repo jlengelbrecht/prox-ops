@@ -1,0 +1,83 @@
+# llama-swap configuration for the Bazzite RTX 5090 edge worker.
+#
+# Contract anchors (edge/EDGE-WORKER-CONTRACT.md):
+#   §2  bearer/API-key authentication is required on every request to the edge
+#       inference endpoint. `apiKeys` below covers GET /v1/models and every
+#       model-dispatched route including POST /v1/chat/completions; both are
+#       what conformance.sh's auth_enforced check probes.
+#   §3  llama-swap is the LAN-facing service; llama-server sits behind it and
+#       is never LAN-exposed. That is enforced twice: `--host 127.0.0.1` on the
+#       llama-server command line below, and the absence of any published port
+#       for it in the quadlet.
+#
+# Secrets: the API key is never written here. `${env.EDGE_API_KEY}` is read
+# from llama-swap's own process environment, which the supervisor populates
+# from the mounted credential file. See env.example.
+
+# Cold start budget. The 17.9 GB GGUF loads from local NVMe rather than the
+# cluster's CephFS, so this is generous rather than tight — but llama-swap
+# kills an upstream that misses this deadline, and a killed cold start looks
+# exactly like a broken model to whoever is debugging it.
+healthCheckTimeout: 900
+
+logLevel: info
+
+# llama-server's ${PORT} allocations start here. These ports exist only inside
+# the container's network namespace and are bound to 127.0.0.1 (see `cmd`).
+startPort: 10001
+
+# Graceful stop budget for an unload (manual, API, or ttl expiry).
+unloadTimeout: 30
+
+# API-key enforcement. An empty list means default-allow, which would put an
+# unauthenticated LLM on the LAN. Keep at least one entry.
+apiKeys:
+  - "${env.EDGE_API_KEY}"
+
+macros:
+  "model_file": "/models/unsloth/Qwen3.6-27B-MTP-GGUF/Qwen3.6-27B-UD-Q4_K_XL.gguf"
+
+  # MTP self-speculative decoding. The draft layers are bundled in this GGUF
+  # and the cluster's kserve-a5000 placement runs with exactly these two
+  # flags on the same server-cuda-b9917 build, so keeping them identical is
+  # what keeps cross-placement numbers comparable.
+  "spec_args": "--spec-type draft-mtp --spec-draft-n-max 2"
+
+models:
+  # The model id is the catalog's `upstream_model_id` for qwen36-27b, which is
+  # also the `--alias` the cluster's llama-server runs with. Keeping every
+  # placement on one upstream id means the AgentgatewayBackend carries the
+  # same `provider.openai.model` value for all providers in a group.
+  #
+  # NOTE for the heartbeat: this is the RUNTIME id, not the catalog `model_id`.
+  # The contract (§1) requires `active_model`/`cached_models` to carry the
+  # catalog `model_id` (`qwen36-27b`), and translation is the edge producer's
+  # job — see model-id-map.json and scripts/edge-heartbeat.sh.
+  "qwen3.6-27b":
+    name: "Qwen3.6-27B UD-Q4_K_XL (llama.cpp CUDA, RTX 5090)"
+    description: "EPIC-035 reference model, same GGUF artifact as the kserve-a5000 and cachyos-7900xtx placements"
+
+    # The catalog `model_id` is accepted as an alias so a caller that speaks
+    # catalog vocabulary reaches the same served model. This does not make the
+    # placement catalog-selectable — that is the control-plane story's change.
+    aliases:
+      - "qwen36-27b"
+
+    # Model lifecycle: started on demand by llama-swap when a request names
+    # this model, unloaded after 30 idle minutes. 1800s matches the cluster's
+    # `scale-to-zero-pod-retention-period: 30m` on the same model, so the
+    # placements share one warm/cold duty cycle.
+    ttl: 1800
+
+    cmd: |
+      /app/llama-server
+      --host 127.0.0.1
+      --port ${PORT}
+      --model ${model_file}
+      --alias qwen3.6-27b
+      --n-gpu-layers 999
+      --ctx-size 65536
+      --parallel 1
+      ${spec_args}
+      --jinja
+      --metrics

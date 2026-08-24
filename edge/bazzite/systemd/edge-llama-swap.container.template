@@ -1,0 +1,108 @@
+# Quadlet template for the Bazzite edge worker's LAN-facing container.
+#
+# This is a TEMPLATE, not a unit: scripts/install.sh substitutes the @TOKENS@
+# from the deployed ~/.config/edge-bazzite/edge.env and writes the result to
+# ~/.config/containers/systemd/edge-llama-swap.container, where quadlet
+# generates the user service `edge-llama-swap.service` on daemon-reload.
+# Substitution at install time is what keeps LAN addresses and host paths out
+# of Git (env.example's rule) while quadlet gets the literal values it needs —
+# quadlet does not expand environment variables in PublishPort/Mount.
+#
+# Why quadlet rather than docker compose (the CachyOS shape): this host's
+# docker daemon requires group membership the login user does not have, while
+# rootless podman needs no privilege at all — and a rootless published port is
+# a real host socket, which composes with Bazzite's firewalld
+# (FedoraWorkstation zone opens TCP 1025-65535) instead of bypassing it the
+# way docker's DNAT bypassed CachyOS's ufw. Same contracts, different
+# mechanics: the supervisor is still PID 1, llama-server is still
+# loopback-only and unpublished, the state dir is still a host bind mount,
+# and every mount that must exist beforehand uses Mount= (which refuses a
+# missing source) rather than Volume= (which would silently create one).
+#
+# One service on purpose. llama-swap is the only edge process cluster traffic
+# reaches (EDGE-WORKER-CONTRACT §3, ruling R3); llama-server is a child of it
+# inside this container, bound to 127.0.0.1 and published nowhere. The
+# heartbeat producer and the interactive guard run on the host as
+# `systemctl --user` units — see the sibling unit files and README.md.
+
+[Unit]
+Description=EPIC-035 edge worker LAN endpoint (Bazzite RTX 5090, llama-swap + llama.cpp CUDA)
+Documentation=file:%h/.local/libexec/edge-bazzite/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+ContainerName=edge-llama-swap
+Image=@EDGE_IMAGE@
+
+# The RTX 5090 via CDI (nvidia-ctk generated /etc/cdi/nvidia.yaml on this
+# host). SecurityLabelDisable is required on this SELinux-enforcing host for
+# the CDI-injected driver mounts; measured 2026-08-24: with labeling on, NVML
+# fails with "Insufficient Permissions" inside the container.
+AddDevice=nvidia.com/gpu=all
+SecurityLabelDisable=true
+
+# Published on one address and one port. Binding the specific LAN address
+# rather than 0.0.0.0 keeps the endpoint off the host's other interfaces.
+PublishPort=@EDGE_BIND_ADDR@:@EDGE_PORT@:8443
+
+# Paths as the CONTAINER sees them. The host units state their own view of
+# the credential and the state dir; see the note in env.example.
+Environment=EDGE_API_KEY_FILE=/edge/secrets/api-key
+Environment=EDGE_STATE_DIR=/edge/state
+Environment=LLAMA_SWAP_BIN=/usr/local/bin/llama-swap
+Environment=EDGE_GUARD_LEASE_TTL=@EDGE_GUARD_LEASE_TTL@
+Environment=EDGE_CACHE_SCAN_INTERVAL=@EDGE_CACHE_SCAN_INTERVAL@
+Environment=EDGE_HOSTNAME=@EDGE_HOSTNAME@
+
+# The GGUF cache, the PKI and the credential: read-only, host directories
+# (rootless podman needs no docker volumes, and host paths are what the
+# heartbeat's cache manifest and the PKI tooling already work against).
+# type=bind via Mount= fails loudly on a missing source — the same guarantee
+# compose's create_host_path:false gave the CachyOS node.
+Mount=type=bind,source=@EDGE_MODEL_SOURCE@,destination=/models,ro=true
+Mount=type=bind,source=@EDGE_PKI_SOURCE@,destination=/pki,ro=true
+Mount=type=bind,source=@EDGE_SECRETS_SOURCE@,destination=/edge/secrets,ro=true
+
+# Read-write, and shared with the host-side guard and heartbeat: the guard
+# writes the interactive claim and the lease, the supervisor writes the phase
+# and the cache manifest. Must be the same directory the systemd units
+# resolve %S/edge-bazzite-state to.
+Mount=type=bind,source=@EDGE_STATE_HOST_DIR@,destination=/edge/state
+
+# Mounted rather than baked in, so a supervisor fix is a file edit and a
+# restart instead of an image rebuild — from the INSTALLED copy at
+# EDGE_LIBEXEC_DIR (scripts/install.sh), never from a checkout path.
+Mount=type=bind,source=@EDGE_LIBEXEC_DIR@/scripts,destination=/edge/scripts,ro=true
+Mount=type=bind,source=@EDGE_LIBEXEC_DIR@/llama-swap.yaml,destination=/etc/llama-swap/config.yaml,ro=true
+
+# The leaf's SAN is the edge hostname, so the in-container healthcheck has to
+# reach itself by that name for certificate validation to mean anything.
+# Scoped to the container; the host resolver is untouched.
+AddHost=@EDGE_HOSTNAME@:127.0.0.1
+
+# /health is llama-swap's only unauthenticated route and answers as soon as
+# the proxy is listening. It fails, correctly, while the host has claimed the
+# GPU — an INTERACTIVE node is not accepting work, and systemd should say so.
+HealthCmd=curl -fsS --cacert /pki/edge-ca.crt https://@EDGE_HOSTNAME@:8443/health
+HealthInterval=30s
+HealthTimeout=5s
+HealthStartPeriod=15s
+HealthRetries=3
+
+# llama-swap's own graceful shutdown budget is 30s with a 35s hard backstop,
+# and the supervisor gives it 40s before escalating. Podman has to allow more
+# than both, or a stop cuts in-flight requests that were about to finish.
+StopTimeout=60
+
+[Service]
+Restart=always
+RestartSec=5
+# Image pulls/starts can be slow on a cold cache.
+TimeoutStartSec=300
+
+[Install]
+# default.target with linger enabled: the endpoint comes back after a reboot
+# without a login — and comes back WITHDRAWN until the guard proves itself,
+# because the supervisor starts closed on a missing/stale lease.
+WantedBy=default.target
