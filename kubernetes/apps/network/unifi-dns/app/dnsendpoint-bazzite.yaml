@@ -1,0 +1,16 @@
+---
+# EPIC-035 (bazzite bring-up): LAN DNS for the Bazzite edge worker's
+# endpoint hostname, which is also the SAN of its dedicated host
+# certificate. Same shape as dnsendpoint-cachyos.yaml.
+apiVersion: externaldns.k8s.io/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: bazzite-5090
+  namespace: network
+  annotations:
+    prox-ops.io/dns-scope: unifi-static
+spec:
+  endpoints:
+    - dnsName: bazzite-5090.homelab0.org
+      recordType: A
+      targets: ["10.20.65.98"]

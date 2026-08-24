@@ -116,3 +116,46 @@ spec:
               model: qwen3.6-27b
             host: qwen36-27b-predictor.ai.svc.cluster.local
             port: 80
+---
+# EPIC-035 (bazzite bring-up): answers `x-placement: bazzite-5090` only.
+# Additive - the FROZEN SAFE GROUPED DEFAULT above is untouched, so no
+# headerless caller can land on the gaming host; only an explicit placement
+# pin reaches it, and agent-router only emits that pin once the catalog
+# makes bazzite-5090 selectable (a separate, owner-approved promotion).
+# Same R6 shape as qwen36-27b-edge-preferred: the pinned provider first,
+# kserve-a5000 as the fallback group, because a header-pinned rule must
+# never terminate in a single-provider backend - and doubly so here, where
+# the contract expects ABRUPT withdrawal whenever a human takes the GPU.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: qwen36-27b-bazzite-preferred
+  namespace: ai
+spec:
+  ai:
+    groups:
+      - providers:
+          # Edge transport per R4: HTTPS, the dedicated per-host CA (never
+          # the cluster wildcard), a hostname SAN, bearer auth via
+          # secretRef - no TLS verification bypass, no plaintext fallback.
+          - name: bazzite-5090
+            openai:
+              model: qwen3.6-27b
+            host: bazzite-5090.homelab0.org
+            port: 8443
+            policies:
+              tls:
+                caCertificateRefs:
+                  - name: edge-bazzite-5090-ca
+                sni: bazzite-5090.homelab0.org
+                verifySubjectAltNames:
+                  - bazzite-5090.homelab0.org
+              auth:
+                secretRef:
+                  name: agentgateway-pilot-edge-bazzite-5090
+      - providers:
+          - name: kserve-a5000
+            openai:
+              model: qwen3.6-27b
+            host: qwen36-27b-predictor.ai.svc.cluster.local
+            port: 80
