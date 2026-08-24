@@ -12,10 +12,10 @@ import (
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/testutil"
 )
 
-// realDigest is the committed catalog 1.3.0's real content digest
+// realDigest is the committed catalog 1.4.0's real content digest
 // (contracts/agent-router/README.md's digest table; also
 // catalog_test.go's wantDigest).
-const realDigest = "sha256:2fd681e0e988bf6be94b8923b1485a0aa174a4e66aec580a2d383c764b60e229"
+const realDigest = "sha256:9b7ba27e367f8cfa0caeed4057fe0fab1cd4138b11f9f65f906822276bfa5e20"
 
 func strp(s string) *string { return &s }
 
@@ -154,7 +154,7 @@ func Test_valid_override_passes(t *testing.T) {
 
 // Test_forbidden_override_fails proves an override to a pairing forbidden
 // for the stamped task tags fails, even though the pair itself is approved.
-// SYNTHETIC: the real catalog 1.3.0 has no approved-pair profile with a
+// SYNTHETIC: the real catalog 1.4.0 has no approved-pair profile with a
 // non-empty forbidden_for, so this mutates a loaded copy to give
 // local-code-standard one, the same technique routing/decide_test.go uses
 // (TestDecide_ForbiddenForExcludesEvenAnApprovedPair).
@@ -356,7 +356,7 @@ func Test_placement_requirement_not_self_assertable_fails(t *testing.T) {
 // Test_pair_currently_ineligible_fails proves ApprovedPairs membership alone
 // is not sufficient: claude+minimax/strong is intentionally listed in
 // routing.ApprovedPairs for when the catalog flips, but minimax/strong is
-// selectable:false in catalog 1.3.0 today, so this pair must fail final
+// selectable:false in catalog 1.4.0 today, so this pair must fail final
 // validation closed even though the {harness, model_profile} table itself
 // approves it.
 func Test_pair_currently_ineligible_fails(t *testing.T) {
@@ -371,7 +371,7 @@ func Test_pair_currently_ineligible_fails(t *testing.T) {
 
 	v := stampvalidate.ValidateFinal(cat, stamp, stampvalidate.ValidationContext{}, now)
 	if v.Valid {
-		t.Fatalf("verdict = %+v, want Valid=false: minimax/strong is selectable:false in catalog 1.3.0", v)
+		t.Fatalf("verdict = %+v, want Valid=false: minimax/strong is selectable:false in catalog 1.4.0", v)
 	}
 	if c := mustCheck(t, v, stampvalidate.CheckApprovedPair); c.Passed || c.ReasonCode != stampvalidate.ReasonPairCurrentlyIneligible {
 		t.Errorf("approved_pair = %+v, want failed with %q", c, stampvalidate.ReasonPairCurrentlyIneligible)

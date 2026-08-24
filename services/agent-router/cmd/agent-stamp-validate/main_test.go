@@ -15,9 +15,9 @@ import (
 	"github.com/jlengelbrecht/prox-ops/services/agent-router/internal/testutil"
 )
 
-// realDigest is catalog 1.3.0's committed content digest
+// realDigest is catalog 1.4.0's committed content digest
 // (contracts/agent-router/README.md's digest table).
-const realDigest = "sha256:2fd681e0e988bf6be94b8923b1485a0aa174a4e66aec580a2d383c764b60e229"
+const realDigest = "sha256:9b7ba27e367f8cfa0caeed4057fe0fab1cd4138b11f9f65f906822276bfa5e20"
 
 func fixedNow(t *testing.T) time.Time {
 	t.Helper()

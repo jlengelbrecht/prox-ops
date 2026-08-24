@@ -22,6 +22,8 @@ const (
 	callerToken = "test-caller-token"
 	nodeToken   = "test-node-token-cachyos"
 	nodeName    = "cachyos-7900xtx"
+	node2Token  = "test-node-token-bazzite"
+	node2Name   = "bazzite-5090"
 )
 
 // env's clock is guarded by mu because it is written by the test goroutine
@@ -59,7 +61,7 @@ func newEnvFull(t *testing.T, cs httpapi.CatalogState, meteredAuthority httpapi.
 	store := capacity.NewStore(e.now)
 
 	callerAuth := auth.NewCallerAuth([]string{callerToken})
-	nodeAuth := auth.NewNodeAuth(map[string]string{nodeToken: nodeName})
+	nodeAuth := auth.NewNodeAuth(map[string]string{nodeToken: nodeName, node2Token: node2Name})
 
 	cfg := httpapi.Config{Version: "test", HeartbeatInterval: 30 * time.Second, OfflineAfter: 90 * time.Second}
 	srv := httpapi.NewServer(cfg, cs, store, callerAuth, nodeAuth, meteredAuthority, entitlementAvailability, nil)

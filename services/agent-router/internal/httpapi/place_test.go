@@ -356,8 +356,13 @@ func TestPlaceDecisionTable(t *testing.T) {
 	// substitute.
 	t.Run("unavailable", func(t *testing.T) {
 		e := newEnv(t, realCatalogState(t))
+		// Both selectable edge candidates withdraw (catalog 1.4.0 added
+		// bazzite-5090); an enrolled-but-unseen candidate would correctly
+		// read as no_eligible_placement instead.
 		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", nodeToken,
 			placeHeartbeatBody(nodeName, "DRAINING", strp("qwen36-27b"), []string{"qwen36-27b"}, 24)))
+		discard(t, e.do(t, http.MethodPost, "/v1/capacity/heartbeat", node2Token,
+			placeHeartbeatBody(node2Name, "DRAINING", strp("qwen36-27b"), []string{"qwen36-27b"}, 32)))
 
 		raw := readAll(t, postPlace(t, e, callerToken, placeRequestBody(t, localCodeStandardBody("edge-only"))))
 		testutil.ValidateJSON(t, schema, raw)

@@ -12,7 +12,7 @@ import (
 
 // TestLoad_RealCatalog proves the router conforms to the committed catalog
 // (contracts/agent-router/README.md documents its real digest as
-// sha256:2fd681e0...60e229), not a hand-copied restatement of it.
+// sha256:9b7ba27e...fa5e20), not a hand-copied restatement of it.
 func TestLoad_RealCatalog(t *testing.T) {
 	path := testutil.ExtractCatalogYAML(t)
 
@@ -21,12 +21,12 @@ func TestLoad_RealCatalog(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	const wantDigest = "sha256:2fd681e0e988bf6be94b8923b1485a0aa174a4e66aec580a2d383c764b60e229"
+	const wantDigest = "sha256:9b7ba27e367f8cfa0caeed4057fe0fab1cd4138b11f9f65f906822276bfa5e20"
 	if digest != wantDigest {
 		t.Errorf("digest = %q, want %q (contracts/agent-router/README.md digest table)", digest, wantDigest)
 	}
-	if cat.DocumentVersion != "1.3.0" {
-		t.Errorf("DocumentVersion = %q, want 1.3.0", cat.DocumentVersion)
+	if cat.DocumentVersion != "1.4.0" {
+		t.Errorf("DocumentVersion = %q, want 1.4.0", cat.DocumentVersion)
 	}
 	if cat.SchemaVersion != 1 {
 		t.Errorf("SchemaVersion = %d, want 1", cat.SchemaVersion)
@@ -99,8 +99,8 @@ func TestLoad_ModelAuthorizedOnPlacement(t *testing.T) {
 	if !cat.ModelAuthorizedOnPlacement("qwen36-27b", "cachyos-7900xtx") {
 		t.Error("qwen36-27b should be authorized on cachyos-7900xtx per the committed catalog")
 	}
-	if cat.ModelAuthorizedOnPlacement("qwen36-27b", "bazzite-5090") {
-		t.Error("qwen36-27b should not be authorized on bazzite-5090")
+	if !cat.ModelAuthorizedOnPlacement("qwen36-27b", "bazzite-5090") {
+		t.Error("qwen36-27b should be authorized on bazzite-5090 per the committed catalog (1.4.0 promotion)")
 	}
 	if cat.ModelAuthorizedOnPlacement("not-a-real-model", "cachyos-7900xtx") {
 		t.Error("an unknown model must never be authorized anywhere")
