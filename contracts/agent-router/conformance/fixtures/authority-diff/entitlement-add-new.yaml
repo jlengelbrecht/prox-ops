@@ -1,0 +1,138 @@
+# Seeded fixture: base.yaml with TWO related edits.
+#   entitlement_pools.minimax-max                              declared
+#   profiles.local-code-standard.entitlements  gains that pool as a second
+#                                              funding candidate
+# Expected: expanding forward, narrowing in reverse.
+# A profile is not assumed to have exactly one funding source: entitlements[]
+# is an ordered list of candidates, and a new candidate is a new way for an
+# attempt to be paid for and therefore to run.
+#
+# The pairing is contrived and says so: base.yaml carries only local profiles,
+# which draw on no pool at all, so hanging a subscription pool off one is not a
+# catalog change anybody would make. What is under test is entitlements[]
+# membership, not whether this profile is a plausible home for that pool.
+# Note what the pool itself demonstrates all the same: `cost_class:
+# subscription` with an API-key-shaped credential and `spillover: none` - the
+# economics come from the entitlement, never from the shape of the secret, so
+# declaring a pool is not by itself a metered path.
+version: "1.3.0"
+schema_version: 1
+updated: "2026-08-21"
+consumers: []
+
+defaults:
+  placement_policy: prefer-warm-local
+
+harnesses:
+  claude:
+    description: Claude Code sessions on the operator's own subscription.
+    supported: true
+    selectable: true
+
+placements:
+  kserve-a5000:
+    description: KServe InferenceServices on the cluster's RTX A5000 node.
+    status: available
+    selectable: true
+    kind: kserve
+    gpu:
+      vendor: nvidia
+      model: RTX A5000
+    capacity:
+      vram_gb: 24
+      vram_gb_nameplate: 24
+      source: measured
+    preemptible: false
+    cold_start_s_estimate: 150
+  cachyos-7900xtx:
+    description: LAN edge worker on the operator's CachyOS workstation.
+    status: available
+    selectable: true
+    kind: edge
+    capacity:
+      vram_gb: null
+      vram_gb_nameplate: 24
+      source: unmeasured
+    preemptible: true
+    cold_start_s_estimate: 6
+
+models:
+  qwen36-27b:
+    description: Qwen3.6-27B, the reference local model for EPIC-035.
+    hosting: local
+    upstream_model_id: qwen3.6-27b
+    placements: [kserve-a5000, cachyos-7900xtx]
+    capabilities: [chat, tools]
+    max_context: 65536
+    alignment: standard
+
+entitlement_pools:
+  anthropic-max:
+    description: The operator's own Anthropic Max subscription.
+    provider: anthropic
+    cost_class: subscription
+    credential_class: subscription-session
+    spillover: none
+  minimax-max:
+    description: MiniMax Max Token Plan - a fixed monthly subscription.
+    provider: minimax
+    cost_class: subscription
+    credential_class: provider-api-key
+    spillover: none
+
+profiles:
+  local-code-standard:
+    description: The default local coding profile.
+    cost_class: free
+    hosting: local
+    selectable: true
+    capabilities: [chat, tools]
+    min_context: 65536
+    alignment: standard
+    forbidden_for: []
+    entitlements:
+      - pool: null
+        cost_class: free
+      - pool: minimax-max
+        cost_class: subscription
+    physical:
+      - model_id: qwen36-27b
+        placement: cachyos-7900xtx
+  local-unrestricted:
+    description: Local model with no refusal training - an alignment property.
+    cost_class: free
+    hosting: local
+    selectable: false
+    capabilities: []
+    min_context: null
+    alignment: unrestricted
+    forbidden_for:
+      - security
+      - iam
+      - secrets
+    entitlements:
+      - pool: null
+        cost_class: free
+    physical: []
+    blocked_by:
+      - a post-MVP catalog PR selects and validates a replacement model
+
+policies:
+  placement_policy:
+    prefer-warm-local:
+      description: Default. Take whatever is warm; otherwise prefer the edge.
+      prefer_order:
+        - cachyos-7900xtx
+        - kserve-a5000
+      warm_preference: strict
+      allow_cold_start: true
+      min_vram_gb: null
+      min_free_vram_gb: null
+    cluster-only:
+      description: Never leave the cluster.
+      prefer_order:
+        - kserve-a5000
+      warm_preference: ignored
+      allow_cold_start: true
+      min_vram_gb: null
+      min_free_vram_gb: null
