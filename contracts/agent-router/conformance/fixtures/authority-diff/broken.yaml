@@ -1,0 +1,12 @@
+# Seeded fixture: DELIBERATELY UNPARSABLE. The quoted scalar below is never
+# closed, so a YAML parser raises rather than returning a document.
+#
+# It exists to pin the half of the interface that is easy to get wrong: a tool
+# error is an EXIT, never a verdict. A classifier that answered "neutral"
+# because it could not read its input would report "nothing changed" for a
+# catalog it never parsed, and the one place that answer gets read is a review
+# of a change to the document that bounds everything the router may do.
+profiles:
+  local-code-standard:
+    selectable: true
+    forbidden_for: ["security

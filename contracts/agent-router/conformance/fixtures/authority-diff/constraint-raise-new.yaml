@@ -1,0 +1,121 @@
+# Seeded fixture: base.yaml with ONE edit.
+#   policies.placement_policy.cluster-only.min_vram_gb: null -> 24
+# Expected: narrowing forward, expanding in reverse.
+# A hard floor admits fewer candidates the higher it goes, and null is no floor
+# at all - the permissive end. This is the mirror image of a capability claim
+# (capability-raise-new.yaml), where null is the RESTRICTIVE end because an
+# absent guarantee guarantees nothing. Same literal `null`, opposite meaning,
+# which is why the two numeric families are separate rules and not one.
+version: "1.3.0"
+schema_version: 1
+updated: "2026-08-21"
+consumers: []
+
+defaults:
+  placement_policy: prefer-warm-local
+
+harnesses:
+  claude:
+    description: Claude Code sessions on the operator's own subscription.
+    supported: true
+    selectable: true
+
+placements:
+  kserve-a5000:
+    description: KServe InferenceServices on the cluster's RTX A5000 node.
+    status: available
+    selectable: true
+    kind: kserve
+    gpu:
+      vendor: nvidia
+      model: RTX A5000
+    capacity:
+      vram_gb: 24
+      vram_gb_nameplate: 24
+      source: measured
+    preemptible: false
+    cold_start_s_estimate: 150
+  cachyos-7900xtx:
+    description: LAN edge worker on the operator's CachyOS workstation.
+    status: available
+    selectable: true
+    kind: edge
+    capacity:
+      vram_gb: null
+      vram_gb_nameplate: 24
+      source: unmeasured
+    preemptible: true
+    cold_start_s_estimate: 6
+
+models:
+  qwen36-27b:
+    description: Qwen3.6-27B, the reference local model for EPIC-035.
+    hosting: local
+    upstream_model_id: qwen3.6-27b
+    placements: [kserve-a5000, cachyos-7900xtx]
+    capabilities: [chat, tools]
+    max_context: 65536
+    alignment: standard
+
+entitlement_pools:
+  anthropic-max:
+    description: The operator's own Anthropic Max subscription.
+    provider: anthropic
+    cost_class: subscription
+    credential_class: subscription-session
+    spillover: none
+
+profiles:
+  local-code-standard:
+    description: The default local coding profile.
+    cost_class: free
+    hosting: local
+    selectable: true
+    capabilities: [chat, tools]
+    min_context: 65536
+    alignment: standard
+    forbidden_for: []
+    entitlements:
+      - pool: null
+        cost_class: free
+    physical:
+      - model_id: qwen36-27b
+        placement: cachyos-7900xtx
+  local-unrestricted:
+    description: Local model with no refusal training - an alignment property.
+    cost_class: free
+    hosting: local
+    selectable: false
+    capabilities: []
+    min_context: null
+    alignment: unrestricted
+    forbidden_for:
+      - security
+      - iam
+      - secrets
+    entitlements:
+      - pool: null
+        cost_class: free
+    physical: []
+    blocked_by:
+      - a post-MVP catalog PR selects and validates a replacement model
+
+policies:
+  placement_policy:
+    prefer-warm-local:
+      description: Default. Take whatever is warm; otherwise prefer the edge.
+      prefer_order:
+        - cachyos-7900xtx
+        - kserve-a5000
+      warm_preference: strict
+      allow_cold_start: true
+      min_vram_gb: null
+      min_free_vram_gb: null
+    cluster-only:
+      description: Never leave the cluster.
+      prefer_order:
+        - kserve-a5000
+      warm_preference: ignored
+      allow_cold_start: true
+      min_vram_gb: 24
+      min_free_vram_gb: null
