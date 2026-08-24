@@ -70,6 +70,24 @@ data:
 
     # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
     #
+    # 1.4.0 (EPIC-035 bazzite bring-up, story 35.13) - ADDITIVE ONLY:
+    #   - bazzite-5090 flips from planned/not-selectable to
+    #     available/selectable: host conformance 7/7 (edge/conformance.sh,
+    #     TLS+auth, no --insecure), interactive-withdrawal and fail-closed
+    #     lease drills passed, control-plane integration proven live
+    #     (heartbeat accepted by agent-router, gateway-path inference via
+    #     x-placement). Evidence: edge/bazzite/ACCEPTANCE.md at the
+    #     promotion PR's SHA.
+    #   - First edge placement with a MEASURED capacity.vram_gb (31.8);
+    #     any-24gb's min_vram_gb: 24 therefore now admits two placements.
+    #   - qwen36-27b.placements and local-code-standard.physical gain
+    #     bazzite-5090 as a third candidate, LAST in both: its 4s cold
+    #     start beats everything, but gaming/interactive use has absolute
+    #     priority on this host (abrupt mid-request withdrawal is normal,
+    #     ruling R2), so it is the placement of last resort, not first.
+    #     prefer_order in every policy is UNCHANGED for the same reason.
+    #   Nothing was removed or re-typed, so schema_version stays 1.
+    #
     # 1.3.0 (STORY-035-8c, owner-directed retirement) - REMOVES MODELS, unlike
     # 1.1.0/1.2.0 which were purely additive:
     #   - qwen-coder, dolphin-chat, hermes-jarvis and qwen-omni are deleted
@@ -101,11 +119,11 @@ data:
     #     the edge as a second candidate, physical ordered edge-before-KServe
     #     to match prefer_order.
     #   Nothing was removed or re-typed, so schema_version stays 1.
-    version: "1.3.0"
+    version: "1.4.0"
     # Structural schema version. Consumers MUST refuse a major they do not
     # implement rather than best-effort parsing an unknown shape.
     schema_version: 1
-    updated: "2026-08-21"
+    updated: "2026-08-24"
     epic: EPIC-035
     story: STORY-035-1
     # Consumers: none. This is asserted, not implied - see README "Inert".
@@ -273,33 +291,57 @@ data:
 
       bazzite-5090:
         description: >-
-          Planned LAN edge worker on the Bazzite gaming host. Hardware is
-          confirmed to exist; nothing about its behaviour under this
-          contract has been measured.
-        status: planned
-        selectable: false
+          LAN edge worker on the operator's Bazzite gaming host. Brought up
+          and measured against edge/EDGE-WORKER-CONTRACT.md (35.13):
+          conformance 7/7 with strict TLS+bearer, interactive-withdrawal
+          and fail-closed-lease drills passed, heartbeat accepted by
+          agent-router. Wired into agentgateway as the
+          qwen36-27b-bazzite-preferred grouped backend (x-placement:
+          bazzite-5090 only; the headerless default never lands here).
+          Evidence: edge/bazzite/ACCEPTANCE.md.
+        status: available
+        selectable: true
         kind: edge
+        # Physical hostname deliberately not recorded here: this repo is
+        # public. The reachable endpoint is a DNS name (unifi-dns).
         node: null
         gpu:
           vendor: nvidia
           model: GeForce RTX 5090
+          arch: sm_120
         capacity:
-          vram_gb: null
+          # MEASURED, not nameplate: nvidia-smi memory.total reports
+          # 32607 MiB = 31.8 GiB on this card (driver 610.57.04). The idle
+          # desktop typically holds ~1.4 GiB of it; the loaded qwen36-27b
+          # leaves ~9 GiB free. First edge placement to satisfy a
+          # min_vram_gb constraint with a measured figure.
+          vram_gb: 31.8
           vram_gb_nameplate: 32
-          source: unmeasured
-        runtime: null
-        # Confirmed in EPIC-035 section 5: gaming/interactive use has
-        # absolute priority; expect abrupt withdrawal mid-request.
+          source: measured
+        # Ruling R3: llama-swap is the LAN-facing service (API key + TLS);
+        # llama-server runs behind it, loopback-only. CUDA build pinned to
+        # the same llama.cpp build number as kserve-a5000 (b9917).
+        runtime: llama-swap fronting llama.cpp (CUDA)
+        # Contract section 4: gaming/interactive use has absolute priority;
+        # abrupt withdrawal mid-request is expected and normal.
         preemptible: true
         scale_to_zero: null
         concurrent_models: null
-        cold_start_s_estimate: null
-        cold_start_source: unmeasured
-        blocked_by: ["35.13"]
+        cold_start_s_estimate: 4
+        cold_start_source: measured
+        cold_start_evidence: >-
+          35.13 cold-load benchmark on-host (model unloaded -> first
+          streamed token), N=5: min 3.462s, median 3.468s, max 3.497s,
+          spread 0.035s - 17.9 GB GGUF from local NVMe. Rounded up for the
+          estimate field; the distribution itself is the evidence.
         notes: >-
           Ruling R2 applies hardest here: once a response stream has begun,
           a broken stream fails the execution attempt. The gateway does not
-          rescue a mid-stream withdrawal.
+          rescue a mid-stream withdrawal - which on this host is a normal
+          event whenever a human takes the GPU (detection ~8s, endpoint
+          refusal ~1s later, measured). Deliberately LAST in every
+          placements/physical list and in every prefer_order: fastest cold
+          start in the fleet, least reliable tenancy.
 
       laptop-rtx5000:
         description: >-
@@ -358,7 +400,7 @@ data:
         upstream_model_id: qwen3.6-27b
         upstream_id_form: llama-server --alias
         runtime: llama.cpp (server-cuda)
-        placements: [kserve-a5000, cachyos-7900xtx]
+        placements: [kserve-a5000, cachyos-7900xtx, bazzite-5090]
         capabilities: [chat, tools]
         max_context: 65536
         alignment: standard
@@ -646,10 +688,14 @@ data:
             placement: cachyos-7900xtx
           - model_id: qwen36-27b
             placement: kserve-a5000
+          - model_id: qwen36-27b
+            placement: bazzite-5090
         notes: >-
-          Two candidates as of 35.8: the edge (cachyos-7900xtx) is listed
+          Three candidates as of 1.4.0: the edge (cachyos-7900xtx) is listed
           first to match policies.placement_policy.prefer-warm-local's
-          prefer_order, but ordering here is a preference hint only - the
+          prefer_order, and bazzite-5090 last - its gaming/interactive
+          priority makes it the least reliable tenancy despite the fastest
+          cold start. Ordering here is a preference hint only - the
           placement_policy on the request is what actually decides, per
           profile/policy/placement being independent axes.
 
@@ -944,10 +990,10 @@ data:
           allow_cold_start: true
           min_vram_gb: null
           min_free_vram_gb: null
-          # cachyos-7900xtx (first in prefer_order) is available/selectable
-          # as of 35.8, so this now resolves - to the edge, live capacity
-          # permitting. bazzite-5090 and laptop-rtx5000 remain
-          # status: planned and contribute nothing yet.
+          # cachyos-7900xtx and (as of 1.4.0) bazzite-5090 are both
+          # available/selectable, so this resolves with a real fallback
+          # inside the edge tier. laptop-rtx5000 remains status: planned
+          # and contributes nothing yet.
           resolves_today: true
 
         any-24gb:
@@ -962,9 +1008,11 @@ data:
           warm_preference: weighted
           warm_bonus_rank_shift: 1
           allow_cold_start: true
-          # Only kserve-a5000 has a measured capacity.vram_gb, so today this
-          # constraint admits exactly one placement. That is correct, not a
-          # bug: nameplate figures do not satisfy a hard constraint.
+          # kserve-a5000 and (as of 1.4.0) bazzite-5090 carry measured
+          # capacity.vram_gb figures, so this constraint admits two
+          # placements. cachyos-7900xtx still reports only nameplate and
+          # stays excluded: nameplate figures do not satisfy a hard
+          # constraint.
           min_vram_gb: 24
           min_free_vram_gb: null
           resolves_today: true

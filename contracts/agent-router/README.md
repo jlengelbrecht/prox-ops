@@ -188,7 +188,7 @@ written by hand.
 
 | Digest | What it is | Used by |
 | --- | --- | --- |
-| `sha256:2fd681e0…60e229` | The **real** digest of catalog 1.3.0 exactly as committed - `sha256` over `data["catalog.yaml"]` of `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml`. Reproducible from the repository today. | every example describing the cluster as it is |
+| `sha256:9b7ba27e…fa5e20` | The **real** digest of catalog 1.4.0 exactly as committed - `sha256` over `data["catalog.yaml"]` of `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml`. Reproducible from the repository today. | every example describing the cluster as it is |
 | `sha256:fd8c4c31…50667a` | Not fabricated - the **former real** digest of catalog 1.1.0, frozen by value as a historical placeholder the moment STORY-035-8 brought `cachyos-7900xtx` up and it stopped being real. Depicts the world before the edge placement existed: one usable placement, `edge-only` resolving to nothing. | `placed-kserve-only-candidate.json`, `unavailable-policy-edge-only.json`, `status-pre-edge-1.1.0.json`, and (as the caller's stale claim) `catalog-version-stale.json` |
 | `sha256:f00dface…f00dface` | Placeholder, obviously fabricated. A **further** catalog in which all three edge placements are selectable - which is what "every candidate has withdrawn itself" needs, since a placement that was never selectable cannot withdraw. | `unavailable-all-withdrawn.json` |
 | `sha256:deadbeef…deadbeef` | Placeholder. A later catalog that retired `local-unrestricted` and folded the `any-24gb` policy into `prefer-warm-local`. | `unknown-profile.json`, `unknown-placement-policy.json`, `catalog-version-stale.json` (as the digest the router now serves) |
@@ -401,11 +401,11 @@ The caller's obligation on a 403 is `abort`: escalate to a human, and specifical
 retry under a different credential**. A client that goes looking for a token that works has
 turned a control into an obstacle course.
 
-Worth recording: catalog 1.3.0 contains no `cost_class: metered` profile and no metered
+Worth recording: catalog 1.4.0 contains no `cost_class: metered` profile and no metered
 funding source at all - Devin's paid on-demand tier deliberately has no profile name to hide
 behind, and every declared pool says `spillover: none`. **So this path cannot fire today**,
 and the three fixtures that show it are pinned to the `cafebabe…` placeholder catalog rather
-than to the real digest. Showing a billable option against catalog 1.3.0 would teach that an
+than to the real digest. Showing a billable option against catalog 1.4.0 would teach that an
 exhausted subscription becomes per-token spend, which is the exact promotion invariant 4
 exists to forbid. The shape is specified now so that it exists before the money does.
 
@@ -822,7 +822,7 @@ invents a missed heartbeat window that never existed. A restarted-but-healthy ed
 as `silence` says a node failed when nothing did. And **a KServe placement reported as anything
 but `static` takes kserve-a5000 out of service on a false signal** - it never checks in by
 design, so the absence of a check-in says nothing about its health. That mistake used to zero
-out local capacity entirely; as of catalog 1.3.0 cachyos-7900xtx would still be there, but the
+out local capacity entirely; as of catalog 1.4.0 cachyos-7900xtx and bazzite-5090 would still be there, but the
 `static` rule protects kserve-a5000 for exactly the same reason regardless of how many other
 placements exist.
 
@@ -939,7 +939,7 @@ loaded catalog has dropped, and `catalog-version-stale.json` shows the caller's 
 `fd8c4c31…` digest (catalog 1.1.0, before the edge existed) against the `deadbeef…` retirements
 catalog the router is serving now.
 `metered-denied-no-alternative.json` and `metered-authorization-required.json` sit on
-`cafebabe…`, the catalog that declares a metered funding source, because catalog 1.3.0
+`cafebabe…`, the catalog that declares a metered funding source, because catalog 1.4.0
 declares none and a billable candidate cannot honestly be shown against it.
 
 The two shared catalog-failure fixtures - `catalog-unavailable.json` and
@@ -947,8 +947,8 @@ The two shared catalog-failure fixtures - `catalog-unavailable.json` and
 endpoint, so a fixture claiming one would teach a caller the wrong error path for its own
 call.
 
-**`examples/status/`** - `status-today.json` is catalog 1.3.0 exactly as it stands, on the
-real digest: `cachyos-7900xtx` selectable and heartbeating, `local-code-standard` with a
+**`examples/status/`** - `status-today.json` is catalog 1.4.0 exactly as it stands, on the
+real digest: `cachyos-7900xtx` and `bazzite-5090` both selectable and heartbeating, `local-code-standard` with a
 second physical candidate, `edge-only` resolving, the four entitlement pools, and
 `minimax/strong` visible but not selectable - alongside `local-code-fast` and
 `local-unrestricted`, retired by STORY-035-8c and visible but not selectable for the same
@@ -963,11 +963,11 @@ node is enrolled and may well be healthy, but nothing has been observed in this 
 it is `unseen`, `OFFLINE` and not eligible, alongside `capacity_state: learning`.
 
 Two examples describe a world that does not exist yet. `unavailable-all-withdrawn.json` needs
-the remaining two edge placements (`bazzite-5090`, `laptop-rtx5000`) to also be selectable - a
-node that was never selectable cannot withdraw itself - so it describes a further catalog and
-carries its own placeholder digest, `f00dface…`. In catalog 1.3.0 those two placements are
-still `status: planned` / `selectable: false` and cannot be returned by `/v1/place` at all,
-which is why this fixture cannot sit on the real digest. The `cafebabe…` metered fixtures are
+the remaining edge placement (`laptop-rtx5000`) to also be selectable - a node that was never
+selectable cannot withdraw itself - so it describes a further catalog and carries its own
+placeholder digest, `f00dface…`. bazzite-5090 became selectable in catalog 1.4.0, but
+laptop-rtx5000 is still `status: planned` / `selectable: false` and cannot be returned by
+`/v1/place` at all, which is why this fixture cannot sit on the real digest. The `cafebabe…` metered fixtures are
 the other still-hypothetical world, described where they are introduced above.
 
 ## Validating this contract
@@ -1038,7 +1038,7 @@ literal LAN address - placeholders such as `<edge-host>` and `<node-id>` are use
 matching the edge worker contract.
 
 The schemas do real work rather than describing the examples back to themselves. They reject,
-among others: `harness: local-agent`; a profile or placement name not in catalog 1.3.0;
+among others: `harness: local-agent`; a profile or placement name not in catalog 1.4.0;
 `cost_class: metered` with `metered: false` and the reverse; a `metered_denied` note on a
 metered profile; `state: INTERACTIVE` with `interactive: false`; a header other than
 `x-placement` in a `PlaceResult`; an `unavailable` result that still carries a placement; and
@@ -1070,7 +1070,7 @@ Recorded rather than resolved, because each belongs to a story that has not run 
    edge contract's field table says, and where the two could drift the edge contract wins, so
    the schema follows it. A node that genuinely cannot read utilization is out of contract
    today; 35.6 is where that gets found out.
-2. **No metered profile exists in catalog 1.3.0**, so `/v1/route` cannot emit `metered: true`
+2. **No metered profile exists in catalog 1.4.0**, so `/v1/route` cannot emit `metered: true`
    at all right now. The refusal shape is specified ahead of the money on purpose.
 3. **The heartbeat interval is router-side** and deliberately not added to the payload. 35.9
    sets the real value; 30 s / 90 s in these examples is a starting point, not a measurement.
