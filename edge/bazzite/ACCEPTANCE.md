@@ -189,3 +189,39 @@ drops `blocked_by`, sets `runtime: llama-swap fronting llama.cpp (CUDA)`,
 updates `prefer_order`/`resolves_today` as decided, bumps `version`/
 `updated` — and updates `services/agent-router/internal/catalog/catalog_test.go:102`,
 which currently asserts qwen36-27b is NOT authorized on bazzite-5090.
+
+## Post-promotion verification (2026-08-24, catalog 1.4.0 live at a75749d)
+
+Sequence per the owner ruling, host held in a real guard-claim withdrawal
+through merge and reconciliation; all router observations via authenticated
+`/v1/status` / `/v1/place` (caller token, staged read-only and shredded after).
+
+1. **First authoritative post-promotion status** (first poll, no unseen
+   window needed): `status: available, selectable: true, state: INTERACTIVE,
+   state_source: heartbeat, readiness: cached, eligible: false,
+   heartbeat.interactive: true, heartbeat.node: bazzite-5090` — the router
+   consumed the live heartbeat stream the moment the catalog made the
+   placement legal. Served digest matched 1.4.0's `sha256:9b7ba27e…fa5e20`.
+2. **`/v1/place` while withdrawn** (`local-code-standard` /
+   `prefer-warm-local`, nothing forced): placed on `kserve-a5000` by the
+   router's own ranking; `bazzite-5090` listed as an alternative with
+   `eligible: false, reason: withdrawn_interactive`.
+3. **Release → AVAILABLE**: heartbeat `AVAILABLE` accepted; status flipped to
+   `AVAILABLE / heartbeat / eligible: true`; `/v1/place` then considered
+   bazzite as an eligible candidate carrying the measured
+   `estimated_cold_start_s: 4`, ranked below the chosen placement
+   (`not_selected_lower_rank`) per the unchanged prefer_order.
+4. **Explicit gateway inference**: `x-placement: bazzite-5090` → 200 "pong",
+   confirmed on-host (request from cluster node, 4.8 s including the cold
+   load after the release restart).
+5. **Final withdrawal/recovery cycle, router-confirmed at every phase**:
+   AVAILABLE/eligible:true/accepting → claim → INTERACTIVE (accepted) /
+   eligible:false / endpoint refusing / new inference = instant wire failure
+   → release → AVAILABLE/eligible:true/accepting.
+
+Verdict: HOST EDGE CONFORMANCE GREEN. CONTROL-PLANE INTEGRATION GREEN.
+CATALOG PROMOTION GREEN. bazzite-5090 is a selectable production placement.
+
+Observed outside this workstream and handed off, not acted on:
+`cachyos-7900xtx` reported `not_yet_observed` on the freshly rolled router
+process during these proofs — its heartbeat producer may be down.
