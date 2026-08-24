@@ -1,0 +1,29 @@
+---
+# LAN name for the AI gateway front door, served by k8s-gateway's DNSEndpoint
+# source. The Service-annotation route merged in #1255 (coredns.io/hostname on
+# the generated LoadBalancer Service) proved inert at the pinned k8s-gateway
+# app v1.7.0: with the annotation live on the Service and the informer freshly
+# resynced, the resolver still returned NXDOMAIN for the name, while this
+# cluster's existing DNSEndpoint record (dnsendpoint-cachyos.yaml) resolves
+# through the same resolver today. This record uses that proven mechanism.
+# The target is the Gateway's Cilium LBIPAM VIP, pinned in
+# ../../agentgateway-config/../gateway.yaml (lbipam.cilium.io/ips) and carried
+# on the generated Service's loadBalancer ingress.
+# DELIBERATELY NOT annotated `prox-ops.io/dns-scope: unifi-static`: that
+# annotation is the selector unifi-dns-static (helmrelease-static.yaml,
+# sources: [crd]) uses to sync a record onto the physical UDM, which the
+# cachyos host record needs because non-k8s-gateway resolvers must also
+# find that host. This name only needs LAN resolution, and the LAN path is
+# UDM -> forward -> k8s-gateway, which serves every DNSEndpoint in the
+# zone with no annotation required - so no UDM record is created and the
+# publication scoping that #1215 established is untouched.
+apiVersion: externaldns.k8s.io/v1alpha1
+kind: DNSEndpoint
+metadata:
+  name: ai-gateway
+  namespace: network
+spec:
+  endpoints:
+    - dnsName: ai-gateway.homelab0.org
+      recordType: A
+      targets: ["10.20.67.27"]
