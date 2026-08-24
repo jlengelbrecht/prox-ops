@@ -28,7 +28,8 @@
 #   C_old -> C_new is EXPANDING if it admits an attempt C_old did not, and
 #   NARROWING if it withdraws one and admits none. Proving set inclusion over
 #   the whole document is not tractable, so the change is decomposed into
-#   ATOMS - one per changed leaf or per changed collection membership - each
+#   ATOMS - one per changed leaf, per changed collection membership, per added
+#   or removed table entry, and per added or removed UNRECOGNIZED key - each
 #   atom is classified by the rule family its field belongs to, and the atoms
 #   are combined by DOMINANCE: any expanding atom makes the whole change
 #   expanding, else any narrowing atom makes it narrowing, else neutral.
@@ -45,10 +46,20 @@
 #     order         a pure permutation of any list                      neutral
 #     everything else                          conservative default: EXPANDING
 #
+#   The conservative default covers a key's PRESENCE as well as its value: an
+#   unrecognized key arriving or departing is an atom in its own right, so an
+#   added `experimental_grant: {}` cannot walk to zero atoms and read neutral.
+#
 #   Two absence rules do the work that `null` does in this catalog, where an
 #   absent key and an explicit null mean the same thing:
 #     - absence of a CLAIM grants nothing (null min_context guarantees nothing);
 #     - absence of a RESTRICTION restricts nothing (null min_vram_gb is no floor).
+#
+#   Adding or removing a whole TABLE ENTRY moves authority only if the entry
+#   ADMITS, and it admits only if every entry-level gate it declares says yes -
+#   `selectable`, `supported` and `status`. A `status: planned` entry is
+#   non-admitting however `selectable` it claims to be, so naming it is neutral
+#   in both directions. Authority moves at the flip, not at the name.
 #
 # The tool reads two files and nothing else: no network, no cluster, no
 # credential, and no dependency on the live catalog. Point it at any two
@@ -117,6 +128,12 @@ DOC_SUBTREES = {"gpu"}          # hardware description, never a routing input
 GATE_BOOLS = {"allow_cold_start", "selectable", "supported"}
 ADMITTING_STATUS = {"available"}
 
+# The gates that decide whether a whole TABLE ENTRY admits - see admits().
+# `allow_cold_start` is deliberately NOT one of them: it is a per-candidate
+# condition inside a policy that still admits every warm candidate, not a
+# switch that takes the entry out of play.
+ENTRY_GATE_BOOLS = ("selectable", "supported")
+
 # Fields with exactly one CLOSED value, where every other value - and an absent
 # key, since an undeclared restriction restricts nothing - is the open one.
 CLOSED_VALUES = {
@@ -148,6 +165,21 @@ TABLES = {
 }
 KNOWN_TABLES = {"entitlement_pools", "harnesses", "models", "placements",
                 "policies", "profiles"}
+
+# Names this document is BUILT OUT OF, rather than fields carrying a rule of
+# their own. Listed only so the unrecognized-KEY rule in diff_mapping fires on
+# a genuinely novel name and never on the document's own skeleton.
+STRUCTURAL_KEYS = {"capacity", "defaults", "placement_policy"}
+
+# Every key name some rule above claims. A key outside this set is surface
+# nobody has classified, so its ARRIVAL or DEPARTURE is an atom in its own
+# right - otherwise an added `experimental_grant: {}` would walk to no atoms at
+# all and come back neutral, which is the conservative default failing open on
+# exactly the shape it exists for.
+KNOWN_KEYS = (DOC_KEYS | GATE_BOOLS | {"status"} | set(CLOSED_VALUES)
+              | RESTRICTION_LISTS | GRANT_LISTS | set(GRANT_RECORD_LISTS)
+              | CLAIM_NUMBERS | CONSTRAINT_NUMBERS | set(LATTICES)
+              | KNOWN_TABLES | STRUCTURAL_KEYS)
 
 
 # --- input ------------------------------------------------------------------
@@ -232,6 +264,13 @@ def is_doc(path):
     return key in DOC_KEYS or key.endswith(DOC_SUFFIXES)
 
 
+def recognized(path):
+    """Does some rule table name this key, or is it documentary? Consulted only
+    to decide whether the key's PRESENCE is an atom. A key present on both
+    sides is always classified by its value, recognized or not."""
+    return is_doc(path) or str(path[-1]) in KNOWN_KEYS
+
+
 def emit(atoms, verdict, path, detail, why):
     atoms.append((verdict, ".".join(str(p) for p in path), detail, why))
 
@@ -277,6 +316,18 @@ def diff_mapping(path, old, new, atoms):
             diff(sub, old[key], new[key], atoms)
         elif table:
             entry(sub, new[key] if key in new else old[key], atoms, key in new)
+        elif not recognized(sub):
+            # The KEY itself is the unrecognized surface, independently of what
+            # hangs off it. Without this atom an added `experimental_grant: {}`
+            # walks to nothing and reads neutral - the conservative default
+            # failing open on the one shape where the field says least about
+            # itself. Not recursed into: the verdict is already the most
+            # conservative one available, and the contents of a field nothing
+            # understands cannot make it more so.
+            emit(atoms, EXPANDING, sub,
+                 "key %s" % ("added" if key in new else "removed"),
+                 "unrecognized key: its presence is unclassified surface, "
+                 "assumed to carry authority (conservative default)")
         else:
             # Absent and null are the same value in this document, so an added
             # or removed field is diffed against None rather than special-cased.
@@ -285,12 +336,26 @@ def diff_mapping(path, old, new, atoms):
 
 def admits(record):
     """Does this table entry take part in an approved execution decision?
-    A harness declares two gates and needs both; an entry declaring none is
-    assumed to admit, because nothing in it says otherwise."""
+
+    Every entry-level gate it declares has to say yes. A harness declares two
+    booleans and needs both; a placement declares `status` as well, and
+    `status: planned` is non-admitting however `selectable` the entry claims to
+    be - a gate that only counts when the other gates agree with it is not a
+    gate. An entry declaring no gate at all is assumed to admit, because
+    nothing in it says otherwise."""
     if not isinstance(record, dict):
         return True
-    flags = [record[g] for g in ("selectable", "supported") if g in record]
-    return all(f is True for f in flags) if flags else True
+    for gate in ENTRY_GATE_BOOLS:
+        if gate in record and record[gate] is not True:
+            return False
+    if "status" in record:
+        status = record["status"]
+        # isinstance first: a non-string status is a malformed gate, and a
+        # malformed gate is not an admitting one. It also keeps an unhashable
+        # value out of the set membership test.
+        if not (isinstance(status, str) and status in ADMITTING_STATUS):
+            return False
+    return True
 
 
 def entry(path, record, atoms, added):
@@ -302,9 +367,9 @@ def entry(path, record, atoms, added):
              ("joins" if added else "leaves"))
     else:
         emit(atoms, NEUTRAL, path,
-             "entry %s (declared non-selectable)" % verb,
-             "a declared-but-not-selectable entry grants nothing; authority "
-             "moves when it is flipped, not when it is named")
+             "entry %s (declared non-admitting)" % verb,
+             "an entry whose own gates refuse it grants nothing; authority "
+             "moves when a gate is flipped, not when the entry is named")
 
 
 def index(items, ids):

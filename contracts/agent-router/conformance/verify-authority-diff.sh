@@ -6,25 +6,27 @@
 #
 # The taxonomy in AUTHORITY-DIFF.md is a set of judgement calls - which fields
 # carry authority, which way `null` points for each family, whether declaring a
-# non-selectable entry grants anything - and judgement calls rot silently. A
+# non-admitting entry grants anything - and judgement calls rot silently. A
 # rule table is one dictionary edit away from classifying `forbidden_for` as a
 # grant, and the classifier would still run, still print a verdict, and still
 # exit 0. Nothing else in this repository would notice.
 #
-# So every case below asserts a verdict in BOTH directions. Direction matters:
+# So every case below asserts a verdict in BOTH directions: forward is the
+# fixture's edit applied, reverse is the same edit undone. Direction matters -
 # most families invert (a grant added is a grant removed the other way round)
-# and two deliberately do not - a mixed change is expanding whichever way it is
+# and two deliberately do not: a mixed change is expanding whichever way it is
 # read, and so is an unrecognized one. Asserting only the forward direction
-# would let a rule that ignores direction entirely pass every case.
+# would let a rule that ignores direction entirely pass every case, and would
+# leave the removal half of every add/remove rule untested.
 #
 # The suite is deliberately fixture-only: it never reads the live catalog, so
 # it cannot start passing or failing because somebody edited the cluster's
 # catalog, and it runs on a laptop with no cluster access at all.
 #
 # Cost: two classifier processes per case, each a python3 start plus a PyYAML
-# import - a few seconds in total, well inside the 10 s budget. If this suite
-# ever grows past that, batch the runs rather than dropping the reverse
-# direction; the reverse direction is where the rules are actually pinned.
+# import - a few seconds in total, inside the 10 s budget. If this suite ever
+# grows past that, batch the runs rather than dropping the reverse direction;
+# the reverse direction is where the rules are actually pinned.
 #
 # Usage: bash verify-authority-diff.sh   (exit 0 = taxonomy intact)
 set -euo pipefail
@@ -42,7 +44,8 @@ CASES=(
   "envelope|envelope-configmap.yaml|envelope-plain.yaml|neutral|neutral|the ConfigMap around a catalog is not catalog data"
   "documentary|base.yaml|documentary-new.yaml|neutral|neutral|version/updated/prose/estimates carry no authority"
   "prefer-order-reorder|base.yaml|prefer-order-reorder-new.yaml|neutral|neutral|order is preference, not permission"
-  "declaration-only|base.yaml|declaration-only-new.yaml|neutral|neutral|a non-selectable declaration grants nothing"
+  "declaration-only|base.yaml|declaration-only-new.yaml|neutral|neutral|an entry added (fwd) or removed (rev) behind status: planned + selectable: false grants nothing"
+  "planned-entry|base.yaml|planned-entry-new.yaml|neutral|neutral|status gates the entry rule on its own: entry added (fwd) / removed (rev) at status: planned, selectable: TRUE"
   "selectable-enable|base.yaml|selectable-enable-new.yaml|expanding|narrowing|the selectable flip, both ways"
   "forbidden-add|base.yaml|forbidden-add-new.yaml|narrowing|expanding|a forbidden_for tag subtracts, both ways"
   "placement-add|base.yaml|placement-add-new.yaml|expanding|narrowing|a selectable placement joins the approved set"
@@ -54,6 +57,7 @@ CASES=(
   "status-withdraw|base.yaml|status-withdraw-new.yaml|narrowing|expanding|'available' is the admitting status"
   "mixed|base.yaml|mixed-new.yaml|expanding|expanding|any expansion dominates, in either direction"
   "unknown-key|base.yaml|unknown-key-new.yaml|expanding|expanding|an unrecognized field is assumed to grant"
+  "unknown-empty|base.yaml|unknown-empty-new.yaml|expanding|expanding|an unrecognized KEY added (fwd) / removed (rev) is surface even when its value is an empty container"
 )
 
 # Classes that must stay covered. Deleting a case is allowed; deleting one of
@@ -61,7 +65,8 @@ CASES=(
 REQUIRED=(
   identical selectable-enable forbidden-add            # the PM-frozen semantics
   placement-add physical-add prefer-order-reorder      # the catalog's own shapes
-  mixed unknown-key                                    # dominance and the default
+  planned-entry                                        # status gates the entry rule
+  mixed unknown-key unknown-empty                      # dominance and the default
 )
 
 VERDICT_LINE='^verdict: (expanding|narrowing|neutral)$'

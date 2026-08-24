@@ -1,9 +1,16 @@
-# Seeded fixture: base.yaml with TWO related edits.
+# Seeded fixture: base.yaml with THREE related edits.
 #   placements.laptop-rtx5000                added, status available/selectable
+#   models.qwen36-27b.placements             gains it, so the model can run there
 #   policies.placement_policy.prefer-warm-local.prefer_order  gains it, last
 # Expected: expanding forward, narrowing in reverse.
-# Both atoms point the same way, which is the ordinary shape of a placement
-# addition: the placement is declared AND a policy is taught to reach it.
+# All three atoms point the same way, which is the ordinary shape of a
+# placement addition: the placement is declared, a model is declared to run on
+# it, AND a policy is taught to reach it. The middle edit is what makes the
+# fixture internally consistent - a prefer_order naming a placement no model
+# declares is a catalog nobody would ship, and this suite's fixtures have to be
+# documents a reviewer could believe in even though the classifier itself does
+# no referential-integrity checking (see AUTHORITY-DIFF.md, "what this
+# deliberately does not do").
 # A placement name is a public identifier - it appears verbatim as an
 # agentgateway provider name and as the x-placement header value - so this is
 # authority arriving, not a rename.
@@ -64,7 +71,7 @@ models:
     description: Qwen3.6-27B, the reference local model for EPIC-035.
     hosting: local
     upstream_model_id: qwen3.6-27b
-    placements: [kserve-a5000, cachyos-7900xtx]
+    placements: [kserve-a5000, cachyos-7900xtx, laptop-rtx5000]
     capabilities: [chat, tools]
     max_context: 65536
     alignment: standard
