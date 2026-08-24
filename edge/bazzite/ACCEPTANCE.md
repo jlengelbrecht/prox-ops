@@ -132,27 +132,50 @@ derivation). Live payload at idle:
 heartbeat is NOT yet POSTing: `EDGE_ROUTER_URL` stays empty until the router
 credential exists (below).
 
-## Outstanding — blocked on owner 1Password actions
+## Control-plane integration (live, captured 2026-08-24 after PR #1283 merged at cc25f15)
 
-The op CLI on this host has no active session, so neither credential of
-record could be read or created. Running now with a clearly-labeled
-TEMPORARY bring-up token (prefix `sk-TEMP-bringup-`) in
-`~/.config/edge-bazzite/secrets/api-key` — it protects the endpoint for the
-drills above and MUST be replaced before any cluster wiring:
+Credentials of record: the owner-provisioned 1Password item `edge-bazzite-5090`
+(vault Automation) is live on both sides. Rotation off the bring-up token was
+proven without printing anything: old temporary token -> 401, credential of
+record -> 200, no credential -> 401. Parity between the 1Password item and the
+host files is proven end-to-end by the gateway path below (the gateway
+authenticates with the ExternalSecret-synced value; llama-swap accepts it).
 
-1. Create 1Password item **`edge-bazzite-5090`** in vault **`Automation`**:
-   - field `credential` — inference bearer (protects traffic INTO this node;
-     read by the host and by `ExternalSecret/agentgateway-pilot-edge-bazzite-5090`)
-   - field `router-credential` — heartbeat bearer (lets this node report
-     capacity TO agent-router; read by the host drop-in and by the
-     `bazzite-5090` entry in `ExternalSecret/agent-router-node-credentials`)
-   Two different values. Never reuse one for the other.
-2. On this host: `op signin`, then re-seed per README steps 3/3a, set
-   `EDGE_ROUTER_URL=https://agent-router.homelab0.org` in edge.env, restart
-   the two units and the container.
-3. Only after (1): merge/apply the agent-router ExternalSecret change (a
-   missing item blocks the WHOLE node-credentials Secret refresh, cachyos
-   included) and the agentgateway ExternalSecret.
+| proof | result |
+|---|---|
+| DNS | `bazzite-5090.homelab0.org -> A 10.20.65.98` served by the LAN resolver (unifi-dns DNSEndpoint) |
+| cluster -> bazzite TLS | agentgateway validated the committed `edge-bazzite-5090-ca` trust anchor + hostname SAN (a failed validation is a hard connect error; the request below succeeded) |
+| gateway inference | `POST /v1/chat/completions` to `https://ai-gateway.homelab0.org` with `x-placement: bazzite-5090`, gateway TLS verified against the system trust store (`ssl_verify: 0`), HTTP 200, content "pong" — and confirmed on-host: llama-swap logged the request from cluster node 10.20.67.10, 200 in 974 ms |
+| unauthenticated inference | gateway path: 401. Direct to the edge endpoint: 401 |
+| heartbeat -> agent-router | authenticated `POST /v1/capacity/heartbeat` accepted (2xx) since 13:32 EDT — the 401s stopped the moment the `agent-router-node-credentials` ExternalSecret synced and Reloader rolled the pod; zero rejections since |
+| withdrawal cycle (router-accepted) | idle: `state=AVAILABLE, interactive=false` POSTed and accepted, endpoint accepting -> claim: `state=INTERACTIVE, interactive=true` POSTed and accepted, endpoint REFUSING -> release: `state=AVAILABLE` POSTed and accepted, endpoint accepting. Each phase's payload got 2xx; the unit's own 30 s posts stayed rejection-free throughout |
+
+**`/v1/status` observation is catalog-gated, by design.** Pre-promotion the
+router presents `bazzite-5090` as `status: planned, state_source: static,
+state: OFFLINE, eligible: false` regardless of stored heartbeats — captured
+live via an authenticated `/v1/status` call at every phase of the cycle
+above. This is deliberate: `handleHeartbeat` records every identity-matched
+heartbeat unconditionally (`server.go`: "Recording a self-reported state
+needs no catalog"), while `status.go` refuses to consult the store for a
+`planned` placement ("A reserved but not-yet-enrolled edge placement... never
+eligible" — with a dedicated internal test,
+`TestReasonCodeFor_HeartbeatingButNotSelectable`). Git catalog = what is
+legally allowed; heartbeat = what is possible right now. The stored
+heartbeats mean the status view flips to `state_source: heartbeat` with live
+state on the first `/v1/status` after the 1.4.0 catalog reconciles — that
+capture is the one acceptance step that can only exist post-promotion, and
+should be taken immediately after merge.
+
+## Resolved — owner 1Password actions (were blocking; completed 2026-08-24)
+
+All completed in order: the owner created 1Password item
+**`edge-bazzite-5090`** (vault **`Automation`**) with distinct `credential`
+and `router-credential` values; both were seeded into the documented host
+files (one copy each, mode 0600), `EDGE_ROUTER_URL` was set, the units
+restarted, and the temporary `sk-TEMP-bringup-` token was proven rejected
+(401) before its saved copy was deleted. The ExternalSecrets reconciled only
+after the item existed. No credential value was ever printed, logged,
+committed, or written into this file.
 
 ## Catalog promotion (separate, owner-approved)
 
