@@ -890,8 +890,16 @@ data:
         # `tools` demonstrated by STORY-035-23 - see
         # models["minimax/m3"].capabilities.
         capabilities: [chat, tools]
-        # Rule 6: equals the sole candidate's max_context (Max Token Plan
-        # tier fact, owner-recorded 2026-08-27).
+        # min_context is a GUARANTEE, not an eligibility floor (README
+        # "profiles"): it promises every candidate here provides at least
+        # this much context. It does not require a task to NEED 1M - a
+        # task needing any amount up to 1M is satisfied by this profile,
+        # so a bigger number widens eligibility rather than narrowing it.
+        # Rule 6 pins the value: it must equal the minimum max_context
+        # across physical[] (sole candidate, 1000000 - Max Token Plan
+        # tier fact, owner-recorded 2026-08-27). null would withhold the
+        # guarantee and bar this profile from explicit long-context
+        # requirements - exactly where a 1M window is its edge.
         min_context: 1000000
         alignment: standard
         forbidden_for: []
