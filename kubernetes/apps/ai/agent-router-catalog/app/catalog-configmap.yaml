@@ -70,6 +70,28 @@ data:
 
     # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
     #
+    # 1.5.0 (STORY-035-23, owner-directed promotion) - ADDITIVE ONLY:
+    #   - minimax/strong flips to selectable: true. Its blocked_by list is
+    #     cleared: five items retired with evidence, four dispositioned by
+    #     owner decision (2026-08-27) - the per-item record is a comment on
+    #     the profile and the full evidence is
+    #     .claude/.ai-docs/stories/STORY-035-23-minimax-validation-evidence.md.
+    #   - minimax/m3 and minimax/strong gain `tools`: STORY-035-23
+    #     demonstrated a full Anthropic-protocol tool round trip.
+    #   - minimax/m3.max_context: 1000000 (Max Token Plan tier fact,
+    #     owner-recorded 2026-08-27); minimax/strong.min_context follows per
+    #     validation rule 6 (sole candidate).
+    #   - The endpoint (api.minimax.io, Global) and auth wiring
+    #     (ANTHROPIC_AUTH_TOKEN -> Authorization: Bearer, which wins over
+    #     x-api-key when both are present) are recorded as PROSE provenance
+    #     in the description/notes, not as structured fields - the
+    #     "endpoints are deliberately absent" rule governs routable gateway
+    #     data, and vendor traffic never touches agentgateway.
+    #   - A consumer does one thing differently: the router may now emit
+    #     model_profile: minimax/strong (harness: claude, pool minimax-max,
+    #     cost_class subscription, spillover none - unchanged).
+    #   Nothing was removed or re-typed, so schema_version stays 1.
+    #
     # 1.4.0 (EPIC-035 bazzite bring-up, story 35.13) - ADDITIVE ONLY:
     #   - bazzite-5090 flips from planned/not-selectable to
     #     available/selectable: host conformance 7/7 (edge/conformance.sh,
@@ -119,11 +141,11 @@ data:
     #     the edge as a second candidate, physical ordered edge-before-KServe
     #     to match prefer_order.
     #   Nothing was removed or re-typed, so schema_version stays 1.
-    version: "1.4.0"
+    version: "1.5.0"
     # Structural schema version. Consumers MUST refuse a major they do not
     # implement rather than best-effort parsing an unknown shape.
     schema_version: 1
-    updated: "2026-08-24"
+    updated: "2026-08-27"
     epic: EPIC-035
     story: STORY-035-1
     # Consumers: none. This is asserted, not implied - see README "Inert".
@@ -474,23 +496,28 @@ data:
       "minimax/m3":
         description: >-
           MiniMax M3 on the MiniMax Max Token Plan, reached by the `claude`
-          harness through MiniMax's Anthropic-compatible endpoint. DECLARED,
-          NOT YET USABLE - see profiles["minimax/strong"].blocked_by.
+          harness through MiniMax's Anthropic-compatible endpoint
+          (api.minimax.io, Global). Physically validated by STORY-035-23
+          (2026-08-27): real completion, tool round trip, Token Plan
+          funding proven against a zero PAYG balance.
         hosting: vendor
         upstream_model_id: null
         resolved_by: harness
         placements: []
-        # `chat` ONLY, deliberately. Tool calling is one of the things the
-        # validation story has to DEMONSTRATE before it can be claimed here;
-        # capabilities are sourced, not assumed, exactly like capacity
-        # numbers. Adding `tools` is that story's catalog PR, with evidence.
-        capabilities: [chat]
-        max_context: null
-        max_context_source: unmeasured
+        # `tools` is EARNED, not assumed - exactly as the 1.1.0 comment
+        # here demanded. STORY-035-23 demonstrated the full
+        # Anthropic-protocol round trip: tool_use emitted with the correct
+        # tool and arguments, tool_result consumed, correct final
+        # synthesis. Evidence:
+        # .claude/.ai-docs/stories/STORY-035-23-minimax-validation-evidence.md
+        capabilities: [chat, tools]
+        # Max Token Plan tier fact, owner-recorded 2026-08-27 with the
+        # 35.23 validation (same tier sheet: ~5.1B M3 tokens/month).
+        max_context: 1000000
         alignment: standard
         cold_start_s_estimate: 0
         cold_start_source: n-a
-        source: owner ruling R16
+        source: owner ruling R16; STORY-035-23 validation evidence
 
       swe-1-7-medium:
         description: Free-tier Devin model, larger sibling of swe-1-7.
@@ -846,7 +873,8 @@ data:
         description: >-
           Strong vendor model on the MiniMax Max Token Plan, executed by the
           `claude` harness against MiniMax's Anthropic-compatible endpoint.
-          DECLARED, NOT YET USABLE (owner ruling R16).
+          Physically validated by STORY-035-23 and promoted selectable by
+          owner decision, 2026-08-27.
         # SUBSCRIPTION, not metered - and note how that is established: from
         # the entitlement pool below, which says the Token Plan is a fixed
         # monthly subscription. It is NOT established from the credential,
@@ -854,14 +882,25 @@ data:
         # entitlement is the error TABLE 4 exists to prevent.
         cost_class: subscription
         hosting: vendor
-        # Non-selectable until a later story validates it PHYSICALLY. The
-        # name is fixed now so the contract and this catalog can land
-        # together and no drift window opens between them.
-        selectable: false
-        # `chat` only until tool calling is demonstrated - see
+        # Promoted from selectable: false by the 1.5.0 owner decision after
+        # STORY-035-23 physical validation. The former blocked_by list is
+        # fully dispositioned below - a selectable profile carries no
+        # dangling blocked_by entries.
+        selectable: true
+        # `tools` demonstrated by STORY-035-23 - see
         # models["minimax/m3"].capabilities.
-        capabilities: [chat]
-        min_context: null
+        capabilities: [chat, tools]
+        # min_context is a GUARANTEE, not an eligibility floor (README
+        # "profiles"): it promises every candidate here provides at least
+        # this much context. It does not require a task to NEED 1M - a
+        # task needing any amount up to 1M is satisfied by this profile,
+        # so a bigger number widens eligibility rather than narrowing it.
+        # Rule 6 pins the value: it must equal the minimum max_context
+        # across physical[] (sole candidate, 1000000 - Max Token Plan
+        # tier fact, owner-recorded 2026-08-27). null would withhold the
+        # guarantee and bar this profile from explicit long-context
+        # requirements - exactly where a 1M window is its edge.
+        min_context: 1000000
         alignment: standard
         forbidden_for: []
         entitlements:
@@ -884,16 +923,35 @@ data:
         physical:
           - model_id: "minimax/m3"
             placement: null
-        blocked_by:
-          - Token Plan billing proven in practice rather than pay-as-you-go
-          - Claude Code to MiniMax M3 execution demonstrated end to end
-          - provider and model identity verifiable from a live response
-          - tool calling exercised
-          - MCP compatibility exercised
-          - isolation from the normal Claude Max environment demonstrated
-          - quota behaviour observable
-          - no automatic pay-as-you-go spillover, demonstrated
-          - correct fallback when MiniMax capacity is unavailable
+        # DISPOSITION OF THE FORMER blocked_by LIST (nine items, owner
+        # decision 2026-08-27). Evidence for every "retired" line:
+        # .claude/.ai-docs/stories/STORY-035-23-minimax-validation-evidence.md
+        #   1. Token Plan billing, not PAYG      - RETIRED (req 4: every
+        #      call succeeded against a $0 PAYG balance; only the
+        #      subscription could have funded them).
+        #   2. Claude Code -> M3 end to end      - RETIRED (req 1: real
+        #      completion, is_error false, all tokens on MiniMax-M3).
+        #   3. identity from a live response     - RETIRED (req 2: body
+        #      model MiniMax-M3 + minimax-request-id/x-mm-request-id
+        #      response headers).
+        #   4. tool calling exercised            - RETIRED (req 3: full
+        #      tool_use -> tool_result -> synthesis round trip).
+        #   5. isolation from Claude Max env     - RETIRED (req 1:
+        #      per-process env only; global Anthropic config untouched).
+        #   6. quota behaviour observable        - RESOLVED by owner
+        #      rationale: per-call usage in every response is sufficient;
+        #      plan-level quota lives in the MiniMax console. Acceptable by
+        #      design under spillover: none.
+        #   7. no automatic PAYG spillover       - RESOLVED by owner
+        #      rationale: demonstrated in the $0-balance direction, and
+        #      structurally guaranteed by minimax-max spillover: none (a
+        #      PAYG pool does not exist to spill into).
+        #   8. MCP compatibility exercised       - RE-FILED to the backlog
+        #      as its own story; a capability claim, not a selectability
+        #      gate. `tools`/`chat` above claim only what was demonstrated.
+        #   9. fallback when MiniMax unavailable - RE-FILED to 35.9: router
+        #      runtime behaviour, owned by the router story, not by this
+        #      catalog row.
         notes: >-
           MiniMax is NOT a harness entry, deliberately. The execution path
           is `harness: claude` + `model_profile: minimax/strong`, which is
@@ -901,6 +959,13 @@ data:
           Claude Code is the harness, MiniMax M3 is the model it is pointed
           at. MiniMax Code is a different harness, is not approved, and
           would need its own evaluation story.
+
+          Wiring, as validated by STORY-035-23: the worker session sets
+          ANTHROPIC_BASE_URL to MiniMax's Anthropic-compatible endpoint
+          (api.minimax.io, Global) and passes the Token Plan key via
+          ANTHROPIC_AUTH_TOKEN - the Authorization: Bearer header, which
+          the endpoint prefers over x-api-key when both are present.
+          x-api-key also authenticates, but Bearer is the standard here.
 
           Credential isolation is part of the contract, not an
           implementation detail: the MiniMax base URL and token reach a
