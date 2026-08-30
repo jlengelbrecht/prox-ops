@@ -17,7 +17,7 @@
   ],
   "metered": false,
   "rationale": "The request is tagged security and secrets and touches an auth boundary, so blast radius is critical and a plausible-but-wrong answer is expensive. local-unrestricted is excluded outright rather than ranked: its forbidden_for list covers both tags, and that is a hard exclusion regardless of how well it would otherwise score (invariant 12). Of what remains, claude/strong is the strongest option the operator already pays for, so nothing here is billable. placement_policy is the catalog default because the caller named none; it is inert while the selected profile is vendor-hosted, and would only bind if the attempt fell back to a local profile. placement_required is false for the same reason the policy is inert: a vendor-hosted profile is resolved by the harness, so there is no placement to make and calling /v1/place for it would be a wasted round trip. entitlement_pool is anthropic-max: the attempt is funded by the operator's own Anthropic subscription, which is what makes it non-billable. Note that this is read from the pool's declared economics, not guessed from the harness or from what its credential looks like.",
-  "catalog_version": "sha256:9b7ba27e367f8cfa0caeed4057fe0fab1cd4138b11f9f65f906822276bfa5e20",
-  "catalog_document_version": "1.4.0",
+  "catalog_version": "sha256:a423d435435714673791bda1312e26556d722f30063f25df17149bfc427004ce",
+  "catalog_document_version": "1.6.0",
   "expires_at": "2026-08-19T15:19:02Z"
 }
