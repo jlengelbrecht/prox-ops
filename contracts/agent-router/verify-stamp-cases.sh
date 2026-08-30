@@ -61,6 +61,20 @@ cm = yaml.safe_load(open(sys.argv[1]))
 open(sys.argv[2], "w").write(cm["data"]["catalog.yaml"])
 PY
 
+# The digest of the catalog THIS RUN just extracted, computed the same way
+# SYNTHETIC_DIGEST is below and the same way agent-stamp-validate does it
+# (catalog.Digest hashes exactly the raw bytes it loads). Every fresh
+# PlacementEvidence this script generates is bound to it. Hardcoding a
+# digest here instead would pin the generated evidence to whatever catalog
+# version was current when the line was written, so the very next catalog
+# bump would make placement_catalog_version_mismatch permanent and
+# unrelated to what these cases test.
+REAL_DIGEST="$(python3 - "$REAL_CATALOG" <<'PY'
+import hashlib, sys
+print("sha256:" + hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+PY
+)"
+
 echo "== deriving the synthetic forbidden-pair catalog (real catalog + local-code-standard.forbidden_for) =="
 SYNTHETIC_CATALOG="$WORK/synthetic-forbidden-pair-catalog.yaml"
 python3 - "$REAL_CATALOG" "$SYNTHETIC_CATALOG" <<'PY'
@@ -103,7 +117,7 @@ PY
 # the binary.
 gen_fresh_evidence() {
   local out="$1"
-  python3 - "$out" <<'PY'
+  python3 - "$out" "$REAL_DIGEST" <<'PY'
 import json, sys
 from datetime import datetime, timedelta, timezone
 
@@ -120,7 +134,7 @@ doc = {
         "ttl_seconds": 30,
         "reason": {"code": "placed_warm", "message": "generated fresh by verify-stamp-cases.sh"},
         "alternatives": [],
-        "catalog_version": "sha256:9b7ba27e367f8cfa0caeed4057fe0fab1cd4138b11f9f65f906822276bfa5e20",
+        "catalog_version": sys.argv[2],
     },
 }
 json.dump(doc, open(sys.argv[1], "w"))
