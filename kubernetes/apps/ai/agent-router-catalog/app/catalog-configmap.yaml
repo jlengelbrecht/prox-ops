@@ -70,6 +70,39 @@ data:
 
     # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
     #
+    # 1.6.0 (STORY-036-2, EPIC-036) - ADDITIVE DOCUMENTATION ONLY:
+    #   - local-code-standard.notes now records the LAUNCH MECHANICS of the
+    #     profile, the way minimax/strong records its own wiring: the
+    #     `claude` harness driven against the gateway's Anthropic-compatible
+    #     /v1/messages endpoint with the scoped agentgateway-claude-code
+    #     key; the four-variable launch contract (ANTHROPIC_BASE_URL,
+    #     ANTHROPIC_AUTH_TOKEN, ANTHROPIC_MODEL, ANTHROPIC_CUSTOM_HEADERS);
+    #     placement conveyed by an x-placement value copied verbatim from a
+    #     /v1/place result; the frozen headerless default; and credential
+    #     isolation.
+    #   - ANTHROPIC_MODEL=qwen36-27b is recorded as REQUIRED, not merely
+    #     preferred: unpinned Claude Code 2.1.251 sends claude-opus-5, which
+    #     is outside the gateway's CEL alias list, and a real unpinned
+    #     session was refused 403 end to end (evidence R1, R2).
+    #   - kserve-a5000 is the ONLY placement claimed as demonstrated on this
+    #     path. Both edges were offline for the entire validation window and
+    #     /v1/place never emitted them (evidence R8); a later data-only
+    #     catalog PR adds them when those hosts are next up.
+    #   - cost_class stays `free` and gains an explicit rationale: the
+    #     credential is a LAN-scoped gateway key granting no metered spend,
+    #     the entitlement is pool: null, and spillover is structurally none
+    #     because no metered pool exists to spill into (evidence R13-R15).
+    #   - Evidence, committed and citable by path:
+    #     contracts/agent-router/evidence/STORY-036-1-local-launch-validation.md
+    #   - Nothing routable was added as DATA: no endpoint, hostname, port or
+    #     credential enters the catalog. The launch path is prose in `notes`,
+    #     per "WHAT IS DELIBERATELY ABSENT" above.
+    #   - A consumer does one thing differently: one resolving
+    #     {harness: claude, model_profile: local-code-standard} can now
+    #     CONSTRUCT A LAUNCH, where before it could only resolve a name.
+    #   No field was added, removed or re-typed - only `notes` prose, the
+    #   version and the date moved - so schema_version stays 1.
+    #
     # 1.5.0 (STORY-035-23, owner-directed promotion) - ADDITIVE ONLY:
     #   - minimax/strong flips to selectable: true. Its blocked_by list is
     #     cleared: five items retired with evidence, four dispositioned by
@@ -141,11 +174,11 @@ data:
     #     the edge as a second candidate, physical ordered edge-before-KServe
     #     to match prefer_order.
     #   Nothing was removed or re-typed, so schema_version stays 1.
-    version: "1.5.0"
+    version: "1.6.0"
     # Structural schema version. Consumers MUST refuse a major they do not
     # implement rather than best-effort parsing an unknown shape.
     schema_version: 1
-    updated: "2026-08-27"
+    updated: "2026-08-30"
     epic: EPIC-035
     story: STORY-035-1
     # Consumers: none. This is asserted, not implied - see README "Inert".
@@ -707,6 +740,17 @@ data:
         # Local execution draws on no entitlement pool: the GPU is
         # already paid for. `pool: null` is the correct value here,
         # not a gap.
+        #
+        # 1.6.0: this is now also EVIDENCED, not merely reasoned. The
+        # credential on the validated launch path is a LAN-scoped
+        # agentgateway key granting NO METERED SPEND: it authenticates
+        # only to this gateway's qwen36-27b sections and is refused
+        # everywhere else (evidence R13), no request reached a vendor
+        # endpoint (evidence R14), and spillover is structurally `none`
+        # because no metered entitlement exists anywhere in this catalog
+        # to spill into (evidence R15). An API-key-shaped credential does
+        # not imply metered - TABLE 4 exists to prevent exactly that
+        # inference.
         entitlements:
           - pool: null
             cost_class: free
@@ -725,6 +769,121 @@ data:
           cold start. Ordering here is a preference hint only - the
           placement_policy on the request is what actually decides, per
           profile/policy/placement being independent axes.
+
+          LAUNCH PATH (added 1.6.0, STORY-036-2). Until now this profile
+          resolved to a NAME and nothing more: a consumer could learn that
+          {harness: claude, model_profile: local-code-standard} was an
+          approved decision, but not how to start it. What follows is the
+          path STORY-036-1 actually validated on 2026-08-30, recorded the
+          way minimax/strong records its own wiring. Evidence:
+          contracts/agent-router/evidence/STORY-036-1-local-launch-validation.md
+          - "R1".."R17" below are that file's numbered requirements; where
+          an OWNER RULING is meant it is written as "owner ruling Rn".
+
+          The path is the `claude` harness driven against the gateway's
+          Anthropic-compatible /v1/messages endpoint, authenticated with
+          the scoped agentgateway-claude-code key and served by qwen36-27b.
+          A real Claude Code session completed successfully through it
+          (R3); the served model was established from live response bodies
+          and gateway telemetry rather than from configuration, and the
+          upstream string returned (qwen3.6-27b) differs from the string
+          the client sent, so it cannot be an echo (R4); and a full
+          tool_use -> tool_result -> synthesis round trip ran over two
+          /v1/messages calls, which is what licenses this profile's `tools`
+          guarantee ON THIS PATH specifically (R5).
+
+          THE LAUNCH CONTRACT IS EXACTLY FOUR VARIABLES, set per-process on
+          the harness: ANTHROPIC_BASE_URL (the gateway), ANTHROPIC_AUTH_TOKEN
+          (the scoped key, conveyed as an Authorization bearer header rather
+          than x-api-key), ANTHROPIC_MODEL, and ANTHROPIC_CUSTOM_HEADERS
+          carrying the placement header. This is what passed, not an
+          idealised contract: R9 confirmed the last two convey from a real
+          session both at the wire and by gateway route-section selection,
+          so the agreed degraded headerless fallback was not needed.
+
+          ANTHROPIC_MODEL=qwen36-27b IS REQUIRED, NOT PREFERRED. Unpinned
+          Claude Code 2.1.251 sends "model": "claude-opus-5" in the request
+          body (R1), which is not in the gateway's CEL alias list, and a
+          real unpinned session against the live gateway was refused with
+          403 authorization failed, the access log naming the
+          body-consistency clause (R2). The zero-config path is broken
+          today: a consumer that omits the pin gets no completion at all,
+          not a degraded one.
+
+          PLACEMENT IS CONVEYED BY THE x-placement REQUEST HEADER, and its
+          value is never composed by hand. It is copied verbatim from the
+          `headers` object of a POST /v1/place result, which carries
+          ttl_seconds: 30 and is therefore point-in-time - re-fetch it per
+          attempt rather than holding it across a long session (R6).
+          Pinning was settled at the routing layer, the only place it can
+          be: pinned requests selected the placement-scoped route section,
+          distinct from the headerless default section (R7).
+
+          PLACEMENTS DEMONSTRATED ON THIS PATH: kserve-a5000 ONLY (R6, R7).
+          cachyos-7900xtx and bazzite-5090 were held ineligible for the
+          entire validation window and /v1/place never emitted them, so
+          nothing here claims them; they are added by a later data-only
+          catalog PR once those hosts are up (R8). Their non-emission is
+          itself positive evidence of late binding: the router named both
+          edges as rejected and why, rather than silently narrowing, and
+          under edge-only it returned status: unavailable with a null
+          placement rather than falling through to the cluster placement
+          the caller had excluded (R8). Eligibility is live runtime state,
+          not catalog data - all three read available/selectable here while
+          only one was actually eligible.
+
+          x-placement REMAINS A SCHEDULING SIGNAL ONLY (owner ruling R5).
+          It is never an authorization input and nothing above makes it
+          one. Authorization stays where it has always been: the per-section
+          CEL policy binding the request-body model, which is never derived
+          from the header. R13 shows the separation directly - the same key
+          is refused 403 for any other body model no matter what placement
+          is asked for, and 401 outside its credential set entirely.
+
+          THE HEADERLESS DEFAULT IS THE FROZEN SAFE DEFAULT. An absent or
+          stale header degrades to it rather than redirecting traffic:
+          headerless requests landed on the default route section and were
+          served from kserve-a5000, by curl and by a real session alike
+          (R10), and both a stale-but-real placement name and a garbage one
+          fell through to that same default and were served normally (R11).
+          So an expired ttl_seconds: 30 place result costs correctness
+          nothing, and no missing header can silently redirect production
+          traffic onto a human's desktop. Safe is not free, though: with
+          both edges genuinely down, a request pinned at an edge still
+          returned a correct completion from the cluster provider but paid
+          roughly 10 s of added latency first (R12) - a single observation
+          under one failure mode, recorded as such and not as a guarantee.
+
+          ECONOMICS. cost_class: free is correct and now evidenced rather
+          than merely reasoned. The credential is a LAN-scoped agentgateway
+          key granting NO METERED SPEND: it authenticates only to this
+          gateway's qwen36-27b sections and is refused everywhere else
+          (R13); no request in the validation reached a vendor endpoint and
+          no ANTHROPIC_API_KEY was set at any point (R14); and spillover is
+          structurally `none` because the entitlement is pool: null and no
+          metered entitlement exists anywhere in this catalog to spill into
+          (R15). An API-key-shaped credential does not imply metered - see
+          TABLE 4. One caveat a consumer must handle - Claude Code's own
+          result envelope
+          reports a non-zero total_cost_usd on this path, computed from the
+          CLI's internal price table with costBasis: unknown. It is a
+          client-side estimate, not spend; the local model has no price.
+          Anything aggregating session cost must exclude hosting: local
+          profiles or it will over-report (R14).
+
+          CREDENTIAL ISOLATION IS PART OF THE CONTRACT, exactly as for
+          minimax/strong. The base URL and token reach the worker's own
+          process or session ONLY. STORY-036-1 set all four variables
+          per-process on the harness subprocess: no ANTHROPIC_API_KEY was
+          set at any point, CLAUDE_CONFIG_DIR was never set, the global
+          Anthropic configuration was not rewritten, and nothing was
+          exported into the operator's shell. The key lives in 1Password,
+          scoped to this gateway path, and never in Git.
+
+          The endpoint itself is deliberately NOT recorded here as data.
+          agentgateway is the only model ingress (invariant 5) and
+          endpoint discovery is runtime state from the heartbeat contract;
+          the paragraphs above are prose provenance, not routable fields.
 
       local-general:
         description: >-
