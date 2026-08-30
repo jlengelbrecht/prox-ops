@@ -188,7 +188,7 @@ written by hand.
 
 | Digest | What it is | Used by |
 | --- | --- | --- |
-| `sha256:a423d435…7004ce` | The **real** digest of catalog 1.6.0 exactly as committed - `sha256` over `data["catalog.yaml"]` of `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml`. Reproducible from the repository today. | every example describing the cluster as it is |
+| `sha256:c4d49d9a…7cd027` | The **real** digest of catalog 1.6.0 exactly as committed - `sha256` over `data["catalog.yaml"]` of `kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml`. Reproducible from the repository today. | every example describing the cluster as it is |
 | `sha256:fd8c4c31…50667a` | Not fabricated - the **former real** digest of catalog 1.1.0, frozen by value as a historical placeholder the moment STORY-035-8 brought `cachyos-7900xtx` up and it stopped being real. Depicts the world before the edge placement existed: one usable placement, `edge-only` resolving to nothing. | `placed-kserve-only-candidate.json`, `unavailable-policy-edge-only.json`, `status-pre-edge-1.1.0.json`, and (as the caller's stale claim) `catalog-version-stale.json` |
 | `sha256:f00dface…f00dface` | Placeholder, obviously fabricated. A **further** catalog in which all three edge placements are selectable - which is what "every candidate has withdrawn itself" needs, since a placement that was never selectable cannot withdraw. | `unavailable-all-withdrawn.json` |
 | `sha256:deadbeef…deadbeef` | Placeholder. A later catalog that retired `local-unrestricted` and folded the `any-24gb` policy into `prefer-warm-local`. | `unknown-profile.json`, `unknown-placement-policy.json`, `catalog-version-stale.json` (as the digest the router now serves) |

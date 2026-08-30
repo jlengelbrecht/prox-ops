@@ -22,7 +22,7 @@ global was written: no `ANTHROPIC_API_KEY` was ever set, `CLAUDE_CONFIG_DIR` was
 `~/.claude/settings.json` was not modified (mtime unchanged across the window), and no
 variable was exported into the operator's own shell.
 
-```
+```text
 ANTHROPIC_BASE_URL       = https://ai-gateway.homelab0.org
 ANTHROPIC_AUTH_TOKEN     = <1Password item agw-claude-code>
 ANTHROPIC_MODEL          = qwen36-27b
@@ -152,7 +152,7 @@ launch path specifically**.
 was called freshly before each attempt (four times across the window; `ttl_seconds: 30`, so
 no result was reused across a long session). Every result:
 
-```
+```text
 status:      placed
 model:       qwen36-27b
 placement:   kserve-a5000

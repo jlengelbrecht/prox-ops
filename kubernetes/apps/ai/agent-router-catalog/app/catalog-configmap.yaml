@@ -810,14 +810,48 @@ data:
           today: a consumer that omits the pin gets no completion at all,
           not a degraded one.
 
+          A KNOWN CAVEAT ON TOP OF THE CONTRACT, NOT A FIFTH VARIABLE: THE
+          CONTEXT WINDOW. Claude Code does not recognise `qwen36-27b` as a
+          model id. It emits [claude-code:unrecognized_model] on every launch
+          and assumes a 200,000-token window for auto-compaction, while this
+          profile's real max_context is 65536 - so a long session compacts
+          far too late and can overrun the model. A consumer should set
+          CLAUDE_CODE_MAX_CONTEXT_TOKENS, or an equivalent model override, to
+          the real 65536. Note the status of this deliberately: the four
+          variables above are the contract STORY-036-1 exercised and passed,
+          whereas this window behaviour was OBSERVED during that validation
+          (evidence finding F3) and was never itself exercised - the sessions
+          were far too short to reach the boundary. It is a caveat a consumer
+          must handle. It does not make the contract five variables.
+
           PLACEMENT IS CONVEYED BY THE x-placement REQUEST HEADER, and its
           value is never composed by hand. It is copied verbatim from the
-          `headers` object of a POST /v1/place result, which carries
-          ttl_seconds: 30 and is therefore point-in-time - re-fetch it per
-          attempt rather than holding it across a long session (R6).
-          Pinning was settled at the routing layer, the only place it can
-          be: pinned requests selected the placement-scoped route section,
-          distinct from the headerless default section (R7).
+          `headers` object of a POST /v1/place result (R6). Pinning was
+          settled at the routing layer, the only place it can be: pinned
+          requests selected the placement-scoped route section, distinct
+          from the headerless default section (R7).
+
+          THE UNIT OF PLACEMENT IS THE SESSION, NOT THE TURN. A place result
+          carries ttl_seconds: 30 and is therefore point-in-time, but
+          ANTHROPIC_CUSTOM_HEADERS is fixed when the harness process starts
+          and cannot be refreshed while it runs. One Claude Code session
+          therefore pins ONE placement for its entire lifetime, and
+          "resolved late, per attempt" means PER SESSION - per launch - not
+          per turn. Fetch a fresh /v1/place result immediately before
+          starting a session, and RELAUNCH a long-running session to
+          re-place it. A session cannot re-place itself and must not be
+          expected to.
+
+          The consequence is bounded, and it is a FRESHNESS limitation
+          rather than a correctness or authorization one. A session
+          outliving its 30 s TTL keeps sending the placement it started
+          with, which may since have been withdrawn - and a withdrawn or
+          stale placement degrades to the frozen headerless default and is
+          served normally rather than failing (R10, R11). What it costs is
+          latency, not an answer: with the pinned placement genuinely down,
+          the request still returned a correct completion, after roughly
+          10 s of added latency spent failing to reach it (R12). Relaunch to
+          re-place when that cost matters; nothing breaks if you do not.
 
           PLACEMENTS DEMONSTRATED ON THIS PATH: kserve-a5000 ONLY (R6, R7).
           cachyos-7900xtx and bazzite-5090 were held ineligible for the
