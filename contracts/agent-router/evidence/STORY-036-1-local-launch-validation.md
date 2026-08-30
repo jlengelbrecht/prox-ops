@@ -349,37 +349,40 @@ not: every `/v1/place` result in this window returned `readiness: "unknown"` for
 `kserve-a5000`, which is the router declining to probe. The predictor was woken by a
 deliberate inference request from the validator, which is the normal caller path.
 
-**Scale-down verification — recorded as not-yet-observed, deliberately.** The last inference
-request completed at `2026-08-30T04:31:14Z`; with the unchanged 30 m retention the predictor
-is expected to return to zero at approximately `05:01Z`. A replica poll was running at
-04:33Z / 04:34Z / 04:35Z and reported `replicas=1` each time, which is the retention window
-behaving normally, not a pin. The return to zero falls outside the validation window and is
-**not claimed here as observed**. It does not change this requirement's verdict: AC-8 asks
-whether the validation *introduced* a warm-pinning side effect, and the config-level evidence
-above answers that on its own. Anyone wanting the empirical confirmation can check
-`replicas` on the predictor deployment after 05:01Z.
+**Scale-down verified empirically.** The last inference request completed at
+`2026-08-30T04:31:14Z`. A once-per-minute replica poll on the predictor deployment ran from
+`04:33Z` and observed `replicas=1` continuously until **`replicas=0` at
+`2026-08-30T05:03:12Z`** — 31 m 58 s after the last request, consistent with the unchanged
+30 m retention plus Knative's stabilization delay. A confirming check at `05:03:20Z` found no
+`qwen36-27b` predictor pod running and the autoscale spec still reading
+`minReplicas: 0 / maxReplicas: 1 / retention: 30m`.
 
-### R17 — (AC-9) Evidence retained under the split this story specifies — **PASS, with a blocking finding**
+The A5000 returned to zero on its own, on the schedule Git declares, and the GPU was freed.
+Nothing in this validation held it warm.
+
+### R17 — (AC-9) Evidence retained under the split this story specifies — **PASS**
 
 - This file — sanitized, numbered, citable per line by a catalog row.
 - Raw captures (response headers, upstream completion ids, full bodies, place-result JSON,
   gateway log lines) — retained locally under `.claude/.ai-docs/stories/`, gitignored,
   uncited.
 
-**FINDING F1 — the intended evidence path is currently gitignored.** `.gitignore` line 135
-contains `/docs/` ("High-level documentation - contains internal infrastructure details"),
-and no file under `docs/` is tracked anywhere in this repository. As written, this file is
-**not committed**, which defeats the whole point of the AC-9 split — a catalog row citing
-`docs/evidence/STORY-036-1-local-launch-validation.md` would point at a file that is not in
-Git, reproducing exactly the failure mode AC-9 was written to prevent (the STORY-035-23
-citation pointing at a file neither host can find).
+**FINDING F1 — RESOLVED.** This record was first written to
+`docs/evidence/STORY-036-1-local-launch-validation.md`, the path the story names. That path is
+unusable: `.gitignore` line 136 contains `/docs/` ("High-level documentation - contains
+internal infrastructure details") and no file under `docs/` is tracked anywhere in this
+repository, so a catalog row citing it would point at a file that is not in Git —
+reproducing exactly the failure mode AC-9 exists to prevent (the STORY-035-23 citation
+pointing at a file neither host can find).
 
-This needs an owner decision before STORY-036-2 cites the path. Deliberately **not** fixed
-here: the 2025-11-07 incident in this repository was caused by a `.gitignore` negation rule,
-so adding one unreviewed is not something a validation story should do on its own authority.
-The options are (a) a narrow negation such as `!/docs/evidence/` reviewed by
-security-guardian, or (b) relocating the citable record to an already-tracked path. Either
-way the decision, not the validator, should pick it.
+The validator flagged this rather than fixing it, because the 2025-11-07 incident in this
+repository was caused by a `.gitignore` negation rule and adding one unreviewed is not a
+validation story's call. The decision taken downstream was the safer of the two options: the
+record was **relocated to this tracked path under `contracts/`**, leaving `/docs/` ignored and
+adding no negation rule. Catalog rows must cite
+`contracts/agent-router/evidence/STORY-036-1-local-launch-validation.md`. The story's own
+literal gate string (`test -f docs/evidence/…`) is therefore stale and is superseded by this
+path.
 
 ---
 
@@ -396,17 +399,18 @@ way the decision, not the validator, should pick it.
 | AC-5 | **PASS** | Headerless and stale/unknown both land on the frozen default section, `curl` and real session alike. (R10, R11) |
 | AC-6 | **PASS** (observation, no guarantee asserted) | With both edges genuinely down, a pinned-edge request still returned HTTP 200, paying ~10.1 s of added latency. Single failure mode only. (R12) |
 | AC-7 | **PASS** | Key scoped to `qwen36-27b` and other models refused 403; zero vendor spend; no metered path exists or is reachable. CLI `total_cost_usd` is a client-side estimate, not spend. (R13, R14, R15) |
-| AC-8 | **PASS** | `minReplicas: 0` and 30 m retention unchanged; nothing applied or patched; router never probed. (R16) |
-| AC-9 | **PASS, with blocking finding F1** | Split retained as specified, but `docs/` is gitignored so the citable half is not yet committed. (R17) |
+| AC-8 | **PASS** | `minReplicas: 0` and 30 m retention unchanged; nothing applied or patched; router never probed; predictor observed returning to zero at `05:03:12Z`, GPU freed. (R16) |
+| AC-9 | **PASS** | Split retained as specified. The citable half lives at a tracked path under `contracts/` because `/docs/` is gitignored; F1 resolved without a negation rule. (R17) |
 
 **Definition of done**: AC-1 through AC-8 pass, with AC-4 passing at the coordinator's stated
 one-placement minimum and its coverage limits recorded explicitly. STORY-036-2 may document
 the four-variable launch contract exactly as validated above, and may claim `kserve-a5000`
-only. F1 must be resolved before the catalog cites this file by path.
+only.
 
 ## Findings carried forward
 
-1. **F1 (blocking the citation, not the launch path)** — `docs/` is gitignored; see R17.
+1. **F1 — resolved.** `docs/` is gitignored, so the citable record was relocated under
+   `contracts/` rather than unignored; see R17. Cite that path, not the one in the story text.
 2. **F2** — The maintenance note in `local-model-policies.yaml` naming `claude-sonnet-5` as
    Claude Code's zero-config default is stale; 2.1.251 sends `claude-opus-5`. The pinned
    contract does not depend on this, so it is context for whoever next touches that file,
