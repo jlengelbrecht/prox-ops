@@ -48,13 +48,13 @@ spec:
               # renovate: datasource=docker depName=ghcr.io/stefanprodan/podinfo
               tag: 6.15.0
             env:
-              # The suffix is what makes this a distinct release. Flagger will
-              # not analyse a pod template whose hash equals the last promoted
-              # one, so undoing a fault has to carry a change of its own or the
-              # Canary never leaves Failed. The functional-check webhook asserts
-              # the "flagger canary pilot" prefix, which every healthy release
-              # keeps.
-              PODINFO_UI_MESSAGE: flagger canary pilot rev4
+              # The functional-check webhook asserts this string, so any release
+              # that changes it fails the analysis on content rather than on a
+              # metric. Note that reverting a bad release back to exactly the
+              # last promoted pod template does not restart an analysis: Flagger
+              # treats a matching hash as a manual rollback and leaves the Canary
+              # in whatever phase it was in.
+              PODINFO_UI_MESSAGE: flagger canary pilot
             # Declared explicitly because there is no service: block to derive
             # them from, and because the PodMonitor addresses this port by
             # name.
