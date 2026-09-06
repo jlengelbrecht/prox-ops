@@ -1,0 +1,78 @@
+---
+# Identity that kustomize-controller impersonates when it applies pilot-branch
+# content, and that helm-controller impersonates for any HelmRelease that
+# content declares (flagger-pilot-app patches spec.serviceAccountName in, so
+# the branch cannot opt out).
+#
+# Read this Role as the full blast radius of the pilot: anything it lists, a
+# pilot-branch commit can create, change or delete. It is not a least-privilege
+# set for one known app, because Helm needs whatever the chart it is handed
+# needs. What bounds it is that Role, RoleBinding and impersonation are all
+# namespaced - there is no ClusterRole and no second RoleBinding, so a manifest
+# that reaches for another namespace or a cluster-scoped object fails Forbidden
+# at apply time instead of succeeding quietly.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flux-flagger-pilot
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-flagger-pilot
+rules:
+  # Flux and Flagger objects the pilot branch declares directly.
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["source.toolkit.fluxcd.io"]
+    resources: ["ocirepositories"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["flagger.app"]
+    resources: ["canaries", "metrictemplates"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["podmonitors"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Workload objects a Helm chart installs once helm-controller is impersonating
+  # this account. Without these every pilot HelmRelease fails Forbidden.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Owned by the Deployment controller, not by Helm; read-only is enough for
+  # Helm's readiness wait and for Flagger to track the canary rollout.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Cannot be narrowed by resourceNames: Helm keeps release state in
+  # sh.helm.release.v1.<name>.v<n> Secrets in the release namespace, and the
+  # names are not known ahead of time. This also covers the get on
+  # cluster-secrets that postBuild substitution needs. It does mean pilot
+  # content can read this namespace's decrypted copy of cluster-secrets; that
+  # copy is per-namespace and cluster-apps restores it, but it is real and is
+  # part of the blast radius above.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flux-flagger-pilot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flux-flagger-pilot
+subjects:
+  - kind: ServiceAccount
+    name: flux-flagger-pilot
+    namespace: flagger-pilot

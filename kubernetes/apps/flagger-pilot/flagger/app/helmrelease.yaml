@@ -1,0 +1,50 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: flagger
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: flagger
+  interval: 1h
+  values:
+    # Gateway API v1 provider, matched to the envoy GatewayClass used by the pilot route
+    meshProvider: gatewayapi:v1
+    # Security-load-bearing, not cosmetic: the chart turns this into the
+    # controller's -namespace startup flag, which is what stops Flagger
+    # reconciling Canaries outside the pilot. The chart's ClusterRole stays
+    # cluster-wide regardless, so dropping this value silently restores
+    # cluster-wide reach.
+    namespace: flagger-pilot
+    # Refuse Canary references that point at another namespace
+    noCrossNamespaceRefs: true
+    metricsServer: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090
+    # The chart's ClusterRole is not narrowed by the namespace value above, and
+    # a cluster-bound ServiceAccount living in this namespace would be a way
+    # out of it for pilot-branch content. Flagger is bound to a namespaced Role
+    # in ./rbac.yaml instead.
+    rbac:
+      create: false
+    # The namespace enforces the restricted Pod Security Standard; the chart's
+    # default context does not meet it on its own.
+    securityContext:
+      enabled: true
+      context:
+        runAsNonRoot: true
+        runAsUser: 10001
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+    podMonitor:
+      enabled: true
+      interval: 15s
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi

@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flagger-pilot
+  labels:
+    kubernetes.io/metadata.name: flagger-pilot
+    # Pod security standards. Load-bearing here rather than conventional: this
+    # is the one namespace that takes workload manifests from a branch, so
+    # admission is the backstop that stops a pilot chart shipping a privileged
+    # container, a hostPath mount or hostNetwork.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled

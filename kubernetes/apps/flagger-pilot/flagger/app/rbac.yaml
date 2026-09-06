@@ -1,0 +1,83 @@
+---
+# Flagger's own permissions, namespaced.
+#
+# The chart ships a ClusterRole and ClusterRoleBinding, and setting its
+# `namespace` value does not narrow them - that value only becomes the
+# controller's -namespace startup flag. The chart's ClusterRole grants
+# cluster-wide CRUD on secrets, configmaps, services, deployments and more.
+#
+# That matters here in a way it would not in an ordinary app namespace. The
+# pilot ServiceAccount has Secret create in flagger-pilot (Helm keeps release
+# state there), and creating a Secret of type kubernetes.io/service-account-
+# token annotated for another ServiceAccount makes the token controller mint a
+# usable token for it. A cluster-bound Flagger ServiceAccount sitting in the
+# same namespace would therefore be a way out of the namespace for anything on
+# the pilot branch.
+#
+# So rbac.create is off in the HelmRelease and Flagger gets this Role instead.
+# The rules are the chart's own, minus the providers this install cannot use
+# (meshProvider is gatewayapi:v1) and minus the /version nonResourceURL, which
+# every authenticated account already has through system:discovery. Minting
+# this account's token now buys nothing that does not stop at the namespace
+# boundary.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flagger
+rules:
+  - apiGroups: [""]
+    resources:
+      - events
+      - configmaps
+      - configmaps/finalizers
+      - secrets
+      - secrets/finalizers
+      - services
+      - services/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources:
+      - daemonsets
+      - daemonsets/finalizers
+      - deployments
+      - deployments/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+      - horizontalpodautoscalers/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["flagger.app"]
+    resources:
+      - canaries
+      - canaries/status
+      - canaries/finalizers
+      - metrictemplates
+      - metrictemplates/status
+      - alertproviders
+      - alertproviders/status
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The router for meshProvider: gatewayapi:v1
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      - httproutes
+      - httproutes/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Leader election is off by default on this chart, but the controller still
+  # asks for the lease when it starts.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flagger
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flagger
+subjects:
+  - kind: ServiceAccount
+    name: flagger
+    namespace: flagger-pilot

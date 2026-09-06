@@ -1,0 +1,51 @@
+---
+# The only Kustomization in the cluster that follows the flagger-pilot branch.
+# It applies as flux-flagger-pilot, not as the controller's cluster-admin
+# identity, and every object is forced into flagger-pilot.
+# The branch does not exist yet, so this reports NotReady until pilot content
+# is pushed; that is expected and affects nothing else.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: flagger-pilot-app
+spec:
+  dependsOn:
+    - name: flagger
+      namespace: flagger-pilot
+    - name: pilot-source
+      namespace: flagger-pilot
+  interval: 5m
+  retryInterval: 1m
+  timeout: 5m
+  path: ./kubernetes/pilot/flagger-pilot
+  prune: true
+  serviceAccountName: flux-flagger-pilot
+  sourceRef:
+    kind: GitRepository
+    name: flagger-pilot
+    namespace: flagger-pilot
+  targetNamespace: flagger-pilot
+  postBuild:
+    substituteFrom:
+      - kind: Secret
+        name: cluster-secrets
+  wait: false
+  patches:
+    - # Load-bearing, not cosmetic. helm-controller reconciles a HelmRelease
+      # under its own identity unless the object sets spec.serviceAccountName,
+      # and in this cluster that identity is bound to cluster-admin through
+      # ClusterRoleBinding/cluster-reconciler-flux-system. A pilot-branch
+      # HelmRelease that simply left the field out would therefore have its
+      # chart installed by a cluster-admin controller, straight past the
+      # flux-flagger-pilot boundary. kustomize-controller stamps the field in
+      # before apply, so branch content cannot opt out of impersonation.
+      patch: |-
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: _
+        spec:
+          serviceAccountName: flux-flagger-pilot
+      target:
+        group: helm.toolkit.fluxcd.io
+        kind: HelmRelease

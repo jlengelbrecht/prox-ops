@@ -1,0 +1,18 @@
+---
+# Second source for this same repository, restricted to the pilot branch.
+# jlengelbrecht/prox-ops is public, so this needs no secretRef - the
+# flux-system GitRepository reads the same URL anonymously.
+# sparseCheckout keeps everything else out of the stored artifact, so the
+# pilot Kustomization physically cannot apply a file from another path.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: flagger-pilot
+spec:
+  interval: 1m
+  timeout: 60s
+  url: https://github.com/jlengelbrecht/prox-ops.git
+  ref:
+    branch: flagger-pilot
+  sparseCheckout:
+    - kubernetes/pilot/flagger-pilot
