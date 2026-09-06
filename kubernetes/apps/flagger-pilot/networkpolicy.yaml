@@ -1,0 +1,91 @@
+---
+# The containment dimension the pilot frame left open.
+#
+# RBAC, PSS restricted, targetNamespace and sparseCheckout between them bound
+# what the pilot branch can create. None of them bounds what a created pod may
+# talk to, and Cilium is default-allow on this cluster with no clusterwide
+# policy in front of it, so without this file anything the branch deploys
+# reaches every pod in every namespace, the kube-apiserver and the internet.
+#
+# Why this object is in the frame and not on the pilot branch: it is the one
+# object here that is a control rather than a workload. For the branch to
+# carry it, flux-flagger-pilot would need full verbs on
+# cilium.io/ciliumnetworkpolicies - list and delete included, because the
+# pilot Kustomization runs with prune: true - and a branch commit could then
+# delete its own fence and Flux would apply that deletion. The frame is
+# reviewed through main PRs with CI; the branch is not. So the fence is
+# applied by cluster-apps, the pilot Role grants no cilium.io verbs at all,
+# and branch content can neither edit nor remove what contains it.
+#
+# endpointSelector is empty on purpose: it selects every endpoint in
+# flagger-pilot, so the bound applies to the primary and canary pods Flagger
+# creates, and to anything else a future branch commit lands here, without
+# having to be updated for each.
+#
+# Both directions are listed, which makes this pod set default-deny for
+# everything not named below. Kubelet probes are unaffected - Cilium's
+# allow-localhost default keeps host-to-pod traffic working - and DNS is the
+# only egress the app needs, because podinfo serves requests and initiates
+# nothing.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: flagger-pilot
+  labels:
+    app.kubernetes.io/component: networkpolicy
+spec:
+  endpointSelector: {}
+
+  ingress:
+    # The data path. Every request the canary analysis measures arrives here,
+    # through envoy-internal, because that is where the traffic split happens.
+    # Ingress is written against the app's own container port: Cilium DNATs
+    # the Service port to the endpoint before it evaluates policy, so 9898 is
+    # what the proxy pods actually connect to.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "9898"
+              protocol: TCP
+
+    # Prometheus scraping the pods directly, per the pilot branch's PodMonitor.
+    # podinfo serves /metrics on its main port, so this is 9898 as well and
+    # there is no second metrics port to open. Without this rule the metric
+    # templates return no values and every rollout halts partway through for a
+    # reason that looks nothing like a policy drop.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9898"
+              protocol: TCP
+
+    # flagger-system gets nothing. Neither of the two workloads there has a
+    # flow into this namespace to name: the Flagger controller talks to the API
+    # server, to Prometheus and to the loadtester's command API, never to the
+    # app; and the loadtester drives its load through envoy-internal, which is
+    # the only path that produces a traffic split for the analysis to measure.
+    # A direct loadtester-to-pod rule would only make an accidental bypass of
+    # the gateway succeed quietly.
+
+  egress:
+    # DNS and nothing else. No toEntities: world, no toCIDR, no kube-apiserver:
+    # a deliberately faulty app is not something to leave with egress. The rule
+    # selects the CoreDNS pods rather than the kube-dns Service, for the same
+    # DNAT-before-policy reason as above; the Service's 53/UDP and 53/TCP map
+    # straight through to them.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP

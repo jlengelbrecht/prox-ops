@@ -23,9 +23,9 @@ spec:
     # The chart's ClusterRole is not narrowed by the namespace value above: it
     # grants cluster-wide CRUD on secrets, configmaps, services, deployments
     # and more, which is far past what a single-namespace install needs.
-    # Flagger is bound to namespaced Roles instead - ./rbac.yaml here for its
-    # own namespace, and kubernetes/apps/flagger-pilot/rbac.yaml for the
-    # namespace it watches.
+    # Flagger is bound to a namespaced Role instead, in
+    # kubernetes/apps/flagger-pilot/rbac.yaml - the namespace it watches. It
+    # holds no permissions in this namespace; see ./kustomization.yaml.
     rbac:
       create: false
     # The namespace enforces the restricted Pod Security Standard; the chart's

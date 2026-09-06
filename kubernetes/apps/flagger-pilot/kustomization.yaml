@@ -1,8 +1,12 @@
 ---
-# Content namespace for the canary pilot. It holds the namespace itself and
-# the permissions two flagger-system ServiceAccounts have inside it, and
-# nothing else - every controller, source and identity is in
+# Content namespace for the canary pilot. It holds the namespace itself, the
+# permissions two flagger-system ServiceAccounts have inside it, and the
+# network policy that fences it - every controller, source and identity is in
 # kubernetes/apps/flagger-system.
+#
+# All three are controls over the pilot branch, not content of it: they are
+# applied from main by cluster-apps, never from the branch; ./networkpolicy.yaml
+# explains the split in full.
 #
 # The shared sops component is deliberately not listed here. It would put a
 # decrypted copy of cluster-secrets in the one namespace pilot-branch content
@@ -14,4 +18,5 @@ namespace: flagger-pilot
 
 resources:
   - ./namespace.yaml
+  - ./networkpolicy.yaml
   - ./rbac.yaml
