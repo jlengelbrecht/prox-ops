@@ -1,7 +1,8 @@
 ---
 # The only Kustomization in the cluster that follows the flagger-pilot branch.
-# It applies as flux-flagger-pilot, not as the controller's cluster-admin
-# identity, and every object is forced into flagger-pilot.
+# The object itself lives in flagger-system, which branch content cannot write
+# to; everything it applies is forced into flagger-pilot and applied as
+# flux-flagger-pilot rather than as the controller's cluster-admin identity.
 # The branch does not exist yet, so this reports NotReady until pilot content
 # is pushed; that is expected and affects nothing else.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -11,9 +12,9 @@ metadata:
 spec:
   dependsOn:
     - name: flagger
-      namespace: flagger-pilot
+      namespace: flagger-system
     - name: pilot-source
-      namespace: flagger-pilot
+      namespace: flagger-system
   interval: 5m
   retryInterval: 1m
   timeout: 5m
@@ -23,9 +24,13 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flagger-pilot
-    namespace: flagger-pilot
+    namespace: flagger-system
   targetNamespace: flagger-pilot
   postBuild:
+    # Resolved from flagger-system, where this object lives, not from the
+    # namespace the branch can write. cluster-secrets carries one key,
+    # SECRET_DOMAIN, and that domain is already in every HTTPRoute in the
+    # cluster.
     substituteFrom:
       - kind: Secret
         name: cluster-secrets

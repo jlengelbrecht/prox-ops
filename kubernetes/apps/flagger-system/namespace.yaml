@@ -1,0 +1,19 @@
+---
+# Control namespace for the canary pilot. Everything privileged lives here:
+# the Flagger controller, the loadtester, the pilot Git source and the
+# ServiceAccount that applies pilot content. Nothing on the flagger-pilot
+# branch can write into this namespace - the pilot Kustomization forces
+# targetNamespace: flagger-pilot and the identity it applies as holds no
+# permission here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flagger-system
+  labels:
+    kubernetes.io/metadata.name: flagger-system
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled

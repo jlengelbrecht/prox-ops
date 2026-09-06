@@ -10,16 +10,16 @@ spec:
   interval: 1h
   retryInterval: 1m
   timeout: 10m
-  path: ./kubernetes/apps/flagger-pilot/flagger/app
+  path: ./kubernetes/apps/flagger-system/flagger/app
   prune: true
   sourceRef:
     kind: GitRepository
     name: flux-system
     namespace: flux-system
-  targetNamespace: flagger-pilot
+  targetNamespace: flagger-system
   wait: true
   healthChecks:
     - apiVersion: helm.toolkit.fluxcd.io/v2
       kind: HelmRelease
       name: flagger
-      namespace: flagger-pilot
+      namespace: flagger-system

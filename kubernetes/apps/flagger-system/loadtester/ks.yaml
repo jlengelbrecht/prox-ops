@@ -7,16 +7,16 @@ spec:
   interval: 1h
   retryInterval: 1m
   timeout: 5m
-  path: ./kubernetes/apps/flagger-pilot/loadtester/app
+  path: ./kubernetes/apps/flagger-system/loadtester/app
   prune: true
   sourceRef:
     kind: GitRepository
     name: flux-system
     namespace: flux-system
-  targetNamespace: flagger-pilot
+  targetNamespace: flagger-system
   wait: true
   healthChecks:
     - apiVersion: apps/v1
       kind: Deployment
       name: flagger-loadtester
-      namespace: flagger-pilot
+      namespace: flagger-system

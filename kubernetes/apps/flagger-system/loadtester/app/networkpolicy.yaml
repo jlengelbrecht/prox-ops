@@ -1,0 +1,77 @@
+---
+# The loadtester's HTTP API runs whatever command a Canary webhook hands it
+# and has no authentication of its own, so both directions matter.
+#
+# Ingress: only the Flagger controller may call it. Flagger now runs in
+# flagger-system, which pilot-branch content cannot write to, so a pod wearing
+# these labels can only have come from this directory.
+#
+# Egress: the command line itself comes from a Canary on the pilot branch, so
+# treat it as attacker-controlled. Three destinations and nothing else - DNS,
+# the canary workloads in flagger-pilot, and the gateway the canary has to be
+# driven through for weighted routing to happen at all. No toCIDR, no
+# toFQDNs and no kube-apiserver entity, so everything off-cluster and every
+# other namespace is denied.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: flagger-loadtester
+  labels:
+    app: flagger-loadtester
+    app.kubernetes.io/component: networkpolicy
+spec:
+  endpointSelector:
+    matchLabels:
+      app: flagger-loadtester
+
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: flagger-system
+            app.kubernetes.io/name: flagger
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  egress:
+    # DNS resolution
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # The canary under test. No toPorts, which means every port and every
+    # protocol - a deliberate choice, not an omission: the pilot app does not
+    # exist yet so its port is unknown, and branch content can already stand
+    # up a listener on any port it likes inside this same namespace, so the
+    # rule grants no reach it did not already have.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: flagger-pilot
+
+    # envoy-internal. Load has to arrive through the gateway or no traffic
+    # split happens.
+    #
+    # The ports are the proxy pods' backend ports, not the Service's 80/443:
+    # Cilium DNATs to the endpoint before it evaluates policy, so a rule
+    # written against 80/443 matches nothing and drops the load silently.
+    # Confirmed on this cluster - the envoy-internal Service maps
+    # 80 -> 10080 and 443 -> 10443 - and the same note is on the equivalent
+    # rule in kubernetes/apps/tools/homepage/app/networkpolicy.yaml.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "10080"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP

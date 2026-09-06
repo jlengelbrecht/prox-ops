@@ -19,6 +19,10 @@ spec:
       labels:
         app: flagger-loadtester
     spec:
+      # No Kubernetes API access is needed: this process only runs the load
+      # generators a Canary webhook asks for. Leaving the default token
+      # mounted would hand that command line a cluster credential.
+      automountServiceAccountToken: false
       containers:
         - name: loadtester
           image: ghcr.io/fluxcd/flagger-loadtester:0.39.0 # renovate: datasource=docker depName=ghcr.io/fluxcd/flagger-loadtester
@@ -51,6 +55,7 @@ spec:
               cpu: 10m
               memory: 32Mi
             limits:
+              cpu: 1000m
               memory: 128Mi
       securityContext:
         runAsNonRoot: true
