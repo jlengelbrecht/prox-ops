@@ -1,0 +1,31 @@
+---
+# Delivery wrapper for flagger-pilot-app, which lives one directory down in
+# ./app rather than here.
+#
+# cluster-apps patches every Kustomization it renders with a spec.patches list
+# of its own, and kustomize replaces a list that has no merge key instead of
+# merging it. So a spec.patches written on a direct child of cluster-apps is
+# dropped before apply. flagger-pilot-app's HelmRelease impersonation patch is
+# the control that stops pilot-branch content escaping through a cluster-admin
+# helm-controller, so it has to be rendered by a Kustomization that is not
+# cluster-apps. That is all this object does; it carries no pilot content and
+# no impersonation of its own.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: pilot-app
+spec:
+  dependsOn:
+    - name: pilot-source
+      namespace: flagger-system
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  path: ./kubernetes/apps/flagger-system/pilot-app/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: flagger-system
+  wait: false

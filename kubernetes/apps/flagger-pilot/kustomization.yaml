@@ -1,0 +1,17 @@
+---
+# Content namespace for the canary pilot. It holds the namespace itself and
+# the permissions two flagger-system ServiceAccounts have inside it, and
+# nothing else - every controller, source and identity is in
+# kubernetes/apps/flagger-system.
+#
+# The shared sops component is deliberately not listed here. It would put a
+# decrypted copy of cluster-secrets in the one namespace pilot-branch content
+# can read; the pilot Kustomization substitutes from the flagger-system copy
+# instead.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: flagger-pilot
+
+resources:
+  - ./namespace.yaml
+  - ./rbac.yaml

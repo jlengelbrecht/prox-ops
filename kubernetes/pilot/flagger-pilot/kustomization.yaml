@@ -1,0 +1,15 @@
+---
+# Placeholder. The pilot app lives on the flagger-pilot branch at this same
+# path; on main the directory is intentionally empty.
+#
+# It exists because Kustomization/flagger-pilot-app declares
+# path: ./kubernetes/pilot/flagger-pilot, and flux-local resolves that path
+# against the checkout it is given rather than against the pilot GitRepository,
+# so a missing directory fails the render test on every main PR.
+#
+# Nothing here is applied to the cluster: cluster-apps reconciles
+# ./kubernetes/apps only, and the pilot Kustomization reads this path from the
+# branch, never from main.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []

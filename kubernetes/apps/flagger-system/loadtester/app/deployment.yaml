@@ -1,0 +1,65 @@
+---
+# Upstream ships this component only as a raw manifest set
+# (github.com/fluxcd/flagger/kustomize/tester); the loadtester chart is not
+# published under oci://ghcr.io/fluxcd/charts, so the Deployment is vendored
+# here with a pinned image tag.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flagger-loadtester
+  labels:
+    app: flagger-loadtester
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flagger-loadtester
+  template:
+    metadata:
+      labels:
+        app: flagger-loadtester
+    spec:
+      # No Kubernetes API access is needed: this process only runs the load
+      # generators a Canary webhook asks for. Leaving the default token
+      # mounted would hand that command line a cluster credential.
+      automountServiceAccountToken: false
+      containers:
+        - name: loadtester
+          image: ghcr.io/fluxcd/flagger-loadtester:0.39.0 # renovate: datasource=docker depName=ghcr.io/fluxcd/flagger-loadtester
+          imagePullPolicy: IfNotPresent
+          command:
+            - ./loadtester
+            - -port=8080
+            - -log-level=info
+            - -timeout=1h
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe: &probes
+            exec:
+              command:
+                - wget
+                - --quiet
+                - --tries=1
+                - --timeout=4
+                - --spider
+                - http://localhost:8080/healthz
+            timeoutSeconds: 5
+          readinessProbe: *probes
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 1000m
+              memory: 128Mi
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault

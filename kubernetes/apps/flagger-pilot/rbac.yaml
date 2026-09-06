@@ -1,0 +1,166 @@
+---
+# What the two flagger-system ServiceAccounts may do inside this namespace.
+#
+# Both Roles are namespaced and both RoleBindings name a subject in another
+# namespace, which is ordinary RBAC: a RoleBinding grants its Role's rules
+# within its own namespace, whoever the subject is. The direction that does
+# not work is the one that matters here - a pod in flagger-pilot cannot mount
+# a ServiceAccount that lives in flagger-system, so nothing the pilot branch
+# deploys can run as either of these identities.
+#
+# There is no ClusterRole and no second RoleBinding anywhere in this change, so
+# a manifest that reaches for another namespace or a cluster-scoped object
+# fails Forbidden at apply time rather than succeeding quietly.
+
+# --- The identity that applies pilot-branch content -------------------------
+#
+# Read this Role as the full blast radius of the pilot: anything it lists, a
+# pilot-branch commit can create, change or delete. It is not a least-privilege
+# set for one known app, because Helm needs whatever the chart it is handed
+# needs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-flagger-pilot
+rules:
+  # Flux and Flagger objects the pilot branch declares directly.
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["source.toolkit.fluxcd.io"]
+    resources: ["ocirepositories"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["flagger.app"]
+    resources: ["canaries", "metrictemplates"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["podmonitors"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Workload objects a Helm chart installs once helm-controller is impersonating
+  # this account. Without these every pilot HelmRelease fails Forbidden.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Owned by the Deployment controller, not by Helm; read-only is enough for
+  # Helm's readiness wait and for Flagger to track the canary rollout.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read-only on purpose. Creating a ServiceAccount here would let branch
+  # content give its own pods an identity this Role could then be persuaded to
+  # bind; there is nothing to bind to as long as this stays read-only.
+  - apiGroups: [""]
+    resources: ["pods", "serviceaccounts"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Cannot be narrowed by resourceNames: Helm keeps release state in
+  # sh.helm.release.v1.<name>.v<n> Secrets in the release namespace, and the
+  # names are not known ahead of time. No Secret worth reading lives here -
+  # cluster-secrets is not projected into this namespace - and the only two
+  # ServiceAccounts with permissions here live in flagger-system, so a minted
+  # service-account-token Secret in this namespace buys nothing.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Two subjects, because the two controllers derive the impersonated username
+# from different objects:
+#
+#  - kustomize-controller reconciles Kustomization/flagger-pilot-app, which
+#    lives in flagger-system, so it impersonates
+#    system:serviceaccount:flagger-system:flux-flagger-pilot.
+#  - helm-controller reconciles the HelmRelease the branch declares, and that
+#    object is applied with targetNamespace: flagger-pilot, so it impersonates
+#    system:serviceaccount:flagger-pilot:flux-flagger-pilot.
+#
+# The second subject is a username, not an object: no ServiceAccount by that
+# name exists in flagger-pilot, and branch content cannot create one because
+# the Role above is read-only on serviceaccounts. Keep it that way - a real
+# ServiceAccount object here would let a branch Deployment run as this
+# identity. Even then it would gain nothing outside flagger-pilot, since the
+# Role, both bindings and both impersonations are namespaced.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flux-flagger-pilot
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flux-flagger-pilot
+subjects:
+  - kind: ServiceAccount
+    name: flux-flagger-pilot
+    namespace: flagger-system
+  - kind: ServiceAccount
+    name: flux-flagger-pilot
+    namespace: flagger-pilot
+---
+# --- Flagger, on the workloads it manages ----------------------------------
+#
+# rbac.create is false on the chart, so these are the chart's own rules minus
+# the providers a gatewayapi:v1 install cannot use (istio, appmesh, smi, gloo,
+# contour, traefik, kuma, apisix, keda, knative, keptn, nginx-ingress,
+# external-metrics) and minus the /version nonResourceURL, which cannot live
+# in a Role and which every authenticated account already has through the
+# built-in system:discovery ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flagger
+rules:
+  - apiGroups: [""]
+    resources:
+      - events
+      - configmaps
+      - configmaps/finalizers
+      - secrets
+      - secrets/finalizers
+      - services
+      - services/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources:
+      - daemonsets
+      - daemonsets/finalizers
+      - deployments
+      - deployments/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+      - horizontalpodautoscalers/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["flagger.app"]
+    resources:
+      - canaries
+      - canaries/status
+      - canaries/finalizers
+      - metrictemplates
+      - metrictemplates/status
+      - alertproviders
+      - alertproviders/status
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The router for meshProvider: gatewayapi:v1
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      - httproutes
+      - httproutes/finalizers
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flagger
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flagger
+subjects:
+  - kind: ServiceAccount
+    name: flagger
+    namespace: flagger-system

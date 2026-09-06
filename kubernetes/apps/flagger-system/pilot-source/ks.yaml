@@ -1,0 +1,17 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: pilot-source
+spec:
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  path: ./kubernetes/apps/flagger-system/pilot-source/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: flagger-system
+  wait: false

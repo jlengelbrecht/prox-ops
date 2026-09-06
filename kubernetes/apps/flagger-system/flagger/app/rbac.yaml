@@ -1,0 +1,41 @@
+---
+# Flagger's permissions inside its own namespace.
+#
+# The chart ships a ClusterRole and ClusterRoleBinding, and setting its
+# `namespace` value does not narrow them - that value only becomes the
+# controller's -namespace startup flag. The chart's ClusterRole grants
+# cluster-wide CRUD on secrets, configmaps, services, deployments and more, so
+# rbac.create is off in the HelmRelease and Flagger is bound to namespaced
+# Roles instead.
+#
+# There are two of them, one per namespace. This one covers what the
+# controller needs where it runs: the leader-election lease and the events it
+# writes about itself. Everything it needs on the workloads it manages is in
+# kubernetes/apps/flagger-pilot/rbac.yaml, bound to this same ServiceAccount
+# across the namespace boundary.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flagger
+rules:
+  # Leader election is off by default on this chart, but the controller still
+  # asks for the lease when it starts.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flagger
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flagger
+subjects:
+  - kind: ServiceAccount
+    name: flagger
+    namespace: flagger-system
