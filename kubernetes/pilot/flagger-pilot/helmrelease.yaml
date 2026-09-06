@@ -49,6 +49,13 @@ spec:
               tag: 6.14.0
             env:
               PODINFO_UI_MESSAGE: flagger canary pilot
+              # Fault injection for the rejection case. podinfo binds every flag
+              # to PODINFO_<FLAG> through viper, so this is the --random-error
+              # flag without touching the container command. It answers one
+              # request in three with 500, 400 or 409 picked at random, so about
+              # one in nine responses is a 5xx and the success-rate template
+              # should read roughly 89% against a 99% floor.
+              PODINFO_RANDOM_ERROR: "true"
             # Declared explicitly because there is no service: block to derive
             # them from, and because the PodMonitor addresses this port by
             # name.
