@@ -1,0 +1,36 @@
+---
+# Scrapes the pods directly, not through a Service. That is what removes the
+# Service-ownership fight with Flagger entirely: this object never names a
+# Service, so Flagger can own all three of them.
+#
+# The selector is an In list rather than the obvious
+# app.kubernetes.io/name: podinfo, and that is not a stylistic choice. Flagger
+# rewrites exactly one label when it builds the primary: getSelectorLabel picks
+# the first of app, name, app.kubernetes.io/name present in the target
+# Deployment's selector, and makePrimaryLabels sets that key to
+# "<target>-primary" on the primary pod template. app-template's selector is
+# app.kubernetes.io/{controller,instance,name}, so Flagger lands on
+# app.kubernetes.io/name and the primary pods carry
+# app.kubernetes.io/name: podinfo-primary while instance and controller stay
+# podinfo. A plain matchLabels on the name would scrape the canary and miss the
+# primary, which is precisely the comparison FRP-004 needs.
+#
+# The endpoint addresses the container port by name, which is why the
+# HelmRelease declares an explicit named port despite rendering no Service.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: podinfo
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: podinfo
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["podinfo", "podinfo-primary"]
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      honorLabels: true

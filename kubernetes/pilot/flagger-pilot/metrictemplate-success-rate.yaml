@@ -1,0 +1,55 @@
+---
+# Candidate success rate, measured on the app's own counter rather than on the
+# gateway's.
+#
+# The reason is a live observation from the design note: envoy-internal names
+# every data-plane cluster per HTTPRoute *rule*, not per backend, and Envoy
+# Gateway implements weighted backendRefs as one cluster with weighted
+# endpoints. envoy_cluster_name therefore cannot separate primary from canary
+# during a rollout. Pod names can: Prometheus regex matchers are fully
+# anchored, so podinfo-<rs>-<pod> matches the two-segment shape below while
+# podinfo-primary-<rs>-<pod> has three segments and does not.
+#
+# podinfo exposes http_requests_total{status="<code>"} on port 9898 at
+# /metrics - subsystem "http", name "requests_total", one label, verified
+# against pkg/api/http/metrics.go at v6.15.0. namespace and pod come from the
+# PodMonitor's target labels, not from the app.
+#
+# "or vector(0)" only guards the numerator. If the candidate serves nothing
+# but 5xx the numerator would otherwise be an empty vector and Flagger would
+# report "no values found" instead of 0 - a much less useful piece of FRP-004
+# evidence. An empty denominator still yields no values, which is the correct
+# reading of "no traffic reached the canary" and halts advancement.
+#
+# Only Flagger's {{ }} placeholders appear here. A literal ${...} would be
+# substituted by Flux at apply time, and SECRET_DOMAIN is the only key defined,
+# so anything else would silently become an empty string.
+apiVersion: flagger.app/v1beta1
+kind: MetricTemplate
+metadata:
+  name: podinfo-success-rate
+spec:
+  provider:
+    type: prometheus
+    address: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090
+  query: |
+    100 * (
+      sum(
+        rate(
+          http_requests_total{
+            namespace="{{ namespace }}",
+            pod=~"{{ target }}-[^-]+-[^-]+",
+            status!~"5.."
+          }[{{ interval }}]
+        )
+      ) or vector(0)
+    )
+    /
+    sum(
+      rate(
+        http_requests_total{
+          namespace="{{ namespace }}",
+          pod=~"{{ target }}-[^-]+-[^-]+"
+        }[{{ interval }}]
+      )
+    )

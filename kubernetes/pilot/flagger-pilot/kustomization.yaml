@@ -1,15 +1,24 @@
 ---
-# Placeholder. The pilot app lives on the flagger-pilot branch at this same
-# path; on main the directory is intentionally empty.
+# The pilot app, on branch flagger-pilot only. On main this same file is an
+# empty placeholder that exists so flux-local can render
+# Kustomization/flagger-pilot-app's path on main PRs.
 #
-# It exists because Kustomization/flagger-pilot-app declares
-# path: ./kubernetes/pilot/flagger-pilot, and flux-local resolves that path
-# against the checkout it is given rather than against the pilot GitRepository,
-# so a missing directory fails the render test on every main PR.
+# No namespace: field. Kustomization/flagger-pilot-app sets
+# targetNamespace: flagger-pilot, which forces every object here into that
+# namespace whatever this file says, and the identity it applies as has no
+# rights anywhere else.
 #
-# Nothing here is applied to the cluster: cluster-apps reconciles
-# ./kubernetes/apps only, and the pilot Kustomization reads this path from the
-# branch, never from main.
+# Everything listed here is workload. The namespace's CiliumNetworkPolicy is
+# deliberately not one of them: it is the object that contains this branch, so
+# it lives in the frame on main (kubernetes/apps/flagger-pilot/) where it is
+# reviewed through a PR with CI. Granting this branch delete on its own network
+# fence would let a pilot commit remove the fence and have Flux apply that.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources: []
+resources:
+  - ./ocirepository.yaml
+  - ./helmrelease.yaml
+  - ./canary.yaml
+  - ./metrictemplate-success-rate.yaml
+  - ./metrictemplate-latency.yaml
+  - ./podmonitor.yaml

@@ -1,0 +1,35 @@
+---
+# Candidate request latency, in milliseconds, from the app's own histogram.
+#
+# Same candidate/primary discrimination as podinfo-success-rate: the anchored
+# two-segment pod-name shape matches podinfo-<rs>-<pod> and excludes
+# podinfo-primary-<rs>-<pod>. FRP-004's baseline queries can read the primary
+# by substituting podinfo-primary-[^-]+-[^-]+.
+#
+# podinfo registers a histogram with subsystem "http", name
+# "request_duration_seconds" and labels method, path, status, so the bucket
+# series is http_request_duration_seconds_bucket and carries le. Verified
+# against pkg/api/http/metrics.go at v6.15.0.
+#
+# P99 rather than an average: an average hides the tail that a delay fault
+# injects. histogram_quantile returns NaN when no buckets match, which Flagger
+# reads as no values and treats as a halt rather than a pass.
+apiVersion: flagger.app/v1beta1
+kind: MetricTemplate
+metadata:
+  name: podinfo-latency
+spec:
+  provider:
+    type: prometheus
+    address: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090
+  query: |
+    histogram_quantile(0.99,
+      sum(
+        rate(
+          http_request_duration_seconds_bucket{
+            namespace="{{ namespace }}",
+            pod=~"{{ target }}-[^-]+-[^-]+"
+          }[{{ interval }}]
+        )
+      ) by (le)
+    ) * 1000

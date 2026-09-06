@@ -1,0 +1,80 @@
+---
+# The canary contract for the pilot app.
+#
+# Flagger owns everything this object implies: on first reconcile it creates
+# the podinfo-primary Deployment from podinfo's pod template, scales podinfo
+# to 0, and creates the podinfo, podinfo-primary and podinfo-canary Services
+# plus one HTTPRoute attached to network/envoy-internal. Nothing in this
+# directory renders any of those, which is why the HelmRelease has no service:
+# and no route: block.
+#
+# The gatewayRef is cross-namespace on purpose. Flagger runs with
+# noCrossNamespaceRefs, but that check only covers spec.upstreamRef,
+# analysis.metrics[].templateRef and analysis.alerts[].providerRef - a
+# gatewayRef into network is not rejected. The metric templates it does check
+# therefore have to live in this namespace, and they do.
+#
+# sectionName pins the https listener: envoy-internal's http listener only
+# admits routes from its own namespace, the https listener admits routes from
+# anywhere and already carries the wildcard certificate for the domain below.
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: podinfo
+spec:
+  provider: gatewayapi:v1
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: podinfo
+  # Deployment progress, not analysis length. The analysis itself runs at most
+  # 5 weighted steps of 1 minute plus promotion.
+  progressDeadlineSeconds: 600
+  service:
+    port: 9898
+    targetPort: 9898
+    hosts: ["podinfo.${SECRET_DOMAIN}"]
+    gatewayRefs:
+      - name: envoy-internal
+        namespace: network
+        sectionName: https
+  analysis:
+    interval: 1m
+    threshold: 3
+    maxWeight: 50
+    stepWeight: 10
+    # Both thresholds are initial test parameters, not measured baselines.
+    # FRP-004 records what a healthy run actually produces and confirms or
+    # replaces them before any fault is injected.
+    metrics:
+      - name: success-rate
+        templateRef:
+          name: podinfo-success-rate
+        thresholdRange:
+          min: 99
+        interval: 1m
+      - name: latency
+        templateRef:
+          name: podinfo-latency
+        thresholdRange:
+          max: 500
+        interval: 1m
+    # No pre-rollout and no confirm-rollout: FRP-005/FRP-006 add the
+    # attribution hook, and until the receiver exists an unreachable webhook
+    # would fail every rollout. No alerts and no alertProviderRef either - the
+    # applying identity has no alertproviders verb, so one would fail Forbidden.
+    #
+    # Load has to arrive through envoy-internal or no traffic split happens,
+    # so the command targets the gateway hostname rather than a Service.
+    # podinfo.${SECRET_DOMAIN} resolves in-cluster to the internal gateway VIP.
+    #
+    # The run is sized against the loadtester's 128Mi limit: 10 requests per
+    # second for 60 seconds is 600 requests, and hey keeps one small record per
+    # request. Raising -q or -z materially is what would put that limit at risk.
+    webhooks:
+      - name: load-test
+        type: rollout
+        url: http://flagger-loadtester.flagger-system.svc.cluster.local/
+        timeout: 15s
+        metadata:
+          cmd: "hey -z 1m -q 10 -c 2 https://podinfo.${SECRET_DOMAIN}/"
