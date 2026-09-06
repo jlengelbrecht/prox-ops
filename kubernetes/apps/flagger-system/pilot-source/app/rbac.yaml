@@ -27,10 +27,16 @@ metadata:
 rules:
   # flagger-pilot-app's postBuild.substituteFrom resolves cluster-secrets from
   # the namespace the Kustomization object lives in, which is this one.
-  # Whether kustomize-controller reads it as the impersonated account or as
-  # itself is not documented; this grant is correct if it does and harmless if
-  # it does not. Narrowed to that one Secret by name - nothing else in this
-  # namespace is readable.
+  #
+  # The running version does not exercise this grant: kustomize-controller
+  # v1.7.3 substitutes variables with its own client
+  # (internal/controller/kustomization_controller.go:787 passes r.Client to
+  # generator.SubstituteVariables), not the impersonated client it builds at
+  # line 393 for the apply. So substitution works today whether or not this
+  # rule exists. It is kept as defence in depth against a Flux change that
+  # moves the read behind impersonation, which would otherwise turn into a
+  # substitution failure with no obvious cause. Narrowed to that one Secret by
+  # name - nothing else in this namespace is readable.
   - apiGroups: [""]
     resources: ["secrets"]
     resourceNames: ["cluster-secrets"]

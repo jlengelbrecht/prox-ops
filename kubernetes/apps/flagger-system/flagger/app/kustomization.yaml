@@ -1,7 +1,10 @@
 ---
+# No rbac.yaml here. Flagger holds no permissions in its own namespace: with
+# leader election off it takes no lease, and its recorder writes events
+# against the Canary, which lives in flagger-pilot. Everything it may do is in
+# kubernetes/apps/flagger-pilot/rbac.yaml.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - ./helmrelease.yaml
   - ./ocirepository.yaml
-  - ./rbac.yaml
