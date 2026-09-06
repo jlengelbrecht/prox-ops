@@ -49,6 +49,13 @@ spec:
               tag: 6.15.0
             env:
               PODINFO_UI_MESSAGE: flagger canary pilot
+              # Fault injection for the latency case. podinfo binds every flag
+              # to PODINFO_<FLAG> through viper, so this is --random-delay: a
+              # whole-number sleep in [0,4] seconds before every response. The
+              # latency template should read a P99 near 4000 ms against a 500 ms
+              # ceiling. It stays inside the 5s readiness timeout on purpose so
+              # the candidate is slow rather than unready.
+              PODINFO_RANDOM_DELAY: "true"
             # Declared explicitly because there is no service: block to derive
             # them from, and because the PodMonitor addresses this port by
             # name.
