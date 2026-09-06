@@ -38,6 +38,16 @@ spec:
       - name: envoy-internal
         namespace: network
         sectionName: https
+    # Flagger copies apex annotations onto the HTTPRoute it owns, which is the
+    # only way this route can carry one: the route is not in this directory and
+    # nothing here may patch it. Without the annotation external-dns skips the
+    # route entirely and the hostname resolves in-cluster (CoreDNS forwards the
+    # zone to k8s-gateway) but not on the LAN, so every probe from outside the
+    # cluster needs curl --resolve. This is the same mechanism every other
+    # internal route in the repository uses.
+    apex:
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: podinfo.${SECRET_DOMAIN}
   analysis:
     interval: 1m
     threshold: 3
@@ -71,6 +81,33 @@ spec:
     # The run is sized against the loadtester's 128Mi limit: 10 requests per
     # second for 60 seconds is 600 requests, and hey keeps one small record per
     # request. Raising -q or -z materially is what would put that limit at risk.
+    #
+    # functional-check is the semantic gate the two metric templates cannot
+    # give: a candidate can serve 200s quickly and still serve the wrong thing.
+    # It runs on the loadtester as "bash", which the loadtester executes
+    # synchronously and answers 500 on a non-zero exit, so a mismatch fails the
+    # analysis instead of being logged and ignored. The load-test webhook above
+    # has no type and is therefore queued and acknowledged immediately, which is
+    # why its 15s timeout is enough for a 1m run and this one's is not.
+    #
+    # It probes the apex hostname through envoy-internal because the network
+    # policy admits the app only from the gateway - the loadtester has no path
+    # to podinfo-canary. The apex is weighted, so a single request would mostly
+    # land on the primary; 30 sequential probes with an early exit make a
+    # divergent candidate near-certain to be caught even at the first 10% step
+    # (1 - 0.9^30) while costing well under a second when everything matches.
+    #
+    # No shell variable appears in cmd, and that is deliberate rather than
+    # stylistic: Flux substitutes every $var and ${var} on this branch and
+    # SECRET_DOMAIN is the only key defined, so a loop counter written as $i
+    # would become an empty string before the loadtester ever saw it. The loop
+    # therefore iterates over literals.
+    #
+    # --max-time 6 and timeout 90s are sized against a deliberately slowed
+    # candidate: podinfo's random-delay middleware sleeps a whole number of
+    # seconds in [0,4] on every request, so a canary hit costs about 4s at
+    # worst. Latency is the metric template's job and content is this one's;
+    # this check must not be what fails a slow-but-correct release.
     webhooks:
       - name: load-test
         type: rollout
@@ -78,3 +115,15 @@ spec:
         timeout: 15s
         metadata:
           cmd: "hey -z 1m -q 10 -c 2 https://podinfo.${SECRET_DOMAIN}/"
+      - name: functional-check
+        type: rollout
+        url: http://flagger-loadtester.flagger-system.svc.cluster.local/
+        timeout: 90s
+        metadata:
+          type: bash
+          returnCmdOutput: "true"
+          cmd: >-
+            for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22
+            23 24 25 26 27 28 29 30; do curl -sf --max-time 6
+            https://podinfo.${SECRET_DOMAIN}/api/info | grep -q 'flagger canary
+            pilot' || exit 1; done
