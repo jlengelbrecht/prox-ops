@@ -1,0 +1,113 @@
+---
+# The disposable app the pilot breaks on purpose.
+#
+# Two things about this HelmRelease are different from every other one in the
+# repository, and both are deliberate:
+#
+#  - It renders no Service and no route. Flagger owns the apex, -primary and
+#    -canary Services and the HTTPRoute; if the chart rendered any of them Flux
+#    and Flagger would fight over the same objects on every reconcile. The
+#    applying identity has no httproutes verb either, so a route here would
+#    fail Forbidden rather than fail quietly.
+#  - It is reconciled by flagger-pilot-app, which is rendered by the pilot
+#    wrapper and not by cluster-apps, so it inherits none of the repository's
+#    shared HelmRelease defaults. Remediation and cleanupOnFail are therefore
+#    written out here instead of being inherited.
+#
+# spec.serviceAccountName is also stamped in by flagger-pilot-app's patch. It
+# is repeated here so the file says what identity installs it rather than
+# leaving that to a Kustomization the branch cannot see.
+#
+# driftDetection is deliberately absent: Flagger scales this Deployment to 0
+# between rollouts, and drift correction would fight it.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: podinfo
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: podinfo
+  interval: 1h
+  serviceAccountName: flux-flagger-pilot
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    controllers:
+      podinfo:
+        strategy: RollingUpdate
+        containers:
+          app:
+            image:
+              repository: ghcr.io/stefanprodan/podinfo
+              # renovate: datasource=docker depName=ghcr.io/stefanprodan/podinfo
+              tag: 6.15.0
+            env:
+              PODINFO_UI_MESSAGE: flagger canary pilot
+            # Declared explicitly because there is no service: block to derive
+            # them from, and because the PodMonitor addresses this port by
+            # name.
+            ports:
+              - name: http
+                containerPort: &port 9898
+                protocol: TCP
+            probes:
+              liveness: &probe
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /healthz
+                    port: *port
+                  initialDelaySeconds: 1
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /readyz
+                    port: *port
+                  initialDelaySeconds: 1
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: { drop: ["ALL"] }
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                memory: 128Mi
+    defaultPodOptions:
+      # podinfo never calls the API server, and the only ServiceAccount that
+      # will exist in flagger-pilot is default, which holds no binding. Not
+      # projecting its token keeps that true even if the namespace's RBAC is
+      # widened later.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+    # podinfo writes to /data for its /store endpoints. Nothing in this pilot
+    # calls them, but the root filesystem is read-only, so give it the same
+    # scratch volume its own chart mounts rather than discover the difference
+    # during a fault-injection run.
+    persistence:
+      data:
+        type: emptyDir
+        globalMounts:
+          - path: /data
