@@ -69,10 +69,13 @@ spec:
         thresholdRange:
           max: 500
         interval: 1m
-    # No pre-rollout and no confirm-rollout: FRP-005/FRP-006 add the
-    # attribution hook, and until the receiver exists an unreachable webhook
-    # would fail every rollout. No alerts and no alertProviderRef either - the
-    # applying identity has no alertproviders verb, so one would fail Forbidden.
+    # pre-rollout, post-rollout and event all point at recovery-receiver,
+    # which FRP-006c deployed. The token in each webhook's metadata is the
+    # frame's postBuild substitution from Secret flagger-pilot-webhook-token
+    # in flagger-system (single key: token) - the placeholder below must stay
+    # literal, never the resolved value. No alerts and no alertProviderRef -
+    # the applying identity has no alertproviders verb, so one would fail
+    # Forbidden.
     #
     # Load has to arrive through envoy-internal or no traffic split happens,
     # so the command targets the gateway hostname rather than a Service.
@@ -109,6 +112,12 @@ spec:
     # worst. Latency is the metric template's job and content is this one's;
     # this check must not be what fails a slow-but-correct release.
     webhooks:
+      - name: pre-rollout
+        type: pre-rollout
+        url: http://recovery-receiver.flagger-system.svc.cluster.local/hooks/pre-rollout
+        timeout: 30s
+        metadata:
+          token: "${token}"
       - name: load-test
         type: rollout
         url: http://flagger-loadtester.flagger-system.svc.cluster.local/
@@ -127,3 +136,15 @@ spec:
             23 24 25 26 27 28 29 30; do curl -sf --max-time 6
             https://podinfo.${SECRET_DOMAIN}/api/info | grep -q 'flagger canary
             pilot' || exit 1; done
+      - name: post-rollout
+        type: post-rollout
+        url: http://recovery-receiver.flagger-system.svc.cluster.local/hooks/post-rollout
+        timeout: 30s
+        metadata:
+          token: "${token}"
+      - name: event
+        type: event
+        url: http://recovery-receiver.flagger-system.svc.cluster.local/hooks/event
+        timeout: 30s
+        metadata:
+          token: "${token}"
