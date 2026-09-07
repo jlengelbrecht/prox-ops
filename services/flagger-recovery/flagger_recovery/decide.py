@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Optional, Protocol
 
 from .identity import is_manual_rollback
 from .inbox import KIND_EVENT, STATUS_ATTRIBUTION_PENDING, WebhookEvent
+from .policy import KIND_CORRECTION, KIND_CORRECTION_RESULT, STATUS_IN_PROGRESS, is_stale
 from .proposal import KIND_PROPOSAL, Proposal, build_proposal
 from .record import DeploymentRecord, PutResult, canary_label, make_key_parts
 from .server import PHASE_PROMOTED, Decision, Ignore, now, write_promoted_record
@@ -136,8 +137,17 @@ class ReconcileReport:
     proposals_written: int = 0
     proposals_open: int = 0
     proposals_superseded: int = 0
+    corrections_stale: int = 0
+    corrections_failed: int = 0
+    corrections_reoffered: int = 0
 
-def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None) -> ReconcileReport:
+def _correction_of(document: Any) -> tuple[str, str]:
+    # Which canary and which failed rollout; a marker and its result share the pair.
+    return (str(document.labels.get("flagger-recovery/canary") or ""),
+            str(document.labels.get("flagger-recovery/template-hash") or ""))
+
+def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None,
+              corrector: Optional[Callable[[Mapping[str, Any]], Any]] = None) -> ReconcileReport:
     """Re-evaluate, once, everything the receiver could not finish in-band.
     An **attribution-pending event** whose candidate record has since landed is
     decided here, because nothing decided it when it arrived; one still missing
@@ -149,6 +159,7 @@ def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None) -> R
     Every write reuses its in-band key, so a second pass writes nothing."""
     status = live.canary_status() or {}
     counts = {field.name: 0 for field in dataclasses.fields(ReconcileReport)}
+    offered: set[str] = set()  # proposals this pass has already handed to the corrector
 
     for document in store.list_documents(KIND_EVENT, canary=canary):
         payload = document.payload
@@ -192,10 +203,47 @@ def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None) -> R
         elif decision.proposal is not None:
             if store.put_document(decision.proposal.to_document()) is PutResult.CREATED:
                 counts["proposals_written"] += 1
+                if corrector is not None:
+                    offered.add(decision.proposal.key)
+                    try:  # as in ``Receiver._correct``: report a writer fault, never raise it
+                        corrector(decision.proposal.to_payload())
+                    except Exception:  # noqa: BLE001 - a writer fault must not end reconciliation
+                        LOG.exception("reconcile: correction attempt failed for %s", decision.proposal.key)
+                        counts["corrections_failed"] += 1
+
+    # A correction claims its proposal with a create-only ``correction`` marker before its
+    # first write, and links the outcome with a ``correction-result``. A proposal still live
+    # with neither beside it was never taken up — a full queue dropped the in-band offer, or
+    # it was refused for something transient — so it is offered again here rather than lost.
+    claimed = {_correction_of(document)
+               for document in store.list_documents(KIND_CORRECTION, canary=canary)}
+    finished = {_correction_of(document)
+                for document in store.list_documents(KIND_CORRECTION_RESULT, canary=canary)}
 
     for document in store.list_documents(KIND_PROPOSAL, canary=canary):
         failed_hash = str(document.payload.get("template_hash") or "")
         settled = status.get("lastAppliedSpec") != failed_hash or is_manual_rollback(status, failed_hash)
         counts["proposals_superseded" if settled else "proposals_open"] += 1
+        if (settled or corrector is None or document.key in offered
+                or not document.payload.get("correction")
+                or _correction_of(document) in claimed | finished):
+            continue
+        counts["corrections_reoffered"] += 1
+        try:  # as above: a writer fault is reported, never raised
+            corrector(document.payload)
+        except Exception:  # noqa: BLE001 - a writer fault must not end reconciliation
+            LOG.exception("reconcile: re-offered correction failed for %s", document.key)
+            counts["corrections_failed"] += 1
+
+    # Create-only storage means a writer that died mid-write leaves its ``in-progress``
+    # document forever. Report those and stop: a retry would re-enter a write whose
+    # outcome nobody established, which wants a human on the branch. A correction that
+    # finished does not update its marker either — it writes a separate result — so a
+    # marker with one beside it is no crash, and counting it would fire on every success.
+    for document in store.list_documents(KIND_CORRECTION, canary=canary):
+        if (document.payload.get("status") == STATUS_IN_PROGRESS
+                and _correction_of(document) not in finished
+                and is_stale(document.payload, now())):
+            counts["corrections_stale"] += 1
 
     return ReconcileReport(**counts)

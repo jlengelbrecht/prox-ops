@@ -227,6 +227,63 @@ as `events_pending`, because Flagger redelivers it and the in-band retry re-runs
 resolution; anything else counts as `events_unattributable` and is logged with
 its reason, because that rollout is over and no record will ever appear.
 
+## The Git correction writer
+
+`flagger_recovery.policy` holds the bounds as literals — `ALLOWED_REPOSITORY`, `ALLOWED_REF`,
+`ALLOWED_PATH_PREFIX`, `ALLOWED_TARGETS` — and `evaluate(proposal, live, tree)` is the pure ladder that
+applies them. `flagger_recovery.gitwriter` is the only thing that can write, through stdlib `urllib`
+against `api.github.com` and no other host, with no `git` binary, no shell, and a credential that arrives
+as a callable rather than from disk or the environment. The transport follows no redirect, so the token is
+never re-sent anywhere GitHub names.
+
+**The two correction forms.** The design says "one file, one field"; the shipped proposal says
+`restore-file <path> to <sha>` or `revert-commit <sha>`. This implements the proposal. `restore-file`
+installs the target file as it was at that revision — the tree entry reuses the blob sha already there, so
+no content is uploaded and the commit provably carries the historical bytes. Only a blob does: a symlink,
+a submodule or a directory at that path answers `unusable-sha`, which is what makes restating mode
+`100644` safe. `revert-commit` is accepted only when the diff it undoes touches exactly one file, under
+the prefix, and that file is the target; anything wider is `mixed-scope`. Both reduce to one path in one
+tree, parented on the branch head and pushed with `"force": false`.
+
+**The restore revision is bounded to this branch.** Before anything is written, `compare` must place the
+branch head on or after the revision being restored; a fork's PR head, a pre-rebase commit, or an object
+GitHub will not compare answers `restore-not-on-branch`. Without it the committed bytes are whatever
+`last_promoted_source_sha` names, and any GitHub account can put an object into a public repository's
+store. The bound is one file where the design said one field, so every change to `helmrelease.yaml`
+between the promoted and failed revisions is reversed, not only the image tag; the owner accepted that
+width on 2026-09-07 given the revision itself is now bounded to the pilot branch's own history, and a
+field-level restore is the tightening FRP-009 may recommend.
+
+**The refusal set** (`policy.REFUSAL_REASONS`, closed): `corrections-disabled` (the module switch is off),
+`requires-decision`, `unparsable-correction` (neither form, or a path/sha contradicting the proposal's own
+fields), `wrong-repository` (the proposal names another, or the writer was built for one), `wrong-ref`,
+`path-outside-prefix`, `not-an-allowed-target`, `unusable-sha` (not 40 hex, or no blob there),
+`mixed-scope`, `no-change` (the restore blob already is the head's), `superseded` (the live
+`lastAppliedSpec` moved on, or the primary is not serving the promoted spec), `already-restored` (F8 — the
+primary serves the failed spec), `target-changed` (the file changed since the failure), `branch-moved` (the
+head is neither the failed revision nor a descendant that left the prefix alone; also a `compare` too long
+to read whole, and the non-fast-forward `PATCH`), `restore-not-on-branch`, `already-corrected`.
+
+**Nothing here is on.** `gitwriter.CORRECTIONS_ENABLED` is `False`, `GitWriter` defaults to `dry_run=True`
+and `_main()` installs no corrector, so this changes nothing about the running receiver; FRP-007b adds the
+credential, the Lease and the switch. `corrector(..., enabled=)` can only *narrow* that constant, so no
+call site FRP-007b writes can run a correction while it is `False`: turning corrections on means flipping
+both it and FRP-007b's own environment control. `lock=` is the design's Lease and is required rather than
+defaulted — a mutual exclusion a caller can forget into a no-op is indistinguishable from one nobody
+configured. Corrections run on one worker thread, so a `post-rollout` hook answers `CorrectionQueued`
+rather than holding its connection for the nine round trips; one the full queue drops is not lost, because
+`reconcile()` re-offers every still-live proposal that has no `correction` marker beside it.
+
+**What a refusal leaves behind.** The `correction` marker is a create-only claim written after every
+read-side bound has passed and immediately before the first mutating call, so a transient refusal —
+`target-changed`, `branch-moved`, `no-change`, `mixed-scope`, `restore-not-on-branch` — leaves nothing
+and the next delivery retries; a duplicate is `already-corrected` with zero GitHub calls. A completed ref
+update writes a `correction-result` linking the old head, the restored revision and the new commit, and
+`reconcile()` counts a marker with no result beside it `corrections_stale` after ten minutes without ever
+retrying it — which covers both a writer that died and a ref update GitHub refused. That refused `PATCH`
+also leaves its tree and commit objects unreferenced: no ref points at them, the API cannot remove them,
+so a dangling commit here is expected debris rather than a write that half-happened.
+
 ## Layout
 
 - `flagger_recovery/identity.py` — `resolve()`, `CandidateIdentity`,
@@ -239,15 +296,19 @@ its reason, because that rollout is over and no record will ever appear.
 - `flagger_recovery/auth.py` — `load_token()`, `presented_token()`,
   `token_matches()`, `TokenUnavailable`.
 - `flagger_recovery/inbox.py` — `WebhookEvent`, `Inbox`, `MalformedPayload`.
-- `flagger_recovery/kube.py` — `ApiReader`, a GET-only Kubernetes API client,
-  and `CandidateReader`, which fetches exactly the objects `resolve()` takes so
-  a caller can write `resolve(**reader.read(namespace, canary))`. No writes
-  live here; `ConfigMapStore` has its own minimal POST/GET.
+- `flagger_recovery/kube.py` — `ApiReader`, a GET-only Kubernetes API client
+  that follows no redirect (its bearer token is a service-account token, and
+  `urllib` would re-send it), and `CandidateReader`, which fetches exactly the
+  objects `resolve()` takes so a caller can write
+  `resolve(**reader.read(namespace, canary))`. No writes live here;
+  `ConfigMapStore` has its own minimal POST/GET.
 - `flagger_recovery/server.py` — `Receiver`, `build_server()`, the `decider`
   hook (`Decision`, `Ignore()`, `DECIDER_NOT_INSTALLED`), the reconcile timer,
   and the in-cluster `_main()` entry point.
 - `flagger_recovery/decide.py` — `decide()`, `LiveState`, `decider()`, `reconcile()`;
-  `flagger_recovery/proposal.py` — `Proposal`, `build_proposal()`, branch/path bounds.
+  `flagger_recovery/proposal.py` — `Proposal`, `build_proposal()`, branch/path bounds;
+  `flagger_recovery/policy.py` — the allowlists, `evaluate()`, `Verdict`, `TreeState`, `is_stale()`;
+  `flagger_recovery/gitwriter.py` — `GitWriter`, `Correction`, `corrector()`.
 - `tests/fixtures/*.json` — sanitised copies of the live pilot objects
   (domain replaced with `example.invalid`, `managedFields` dropped).
   `replicasets.json` and `pods.json` are the raw `kubectl get ... -o json`

@@ -268,20 +268,39 @@ class Transport(Protocol):
         ca_file: Optional[str], timeout: float,
     ) -> tuple[int, bytes]: ...
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect. ``urllib``'s default handler re-sends the request to the
+    new location with the original headers — ``Authorization`` included, host change or
+    not — and hands the caller the result as if it came from the host it asked for. That
+    header carries a Kubernetes service-account token, and from FRP-007b a GitHub token
+    with write authority over this repository. Nothing this package calls redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001 - urllib's signature
+        fp.close()
+        raise ApiWriteError(req.get_method(), req.full_url, code, b"refused a redirect")
+
 class _UrllibTransport:
-    """The real transport: stdlib ``urllib`` only, GET and POST, never more."""
+    """The real transport: stdlib ``urllib``, GET and POST, never more, never a redirect."""
 
     def request(
         self, method: str, url: str, *, headers: Mapping[str, str], body: Optional[bytes],
         ca_file: Optional[str], timeout: float,
     ) -> tuple[int, bytes]:
         request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
-        context = ssl.create_default_context(cafile=ca_file) if ca_file else None
+        handlers = [_NoRedirects()]
+        if ca_file:
+            handlers.append(urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=ca_file)))
         try:
-            with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
-                return response.status, response.read()
+            with urllib.request.build_opener(*handlers).open(request, timeout=timeout) as response:
+                status, raw = response.status, response.read()
         except urllib.error.HTTPError as exc:
-            return exc.code, exc.read()
+            with exc:
+                status, raw = exc.code, exc.read()
+        # A 3xx with no ``Location`` never reaches the handler above, and is no more
+        # legitimate than one that does.
+        if 300 <= status < 400:
+            raise ApiWriteError(method, url, status, b"refused a redirect")
+        return status, raw
 
 class ConfigMapStore:
     """Create and read only: ``put`` is a POST create, ``get``/``list`` are

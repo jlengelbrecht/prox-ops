@@ -19,6 +19,15 @@ class ApiError(Exception):
         self.url = url
         self.body = body
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect: the stock handler re-sends the request to the new location
+    with the original headers, so a 302 would hand this bearer token — a service-account
+    token with read access to the cluster — to whatever host it names."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001 - urllib's signature
+        fp.close()
+        raise ApiError(code, req.full_url, "refused a redirect")
+
 class ApiReader:
     """Reads Kubernetes objects as plain dicts. ``base_url`` is typically
     ``http://127.0.0.1:8001`` from ``kubectl proxy`` for local smoke testing,
@@ -46,12 +55,18 @@ class ApiReader:
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         request = urllib.request.Request(url, headers=headers, method="GET")
-        context = ssl.create_default_context(cafile=self._ca_file) if self._ca_file else None
+        # The same opener ``record`` uses, for the same reason: the stock one follows a
+        # redirect and re-sends this bearer token to whatever host the redirect names.
+        handlers = [_NoRedirects()]
+        if self._ca_file:
+            handlers.append(urllib.request.HTTPSHandler(
+                context=ssl.create_default_context(cafile=self._ca_file)))
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout, context=context) as response:
+            with urllib.request.build_opener(*handlers).open(request, timeout=self._timeout) as response:
                 payload = response.read()
         except urllib.error.HTTPError as exc:
-            raise ApiError(exc.code, url, exc.read().decode("utf-8", "replace")) from exc
+            with exc:
+                raise ApiError(exc.code, url, exc.read().decode("utf-8", "replace")) from exc
         return json.loads(payload)
 
 class CandidateReader:

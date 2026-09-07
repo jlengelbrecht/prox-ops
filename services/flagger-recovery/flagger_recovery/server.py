@@ -24,6 +24,7 @@ import logging
 import math
 import os
 import pathlib
+import queue
 import re
 import threading
 import urllib.parse
@@ -56,6 +57,8 @@ MIN_RECONCILE_INTERVAL = 10.0
 
 PHASE_CANDIDATE = "candidate"
 PHASE_PROMOTED = "promoted"
+
+CORRECTION_QUEUED = "CorrectionQueued"  # a hook's answer when the worker below took it
 
 HOOK_PATHS = {
     "/hooks/pre-rollout": "pre-rollout",
@@ -130,6 +133,7 @@ class Receiver:
         candidates: CandidateSource,
         clock: Any = now,
         decider: Decider = _default_decider,
+        corrector: Optional[Callable[[Mapping[str, Any]], Any]] = None,
     ) -> None:
         if not token:
             raise ValueError("Receiver requires a token; see auth.load_token()")
@@ -138,6 +142,7 @@ class Receiver:
         self._candidates = candidates
         self._clock = clock
         self._decider = decider
+        self._corrector = corrector
         self._inbox = Inbox(store)
         self.unauthorised = 0
 
@@ -201,15 +206,33 @@ class Receiver:
         repeated or delayed ``Failed`` hook creates nothing."""
         record = self._candidate_for(event)
         decision = self._decider(record, event)
+        queued = ""
         if decision.proposal is not None:
             self._store.put_document(decision.proposal.to_document())
+            queued = self._correct(decision.proposal)
         self._inbox.accept(
             event,
             status=STATUS_RECEIVED,
             received_at=self._clock(),
             detail=f"{decision.kind}: {decision.reason}" if decision.reason else decision.kind,
         )
-        return 202, {"result": decision.kind, "event": event.key, "detail": decision.reason}
+        return 202, {"result": queued or decision.kind, "event": event.key, "detail": decision.reason}
+
+    def _correct(self, proposal: Any) -> str:
+        """The FRP-007 seam: hand a freshly written proposal to the Git correction
+        writer, when one is installed at all — ``_main`` installs none, so this is a
+        no-op in the deployed receiver. A correction never fails a hook: the proposal is
+        durable already, and this hook is the ``post-rollout Failed`` of a rollout that
+        is over, so neither an exception nor an outcome here is the hook's business.
+        ``CORRECTION_QUEUED`` back means a worker thread took it, which the hook says
+        rather than implying a write that has not happened yet."""
+        if self._corrector is None:
+            return ""
+        try:
+            return CORRECTION_QUEUED if self._corrector(proposal.to_payload()) == CORRECTION_QUEUED else ""
+        except Exception:  # noqa: BLE001 - a writer fault must not fail somebody's release
+            LOG.exception("correction attempt failed for proposal %s", proposal.key)
+            return ""
 
     def _register(self, event: WebhookEvent) -> tuple[int, dict[str, Any]]:
         """AC1: attribute the candidate the first time it is seen. The
@@ -364,6 +387,34 @@ def reconcile_interval(environ: Optional[Mapping[str, str]] = None) -> float:
     if not math.isfinite(interval):
         return DEFAULT_RECONCILE_INTERVAL
     return 0.0 if interval <= 0 else max(interval, MIN_RECONCILE_INTERVAL)
+
+def queued_corrector(run_one: Callable[[Mapping[str, Any]], Any], *, depth: int = 8) -> Callable[..., str]:
+    """Run corrections on one worker thread rather than the webhook thread. A correction
+    is up to nine GitHub round trips at ten seconds each, and the hook it would run under
+    is the ``post-rollout Failed`` of a rollout that already finished — nothing in that
+    response depends on the outcome, so holding the connection for a minute and a half is
+    all the in-band version buys. One worker, so corrections are serialised against each
+    other too. A full queue is dropped and said so; the reconcile pass re-offers it."""
+    pending: "queue.Queue[Mapping[str, Any]]" = queue.Queue(maxsize=depth)
+
+    def _worker() -> None:
+        while True:
+            payload = pending.get()
+            try:
+                run_one(payload)
+            except Exception:  # noqa: BLE001 - a writer fault must not end the worker
+                LOG.exception("queued correction failed for %r", payload.get("template_hash"))
+
+    def _enqueue(payload: Mapping[str, Any]) -> str:
+        try:
+            pending.put_nowait(payload)
+        except queue.Full:
+            LOG.error("correction queue full: dropped %r", payload.get("template_hash"))
+            return ""
+        return CORRECTION_QUEUED
+
+    threading.Thread(target=_worker, name="flagger-recovery-corrections", daemon=True).start()
+    return _enqueue
 
 def start_reconcile_loop(pass_fn: Callable[[], Any], interval: float) -> threading.Event:
     """Run ``pass_fn`` once, then every ``interval`` seconds if positive — all
