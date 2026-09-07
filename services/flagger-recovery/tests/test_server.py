@@ -23,7 +23,7 @@ from flagger_recovery.server import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TOKEN = "t" * 32
-TEMPLATE_HASH = "5b86bd6879"
+TEMPLATE_HASH = "759f9fb7bd"
 
 def _load(name: str):
     with open(FIXTURES / name, encoding="utf-8") as handle:
@@ -44,8 +44,8 @@ class FakeCandidates:
         return {
             "canary": _load("canary.json"),
             "deployment": _load("deployment.json"),
-            "candidate_pods": _load("pods.json"),
-            "candidate_replicasets": _load("replicasets.json"),
+            "candidate_pods": _load("pods.json")["items"],
+            "candidate_replicasets": _load("replicasets.json")["items"],
             "helmrelease": _load("helmrelease.json"),
             "ocirepository": _load("ocirepository.json"),
             "kustomization": _load("kustomization.json"),
@@ -236,6 +236,44 @@ class RejectionTests(ReceiverTestCase):
         with self.assertRaises(ValueError):
             Receiver(token="", store=self.store, candidates=self.candidates)
 
+class DurabilityTests(ReceiverTestCase):
+    """A failure to write the record itself must not be masked as a
+    duplicate on retry: the inbox is only marked seen once the write it
+    describes has actually landed."""
+
+    class _FlakyStore:
+        """Wraps a real store and raises once from ``put()``, then delegates."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.put_calls = 0
+
+        def put(self, record):
+            self.put_calls += 1
+            if self.put_calls == 1:
+                raise RuntimeError("simulated store outage")
+            return self._inner.put(record)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def test_a_failed_record_write_leaves_the_event_unseen_so_a_retry_can_still_register(self):
+        flaky = self._FlakyStore(self.store)
+        receiver = Receiver(
+            token=TOKEN, store=flaky, candidates=self.candidates, clock=lambda: "2026-09-07T00:00:00Z"
+        )
+
+        with self.assertRaises(RuntimeError):
+            receiver.handle("pre-rollout", {}, _body())
+
+        self.assertEqual(
+            len(self.store.list_documents(KIND_EVENT)), 0,
+            "the inbox must not be marked seen when the record write failed",
+        )
+
+        status, payload = receiver.handle("pre-rollout", {}, _body())
+        self.assertEqual((status, payload["result"]), (202, "Registered"))
+
 class HttpTests(unittest.TestCase):
     """Drives the real handler over a loopback socket on an ephemeral port."""
 
@@ -287,10 +325,10 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.store.writes, 0)
 
     def test_unknown_paths_are_404_and_health_paths_reject_post(self):
-        self.assertEqual(self.request("GET", "/nope")[0], 404)
-        self.assertEqual(self.request("POST", "/hooks/rollback", b"{}")[0], 404)
-        self.assertEqual(self.request("POST", "/healthz", b"{}")[0], 405)
-        self.assertEqual(self.request("GET", "/hooks/pre-rollout")[0], 405)
+        self.assertEqual(self.request("GET", "/nope"), (404, {"result": "NotFound"}))
+        self.assertEqual(self.request("POST", "/hooks/rollback", b"{}"), (404, {"result": "NotFound"}))
+        self.assertEqual(self.request("POST", "/healthz", b"{}"), (405, {"result": "MethodNotAllowed"}))
+        self.assertEqual(self.request("GET", "/hooks/pre-rollout"), (405, {"result": "MethodNotAllowed"}))
         self.assertEqual(self.store.writes, 0)
 
     def test_an_oversized_body_is_413_over_http(self):

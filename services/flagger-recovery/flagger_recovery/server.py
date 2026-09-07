@@ -156,15 +156,20 @@ class Receiver:
         return 202, {"result": decision.kind, "event": event.key, "detail": decision.reason}
 
     def _register(self, event: WebhookEvent) -> tuple[int, dict[str, Any]]:
-        """AC1: attribute the candidate the first time it is seen."""
+        """AC1: attribute the candidate the first time it is seen. The
+        durable record write happens before the inbox is marked seen: if the
+        write fails, the exception reaches the handler's 500 (a failure to
+        store durably is not an accepted event) and a retried request finds
+        the event still unseen, so it tries the write again instead of
+        answering ``Duplicate`` for a record that was never created."""
         try:
             identity = resolve(**self._candidates.read(event.namespace, event.name))
         except (AttributionRefused, ApiError, KeyError) as exc:
             return self._pending(event, f"{type(exc).__name__}: {exc}")
-        self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
         result = self._store.put(
             DeploymentRecord(phase=PHASE_CANDIDATE, identity=identity, created_at=self._clock())
         )
+        self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
         return 202, {
             "result": "Registered" if result is PutResult.CREATED else "Duplicate",
             "event": event.key,
@@ -174,15 +179,17 @@ class Receiver:
     def _promote(self, event: WebhookEvent) -> tuple[int, dict[str, Any]]:
         """A promotion re-states the identity recorded at pre-rollout; it never
         re-resolves it, because Flagger has already scaled the candidate pods
-        away by the time this hook fires."""
+        away by the time this hook fires. As in ``_register``, the record
+        write happens before the inbox is marked seen so a failed write can
+        be retried instead of being masked as a duplicate."""
         key = make_key_parts(event.namespace, event.name, event.checksum, PHASE_CANDIDATE) if event.checksum else ""
         record = self._store.get(key) if key else None
         if record is None:
             return self._pending(event, f"no {PHASE_CANDIDATE} record for checksum {event.checksum!r}")
-        self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
         self._store.put(
             DeploymentRecord(phase=PHASE_PROMOTED, identity=record.identity, created_at=self._clock())
         )
+        self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
         return 202, {
             "result": "Promoted",
             "event": event.key,
@@ -223,7 +230,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         hook = HOOK_PATHS.get(path)
         if hook is None:
-            self._respond(405 if path in HEALTH_PATHS else 404, {"result": "NotFound"})
+            if path in HEALTH_PATHS:
+                self._respond(405, {"result": "MethodNotAllowed"})
+            else:
+                self._respond(404, {"result": "NotFound"})
             return
         raw_length = self.headers.get("Content-Length")
         if raw_length is None or not raw_length.strip().isdigit():
