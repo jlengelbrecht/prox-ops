@@ -29,8 +29,13 @@ run again.
 `flagger_recovery.record` persists a `DeploymentRecord` per (canary,
 template-hash, phase) as a ConfigMap in `flagger-system`. The idempotency key
 is `sha256(namespace/canary/template-hash/phase)[:32]`; a duplicate write is
-free because it relies on the Kubernetes API's own `409 AlreadyExists` on
-`create`, never a read-modify-write.
+detected via the Kubernetes API's own `409 AlreadyExists` on `create`, then
+confirmed with a follow-up GET that checks the existing ConfigMap's labels
+actually belong to this record before reporting it as a duplicate — never a
+read-modify-write, never a PATCH or PUT. A 409 whose GET shows a different
+record (or that can't be resolved after one retried create) raises
+`ForeignConfigMap` instead, so the caller can log and refuse rather than
+assume its record was ever stored.
 
 ## Layout
 

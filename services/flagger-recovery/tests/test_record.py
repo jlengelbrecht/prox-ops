@@ -7,6 +7,7 @@ from flagger_recovery.identity import CandidateIdentity, ContainerImage
 from flagger_recovery.record import (
     ConfigMapStore,
     DeploymentRecord,
+    ForeignConfigMap,
     InMemoryStore,
     PutResult,
     canary_label,
@@ -83,6 +84,22 @@ class FakeTransport:
             key, _, value = selector.partition("=")
             items = [item for item in items if item["metadata"]["labels"].get(key) == value]
         return 200, json.dumps({"items": items}).encode()
+
+class ScriptedTransport:
+    """Returns a fixed sequence of (status, body) responses, for the 409/404
+    races a consistent backing dict (``FakeTransport``) can't produce on its
+    own -- the ConfigMap changing shape between our create and our
+    verification GET."""
+
+    def __init__(self, responses) -> None:
+        self._responses = list(responses)
+        self.requests: list[tuple[str, str]] = []
+
+    def request(self, method, url, *, headers, body, ca_file, timeout):
+        self.requests.append((method, url))
+        if method not in ("GET", "POST"):
+            raise AssertionError(f"unexpected HTTP method {method} for a record store")
+        return self._responses.pop(0)
 
 class MakeKeyTests(unittest.TestCase):
     def test_deterministic_and_32_hex_chars(self):
@@ -162,7 +179,7 @@ class ConfigMapStoreTests(unittest.TestCase):
     def _store(self, transport):
         return ConfigMapStore("http://127.0.0.1:8001", transport=transport)
 
-    def test_put_creates_then_duplicate_without_read_modify_write(self):
+    def test_put_creates_then_confirms_duplicate_via_get(self):
         transport = FakeTransport()
         store = self._store(transport)
         record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
@@ -170,8 +187,60 @@ class ConfigMapStoreTests(unittest.TestCase):
         self.assertEqual(store.put(record), PutResult.CREATED)
         self.assertEqual(store.put(record), PutResult.DUPLICATE)
 
-        self.assertEqual(transport.requests, [("POST", transport.requests[0][1]), ("POST", transport.requests[1][1])])
+        # 409 on the second create is not itself the answer -- a GET must
+        # confirm the existing ConfigMap belongs to this record.
+        self.assertEqual(
+            transport.requests,
+            [
+                ("POST", transport.requests[0][1]),
+                ("POST", transport.requests[1][1]),
+                ("GET", transport.requests[2][1]),
+            ],
+        )
         self.assertTrue(transport.requests[0][1].endswith("/api/v1/namespaces/flagger-system/configmaps"))
+
+    def test_put_conflict_with_a_foreign_configmap_raises(self):
+        transport = FakeTransport()
+        store = self._store(transport)
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        name = record.to_configmap()["metadata"]["name"]
+
+        # Something else already occupies our deterministic name, with a
+        # different phase label -- not our record.
+        foreign = {
+            "metadata": {
+                "name": name,
+                "labels": {
+                    "app.kubernetes.io/part-of": "flagger-recovery",
+                    "flagger-recovery/canary": canary_label("flagger-pilot", "podinfo"),
+                    "flagger-recovery/phase": "Succeeded",
+                    "flagger-recovery/template-hash": "5b86bd6879",
+                },
+            },
+            "data": {"record.json": "{}"},
+        }
+        transport.by_namespace.setdefault("flagger-system", {})[name] = foreign
+
+        with self.assertRaises(ForeignConfigMap) as ctx:
+            store.put(record)
+        self.assertEqual(ctx.exception.name, name)
+
+    def test_put_conflict_deleted_then_still_conflicting_on_retry_gives_up(self):
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        name = record.to_configmap()["metadata"]["name"]
+        transport = ScriptedTransport(
+            [
+                (409, json.dumps({"reason": "AlreadyExists"}).encode()),  # initial create
+                (404, b"{}"),  # verification GET: deleted in between
+                (409, json.dumps({"reason": "AlreadyExists"}).encode()),  # retried create: still conflicting
+            ]
+        )
+        store = self._store(transport)
+
+        with self.assertRaises(ForeignConfigMap) as ctx:
+            store.put(record)
+        self.assertEqual(ctx.exception.name, name)
+        self.assertEqual([method for method, _ in transport.requests], ["POST", "GET", "POST"])
 
     def test_get_by_name(self):
         transport = FakeTransport()

@@ -37,6 +37,24 @@ class ApiWriteError(Exception):
         self.status = status
         self.body = body
 
+class ForeignConfigMap(Exception):
+    """Raised by ``ConfigMapStore.put`` when a ConfigMap occupies our
+    deterministic name but isn't provably our record.
+
+    A 409 on create proves only that the name is taken, not that its contents
+    are our record, so ``put`` follows up with a GET and checks the
+    ``app.kubernetes.io/part-of``, ``flagger-recovery/template-hash`` and
+    ``flagger-recovery/phase`` labels before reporting ``PutResult.DUPLICATE``.
+    This is raised instead when those labels don't match, or when the
+    verification GET returns 404 (the ConfigMap was deleted between our
+    failed create and our check) and a single retried create still can't
+    land cleanly -- in both cases the caller must log and refuse rather than
+    assume its record was ever stored."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"ConfigMap {name!r} exists but is not a flagger-recovery record for this key")
+        self.name = name
+
 def canary_label(namespace: str, canary_name: str) -> str:
     """The ``flagger-recovery/canary`` label value: unique across namespaces.
 
@@ -145,13 +163,42 @@ class ConfigMapStore:
 
     def put(self, record: DeploymentRecord) -> PutResult:
         configmap = record.to_configmap(storage_namespace=self._namespace)
-        url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps"
-        status, body = self._request("POST", url, json.dumps(configmap).encode("utf-8"))
+        name = configmap["metadata"]["name"]
+        create_url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps"
+        create_body = json.dumps(configmap).encode("utf-8")
+
+        status, body = self._request("POST", create_url, create_body)
         if status == 201:
             return PutResult.CREATED
-        if status == 409:
+        if status != 409:
+            raise ApiWriteError("POST", create_url, status, body)
+
+        # A 409 only proves the name is taken -- confirm the existing
+        # ConfigMap is actually our record before calling it a duplicate.
+        get_url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{name}"
+        status, body = self._request("GET", get_url, None)
+        if status == 404:
+            # Deleted between our failed create and this check. Retry once;
+            # a second conflict means something is actively racing us for
+            # this name, so give up rather than loop.
+            status, body = self._request("POST", create_url, create_body)
+            if status == 201:
+                return PutResult.CREATED
+            if status == 409:
+                raise ForeignConfigMap(name)
+            raise ApiWriteError("POST", create_url, status, body)
+        if status != 200:
+            raise ApiWriteError("GET", get_url, status, body)
+
+        existing_labels = json.loads(body).get("metadata", {}).get("labels", {})
+        wanted_labels = configmap["metadata"]["labels"]
+        if (
+            existing_labels.get("app.kubernetes.io/part-of") == "flagger-recovery"
+            and existing_labels.get("flagger-recovery/template-hash") == wanted_labels["flagger-recovery/template-hash"]
+            and existing_labels.get("flagger-recovery/phase") == wanted_labels["flagger-recovery/phase"]
+        ):
             return PutResult.DUPLICATE
-        raise ApiWriteError("POST", url, status, body)
+        raise ForeignConfigMap(name)
 
     def get(self, key: str) -> Optional[DeploymentRecord]:
         url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{_NAME_PREFIX}{key}"
