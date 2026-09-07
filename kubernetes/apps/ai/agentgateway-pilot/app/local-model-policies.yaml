@@ -2,7 +2,7 @@
 # STORY-034-11: auth + authorization for the local chat-model rules added
 # to the agentgateway-pilot route in httproute.yaml. Originally five
 # models/ten rules; STORY-035-8c retired four of the five models, leaving
-# qwen36-27b's six sections below (see git history for the retired
+# qwen36-27b's sections below (see git history for the retired
 # per-model authz policies that used to follow this one).
 #
 # Two objects, one concern each - same reasoning as 34.3's auth-matrix
@@ -16,8 +16,8 @@
 # and so wins on the `apiKeyAuthentication` field for exactly these
 # sections (v1.3.1 CRD doc-string: "Precedence is given to more precise
 # policies: Gateway < Listener < Route < Route Rule"), while leaving the
-# spike key policy fully in force on models-stub and the pilot catch-all,
-# both untouched by this story.
+# spike key policy fully in force on the cloud rules at the end of the
+# route, which this story does not touch.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
@@ -33,9 +33,12 @@ spec:
       kind: HTTPRoute
       name: agentgateway-pilot
       sectionName: qwen36-27b-messages
-    # STORY-035-8: the four x-placement-scoped rules are additional
+    # STORY-035-8: the x-placement-scoped rules are additional
     # sections on the SAME two paths, not new models - same key
-    # requirement as the two above.
+    # requirement as the two above. The two `kserve-a5000` sections that
+    # used to be listed here went with their rules (httproute.yaml):
+    # that header now falls through to the headerless sections above,
+    # which carry this same policy.
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: agentgateway-pilot
@@ -43,15 +46,7 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: agentgateway-pilot
-      sectionName: qwen36-27b-chat-kserve
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
       sectionName: qwen36-27b-messages-edge
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen36-27b-messages-kserve
     # EPIC-035 (bazzite bring-up): the two bazzite x-placement sections -
     # same key requirement, same paths, not new models.
     - group: gateway.networking.k8s.io
@@ -170,11 +165,14 @@ spec:
       kind: HTTPRoute
       name: agentgateway-pilot
       sectionName: qwen36-27b-messages
-    # STORY-035-8: same model, same authorization rule, on the four
+    # STORY-035-8: same model, same authorization rule, on the
     # x-placement-scoped sections. Per ruling R5, x-placement is
     # scheduling metadata only and must never touch this decision - so
     # this CEL is copied verbatim onto the new sections, not derived from
-    # the header in any way.
+    # the header in any way. The two `kserve-a5000` sections that used to
+    # be listed here went with their rules (httproute.yaml); the header
+    # falls through to the headerless sections above, which this same
+    # policy already covers, so nothing about who may call what changes.
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: agentgateway-pilot
@@ -182,15 +180,7 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: agentgateway-pilot
-      sectionName: qwen36-27b-chat-kserve
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
       sectionName: qwen36-27b-messages-edge
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: qwen36-27b-messages-kserve
     # EPIC-035 (bazzite bring-up): same model, same rule, on the two
     # bazzite x-placement sections - the CEL below stays copied verbatim,
     # never derived from the header (ruling R5).
@@ -213,10 +203,20 @@ spec:
 # (grouped backend in local-model-backends.yaml + this + route retry in
 # httproute.yaml). Backend-scoped `spec.backend.health` (not
 # `spec.traffic`), targeting the GROUP-0 provider of each of qwen36-27b's
-# two backend variants by `sectionName` - kserve-a5000 in the default/
-# KServe-preferred backend, cachyos-7900xtx in the edge-preferred one. One
-# policy, two targetRefs, since the frozen values (duration: 30s,
-# consecutiveFailures: 1) are identical either way.
+# backend variants by `sectionName` - kserve-a5000 in the default backend,
+# cachyos-7900xtx in the edge-preferred one, bazzite-5090 in the
+# bazzite-preferred one. One policy, three targetRefs, since the frozen
+# values (duration: 30s, consecutiveFailures: 1) are identical either way.
+#
+# On the default backend the evicted provider is now the only one there
+# is (its cachyos-7900xtx fallback group is gone - local-model-backends.
+# yaml), so eviction there has nothing to fail over to. It is not a
+# blackout: when every provider of a backend is evicted, agentgateway's
+# load balancer falls back to returning the evicted ones (v1.3.1
+# crates/agentgateway/src/http/health.rs, eviction_decision), so a
+# headerless request keeps reaching the predictor and fails or succeeds
+# on its own outcome. What eviction adds on that backend is the health
+# score, not an alternative.
 #
 # Passive only: this reacts to real request outcomes on the provider it
 # targets. It is not an active probe and cannot be one - `health.eviction`

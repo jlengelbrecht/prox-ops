@@ -27,21 +27,25 @@
 #
 # STORY-035-8: qwen36-27b becomes a GROUPED backend - the 35.5-proven
 # `spec.ai.groups` shape (b): a passive safety net beneath proactive
-# agent-router placement, never the placement mechanism itself). Two
+# agent-router placement, never the placement mechanism itself). Three
 # AgentgatewayBackend objects below, not one, because `x-placement` has to
-# realize an EDGE-preferred order as well as a KServe-preferred one
-# (httproute.yaml picks between them on that header) - each retains the
-# other placement as its own R6 fallback group, so a header-pinned rule
-# never terminates in a single-provider backend (measured 3/3 503s
-# otherwise). This is the R6 atomic unit: grouped backend + passive health
-# (local-model-policies.yaml) + route retry (httproute.yaml) ship together.
+# realize an EDGE-preferred and a BAZZITE-preferred order as well as the
+# KServe default (httproute.yaml picks between them on that header). The
+# two placement-preferred backends each retain kserve-a5000 as their own
+# R6 fallback group, so a header-pinned rule never terminates in a
+# single-provider backend (measured 3/3 503s otherwise). This is the R6
+# atomic unit: grouped backend + passive health (local-model-policies.yaml)
+# + route retry (httproute.yaml) ship together. The default backend is the
+# one exception and carries no fallback group at all - see below.
 #
 # `qwen36-27b` keeps its name and is the FROZEN SAFE GROUPED DEFAULT:
-# kserve-a5000 first, cachyos-7900xtx as fallback. Every existing caller
-# that sends no `x-placement` (Claude Code's zero-config path included)
-# keeps landing here unchanged - production traffic never gets silently
-# redirected onto a human's desktop by an absent header. It also answers
-# `x-placement: kserve-a5000`.
+# kserve-a5000 only. Every existing caller that sends no `x-placement`
+# (Claude Code's zero-config path included) keeps landing here unchanged,
+# and it also answers `x-placement: kserve-a5000`. There is deliberately no
+# fallback group: a human-owned host is reachable only through a rule
+# pinned to its own identity (GATEWAY-REALIZATION.md §1, SERVING-RUNTIME.md
+# §6), so when the predictor is down an unpinned request fails instead of
+# landing on someone's desktop.
 #
 # `qwen36-27b-edge-preferred` is new and answers
 # `x-placement: cachyos-7900xtx`:
@@ -64,27 +68,6 @@ spec:
               model: qwen3.6-27b
             host: qwen36-27b-predictor.ai.svc.cluster.local
             port: 80
-      - providers:
-          # Edge transport per R4/35.4: HTTPS, a dedicated CA (never the
-          # cluster wildcard), a hostname SAN, bearer auth via secretRef -
-          # no TLS verification bypass, no wildcard SAN, no plaintext
-          # fallback. Reuses the 35.6/35.6a identity material; nothing here
-          # mints a new credential or a new CA.
-          - name: cachyos-7900xtx
-            openai:
-              model: qwen3.6-27b
-            host: cachyos-7900xtx.homelab0.org
-            port: 8443
-            policies:
-              tls:
-                caCertificateRefs:
-                  - name: edge-cachyos-7900xtx-ca
-                sni: cachyos-7900xtx.homelab0.org
-                verifySubjectAltNames:
-                  - cachyos-7900xtx.homelab0.org
-              auth:
-                secretRef:
-                  name: agentgateway-pilot-edge-cachyos-7900xtx
 ---
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend

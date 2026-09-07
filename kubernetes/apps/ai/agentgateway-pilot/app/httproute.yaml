@@ -3,30 +3,33 @@
 # (covered by the wildcard cert); no DNS record is published (Story 34.19) -
 # LAN tests use `curl --resolve`.
 #
-# Rule order: the exact-match /v1/models stub is listed first and pinned via
-# an AgentgatewayPolicy directResponse (see policy.yaml) so a future
-# catch-all PathPrefix "/" route never shadows it (scale-to-zero hazard
-# control carried forward from Story 34.9's requirement). Gateway API's own
-# specificity rules (exact beats prefix) already favor this rule regardless
-# of list order; the directResponse policy is what actually answers it.
-# The rule keeps a backendRef only to satisfy HTTPRoute's schema - the
-# directResponse policy is expected to short-circuit before the backend is
-# ever reached.
+# DATAPATH CONFORMANCE (2026-09-07): this route no longer answers
+# /v1/models. The exact-match stub rule that used to answer it, and the
+# directResponse policy that supplied the list (policy.yaml), are both
+# gone: a gateway must not answer a discovery request from a literal list
+# written into gateway configuration, because such a list drifts from what
+# the rules actually serve and teaches callers a model no rule serves
+# (GATEWAY-REALIZATION.md §4, §7). Discovery is derived from the catalog
+# agent-router publishes or it is not answered at all, and nothing
+# publishes a menu today - so GET /v1/models now gets the gateway's own
+# 404.
 #
-# STORY-034-9 (2026-08-02): re-verified live as this story's own AC,
-# independent of 34.2's original Phase-2 proof. Unauthenticated GET
-# /v1/models -> 401; authenticated -> 200 with the stub list; zero pods
-# created in ns ai across all probes (kubectl get pod -n ai stays
-# empty - this route has no KServe backend at all, so there is no GPU
-# to wake). Bonus finding while re-verifying: an authenticated
-# bodyless GET on any OTHER path (e.g. /api/hello) still falls through
-# to the `pilot` catch-all rule below and reaches the AI-typed
-# backend's body parser, which 503s on "EOF while parsing a value" -
-# this is 34.4's finding F3 in miniature. It fails safely here only
-# because the backend is a dormant cloud model with no upstream to
-# actually contact; the recommendation carried to 34.11 stands
-# unchanged: production local-model routes must use explicit path
-# matches, not PathPrefix "/".
+# The `PathPrefix: /` catch-all is gone with it. Every rule below is an
+# Exact path match with a method, which is the same shape the auth-matrix
+# route adopted deliberately and what §4 requires of any rule that can
+# reach an accelerator. It also retires 34.9's own carried finding, which
+# was recorded here and never fixed: an authenticated bodyless GET on any
+# OTHER path (e.g. /api/hello) fell through to the catch-all, reached the
+# AI-typed backend's body parser and 503'd on "EOF while parsing a value"
+# (34.4's finding F3 in miniature). Unmatched paths now get a 404 from the
+# gateway instead.
+#
+# STORY-034-9 (2026-08-02) verified the retired stub live: unauthenticated
+# GET /v1/models -> 401, authenticated -> 200 with the stub list, zero pods
+# created in ns ai across all probes. The wake-avoidance half of that
+# result survives its removal - the cloud rules below have no KServe
+# backend behind them, so there is still no GPU for a probe to wake, and
+# the route-scoped API key policy (policy.yaml) is untouched.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -39,25 +42,16 @@ spec:
   hostnames:
     - ai-gateway.homelab0.org
   rules:
-    - name: models-stub
-      matches:
-        - path:
-            type: Exact
-            value: /v1/models
-          method: GET
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: agentgateway-pilot-openai
-
     # -----------------------------------------------------------------
     # STORY-034-11: originally five local chat models (see history for the
     # `x-model` dispatch mechanism); STORY-035-8c retired the four non-
     # qwen36-27b models and their rules, so qwen36-27b's `x-placement`
-    # rules below are what remains. Every rule below is an Exact
-    # path match on one of the two canonical AI paths agentgateway
-    # recognises (/v1/chat/completions, /v1/messages) - finding F3 (no
-    # PathPrefix "/" catch-all fronting a GPU). The real, unmodified
+    # rules below are what remains. Every local-model rule below is an
+    # Exact path match, with a method, on one of the two canonical AI
+    # paths agentgateway recognises (/v1/chat/completions, /v1/messages)
+    # - finding F3 (no PathPrefix "/" catch-all fronting a GPU). The two
+    # cloud rules at the end of the file are Exact matches with a method
+    # too, on /v1/responses and /v1/embeddings. The real, unmodified
     # request path is preserved in every case (no URLRewrite anywhere in
     # this file), which is deliberate: it is the one dimension every
     # proven G1/G2 test in WI-034-4 shared, and changing it for
@@ -72,7 +66,8 @@ spec:
     # spec.traffic.phase doc-string: "If the phase is PreRouting, the
     # targetRef must be a Gateway or a Listener"). A Gateway-scoped
     # policy would run body-parsing on every request through EVERY route
-    # on ai-gateway (pilot, wake-gate, auth-matrix, MCP federation) for
+    # on ai-gateway (pilot, wake-gate, MCP federation and, at the time,
+    # the auth-matrix spike) for
     # the sake of five rules on one route - out of proportion for this
     # story and not requested by the handoff. So dispatch here uses the
     # `x-model` request header instead, exactly reusing WI-034-4's
@@ -110,19 +105,17 @@ spec:
     # STORY-035-8: x-placement dispatch for qwen36-27b ONLY (R6 names this
     # model alone). Same mechanism as x-model above - Gateway API ranks a
     # header-matched rule above the headerless one below it, so
-    # `x-placement: cachyos-7900xtx` and `x-placement: kserve-a5000` each
-    # pick a dedicated rule and anything else (missing, unknown, or a stale
-    # name) falls through to the headerless default. The values are the
-    # placement names verbatim, because that is what the router hands the
-    # caller to copy - an abbreviation here would match nothing. Every
-    # rule below - default included - terminates in a GROUPED backend
-    # (local-model-backends.yaml), never a single-provider one, so the
-    # worst case for an uncooperative caller is gateway-side selection
-    # rather than an error.
+    # `x-placement: cachyos-7900xtx` and `x-placement: bazzite-5090` each
+    # pick a dedicated rule, while `x-placement: kserve-a5000` and
+    # anything else (missing, unknown, or a stale name) fall through to
+    # the headerless default, which terminates on kserve-a5000. The
+    # values are the placement names verbatim, because that is what the
+    # router hands the caller to copy - an abbreviation here would match
+    # nothing.
     #
     # Access control is unaffected. The qwen36-27b authz CEL defined
-    # alongside the other model policies is copied onto these same four
-    # section names verbatim: x-placement never touches authorization.
+    # alongside the other model policies is copied onto these same section
+    # names verbatim: x-placement never touches authorization.
     - name: qwen36-27b-chat-edge
       matches:
         - path:
@@ -142,27 +135,18 @@ spec:
         attempts: 1
         backoff: 50ms
         codes: [503]
-    - name: qwen36-27b-chat-kserve
-      matches:
-        - path:
-            type: Exact
-            value: /v1/chat/completions
-          method: POST
-          headers:
-            - name: x-placement
-              value: kserve-a5000
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: qwen36-27b
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 1
-        backoff: 50ms
-        codes: [503]
+    # DATAPATH CONFORMANCE (2026-09-07): the `x-placement: kserve-a5000`
+    # rules that used to sit here and below (qwen36-27b-chat-kserve,
+    # qwen36-27b-messages-kserve) are removed. A request carrying that
+    # header now falls through to the headerless rule further down, which
+    # terminates on kserve-a5000 anyway - so the identity the caller asked
+    # for is still honoured, by the default rather than by a rule of its
+    # own. They cannot be kept in any form: §2 forbids a pinned rule whose
+    # backend terminates in a single provider, and the only other member
+    # that backend could carry is cachyos-7900xtx, which §1 forbids any
+    # non-cachyos rule from reaching (local-model-backends.yaml).
     # EPIC-035 (bazzite bring-up): `x-placement: bazzite-5090` dispatch,
-    # additive alongside the two 35.8 placement rules above. Reachable only
+    # additive alongside the 35.8 placement rule above. Reachable only
     # via the explicit header, which agent-router only emits once the
     # catalog makes bazzite-5090 selectable; the headerless default below
     # is untouched.
@@ -186,10 +170,12 @@ spec:
         backoff: 50ms
         codes: [503]
     # Frozen safe grouped default: headerless, so missing/unknown/stale
-    # `x-placement` lands here. Same backend as the kserve-a5000 rule
-    # above - production traffic (Claude Code's zero-config path included)
-    # never gets silently redirected onto a human's desktop by an absent
-    # header.
+    # `x-placement` lands here, and so does `x-placement: kserve-a5000`
+    # now that it has no rule of its own. The backend behind it holds one
+    # provider, kserve-a5000, and no human-owned host at all - production
+    # traffic (Claude Code's zero-config path included) cannot be
+    # redirected onto a human's desktop by an absent header, and when the
+    # predictor is down the request fails here instead of landing on one.
     - name: qwen36-27b-chat
       matches:
         - path:
@@ -219,25 +205,6 @@ spec:
         - group: agentgateway.dev
           kind: AgentgatewayBackend
           name: qwen36-27b-edge-preferred
-      timeouts:
-        request: 240s
-      retry:
-        attempts: 1
-        backoff: 50ms
-        codes: [503]
-    - name: qwen36-27b-messages-kserve
-      matches:
-        - path:
-            type: Exact
-            value: /v1/messages
-          method: POST
-          headers:
-            - name: x-placement
-              value: kserve-a5000
-      backendRefs:
-        - group: agentgateway.dev
-          kind: AgentgatewayBackend
-          name: qwen36-27b
       timeouts:
         request: 240s
       retry:
@@ -281,11 +248,46 @@ spec:
         attempts: 1
         backoff: 50ms
         codes: [503]
-    - name: pilot
+    # -----------------------------------------------------------------
+    # DATAPATH CONFORMANCE (2026-09-07): the cloud surface, which used to
+    # be the `pilot` rule matching `PathPrefix: /`. It is now two Exact
+    # rules for the two OpenAI paths this dormant backend could actually
+    # serve (backend.yaml: gpt-4o-mini, cloud descoped by 34.9 Decision 7,
+    # the key behind it has no credits).
+    #
+    # /v1/chat/completions and /v1/messages are deliberately NOT listed
+    # here even though the cloud provider speaks the first of them: both
+    # are already served by the local rules above, and a second headerless
+    # rule on the same path and method would make which backend answers a
+    # matter of rule order rather than a declared choice - which is
+    # exactly the emergent safe default §1 forbids. The local rules own
+    # those two paths.
+    #
+    # /v1/models is not listed either: see the file header.
+    #
+    # Kept rather than deleted, deliberately. Only the route-level API key
+    # policy (policy.yaml, the 34.2 spike key) covers these two rules -
+    # the same and only key that could reach the old catch-all - so who
+    # can reach the cloud backend does not change here, and the backend's
+    # key has no credits either way (34.9 Decision 7). Taking the cloud
+    # pilot's last rules away is a scoping decision about that pilot, not
+    # a conformance fix, so it is left for the owner to make on its own.
+    - name: pilot-responses
       matches:
         - path:
-            type: PathPrefix
-            value: /
+            type: Exact
+            value: /v1/responses
+          method: POST
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: agentgateway-pilot-openai
+    - name: pilot-embeddings
+      matches:
+        - path:
+            type: Exact
+            value: /v1/embeddings
+          method: POST
       backendRefs:
         - group: agentgateway.dev
           kind: AgentgatewayBackend

@@ -1,9 +1,16 @@
 ---
-# STORY-034-2: inbound auth + the /v1/models stub, both scoped to this
-# pilot route only (AgentgatewayPolicy targetRefs supports Route per the
-# installed v1.3.1 CRD - broader than the Gateway-only scoping
-# res-agentgateway-core.md's doc survey described; verified via
-# `kubectl explain agentgatewaypolicy.spec.traffic`).
+# STORY-034-2: inbound auth for this pilot route only (AgentgatewayPolicy
+# targetRefs supports Route per the installed v1.3.1 CRD - broader than the
+# Gateway-only scoping res-agentgateway-core.md's doc survey described;
+# verified via `kubectl explain agentgatewaypolicy.spec.traffic`).
+#
+# DATAPATH CONFORMANCE (2026-09-07): the /v1/models stub this file also
+# used to carry is gone - the directResponse policy that answered the path
+# from a literal list, and the section-scoped API key policy that swapped
+# auth for just that section. A gateway must not answer discovery from a
+# list written into gateway configuration (GATEWAY-REALIZATION.md §4, §7);
+# see httproute.yaml's header for the whole reasoning. The route-level
+# policy below is unchanged and still covers every rule on the route.
 #
 # DEVIATION (see completion report): the installed v1.3.1
 # AgentgatewayPolicy CRD's apiKeyAuthentication.secretRef only documents a
@@ -35,62 +42,3 @@ spec:
       mode: Strict
       secretRef:
         name: agentgateway-pilot-spike-key
----
-# FOLLOW-UP (post-34.11 live verification): /v1/models is how every real
-# consumer discovers models, but it inherited auth from the route-level
-# policy above, which only recognises the 34.2 throwaway spike key - both
-# production keys (34.10: agentgateway-claude-code, agentgateway-open-webui)
-# got 401 here even though they work fine on the actual chat/messages
-# routes. Section-scoped policy wins over the route-level default (same
-# precedence rule local-model-policies.yaml relies on), so this narrowly
-# swaps auth for JUST the models-stub section to secretSelector on the
-# label 34.10 already put on both production Secrets - no changes to
-# those Secrets, and the spike key keeps working everywhere else on this
-# route (route-level policy is untouched).
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
-metadata:
-  name: agentgateway-pilot-models-stub-apikey
-  namespace: ai
-spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: models-stub
-  traffic:
-    apiKeyAuthentication:
-      mode: Strict
-      secretSelector:
-        matchLabels:
-          agentgateway.dev/credential-set: agentgateway-pilot-local-models
----
-# STORY-034-11: appended the 5 local chat-model aliases for LiteLLM
-# parity - the exact `model_name` strings from litellm/app/configmap.yaml,
-# which is also what local-model-policies.yaml's authorization CEL expects
-# in the request body (`json(request.body).model`); local-model-
-# backends.yaml's `provider.openai.model` override makes an echoed id
-# resolve correctly regardless of the differing internal upstream
-# identifier (see that file's comment). gpt-4o-mini stays first,
-# unchanged - cloud remains descoped (34.9 decision 7) but the dormant
-# entry is additive-only, not this story's to remove. STORY-035-8c retired
-# four of those five aliases; only qwen36-27b remains below.
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
-metadata:
-  name: agentgateway-pilot-models-stub
-  namespace: ai
-spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: agentgateway-pilot
-      sectionName: models-stub
-  traffic:
-    directResponse:
-      status: 200
-      headers:
-        - name: content-type
-          value: application/json
-      body: |
-        {"object":"list","data":[{"id":"gpt-4o-mini","object":"model","owned_by":"openai"},{"id":"qwen36-27b","object":"model","owned_by":"kserve"}]}
