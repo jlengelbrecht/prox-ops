@@ -16,6 +16,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import re
 import urllib.parse
 from typing import Any, Callable, Mapping, Optional
 
@@ -28,9 +29,9 @@ LOG = logging.getLogger("flagger_recovery.gitwriter")
 
 API_HOST = "api.github.com"  # the only host this writer may ever present the token to
 DEFAULT_BASE_URL = f"https://{API_HOST}"
-# ``compare`` pages its file list and GitHub caps it at 300; past that it is a
-# truncation, which every caller here fails closed on.
-COMPARE_PER_PAGE, COMPARE_PAGES = 100, 3
+# ``compare`` returns its files once and caps them at 300 for the whole comparison, with no
+# file total: a list at the cap cannot be told from a truncated one, so it is not complete.
+COMPARE_FILE_CAP = 300
 USER_AGENT, API_VERSION = "flagger-recovery", "2022-11-28"
 FILE_MODE = "100644"  # a YAML manifest, never executable; a tree entry needs a mode
 AUTHOR = {"name": "flagger-recovery", "email": "flagger-recovery@users.noreply.github.com"}
@@ -38,6 +39,15 @@ AUTHOR = {"name": "flagger-recovery", "email": "flagger-recovery@users.noreply.g
 # The module-level switch, and the outer bound: ``corrector(enabled=)`` narrows it and
 # cannot widen it. FRP-007b turns it on, with the credential and the Lease.
 CORRECTIONS_ENABLED = False
+
+# ``owner/name``, GitHub's own alphabet: a repository is interpolated into every request
+# path, and ``correct()`` is only one of the entry points that builds one.
+_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
+
+class _StaleLiveView(Exception):
+    """``live_for`` answered with the same view twice, so the second ``evaluate`` pass
+    would re-check freshness against the first's memoised reads — no re-read at all.
+    Raised before anything is claimed or written."""
 
 def _failed(method: str, path: str, status: int, raw: bytes) -> ApiWriteError:
     # Carrying what GitHub answered: its own error document, which holds nothing of
@@ -70,8 +80,14 @@ class GitWriter:
                 or parsed.username is not None or parsed.password is not None or parsed.query
                 or parsed.fragment or parsed.path not in ("", "/")):
             raise ValueError(f"GitWriter requires an https://{API_HOST} base_url (got {base_url!r})")
+        # Validated here, not only in ``correct()``: the read helpers are public and
+        # would otherwise build ``/repos/<anything>`` out of a constructor argument.
+        if not _REPOSITORY_RE.match(repository):
+            raise ValueError(f"GitWriter requires an owner/name repository (got {repository!r})")
         self._token = token
         self._repository = repository
+        self._repository_path = "/".join(
+            urllib.parse.quote(segment, safe="") for segment in repository.split("/"))
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self.dry_run = dry_run
@@ -90,7 +106,7 @@ class GitWriter:
             self.mutations += 1
         self.requests += 1
         status, raw = self._transport.request(
-            method, f"{self._base_url}/repos/{self._repository}{path}",
+            method, f"{self._base_url}/repos/{self._repository_path}{path}",
             headers=headers, body=body, ca_file=None, timeout=self._timeout)
         try:
             return status, (json.loads(raw) if raw else {}), raw
@@ -128,39 +144,39 @@ class GitWriter:
     def compare(self, base: str, head: str) -> tuple[str, tuple[str, ...], bool]:
         """``(status, changed paths, complete)``: GitHub's own identical/ahead/behind/
         diverged, ``""`` when it cannot compare the two at all, and whether the file
-        list came back whole — a truncated one is refused, never worked around."""
+        list came back whole — a truncated one is refused, never worked around. One
+        request: paging this endpoint pages the *commits*, which no bound here reads,
+        while the files come back once and stop at ``COMPARE_FILE_CAP``. A list that
+        reaches the cap is therefore not complete, and refusing a comparison that is
+        genuinely that wide is the fail-closed answer."""
         quote = urllib.parse.quote
         route = f"/compare/{quote(base, safe='')}...{quote(head, safe='')}"
-        state, files, complete = "", [], False
-        for page in range(1, COMPARE_PAGES + 1):
-            status, payload, raw = self._call("GET", f"{route}?per_page={COMPARE_PER_PAGE}&page={page}")
-            if status == 404:
-                return "", (), True
-            if status != 200 or not isinstance(payload, dict):
-                raise _failed("GET", route, status, raw)
-            state = str(payload.get("status") or "")
-            batch = [str(entry.get("filename") or "") for entry in payload.get("files") or ()]
-            files.extend(batch)
-            reported = payload.get("total_files")
-            complete = (len(batch) < COMPARE_PER_PAGE
-                        and (not isinstance(reported, int) or len(files) >= reported))
-            if complete:
-                break
-        return state, tuple(files), complete
+        status, payload, raw = self._call("GET", route)
+        if status == 404:
+            return "", (), True
+        if status != 200 or not isinstance(payload, dict):
+            raise _failed("GET", route, status, raw)
+        files = tuple(str(entry.get("filename") or "") for entry in payload.get("files") or ())
+        return str(payload.get("status") or ""), files, len(files) < COMPARE_FILE_CAP
 
     def snapshot(self, proposal: Mapping[str, Any], verdict: Verdict) -> TreeState:
         """Everything ``policy.evaluate``'s freshness bounds compare. All GETs."""
         failed = str(proposal["failed_source_sha"])
-        head_sha = self.read_ref()
+        head_sha, restore = self.read_ref(), verdict.restore_sha
         state, since, whole = ("identical", (), True) if head_sha == failed else self.compare(failed, head_sha)
         # The restore revision decides what bytes get committed, so place it on the
         # branch: the head is it, or descends from it. A revert asks the same of the
         # failed revision, keeping that comparison's status and not only its file list.
-        on_branch, undone, undone_whole = head_sha == verdict.restore_sha, (), True
-        if not on_branch and head_sha:
-            on_branch = self.compare(verdict.restore_sha, head_sha)[0] in ("identical", "ahead")
+        undone_state, undone, undone_whole = "", (), True
         if verdict.form == policy.REVERT_COMMIT:
-            undone_state, undone, undone_whole = self.compare(verdict.restore_sha, failed)
+            undone_state, undone, undone_whole = self.compare(restore, failed)
+        if head_sha in ("", restore):
+            on_branch = head_sha == restore
+        elif head_sha == failed and undone_state:
+            on_branch = undone_state in ("identical", "ahead")  # the same request, just made
+        else:
+            on_branch = self.compare(restore, head_sha)[0] in ("identical", "ahead")
+        if verdict.form == policy.REVERT_COMMIT:
             on_branch = on_branch and undone_state in ("identical", "ahead")
         return TreeState(
             head_sha=head_sha,
@@ -252,8 +268,14 @@ def corrector(store: Any, writer: GitWriter, live_for: Callable[[str, str], Any]
             return Correction(Refuse(policy.ALREADY_CORRECTED))
         dry_run = writer.dry_run
 
+        views: list[Any] = []  # enforced, not documented: see _StaleLiveView
+
         def live() -> Any:
-            return live_for(str(proposal.get("namespace") or ""), str(proposal.get("canary_name") or ""))
+            view = live_for(str(proposal.get("namespace") or ""), str(proposal.get("canary_name") or ""))
+            if views and view is views[-1]:
+                raise _StaleLiveView()
+            views.append(view)
+            return view
 
         def claim(verdict: Verdict) -> bool:
             marker = {"status": policy.STATUS_IN_PROGRESS, "started_at": clock(), "ref": ALLOWED_REF,
@@ -262,8 +284,13 @@ def corrector(store: Any, writer: GitWriter, live_for: Callable[[str, str], Any]
             return store.put_document(
                 _document(policy.KIND_CORRECTION, proposal, marker)) is not PutResult.DUPLICATE
 
-        with lock():
-            result = writer.correct(proposal, live, claim=claim, dry_run=dry_run)
+        try:
+            with lock():
+                result = writer.correct(proposal, live, claim=claim, dry_run=dry_run)
+        except _StaleLiveView:
+            LOG.error("correction for %r refused: the live view was not fresh — live_for "
+                      "answered with the same object twice", proposal.get("template_hash"))
+            return Correction(Refuse(policy.SUPERSEDED))
         if result.commit_sha:
             store.put_document(_document(policy.KIND_CORRECTION_RESULT, proposal, {
                 "status": policy.STATUS_WRITTEN, "finished_at": clock(), "ref": ALLOWED_REF,

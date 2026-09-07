@@ -271,7 +271,8 @@ call site FRP-007b writes can run a correction while it is `False`: turning corr
 both it and FRP-007b's own environment control. `lock=` is the design's Lease and is required rather than
 defaulted — a mutual exclusion a caller can forget into a no-op is indistinguishable from one nobody
 configured. Corrections run on one worker thread, so a `post-rollout` hook answers `CorrectionQueued`
-rather than holding its connection for the nine round trips.
+rather than holding its connection for the nine round trips; one the full queue drops is not lost, because
+`reconcile()` re-offers every still-live proposal that has no `correction` marker beside it.
 
 **What a refusal leaves behind.** The `correction` marker is a create-only claim written after every
 read-side bound has passed and immediately before the first mutating call, so a transient refusal —

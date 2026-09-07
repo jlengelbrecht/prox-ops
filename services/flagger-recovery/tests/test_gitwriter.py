@@ -20,7 +20,9 @@ from flagger_recovery import gitwriter, policy
 from flagger_recovery.decide import reconcile
 from flagger_recovery.gitwriter import Correction, GitWriter, corrector
 from flagger_recovery.policy import ALLOWED_TARGETS, Refuse
-from flagger_recovery.record import ApiWriteError, Document, InMemoryStore, make_key_parts
+from flagger_recovery.proposal import KIND_PROPOSAL
+from flagger_recovery.record import (ApiWriteError, Document, InMemoryStore, canary_label,
+                                     label_value, make_key_parts)
 from flagger_recovery.server import CORRECTION_QUEUED, Receiver, queued_corrector
 from tests.test_server import TOKEN, FakeCandidates
 
@@ -101,14 +103,15 @@ class StubGitHub:
             blob = self.blobs.get(ref)
             return _json({"type": "file", "sha": blob}) if blob else (404, b"{}")
         if method == "GET" and path.startswith("/compare/"):
-            route, query = path.split("?", 1)
-            base, head = route[len("/compare/"):].split("...")
+            base, head = path[len("/compare/"):].split("...")
             entry = self.compares.get((base, head), ("ahead", ()))
             if entry is None:  # GitHub cannot compare these two at all
                 return 404, b'{"message": "Not Found"}'
-            page, size = int(urllib.parse.parse_qs(query)["page"][0]), gitwriter.COMPARE_PER_PAGE
-            window = entry[1][(page - 1) * size:page * size]
-            return _json({"status": entry[0], "files": [{"filename": name} for name in window]})
+            # As documented: the changed files come back on this one response, capped at
+            # 300 for the whole comparison, with a commit total and no file total. Paging
+            # would page the commits; a 700-file comparison simply answers 300 of them.
+            return _json({"status": entry[0], "total_commits": 1, "files": [
+                {"filename": name} for name in entry[1][:gitwriter.COMPARE_FILE_CAP]]})
         if method == "POST" and path in ("/git/trees", "/git/commits"):
             return _json({"sha": NEW_TREE if path.endswith("trees") else NEW_COMMIT})
         if method == "PATCH" and path == "/git/refs/heads/flagger-pilot":
@@ -136,6 +139,10 @@ class GitWriterTests(unittest.TestCase):
                          "https://api.github.com?x=1", "https://api.github.com/extra"):
             with self.subTest(base_url=base_url), self.assertRaises(ValueError):
                 GitWriter(lambda: "", base_url=base_url)
+        # The repository reaches every request path, and the read helpers are public.
+        for repository in ("", "owner", "owner/name/extra", "owner/../../x", "owner/na me"):
+            with self.subTest(repository=repository), self.assertRaises(ValueError):
+                GitWriter(lambda: "", repository=repository)
 
     def test_happy_path_writes_one_commit_over_the_live_proposal(self):
         result, stub = run()
@@ -179,17 +186,23 @@ class GitWriterTests(unittest.TestCase):
         result, _ = run(stub)
         self.assertTrue(result.verdict, result.verdict.reason)
         self.assertEqual(result.commit["parents"], [AHEAD_SHA])
-        # Two full pages and a short third is a whole file list, read as one, not a
-        # truncation: the prefix bound is proven over all 250 and the write goes ahead.
-        paged = StubGitHub(head=AHEAD_SHA, blobs={AHEAD_SHA: BLOB_FAILED}, compares={
-            (FAILED_SHA, AHEAD_SHA): ("ahead", tuple(f"docs/{n}.md" for n in range(250)))})
-        self.assertTrue(run(paged)[0].verdict)
+        # 299 changed files is under GitHub's cap, so the list is whole and the prefix
+        # bound is proven over all of them. It costs one request, not one per hundred.
+        under_cap = StubGitHub(head=AHEAD_SHA, blobs={AHEAD_SHA: BLOB_FAILED}, compares={
+            (FAILED_SHA, AHEAD_SHA): ("ahead", tuple(f"docs/{n}.md" for n in range(299)))})
+        self.assertTrue(run(under_cap)[0].verdict)
+        self.assertEqual([call[1] for call in under_cap.calls if call[1].startswith("/compare/")],
+                         [f"/compare/{FAILED_SHA}...{AHEAD_SHA}", f"/compare/{PROMOTED_SHA}...{AHEAD_SHA}"])
 
     def test_revert_commit_is_accepted_only_at_single_file_scope(self):
         revert = {"correction": f"revert-commit {FAILED_SHA}"}
-        result, _ = run(**revert)
+        result, stub = run(**revert)
         self.assertEqual(result.verdict.target_path, TARGET)
         self.assertEqual(result.verdict.restore_sha, PROMOTED_SHA)
+        # The head being the failed revision makes the on-branch and the undone
+        # comparison one request, and it is issued once.
+        self.assertEqual([call[1] for call in stub.calls if call[1].startswith("/compare/")],
+                         [f"/compare/{PROMOTED_SHA}...{FAILED_SHA}"])
         mixed = StubGitHub(compares={(PROMOTED_SHA, FAILED_SHA): ("ahead", (TARGET, "kustomization.yaml"))})
         self.assertEqual(run(mixed, **revert)[0].verdict.reason, policy.MIXED_SCOPE)
 
@@ -245,14 +258,17 @@ class GitWriterTests(unittest.TestCase):
         ))
 
     def test_the_other_write_time_bounds_refuse_before_any_write(self):
-        """300 files back is GitHub's cap, so the change that matters may be past it and
-        the prefix bound cannot be proven. A symlink, a submodule or a directory (a JSON
-        array) is not a blob to install, which is what makes restating mode 100644 safe."""
+        """300 files is GitHub's cap for a whole comparison, so the change that matters may
+        be past it — here the 401st of 700 is under the pilot prefix and the answer never
+        mentions it — and the prefix bound cannot be proven. A symlink, a submodule or a
+        directory (a JSON array) is not a blob to install: restating 100644 is not a cast."""
         ahead = {"head": AHEAD_SHA, "blobs": {AHEAD_SHA: BLOB_FAILED}}
         symlink = {"type": "symlink", "sha": "7" * 40}
+        past_cap = tuple(policy.ALLOWED_PATH_PREFIX + "canary.yaml" if n == 400 else f"docs/{n}.md"
+                         for n in range(700))
         self._refuses((
-            (policy.BRANCH_MOVED, {**ahead, "compares": {
-                (FAILED_SHA, AHEAD_SHA): ("ahead", tuple(f"docs/{n}.md" for n in range(300)))}}, {}, None),
+            (policy.BRANCH_MOVED, {**ahead, "compares": {(FAILED_SHA, AHEAD_SHA): ("ahead", past_cap)}},
+             {}, None),
             (policy.TARGET_CHANGED, {"head": AHEAD_SHA, "blobs": {AHEAD_SHA: "7" * 40}}, {}, None),
             (policy.BRANCH_MOVED, {**ahead, "compares": {(FAILED_SHA, AHEAD_SHA): ("ahead", (TARGET,))}}, {}, None),
             (policy.BRANCH_MOVED, {**ahead, "compares": {(FAILED_SHA, AHEAD_SHA): ("diverged", ())}}, {}, None),
@@ -361,6 +377,32 @@ class CorrectorTests(unittest.TestCase):
         # Losing the claim to a concurrent writer costs no tree, commit or ref update.
         lost = self.writer.correct(proposal(), views(FakeLive()), claim=lambda _verdict: False)
         self.assertEqual(lost.verdict.reason, policy.ALREADY_CORRECTED)
+
+    def test_a_live_view_that_is_not_rebuilt_refuses_before_any_write(self):
+        """R2's fix rests on a fresh view per ``evaluate`` pass: a call site closing over one
+        ``LiveCanary`` would hand the second pass the first's memoised reads."""
+        one_view = FakeLive()
+        run_one = corrector(self.store, self.writer, lambda _ns, _name: one_view,
+                            clock=self.clock, lock=contextlib.nullcontext)
+        with self.assertLogs("flagger_recovery.gitwriter", level="ERROR"):
+            self.assertEqual(run_one(proposal()).verdict.reason, policy.SUPERSEDED)
+        self.assertEqual((self.store.writes, self.stub.mutating), (0, []))
+
+    def test_a_correction_the_queue_dropped_is_re_offered_by_the_next_pass(self):
+        """A full queue drops the in-band offer, leaving a proposal with no claim beside it.
+        The pass re-offers exactly those, and leaves a claimed or finished one alone."""
+        offers = []
+        self.store.put_document(Document(
+            kind=KIND_PROPOSAL, key=_key(KIND_PROPOSAL),
+            labels={"flagger-recovery/canary": canary_label(LIVE["namespace"], LIVE["canary_name"]),
+                    "flagger-recovery/template-hash": label_value(TEMPLATE_HASH)},
+            payload=proposal()))
+        report = reconcile(self.store, FakeLive(), corrector=offers.append)
+        self.assertEqual((report.corrections_reoffered, report.proposals_open), (1, 1))
+        self.assertEqual(offers[0]["correction"], LIVE["correction"])
+        self.correct()  # now claimed and finished
+        self.assertEqual(reconcile(self.store, FakeLive(), corrector=offers.append).corrections_reoffered, 0)
+        self.assertEqual(len(offers), 1)
 
     def test_a_crashed_writer_is_stale_and_a_finished_one_is_not(self):
         marker = {"status": policy.STATUS_IN_PROGRESS, "started_at": "2026-09-07T21:00:00Z"}
