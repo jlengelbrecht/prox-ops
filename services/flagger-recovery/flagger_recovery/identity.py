@@ -95,7 +95,7 @@ def _resolve_images(candidate_pods: Sequence[Mapping[str, Any]]) -> tuple[Contai
             seen[(container_name, digest_ref)] = ContainerImage(
                 name=container_name, repository=repository, tag=tag, digest=digest_ref
             )
-    return tuple(seen.values())
+    return tuple(sorted(seen.values(), key=lambda image: (image.name, image.repository, image.digest)))
 
 def _resolve_chart(helmrelease: Mapping[str, Any]) -> tuple[str, str]:
     history = helmrelease.get("status", {}).get("history") or []
@@ -163,7 +163,13 @@ def resolve(
             f"{len(matching_replicasets)} ReplicaSets owned by Deployment {deployment_uid} "
             f"share pod-template-hash {template_hash!r}; refusing to disambiguate the candidate"
         )
+    if not matching_replicasets:
+        raise AttributionRefused(
+            f"no ReplicaSet owned by Deployment {deployment_uid} has pod-template-hash {template_hash!r}"
+        )
 
+    candidate_rs_uid = matching_replicasets[0]["metadata"]["uid"]
+    candidate_pods = [pod for pod in candidate_pods if _controller_uid(pod) == candidate_rs_uid]
     if not candidate_pods:
         raise AttributionRefused("no candidate pods observed yet; cannot read an image digest")
 
@@ -243,14 +249,10 @@ def _main(argv: Optional[Sequence[str]] = None) -> None:
         "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flagger-system/kustomizations/flagger-pilot-app"
     )
 
-    deployment_uid = deployment["metadata"]["uid"]
-    candidate_rs_uids = {rs["metadata"]["uid"] for rs in replicasets if _controller_uid(rs) == deployment_uid}
-    candidate_pods = [pod for pod in pods if _controller_uid(pod) in candidate_rs_uids]
-
     identity = resolve(
         canary=canary,
         deployment=deployment,
-        candidate_pods=candidate_pods,
+        candidate_pods=pods,
         candidate_replicasets=replicasets,
         helmrelease=helmrelease,
         ocirepository=ocirepository,

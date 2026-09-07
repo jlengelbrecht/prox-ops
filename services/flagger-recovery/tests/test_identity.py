@@ -76,7 +76,11 @@ class ResolveHappyPathTests(unittest.TestCase):
     def test_is_promoted_true_when_hash_equals_last_promoted_spec(self):
         canary = _load("canary.json")
         canary["status"]["lastAppliedSpec"] = "759f9fb7bd"
-        identity = resolve(**_live_objects(canary=canary))
+        replicasets = _load("replicasets.json")
+        replicasets[0]["metadata"]["labels"]["pod-template-hash"] = "759f9fb7bd"
+        pods = _load("pods.json")
+        pods[0]["metadata"]["labels"]["pod-template-hash"] = "759f9fb7bd"
+        identity = resolve(**_live_objects(canary=canary, candidate_replicasets=replicasets, candidate_pods=pods))
         self.assertTrue(identity.is_promoted)
 
     def test_dedupes_images_seen_on_multiple_pods(self):
@@ -85,6 +89,38 @@ class ResolveHappyPathTests(unittest.TestCase):
         second["metadata"]["name"] = "podinfo-5b86bd6879-second"
         identity = resolve(**_live_objects(candidate_pods=pods + [second]))
         self.assertEqual(len(identity.images), 1)
+
+    def test_images_are_sorted_regardless_of_input_order(self):
+        pods = _load("pods.json")
+        first = pods[0]
+        second = json.loads(json.dumps(first))
+        second["metadata"]["name"] = "podinfo-5b86bd6879-second"
+        second["status"]["containerStatuses"][0]["name"] = "sidecar"
+        second["status"]["containerStatuses"][0]["imageID"] = (
+            "ghcr.io/stefanprodan/sidecar@sha256:" + "a" * 64
+        )
+        second["status"]["containerStatuses"][0]["image"] = "ghcr.io/stefanprodan/sidecar:1.0.0"
+
+        forward = resolve(**_live_objects(candidate_pods=[first, second]))
+        reversed_order = resolve(**_live_objects(candidate_pods=[second, first]))
+        self.assertEqual(forward.images, reversed_order.images)
+        self.assertEqual([image.name for image in forward.images], ["app", "sidecar"])
+
+    def test_filters_candidate_pods_to_the_matching_replicaset_only(self):
+        replicasets = _load("replicasets.json")
+        pods = _load("pods.json")
+
+        stale_pod = json.loads(json.dumps(pods[0]))
+        stale_pod["metadata"]["name"] = "podinfo-74bf8ddcdd-stale"
+        stale_pod["metadata"]["ownerReferences"][0]["uid"] = replicasets[1]["metadata"]["uid"]
+        stale_pod["status"]["containerStatuses"][0]["imageID"] = (
+            "ghcr.io/stefanprodan/podinfo@sha256:" + "f" * 64
+        )
+
+        identity = resolve(**_live_objects(candidate_pods=[stale_pod] + pods, candidate_replicasets=replicasets))
+
+        self.assertEqual(len(identity.images), 1)
+        self.assertEqual(identity.images[0].digest, pods[0]["status"]["containerStatuses"][0]["imageID"])
 
     def test_to_dict_from_dict_round_trip(self):
         identity = resolve(**_live_objects())
@@ -115,6 +151,11 @@ class ResolveRefusalTests(unittest.TestCase):
         duplicate["metadata"]["name"] = "podinfo-5b86bd6879-duplicate"
         with self.assertRaises(AttributionRefused):
             resolve(**_live_objects(candidate_replicasets=replicasets + [duplicate]))
+
+    def test_refuses_when_no_replicaset_has_the_tracked_hash(self):
+        replicasets = [rs for rs in _load("replicasets.json") if rs["metadata"]["name"] != "podinfo-5b86bd6879"]
+        with self.assertRaises(AttributionRefused):
+            resolve(**_live_objects(candidate_replicasets=replicasets))
 
     def test_refuses_with_no_last_applied_spec(self):
         canary = _load("canary.json")
