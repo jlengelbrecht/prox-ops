@@ -1,6 +1,8 @@
 import dataclasses
+import http.server
 import json
 import re
+import threading
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -8,6 +10,7 @@ from pathlib import Path
 from flagger_recovery.identity import CandidateIdentity, ContainerImage
 from flagger_recovery.record import (
     CHECKSUM_LABEL,
+    ApiWriteError,
     ConfigMapStore,
     DeploymentRecord,
     ForeignConfigMap,
@@ -19,6 +22,7 @@ from flagger_recovery.record import (
     label_value,
     make_key,
 )
+from flagger_recovery.record import _UrllibTransport
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -438,6 +442,46 @@ class InMemoryStoreTests(unittest.TestCase):
         self.assertEqual(store.list(canary_label("flagger-pilot", "podinfo")), [record])
         self.assertIsNone(store.get("0" * 32))
         self.assertEqual(store.list("no-such-canary"), [])
+
+class _Recorder(http.server.BaseHTTPRequestHandler):
+    """Answers whatever its server was told to, and records what it was asked."""
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):  # noqa: N802 - http.server's naming
+        self.server.seen.append((self.path, self.headers.get("Authorization")))
+        self.send_response(self.server.status)
+        if self.server.location:
+            self.send_header("Location", self.server.location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *_args):
+        pass
+
+def _server(test, status=200, location=""):
+    httpd = http.server.HTTPServer(("127.0.0.1", 0), _Recorder)
+    httpd.status, httpd.location, httpd.seen = status, location, []
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    test.addCleanup(httpd.server_close)
+    test.addCleanup(httpd.shutdown)
+    return httpd, f"http://127.0.0.1:{httpd.server_port}"
+
+class TransportRedirectTests(unittest.TestCase):
+    """A redirect is never followed. ``urllib``'s default handler re-sends the request to
+    the new location with the original headers, so a 302 from either API would hand the
+    bearer token — a Kubernetes service-account token here, a GitHub token with write
+    authority from FRP-007b — to whatever host the redirect names."""
+
+    def test_a_redirect_is_refused_and_the_token_is_not_re_sent(self):
+        elsewhere, elsewhere_url = _server(self)
+        redirector, url = _server(self, 302, elsewhere_url + "/stolen")
+        no_location = _server(self, 302)[1]
+        for target in (url, no_location):  # a 3xx without a Location never reaches the handler
+            with self.subTest(target=target), self.assertRaises(ApiWriteError):
+                _UrllibTransport().request("GET", target + "/repos/x", body=None, ca_file=None,
+                                           headers={"Authorization": "Bearer SECRET"}, timeout=5)
+        self.assertEqual(elsewhere.seen, [])
+        self.assertEqual(redirector.seen, [("/repos/x", "Bearer SECRET")])
 
 if __name__ == "__main__":
     unittest.main()

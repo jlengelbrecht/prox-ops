@@ -1,14 +1,13 @@
 """What a correction is allowed to be, decided before anything is written.
 
 Every bound is a literal here: the repository, the ref, the path prefix and the one
-file the pilot may correct. ``evaluate`` is pure — proposal payload, a live view of
-the canary, and (once the Git reads are done) a ``TreeState`` — and answers a
-``Verdict``: an allow, or a refusal carrying a reason from the closed set below,
-which the README lists. Nothing here opens a socket, reads a file, starts a program
-or touches a credential. It is a ladder of refusals with the one allow at the
-bottom, run twice: with ``tree=None`` before any network call, so a proposal out of
-bounds on its face costs zero GitHub requests, and again with the snapshot, so
-every freshness bound is re-read at write time.
+file the pilot may correct. ``evaluate`` is pure — proposal payload, a live view of the
+canary, and (once the Git reads are done) a ``TreeState`` — and answers a ``Verdict``:
+an allow, or a refusal from the closed set below, which the README explains. Nothing
+here opens a socket, reads a file, starts a program or touches a credential. It is a
+ladder of refusals with the one allow at the bottom, run twice: with ``tree=None``
+before any network call, so a proposal out of bounds on its face costs zero GitHub
+requests, and again with the snapshot and a freshly read cluster.
 """
 
 from __future__ import annotations
@@ -31,8 +30,7 @@ ALLOWED_REF_PATH = ALLOWED_REF[len("refs/"):]
 
 KIND_CORRECTION, KIND_CORRECTION_RESULT = "correction", "correction-result"
 STATUS_IN_PROGRESS, STATUS_WRITTEN = "in-progress", "written"
-# How long an ``in-progress`` marker may sit before the reconcile pass calls it
-# stale. Create-only storage means a writer that dies leaves its marker forever.
+# How long an ``in-progress`` marker may sit before the reconcile pass calls it stale.
 STALE_AFTER_SECONDS = 600.0
 RESTORE_FILE, REVERT_COMMIT = "restore-file", "revert-commit"
 
@@ -43,20 +41,23 @@ PATH_OUTSIDE_PREFIX, NOT_AN_ALLOWED_TARGET = "path-outside-prefix", "not-an-allo
 UNUSABLE_SHA, MIXED_SCOPE, NO_CHANGE = "unusable-sha", "mixed-scope", "no-change"
 SUPERSEDED, ALREADY_RESTORED = "superseded", "already-restored"
 TARGET_CHANGED, BRANCH_MOVED, ALREADY_CORRECTED = "target-changed", "branch-moved", "already-corrected"
+RESTORE_NOT_ON_BRANCH = "restore-not-on-branch"  # the revision is not in ALLOWED_REF's history
 REFUSAL_REASONS = (DISABLED, REQUIRES_DECISION, UNPARSABLE, WRONG_REPOSITORY, WRONG_REF,
                    PATH_OUTSIDE_PREFIX, NOT_AN_ALLOWED_TARGET, UNUSABLE_SHA, MIXED_SCOPE, NO_CHANGE,
-                   SUPERSEDED, ALREADY_RESTORED, TARGET_CHANGED, BRANCH_MOVED, ALREADY_CORRECTED)
+                   SUPERSEDED, ALREADY_RESTORED, TARGET_CHANGED, BRANCH_MOVED, ALREADY_CORRECTED,
+                   RESTORE_NOT_ON_BRANCH)
 
-_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_RESTORE_RE = re.compile(r"^restore-file (\S+) to (\S+)$")
-_REVERT_RE = re.compile(r"^revert-commit (\S+)$")
+# ``\Z``, never ``$``: ``$`` also matches before a trailing newline, and a validator
+# this much authority rests on must not read "<40 hex>\n" as a sha.
+_SHA_RE = re.compile(r"^[0-9a-f]{40}\Z")
+_RESTORE_RE = re.compile(r"^restore-file (\S+) to (\S+)\Z")
+_REVERT_RE = re.compile(r"^revert-commit (\S+)\Z")
 
 @dataclasses.dataclass(frozen=True)
 class Verdict:
     """Allowed, or refused with a reason. ``target_path``/``restore_sha`` are the
     correction reduced to one file and one revision; ``blob_sha`` is that revision's
     blob for that path, which only the second pass can know."""
-
     allowed: bool
     reason: str = ""
     form: str = ""
@@ -74,13 +75,14 @@ def Refuse(reason: str) -> Verdict:  # noqa: N802 - a Verdict constructor, not a
 class TreeState:
     """The Git side of the freshness check, read at write time: every field is a fact
     about the repository now, the proposal being a statement about the past."""
-
     head_sha: str  # the branch head commit
     head_tree_sha: str  # its tree, the base for the tree we build
     blob_at_head: str  # the target file's blob at the head
     blob_at_failed: str  # ... at the revision the failed release was built from
     blob_at_restore: str  # ... at the revision being restored: the blob we install
     head_is_descendant: bool  # the head is the failed revision, or ahead of it
+    restore_on_branch: bool = False  # the head is the restore revision, or a descendant of it
+    paths_complete: bool = True  # every file list below was read in full, not truncated
     paths_since_failed: tuple[str, ...] = ()  # files changed between the two
     paths_undone: tuple[str, ...] = ()  # files the correction reverses
 
@@ -89,6 +91,10 @@ def evaluate(proposal: Mapping[str, Any], live: Any, tree: Optional[TreeState] =
     ``LiveState``; ``tree`` is ``None`` pre-network, a snapshot just before the write."""
     if proposal.get("requires_decision") or not proposal.get("correction"):
         return Refuse(REQUIRES_DECISION)
+    # A document written before the field existed names none, and can only have come
+    # from this receiver, which serves the one repository above.
+    if str(proposal.get("repository") or ALLOWED_REPOSITORY) != ALLOWED_REPOSITORY:
+        return Refuse(WRONG_REPOSITORY)
     if proposal.get("branch") != ALLOWED_BRANCH:
         return Refuse(WRONG_REF)
     if proposal.get("path_prefix") != ALLOWED_PATH_PREFIX:
@@ -103,9 +109,8 @@ def evaluate(proposal: Mapping[str, Any], live: Any, tree: Optional[TreeState] =
     if restore is not None:
         form, path, sha = RESTORE_FILE, restore.group(1), restore.group(2)
     elif revert is not None:
-        # Undoing the failed commit is restoring the one file in bounds to the
-        # revision the proposal already names; the path comes from the allowlist
-        # and not from the string, and the commit's own scope is checked below.
+        # Undoing the failed commit is restoring the one file in bounds to the revision
+        # the proposal already names; the path comes from the allowlist, not the string.
         form, path, sha = REVERT_COMMIT, ALLOWED_TARGETS[0], promoted_sha
         if revert.group(1) != failed_sha:
             return Refuse(UNPARSABLE if _SHA_RE.match(revert.group(1)) else UNUSABLE_SHA)
@@ -124,16 +129,27 @@ def evaluate(proposal: Mapping[str, Any], live: Any, tree: Optional[TreeState] =
     template_hash = str(proposal.get("template_hash") or "")
     if not template_hash or status.get("lastAppliedSpec") != template_hash:
         return Refuse(SUPERSEDED)
-    # F8: the primary already serves this spec, so there is nothing to undo and a
-    # commit here would revert whatever restored it.
+    # F8: the primary already serves this spec, so a commit would revert what restored it.
     if is_manual_rollback(status, template_hash):
         return Refuse(ALREADY_RESTORED)
 
     allowed = Verdict(allowed=True, form=form, target_path=path, restore_sha=sha)
     if tree is None:
         return allowed
+    # The design's third re-read, the only bound that asks the cluster and not the
+    # Canary's bookkeeping: ``None`` is a primary mid-rollout or degraded, serving nothing.
+    serving = live.primary_template_hash()
+    if serving is None or serving != status.get("lastPromotedSpec"):
+        return Refuse(SUPERSEDED)
     if not _SHA_RE.match(tree.head_sha) or not _SHA_RE.match(tree.head_tree_sha):
         return Refuse(UNUSABLE_SHA)
+    # The bound on the committed bytes: they are the restore revision's blob, so that
+    # revision must be on this branch. An object GitHub serves but cannot place here —
+    # a fork's PR head, a pre-rebase commit — fails here.
+    if not tree.restore_on_branch:
+        return Refuse(RESTORE_NOT_ON_BRANCH)
+    if not tree.paths_complete:  # a truncated file list cannot prove the prefix was left alone
+        return Refuse(BRANCH_MOVED)
     if not tree.blob_at_head or tree.blob_at_head != tree.blob_at_failed:
         return Refuse(TARGET_CHANGED)
     if tree.head_sha != failed_sha and (
@@ -162,8 +178,7 @@ def _parse_time(value: str) -> Optional[datetime]:
 
 def is_stale(payload: Mapping[str, Any], at: str, *, after_seconds: float = STALE_AFTER_SECONDS) -> bool:
     """True when an ``in-progress`` marker written at ``payload["started_at"]`` is older
-    than ``after_seconds`` as of ``at``. One with no readable timestamp is stale at
-    once — exactly a case a human needs to see."""
+    than ``after_seconds`` as of ``at``. One with no readable timestamp is stale at once."""
     started, now = _parse_time(str(payload.get("started_at") or "")), _parse_time(at)
     if now is None:
         return False

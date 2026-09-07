@@ -17,8 +17,12 @@ import re
 from typing import Any, Optional
 
 from .identity import CandidateIdentity
+from .policy import ALLOWED_REPOSITORY
 from .record import Document, canary_label, label_value, make_key_parts
 
+# The one repository a correction may name, so ``policy.evaluate`` can cross-check the
+# proposal's own field rather than only the writer's constructor argument.
+REPOSITORY = ALLOWED_REPOSITORY
 BRANCH = "flagger-pilot"
 PATH_PREFIX = "kubernetes/pilot/flagger-pilot/"
 HELMRELEASE_PATH = PATH_PREFIX + "helmrelease.yaml"
@@ -64,7 +68,8 @@ class Proposal:
     def to_payload(self) -> dict[str, Any]:
         # asdict() recurses through both identities, so the payload carries
         # every field of each, as the record ConfigMaps store them.
-        return {"branch": BRANCH, "path_prefix": PATH_PREFIX, **dataclasses.asdict(self)}
+        return {"repository": REPOSITORY, "branch": BRANCH, "path_prefix": PATH_PREFIX,
+                **dataclasses.asdict(self)}
 
     def to_document(self) -> Document:
         return Document(

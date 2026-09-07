@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from flagger_recovery.identity import resolve
-from flagger_recovery.kube import CandidateReader, LiveCanary
+from flagger_recovery.kube import ApiError, ApiReader, CandidateReader, LiveCanary
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -123,3 +123,16 @@ class LiveCanaryTests(unittest.TestCase):
         api = FakeApiReader()
         LiveCanary(api, "flagger-pilot", "../../secrets").canary_status()
         self.assertIn("canaries/..%2F..%2Fsecrets", api.paths[0])
+
+class ApiReaderRedirectTests(unittest.TestCase):
+    """The service-account token this reader carries must not follow a redirect out to
+    another host — the same bug ``record``'s transport refuses, on the other credential."""
+
+    def test_a_redirect_is_refused_and_the_token_is_not_re_sent(self):
+        from tests.test_record import _server  # the recording HTTP servers
+
+        elsewhere, elsewhere_url = _server(self)
+        url = _server(self, 302, elsewhere_url + "/stolen")[1]
+        with self.assertRaises(ApiError):
+            ApiReader(url, token="SECRET", timeout=5).get("/api/v1/namespaces")
+        self.assertEqual(elsewhere.seen, [])

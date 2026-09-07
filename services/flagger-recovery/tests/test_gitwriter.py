@@ -1,27 +1,27 @@
 """The Git correction writer, against a stub GitHub API.
 
-``StubGitHub`` implements ``record.Transport``, so every request the writer would
-put on the wire is recorded here instead — method, path, headers and decoded body
-— and the assertions below are about request bodies, not just outcomes. No socket
-is opened and no test names the real API host; the writer's own default is
-asserted once, in ``test_defaults_are_refusal_first``.
-
-The proposal under test is the first live one the pilot ever produced, copied
-verbatim from ``outputs/e2e-proposal.json`` (cycle 2) into
-``fixtures/live-proposal.json``.
+``StubGitHub`` implements ``record.Transport``, so every request the writer would put on
+the wire is recorded here instead — method, path, headers and decoded body — and the
+assertions below are about request bodies, not just outcomes. No socket is opened: the
+base URL is the real host because the writer refuses every other, but nothing here holds
+a transport that could reach it. The proposal under test is the first live one the pilot
+produced, copied verbatim from ``outputs/e2e-proposal.json`` into the fixture.
 """
 
+import contextlib
 import json
 import pathlib
+import threading
 import unittest
 import urllib.parse
+from unittest import mock
 
 from flagger_recovery import gitwriter, policy
 from flagger_recovery.decide import reconcile
 from flagger_recovery.gitwriter import Correction, GitWriter, corrector
 from flagger_recovery.policy import ALLOWED_TARGETS, Refuse
-from flagger_recovery.record import InMemoryStore
-from flagger_recovery.server import Receiver
+from flagger_recovery.record import ApiWriteError, Document, InMemoryStore, make_key_parts
+from flagger_recovery.server import CORRECTION_QUEUED, Receiver, queued_corrector
 from tests.test_server import TOKEN, FakeCandidates
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
@@ -32,34 +32,48 @@ FAILED_SHA = LIVE["failed_source_sha"]
 PROMOTED_SHA = LIVE["last_promoted_source_sha"]
 TEMPLATE_HASH = LIVE["template_hash"]
 PROMOTED_HASH = LIVE["promoted_identity"]["template_hash"]
-AHEAD_SHA = "9" * 40
+AHEAD_SHA, FORK_SHA = "9" * 40, "8" * 40
 BLOB_FAILED, BLOB_PROMOTED = "1" * 40, "2" * 40
 NEW_TREE, NEW_COMMIT, HEAD_TREE = "3" * 40, "4" * 40, "5" * 40
-BASE_URL = "https://github.invalid/api"  # never the real host: nothing here leaves the process
+BASE_URL = gitwriter.DEFAULT_BASE_URL  # the only host the writer accepts; the transport is a stub
 TOKEN_VALUE = "ghs-not-a-real-token"
 
 def proposal(**changes):
     return {**LIVE, **changes}
 
 class FakeLive:
-    """``decide.LiveState``'s one method the policy consults."""
-
-    def __init__(self, applied=TEMPLATE_HASH, promoted=PROMOTED_HASH):
+    """The two ``decide.LiveState`` methods the policy consults. ``serving`` is the spec
+    the ``-primary`` Deployment is running, ``None`` while it is mid-rollout."""
+    def __init__(self, applied=TEMPLATE_HASH, promoted=PROMOTED_HASH, serving=...):
         self.status = {"lastAppliedSpec": applied, "lastPromotedSpec": promoted}
+        self.serving = promoted if serving is ... else serving
 
     def canary_status(self):
         return self.status
+
+    def primary_template_hash(self):
+        return self.serving
+
+def views(*live):
+    """A ``live_for`` over a script of views: one per ``evaluate`` pass, the last
+    repeating. A real view memoises its reads, so the two passes must not share one."""
+    calls = []
+    def _next():
+        calls.append(None)
+        return live[min(len(calls) - 1, len(live) - 1)]
+    return _next
 
 def _json(payload):
     return 200, json.dumps(payload).encode("utf-8")
 
 class StubGitHub:
     """Routes the seven endpoints the writer can reach and records every call."""
-
-    def __init__(self, *, head=FAILED_SHA, blobs=None, compares=None, patch_status=200):
+    def __init__(self, *, head=FAILED_SHA, blobs=None, compares=None, patch_status=200, contents=None):
         self.head = head
         self.blobs = {FAILED_SHA: BLOB_FAILED, PROMOTED_SHA: BLOB_PROMOTED, **(blobs or {})}
+        # The promoted revision is on the branch: the failed one descends from it.
         self.compares = {(PROMOTED_SHA, FAILED_SHA): ("ahead", (TARGET,)), **(compares or {})}
+        self.contents = contents  # a whole /contents payload for the restore revision
         self.patch_status = patch_status
         self.calls = []
 
@@ -82,12 +96,19 @@ class StubGitHub:
             return _json({"tree": {"sha": HEAD_TREE}})
         if method == "GET" and path.startswith("/contents/"):
             ref = urllib.parse.parse_qs(path.split("?", 1)[1])["ref"][0]
+            if self.contents is not None and ref == PROMOTED_SHA:
+                return _json(self.contents)
             blob = self.blobs.get(ref)
             return _json({"type": "file", "sha": blob}) if blob else (404, b"{}")
         if method == "GET" and path.startswith("/compare/"):
-            base, head = path[len("/compare/"):].split("...")
-            state, files = self.compares.get((base, head), ("ahead", ()))
-            return _json({"status": state, "files": [{"filename": name} for name in files]})
+            route, query = path.split("?", 1)
+            base, head = route[len("/compare/"):].split("...")
+            entry = self.compares.get((base, head), ("ahead", ()))
+            if entry is None:  # GitHub cannot compare these two at all
+                return 404, b'{"message": "Not Found"}'
+            page, size = int(urllib.parse.parse_qs(query)["page"][0]), gitwriter.COMPARE_PER_PAGE
+            window = entry[1][(page - 1) * size:page * size]
+            return _json({"status": entry[0], "files": [{"filename": name} for name in window]})
         if method == "POST" and path in ("/git/trees", "/git/commits"):
             return _json({"sha": NEW_TREE if path.endswith("trees") else NEW_COMMIT})
         if method == "PATCH" and path == "/git/refs/heads/flagger-pilot":
@@ -100,15 +121,21 @@ def writer(stub, *, dry_run=False, repository=policy.ALLOWED_REPOSITORY):
 
 def run(stub=None, *, live=None, dry_run=False, **changes):
     stub = stub or StubGitHub()
-    return writer(stub, dry_run=dry_run).correct(proposal(**changes), live or FakeLive()), stub
+    live_for = live if callable(live) else views(live or FakeLive())
+    return writer(stub, dry_run=dry_run).correct(proposal(**changes), live_for), stub
 
 class GitWriterTests(unittest.TestCase):
     def test_defaults_are_refusal_first(self):
         self.assertTrue(gitwriter.DEFAULT_BASE_URL.startswith("https://api.github.com"))
         self.assertFalse(gitwriter.CORRECTIONS_ENABLED)
         self.assertTrue(GitWriter(lambda: "").dry_run)
-        with self.assertRaises(ValueError):
-            GitWriter(lambda: "", base_url="http://github.invalid")
+        # The first of these starts with the right characters, resolves to
+        # attacker.example, and is where the bearer token would then have gone.
+        for base_url in ("https://api.github.com@attacker.example", "https://github.invalid/api",
+                         "http://api.github.com", "https://api.github.com:8443",
+                         "https://api.github.com?x=1", "https://api.github.com/extra"):
+            with self.subTest(base_url=base_url), self.assertRaises(ValueError):
+                GitWriter(lambda: "", base_url=base_url)
 
     def test_happy_path_writes_one_commit_over_the_live_proposal(self):
         result, stub = run()
@@ -146,32 +173,17 @@ class GitWriterTests(unittest.TestCase):
         self.assertEqual(stub.calls[-1][0], "PATCH")
         self.assertEqual(len(stub.mutating), 3)
 
-    def test_blob_mismatch_refuses_target_changed(self):
-        stub = StubGitHub(head=AHEAD_SHA, blobs={AHEAD_SHA: "7" * 40},
-                          compares={(FAILED_SHA, AHEAD_SHA): ("ahead", ("README.md",))})
-        result, stub = run(stub)
-        self.assertEqual(result.verdict.reason, policy.TARGET_CHANGED)
-        self.assertEqual(stub.mutating, [])
-
-    def test_a_later_commit_inside_the_prefix_refuses_branch_moved(self):
-        stub = StubGitHub(head=AHEAD_SHA, blobs={AHEAD_SHA: BLOB_FAILED},
-                          compares={(FAILED_SHA, AHEAD_SHA): ("ahead", (TARGET,))})
-        self.assertEqual(run(stub)[0].verdict.reason, policy.BRANCH_MOVED)
-        diverged = StubGitHub(head=AHEAD_SHA, blobs={AHEAD_SHA: BLOB_FAILED},
-                              compares={(FAILED_SHA, AHEAD_SHA): ("diverged", ())})
-        self.assertEqual(run(diverged)[0].verdict.reason, policy.BRANCH_MOVED)
-
     def test_a_later_commit_outside_the_prefix_is_still_correctable(self):
         stub = StubGitHub(head=AHEAD_SHA, blobs={AHEAD_SHA: BLOB_FAILED},
                           compares={(FAILED_SHA, AHEAD_SHA): ("ahead", (".github/workflows/ci.yaml",))})
         result, _ = run(stub)
         self.assertTrue(result.verdict, result.verdict.reason)
         self.assertEqual(result.commit["parents"], [AHEAD_SHA])
-
-    def test_an_unchanged_file_refuses_rather_than_committing_nothing(self):
-        result, stub = run(StubGitHub(blobs={PROMOTED_SHA: BLOB_FAILED}))
-        self.assertEqual(result.verdict.reason, policy.NO_CHANGE)
-        self.assertEqual(stub.mutating, [])
+        # Two full pages and a short third is a whole file list, read as one, not a
+        # truncation: the prefix bound is proven over all 250 and the write goes ahead.
+        paged = StubGitHub(head=AHEAD_SHA, blobs={AHEAD_SHA: BLOB_FAILED}, compares={
+            (FAILED_SHA, AHEAD_SHA): ("ahead", tuple(f"docs/{n}.md" for n in range(250)))})
+        self.assertTrue(run(paged)[0].verdict)
 
     def test_revert_commit_is_accepted_only_at_single_file_scope(self):
         revert = {"correction": f"revert-commit {FAILED_SHA}"}
@@ -184,6 +196,7 @@ class GitWriterTests(unittest.TestCase):
     def test_bounds_refuse_before_any_request(self):
         cases = {
             policy.WRONG_REF: {"branch": "main"},
+            policy.WRONG_REPOSITORY: {"repository": "someone/else"},
             policy.PATH_OUTSIDE_PREFIX: {"correction": f"restore-file kubernetes/apps/x.yaml to {PROMOTED_SHA}"},
             policy.NOT_AN_ALLOWED_TARGET: {
                 "correction": f"restore-file kubernetes/pilot/flagger-pilot/canary.yaml to {PROMOTED_SHA}"},
@@ -192,23 +205,89 @@ class GitWriterTests(unittest.TestCase):
             policy.UNPARSABLE: {"correction": "delete-file " + TARGET},
             policy.SUPERSEDED: {"template_hash": "0000000000"},
         }
-        for reason, changes in cases.items():
-            with self.subTest(reason=reason):
+        # ``$`` would have accepted every trailing newline in the last four as an end.
+        extra = ((policy.UNUSABLE_SHA, {"last_promoted_source_sha": PROMOTED_SHA + "\n"}),
+                 (policy.UNUSABLE_SHA, {"correction": "revert-commit HEAD~1"}),
+                 (policy.UNPARSABLE, {"correction": f"restore-file {TARGET} to {PROMOTED_SHA}\n"}),
+                 (policy.UNPARSABLE, {"correction": f"revert-commit {FAILED_SHA}\n"}),
+                 (policy.UNPARSABLE, {"correction": f"revert-commit {AHEAD_SHA}"}))
+        for reason, changes in tuple(cases.items()) + extra:
+            with self.subTest(reason=reason, changes=changes):
                 result, stub = run(**changes)
                 self.assertEqual(result.verdict.reason, reason)
                 self.assertEqual(stub.calls, [])
         self.assertEqual(run(live=FakeLive(promoted=TEMPLATE_HASH))[0].verdict.reason, policy.ALREADY_RESTORED)
+        built_for_another = writer(StubGitHub(), repository="someone/else")
+        self.assertEqual(built_for_another.correct(proposal(), views(FakeLive())).verdict.reason,
+                         policy.WRONG_REPOSITORY)
 
-    def test_a_writer_pointed_at_another_repository_refuses(self):
-        stub = StubGitHub()
-        result = writer(stub, repository="someone/else").correct(proposal(), FakeLive())
-        self.assertEqual(result.verdict.reason, policy.WRONG_REPOSITORY)
-        self.assertEqual(stub.calls, [])
+    def _refuses(self, cases):
+        for reason, github, changes, live in cases:
+            with self.subTest(reason=reason, github=github, live=live):
+                result, stub = run(StubGitHub(**github), live=live, **changes)
+                self.assertEqual(result.verdict.reason, reason)
+                self.assertEqual(stub.mutating, [])
+
+    def test_a_restore_revision_off_the_branch_refuses_before_any_write(self):
+        """The bound on what bytes get committed. A fork's PR head lives in this public
+        repository's object store and ``/contents`` serves it, so only ``compare`` can
+        say whether the revision is this branch's own history — and the revert form has
+        to ask the same of the diff it undoes, which means keeping that status."""
+        fork = {"last_promoted_source_sha": FORK_SHA, "correction": f"restore-file {TARGET} to {FORK_SHA}"}
+        off_branch = policy.RESTORE_NOT_ON_BRANCH
+        self._refuses((
+            (off_branch, {"blobs": {FORK_SHA: "6" * 40},
+                          "compares": {(FORK_SHA, FAILED_SHA): ("diverged", (TARGET,))}}, fork, None),
+            (off_branch, {"compares": {(PROMOTED_SHA, FAILED_SHA): ("behind", ())}}, {}, None),  # pre-rebase
+            (off_branch, {"compares": {(PROMOTED_SHA, FAILED_SHA): None}}, {}, None),  # 404: uncomparable
+            (off_branch, {"compares": {(PROMOTED_SHA, FAILED_SHA): ("diverged", (TARGET,))}},
+             {"correction": f"revert-commit {FAILED_SHA}"}, None),
+        ))
+
+    def test_the_other_write_time_bounds_refuse_before_any_write(self):
+        """300 files back is GitHub's cap, so the change that matters may be past it and
+        the prefix bound cannot be proven. A symlink, a submodule or a directory (a JSON
+        array) is not a blob to install, which is what makes restating mode 100644 safe."""
+        ahead = {"head": AHEAD_SHA, "blobs": {AHEAD_SHA: BLOB_FAILED}}
+        symlink = {"type": "symlink", "sha": "7" * 40}
+        self._refuses((
+            (policy.BRANCH_MOVED, {**ahead, "compares": {
+                (FAILED_SHA, AHEAD_SHA): ("ahead", tuple(f"docs/{n}.md" for n in range(300)))}}, {}, None),
+            (policy.TARGET_CHANGED, {"head": AHEAD_SHA, "blobs": {AHEAD_SHA: "7" * 40}}, {}, None),
+            (policy.BRANCH_MOVED, {**ahead, "compares": {(FAILED_SHA, AHEAD_SHA): ("ahead", (TARGET,))}}, {}, None),
+            (policy.BRANCH_MOVED, {**ahead, "compares": {(FAILED_SHA, AHEAD_SHA): ("diverged", ())}}, {}, None),
+            (policy.NO_CHANGE, {"blobs": {PROMOTED_SHA: BLOB_FAILED}}, {}, None),
+            (policy.UNUSABLE_SHA, {"contents": symlink}, {}, None),
+            (policy.UNUSABLE_SHA, {"contents": {**symlink, "type": "submodule"}}, {}, None),
+            (policy.UNUSABLE_SHA, {"contents": [{"type": "file", "sha": "7" * 40}]}, {}, None),
+        ))
+
+    def test_the_live_view_is_read_again_after_the_git_round_trips(self):
+        """The second pass reads the cluster afresh — an operator rolling back mid-write
+        is what F8 exists for, and a memoised view cannot notice it. ``serving`` is the
+        design's third re-read: the spec the primary is actually running."""
+        self._refuses((
+            (policy.SUPERSEDED, {}, {}, views(FakeLive(), FakeLive(applied="0" * 10))),
+            (policy.ALREADY_RESTORED, {}, {}, views(FakeLive(), FakeLive(promoted=TEMPLATE_HASH))),
+            (policy.SUPERSEDED, {}, {}, FakeLive(serving=None)),
+            (policy.SUPERSEDED, {}, {}, FakeLive(serving="0" * 10)),
+        ))
+
+    def test_an_unusable_response_says_what_github_answered(self):
+        for path, answer, expected in (("/git/trees", _json({}), "/git/trees"),  # a 2xx create with no sha
+                                       ("/git/ref/", (500, b'{"message": "Server Error"}'), "Server Error")):
+            with self.subTest(path=path):
+                stub = StubGitHub()
+                stub._route = lambda method, route, inner=stub._route: (
+                    answer if route.startswith(path) else inner(method, route))
+                with self.assertRaises(ApiWriteError) as raised:
+                    run(stub)
+                self.assertIn(expected, str(raised.exception))
 
     def test_every_reason_reached_here_is_in_the_closed_set(self):
         for reason in (policy.BRANCH_MOVED, policy.TARGET_CHANGED, policy.NO_CHANGE, policy.MIXED_SCOPE,
                        policy.WRONG_REPOSITORY, policy.ALREADY_RESTORED, policy.ALREADY_CORRECTED,
-                       policy.DISABLED):
+                       policy.DISABLED, policy.RESTORE_NOT_ON_BRANCH):
             self.assertIn(reason, policy.REFUSAL_REASONS)
         self.assertEqual(len(set(policy.REFUSAL_REASONS)), len(policy.REFUSAL_REASONS))
 
@@ -218,17 +297,24 @@ class CorrectorTests(unittest.TestCase):
         self.stub = StubGitHub()
         self.writer = writer(self.stub)
         self.clock = lambda: "2026-09-07T21:12:42Z"
+        # The module switch bounds everything below, so a test that needs a correction
+        # to run has to turn it on — exactly as FRP-007b's deployment will.
+        switch = mock.patch.object(gitwriter, "CORRECTIONS_ENABLED", True)
+        switch.start()
+        self.addCleanup(switch.stop)
 
-    def correct(self, *, enabled=True, lock=None):
+    def correct(self, *, enabled=None, lock=contextlib.nullcontext):
         run_one = corrector(self.store, self.writer, lambda _ns, _name: FakeLive(),
                             clock=self.clock, lock=lock, enabled=enabled)
         return run_one(proposal())
 
-    def test_the_switch_is_off_by_default_and_nothing_happens(self):
-        result = corrector(self.store, self.writer, lambda _ns, _name: FakeLive(),
-                           clock=self.clock)(proposal())
-        self.assertEqual(result.verdict.reason, policy.DISABLED)
+    def test_the_switch_narrows_and_neither_a_caller_nor_a_flag_can_widen_it(self):
+        with mock.patch.object(gitwriter, "CORRECTIONS_ENABLED", False):
+            for enabled in (None, True):
+                with self.subTest(enabled=enabled):
+                    self.assertEqual(self.correct(enabled=enabled).verdict.reason, policy.DISABLED)
         self.assertEqual((self.store.writes, self.stub.calls), (0, []))
+        self.assertEqual(self.correct(enabled=False).verdict.reason, policy.DISABLED)
 
     def test_a_second_identical_proposal_is_suppressed_with_zero_git_calls(self):
         first = self.correct()
@@ -247,7 +333,7 @@ class CorrectorTests(unittest.TestCase):
 
     def test_a_completed_write_links_the_old_and_new_revisions(self):
         held = []
-        self.correct(lock=lambda: _Recording(held))
+        self.correct(lock=lambda: _recording(held))
         self.assertEqual(held, ["entered", "exited"])
         marker = self.store.get_document(policy.KIND_CORRECTION, _key(policy.KIND_CORRECTION))
         self.assertEqual(marker.payload["status"], policy.STATUS_IN_PROGRESS)
@@ -258,39 +344,74 @@ class CorrectorTests(unittest.TestCase):
 
     def test_a_refused_proposal_leaves_no_marker_behind(self):
         run_one = corrector(self.store, self.writer, lambda _ns, _name: FakeLive(),
-                            clock=self.clock, enabled=True)
+                            clock=self.clock, lock=contextlib.nullcontext)
         self.assertEqual(run_one(proposal(branch="main")).verdict.reason, policy.WRONG_REF)
         self.assertEqual((self.store.writes, self.stub.calls), (0, []))
 
-    def test_a_crashed_writer_leaves_a_marker_the_reconcile_pass_calls_stale(self):
+    def test_a_refusal_after_the_reads_leaves_nothing_and_the_next_attempt_retries(self):
+        # Storage is create-only, so a marker written before a transient refusal — a
+        # concurrent push, a file that moved — would suppress that proposal for good.
+        self.stub.head = AHEAD_SHA
+        self.stub.blobs[AHEAD_SHA] = "7" * 40  # target-changed
+        self.assertEqual(self.correct().verdict.reason, policy.TARGET_CHANGED)
+        self.assertEqual(self.store.writes, 0)
+        self.stub.blobs[AHEAD_SHA] = BLOB_FAILED
+        self.stub.compares[(FAILED_SHA, AHEAD_SHA)] = ("ahead", ("README.md",))
+        self.assertEqual(self.correct().commit_sha, NEW_COMMIT)
+        # Losing the claim to a concurrent writer costs no tree, commit or ref update.
+        lost = self.writer.correct(proposal(), views(FakeLive()), claim=lambda _verdict: False)
+        self.assertEqual(lost.verdict.reason, policy.ALREADY_CORRECTED)
+
+    def test_a_crashed_writer_is_stale_and_a_finished_one_is_not(self):
         marker = {"status": policy.STATUS_IN_PROGRESS, "started_at": "2026-09-07T21:00:00Z"}
         self.assertFalse(policy.is_stale(marker, "2026-09-07T21:05:00Z"))
         self.assertTrue(policy.is_stale(marker, "2026-09-07T21:15:00Z"))
         self.assertTrue(policy.is_stale({"status": policy.STATUS_IN_PROGRESS}, "2026-09-07T21:00:00Z"))
-        # The fixed clock puts this marker well past the window, so the pass sees it.
+        # A correction that finished writes a result beside its marker and is not a
+        # crash; the marker itself is never updated, storage being create-only.
         self.correct()
-        self.assertEqual(reconcile(self.store, FakeLive()).corrections_stale, 1)
+        with mock.patch("flagger_recovery.decide.now", lambda: "2026-09-07T21:30:00Z"):
+            self.assertEqual(reconcile(self.store, FakeLive()).corrections_stale, 0)
+            self.store.put_document(Document(  # the crash the signal is for: no result
+                kind=policy.KIND_CORRECTION, key=make_key_parts("iot", "other", "abc", policy.KIND_CORRECTION),
+                labels={"flagger-recovery/canary": "iot.other", "flagger-recovery/template-hash": "abc"},
+                payload=marker))
+            self.assertEqual(reconcile(self.store, FakeLive()).corrections_stale, 1)
 
     def test_the_receiver_seam_forwards_the_payload_and_never_raises(self):
         seen = []
         receiver = Receiver(token=TOKEN, store=InMemoryStore(), candidates=FakeCandidates(),
                             corrector=lambda payload: seen.append(payload) or Correction(Refuse("x")))
-        receiver._correct(_StubProposal())
+        self.assertEqual(receiver._correct(_StubProposal()), "")
         self.assertEqual(seen, [{"template_hash": TEMPLATE_HASH}])
         with self.assertLogs("flagger_recovery.server", level="ERROR"):
             Receiver(token=TOKEN, store=InMemoryStore(), candidates=FakeCandidates(),
                      corrector=_boom)._correct(_StubProposal())
 
-class _Recording:
-    def __init__(self, log):
-        self._log = log
+    def test_the_hook_answers_before_the_queued_correction_runs(self):
+        started, release, ran = threading.Event(), threading.Event(), []
 
-    def __enter__(self):
-        self._log.append("entered")
+        def _work(payload):
+            if not payload:
+                raise RuntimeError("the writer fell over")
+            started.set()
+            release.wait(5)
+            ran.append(payload)
 
-    def __exit__(self, *_exc):
-        self._log.append("exited")
-        return False
+        enqueue = queued_corrector(_work)
+        receiver = Receiver(token=TOKEN, store=InMemoryStore(), candidates=FakeCandidates(), corrector=enqueue)
+        with self.assertLogs("flagger_recovery.server", level="ERROR"):
+            enqueue({})  # one worker, in order: a fault on it is logged and survived
+            self.assertEqual(receiver._correct(_StubProposal()), CORRECTION_QUEUED)
+            self.assertTrue(started.wait(5))
+            self.assertEqual(ran, [])  # the hook answered with the writer still in flight
+            release.set()
+
+@contextlib.contextmanager
+def _recording(log):
+    log.append("entered")
+    yield
+    log.append("exited")
 
 class _StubProposal:
     key = "proposal-key"
@@ -302,7 +423,6 @@ def _boom(_payload):
     raise RuntimeError("the writer fell over")
 
 def _key(kind):
-    from flagger_recovery.record import make_key_parts
     return make_key_parts(LIVE["namespace"], LIVE["canary_name"], TEMPLATE_HASH, kind)
 
 if __name__ == "__main__":
