@@ -54,7 +54,10 @@ spec:
               # last promoted pod template does not restart an analysis: Flagger
               # treats a matching hash as a manual rollback and leaves the Canary
               # in whatever phase it was in.
-              PODINFO_UI_MESSAGE: flagger canary pilot
+              # The suffix is what makes this a distinguishing pod template: the
+              # webhook greps for the phrase above, which the suffix keeps, so
+              # the release is benign and a real analysis still runs.
+              PODINFO_UI_MESSAGE: flagger canary pilot e2e1
             # Declared explicitly because there is no service: block to derive
             # them from, and because the PodMonitor addresses this port by
             # name.
