@@ -237,14 +237,14 @@ jobs:
         run: |
           # Get list of changed files based on event type
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+            CHANGED_FILES=$(git diff --name-only --diff-filter=d ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
           elif [ "${{ github.event_name }}" = "push" ]; then
             BEFORE="${{ github.event.before }}"
             if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
               # New branch or force push - check all SOPS files
               CHANGED_FILES=$(find . -name "*.sops.yaml" -o -name "*.sops.yml" | sed 's|^\./||')
             else
-              CHANGED_FILES=$(git diff --name-only "$BEFORE"..${{ github.sha }})
+              CHANGED_FILES=$(git diff --name-only --diff-filter=d "$BEFORE"..${{ github.sha }})
             fi
           else
             # Manual run - check all SOPS files
