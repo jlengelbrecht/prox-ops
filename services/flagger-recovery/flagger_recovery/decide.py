@@ -15,13 +15,16 @@ spec, and the primary is serving the promoted one.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from typing import Any, Callable, Mapping, Optional, Protocol
 
 from .identity import is_manual_rollback
 from .inbox import KIND_EVENT, STATUS_ATTRIBUTION_PENDING, WebhookEvent
 from .proposal import KIND_PROPOSAL, Proposal, build_proposal
-from .record import DeploymentRecord, PutResult, make_key_parts
-from .server import PHASE_CANDIDATE, PHASE_PROMOTED, Decision, Ignore, now, write_promoted_record
+from .record import DeploymentRecord, PutResult, canary_label, make_key_parts
+from .server import PHASE_PROMOTED, Decision, Ignore, now, write_promoted_record
+
+LOG = logging.getLogger("flagger_recovery.decide")
 
 REASON_MANUAL_ROLLBACK = "manual-rollback-restored"
 REASON_NOT_A_TERMINAL_FAILURE = "not-a-terminal-failure"
@@ -59,32 +62,36 @@ def decide(record: Optional[DeploymentRecord], event: WebhookEvent, live: LiveSt
     ``promoted`` the stored ``promoted`` record for the canary's last promoted
     spec — the revision a correction points back to."""
     status = live.canary_status() or {}
-    checksum = event.checksum
 
     # Decided first: at promotion time lastPromotedSpec has just become the
     # candidate's own hash, so the F8 test below would read a fresh success as
     # a manual rollback.
     if event.hook == "post-rollout" and event.phase == "Succeeded":
         return Register()
-    if not checksum:
+    if not event.checksum:
         return Ignore(REASON_NO_CHECKSUM)
-    # F8. A hook about a hash that is already the promoted spec describes a
-    # release that is serving again, whatever status.phase still says.
-    if is_manual_rollback(status, checksum):
-        return Ignore(REASON_MANUAL_ROLLBACK)
     if event.hook != "post-rollout" or event.phase != "Failed":
         return Ignore(REASON_NOT_A_TERMINAL_FAILURE)
-
     if record is None:
         return Refuse(REASON_NO_CANDIDATE_RECORD)
+
+    # From here on the comparisons are all in the template-hash space
+    # (``status.lastAppliedSpec``). ``event.checksum`` is a hash *of* that value
+    # (``record.checksum_label``) and never equals it, so it is only ever used
+    # to find the record — the record is what says which spec failed.
+    template_hash = record.identity.template_hash
+    # F8. A hook about a spec that is already the promoted one describes a
+    # release that is serving again, whatever status.phase still says.
+    if is_manual_rollback(status, template_hash):
+        return Ignore(REASON_MANUAL_ROLLBACK)
     # Superseded: something newer has been applied since, so correcting this
     # failure would revert work that has nothing to do with it.
-    if checksum != record.identity.template_hash or status.get("lastAppliedSpec") != checksum:
+    if status.get("lastAppliedSpec") != template_hash:
         return Ignore(REASON_SUPERSEDED)
     live_hash = live.deployment_template_hash()
     if not live_hash:
         return Refuse(REASON_TARGET_SPEC_UNKNOWN)
-    if live_hash != checksum:
+    if live_hash != template_hash:
         return Ignore(REASON_SUPERSEDED)
 
     last_promoted = status.get("lastPromotedSpec")
@@ -125,6 +132,7 @@ class ReconcileReport:
 
     events_pending: int = 0
     events_resolved: int = 0
+    events_unattributable: int = 0
     proposals_written: int = 0
     proposals_open: int = 0
     proposals_superseded: int = 0
@@ -150,9 +158,26 @@ def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None) -> R
                                              for name in ("hook", "name", "namespace", "phase", "checksum")})
         record = None
         if event.checksum and event.namespace and event.name:
-            record = store.get(make_key_parts(event.namespace, event.name, event.checksum, PHASE_CANDIDATE))
+            record = store.find_candidate(canary_label(event.namespace, event.name), event.checksum)
         if record is None:
-            counts["events_pending"] += 1
+            # A ``pre-rollout`` is retried in band — Flagger redelivers it, the
+            # receiver re-runs resolution and writes the record, and the next
+            # pass finds it here. Any other hook is a one-shot: the rollout it
+            # belongs to is over, nothing will create a candidate record for it
+            # now, and re-checking it every five minutes forever is not
+            # progress. Refuse it out loud instead, once per pass.
+            if event.hook == "pre-rollout":
+                counts["events_pending"] += 1
+            else:
+                counts["events_unattributable"] += 1
+                # %r on phase and checksum, not %s: unlike ``hook`` they are
+                # payload fields the inbox only strips and bounds, so repr's
+                # escaping is what stops a caller forging a log line.
+                LOG.warning(
+                    "reconcile: refusing %s hook, phase %r, checksum %r: no candidate record is "
+                    "indexed under that checksum, and none can be created for a finished rollout",
+                    event.hook, event.phase, event.checksum,
+                )
             continue
         counts["events_resolved"] += 1
         decision = decide(record, event, live, promoted=promoted_record(store, event, live))
@@ -163,7 +188,7 @@ def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None) -> R
         # next failure's ``promoted_record()`` lookup finds nothing and its
         # proposal degrades to ``requires_decision``.
         if decision.kind == "Register":
-            write_promoted_record(store, record.identity, now)
+            write_promoted_record(store, record.identity, now, checksum=record.checksum)
         elif decision.proposal is not None:
             if store.put_document(decision.proposal.to_document()) is PutResult.CREATED:
                 counts["proposals_written"] += 1

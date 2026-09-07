@@ -40,7 +40,7 @@ from .inbox import (
     WebhookEvent,
 )
 from .kube import ApiError, ApiReader, CandidateReader, LiveCanary
-from .record import ConfigMapStore, DeploymentRecord, PutResult, canary_label, make_key, make_key_parts
+from .record import ConfigMapStore, DeploymentRecord, PutResult, canary_label, make_key
 
 LOG = logging.getLogger("flagger_recovery.server")
 
@@ -66,6 +66,9 @@ HEALTH_PATHS = ("/healthz", "/readyz")
 
 _SERVICE_ACCOUNT = pathlib.Path("/var/run/secrets/kubernetes.io/serviceaccount")
 _UNSAFE_LOG_CHARS = re.compile(r"[^\x20-\x7e]")
+# ``http.server.BaseHTTPRequestHandler.handle_one_request`` reports an expired
+# socket timeout with exactly this prefix; see ``_Handler.log_error``.
+_REQUEST_TIMED_OUT = "Request timed out:"
 
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -90,14 +93,18 @@ class Decision(NamedTuple):
 def Ignore(reason: str) -> Decision:  # noqa: N802 - reads as the decide.py constructor it stands in for
     return Decision(kind="Ignore", reason=reason)
 
-def write_promoted_record(store: Any, identity: CandidateIdentity, clock: Callable[[], str] = now) -> DeploymentRecord:
+def write_promoted_record(
+    store: Any, identity: CandidateIdentity, clock: Callable[[], str] = now, *, checksum: str = ""
+) -> DeploymentRecord:
     """Persist the ``promoted`` record for a candidate that has just succeeded
     — the in-band path (``Receiver._promote``) and the reconcile pass (a
     delayed candidate landing after an ``attribution-pending`` promotion
     event) both call this. The key is the identity's template hash and
     ``PHASE_PROMOTED``, and the store is create-only, so whichever of the two
-    gets there first wins and the other is a no-op duplicate."""
-    record = DeploymentRecord(phase=PHASE_PROMOTED, identity=identity, created_at=clock())
+    gets there first wins and the other is a no-op duplicate. ``checksum`` is
+    carried over from the candidate so the promotion says which rollout made
+    it; lookups of a promoted record stay by template hash."""
+    record = DeploymentRecord(phase=PHASE_PROMOTED, identity=identity, created_at=clock(), checksum=checksum)
     store.put(record)
     return record
 
@@ -166,6 +173,20 @@ class Receiver:
             return self._promote(event)
         return self._decide(event)
 
+    def _candidate_for(self, event: WebhookEvent) -> Optional[DeploymentRecord]:
+        """The stored ``candidate`` record for this rollout, found through the
+        checksum index rather than by key.
+
+        Flagger's payload ``checksum`` is a hash of ``status.lastAppliedSpec``,
+        not that value (``record.checksum_label``), so it cannot be turned into
+        a record key. Only ``_register`` ever sees both hashes at once, and it
+        stored the checksum on the record for exactly this lookup. Resolving
+        the identity live here instead would attribute a late hook to whatever
+        the canary has applied *now*, which for a superseded revision is the
+        wrong candidate — NFR4 forbids that, so the answer is ``None`` and an
+        ``attribution-pending`` event."""
+        return self._store.find_candidate(canary_label(event.namespace, event.name), event.checksum)
+
     def _decide(self, event: WebhookEvent) -> tuple[int, dict[str, Any]]:
         """Everything not already handled above: a ``post-rollout`` that is
         not ``Succeeded`` (chiefly ``Failed``, FRP-006a's AC2), and every plain
@@ -178,8 +199,7 @@ class Receiver:
         a failed proposal write must reach the handler's 500 and leave the
         event retryable. The proposal's key is the candidate identity, so a
         repeated or delayed ``Failed`` hook creates nothing."""
-        key = make_key_parts(event.namespace, event.name, event.checksum, PHASE_CANDIDATE) if event.checksum else ""
-        record = self._store.get(key) if key else None
+        record = self._candidate_for(event)
         decision = self._decider(record, event)
         if decision.proposal is not None:
             self._store.put_document(decision.proposal.to_document())
@@ -202,8 +222,14 @@ class Receiver:
             identity = resolve(**self._candidates.read(event.namespace, event.name))
         except (AttributionRefused, ApiError, KeyError) as exc:
             return self._pending(event, f"{type(exc).__name__}: {exc}")
+        # The one place both hashes are in hand: the payload's ``checksum`` and
+        # the identity's ``template_hash`` (status.lastAppliedSpec). Persisting
+        # the checksum here is what lets this rollout's later hooks find this
+        # record — nothing downstream can derive one hash from the other.
         result = self._store.put(
-            DeploymentRecord(phase=PHASE_CANDIDATE, identity=identity, created_at=self._clock())
+            DeploymentRecord(
+                phase=PHASE_CANDIDATE, identity=identity, created_at=self._clock(), checksum=event.checksum
+            )
         )
         self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
         return 202, {
@@ -218,11 +244,10 @@ class Receiver:
         away by the time this hook fires. As in ``_register``, the record
         write happens before the inbox is marked seen so a failed write can
         be retried instead of being masked as a duplicate."""
-        key = make_key_parts(event.namespace, event.name, event.checksum, PHASE_CANDIDATE) if event.checksum else ""
-        record = self._store.get(key) if key else None
+        record = self._candidate_for(event)
         if record is None:
-            return self._pending(event, f"no {PHASE_CANDIDATE} record for checksum {event.checksum!r}")
-        promoted = write_promoted_record(self._store, record.identity, self._clock)
+            return self._pending(event, f"no {PHASE_CANDIDATE} record indexed under checksum {event.checksum!r}")
+        promoted = write_promoted_record(self._store, record.identity, self._clock, checksum=record.checksum)
         self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
         return 202, {
             "result": "Promoted",
@@ -298,6 +323,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         # The default logs the raw request line to stderr, which lets a caller
         # inject newlines into the log. Log a sanitised, bounded line instead.
         LOG.info("%s", _UNSAFE_LOG_CHARS.sub("?", (fmt % args))[:512])
+
+    def log_error(self, fmt: str, *args: Any) -> None:
+        # Flagger holds the connection open after a hook's response rather than
+        # closing it, so ``timeout`` expires ~15 s later on every single hook
+        # and ``handle_one_request`` reports it through here. That is the
+        # timeout doing its job, not an error: dropping it to DEBUG keeps the
+        # log readable without shortening the window a slow hook gets.
+        if fmt.startswith(_REQUEST_TIMED_OUT):
+            LOG.debug("%s", _UNSAFE_LOG_CHARS.sub("?", (fmt % args))[:512])
+            return
+        self.log_message(fmt, *args)
 
 class ReceiverServer(http.server.ThreadingHTTPServer):
     daemon_threads = True

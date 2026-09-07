@@ -78,9 +78,13 @@ def _metadata(payload: Mapping[str, Any]) -> dict[str, str]:
 
 @dataclasses.dataclass(frozen=True)
 class WebhookEvent:
-    """One Flagger webhook call. ``checksum`` is the Canary's
-    ``status.lastAppliedSpec`` — the candidate's pod-template hash, which is
-    what ties an event to a ``DeploymentRecord``."""
+    """One Flagger webhook call. ``checksum`` is *not* the Canary's
+    ``status.lastAppliedSpec``: Flagger fills it with
+    ``ComputeHash({TrackedConfigs, LastAppliedSpec})`` (``canaryChecksum`` in
+    ``pkg/controller/webhook.go``, v1.45.0), so it is a hash of that value and
+    never equal to it. It ties an event to a ``DeploymentRecord`` only through
+    the checksum the record stored at pre-rollout — see
+    ``record.checksum_label``."""
 
     hook: str
     name: str

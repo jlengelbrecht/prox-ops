@@ -66,9 +66,9 @@ in constant time.
 durable event. The idempotency key is
 `sha256(namespace/name + checksum + phase + hook)[:32]`, so a redelivery of the
 same hook lands on the same ConfigMap name and the store's `create` reports it
-as a duplicate without writing anything. `checksum` is the Canary's
-`status.lastAppliedSpec` — the candidate's pod-template hash — which is what
-ties an event to a `DeploymentRecord` for the same candidate. The shared token
+as a duplicate without writing anything. `checksum` is the payload's own field
+and **not** `status.lastAppliedSpec` — see "The payload checksum" below for what
+it actually is and how an event is tied to a `DeploymentRecord`. The shared token
 is stripped from `metadata` before the event is stored, and `metadata` values
 are bounded and coerced to strings: nothing in a payload is trusted for
 anything beyond being recorded, and nothing in one is ever executed.
@@ -95,6 +95,57 @@ Label values for an event, all set by `inbox`:
 clamps anything that is not a valid Kubernetes label value to a short, stable
 hash form instead of rejecting the event.
 
+**Records and documents are labelled differently, and one label name lies.**
+Records carry `flagger-recovery/phase`, `flagger-recovery/template-hash`,
+`flagger-recovery/checksum` and no `flagger-recovery/kind` at all; documents
+(events, proposals) carry `flagger-recovery/kind` and no checksum. So
+`-l flagger-recovery/kind` lists only documents. And on a *document*,
+`flagger-recovery/template-hash` holds the payload's `checksum`, while on a
+*record* the same label name holds the real `status.lastAppliedSpec` — never
+equal, so do not join on that label across the two kinds.
+
+```sh
+# every object this service owns
+kubectl get cm -n flagger-system -l app.kubernetes.io/part-of=flagger-recovery
+# records only, and the rollout each one belongs to. Select on the *absence* of
+# a kind: an event's flagger-recovery/phase is the payload's phase, so a
+# phase=candidate selector would also match a hook that reported that phase.
+kubectl get cm -n flagger-system -l 'app.kubernetes.io/part-of=flagger-recovery,!flagger-recovery/kind' \
+  -L flagger-recovery/template-hash,flagger-recovery/checksum
+# events and proposals only
+kubectl get cm -n flagger-system -l flagger-recovery/kind=event
+```
+
+## The payload checksum, and why it is not the template hash
+
+Flagger fills every payload's `Checksum` from `canaryChecksum(canary)` in
+`pkg/controller/webhook.go` (v1.45.0), which is `canary.ComputeHash` over a
+struct *containing* `status.lastAppliedSpec` and the tracked ConfigMap/Secret
+checksums; `status.lastAppliedSpec` is that same `ComputeHash`
+(`pkg/canary/spec.go`, FNV-1a + `rand.SafeEncodeString`) applied to the target's
+pod spec. The payload checksum is therefore a hash *of* `lastAppliedSpec`: the two
+look alike and never compare equal — the pilot's first live rollout sent
+`checksum: 5f5697644f` while its `lastAppliedSpec` was `6d4d7b659`. That is the
+third hash here that looks joinable and is not (see `pod-template-hash` above).
+
+Records stay keyed by `template_hash`, because that is what `is_manual_rollback`,
+the promoted-record lookup and FRP-007's freshness check compare against. The
+bridge is an **index, not the key**: `pre-rollout` is the one moment both values
+are in hand, so it writes the payload checksum onto the candidate record as the
+`flagger-recovery/checksum` label and a `checksum` field in `record.json`. Every
+later hook of that rollout carries the same checksum, so
+`store.find_candidate(canary, checksum)` finds the record by label selector.
+
+Deliberately *not* done: re-resolving the identity live at post-rollout time. A
+late hook for a superseded revision would then attribute to whatever
+`lastAppliedSpec` says now — the wrong candidate, which NFR4 forbids. An
+unresolvable checksum answers `202 AttributionPending` instead, and two records
+sharing a checksum (reachable only if `label_value()` clamps two hostile values
+together) refuse rather than pick one. Records written before this index existed
+have no checksum label and, the store being create-only, can never gain one; the
+reconcile pass counts their events `events_unattributable` with a logged reason
+rather than pending forever, since a finished rollout never re-sends its hooks.
+
 ## The receiver server
 
 `flagger_recovery.server` is a stdlib `http.server` on port 8080, no
@@ -117,9 +168,15 @@ candidate pods yet) is `202 AttributionPending` with a retry hint, never a
 5xx — Flagger halts the rollout on a failed `pre-rollout` webhook, and "no
 pods visible yet" is not a reason to fail somebody's release. A `Succeeded`
 `post-rollout` re-states the identity already recorded at `pre-rollout` as a
-`promoted` record — a stored-record lookup keyed by `namespace`/`name`/
-`checksum`, never a live re-resolve, because by the time this hook fires
-Flagger has already scaled the candidate pods away.
+`promoted` record — found through the checksum index, never a live re-resolve,
+because by the time this hook fires Flagger has already scaled the candidate
+pods away.
+
+Flagger keeps the connection open after a hook's response rather than closing
+it, so the handler's 15 s socket timeout expires on every single hook and
+`http.server` reports it through `log_error`. `_Handler.log_error` logs that one
+condition at DEBUG; every other error still goes through the sanitising
+`log_message` at INFO. The timeout itself is unchanged.
 
 Everything else — a `Failed` `post-rollout`, and every plain `event` hook —
 flows through a `decider` callable injected into `Receiver`. The default
@@ -135,14 +192,17 @@ reads `status.phase` as the success signal. That is F8 again: a revert to the
 last promoted spec runs no analysis and leaves the Canary `Failed` forever, so a
 phase-driven receiver would keep proposing corrections for an already-fixed
 failure. The rules, in order: a `Succeeded` `post-rollout` is `Register` (first,
-because `lastPromotedSpec` has just become the candidate's own hash); a hook
-about a hash already equal to `lastPromotedSpec` is
-`Ignore(manual-rollback-restored)`, via `identity.is_manual_rollback`; anything
-else that is not a `Failed` `post-rollout` is `Ignore(not-a-terminal-failure)`;
-a failure with no stored candidate record is `Refuse(no-candidate-record)`; a
-failed hash that is not still the stored record's, the live `lastAppliedSpec`
-and the hash the target Deployment carries is `Ignore(superseded)`, because
-correcting it would revert unrelated work; a primary not serving
+because `lastPromotedSpec` has just become the candidate's own hash); anything
+that is not a `Failed` `post-rollout` is `Ignore(not-a-terminal-failure)`; a
+failure with no candidate record indexed under its checksum is
+`Refuse(no-candidate-record)`. From there every comparison is in the
+template-hash space, taken from the record the checksum found — the payload
+checksum is only ever the lookup. A record whose `template_hash` already equals
+`lastPromotedSpec` is `Ignore(manual-rollback-restored)`, via
+`identity.is_manual_rollback`; a `template_hash` that is no longer the live
+`lastAppliedSpec` or the hash the target Deployment carries is
+`Ignore(superseded)`, because correcting it would revert unrelated work; a
+primary not serving
 `lastPromotedSpec` is `Refuse(primary-not-serving-promoted)`, and a failing
 functional check `Refuse(functional-check-failing)`. Only then,
 `ProposeCorrection`. `LiveCanary` answers `None` — which refuses — for a hash
@@ -161,7 +221,11 @@ candidate identity, so repeated `Failed` hooks land on the same
 `decide.reconcile(store, live)` runs at startup and every
 `RECONCILE_INTERVAL_SECONDS` (default 300, floor 10, `0` disables the timer),
 deciding `attribution-pending` events whose record has since landed and counting
-proposals open or superseded — derived from live state, never stored.
+proposals open or superseded — derived from live state, never stored. A pending
+event with no record under its checksum splits two ways: a `pre-rollout` counts
+as `events_pending`, because Flagger redelivers it and the in-band retry re-runs
+resolution; anything else counts as `events_unattributable` and is logged with
+its reason, because that rollout is over and no record will ever appear.
 
 ## Layout
 
@@ -169,8 +233,9 @@ proposals open or superseded — derived from live state, never stored.
   `ContainerImage`, `AttributionRefused`, `is_manual_rollback()`, and a
   `python3 -m flagger_recovery.identity` CLI for the read-only smoke below.
 - `flagger_recovery/record.py` — `DeploymentRecord`, `Document`, `make_key()`,
-  `make_key_parts()`, `label_value()`, `RecordStore` protocol, `ConfigMapStore`
-  (stdlib `urllib`), `InMemoryStore`.
+  `make_key_parts()`, `label_value()`, `checksum_label()`, `RecordStore`
+  protocol (including `find_candidate()`), `ConfigMapStore` (stdlib `urllib`),
+  `InMemoryStore`.
 - `flagger_recovery/auth.py` — `load_token()`, `presented_token()`,
   `token_matches()`, `TokenUnavailable`.
 - `flagger_recovery/inbox.py` — `WebhookEvent`, `Inbox`, `MalformedPayload`.
@@ -189,6 +254,15 @@ proposals open or superseded — derived from live state, never stored.
   List shape (`{"items": [...]}`), matching multi-object GETs from the
   cluster API; the single-object fixtures (`canary.json`, `deployment.json`,
   ...) are not wrapped.
+- `tests/fixtures/live-{pre-rollout,post-rollout,candidate-records}.json` —
+  ConfigMaps this receiver itself wrote in `flagger-system` on 2026-09-07, the
+  first two rollouts to reach it with the hooks wired, copied verbatim from
+  `kubectl get cm -n flagger-system -l flagger-recovery/hook=pre-rollout -o json`
+  and the equivalents for `hook=post-rollout` and `phase=candidate` (items
+  sorted by name, `resourceVersion`/`uid` dropped as per-write bookkeeping, and
+  nothing else changed; the shared token never reaches a stored document, so
+  there is none to strip). `tests/test_checksum_bridge.py` replays both
+  rollouts through the receiver from those exact payloads.
 
 ## Running the tests
 

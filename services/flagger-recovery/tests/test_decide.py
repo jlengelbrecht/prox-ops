@@ -8,13 +8,16 @@ from flagger_recovery.identity import resolve
 from flagger_recovery.inbox import KIND_EVENT, STATUS_ATTRIBUTION_PENDING, STATUS_RECEIVED, WebhookEvent
 from flagger_recovery.record import DeploymentRecord, InMemoryStore, PutResult, canary_label, make_key_parts
 from flagger_recovery.server import PHASE_CANDIDATE, PHASE_PROMOTED, Receiver
-from tests.test_server import TOKEN, FakeCandidates, _body
+from tests.test_server import CHECKSUM, TOKEN, FakeCandidates, _body
 
 NAMESPACE = "flagger-pilot"
 CANARY = "podinfo"
 FAILED_HASH = "759f9fb7bd"  # the fixtures' lastAppliedSpec, so FakeCandidates resolves to it
 PROMOTED_HASH = "5b86bd6879"
 OTHER_HASH = "cafed00d99"
+# Every hook below carries the payload checksum, never a template hash: the two
+# are different hash spaces, and the record is what maps one to the other.
+FAILED_CHECKSUM = CHECKSUM
 PROMOTED_SHA = "4e2f0b1a" + "c" * 32
 _SAME = object()  # "whatever the recorded hash is", so a FakeLive names only what it changes
 
@@ -26,8 +29,9 @@ def identity(**changes):
     changes.setdefault("template_hash", FAILED_HASH)
     return dataclasses.replace(BASE, **changes)
 
-def record(*, phase=PHASE_CANDIDATE, **changes):
-    return DeploymentRecord(phase=phase, identity=identity(**changes), created_at="2026-09-07T00:00:00Z")
+def record(*, phase=PHASE_CANDIDATE, checksum=FAILED_CHECKSUM, **changes):
+    return DeploymentRecord(phase=phase, identity=identity(**changes), created_at="2026-09-07T00:00:00Z",
+                            checksum=checksum)
 
 def promoted_identity(**changes):
     return identity(**{"template_hash": PROMOTED_HASH, "source_sha": PROMOTED_SHA, **changes})
@@ -35,7 +39,7 @@ def promoted_identity(**changes):
 def promoted_record(**changes):
     return record(phase=PHASE_PROMOTED, **{"template_hash": PROMOTED_HASH, "source_sha": PROMOTED_SHA, **changes})
 
-def event(*, hook="post-rollout", phase="Failed", checksum=FAILED_HASH):
+def event(*, hook="post-rollout", phase="Failed", checksum=FAILED_CHECKSUM):
     return WebhookEvent(hook=hook, name=CANARY, namespace=NAMESPACE, phase=phase, checksum=checksum, metadata={})
 
 class FakeLive:
@@ -58,11 +62,11 @@ class DecideTests(unittest.TestCase):
     def test_every_branch_that_stops_short_of_a_proposal(self):
         cases = [
             ("no checksum", record(), event(checksum=""), FakeLive(), "Ignore", rules.REASON_NO_CHECKSUM),
-            ("F8 manual rollback restored", record(template_hash=PROMOTED_HASH), event(checksum=PROMOTED_HASH), FakeLive(), "Ignore", rules.REASON_MANUAL_ROLLBACK),
+            ("F8 manual rollback restored", record(template_hash=PROMOTED_HASH), event(), FakeLive(), "Ignore", rules.REASON_MANUAL_ROLLBACK),
             ("a plain event hook", record(), event(hook="event", phase="Progressing"), FakeLive(), "Ignore", rules.REASON_NOT_A_TERMINAL_FAILURE),
             ("neither failed nor succeeded", record(), event(phase="Progressing"), FakeLive(), "Ignore", rules.REASON_NOT_A_TERMINAL_FAILURE),
             ("no candidate record", None, event(), FakeLive(), "Refuse", rules.REASON_NO_CANDIDATE_RECORD),
-            ("the record is for another hash", record(template_hash=OTHER_HASH), event(), FakeLive(), "Ignore", rules.REASON_SUPERSEDED),
+            ("the record is for a spec the canary no longer has applied", record(template_hash=OTHER_HASH), event(), FakeLive(), "Ignore", rules.REASON_SUPERSEDED),
             ("the canary moved on", record(), event(), FakeLive(applied=OTHER_HASH), "Ignore", rules.REASON_SUPERSEDED),
             ("the target's spec is unreadable", record(), event(), FakeLive(target=None), "Refuse", rules.REASON_TARGET_SPEC_UNKNOWN),
             ("the target serves something else", record(), event(), FakeLive(target=OTHER_HASH), "Ignore", rules.REASON_SUPERSEDED),
@@ -221,11 +225,33 @@ class ReconcileEventTests(ReconcileTestCase):
         self.assertFalse(decision.proposal.requires_decision)
         self.assertEqual(decision.proposal.last_promoted_source_sha, FAILED_SHA)
 
-    def test_an_event_still_missing_its_record_stays_pending_and_writes_nothing(self):
-        self.pending()
+    def test_a_pending_pre_rollout_stays_pending_because_the_retry_is_in_band(self):
+        self.pending(hook="pre-rollout", phase="Progressing")
         report = rules.reconcile(self.store, FakeLive(), canary=self.canary)
         self.assertEqual((report.events_pending, report.events_resolved), (1, 0))
+        self.assertEqual(report.events_unattributable, 0)
         self.assertEqual(self.store.writes, 1, "only the pending event itself is stored")
+
+    def test_a_pending_post_rollout_with_no_indexed_record_is_refused_out_loud(self):
+        """The one already in the cluster: it was stored before candidate
+        records carried a checksum, so no lookup will ever find its record and
+        Flagger will not send that hook again. Counting it as pending forever
+        hides that; it is refused with a reason instead."""
+        self.pending(phase="Succeeded")
+        with self.assertLogs("flagger_recovery.decide", level="WARNING") as logs:
+            report = rules.reconcile(self.store, FakeLive(), canary=self.canary)
+        self.assertEqual((report.events_unattributable, report.events_pending, report.events_resolved), (1, 0, 0))
+        self.assertEqual(self.store.writes, 1, "only the pending event itself is stored")
+        self.assertIn(FAILED_CHECKSUM, logs.output[0])
+
+    def test_a_hostile_phase_cannot_forge_a_line_in_that_refusal(self):
+        """``phase`` is only stripped and bounded by the inbox, never clamped."""
+        self.pending(phase="Succeeded\nWARNING:root:forged")
+        with self.assertLogs("flagger_recovery.decide", level="WARNING") as logs:
+            rules.reconcile(self.store, FakeLive(), canary=self.canary)
+        self.assertEqual(len(logs.records), 1)
+        self.assertNotIn("\n", logs.output[0])
+        self.assertIn("forged", logs.output[0], "escaped, not dropped")
 
     def test_a_settled_event_is_never_re_evaluated(self):
         self.store.put_document(event().to_document(status=STATUS_RECEIVED, received_at="2026-09-07T00:00:00Z"))
