@@ -1,0 +1,208 @@
+import json
+import unittest
+import urllib.parse
+from pathlib import Path
+
+from flagger_recovery.identity import CandidateIdentity, ContainerImage
+from flagger_recovery.record import (
+    ConfigMapStore,
+    DeploymentRecord,
+    InMemoryStore,
+    PutResult,
+    canary_label,
+    make_key,
+)
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+def _identity(**overrides) -> CandidateIdentity:
+    fields = dict(
+        namespace="flagger-pilot",
+        canary_name="podinfo",
+        deployment_uid="556b57bc-ee18-45bb-8d8d-9ccfb483e07d",
+        template_hash="5b86bd6879",
+        images=(
+            ContainerImage(
+                name="app",
+                repository="ghcr.io/stefanprodan/podinfo",
+                tag="6.15.0",
+                digest="ghcr.io/stefanprodan/podinfo@sha256:" + "e" * 64,
+            ),
+        ),
+        chart_name="app-template",
+        chart_version="4.4.0",
+        oci_digest="sha256:" + "0" * 64,
+        source_branch="flagger-pilot",
+        source_sha="9" * 40,
+        last_promoted_spec="759f9fb7bd",
+        is_promoted=False,
+        pr_number=None,
+        sources={"namespace": "Canary.metadata.namespace"},
+    )
+    fields.update(overrides)
+    return CandidateIdentity(**fields)
+
+class FakeTransport:
+    """A namespaced ConfigMap store keyed by name, logging every request so
+    tests can assert exact shapes. Raises on anything but GET or POST."""
+
+    def __init__(self) -> None:
+        self.by_namespace: dict[str, dict[str, dict]] = {}
+        self.requests: list[tuple[str, str]] = []
+
+    def request(self, method, url, *, headers, body, ca_file, timeout):
+        self.requests.append((method, url))
+        if method not in ("GET", "POST"):
+            raise AssertionError(f"unexpected HTTP method {method} for a record store")
+
+        parsed = urllib.parse.urlparse(url)
+        parts = parsed.path.split("/")
+        # /api/v1/namespaces/<ns>/configmaps[/<name>]
+        namespace = parts[4]
+        store = self.by_namespace.setdefault(namespace, {})
+
+        if method == "POST":
+            configmap = json.loads(body)
+            name = configmap["metadata"]["name"]
+            if name in store:
+                return 409, json.dumps({"reason": "AlreadyExists"}).encode()
+            store[name] = configmap
+            return 201, json.dumps(configmap).encode()
+
+        if len(parts) >= 7 and parts[6]:
+            name = parts[6]
+            if name not in store:
+                return 404, b"{}"
+            return 200, json.dumps(store[name]).encode()
+
+        query = urllib.parse.parse_qs(parsed.query)
+        selector = query.get("labelSelector", [""])[0]
+        items = list(store.values())
+        if selector:
+            key, _, value = selector.partition("=")
+            items = [item for item in items if item["metadata"]["labels"].get(key) == value]
+        return 200, json.dumps({"items": items}).encode()
+
+class MakeKeyTests(unittest.TestCase):
+    def test_deterministic_and_32_hex_chars(self):
+        identity = _identity()
+        key_a = make_key(identity, "Failed")
+        key_b = make_key(identity, "Failed")
+        self.assertEqual(key_a, key_b)
+        self.assertEqual(len(key_a), 32)
+        int(key_a, 16)  # raises if not hex
+
+    def test_changes_with_template_hash(self):
+        identity_a = _identity(template_hash="aaaaaaaaaa")
+        identity_b = _identity(template_hash="bbbbbbbbbb")
+        self.assertNotEqual(make_key(identity_a, "Failed"), make_key(identity_b, "Failed"))
+
+    def test_changes_with_phase(self):
+        identity = _identity()
+        self.assertNotEqual(make_key(identity, "Failed"), make_key(identity, "Succeeded"))
+
+    def test_unaffected_by_image_tag_or_timestamp(self):
+        identity_a = _identity(
+            images=(ContainerImage(name="app", repository="r", tag="1.0", digest="r@sha256:" + "a" * 64),)
+        )
+        identity_b = _identity(
+            images=(ContainerImage(name="app", repository="r", tag="2.0", digest="r@sha256:" + "a" * 64),)
+        )
+        self.assertEqual(make_key(identity_a, "Failed"), make_key(identity_b, "Failed"))
+
+class DeploymentRecordRoundTripTests(unittest.TestCase):
+    def test_to_configmap_from_configmap_round_trip(self):
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        configmap = record.to_configmap()
+        restored = DeploymentRecord.from_configmap(configmap)
+        self.assertEqual(record, restored)
+
+    def test_configmap_labels(self):
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        labels = record.to_configmap()["metadata"]["labels"]
+        self.assertEqual(labels["app.kubernetes.io/part-of"], "flagger-recovery")
+        self.assertEqual(labels["flagger-recovery/canary"], canary_label("flagger-pilot", "podinfo"))
+        self.assertEqual(labels["flagger-recovery/phase"], "Failed")
+        self.assertEqual(labels["flagger-recovery/template-hash"], "5b86bd6879")
+
+class ConfigMapStoreTests(unittest.TestCase):
+    def _store(self, transport):
+        return ConfigMapStore("http://127.0.0.1:8001", transport=transport)
+
+    def test_put_creates_then_duplicate_without_read_modify_write(self):
+        transport = FakeTransport()
+        store = self._store(transport)
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+
+        self.assertEqual(store.put(record), PutResult.CREATED)
+        self.assertEqual(store.put(record), PutResult.DUPLICATE)
+
+        self.assertEqual(transport.requests, [("POST", transport.requests[0][1]), ("POST", transport.requests[1][1])])
+        self.assertTrue(transport.requests[0][1].endswith("/api/v1/namespaces/flagger-system/configmaps"))
+
+    def test_get_by_name(self):
+        transport = FakeTransport()
+        store = self._store(transport)
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        store.put(record)
+
+        key = make_key(record.identity, record.phase)
+        fetched = store.get(key)
+        self.assertEqual(fetched, record)
+        self.assertIn(("GET", f"http://127.0.0.1:8001/api/v1/namespaces/flagger-system/configmaps/flagger-recovery-{key}"), transport.requests)
+
+    def test_get_missing_returns_none(self):
+        store = self._store(FakeTransport())
+        self.assertIsNone(store.get("0" * 32))
+
+    def test_list_with_label_selector(self):
+        transport = FakeTransport()
+        store = self._store(transport)
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        store.put(record)
+
+        results = store.list(canary_label("flagger-pilot", "podinfo"))
+        self.assertEqual(results, [record])
+
+        list_requests = [req for req in transport.requests if "labelSelector" in req[1]]
+        self.assertEqual(len(list_requests), 1)
+        self.assertIn("flagger-recovery%2Fcanary", list_requests[0][1])
+
+    def test_no_configmap_request_ever_uses_patch_put_or_delete(self):
+        transport = FakeTransport()
+        store = self._store(transport)
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        store.put(record)
+        store.put(record)
+        store.get(make_key(record.identity, record.phase))
+        store.list(canary_label("flagger-pilot", "podinfo"))
+
+        methods = {method for method, _ in transport.requests}
+        self.assertEqual(methods, {"POST", "GET"})
+
+    def test_get_after_simulated_restart_finds_the_record(self):
+        transport = FakeTransport()
+        first_process_store = self._store(transport)
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        first_process_store.put(record)
+
+        second_process_store = self._store(transport)  # a fresh store instance, same backing API
+        fetched = second_process_store.get(make_key(record.identity, record.phase))
+        self.assertEqual(fetched, record)
+
+class InMemoryStoreTests(unittest.TestCase):
+    def test_implements_the_same_protocol(self):
+        store = InMemoryStore()
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+
+        self.assertEqual(store.put(record), PutResult.CREATED)
+        self.assertEqual(store.put(record), PutResult.DUPLICATE)
+
+        key = make_key(record.identity, record.phase)
+        self.assertEqual(store.get(key), record)
+        self.assertEqual(store.list(canary_label("flagger-pilot", "podinfo")), [record])
+        self.assertIsNone(store.get("0" * 32))
+        self.assertEqual(store.list("no-such-canary"), [])
+
+if __name__ == "__main__":
+    unittest.main()
