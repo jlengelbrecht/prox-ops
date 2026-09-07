@@ -19,6 +19,7 @@ from flagger_recovery.server import (
     Ignore,
     Receiver,
     build_server,
+    reconcile_interval,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -406,6 +407,18 @@ class HttpTests(unittest.TestCase):
     def test_non_json_body_is_400_over_http(self):
         self.assertEqual(self.request("POST", "/hooks/event", b"not json")[0], 400)
         self.assertEqual(self.store.writes, 0)
+
+class ReconcileIntervalTests(unittest.TestCase):
+    """``nan`` and ``inf`` parse without raising and defeat both ``<= 0`` and
+    ``max()``, and ``Event.wait(nan)`` returns at once — a hot loop."""
+
+    def test_every_env_value_is_disabled_or_a_finite_interval_above_the_floor(self):
+        for raw, expected in (("", 300.0), ("abc", 300.0), ("nan", 300.0), ("inf", 300.0), ("-inf", 300.0),
+                              ("0", 0.0), ("-5", 0.0), ("5", 10.0), ("600", 600.0)):
+            with self.subTest(raw=raw):
+                interval = reconcile_interval({"RECONCILE_INTERVAL_SECONDS": raw})
+                self.assertEqual(interval, expected)
+                self.assertTrue(interval == 0.0 or interval >= 10.0)
 
 class RestartTests(unittest.TestCase):
     def test_a_restarted_receiver_reads_prior_records_and_never_duplicates(self):

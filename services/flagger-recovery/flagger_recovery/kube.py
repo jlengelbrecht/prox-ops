@@ -97,3 +97,76 @@ class CandidateReader:
                 f"/kustomizations/{kustomization_name}"
             ),
         }
+
+def _observed(deployment: Mapping[str, Any]) -> bool:
+    """True when the controller has seen the object's current spec, so Flagger's hash of it is settled."""
+    generation = deployment.get("metadata", {}).get("generation")
+    return generation is None or deployment.get("status", {}).get("observedGeneration") == generation
+
+def _serving(deployment: Mapping[str, Any]) -> bool:
+    """True when a Deployment runs exactly the replicas it wants, all ready.
+    Asked of the primary only: Flagger scales the *target* to zero after every
+    rollout, so "no replicas" is its normal state. ``replicas != spec.replicas``
+    catches a rollout in flight, because the surge runs pods for both specs at
+    once; ``updatedReplicas`` is checked only when reported (``omitempty``)."""
+    status = deployment.get("status", {})
+    wanted = deployment.get("spec", {}).get("replicas", 1)
+    if not _observed(deployment) or status.get("replicas") != wanted:
+        return False
+    updated = status.get("updatedReplicas")
+    return status.get("readyReplicas") == wanted and (updated is None or updated == wanted)
+
+class LiveCanary:
+    """A ``decide.LiveState`` over the live cluster. GET only, and one read per
+    object per instance — a decision is made against a single snapshot, so a
+    new instance is built per event rather than reused. Both hash methods answer
+    in **Flagger's own hash space**; no second hasher produces comparable output
+    (``identity`` explains why the pod-template-hash label does not). What they
+    add over reading ``status`` directly is the serving check — Flagger writes
+    ``lastAppliedSpec`` and ``lastPromotedSpec`` when it *decides* something,
+    and the Deployment behind it may not have caught up — so each answers
+    ``None`` rather than let ``decide`` act on a spec nothing is serving."""
+
+    def __init__(self, api: ApiReader, namespace: str, canary_name: str) -> None:
+        self._api = api
+        self._namespace = urllib.parse.quote(namespace, safe="")
+        self._name = urllib.parse.quote(canary_name, safe="")
+        self._cache: dict[str, Any] = {}
+
+    def _get(self, path: str) -> Any:
+        if path not in self._cache:
+            self._cache[path] = self._api.get(path)
+        return self._cache[path]
+
+    def _canary(self) -> Mapping[str, Any]:
+        return self._get(f"/apis/flagger.app/v1beta1/namespaces/{self._namespace}/canaries/{self._name}")
+
+    def _deployment(self, suffix: str = "") -> Mapping[str, Any]:
+        target = urllib.parse.quote(self._canary()["spec"]["targetRef"]["name"] + suffix, safe="")
+        return self._get(f"/apis/apps/v1/namespaces/{self._namespace}/deployments/{target}")
+
+    def canary_status(self) -> Mapping[str, Any]:
+        return self._canary().get("status", {})
+
+    def deployment_template_hash(self) -> Optional[str]:
+        """The hash of the spec the target Deployment now carries — ``None`` while
+        its controller has not observed it, because Flagger's hash of that spec
+        is then about to change."""
+        if not _observed(self._deployment()):
+            return None
+        return self.canary_status().get("lastAppliedSpec") or None
+
+    def primary_template_hash(self) -> Optional[str]:
+        """The hash of the spec the ``-primary`` Deployment is serving now —
+        ``None`` while it is mid-rollout or degraded, which is exactly when
+        "the primary serves the last promoted spec" is false."""
+        if not _serving(self._deployment("-primary")):
+            return None
+        return self.canary_status().get("lastPromotedSpec") or None
+
+    def functional_check(self) -> Optional[bool]:
+        """``None``: the receiver runs no prober of its own. The apex's
+        semantic check is the Canary's ``functional-check`` rollout webhook,
+        which runs on the loadtester during an analysis and has no path back
+        here. ``decide`` reads ``None`` as "not consulted", never as a pass."""
+        return None

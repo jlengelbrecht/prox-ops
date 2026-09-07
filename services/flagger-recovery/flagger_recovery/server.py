@@ -21,9 +21,11 @@ from __future__ import annotations
 import http.server
 import json
 import logging
+import math
 import os
 import pathlib
 import re
+import threading
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Protocol
@@ -37,13 +39,20 @@ from .inbox import (
     MalformedPayload,
     WebhookEvent,
 )
-from .kube import ApiError, ApiReader, CandidateReader
-from .record import ConfigMapStore, DeploymentRecord, PutResult, make_key, make_key_parts
+from .kube import ApiError, ApiReader, CandidateReader, LiveCanary
+from .record import ConfigMapStore, DeploymentRecord, PutResult, canary_label, make_key, make_key_parts
 
 LOG = logging.getLogger("flagger_recovery.server")
 
 MAX_BODY_BYTES = 64 * 1024
 RETRY_AFTER_SECONDS = 30
+
+# The reconcile pass (FRP-006a AC5) runs at startup and then on this interval.
+# ``0`` disables the timer; anything under the floor is raised to it, so a typo
+# cannot make the pass a hot loop against the API server.
+RECONCILE_INTERVAL_ENV = "RECONCILE_INTERVAL_SECONDS"
+DEFAULT_RECONCILE_INTERVAL = 300.0
+MIN_RECONCILE_INTERVAL = 10.0
 
 PHASE_CANDIDATE = "candidate"
 PHASE_PROMOTED = "promoted"
@@ -69,11 +78,14 @@ class CandidateSource(Protocol):
 
 class Decision(NamedTuple):
     """The result of a decider call. ``kind`` mirrors FRP-006a's ``decide``
-    contract (``Register``, ``Ignore``, ``ProposeCorrection``, ``Refuse``),
-    though the default decider installed here only ever returns ``Ignore``."""
+    contract (``Register``, ``Ignore``, ``ProposeCorrection``, ``Refuse``).
+    ``proposal`` carries a ``proposal.Proposal`` on a ``ProposeCorrection`` and
+    is ``None`` on every other kind; its type is left open so that ``decide``
+    can import this module without this module importing it."""
 
     kind: str
     reason: str = ""
+    proposal: Any = None
 
 def Ignore(reason: str) -> Decision:  # noqa: N802 - reads as the decide.py constructor it stands in for
     return Decision(kind="Ignore", reason=reason)
@@ -148,12 +160,18 @@ class Receiver:
         not ``Succeeded`` (chiefly ``Failed``, FRP-006a's AC2), and every plain
         ``event`` hook. The candidate record is a stored-record lookup, same
         as ``_promote`` — never a live re-resolve. The decider's result is
-        recorded on the accepted event; the default installed here always
-        answers ``Ignore(decider-not-installed)`` until slice 3 injects the
-        real ``decide()``."""
+        recorded on the accepted event; the default answers
+        ``Ignore(decider-not-installed)`` unless ``decide.decider()`` is
+        injected. A decision carrying a proposal stores it before the event is
+        marked seen, for the same reason ``_register`` writes its record first:
+        a failed proposal write must reach the handler's 500 and leave the
+        event retryable. The proposal's key is the candidate identity, so a
+        repeated or delayed ``Failed`` hook creates nothing."""
         key = make_key_parts(event.namespace, event.name, event.checksum, PHASE_CANDIDATE) if event.checksum else ""
         record = self._store.get(key) if key else None
         decision = self._decider(record, event)
+        if decision.proposal is not None:
+            self._store.put_document(decision.proposal.to_document())
         self._inbox.accept(
             event,
             status=STATUS_RECEIVED,
@@ -286,6 +304,42 @@ def build_server(receiver: Receiver, *, host: str = "", port: int = 8080) -> Rec
     in tests and ``port=0`` for an ephemeral port."""
     return ReceiverServer((host, port), receiver)
 
+def reconcile_interval(environ: Optional[Mapping[str, str]] = None) -> float:
+    """The interval in seconds, from ``RECONCILE_INTERVAL_SECONDS``. An unset
+    or unparsable value falls back to the default rather than failing to
+    start; a non-positive one disables the timer."""
+    raw = (os.environ if environ is None else environ).get(RECONCILE_INTERVAL_ENV, "")
+    try:
+        interval = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_RECONCILE_INTERVAL
+    # NaN and infinity parse but defeat every comparison below: ``nan <= 0`` is
+    # False and ``max(nan, floor)`` is nan, which ``Event.wait`` treats as no
+    # wait at all — the floor exists precisely to stop that hot loop.
+    if not math.isfinite(interval):
+        return DEFAULT_RECONCILE_INTERVAL
+    return 0.0 if interval <= 0 else max(interval, MIN_RECONCILE_INTERVAL)
+
+def start_reconcile_loop(pass_fn: Callable[[], Any], interval: float) -> threading.Event:
+    """Run ``pass_fn`` now, then every ``interval`` seconds on a daemon thread.
+    A pass that raises is logged, never fatal — Flagger depends on the in-band
+    path, and the next tick tries again. Returns the stop event."""
+    stop = threading.Event()
+    def _once() -> None:
+        try:
+            LOG.info("reconcile: %s", pass_fn())
+        except Exception:  # noqa: BLE001 - a reconcile bug must not take the receiver down
+            LOG.exception("reconcile pass failed")
+
+    def _loop() -> None:
+        while not stop.wait(interval):
+            _once()
+
+    _once()
+    if interval > 0:
+        threading.Thread(target=_loop, name="flagger-recovery-reconcile", daemon=True).start()
+    return stop
+
 def _main(argv: Optional[list[str]] = None) -> None:
     """In-cluster entry point. Exits rather than serving without a token."""
     import argparse
@@ -295,6 +349,8 @@ def _main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--storage-namespace", default=os.environ.get("STORAGE_NAMESPACE", "flagger-system"))
     parser.add_argument("--kustomization-namespace", default="flagger-system")
     parser.add_argument("--kustomization-name", default="flagger-pilot-app")
+    parser.add_argument("--canary-namespace", default="flagger-pilot", help="the canary the reconcile pass covers")
+    parser.add_argument("--canary-name", default="podinfo")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -306,14 +362,33 @@ def _main(argv: Optional[list[str]] = None) -> None:
     ca_file = str(_SERVICE_ACCOUNT / "ca.crt")
     api_token = (_SERVICE_ACCOUNT / "token").read_text(encoding="utf-8").strip()
 
+    # Imported here, not at module scope: ``decide`` imports this module for
+    # the ``Decision`` contract, so the dependency runs one way everywhere but
+    # this entry point, which is what installs the real decider.
+    from .decide import decider, reconcile
+
+    api = ApiReader(base_url, token=api_token, ca_file=ca_file)
     store = ConfigMapStore(base_url, namespace=args.storage_namespace, token=api_token, ca_file=ca_file)
     candidates = CandidateReader(
-        ApiReader(base_url, token=api_token, ca_file=ca_file),
+        api,
         kustomization_namespace=args.kustomization_namespace,
         kustomization_name=args.kustomization_name,
     )
-    server = build_server(Receiver(token=token, store=store, candidates=candidates), port=args.port)
-    LOG.info("listening on :%d, storing records in %s", args.port, args.storage_namespace)
+    # A fresh reader per event: each caches its own reads, one snapshot per decision.
+    live_for = lambda namespace, name: LiveCanary(api, namespace, name)  # noqa: E731
+    receiver = Receiver(token=token, store=store, candidates=candidates, decider=decider(store, live_for))
+    server = build_server(receiver, port=args.port)
+
+    interval = reconcile_interval()
+    start_reconcile_loop(
+        lambda: reconcile(
+            store, live_for(args.canary_namespace, args.canary_name),
+            canary=canary_label(args.canary_namespace, args.canary_name),
+        ),
+        interval,
+    )
+    LOG.info("listening on :%d, storing records in %s, reconciling %s/%s every %.0fs", args.port,
+             args.storage_namespace, args.canary_namespace, args.canary_name, interval)
     server.serve_forever()
 
 if __name__ == "__main__":
