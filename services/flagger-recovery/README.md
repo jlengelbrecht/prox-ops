@@ -95,6 +95,40 @@ Label values for an event, all set by `inbox`:
 clamps anything that is not a valid Kubernetes label value to a short, stable
 hash form instead of rejecting the event.
 
+## The receiver server
+
+`flagger_recovery.server` is a stdlib `http.server` on port 8080, no
+framework. `Receiver.handle(hook, headers, body)` is the whole decision
+surface — it takes bytes, not a socket, so every response code is
+unit-testable without a listener; `_Handler` is a thin HTTP shim over it.
+
+Routes: `POST /hooks/pre-rollout`, `POST /hooks/post-rollout`,
+`POST /hooks/event`, `GET /healthz`, `GET /readyz`. Every other path is 404,
+and a `GET` on a hook path or a `POST` on a health path is 405. Bodies are
+capped at 64 KiB (`413` before the body is even read, from `Content-Length`)
+and must be a JSON object (`400` otherwise); a missing or wrong token is
+`401` with no state change; every rejection is checked against the store's
+write counter in tests, never just the response code.
+
+`pre-rollout` resolves the candidate identity live through `CandidateSource`
+(`kube.CandidateReader` in production) and stores a `candidate`
+`DeploymentRecord`, per FRP-005's contract; a resolution refusal (no
+candidate pods yet) is `202 AttributionPending` with a retry hint, never a
+5xx — Flagger halts the rollout on a failed `pre-rollout` webhook, and "no
+pods visible yet" is not a reason to fail somebody's release. A `Succeeded`
+`post-rollout` re-states the identity already recorded at `pre-rollout` as a
+`promoted` record — a stored-record lookup keyed by `namespace`/`name`/
+`checksum`, never a live re-resolve, because by the time this hook fires
+Flagger has already scaled the candidate pods away.
+
+Everything else — a `Failed` `post-rollout`, and every plain `event` hook —
+flows through a `decider` callable injected into `Receiver`. The default
+installed here always answers `Ignore("decider-not-installed")`, which is
+recorded as the accepted event's `detail`; the follow-up story's `decide.py`
+(stored candidate record + live Canary/Deployment state + event ->
+`Register`/`Ignore`/`ProposeCorrection`/`Refuse`) plugs in by passing
+`Receiver(decider=decide)` — no route changes.
+
 ## Layout
 
 - `flagger_recovery/identity.py` — `resolve()`, `CandidateIdentity`,
@@ -110,6 +144,9 @@ hash form instead of rejecting the event.
   and `CandidateReader`, which fetches exactly the objects `resolve()` takes so
   a caller can write `resolve(**reader.read(namespace, canary))`. No writes
   live here; `ConfigMapStore` has its own minimal POST/GET.
+- `flagger_recovery/server.py` — `Receiver`, `build_server()`, the `decider`
+  hook (`Decision`, `Ignore()`, `DECIDER_NOT_INSTALLED`), and the in-cluster
+  `_main()` entry point.
 - `tests/fixtures/*.json` — sanitised copies of the live pilot objects
   (domain replaced with `example.invalid`, `managedFields` dropped).
   `replicasets.json` and `pods.json` are the raw `kubectl get ... -o json`
