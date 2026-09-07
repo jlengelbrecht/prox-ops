@@ -1,38 +1,43 @@
-[
-  {
-    "apiVersion": "v1",
-    "kind": "Pod",
-    "metadata": {
-      "name": "podinfo-5b86bd6879-x7q2m",
-      "namespace": "flagger-pilot",
-      "labels": {
-        "app.kubernetes.io/controller": "podinfo",
-        "app.kubernetes.io/instance": "podinfo",
-        "app.kubernetes.io/name": "podinfo",
-        "pod-template-hash": "5b86bd6879"
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "metadata": {},
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "podinfo-675556c6fd-x7q2m",
+        "namespace": "flagger-pilot",
+        "labels": {
+          "app.kubernetes.io/controller": "podinfo",
+          "app.kubernetes.io/instance": "podinfo",
+          "app.kubernetes.io/name": "podinfo",
+          "pod-template-hash": "675556c6fd"
+        },
+        "ownerReferences": [
+          {
+            "apiVersion": "apps/v1",
+            "kind": "ReplicaSet",
+            "name": "podinfo-675556c6fd",
+            "uid": "9e8d7c6b-5a4f-4a3e-9b5a-1f2e3d4c5b6a",
+            "controller": true,
+            "blockOwnerDeletion": true
+          }
+        ]
       },
-      "ownerReferences": [
-        {
-          "apiVersion": "apps/v1",
-          "kind": "ReplicaSet",
-          "name": "podinfo-5b86bd6879",
-          "uid": "8f3a2f1a-6b5a-4a3e-9b5a-1a2b3c4d5e6f",
-          "controller": true,
-          "blockOwnerDeletion": true
-        }
-      ]
-    },
-    "status": {
-      "phase": "Running",
-      "containerStatuses": [
-        {
-          "name": "app",
-          "image": "ghcr.io/stefanprodan/podinfo:6.15.0",
-          "imageID": "ghcr.io/stefanprodan/podinfo@sha256:ec73780a8425f59ea49f5bc8cdff0d598805a224fbaa1f86c67a244f250fa9da",
-          "ready": true,
-          "started": true
-        }
-      ]
+      "status": {
+        "phase": "Running",
+        "containerStatuses": [
+          {
+            "name": "app",
+            "image": "ghcr.io/stefanprodan/podinfo:6.15.0",
+            "imageID": "ghcr.io/stefanprodan/podinfo@sha256:ec73780a8425f59ea49f5bc8cdff0d598805a224fbaa1f86c67a244f250fa9da",
+            "ready": true,
+            "started": true
+          }
+        ]
+      }
     }
-  }
-]
+  ]
+}

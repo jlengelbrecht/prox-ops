@@ -23,6 +23,7 @@ def _identity(**overrides) -> CandidateIdentity:
         canary_name="podinfo",
         deployment_uid="556b57bc-ee18-45bb-8d8d-9ccfb483e07d",
         template_hash="5b86bd6879",
+        replicaset_hash="675556c6fd",
         images=(
             ContainerImage(
                 name="app",

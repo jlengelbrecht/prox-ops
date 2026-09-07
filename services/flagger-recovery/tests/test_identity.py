@@ -7,8 +7,14 @@ from flagger_recovery.identity import AttributionRefused, _parse_tag, is_manual_
 FIXTURES = Path(__file__).parent / "fixtures"
 
 def _load(name: str):
+    """Load a fixture. ``replicasets.json``/``pods.json`` are the raw ``kubectl
+    get ... -o json`` List shape (``{"items": [...]}``, matching what
+    ``kube.ApiReader`` returns for multi-object GETs) — unwrap to the bare
+    list callers expect. Single-object fixtures (canary, deployment, ...)
+    have no ``items`` key and pass through unchanged."""
     with open(FIXTURES / name, encoding="utf-8") as handle:
-        return json.load(handle)
+        data = json.load(handle)
+    return data.get("items", data) if isinstance(data, dict) else data
 
 def _live_objects(**overrides):
     objects = {
@@ -30,7 +36,9 @@ class ResolveHappyPathTests(unittest.TestCase):
         self.assertEqual(identity.namespace, "flagger-pilot")
         self.assertEqual(identity.canary_name, "podinfo")
         self.assertEqual(identity.deployment_uid, "556b57bc-ee18-45bb-8d8d-9ccfb483e07d")
-        self.assertEqual(identity.template_hash, "5b86bd6879")
+        self.assertEqual(identity.template_hash, "759f9fb7bd")
+        self.assertEqual(identity.replicaset_hash, "675556c6fd")
+        self.assertNotEqual(identity.template_hash, identity.replicaset_hash)
         self.assertEqual(len(identity.images), 1)
         image = identity.images[0]
         self.assertEqual(image.name, "app")
@@ -45,7 +53,7 @@ class ResolveHappyPathTests(unittest.TestCase):
         self.assertEqual(identity.oci_digest, "sha256:0fd5a5fdbf95f32758c1cb18b2031dacba7eb6f553abcb5cd7c37b93c7a5bd0d")
         self.assertEqual(identity.source_branch, "flagger-pilot")
         self.assertEqual(identity.source_sha, "99abc217d85ddcf310d1919f691f538c2a6c8082")
-        self.assertEqual(identity.last_promoted_spec, "759f9fb7bd")
+        self.assertEqual(identity.last_promoted_spec, "5b86bd6879")
         self.assertFalse(identity.is_promoted)
         self.assertEqual(identity.pr_number, 1300)
 
@@ -54,6 +62,7 @@ class ResolveHappyPathTests(unittest.TestCase):
             "canary_name",
             "deployment_uid",
             "template_hash",
+            "replicaset_hash",
             "images",
             "chart_name",
             "chart_version",
@@ -75,13 +84,18 @@ class ResolveHappyPathTests(unittest.TestCase):
 
     def test_is_promoted_true_when_hash_equals_last_promoted_spec(self):
         canary = _load("canary.json")
-        canary["status"]["lastAppliedSpec"] = "759f9fb7bd"
-        replicasets = _load("replicasets.json")
-        replicasets[0]["metadata"]["labels"]["pod-template-hash"] = "759f9fb7bd"
-        pods = _load("pods.json")
-        pods[0]["metadata"]["labels"]["pod-template-hash"] = "759f9fb7bd"
-        identity = resolve(**_live_objects(canary=canary, candidate_replicasets=replicasets, candidate_pods=pods))
+        canary["status"]["lastAppliedSpec"] = canary["status"]["lastPromotedSpec"]
+        identity = resolve(**_live_objects(canary=canary))
         self.assertTrue(identity.is_promoted)
+
+    def test_selects_replicaset_by_deployment_revision_not_by_hash(self):
+        # Several old ReplicaSets (revisions 8, 9, 10) sit alongside the current one
+        # (revision 11) under the same Deployment; only the revision match may win, and
+        # its pod-template-hash never equals Flagger's lastAppliedSpec.
+        identity = resolve(**_live_objects())
+        self.assertEqual(identity.template_hash, "759f9fb7bd")
+        self.assertEqual(identity.replicaset_hash, "675556c6fd")
+        self.assertNotEqual(identity.template_hash, identity.replicaset_hash)
 
     def test_dedupes_images_seen_on_multiple_pods(self):
         pods = _load("pods.json")
@@ -110,9 +124,10 @@ class ResolveHappyPathTests(unittest.TestCase):
         replicasets = _load("replicasets.json")
         pods = _load("pods.json")
 
+        old_rs = next(rs for rs in replicasets if rs["metadata"]["name"] == "podinfo-74bf8ddcdd")
         stale_pod = json.loads(json.dumps(pods[0]))
         stale_pod["metadata"]["name"] = "podinfo-74bf8ddcdd-stale"
-        stale_pod["metadata"]["ownerReferences"][0]["uid"] = replicasets[1]["metadata"]["uid"]
+        stale_pod["metadata"]["ownerReferences"][0]["uid"] = old_rs["metadata"]["uid"]
         stale_pod["status"]["containerStatuses"][0]["imageID"] = (
             "ghcr.io/stefanprodan/podinfo@sha256:" + "f" * 64
         )
@@ -144,18 +159,25 @@ class ResolveRefusalTests(unittest.TestCase):
         with self.assertRaises(AttributionRefused):
             resolve(**_live_objects(candidate_pods=pods))
 
-    def test_refuses_with_two_replicasets_sharing_a_hash(self):
+    def test_refuses_with_two_replicasets_sharing_the_current_revision(self):
         replicasets = _load("replicasets.json")
-        duplicate = json.loads(json.dumps(replicasets[0]))
+        candidate = next(rs for rs in replicasets if rs["metadata"]["name"] == "podinfo-675556c6fd")
+        duplicate = json.loads(json.dumps(candidate))
         duplicate["metadata"]["uid"] = "duplicate-rs-uid"
-        duplicate["metadata"]["name"] = "podinfo-5b86bd6879-duplicate"
+        duplicate["metadata"]["name"] = "podinfo-675556c6fd-duplicate"
         with self.assertRaises(AttributionRefused):
             resolve(**_live_objects(candidate_replicasets=replicasets + [duplicate]))
 
-    def test_refuses_when_no_replicaset_has_the_tracked_hash(self):
-        replicasets = [rs for rs in _load("replicasets.json") if rs["metadata"]["name"] != "podinfo-5b86bd6879"]
+    def test_refuses_when_no_replicaset_has_the_current_revision(self):
+        replicasets = [rs for rs in _load("replicasets.json") if rs["metadata"]["name"] != "podinfo-675556c6fd"]
         with self.assertRaises(AttributionRefused):
             resolve(**_live_objects(candidate_replicasets=replicasets))
+
+    def test_refuses_when_deployment_has_no_revision_annotation(self):
+        deployment = _load("deployment.json")
+        del deployment["metadata"]["annotations"]["deployment.kubernetes.io/revision"]
+        with self.assertRaises(AttributionRefused):
+            resolve(**_live_objects(deployment=deployment))
 
     def test_refuses_with_no_last_applied_spec(self):
         canary = _load("canary.json")

@@ -17,14 +17,28 @@ v1.45.0). Recovery automation that waits for `phase == Succeeded` after a
 revert will wait forever, even though the cluster is healthy again.
 
 `flagger_recovery.identity` therefore builds a `CandidateIdentity` once, when
-a candidate is first seen — from the Deployment's pod-template hash, the
-candidate pods' image digests, the HelmRelease chart version, the OCIRepository
-digest, and the Git revision Flux applied — and never re-derives it from
+a candidate is first seen — from the Canary's own tracked hash, the candidate
+pods' image digests, the HelmRelease chart version, the OCIRepository digest,
+and the Git revision Flux applied — and never re-derives it from
 `status.phase`. `is_manual_rollback(canary_status, new_template_hash)` is the
 one helper that reads the phase-is-not-state finding directly: it is `True`
 exactly when the new hash equals `lastPromotedSpec`, which is the signal that
 a revert needs a distinguishing follow-up change before a real analysis will
 run again.
+
+**Two hashers that must never be compared.** `CandidateIdentity.template_hash`
+is `Canary.status.lastAppliedSpec` — Flagger's own hash of the pod template.
+`CandidateIdentity.replicaset_hash` is the selected ReplicaSet's
+`pod-template-hash` label — the Deployment controller's own hash of the same
+template. The two hashers are different algorithms and their outputs never
+coincide, even for the identical template, so the candidate ReplicaSet cannot
+be found by comparing `template_hash` to `pod-template-hash`. `resolve()`
+instead selects the ReplicaSet owned by the Deployment whose
+`deployment.kubernetes.io/revision` annotation equals the Deployment's own —
+refusing if the Deployment lacks that annotation or if zero or more than one
+ReplicaSet matches. `template_hash` remains the identity Flagger tracks (and
+what `is_manual_rollback` compares); `replicaset_hash` is recorded only for
+observability and must never be compared to `template_hash`.
 
 `flagger_recovery.record` persists a `DeploymentRecord` per (canary,
 template-hash, phase) as a ConfigMap in `flagger-system`. The idempotency key
@@ -48,6 +62,10 @@ assume its record was ever stored.
   No writes live here; `ConfigMapStore` has its own minimal POST/GET.
 - `tests/fixtures/*.json` — sanitised copies of the live pilot objects
   (domain replaced with `example.invalid`, `managedFields` dropped).
+  `replicasets.json` and `pods.json` are the raw `kubectl get ... -o json`
+  List shape (`{"items": [...]}`), matching multi-object GETs from the
+  cluster API; the single-object fixtures (`canary.json`, `deployment.json`,
+  ...) are not wrapped.
 
 ## Running the tests
 
