@@ -254,7 +254,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> None:
     import argparse
     import json
 
-    from .kube import ApiReader
+    from .kube import ApiReader, CandidateReader
 
     parser = argparse.ArgumentParser(description=_main.__doc__)
     parser.add_argument("--base-url", required=True, help="e.g. http://127.0.0.1:8001 from kubectl proxy")
@@ -264,29 +264,8 @@ def _main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--ca-file")
     args = parser.parse_args(argv)
 
-    import urllib.parse
-
-    reader = ApiReader(args.base_url, token=args.token, ca_file=args.ca_file)
-    ns, name = urllib.parse.quote(args.namespace, safe=""), urllib.parse.quote(args.canary, safe="")
-    canary = reader.get(f"/apis/flagger.app/v1beta1/namespaces/{ns}/canaries/{name}")
-    deployment = reader.get(f"/apis/apps/v1/namespaces/{ns}/deployments/{canary['spec']['targetRef']['name']}")
-    replicasets = reader.get(f"/apis/apps/v1/namespaces/{ns}/replicasets").get("items", [])
-    pods = reader.get(f"/api/v1/namespaces/{ns}/pods").get("items", [])
-    helmrelease = reader.get(f"/apis/helm.toolkit.fluxcd.io/v2/namespaces/{ns}/helmreleases/{name}")
-    ocirepository = reader.get(f"/apis/source.toolkit.fluxcd.io/v1/namespaces/{ns}/ocirepositories/{name}")
-    kustomization = reader.get(
-        "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flagger-system/kustomizations/flagger-pilot-app"
-    )
-
-    identity = resolve(
-        canary=canary,
-        deployment=deployment,
-        candidate_pods=pods,
-        candidate_replicasets=replicasets,
-        helmrelease=helmrelease,
-        ocirepository=ocirepository,
-        kustomization=kustomization,
-    )
+    reader = CandidateReader(ApiReader(args.base_url, token=args.token, ca_file=args.ca_file))
+    identity = resolve(**reader.read(args.namespace, args.canary))
     print(json.dumps(identity.to_dict(), indent=2, sort_keys=True))
 
 if __name__ == "__main__":

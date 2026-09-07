@@ -22,6 +22,14 @@ from .identity import CandidateIdentity
 
 _NAME_PREFIX = "flagger-recovery-"
 _LABEL_ANNOTATION = "flagger-recovery/canary-full"
+_PART_OF = "flagger-recovery"
+
+# Which labels must match before a 409 on create counts as *our* duplicate
+# rather than someone else's ConfigMap wearing our deterministic name.
+_RECORD_OWNERSHIP = ("app.kubernetes.io/part-of", "flagger-recovery/template-hash", "flagger-recovery/phase")
+_DOCUMENT_OWNERSHIP = ("app.kubernetes.io/part-of", "flagger-recovery/kind")
+
+_KIND_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
 
 # Kubernetes label VALUES: <=63 chars, alphanumeric/./-/_ , must start and end alphanumeric.
 _LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
@@ -64,18 +72,27 @@ class ForeignConfigMap(Exception):
         super().__init__(f"ConfigMap {name!r} exists but is not a flagger-recovery record for this key")
         self.name = name
 
-def canary_label(namespace: str, canary_name: str) -> str:
-    """The ``flagger-recovery/canary`` label value: unique across namespaces.
+_STEM_CHAR_RE = re.compile(r"[A-Za-z0-9._-]")
+
+def label_value(value: str) -> str:
+    """Clamp an arbitrary string to a valid Kubernetes label value.
 
     Kubernetes caps label values at 63 characters and restricts the charset;
     inputs that fit are used verbatim, everything else falls back to a short,
-    stable hash form. ``canary_label_full()`` recovers the original value in
-    that case."""
-    full = f"{namespace}.{canary_name}"
-    if len(full) <= 63 and _LABEL_VALUE_RE.match(full):
-        return full
-    digest = hashlib.sha256(full.encode("utf-8")).hexdigest()[:12]
-    return f"{full[:24]}-{digest}"
+    stable hash form so that untrusted webhook fields can still be indexed.
+    The stem is restricted to ASCII alphanumerics/``-``/``_``/``.`` only:
+    ``str.isalnum()`` accepts Unicode (e.g. "échec"), which would let a
+    non-ASCII stem back into the result and violate ``_LABEL_VALUE_RE``."""
+    if len(value) <= 63 and _LABEL_VALUE_RE.match(value):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    stem = "".join(char for char in value[:24] if _STEM_CHAR_RE.match(char)).strip("-_.")
+    return f"{stem}-{digest}" if stem else digest
+
+def canary_label(namespace: str, canary_name: str) -> str:
+    """The ``flagger-recovery/canary`` label value: unique across namespaces.
+    ``canary_label_full()`` recovers the original when this shortens it."""
+    return label_value(f"{namespace}.{canary_name}")
 
 def canary_label_full(namespace: str, canary_name: str) -> Optional[str]:
     """The full ``namespace.canary_name`` value, or ``None`` when
@@ -86,10 +103,15 @@ def canary_label_full(namespace: str, canary_name: str) -> Optional[str]:
         return None
     return full
 
+def make_key_parts(namespace: str, canary_name: str, template_hash: str, phase: str) -> str:
+    """The record key from its parts, for callers holding a webhook payload
+    (namespace, canary name and ``checksum``) rather than a resolved identity."""
+    material = f"{namespace}/{canary_name}/{template_hash}/{phase}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
 def make_key(identity: CandidateIdentity, phase: str) -> str:
     """A deterministic 32-hex-char key. Changes with template hash or phase only."""
-    material = f"{identity.namespace}/{identity.canary_name}/{identity.template_hash}/{phase}"
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+    return make_key_parts(identity.namespace, identity.canary_name, identity.template_hash, phase)
 
 @dataclasses.dataclass(frozen=True)
 class DeploymentRecord:
@@ -129,10 +151,58 @@ class DeploymentRecord:
             identity=CandidateIdentity.from_dict(payload["identity"]),
         )
 
+@dataclasses.dataclass(frozen=True)
+class Document:
+    """A non-record ConfigMap the receiver owns: an inbox ``event`` or a
+    correction ``proposal``. Same create-only, deterministically named
+    storage as ``DeploymentRecord``, but a free-form JSON payload."""
+
+    kind: str  # "event" | "proposal"
+    key: str  # 32 hex chars, the caller's idempotency key
+    labels: Mapping[str, str]  # merged over the base ownership labels
+    payload: Mapping[str, Any]
+
+    @property
+    def name(self) -> str:
+        return f"{_NAME_PREFIX}{self.kind}-{self.key}"
+
+    def to_configmap(self, *, storage_namespace: str = "flagger-system") -> dict[str, Any]:
+        if not _KIND_RE.match(self.kind):
+            raise ValueError(f"invalid document kind: {self.kind!r}")
+        if not _KEY_RE.match(self.key):
+            raise ValueError(f"invalid document key: {self.key!r}")
+        labels = {}
+        for name, value in self.labels.items():
+            if not _LABEL_VALUE_RE.match(value):
+                raise ValueError(f"label {name!r} has an invalid value: {value!r}")
+            labels[name] = value
+        # The ownership labels are set last so a caller cannot override them.
+        labels["app.kubernetes.io/part-of"] = _PART_OF
+        labels["flagger-recovery/kind"] = self.kind
+        return {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": self.name, "namespace": storage_namespace, "labels": labels},
+            "data": {"document.json": json.dumps(self.payload, sort_keys=True)},
+        }
+
+    @classmethod
+    def from_configmap(cls, configmap: Mapping[str, Any]) -> "Document":
+        labels = dict(configmap["metadata"].get("labels") or {})
+        return cls(
+            kind=labels.get("flagger-recovery/kind", ""),
+            key=configmap["metadata"]["name"].rsplit("-", 1)[-1],
+            labels=labels,
+            payload=json.loads(configmap["data"]["document.json"]),
+        )
+
 class RecordStore(Protocol):
     def put(self, record: DeploymentRecord) -> PutResult: ...
     def get(self, key: str) -> Optional[DeploymentRecord]: ...
     def list(self, canary: str) -> Sequence[DeploymentRecord]: ...
+    def put_document(self, document: Document) -> PutResult: ...
+    def get_document(self, kind: str, key: str) -> Optional[Document]: ...
+    def list_documents(self, kind: str, *, canary: Optional[str] = None) -> Sequence[Document]: ...
 
 class Transport(Protocol):
     def request(
@@ -184,7 +254,15 @@ class ConfigMapStore:
         self._transport = transport or _UrllibTransport()
 
     def put(self, record: DeploymentRecord) -> PutResult:
-        configmap = record.to_configmap(storage_namespace=self._namespace)
+        return self._create(record.to_configmap(storage_namespace=self._namespace), _RECORD_OWNERSHIP)
+
+    def put_document(self, document: Document) -> PutResult:
+        return self._create(document.to_configmap(storage_namespace=self._namespace), _DOCUMENT_OWNERSHIP)
+
+    def _create(self, configmap: Mapping[str, Any], ownership: Sequence[str]) -> PutResult:
+        """The one write in this package: a ConfigMap ``create``, never a
+        PATCH, PUT or DELETE. A 409 only proves the name is taken, not that
+        the contents match, so a follow-up GET checks ``ownership`` labels."""
         name = configmap["metadata"]["name"]
         create_url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps"
         create_body = json.dumps(configmap).encode("utf-8")
@@ -195,10 +273,7 @@ class ConfigMapStore:
         if status != 409:
             raise ApiWriteError("POST", create_url, status, body)
 
-        # A 409 only proves the name is taken, not that the contents match:
-        # GET the existing ConfigMap and check its ownership labels. A match
-        # reports PutResult.DUPLICATE; a mismatch raises ForeignConfigMap.
-        get_url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{name}"
+        get_url = f"{create_url}/{name}"
         status, body = self._request("GET", get_url, None)
         if status == 404:
             # Deleted between our failed create and this check. Retry once;
@@ -215,33 +290,52 @@ class ConfigMapStore:
 
         existing_labels = json.loads(body).get("metadata", {}).get("labels", {})
         wanted_labels = configmap["metadata"]["labels"]
-        if (
-            existing_labels.get("app.kubernetes.io/part-of") == "flagger-recovery"
-            and existing_labels.get("flagger-recovery/template-hash") == wanted_labels["flagger-recovery/template-hash"]
-            and existing_labels.get("flagger-recovery/phase") == wanted_labels["flagger-recovery/phase"]
-        ):
+        if all(existing_labels.get(label) == wanted_labels[label] for label in ownership):
             return PutResult.DUPLICATE
         raise ForeignConfigMap(name)
 
     def get(self, key: str) -> Optional[DeploymentRecord]:
         if not _KEY_RE.match(key):
             raise ValueError(f"invalid record key: {key!r}")
-        url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{_NAME_PREFIX}{key}"
+        body = self._get_configmap(f"{_NAME_PREFIX}{key}")
+        return None if body is None else DeploymentRecord.from_configmap(body)
+
+    def get_document(self, kind: str, key: str) -> Optional[Document]:
+        if not _KIND_RE.match(kind):
+            raise ValueError(f"invalid document kind: {kind!r}")
+        if not _KEY_RE.match(key):
+            raise ValueError(f"invalid document key: {key!r}")
+        body = self._get_configmap(f"{_NAME_PREFIX}{kind}-{key}")
+        return None if body is None else Document.from_configmap(body)
+
+    def list(self, canary: str) -> Sequence[DeploymentRecord]:
+        return [DeploymentRecord.from_configmap(item) for item in self._list({"flagger-recovery/canary": canary})]
+
+    def list_documents(self, kind: str, *, canary: Optional[str] = None) -> Sequence[Document]:
+        if not _KIND_RE.match(kind):
+            raise ValueError(f"invalid document kind: {kind!r}")
+        selectors = {"flagger-recovery/kind": kind}
+        if canary is not None:
+            selectors["flagger-recovery/canary"] = canary
+        return [Document.from_configmap(item) for item in self._list(selectors)]
+
+    def _get_configmap(self, name: str) -> Optional[Mapping[str, Any]]:
+        url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{name}"
         status, body = self._request("GET", url, None)
         if status == 404:
             return None
         if status != 200:
             raise ApiWriteError("GET", url, status, body)
-        return DeploymentRecord.from_configmap(json.loads(body))
+        return json.loads(body)
 
-    def list(self, canary: str) -> Sequence[DeploymentRecord]:
-        selector = urllib.parse.urlencode({"labelSelector": f"flagger-recovery/canary={canary}"})
-        url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps?{selector}"
+    def _list(self, selectors: Mapping[str, str]) -> Sequence[Mapping[str, Any]]:
+        selector = ",".join(f"{label}={value}" for label, value in sorted(selectors.items()))
+        query = urllib.parse.urlencode({"labelSelector": selector})
+        url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps?{query}"
         status, body = self._request("GET", url, None)
         if status != 200:
             raise ApiWriteError("GET", url, status, body)
-        items = json.loads(body).get("items", [])
-        return [DeploymentRecord.from_configmap(item) for item in items]
+        return json.loads(body).get("items", [])
 
     def _request(self, method: str, url: str, body: Optional[bytes]) -> tuple[int, bytes]:
         headers = {"Accept": "application/json"}
@@ -260,6 +354,27 @@ class InMemoryStore:
     def __init__(self) -> None:
         self._by_key: dict[str, DeploymentRecord] = {}
         self._by_canary: dict[str, list[str]] = {}
+        self._documents: dict[tuple[str, str], Document] = {}
+        self.writes = 0  # every accepted create, so tests can assert "nothing was written"
+
+    def put_document(self, document: Document) -> PutResult:
+        document.to_configmap()  # same validation the real store applies
+        if (document.kind, document.key) in self._documents:
+            return PutResult.DUPLICATE
+        self._documents[(document.kind, document.key)] = document
+        self.writes += 1
+        return PutResult.CREATED
+
+    def get_document(self, kind: str, key: str) -> Optional[Document]:
+        return self._documents.get((kind, key))
+
+    def list_documents(self, kind: str, *, canary: Optional[str] = None) -> Sequence[Document]:
+        return [
+            document
+            for (document_kind, _), document in sorted(self._documents.items())
+            if document_kind == kind
+            and (canary is None or document.labels.get("flagger-recovery/canary") == canary)
+        ]
 
     def put(self, record: DeploymentRecord) -> PutResult:
         key = make_key(record.identity, record.phase)
@@ -268,6 +383,7 @@ class InMemoryStore:
         self._by_key[key] = record
         label = canary_label(record.identity.namespace, record.identity.canary_name)
         self._by_canary.setdefault(label, []).append(key)
+        self.writes += 1
         return PutResult.CREATED
 
     def get(self, key: str) -> Optional[DeploymentRecord]:

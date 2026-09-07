@@ -53,3 +53,47 @@ class ApiReader:
         except urllib.error.HTTPError as exc:
             raise ApiError(exc.code, url, exc.read().decode("utf-8", "replace")) from exc
         return json.loads(payload)
+
+class CandidateReader:
+    """Fetches exactly the objects ``identity.resolve()`` takes, keyed by its
+    parameter names, so a caller can write ``resolve(**reader.read(ns, name))``.
+    GET only — this class adds no write path."""
+
+    def __init__(
+        self,
+        api: ApiReader,
+        *,
+        kustomization_namespace: str = "flagger-system",
+        kustomization_name: str = "flagger-pilot-app",
+    ) -> None:
+        self._api = api
+        self._kustomization_namespace = kustomization_namespace
+        self._kustomization_name = kustomization_name
+
+    def read(self, namespace: str, canary_name: str) -> dict[str, Any]:
+        namespace_path = urllib.parse.quote(namespace, safe="")
+        name_path = urllib.parse.quote(canary_name, safe="")
+        canary = self._api.get(
+            f"/apis/flagger.app/v1beta1/namespaces/{namespace_path}/canaries/{name_path}"
+        )
+        target = urllib.parse.quote(canary["spec"]["targetRef"]["name"], safe="")
+        kustomization_namespace = urllib.parse.quote(self._kustomization_namespace, safe="")
+        kustomization_name = urllib.parse.quote(self._kustomization_name, safe="")
+        return {
+            "canary": canary,
+            "deployment": self._api.get(f"/apis/apps/v1/namespaces/{namespace_path}/deployments/{target}"),
+            "candidate_replicasets": self._api.get(
+                f"/apis/apps/v1/namespaces/{namespace_path}/replicasets"
+            ).get("items", []),
+            "candidate_pods": self._api.get(f"/api/v1/namespaces/{namespace_path}/pods").get("items", []),
+            "helmrelease": self._api.get(
+                f"/apis/helm.toolkit.fluxcd.io/v2/namespaces/{namespace_path}/helmreleases/{name_path}"
+            ),
+            "ocirepository": self._api.get(
+                f"/apis/source.toolkit.fluxcd.io/v1/namespaces/{namespace_path}/ocirepositories/{name_path}"
+            ),
+            "kustomization": self._api.get(
+                f"/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{kustomization_namespace}"
+                f"/kustomizations/{kustomization_name}"
+            ),
+        }

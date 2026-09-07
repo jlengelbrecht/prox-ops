@@ -1,4 +1,5 @@
 import json
+import re
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -12,6 +13,7 @@ from flagger_recovery.record import (
     PutResult,
     canary_label,
     canary_label_full,
+    label_value,
     make_key,
 )
 
@@ -128,6 +130,27 @@ class MakeKeyTests(unittest.TestCase):
             images=(ContainerImage(name="app", repository="r", tag="2.0", digest="r@sha256:" + "a" * 64),)
         )
         self.assertEqual(make_key(identity_a, "Failed"), make_key(identity_b, "Failed"))
+
+class LabelValueTests(unittest.TestCase):
+    _LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
+
+    def test_ascii_value_within_limit_is_used_verbatim(self):
+        self.assertEqual(label_value("Progressing"), "Progressing")
+
+    def test_non_ascii_input_falls_back_to_an_ascii_only_stem(self):
+        # str.isalnum() accepts Unicode ("échec" would pass it), which would
+        # let a non-ASCII stem back into the label value and violate the
+        # Kubernetes label grammar. The stem here must be ASCII-only.
+        value = label_value("échec")
+        self.assertRegex(value, self._LABEL_VALUE_RE)
+        self.assertNotIn("é", value)
+        self.assertEqual(value, label_value("échec"))  # deterministic
+
+    def test_oversized_value_is_clamped_and_deterministic(self):
+        value = label_value("x" * 64)
+        self.assertLessEqual(len(value), 63)
+        self.assertRegex(value, self._LABEL_VALUE_RE)
+        self.assertEqual(value, label_value("x" * 64))
 
 class CanaryLabelTests(unittest.TestCase):
     def test_short_name_is_used_verbatim_with_no_annotation(self):
