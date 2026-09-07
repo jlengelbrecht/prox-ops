@@ -156,6 +156,15 @@ class Inbox:
         remains the authoritative duplicate test."""
         return self._store.get_document(KIND_EVENT, event.key) is not None
 
+    def status(self, event: WebhookEvent) -> Optional[str]:
+        """The status last durably recorded for this exact hook, or ``None``
+        if it was never accepted. ``STATUS_ATTRIBUTION_PENDING`` is not a
+        terminal outcome — the document store is create-only, so it can never
+        be overwritten in place — a caller must treat it as retryable rather
+        than as a finished duplicate."""
+        document = self._store.get_document(KIND_EVENT, event.key)
+        return document.payload.get("status") if document is not None else None
+
     def accept(
         self,
         event: WebhookEvent,
