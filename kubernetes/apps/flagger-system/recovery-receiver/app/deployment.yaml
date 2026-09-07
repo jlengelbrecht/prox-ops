@@ -1,0 +1,125 @@
+---
+# A stock python image with the package mounted in, not an image build. See
+# ./kustomization.yaml for why, and for what makes a code change roll the pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recovery-receiver
+  labels:
+    app.kubernetes.io/name: recovery-receiver
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate. The store is create-only and keyed by the
+  # event, so two receivers racing the same redelivered hook would not corrupt a
+  # record - one of them would just lose the create with a 409. But an overlap
+  # buys nothing either: there is one caller, the hooks are not latency
+  # sensitive, and a brief refusal window is easier to reason about during an
+  # incident than two processes disagreeing about which pods are the candidate.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: recovery-receiver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: recovery-receiver
+    spec:
+      serviceAccountName: recovery-receiver
+      # On, unlike the loadtester's. This process is a Kubernetes API client:
+      # the projected token is how it reads Canary/Deployment/ReplicaSet/Pod
+      # state in flagger-pilot and writes its records here. What that token can
+      # do is the two namespaced Roles and nothing else.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # The token Secret below is mounted 0440; fsGroup is what makes it
+        # readable by this uid, since kubelet writes secret files owned by root.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: receiver
+          image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea # renovate: datasource=docker depName=python
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -m
+            - flagger_recovery.server
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # The package is mounted at /app/flagger_recovery, so /app is what
+            # `python3 -m flagger_recovery.server` needs on the path.
+            - name: PYTHONPATH
+              value: /app
+            # The mount is read-only and the root filesystem is too, so byte
+            # compilation would fail on every import; skip it rather than let
+            # the interpreter try.
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            # auth.load_token() reads this path and refuses to start if it holds
+            # nothing usable, so a missing or empty Secret is a crash loop, never
+            # an unauthenticated endpoint.
+            - name: FLAGGER_PILOT_WEBHOOK_TOKEN_FILE
+              value: /var/run/secrets/flagger-recovery/token
+            - name: STORAGE_NAMESPACE
+              value: flagger-system
+            - name: PORT
+              value: "8080"
+          volumeMounts:
+            - name: code
+              mountPath: /app/flagger_recovery
+              readOnly: true
+            - name: webhook-token
+              mountPath: /var/run/secrets/flagger-recovery
+              readOnly: true
+            # The root filesystem is read-only; give the interpreter somewhere
+            # to put a temporary file if it ever wants one.
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              # No CPU limit: the work is a handful of API calls per rollout and
+              # throttling a pre-rollout hook would stall somebody's release for
+              # no gain. Memory is capped because a leak here is not.
+              memory: 256Mi
+      volumes:
+        - name: code
+          configMap:
+            name: recovery-receiver-code
+        - name: webhook-token
+          secret:
+            secretName: flagger-pilot-webhook-token
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}

@@ -100,6 +100,58 @@ subjects:
     name: flux-flagger-pilot
     namespace: flagger-pilot
 ---
+# --- The recovery receiver, on what it has to read to attribute a rollout ----
+#
+# Strictly read-only, and only the six kinds CandidateReader.read() fetches:
+# the Canary, its target Deployment, every ReplicaSet and Pod in the namespace,
+# and the HelmRelease and OCIRepository the identity is traced back to. The
+# receiver creates nothing here and changes nothing here - its only writes are
+# record ConfigMaps in flagger-system, granted by
+# kubernetes/apps/flagger-system/recovery-receiver/app/rbac.yaml.
+#
+# `list` on pods and replicasets cannot be narrowed to `get`: identity
+# resolution matches the candidate ReplicaSet by pod-template-hash across the
+# namespace, so it has to enumerate. `watch` is absent - every read is a
+# one-shot GET.
+#
+# The subject is a ServiceAccount in flagger-system, so this is the same
+# cross-namespace shape as the two bindings above, with the same property: a
+# pod in flagger-pilot cannot mount it, so pilot-branch content cannot acquire
+# this identity even though its permissions apply here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: recovery-receiver
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["flagger.app"]
+    resources: ["canaries"]
+    verbs: ["get", "list"]
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list"]
+  - apiGroups: ["source.toolkit.fluxcd.io"]
+    resources: ["ocirepositories"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: recovery-receiver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: recovery-receiver
+subjects:
+  - kind: ServiceAccount
+    name: recovery-receiver
+    namespace: flagger-system
+---
 # --- Flagger, on the workloads it manages ----------------------------------
 #
 # rbac.create is false on the chart, so these are the chart's own rules minus
