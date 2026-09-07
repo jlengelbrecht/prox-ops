@@ -20,8 +20,8 @@ from typing import Any, Callable, Mapping, Optional, Protocol
 from .identity import is_manual_rollback
 from .inbox import KIND_EVENT, STATUS_ATTRIBUTION_PENDING, WebhookEvent
 from .proposal import KIND_PROPOSAL, Proposal, build_proposal
-from .record import DeploymentRecord, make_key_parts
-from .server import PHASE_CANDIDATE, PHASE_PROMOTED, Decision, Ignore
+from .record import DeploymentRecord, PutResult, make_key_parts
+from .server import PHASE_CANDIDATE, PHASE_PROMOTED, Decision, Ignore, now, write_promoted_record
 
 REASON_MANUAL_ROLLBACK = "manual-rollback-restored"
 REASON_NOT_A_TERMINAL_FAILURE = "not-a-terminal-failure"
@@ -156,9 +156,17 @@ def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None) -> R
             continue
         counts["events_resolved"] += 1
         decision = decide(record, event, live, promoted=promoted_record(store, event, live))
-        if decision.proposal is not None:
-            store.put_document(decision.proposal.to_document())
-            counts["proposals_written"] += 1
+        # A ``Register`` here is a delayed promotion: the candidate record
+        # only just landed, so nothing wrote the ``promoted`` record when the
+        # event first arrived (canary-matrix.md F8's promotion path is the
+        # only other writer, and it never saw this event). Without this, the
+        # next failure's ``promoted_record()`` lookup finds nothing and its
+        # proposal degrades to ``requires_decision``.
+        if decision.kind == "Register":
+            write_promoted_record(store, record.identity, now)
+        elif decision.proposal is not None:
+            if store.put_document(decision.proposal.to_document()) is PutResult.CREATED:
+                counts["proposals_written"] += 1
 
     for document in store.list_documents(KIND_PROPOSAL, canary=canary):
         failed_hash = str(document.payload.get("template_hash") or "")

@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Protocol
 
 from . import auth
-from .identity import AttributionRefused, resolve
+from .identity import AttributionRefused, CandidateIdentity, resolve
 from .inbox import (
     STATUS_ATTRIBUTION_PENDING,
     STATUS_RECEIVED,
@@ -67,7 +67,7 @@ HEALTH_PATHS = ("/healthz", "/readyz")
 _SERVICE_ACCOUNT = pathlib.Path("/var/run/secrets/kubernetes.io/serviceaccount")
 _UNSAFE_LOG_CHARS = re.compile(r"[^\x20-\x7e]")
 
-def _now() -> str:
+def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 class CandidateSource(Protocol):
@@ -90,6 +90,17 @@ class Decision(NamedTuple):
 def Ignore(reason: str) -> Decision:  # noqa: N802 - reads as the decide.py constructor it stands in for
     return Decision(kind="Ignore", reason=reason)
 
+def write_promoted_record(store: Any, identity: CandidateIdentity, clock: Callable[[], str] = now) -> DeploymentRecord:
+    """Persist the ``promoted`` record for a candidate that has just succeeded
+    — the in-band path (``Receiver._promote``) and the reconcile pass (a
+    delayed candidate landing after an ``attribution-pending`` promotion
+    event) both call this. The key is the identity's template hash and
+    ``PHASE_PROMOTED``, and the store is create-only, so whichever of the two
+    gets there first wins and the other is a no-op duplicate."""
+    record = DeploymentRecord(phase=PHASE_PROMOTED, identity=identity, created_at=clock())
+    store.put(record)
+    return record
+
 DECIDER_NOT_INSTALLED = "decider-not-installed"
 
 # ``decide.py`` (slice 3) is the real implementation of this signature: given
@@ -110,7 +121,7 @@ class Receiver:
         token: str,
         store: Any,
         candidates: CandidateSource,
-        clock: Any = _now,
+        clock: Any = now,
         decider: Decider = _default_decider,
     ) -> None:
         if not token:
@@ -211,14 +222,12 @@ class Receiver:
         record = self._store.get(key) if key else None
         if record is None:
             return self._pending(event, f"no {PHASE_CANDIDATE} record for checksum {event.checksum!r}")
-        self._store.put(
-            DeploymentRecord(phase=PHASE_PROMOTED, identity=record.identity, created_at=self._clock())
-        )
+        promoted = write_promoted_record(self._store, record.identity, self._clock)
         self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
         return 202, {
             "result": "Promoted",
             "event": event.key,
-            "record": make_key(record.identity, PHASE_PROMOTED),
+            "record": make_key(promoted.identity, PHASE_PROMOTED),
         }
 
     def _pending(self, event: WebhookEvent, detail: str) -> tuple[int, dict[str, Any]]:
@@ -321,9 +330,12 @@ def reconcile_interval(environ: Optional[Mapping[str, str]] = None) -> float:
     return 0.0 if interval <= 0 else max(interval, MIN_RECONCILE_INTERVAL)
 
 def start_reconcile_loop(pass_fn: Callable[[], Any], interval: float) -> threading.Event:
-    """Run ``pass_fn`` now, then every ``interval`` seconds on a daemon thread.
-    A pass that raises is logged, never fatal — Flagger depends on the in-band
-    path, and the next tick tries again. Returns the stop event."""
+    """Run ``pass_fn`` once, then every ``interval`` seconds if positive — all
+    on one daemon thread, so this returns before the first pass finishes and
+    ``_main()`` can bind the HTTP server without waiting on API-server
+    latency. A pass that raises is logged, never fatal — Flagger depends on
+    the in-band path, and the next tick (or the next process start, if the
+    timer is disabled) tries again. Returns the stop event."""
     stop = threading.Event()
     def _once() -> None:
         try:
@@ -332,13 +344,20 @@ def start_reconcile_loop(pass_fn: Callable[[], Any], interval: float) -> threadi
             LOG.exception("reconcile pass failed")
 
     def _loop() -> None:
-        while not stop.wait(interval):
+        _once()
+        while interval > 0 and not stop.wait(interval):
             _once()
 
-    _once()
-    if interval > 0:
-        threading.Thread(target=_loop, name="flagger-recovery-reconcile", daemon=True).start()
+    threading.Thread(target=_loop, name="flagger-recovery-reconcile", daemon=True).start()
     return stop
+
+def _reconcile_startup_note(canary_namespace: str, canary_name: str, interval: float) -> str:
+    """The reconcile clause of the startup log line. ``interval <= 0`` means
+    the periodic timer is off (only the startup pass runs), which reads very
+    differently from a hot loop and must not be logged as "every 0s"."""
+    if interval <= 0:
+        return "reconcile: startup pass only, periodic timer disabled"
+    return f"reconciling {canary_namespace}/{canary_name} every {interval:.0f}s"
 
 def _main(argv: Optional[list[str]] = None) -> None:
     """In-cluster entry point. Exits rather than serving without a token."""
@@ -387,8 +406,8 @@ def _main(argv: Optional[list[str]] = None) -> None:
         ),
         interval,
     )
-    LOG.info("listening on :%d, storing records in %s, reconciling %s/%s every %.0fs", args.port,
-             args.storage_namespace, args.canary_namespace, args.canary_name, interval)
+    LOG.info("listening on :%d, storing records in %s, %s", args.port, args.storage_namespace,
+             _reconcile_startup_note(args.canary_namespace, args.canary_name, interval))
     server.serve_forever()
 
 if __name__ == "__main__":

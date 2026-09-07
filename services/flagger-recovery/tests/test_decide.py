@@ -189,6 +189,38 @@ class ReconcileEventTests(ReconcileTestCase):
         report = rules.reconcile(self.store, FakeLive(promoted=""), canary=self.canary)
         self.assertEqual((report.events_resolved, report.events_pending), (1, 0))
 
+    def test_a_delayed_candidate_lets_a_pending_promotion_write_its_promoted_record(self):
+        """CodeRabbit on #1304: an event stored ``attribution-pending`` at
+        post-rollout/Succeeded because the candidate record was not there yet
+        must still get its ``promoted`` record written once that record
+        lands, or the next failure's correction degrades to
+        ``requires_decision``."""
+        self.pending(phase="Succeeded")
+        self.store.put(record())
+
+        report = rules.reconcile(self.store, FakeLive(), canary=self.canary)
+        self.assertEqual((report.events_resolved, report.events_pending), (1, 0))
+
+        promoted = self.store.get(make_key_parts(NAMESPACE, CANARY, FAILED_HASH, PHASE_PROMOTED))
+        self.assertIsNotNone(promoted)
+        self.assertEqual(promoted.identity.source_sha, FAILED_SHA)
+
+        writes_after_first = self.store.writes
+        rules.reconcile(self.store, FakeLive(), canary=self.canary)
+        self.assertEqual(self.store.writes, writes_after_first, "a second pass writes nothing")
+
+        next_hash = OTHER_HASH
+        self.store.put(record(template_hash=next_hash, source_sha=PROMOTED_SHA))
+        failure = event(checksum=next_hash)
+        live = FakeLive(applied=next_hash, promoted=FAILED_HASH)
+        decision = rules.decide(
+            self.store.get(make_key_parts(NAMESPACE, CANARY, next_hash, PHASE_CANDIDATE)),
+            failure, live, promoted=rules.promoted_record(self.store, failure, live),
+        )
+        self.assertEqual(decision.kind, "ProposeCorrection")
+        self.assertFalse(decision.proposal.requires_decision)
+        self.assertEqual(decision.proposal.last_promoted_source_sha, FAILED_SHA)
+
     def test_an_event_still_missing_its_record_stays_pending_and_writes_nothing(self):
         self.pending()
         report = rules.reconcile(self.store, FakeLive(), canary=self.canary)
@@ -215,7 +247,7 @@ class ReconcileProposalTests(ReconcileTestCase):
         first = rules.reconcile(self.store, FakeLive(), canary=self.canary)
         writes_after_first = self.store.writes
         second = rules.reconcile(self.store, FakeLive(), canary=self.canary)
-        self.assertEqual((first.proposals_written, second.proposals_written), (1, 1))
+        self.assertEqual((first.proposals_written, second.proposals_written), (1, 0))
         self.assertEqual(self.store.writes, writes_after_first, "it re-decides, but the key is the guard")
         self.assertEqual(len(self.store.list_documents(proposals.KIND_PROPOSAL)), 1)
 

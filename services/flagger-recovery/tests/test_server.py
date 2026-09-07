@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -18,8 +19,10 @@ from flagger_recovery.server import (
     Decision,
     Ignore,
     Receiver,
+    _reconcile_startup_note,
     build_server,
     reconcile_interval,
+    start_reconcile_loop,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -419,6 +422,54 @@ class ReconcileIntervalTests(unittest.TestCase):
                 interval = reconcile_interval({"RECONCILE_INTERVAL_SECONDS": raw})
                 self.assertEqual(interval, expected)
                 self.assertTrue(interval == 0.0 or interval >= 10.0)
+
+class ReconcileLoopTests(unittest.TestCase):
+    def test_start_returns_before_the_first_pass_completes(self):
+        started = threading.Event()
+        release = threading.Event()
+        finished = []
+        def pass_fn():
+            started.set()
+            release.wait(timeout=5)
+            finished.append(1)
+            return "ok"
+
+        stop = start_reconcile_loop(pass_fn, 0.0)
+        self.addCleanup(stop.set)
+        try:
+            self.assertTrue(started.wait(timeout=5), "the pass must start promptly")
+            self.assertEqual(finished, [], "start_reconcile_loop must not block on the pass")
+        finally:
+            release.set()
+
+    def test_the_pass_runs_exactly_once_when_the_timer_is_disabled(self):
+        calls = []
+        done = threading.Event()
+        def pass_fn():
+            calls.append(1)
+            done.set()
+            return "ok"
+
+        stop = start_reconcile_loop(pass_fn, 0.0)
+        self.addCleanup(stop.set)
+        self.assertTrue(done.wait(timeout=5))
+        # A disabled timer must never schedule a second call; give a wrongly
+        # re-armed loop a moment to prove it stayed off before asserting.
+        time.sleep(0.1)
+        self.assertEqual(calls, [1])
+
+class ReconcileStartupNoteTests(unittest.TestCase):
+    def test_a_disabled_timer_reads_as_startup_only(self):
+        self.assertEqual(
+            _reconcile_startup_note("flagger-pilot", "podinfo", 0.0),
+            "reconcile: startup pass only, periodic timer disabled",
+        )
+
+    def test_a_positive_interval_keeps_the_every_n_seconds_wording(self):
+        self.assertEqual(
+            _reconcile_startup_note("flagger-pilot", "podinfo", 300.0),
+            "reconciling flagger-pilot/podinfo every 300s",
+        )
 
 class RestartTests(unittest.TestCase):
     def test_a_restarted_receiver_reads_prior_records_and_never_duplicates(self):
