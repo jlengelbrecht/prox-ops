@@ -51,15 +51,65 @@ record (or that can't be resolved after one retried create) raises
 `ForeignConfigMap` instead, so the caller can log and refuse rather than
 assume its record was ever stored.
 
+## Authentication and event intake
+
+Flagger's webhook definition cannot reference a Secret, so the receiver
+authenticates callers with a shared token that travels in the Canary webhook
+entry's `metadata` map (`flagger_recovery.auth`). `load_token()` reads it from
+a mounted Secret file or the environment and raises `TokenUnavailable` rather
+than returning an empty string — an unconfigured token must never degrade into
+an open endpoint. `presented_token()` prefers an `X-Flagger-Recovery-Token`
+header where the installed Flagger can send one, and `token_matches()` compares
+in constant time.
+
+`flagger_recovery.inbox` turns an authenticated webhook into exactly one
+durable event. The idempotency key is
+`sha256(namespace/name + checksum + phase + hook)[:32]`, so a redelivery of the
+same hook lands on the same ConfigMap name and the store's `create` reports it
+as a duplicate without writing anything. `checksum` is the Canary's
+`status.lastAppliedSpec` — the candidate's pod-template hash — which is what
+ties an event to a `DeploymentRecord` for the same candidate. The shared token
+is stripped from `metadata` before the event is stored, and `metadata` values
+are bounded and coerced to strings: nothing in a payload is trusted for
+anything beyond being recorded, and nothing in one is ever executed.
+
+Records and non-record documents share one storage path. `record.Document` is
+a ConfigMap with a free-form JSON payload, named
+`flagger-recovery-<kind>-<key>` and labelled `flagger-recovery/kind=<kind>`
+(`event` here; `proposal` in the follow-up). Both go through the same
+create-only `ConfigMapStore._create`, which is the one write in this package.
+
+Label values for an event, all set by `inbox`:
+
+| label | value |
+|---|---|
+| `app.kubernetes.io/part-of` | `flagger-recovery` |
+| `flagger-recovery/kind` | `event` |
+| `flagger-recovery/canary` | `<namespace>.<canary>`, clamped by `label_value()` |
+| `flagger-recovery/hook` | `pre-rollout`, `post-rollout` or `event` |
+| `flagger-recovery/phase` | the payload's `phase`, or `none` |
+| `flagger-recovery/status` | `received` or `attribution-pending` |
+| `flagger-recovery/template-hash` | the payload's `checksum`, or `none` |
+
+`phase` and `checksum` come from an untrusted payload, so `label_value()`
+clamps anything that is not a valid Kubernetes label value to a short, stable
+hash form instead of rejecting the event.
+
 ## Layout
 
 - `flagger_recovery/identity.py` — `resolve()`, `CandidateIdentity`,
   `ContainerImage`, `AttributionRefused`, `is_manual_rollback()`, and a
   `python3 -m flagger_recovery.identity` CLI for the read-only smoke below.
-- `flagger_recovery/record.py` — `DeploymentRecord`, `make_key()`,
-  `RecordStore` protocol, `ConfigMapStore` (stdlib `urllib`), `InMemoryStore`.
-- `flagger_recovery/kube.py` — `ApiReader`, a GET-only Kubernetes API client.
-  No writes live here; `ConfigMapStore` has its own minimal POST/GET.
+- `flagger_recovery/record.py` — `DeploymentRecord`, `Document`, `make_key()`,
+  `make_key_parts()`, `label_value()`, `RecordStore` protocol, `ConfigMapStore`
+  (stdlib `urllib`), `InMemoryStore`.
+- `flagger_recovery/auth.py` — `load_token()`, `presented_token()`,
+  `token_matches()`, `TokenUnavailable`.
+- `flagger_recovery/inbox.py` — `WebhookEvent`, `Inbox`, `MalformedPayload`.
+- `flagger_recovery/kube.py` — `ApiReader`, a GET-only Kubernetes API client,
+  and `CandidateReader`, which fetches exactly the objects `resolve()` takes so
+  a caller can write `resolve(**reader.read(namespace, canary))`. No writes
+  live here; `ConfigMapStore` has its own minimal POST/GET.
 - `tests/fixtures/*.json` — sanitised copies of the live pilot objects
   (domain replaced with `example.invalid`, `managedFields` dropped).
   `replicasets.json` and `pods.json` are the raw `kubectl get ... -o json`
