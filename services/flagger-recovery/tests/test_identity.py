@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-from flagger_recovery.identity import AttributionRefused, is_manual_rollback, resolve
+from flagger_recovery.identity import AttributionRefused, _parse_tag, is_manual_rollback, resolve
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -193,6 +193,35 @@ class ResolveRefusalTests(unittest.TestCase):
         pods[0]["status"]["containerStatuses"] = []
         with self.assertRaises(AttributionRefused):
             resolve(**_live_objects(candidate_pods=pods))
+
+class ParseTagTests(unittest.TestCase):
+    def test_plain_tag(self):
+        self.assertEqual(_parse_tag("ghcr.io/stefanprodan/podinfo:6.15.0"), "6.15.0")
+
+    def test_digest_only_reference_has_no_tag(self):
+        self.assertIsNone(
+            _parse_tag("ghcr.io/stefanprodan/podinfo@sha256:" + "a" * 64)
+        )
+
+    def test_tag_and_digest_reference_ignores_digest(self):
+        self.assertEqual(
+            _parse_tag("ghcr.io/stefanprodan/podinfo:6.15.0@sha256:" + "a" * 64),
+            "6.15.0",
+        )
+
+    def test_registry_port_is_not_mistaken_for_a_tag(self):
+        self.assertIsNone(_parse_tag("registry:5000/repo"))
+
+    def test_registry_port_with_tag(self):
+        self.assertEqual(_parse_tag("registry:5000/repo:1.2.3"), "1.2.3")
+
+    def test_registry_port_with_digest_has_no_tag(self):
+        self.assertIsNone(
+            _parse_tag("registry:5000/repo@sha256:" + "b" * 64)
+        )
+
+    def test_no_tag_or_digest(self):
+        self.assertIsNone(_parse_tag("ghcr.io/stefanprodan/podinfo"))
 
 class ManualRollbackTests(unittest.TestCase):
     def test_true_when_new_hash_equals_last_promoted_spec(self):

@@ -15,7 +15,6 @@ import re
 from typing import Any, Mapping, Optional, Sequence
 
 _DIGEST_RE = re.compile(r"^(?:docker-pullable://|docker://)?(?P<repo>[^@]+)@sha256:(?P<hex>[0-9a-f]{64})$")
-_TAG_RE = re.compile(r"^(?P<repo>.+):(?P<tag>[^/:]+)$")
 _REVISION_RE = re.compile(r"^(?P<branch>[^@]+)@sha1:(?P<sha>[0-9a-f]{40})$")
 _PR_RE = re.compile(r"\(#(?P<number>\d+)\)\s*$")
 
@@ -72,8 +71,13 @@ def _parse_image_id(image_id: str) -> Optional[tuple[str, str]]:
     return repo, f"{repo}@sha256:{match.group('hex')}"
 
 def _parse_tag(image: str) -> Optional[str]:
-    match = _TAG_RE.match(image or "")
-    return match.group("tag") if match else None
+    # Strip any "@sha256:<hex>" digest suffix first, then only treat a colon
+    # as a tag separator when it falls after the final "/" — otherwise a
+    # registry port (e.g. "registry:5000/repo") is mistaken for a tag.
+    image_name = (image or "").split("@", 1)[0]
+    colon = image_name.rfind(":")
+    slash = image_name.rfind("/")
+    return image_name[colon + 1 :] if colon > slash else None
 
 def _resolve_images(candidate_pods: Sequence[Mapping[str, Any]]) -> tuple[ContainerImage, ...]:
     seen: dict[tuple[str, str], ContainerImage] = {}

@@ -51,11 +51,19 @@ evidence for this story — see the PR body for its recorded output.
 
 ```bash
 kubectl proxy --port=8001 &
+PROXY_PID=$!
+trap 'kill "$PROXY_PID" 2>/dev/null' EXIT
+until curl -sf http://127.0.0.1:8001/version >/dev/null; do sleep 0.5; done
+
+cd services/flagger-recovery
 python3 -m flagger_recovery.identity --base-url http://127.0.0.1:8001 \
   --namespace flagger-pilot --canary podinfo
-pkill -f 'kubectl proxy'
+
+kill "$PROXY_PID"
 ```
 
-This prints the resolved `CandidateIdentity` as JSON. If `kubectl proxy`
-cannot be started under the session's policy, skip this step — the unit
-tests above are the gate.
+This prints the resolved `CandidateIdentity` as JSON. The `cd` (or
+`PYTHONPATH=services/flagger-recovery` from the repository root) is required
+for `flagger_recovery` to be importable. If `kubectl proxy` cannot be started
+under the session's policy, skip this step — the unit tests above are the
+gate.
