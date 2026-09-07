@@ -127,8 +127,12 @@ def checksum_label(checksum: str) -> Optional[str]:
     return label_value(checksum) if checksum else None
 
 def make_key_parts(namespace: str, canary_name: str, template_hash: str, phase: str) -> str:
-    """The record key from its parts, for callers holding a webhook payload
-    (namespace, canary name and ``checksum``) rather than a resolved identity."""
+    """The record key from its parts, for callers holding a resolved
+    ``template_hash`` (``Canary.status.lastAppliedSpec``) rather than a
+    ``CandidateIdentity``. The key is in the template-hash space; a caller
+    holding only a webhook payload's ``checksum`` cannot build it and must
+    look the record up instead, via ``RecordStore.find_candidate(canary,
+    checksum)``."""
     material = f"{namespace}/{canary_name}/{template_hash}/{phase}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
@@ -345,6 +349,13 @@ class ConfigMapStore:
         existing_labels = json.loads(body).get("metadata", {}).get("labels", {})
         wanted_labels = configmap["metadata"]["labels"]
         if all(existing_labels.get(label) == wanted_labels[label] for label in ownership):
+            # Every accepted hook logs "202 -" whether or not this branch is
+            # taken, so without this line a duplicate write and a real write
+            # are indistinguishable in the log.
+            LOG.info(
+                "configmap %s already exists (kind=%s): collapsed onto the existing document, nothing written",
+                name, wanted_labels.get("flagger-recovery/kind", "record"),
+            )
             return PutResult.DUPLICATE
         raise ForeignConfigMap(name)
 

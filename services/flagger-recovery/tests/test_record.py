@@ -272,6 +272,23 @@ class ConfigMapStoreTests(unittest.TestCase):
         )
         self.assertTrue(transport.requests[0][1].endswith("/api/v1/namespaces/flagger-system/configmaps"))
 
+    def test_put_logs_the_duplicate_so_it_is_distinguishable_from_a_real_write(self):
+        """Every accepted hook logs "202 -" whether or not a write happened;
+        without this line a deduplicated write and a real write look
+        identical in the receiver log (validator finding F16)."""
+        transport = FakeTransport()
+        store = self._store(transport)
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        name = record.to_configmap()["metadata"]["name"]
+
+        store.put(record)
+        with self.assertLogs("flagger_recovery.record", level="INFO") as logs:
+            self.assertEqual(store.put(record), PutResult.DUPLICATE)
+
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn(name, logs.output[0])
+        self.assertIn("kind=record", logs.output[0])
+
     def test_find_candidate_selects_on_canary_phase_and_checksum(self):
         transport = FakeTransport()
         store = self._store(transport)
