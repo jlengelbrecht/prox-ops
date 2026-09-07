@@ -1,9 +1,10 @@
 # flagger-recovery
 
 Stdlib-only Python that resolves an immutable identity for a Flagger canary
-candidate. No third-party dependencies, no `subprocess`, no `eval`/`exec` —
-an AST gate in the story's test suite enforces that. This module makes no
-cluster writes; it is a library plus a read-only smoke CLI.
+candidate and persists a durable record of it. No third-party dependencies,
+no `subprocess`, no `eval`/`exec` — an AST gate in the story's test suite
+enforces that. The identity resolver and API reader never write to the
+cluster; the record store's only write is a ConfigMap `create`.
 
 ## Why identity, not phase
 
@@ -25,12 +26,26 @@ exactly when the new hash equals `lastPromotedSpec`, which is the signal that
 a revert needs a distinguishing follow-up change before a real analysis will
 run again.
 
+`flagger_recovery.record` persists a `DeploymentRecord` per (canary,
+template-hash, phase) as a ConfigMap in `flagger-system`. The idempotency key
+is `sha256(namespace/canary/template-hash/phase)[:32]`; a duplicate write is
+detected via the Kubernetes API's own `409 AlreadyExists` on `create`, then
+confirmed with a follow-up GET that checks the existing ConfigMap's labels
+actually belong to this record before reporting it as a duplicate — never a
+read-modify-write, never a PATCH or PUT. A 409 whose GET shows a different
+record (or that can't be resolved after one retried create) raises
+`ForeignConfigMap` instead, so the caller can log and refuse rather than
+assume its record was ever stored.
+
 ## Layout
 
 - `flagger_recovery/identity.py` — `resolve()`, `CandidateIdentity`,
   `ContainerImage`, `AttributionRefused`, `is_manual_rollback()`, and a
   `python3 -m flagger_recovery.identity` CLI for the read-only smoke below.
+- `flagger_recovery/record.py` — `DeploymentRecord`, `make_key()`,
+  `RecordStore` protocol, `ConfigMapStore` (stdlib `urllib`), `InMemoryStore`.
 - `flagger_recovery/kube.py` — `ApiReader`, a GET-only Kubernetes API client.
+  No writes live here; `ConfigMapStore` has its own minimal POST/GET.
 - `tests/fixtures/*.json` — sanitised copies of the live pilot objects
   (domain replaced with `example.invalid`, `managedFields` dropped).
 
