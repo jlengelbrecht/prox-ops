@@ -1,0 +1,57 @@
+{
+  "apiVersion": "flagger.app/v1beta1",
+  "kind": "Canary",
+  "metadata": {
+    "name": "podinfo",
+    "namespace": "flagger-pilot",
+    "uid": "4c6bafc7-a569-4044-9a66-a1f7fc95969b",
+    "generation": 2,
+    "labels": {
+      "kustomize.toolkit.fluxcd.io/name": "flagger-pilot-app",
+      "kustomize.toolkit.fluxcd.io/namespace": "flagger-system"
+    }
+  },
+  "spec": {
+    "targetRef": {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "name": "podinfo"
+    },
+    "service": {
+      "port": 9898,
+      "targetPort": 9898,
+      "hosts": ["podinfo.example.invalid"],
+      "gatewayRefs": [
+        {
+          "group": "gateway.networking.k8s.io",
+          "kind": "Gateway",
+          "name": "envoy-internal",
+          "namespace": "network",
+          "sectionName": "https"
+        }
+      ]
+    },
+    "analysis": {
+      "interval": "1m",
+      "threshold": 3,
+      "maxWeight": 50,
+      "stepWeight": 10,
+      "metrics": [
+        {"name": "success-rate", "templateRef": {"name": "podinfo-success-rate"}, "thresholdRange": {"min": 99}, "interval": "1m"},
+        {"name": "latency", "templateRef": {"name": "podinfo-latency"}, "thresholdRange": {"max": 500}, "interval": "1m"}
+      ]
+    },
+    "provider": "gatewayapi:v1",
+    "progressDeadlineSeconds": 600
+  },
+  "status": {
+    "phase": "Progressing",
+    "canaryWeight": 10,
+    "failedChecks": 0,
+    "iterations": 1,
+    "lastAppliedSpec": "5b86bd6879",
+    "lastPromotedSpec": "759f9fb7bd",
+    "lastTransitionTime": "2026-09-06T23:38:12Z",
+    "trackedConfigs": {}
+  }
+}

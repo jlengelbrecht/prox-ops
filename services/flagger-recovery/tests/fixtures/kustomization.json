@@ -1,0 +1,30 @@
+{
+  "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+  "kind": "Kustomization",
+  "metadata": {
+    "name": "flagger-pilot-app",
+    "namespace": "flagger-system",
+    "uid": "3f2a2708-b11f-4925-bb59-838d07a6358a"
+  },
+  "spec": {
+    "path": "./kubernetes/pilot/flagger-pilot",
+    "sourceRef": {"kind": "GitRepository", "name": "flagger-pilot", "namespace": "flagger-system"},
+    "targetNamespace": "flagger-pilot",
+    "serviceAccountName": "flux-flagger-pilot",
+    "prune": true
+  },
+  "status": {
+    "observedGeneration": 1,
+    "lastAppliedRevision": "flagger-pilot@sha1:99abc217d85ddcf310d1919f691f538c2a6c8082",
+    "lastAttemptedRevision": "flagger-pilot@sha1:99abc217d85ddcf310d1919f691f538c2a6c8082",
+    "conditions": [
+      {
+        "type": "Ready",
+        "status": "True",
+        "reason": "ReconciliationSucceeded",
+        "message": "Applied revision: flagger-pilot@sha1:99abc217d85ddcf310d1919f691f538c2a6c8082",
+        "lastTransitionTime": "2026-09-07T00:37:09Z"
+      }
+    ]
+  }
+}
