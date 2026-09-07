@@ -227,6 +227,39 @@ as `events_pending`, because Flagger redelivers it and the in-band retry re-runs
 resolution; anything else counts as `events_unattributable` and is logged with
 its reason, because that rollout is over and no record will ever appear.
 
+## The Git correction writer
+
+`flagger_recovery.policy` holds the bounds as literals — `ALLOWED_REPOSITORY`, `ALLOWED_REF`,
+`ALLOWED_PATH_PREFIX`, `ALLOWED_TARGETS` — and `evaluate(proposal, live, tree)` is the pure ladder that
+applies them. `flagger_recovery.gitwriter` is the only thing that can write, through stdlib `urllib`
+against the GitHub REST API, with no `git` binary, no shell, and a credential that arrives as a callable
+rather than from disk or the environment.
+
+**The two correction forms.** The design says "one file, one field"; the shipped proposal says
+`restore-file <path> to <sha>` or `revert-commit <sha>`. This implements the proposal. `restore-file`
+installs the target file's content as it was at that revision — the tree entry reuses the blob sha that
+already exists there, so no content is uploaded and the commit provably carries the historical bytes.
+`revert-commit` is accepted only when the diff it undoes touches exactly one file, under the prefix, and
+that file is the target; anything wider is `mixed-scope`. Both reduce to one path in one tree, parented
+on the branch head and pushed with `"force": false`.
+
+**The refusal set** (`policy.REFUSAL_REASONS`, closed): `corrections-disabled` (the module switch is off),
+`requires-decision`, `unparsable-correction` (neither form, or a path/sha contradicting the proposal's own
+fields), `wrong-repository`, `wrong-ref`, `path-outside-prefix`, `not-an-allowed-target`, `unusable-sha`
+(not 40 hex), `mixed-scope`, `no-change` (the restore blob already is the head's), `superseded` (the live
+`lastAppliedSpec` moved on), `already-restored` (F8 — the primary serves the promoted spec),
+`target-changed` (the file changed since the failure), `branch-moved` (the head is neither the failed
+revision nor a descendant that left the prefix alone; also the non-fast-forward `PATCH`), `already-corrected`.
+
+**Nothing here is on.** `gitwriter.CORRECTIONS_ENABLED` is `False`, `GitWriter` defaults to `dry_run=True`
+and `_main()` installs no corrector, so this changes nothing about the running receiver; FRP-007b adds the
+credential, the Lease and the switch. `corrector()` claims a write with a create-only `correction` document
+keyed by the proposal's key — a duplicate is `already-corrected` with zero GitHub calls — and only a
+completed ref update writes a `correction-result` document linking the old head, the restored revision and
+the new commit. `lock=` is the seam for the design's Lease, a no-op here because a Lease needs RBAC this
+story does not add. A writer that dies leaves its marker forever: `reconcile()` counts those
+`corrections_stale` after ten minutes and never retries them on its own.
+
 ## Layout
 
 - `flagger_recovery/identity.py` — `resolve()`, `CandidateIdentity`,
@@ -247,7 +280,9 @@ its reason, because that rollout is over and no record will ever appear.
   hook (`Decision`, `Ignore()`, `DECIDER_NOT_INSTALLED`), the reconcile timer,
   and the in-cluster `_main()` entry point.
 - `flagger_recovery/decide.py` — `decide()`, `LiveState`, `decider()`, `reconcile()`;
-  `flagger_recovery/proposal.py` — `Proposal`, `build_proposal()`, branch/path bounds.
+  `flagger_recovery/proposal.py` — `Proposal`, `build_proposal()`, branch/path bounds;
+  `flagger_recovery/policy.py` — the allowlists, `evaluate()`, `Verdict`, `TreeState`, `is_stale()`;
+  `flagger_recovery/gitwriter.py` — `GitWriter`, `Correction`, `corrector()`.
 - `tests/fixtures/*.json` — sanitised copies of the live pilot objects
   (domain replaced with `example.invalid`, `managedFields` dropped).
   `replicasets.json` and `pods.json` are the raw `kubectl get ... -o json`

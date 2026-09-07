@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Optional, Protocol
 
 from .identity import is_manual_rollback
 from .inbox import KIND_EVENT, STATUS_ATTRIBUTION_PENDING, WebhookEvent
+from .policy import KIND_CORRECTION, STATUS_IN_PROGRESS, is_stale
 from .proposal import KIND_PROPOSAL, Proposal, build_proposal
 from .record import DeploymentRecord, PutResult, canary_label, make_key_parts
 from .server import PHASE_PROMOTED, Decision, Ignore, now, write_promoted_record
@@ -136,8 +137,10 @@ class ReconcileReport:
     proposals_written: int = 0
     proposals_open: int = 0
     proposals_superseded: int = 0
+    corrections_stale: int = 0
 
-def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None) -> ReconcileReport:
+def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None,
+              corrector: Optional[Callable[[Mapping[str, Any]], Any]] = None) -> ReconcileReport:
     """Re-evaluate, once, everything the receiver could not finish in-band.
     An **attribution-pending event** whose candidate record has since landed is
     decided here, because nothing decided it when it arrived; one still missing
@@ -192,10 +195,19 @@ def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None) -> R
         elif decision.proposal is not None:
             if store.put_document(decision.proposal.to_document()) is PutResult.CREATED:
                 counts["proposals_written"] += 1
+                if corrector is not None:
+                    corrector(decision.proposal.to_payload())
 
     for document in store.list_documents(KIND_PROPOSAL, canary=canary):
         failed_hash = str(document.payload.get("template_hash") or "")
         settled = status.get("lastAppliedSpec") != failed_hash or is_manual_rollback(status, failed_hash)
         counts["proposals_superseded" if settled else "proposals_open"] += 1
+
+    # Create-only storage means a writer that died mid-write leaves its
+    # ``in-progress`` document forever. Report those and stop: a retry would re-enter
+    # a write whose outcome nobody established, which wants a human on the branch.
+    for document in store.list_documents(KIND_CORRECTION, canary=canary):
+        if document.payload.get("status") == STATUS_IN_PROGRESS and is_stale(document.payload, now()):
+            counts["corrections_stale"] += 1
 
     return ReconcileReport(**counts)

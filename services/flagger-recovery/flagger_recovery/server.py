@@ -130,6 +130,7 @@ class Receiver:
         candidates: CandidateSource,
         clock: Any = now,
         decider: Decider = _default_decider,
+        corrector: Optional[Callable[[Mapping[str, Any]], Any]] = None,
     ) -> None:
         if not token:
             raise ValueError("Receiver requires a token; see auth.load_token()")
@@ -138,6 +139,7 @@ class Receiver:
         self._candidates = candidates
         self._clock = clock
         self._decider = decider
+        self._corrector = corrector
         self._inbox = Inbox(store)
         self.unauthorised = 0
 
@@ -203,6 +205,7 @@ class Receiver:
         decision = self._decider(record, event)
         if decision.proposal is not None:
             self._store.put_document(decision.proposal.to_document())
+            self._correct(decision.proposal)
         self._inbox.accept(
             event,
             status=STATUS_RECEIVED,
@@ -210,6 +213,18 @@ class Receiver:
             detail=f"{decision.kind}: {decision.reason}" if decision.reason else decision.kind,
         )
         return 202, {"result": decision.kind, "event": event.key, "detail": decision.reason}
+
+    def _correct(self, proposal: Any) -> None:
+        """The FRP-007 seam: hand a freshly written proposal to the Git correction
+        writer, when one is installed at all — ``_main`` installs none, so this is a
+        no-op in the deployed receiver. A correction never fails a hook: Flagger halts
+        a rollout on a webhook error, and the proposal is durable already."""
+        if self._corrector is None:
+            return
+        try:
+            self._corrector(proposal.to_payload())
+        except Exception:  # noqa: BLE001 - a writer fault must not fail somebody's release
+            LOG.exception("correction attempt failed for proposal %s", proposal.key)
 
     def _register(self, event: WebhookEvent) -> tuple[int, dict[str, Any]]:
         """AC1: attribute the candidate the first time it is seen. The
