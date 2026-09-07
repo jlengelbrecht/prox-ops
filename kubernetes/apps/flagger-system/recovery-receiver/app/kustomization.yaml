@@ -1,0 +1,49 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ./rbac.yaml
+  - ./externalsecret.yaml
+  - ./deployment.yaml
+  - ./service.yaml
+  - ./networkpolicy.yaml
+
+# How the receiver's code reaches the cluster.
+#
+# There is no image build for services/flagger-recovery and no registry to push
+# one to; the package is pure stdlib Python, so the source itself is the
+# artifact. The generator reads the real files - the ones the unit suite runs
+# against - out of the repository and mounts them into a stock python image.
+# One source of truth, no vendored copy under kubernetes/ to drift.
+#
+# The path leaves this kustomization's root, which plain `kubectl kustomize`
+# refuses by default (--load-restrictor LoadRestrictionsNone accepts it, and
+# that is how the gates in this story's frontmatter invoke it).
+# kustomize-controller builds every Kustomization with load restrictions
+# disabled, so the in-cluster build accepts it as written.
+#
+# The list is the whole package, file by file, because kustomize does not glob
+# here: `files:` entries are opened literally (kustomize v5.6.0 answers a `*.py`
+# entry with "open .../*.py: no such file or directory"), unlike `resources:`,
+# which does expand patterns. So the slice that adds decide.py and proposal.py
+# has to add them here too, or the receiver will keep answering
+# Ignore(decider-not-installed) with no other symptom. That is the one
+# maintenance cost of shipping source instead of an image.
+#
+# Keys are basenames, so the ConfigMap is the package directory verbatim,
+# mounted at /app/flagger_recovery.
+#
+# The name-suffix hash is what makes a code change a rollout: editing a .py
+# file changes the generated name, which changes the Deployment's volume
+# reference, which rolls the pod. Without it a code change would sit in an
+# updated ConfigMap that the running process never re-imports.
+configMapGenerator:
+  - name: recovery-receiver-code
+    files:
+      - ../../../../../services/flagger-recovery/flagger_recovery/__init__.py
+      - ../../../../../services/flagger-recovery/flagger_recovery/auth.py
+      - ../../../../../services/flagger-recovery/flagger_recovery/identity.py
+      - ../../../../../services/flagger-recovery/flagger_recovery/inbox.py
+      - ../../../../../services/flagger-recovery/flagger_recovery/kube.py
+      - ../../../../../services/flagger-recovery/flagger_recovery/record.py
+      - ../../../../../services/flagger-recovery/flagger_recovery/server.py

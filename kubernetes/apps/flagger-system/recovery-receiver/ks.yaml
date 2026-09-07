@@ -1,0 +1,34 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: recovery-receiver
+spec:
+  dependsOn:
+    # Flagger is the only caller, and pilot-source carries the identity whose
+    # permissions in flagger-pilot this app's RoleBinding extends. Ordering
+    # against external-secrets matters more than either: the Deployment mounts
+    # the token Secret this app's ExternalSecret materialises, so without the
+    # controller running the pod never leaves ContainerCreating.
+    - name: flagger
+      namespace: flagger-system
+    - name: pilot-source
+      namespace: flagger-system
+    - name: external-secrets-operator
+      namespace: flux-system
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  path: ./kubernetes/apps/flagger-system/recovery-receiver/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: flagger-system
+  wait: true
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: recovery-receiver
+      namespace: flagger-system

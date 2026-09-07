@@ -35,11 +35,30 @@ rules:
   # line 393 for the apply. So substitution works today whether or not this
   # rule exists. It is kept as defence in depth against a Flux change that
   # moves the read behind impersonation, which would otherwise turn into a
-  # substitution failure with no obvious cause. Narrowed to that one Secret by
-  # name - nothing else in this namespace is readable.
+  # substitution failure with no obvious cause. Narrowed by name - nothing else
+  # in this namespace is readable, and this namespace holds the receiver's
+  # ServiceAccount token Secrets and every other flagger-system Secret.
+  #
+  # flagger-pilot-webhook-token joined the list for the same reason: it is the
+  # second entry in flagger-pilot-app's substituteFrom.
+  #
+  # Be honest about what that grant costs. The substitution path itself gives
+  # the branch nothing new - it happens before apply, and the resolved value is
+  # the token the branch has to send to authenticate anyway. But this account is
+  # also the identity helm-controller impersonates for any HelmRelease the
+  # branch declares (flagger-pilot-app patches serviceAccountName in), and a
+  # HelmRelease may pull a Secret into rendered values with valuesFrom, across
+  # namespaces, under its own RBAC - this cluster does not set
+  # --no-cross-namespace-refs. So a branch commit that deliberately added such a
+  # stanza could read this Secret's value into flagger-pilot. That is a
+  # write-access-to-the-branch threat, not a compromised-workload one: candidate
+  # pods cannot mount this identity, and anyone who can push to the branch can
+  # already read the token out of the Canary they are writing. Closing it
+  # properly means --no-cross-namespace-refs on both controllers, which is a
+  # cluster-wide change and its own decision.
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["cluster-secrets"]
+    resourceNames: ["cluster-secrets", "flagger-pilot-webhook-token"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

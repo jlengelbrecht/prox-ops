@@ -31,9 +31,23 @@ spec:
     # namespace the branch can write. cluster-secrets carries one key,
     # SECRET_DOMAIN, and that domain is already in every HTTPRoute in the
     # cluster.
+    #
+    # flagger-pilot-webhook-token carries one key, `token`, and is the only way
+    # the pilot branch can authenticate to the recovery receiver: a Flagger
+    # webhook definition cannot reference a Secret, so the Canary writes
+    # `${token}` into its webhook metadata and this substitution fills it in.
+    # So the value is never committed to the branch - which is not the same as
+    # the branch being unable to obtain it; see the note on the matching
+    # resourceNames grant in ../../pilot-source/app/rbac.yaml.
+    #
+    # Neither entry is optional: an unresolvable substitution should stop the
+    # reconcile loudly, because the alternative here is a Canary that ships an
+    # empty token and gets 401 back from every hook.
     substituteFrom:
       - kind: Secret
         name: cluster-secrets
+      - kind: Secret
+        name: flagger-pilot-webhook-token
   wait: false
   patches:
     - # Load-bearing, not cosmetic. helm-controller reconciles a HelmRelease

@@ -1,0 +1,60 @@
+---
+# The receiver holds a Kubernetes credential and accepts input from a webhook
+# body, which is the combination worth fencing. Both directions are listed, so
+# this endpoint is default-deny for everything not named below.
+#
+# Ingress: the Flagger controller and nothing else. Note what is absent -
+# flagger-pilot has no rule here, so a pod the pilot branch deploys cannot reach
+# this port at all, whatever token it might have scraped out of its own Canary.
+#
+# Egress: DNS and the API server. No toEntities: world, no toCIDR, no toFQDNs -
+# the process talks to one API and writes no files, so there is nothing else for
+# it to reach and nowhere for a payload to be exfiltrated to.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: recovery-receiver
+  labels:
+    app.kubernetes.io/name: recovery-receiver
+    app.kubernetes.io/component: networkpolicy
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: recovery-receiver
+
+  ingress:
+    # Written against the container port, not the Service's 80: Cilium DNATs to
+    # the endpoint before it evaluates policy, so a rule naming 80 matches
+    # nothing and every hook is dropped silently.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: flagger-system
+            app.kubernetes.io/name: flagger
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  egress:
+    # CoreDNS pods rather than the kube-dns Service, for the same
+    # DNAT-before-policy reason as above.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+
+    # The kube-apiserver entity, which is how the receiver reads canaries,
+    # deployments, replicasets and pods and writes its records. No toPorts on
+    # purpose: the pod dials the kubernetes Service on 443 and Cilium sees the
+    # post-DNAT port, which is the control plane's real listener - pinning a
+    # port here would break on a Talos change that moves it, and a port is not
+    # what bounds this reach anyway. RBAC is: two namespaced Roles, read-only
+    # outside this namespace, create-and-read within it.
+    - toEntities:
+        - kube-apiserver

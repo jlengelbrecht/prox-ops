@@ -1,0 +1,65 @@
+---
+# The receiver's identity and what it may do in its own namespace.
+#
+# The account lives here rather than in flagger-pilot for the same reason
+# flux-flagger-pilot does: a pod in flagger-pilot cannot mount a ServiceAccount
+# from another namespace, so nothing the pilot branch deploys can run as this
+# identity. What it may read in flagger-pilot is granted from there, by
+# kubernetes/apps/flagger-pilot/rbac.yaml.
+#
+# Unlike the loadtester next door, this pod does need its projected token: the
+# receiver reads Canary, Deployment, ReplicaSet and Pod state to attribute a
+# candidate, and writes its records as ConfigMaps. Both Roles below are
+# namespaced and there is no ClusterRole anywhere in this app - the receiver
+# reads nothing cluster-scoped.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: recovery-receiver
+  labels:
+    app.kubernetes.io/name: recovery-receiver
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: recovery-receiver
+  labels:
+    app.kubernetes.io/name: recovery-receiver
+rules:
+  # The document store (FRP-005/FRP-006a): deployment records, accepted events
+  # and, once slice 3 lands, correction proposals, all as ConfigMaps in this
+  # namespace.
+  #
+  # Create and read only. No update, no patch, no delete - that is not tidiness,
+  # it is the duplicate check: ConfigMapStore treats the API's 409 on a second
+  # create as "already recorded", so a record that exists cannot be rewritten by
+  # this account at all, and a replayed webhook cannot overwrite an attribution.
+  #
+  # `watch` is absent because every read is a one-shot GET (ConfigMapStore._get
+  # and ._list); nothing here holds an informer.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "list"]
+  # The one Flux object CandidateReader fetches from outside flagger-pilot: the
+  # Kustomization that applied the candidate, which is how a record ties back to
+  # a Git revision. Named, so nothing else in this namespace is readable - and
+  # this namespace holds the Kustomization objects for every pilot component.
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    resourceNames: ["flagger-pilot-app"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: recovery-receiver
+  labels:
+    app.kubernetes.io/name: recovery-receiver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: recovery-receiver
+subjects:
+  - kind: ServiceAccount
+    name: recovery-receiver
+    namespace: flagger-system

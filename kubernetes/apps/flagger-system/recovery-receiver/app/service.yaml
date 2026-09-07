@@ -1,0 +1,21 @@
+---
+# ClusterIP only, and deliberately no HTTPRoute: the sole caller is the Flagger
+# controller in this namespace, calling
+# http://recovery-receiver.flagger-system/hooks/... from a Canary webhook. The
+# endpoint authenticates its caller, but it has no business being reachable from
+# outside the cluster to try.
+apiVersion: v1
+kind: Service
+metadata:
+  name: recovery-receiver
+  labels:
+    app.kubernetes.io/name: recovery-receiver
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: recovery-receiver
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: http
