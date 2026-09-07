@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import logging
 import re
 import ssl
 import urllib.error
@@ -20,9 +21,19 @@ from typing import Any, Mapping, Optional, Protocol, Sequence
 
 from .identity import CandidateIdentity
 
+LOG = logging.getLogger("flagger_recovery.record")
+
 _NAME_PREFIX = "flagger-recovery-"
 _LABEL_ANNOTATION = "flagger-recovery/canary-full"
 _PART_OF = "flagger-recovery"
+
+CANARY_LABEL = "flagger-recovery/canary"
+PHASE_LABEL = "flagger-recovery/phase"
+# The webhook payload's ``checksum``, which is NOT the template hash the record
+# is keyed by — see ``checksum_label()``.
+CHECKSUM_LABEL = "flagger-recovery/checksum"
+# ``server.PHASE_CANDIDATE``, restated here because the store is the lower layer.
+_CANDIDATE = "candidate"
 
 # Which labels must match before a 409 on create counts as *our* duplicate
 # rather than someone else's ConfigMap wearing our deterministic name.
@@ -103,6 +114,18 @@ def canary_label_full(namespace: str, canary_name: str) -> Optional[str]:
         return None
     return full
 
+def checksum_label(checksum: str) -> Optional[str]:
+    """The ``flagger-recovery/checksum`` label value for a webhook payload's
+    ``checksum``, or ``None`` when there is nothing to index.
+
+    Flagger computes that field as ``ComputeHash({TrackedConfigs,
+    LastAppliedSpec})`` (``pkg/controller/webhook.go``, ``canaryChecksum``), so
+    it is a hash *of* ``status.lastAppliedSpec``, never that value itself — the
+    two are in different hash spaces and never compare equal. Records stay keyed
+    by the template hash; this label is only the index that lets a later hook,
+    which carries the checksum and nothing else, find the record again."""
+    return label_value(checksum) if checksum else None
+
 def make_key_parts(namespace: str, canary_name: str, template_hash: str, phase: str) -> str:
     """The record key from its parts, for callers holding a webhook payload
     (namespace, canary name and ``checksum``) rather than a resolved identity."""
@@ -118,19 +141,30 @@ class DeploymentRecord:
     phase: str
     identity: CandidateIdentity
     created_at: str  # ISO 8601; informational only, never part of the key
+    checksum: str = ""  # the webhook payload's checksum for this rollout; an
+    # index, never part of the key — see checksum_label().
 
     def to_configmap(self, *, storage_namespace: str = "flagger-system") -> dict[str, Any]:
         key = make_key(self.identity, self.phase)
-        payload = {"phase": self.phase, "created_at": self.created_at, "identity": self.identity.to_dict()}
+        payload = {
+            "phase": self.phase,
+            "created_at": self.created_at,
+            "checksum": self.checksum,
+            "identity": self.identity.to_dict(),
+        }
+        labels = {
+            "app.kubernetes.io/part-of": "flagger-recovery",
+            CANARY_LABEL: canary_label(self.identity.namespace, self.identity.canary_name),
+            PHASE_LABEL: self.phase,
+            "flagger-recovery/template-hash": self.identity.template_hash,
+        }
+        checksum = checksum_label(self.checksum)
+        if checksum is not None:
+            labels[CHECKSUM_LABEL] = checksum
         metadata: dict[str, Any] = {
             "name": f"{_NAME_PREFIX}{key}",
             "namespace": storage_namespace,
-            "labels": {
-                "app.kubernetes.io/part-of": "flagger-recovery",
-                "flagger-recovery/canary": canary_label(self.identity.namespace, self.identity.canary_name),
-                "flagger-recovery/phase": self.phase,
-                "flagger-recovery/template-hash": self.identity.template_hash,
-            },
+            "labels": labels,
         }
         full_canary = canary_label_full(self.identity.namespace, self.identity.canary_name)
         if full_canary is not None:
@@ -148,6 +182,9 @@ class DeploymentRecord:
         return cls(
             phase=payload["phase"],
             created_at=payload["created_at"],
+            # Records written before the checksum index existed have no such
+            # field; they read back with an empty checksum and stay unindexed.
+            checksum=str(payload.get("checksum") or ""),
             identity=CandidateIdentity.from_dict(payload["identity"]),
         )
 
@@ -196,9 +233,26 @@ class Document:
             payload=json.loads(configmap["data"]["document.json"]),
         )
 
+def _unique_candidate(matches: Sequence[DeploymentRecord], checksum: str) -> Optional[DeploymentRecord]:
+    """The single candidate record for a checksum, or ``None``. Two records
+    sharing one should be impossible, but ``label_value()`` can clamp two hostile
+    checksums onto one label; picking an arbitrary one would break NFR4, so
+    refuse. ``attribution-pending`` is recoverable, a wrong attribution is not."""
+    if len(matches) > 1:
+        # %r on the checksum, an unclamped payload field. The template hashes
+        # need none: to_configmap() writes them as label values unclamped, so
+        # the API server has already rejected anything a log could be forged with.
+        LOG.warning(
+            "refusing to attribute checksum %r: %d candidate records carry it (%s)",
+            checksum, len(matches), ", ".join(sorted(record.identity.template_hash for record in matches)),
+        )
+        return None
+    return matches[0] if matches else None
+
 class RecordStore(Protocol):
     def put(self, record: DeploymentRecord) -> PutResult: ...
     def get(self, key: str) -> Optional[DeploymentRecord]: ...
+    def find_candidate(self, canary: str, checksum: str) -> Optional[DeploymentRecord]: ...
     def list(self, canary: str) -> Sequence[DeploymentRecord]: ...
     def put_document(self, document: Document) -> PutResult: ...
     def get_document(self, kind: str, key: str) -> Optional[Document]: ...
@@ -308,8 +362,21 @@ class ConfigMapStore:
         body = self._get_configmap(f"{_NAME_PREFIX}{kind}-{key}")
         return None if body is None else Document.from_configmap(body)
 
+    def find_candidate(self, canary: str, checksum: str) -> Optional[DeploymentRecord]:
+        """The ``candidate`` record a webhook payload's ``checksum`` points at,
+        by label selector rather than by key: only the pre-rollout hook ever
+        sees both hashes at once, so the checksum it stored is the only bridge
+        a later hook has back to the record. ``phase=candidate`` alone would not
+        be enough — an event document's ``phase`` label is the payload's phase —
+        but only a record ever carries ``CHECKSUM_LABEL``, which pins it."""
+        label = checksum_label(checksum)
+        if label is None:
+            return None
+        items = self._list({CANARY_LABEL: canary, PHASE_LABEL: _CANDIDATE, CHECKSUM_LABEL: label})
+        return _unique_candidate([DeploymentRecord.from_configmap(item) for item in items], checksum)
+
     def list(self, canary: str) -> Sequence[DeploymentRecord]:
-        return [DeploymentRecord.from_configmap(item) for item in self._list({"flagger-recovery/canary": canary})]
+        return [DeploymentRecord.from_configmap(item) for item in self._list({CANARY_LABEL: canary})]
 
     def list_documents(self, kind: str, *, canary: Optional[str] = None) -> Sequence[Document]:
         if not _KIND_RE.match(kind):
@@ -388,6 +455,16 @@ class InMemoryStore:
 
     def get(self, key: str) -> Optional[DeploymentRecord]:
         return self._by_key.get(key)
+
+    def find_candidate(self, canary: str, checksum: str) -> Optional[DeploymentRecord]:
+        label = checksum_label(checksum)
+        if label is None:
+            return None
+        return _unique_candidate(
+            [record for record in self.list(canary)
+             if record.phase == _CANDIDATE and checksum_label(record.checksum) == label],
+            checksum,
+        )
 
     def list(self, canary: str) -> Sequence[DeploymentRecord]:
         return [self._by_key[key] for key in self._by_canary.get(canary, [])]

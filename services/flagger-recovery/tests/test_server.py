@@ -19,6 +19,7 @@ from flagger_recovery.server import (
     Decision,
     Ignore,
     Receiver,
+    _Handler,
     _reconcile_startup_note,
     build_server,
     reconcile_interval,
@@ -27,7 +28,11 @@ from flagger_recovery.server import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 TOKEN = "t" * 32
-TEMPLATE_HASH = "759f9fb7bd"
+TEMPLATE_HASH = "759f9fb7bd"  # canary.json's status.lastAppliedSpec: what records are keyed by
+# What Flagger actually puts in a payload's ``checksum`` — a hash *of* the
+# template hash above, so deliberately not equal to it. Taken verbatim from the
+# pilot's first live hooks (tests/fixtures/live-pre-rollout.json).
+CHECKSUM = "5f5697644f"
 
 def _load(name: str):
     with open(FIXTURES / name, encoding="utf-8") as handle:
@@ -60,7 +65,7 @@ def _payload(**overrides):
         "name": "podinfo",
         "namespace": "flagger-pilot",
         "phase": "Progressing",
-        "checksum": TEMPLATE_HASH,
+        "checksum": CHECKSUM,
         "metadata": {"token": TOKEN},
     }
     payload.update(overrides)
@@ -410,6 +415,26 @@ class HttpTests(unittest.TestCase):
     def test_non_json_body_is_400_over_http(self):
         self.assertEqual(self.request("POST", "/hooks/event", b"not json")[0], 400)
         self.assertEqual(self.store.writes, 0)
+
+class HandlerLoggingTests(unittest.TestCase):
+    """Flagger does not close the connection after a hook's response, so the
+    handler's 15 s socket timeout expires on every single hook and
+    ``handle_one_request`` reports it through ``log_error``. One INFO line per
+    hook saying nothing went wrong is noise that buries the ones that matter."""
+
+    def handler(self):
+        return _Handler.__new__(_Handler)  # no socket: only the log methods are under test
+
+    def test_the_per_hook_socket_timeout_drops_to_debug(self):
+        with self.assertLogs("flagger_recovery.server", level="DEBUG") as logs:
+            self.handler().log_error("Request timed out: %r", TimeoutError("timed out"))
+        self.assertEqual([record.levelname for record in logs.records], ["DEBUG"])
+
+    def test_every_other_error_is_still_logged_and_still_sanitised(self):
+        with self.assertLogs("flagger_recovery.server", level="DEBUG") as logs:
+            self.handler().log_error("code %d, message %s", 400, "bad\nrequest")
+        self.assertEqual([record.levelname for record in logs.records], ["INFO"])
+        self.assertIn("bad?request", logs.output[0])
 
 class ReconcileIntervalTests(unittest.TestCase):
     """``nan`` and ``inf`` parse without raising and defeat both ``<= 0`` and

@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import re
 import unittest
@@ -6,6 +7,7 @@ from pathlib import Path
 
 from flagger_recovery.identity import CandidateIdentity, ContainerImage
 from flagger_recovery.record import (
+    CHECKSUM_LABEL,
     ConfigMapStore,
     DeploymentRecord,
     ForeignConfigMap,
@@ -13,6 +15,7 @@ from flagger_recovery.record import (
     PutResult,
     canary_label,
     canary_label_full,
+    checksum_label,
     label_value,
     make_key,
 )
@@ -83,8 +86,10 @@ class FakeTransport:
         query = urllib.parse.parse_qs(parsed.query)
         selector = query.get("labelSelector", [""])[0]
         items = list(store.values())
-        if selector:
-            key, _, value = selector.partition("=")
+        # Every term must match, as the API server does it: find_candidate()
+        # selects on canary, phase and checksum at once.
+        for term in filter(None, selector.split(",")):
+            key, _, value = term.partition("=")
             items = [item for item in items if item["metadata"]["labels"].get(key) == value]
         return 200, json.dumps({"items": items}).encode()
 
@@ -188,6 +193,29 @@ class DeploymentRecordRoundTripTests(unittest.TestCase):
         self.assertEqual(labels["flagger-recovery/phase"], "Failed")
         self.assertEqual(labels["flagger-recovery/template-hash"], "5b86bd6879")
 
+    def test_the_payload_checksum_is_a_label_but_never_the_key(self):
+        """The bridge: the record stays keyed by the template hash, so existing
+        records and every lookup by template hash keep working, and the payload
+        checksum rides along as an index."""
+        plain = DeploymentRecord(phase="candidate", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        indexed = dataclasses.replace(plain, checksum="5f5697644f")
+
+        self.assertEqual(
+            plain.to_configmap()["metadata"]["name"], indexed.to_configmap()["metadata"]["name"]
+        )
+        self.assertEqual(indexed.to_configmap()["metadata"]["labels"][CHECKSUM_LABEL], "5f5697644f")
+        self.assertNotIn(CHECKSUM_LABEL, plain.to_configmap()["metadata"]["labels"])
+        self.assertEqual(DeploymentRecord.from_configmap(indexed.to_configmap()), indexed)
+
+    def test_an_unlabelable_checksum_is_clamped_the_same_way_on_both_sides(self):
+        hostile = "../" + "z" * 80
+        record = DeploymentRecord(phase="candidate", identity=_identity(),
+                                  created_at="2026-09-07T00:00:00Z", checksum=hostile)
+        label = record.to_configmap()["metadata"]["labels"][CHECKSUM_LABEL]
+        self.assertRegex(label, r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
+        self.assertLessEqual(len(label), 63)
+        self.assertEqual(checksum_label(hostile), label)
+
     def test_no_annotation_when_canary_label_fits(self):
         record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
         self.assertNotIn("annotations", record.to_configmap()["metadata"])
@@ -243,6 +271,42 @@ class ConfigMapStoreTests(unittest.TestCase):
             ],
         )
         self.assertTrue(transport.requests[0][1].endswith("/api/v1/namespaces/flagger-system/configmaps"))
+
+    def test_find_candidate_selects_on_canary_phase_and_checksum(self):
+        transport = FakeTransport()
+        store = self._store(transport)
+        wanted = DeploymentRecord(phase="candidate", identity=_identity(), created_at="2026-09-07T00:00:00Z",
+                                  checksum="5f5697644f")
+        store.put(wanted)
+        # Same checksum and canary but promoted, not candidate; and a candidate
+        # for the same canary under a different checksum. Neither may be picked.
+        store.put(dataclasses.replace(wanted, phase="promoted"))
+        store.put(dataclasses.replace(wanted, identity=_identity(template_hash="576f8b8d6"),
+                                      checksum="687b888d46"))
+        canary = canary_label("flagger-pilot", "podinfo")
+
+        self.assertEqual(store.find_candidate(canary, "5f5697644f"), wanted)
+        self.assertEqual(store.find_candidate(canary, "687b888d46").identity.template_hash, "576f8b8d6")
+        self.assertIsNone(store.find_candidate(canary, "no-such-checksum"))
+        self.assertIsNone(store.find_candidate(canary, ""), "an empty checksum indexes nothing")
+        self.assertIsNone(store.find_candidate(canary_label("flagger-pilot", "other"), "5f5697644f"))
+        selector = urllib.parse.parse_qs(urllib.parse.urlparse(transport.requests[-1][1]).query)["labelSelector"][0]
+        self.assertEqual(sorted(selector.split(",")), [
+            f"flagger-recovery/canary={canary_label('flagger-pilot', 'other')}",
+            f"{CHECKSUM_LABEL}=5f5697644f", "flagger-recovery/phase=candidate"])
+
+    def test_find_candidate_refuses_when_two_records_share_a_checksum(self):
+        """Impossible by construction and disastrous if guessed at (NFR4), so
+        the ambiguity answers ``None`` and the caller stays pending."""
+        transport = FakeTransport()
+        store = self._store(transport)
+        record = DeploymentRecord(phase="candidate", identity=_identity(), created_at="2026-09-07T00:00:00Z",
+                                  checksum="5f5697644f")
+        store.put(record)
+        store.put(dataclasses.replace(record, identity=_identity(template_hash="576f8b8d6")))
+
+        with self.assertLogs("flagger_recovery.record", level="WARNING"):
+            self.assertIsNone(store.find_candidate(canary_label("flagger-pilot", "podinfo"), "5f5697644f"))
 
     def test_put_conflict_with_a_foreign_configmap_raises(self):
         transport = FakeTransport()
