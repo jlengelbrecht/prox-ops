@@ -111,7 +111,10 @@ subjects:
 #
 # `list` on pods and replicasets cannot be narrowed to `get`: identity
 # resolution matches the candidate ReplicaSet by pod-template-hash across the
-# namespace, so it has to enumerate. `watch` is absent - every read is a
+# namespace, so it has to enumerate. Everything else CandidateReader reads is
+# a GET by name, so it gets `get` only - `list` on the Canary, Deployment,
+# HelmRelease or OCIRepository would let this identity enumerate objects it
+# never looks up that way. `watch` is absent everywhere - every read is a
 # one-shot GET.
 #
 # The subject is a ServiceAccount in flagger-system, so this is the same
@@ -127,17 +130,20 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list"]
   - apiGroups: ["apps"]
-    resources: ["deployments", "replicasets"]
+    resources: ["replicasets"]
     verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]
   - apiGroups: ["flagger.app"]
     resources: ["canaries"]
-    verbs: ["get", "list"]
+    verbs: ["get"]
   - apiGroups: ["helm.toolkit.fluxcd.io"]
     resources: ["helmreleases"]
-    verbs: ["get", "list"]
+    verbs: ["get"]
   - apiGroups: ["source.toolkit.fluxcd.io"]
     resources: ["ocirepositories"]
-    verbs: ["get", "list"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
