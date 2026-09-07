@@ -1,0 +1,51 @@
+{
+  "apiVersion": "helm.toolkit.fluxcd.io/v2",
+  "kind": "HelmRelease",
+  "metadata": {
+    "name": "podinfo",
+    "namespace": "flagger-pilot",
+    "uid": "e9a37c2a-3333-4c4f-ad98-cdf5d7d95363",
+    "generation": 11,
+    "labels": {
+      "kustomize.toolkit.fluxcd.io/name": "flagger-pilot-app",
+      "kustomize.toolkit.fluxcd.io/namespace": "flagger-system"
+    }
+  },
+  "spec": {
+    "chartRef": {"kind": "OCIRepository", "name": "podinfo"},
+    "interval": "1h",
+    "serviceAccountName": "flux-flagger-pilot"
+  },
+  "status": {
+    "observedGeneration": 11,
+    "storageNamespace": "flagger-pilot",
+    "history": [
+      {
+        "chartName": "app-template",
+        "chartVersion": "4.4.0",
+        "configDigest": "sha256:86236e72f98d89e571e71daed691a1d99a6528ec596187b7166dcc2e4a06c2aa",
+        "digest": "sha256:4e735604d68bb9f038015f830387e83542b5d7b772105dcf3bc2961caa0e0c22",
+        "firstDeployed": "2026-09-06T21:29:39Z",
+        "lastDeployed": "2026-09-06T23:47:02Z",
+        "name": "podinfo",
+        "namespace": "flagger-pilot",
+        "ociDigest": "sha256:fb3321cce7e3cf41b5c36024ccdb30022135d71cbaa2c1e71541c435cfa6532c",
+        "status": "deployed",
+        "version": 11
+      },
+      {
+        "chartName": "app-template",
+        "chartVersion": "4.4.0",
+        "configDigest": "sha256:44a0f50c9a814e62cc95eae05fa4c8bc989214df7f01fc231b06741aba35e1d8",
+        "digest": "sha256:8eb5c2e274467a31c791f7b0fa37a388fd7dfef99f927c73f2c5d52542bcf873",
+        "firstDeployed": "2026-09-06T21:29:39Z",
+        "lastDeployed": "2026-09-06T23:38:12Z",
+        "name": "podinfo",
+        "namespace": "flagger-pilot",
+        "ociDigest": "sha256:fb3321cce7e3cf41b5c36024ccdb30022135d71cbaa2c1e71541c435cfa6532c",
+        "status": "superseded",
+        "version": 10
+      }
+    ]
+  }
+}

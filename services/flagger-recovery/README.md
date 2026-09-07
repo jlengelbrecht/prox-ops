@@ -1,0 +1,61 @@
+# flagger-recovery
+
+Stdlib-only Python that resolves an immutable identity for a Flagger canary
+candidate. No third-party dependencies, no `subprocess`, no `eval`/`exec` —
+an AST gate in the story's test suite enforces that. This module makes no
+cluster writes; it is a library plus a read-only smoke CLI.
+
+## Why identity, not phase
+
+FRP-004's canary matrix (`_bmad-output/epics/flagger-recovery-pilot/outputs/canary-matrix.md`,
+finding F8) showed that a `git revert` to the last promoted spec runs no
+Flagger analysis and leaves `Canary.status.phase` at `Failed` forever —
+Flagger's controller explicitly refuses to start an analysis once the new
+pod-template hash equals `status.lastPromotedSpec` (`pkg/canary/spec.go`,
+v1.45.0). Recovery automation that waits for `phase == Succeeded` after a
+revert will wait forever, even though the cluster is healthy again.
+
+`flagger_recovery.identity` therefore builds a `CandidateIdentity` once, when
+a candidate is first seen — from the Deployment's pod-template hash, the
+candidate pods' image digests, the HelmRelease chart version, the OCIRepository
+digest, and the Git revision Flux applied — and never re-derives it from
+`status.phase`. `is_manual_rollback(canary_status, new_template_hash)` is the
+one helper that reads the phase-is-not-state finding directly: it is `True`
+exactly when the new hash equals `lastPromotedSpec`, which is the signal that
+a revert needs a distinguishing follow-up change before a real analysis will
+run again.
+
+## Layout
+
+- `flagger_recovery/identity.py` — `resolve()`, `CandidateIdentity`,
+  `ContainerImage`, `AttributionRefused`, `is_manual_rollback()`, and a
+  `python3 -m flagger_recovery.identity` CLI for the read-only smoke below.
+- `flagger_recovery/kube.py` — `ApiReader`, a GET-only Kubernetes API client.
+- `tests/fixtures/*.json` — sanitised copies of the live pilot objects
+  (domain replaced with `example.invalid`, `managedFields` dropped).
+
+## Running the tests
+
+```bash
+python3 -m unittest discover -s services/flagger-recovery/tests -t services/flagger-recovery -v
+```
+
+No repository CI workflow runs Python tests yet, so this command is the test
+evidence for this story — see the PR body for its recorded output.
+
+## Read-only smoke against the live cluster
+
+`resolve()` never touches the network itself; `flagger_recovery.identity`'s
+`__main__` uses `kube.ApiReader` to fetch the live objects and calls
+`resolve()` over them. It makes only GET requests.
+
+```bash
+kubectl proxy --port=8001 &
+python3 -m flagger_recovery.identity --base-url http://127.0.0.1:8001 \
+  --namespace flagger-pilot --canary podinfo
+pkill -f 'kubectl proxy'
+```
+
+This prints the resolved `CandidateIdentity` as JSON. If `kubectl proxy`
+cannot be started under the session's policy, skip this step — the unit
+tests above are the gate.

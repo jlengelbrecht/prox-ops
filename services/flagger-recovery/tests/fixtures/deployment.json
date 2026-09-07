@@ -1,0 +1,33 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "podinfo",
+    "namespace": "flagger-pilot",
+    "uid": "556b57bc-ee18-45bb-8d8d-9ccfb483e07d",
+    "labels": {
+      "app.kubernetes.io/controller": "podinfo",
+      "app.kubernetes.io/instance": "podinfo",
+      "app.kubernetes.io/managed-by": "Helm",
+      "app.kubernetes.io/name": "podinfo",
+      "helm.sh/chart": "app-template-4.4.0",
+      "helm.toolkit.fluxcd.io/name": "podinfo",
+      "helm.toolkit.fluxcd.io/namespace": "flagger-pilot"
+    }
+  },
+  "spec": {
+    "replicas": 1,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/controller": "podinfo",
+        "app.kubernetes.io/instance": "podinfo",
+        "app.kubernetes.io/name": "podinfo"
+      }
+    }
+  },
+  "status": {
+    "replicas": 1,
+    "readyReplicas": 1,
+    "availableReplicas": 1
+  }
+}
