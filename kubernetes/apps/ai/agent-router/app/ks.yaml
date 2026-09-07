@@ -1,0 +1,115 @@
+---
+# yaml-language-server: $schema=https://kubernetes-schemas.pages.dev/kustomize.toolkit.fluxcd.io/kustomization_v1.json
+#
+# The router itself, from the release artifact. This Flux Kustomization is
+# applied by the `agent-router` Kustomization in ../ks.yaml as one of that
+# directory's objects, exactly the way flagger-system/pilot-app/app/ks.yaml is
+# applied by its wrapper, and for the same reason: cluster-apps patches every
+# Kustomization it renders with a spec.patches list of its own, and kustomize
+# replaces a list that has no merge key instead of merging it, so a
+# spec.patches written on a direct child of cluster-apps is dropped before it
+# is applied. The three patches below are the whole reason this object exists -
+# without them the release's placeholder hostname and Gateway would ship, so
+# would its portable NetworkPolicy, and the pod would carry no credential for a
+# private image - so it is rendered one level down, where nothing rewrites it.
+# ../ks.yaml is untouched by the cutover.
+#
+# The object lives in `ai` because ../ks.yaml sets targetNamespace: ai on
+# everything in this directory; the namespace is written out here as well, as
+# the sibling files do, so this file reads the same whether it is built by the
+# controller or by `flux build kustomization --namespace ai`.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agent-router-base
+  namespace: ai
+spec:
+  dependsOn:
+    # The same two things ../ks.yaml waits for: the ExternalSecrets need their
+    # operator before the Deployment can mount what they produce, and the
+    # catalog is the ConfigMap the router mounts. NOT agent-router: that object
+    # applies this one and, with wait: true, waits for it to become Ready, so a
+    # dependency on it would wait on itself. The OCIRepository this reads is
+    # applied alongside this object and needs no dependsOn - the controller
+    # requeues until the artifact is there.
+    - name: external-secrets-operator
+      namespace: flux-system
+    - name: agent-router-catalog
+      namespace: ai
+  interval: 1h
+  # The artifact holds the release's deploy/base at its root.
+  path: ./
+  prune: true
+  sourceRef:
+    kind: OCIRepository
+    name: agent-router-base
+    namespace: ai
+  targetNamespace: ai
+  wait: true
+  retryInterval: 1m
+  timeout: 5m
+  # All three patches name their object outright instead of through a `target:`
+  # selector, on purpose: kustomize treats a selector that matches nothing as
+  # nothing to do, and treats a named object that is not there as an error. A
+  # release that renames or drops the HTTPRoute, the NetworkPolicy or the
+  # Deployment therefore stops this Kustomization from building, and the
+  # objects already in the cluster stay as they are, instead of a Renovate bump
+  # quietly shipping the placeholder hostname, an unexpected policy or a pod
+  # with no pull credential. Nothing in prox-ops's CI renders this object
+  # against the artifact, so the patches have to fail closed on their own.
+  patches:
+    # The HTTPRoute's deployment values: the hostname external-dns publishes
+    # and the Gateway listener it attaches to. The release ships conspicuous
+    # placeholders; these are this cluster's. The lists are replaced whole,
+    # which is the intent - one hostname, one parent.
+    - patch: |-
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        metadata:
+          name: agent-router
+          annotations:
+            external-dns.alpha.kubernetes.io/hostname: agent-router.homelab0.org
+        spec:
+          hostnames:
+            - agent-router.homelab0.org
+          parentRefs:
+            - name: envoy-internal
+              namespace: network
+              sectionName: https
+    # The release's portable networking.k8s.io NetworkPolicy is removed from
+    # the render entirely, and the CiliumNetworkPolicy in this directory - the
+    # one this cluster already enforces - is kept verbatim.
+    #
+    # This is not a preference. Cilium runs here in its default mode and
+    # evaluates both policy kinds as a UNION of allow rules, so shipping the
+    # portable policy alongside the CNP would only ever widen ingress: patching
+    # its placeholder namespace to `network` would admit every pod in that
+    # namespace, where the CNP admits only pods owned by the envoy-internal
+    # gateway. Leaving it unpatched would ship a REPLACE-ME selector into
+    # production instead. The cutover is a change of where the manifests come
+    # from; it is not a change to the network posture, and this patch is what
+    # makes that true.
+    - patch: |-
+        $patch: delete
+        apiVersion: networking.k8s.io/v1
+        kind: NetworkPolicy
+        metadata:
+          name: agent-router
+    # The pull credential for the router image. The base is generic and names
+    # no registry secret - a pull secret is a deployment's, not the product's -
+    # so the reference is added here, from the Secret externalsecret.yaml
+    # renders. The image package is public today; with this in place, making it
+    # private is a package setting rather than another change to this
+    # directory, which is the point. Nothing is replaced: the base's pod spec
+    # carries no imagePullSecrets at all, and an unused pull secret costs a
+    # public pull nothing.
+    - patch: |-
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: agent-router
+        spec:
+          template:
+            spec:
+              imagePullSecrets:
+                - name: agent-router-ghcr
