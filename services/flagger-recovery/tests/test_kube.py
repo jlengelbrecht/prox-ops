@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from flagger_recovery.identity import resolve
-from flagger_recovery.kube import CandidateReader
+from flagger_recovery.kube import CandidateReader, LiveCanary
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -78,3 +78,48 @@ class CandidateReaderTests(unittest.TestCase):
             api.paths[0], "/apis/flagger.app/v1beta1/namespaces/flagger-pilot/canaries/..%2F..%2Fsecrets"
         )
         self.assertTrue(all("/../" not in path for path in api.paths))
+
+class DeploymentApiReader(FakeApiReader):
+    """``FakeApiReader`` with every Deployment's status overridden; the fixture
+    carries no generation, so one is added for the observed check."""
+
+    def __init__(self, **status):
+        super().__init__()
+        self._status = status
+
+    def get(self, path, *, params=None):
+        obj = super().get(path, params=params)
+        if "/deployments/" in path:
+            obj["metadata"]["generation"] = 12
+            obj["status"] = {**obj["status"], "observedGeneration": 12, **self._status}
+        return obj
+
+class LiveCanaryTests(unittest.TestCase):
+    """The live ``decide.LiveState``: Flagger's own hashes, gated on the
+    Deployment behind each one having observed — and, for the primary, still
+    serving — the spec Flagger recorded."""
+
+    def test_it_reports_the_hashes_the_canary_tracks(self):
+        api = FakeApiReader()
+        live = LiveCanary(api, "flagger-pilot", "podinfo")
+        self.assertEqual(live.canary_status()["phase"], "Progressing")
+        self.assertEqual(live.deployment_template_hash(), "759f9fb7bd")
+        self.assertEqual(live.primary_template_hash(), "5b86bd6879")
+        self.assertIsNone(live.functional_check(), "no prober is wired into the receiver")
+        self.assertIn("/apis/apps/v1/namespaces/flagger-pilot/deployments/podinfo-primary", api.paths)
+        self.assertEqual(len(api.paths), 3, "one snapshot per decision, not one read per question")
+
+    def test_a_primary_that_is_not_serving_its_spec_reports_no_hash(self):
+        for label, status in (("degraded", {"readyReplicas": 0}), ("surging", {"replicas": 2}),
+                              ("unobserved", {"observedGeneration": 11})):
+            with self.subTest(label):
+                live = LiveCanary(DeploymentApiReader(**status), "flagger-pilot", "podinfo")
+                self.assertIsNone(live.primary_template_hash())
+                # Only the unobserved case reaches the target: Flagger scales it
+                # to zero after every rollout, so replica counts say nothing.
+                self.assertEqual(live.deployment_template_hash(), None if label == "unobserved" else "759f9fb7bd")
+
+    def test_a_canary_name_from_a_payload_cannot_escape_the_url_path(self):
+        api = FakeApiReader()
+        LiveCanary(api, "flagger-pilot", "../../secrets").canary_status()
+        self.assertIn("canaries/..%2F..%2Fsecrets", api.paths[0])

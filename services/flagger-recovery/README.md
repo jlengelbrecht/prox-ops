@@ -123,11 +123,45 @@ Flagger has already scaled the candidate pods away.
 
 Everything else — a `Failed` `post-rollout`, and every plain `event` hook —
 flows through a `decider` callable injected into `Receiver`. The default
-installed here always answers `Ignore("decider-not-installed")`, which is
-recorded as the accepted event's `detail`; the follow-up story's `decide.py`
-(stored candidate record + live Canary/Deployment state + event ->
-`Register`/`Ignore`/`ProposeCorrection`/`Refuse`) plugs in by passing
-`Receiver(decider=decide)` — no route changes.
+answers `Ignore("decider-not-installed")`, which is recorded as the accepted
+event's `detail`; `decide.decider(store, live_for)` is the real one, and
+`_main()` installs it.
+
+## How a failure becomes a proposal
+
+`decide(record, event, live)` is pure — every live read arrives through the
+four-method `LiveState` protocol, `kube.LiveCanary` in production — and never
+reads `status.phase` as the success signal. That is F8 again: a revert to the
+last promoted spec runs no analysis and leaves the Canary `Failed` forever, so a
+phase-driven receiver would keep proposing corrections for an already-fixed
+failure. The rules, in order: a `Succeeded` `post-rollout` is `Register` (first,
+because `lastPromotedSpec` has just become the candidate's own hash); a hook
+about a hash already equal to `lastPromotedSpec` is
+`Ignore(manual-rollback-restored)`, via `identity.is_manual_rollback`; anything
+else that is not a `Failed` `post-rollout` is `Ignore(not-a-terminal-failure)`;
+a failure with no stored candidate record is `Refuse(no-candidate-record)`; a
+failed hash that is not still the stored record's, the live `lastAppliedSpec`
+and the hash the target Deployment carries is `Ignore(superseded)`, because
+correcting it would revert unrelated work; a primary not serving
+`lastPromotedSpec` is `Refuse(primary-not-serving-promoted)`, and a failing
+functional check `Refuse(functional-check-failing)`. Only then,
+`ProposeCorrection`. `LiveCanary` answers `None` — which refuses — for a hash
+whose Deployment has not observed its spec, and for a primary mid-rollout or
+degraded; it never replica-checks the target, which Flagger scales to zero.
+
+A proposal is bounded by branch `flagger-pilot` and path prefix
+`kubernetes/pilot/flagger-pilot/`. It carries both identities, both source shas,
+and one `correction`: `revert-commit <sha>` when the failed revision is exactly
+one commit ahead of the promoted one, otherwise `restore-file
+kubernetes/pilot/flagger-pilot/helmrelease.yaml to <sha>`; when neither can be
+established (no promoted revision, a revision off the pilot branch, an unusable
+sha) `correction` is null and `requires_decision` is true. Its key is the
+candidate identity, so repeated `Failed` hooks land on the same
+`flagger-recovery/kind=proposal` document and the store's `409` deduplicates.
+`decide.reconcile(store, live)` runs at startup and every
+`RECONCILE_INTERVAL_SECONDS` (default 300, floor 10, `0` disables the timer),
+deciding `attribution-pending` events whose record has since landed and counting
+proposals open or superseded — derived from live state, never stored.
 
 ## Layout
 
@@ -145,8 +179,10 @@ recorded as the accepted event's `detail`; the follow-up story's `decide.py`
   a caller can write `resolve(**reader.read(namespace, canary))`. No writes
   live here; `ConfigMapStore` has its own minimal POST/GET.
 - `flagger_recovery/server.py` — `Receiver`, `build_server()`, the `decider`
-  hook (`Decision`, `Ignore()`, `DECIDER_NOT_INSTALLED`), and the in-cluster
-  `_main()` entry point.
+  hook (`Decision`, `Ignore()`, `DECIDER_NOT_INSTALLED`), the reconcile timer,
+  and the in-cluster `_main()` entry point.
+- `flagger_recovery/decide.py` — `decide()`, `LiveState`, `decider()`, `reconcile()`;
+  `flagger_recovery/proposal.py` — `Proposal`, `build_proposal()`, branch/path bounds.
 - `tests/fixtures/*.json` — sanitised copies of the live pilot objects
   (domain replaced with `example.invalid`, `managedFields` dropped).
   `replicasets.json` and `pods.json` are the raw `kubectl get ... -o json`
