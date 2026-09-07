@@ -10,6 +10,7 @@ from flagger_recovery.record import (
     InMemoryStore,
     PutResult,
     canary_label,
+    canary_label_full,
     make_key,
 )
 
@@ -110,6 +111,27 @@ class MakeKeyTests(unittest.TestCase):
         )
         self.assertEqual(make_key(identity_a, "Failed"), make_key(identity_b, "Failed"))
 
+class CanaryLabelTests(unittest.TestCase):
+    def test_short_name_is_used_verbatim_with_no_annotation(self):
+        label = canary_label("flagger-pilot", "podinfo")
+        self.assertEqual(label, "flagger-pilot.podinfo")
+        self.assertLessEqual(len(label), 63)
+        self.assertIsNone(canary_label_full("flagger-pilot", "podinfo"))
+
+    def test_long_name_falls_back_to_a_stable_short_hash(self):
+        namespace = "a" * 40
+        canary_name = "b" * 40
+        label_a = canary_label(namespace, canary_name)
+        label_b = canary_label(namespace, canary_name)
+
+        self.assertLessEqual(len(label_a), 63)
+        self.assertEqual(label_a, label_b)  # deterministic
+        self.assertEqual(canary_label_full(namespace, canary_name), f"{namespace}.{canary_name}")
+
+        # A different pair of long names must not collide on the short form.
+        other_label = canary_label("c" * 40, "d" * 40)
+        self.assertNotEqual(label_a, other_label)
+
 class DeploymentRecordRoundTripTests(unittest.TestCase):
     def test_to_configmap_from_configmap_round_trip(self):
         record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
@@ -124,6 +146,17 @@ class DeploymentRecordRoundTripTests(unittest.TestCase):
         self.assertEqual(labels["flagger-recovery/canary"], canary_label("flagger-pilot", "podinfo"))
         self.assertEqual(labels["flagger-recovery/phase"], "Failed")
         self.assertEqual(labels["flagger-recovery/template-hash"], "5b86bd6879")
+
+    def test_no_annotation_when_canary_label_fits(self):
+        record = DeploymentRecord(phase="Failed", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        self.assertNotIn("annotations", record.to_configmap()["metadata"])
+
+    def test_full_value_annotated_when_canary_label_is_shortened(self):
+        identity = _identity(namespace="a" * 40, canary_name="b" * 40)
+        record = DeploymentRecord(phase="Failed", identity=identity, created_at="2026-09-07T00:00:00Z")
+        metadata = record.to_configmap()["metadata"]
+        self.assertEqual(metadata["annotations"]["flagger-recovery/canary-full"], f"{identity.namespace}.{identity.canary_name}")
+        self.assertEqual(metadata["labels"]["flagger-recovery/canary"], canary_label(identity.namespace, identity.canary_name))
 
 class ConfigMapStoreTests(unittest.TestCase):
     def _store(self, transport):

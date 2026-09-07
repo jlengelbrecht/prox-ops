@@ -3,8 +3,8 @@
 Stdlib-only Python that resolves an immutable identity for a Flagger canary
 candidate and persists a durable record of it. No third-party dependencies,
 no `subprocess`, no `eval`/`exec` — an AST gate in the story's test suite
-enforces that. This module makes no cluster writes; it is a library plus a
-read-only smoke CLI.
+enforces that. The identity resolver and API reader never write to the
+cluster; the record store's only write is a ConfigMap `create`.
 
 ## Why identity, not phase
 

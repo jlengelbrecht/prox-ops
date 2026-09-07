@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import re
 import ssl
 import urllib.error
 import urllib.parse
@@ -17,6 +18,10 @@ from typing import Any, Mapping, Optional, Protocol, Sequence
 from .identity import CandidateIdentity
 
 _NAME_PREFIX = "flagger-recovery-"
+_LABEL_ANNOTATION = "flagger-recovery/canary-full"
+
+# Kubernetes label VALUES: <=63 chars, alphanumeric/./-/_ , must start and end alphanumeric.
+_LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
 
 class PutResult(Enum):
     CREATED = "created"
@@ -33,8 +38,26 @@ class ApiWriteError(Exception):
         self.body = body
 
 def canary_label(namespace: str, canary_name: str) -> str:
-    """The ``flagger-recovery/canary`` label value: unique across namespaces."""
-    return f"{namespace}.{canary_name}"
+    """The ``flagger-recovery/canary`` label value: unique across namespaces.
+
+    Kubernetes caps label values at 63 characters and restricts the charset;
+    inputs that fit are used verbatim, everything else falls back to a short,
+    stable hash form. ``canary_label_full()`` recovers the original value in
+    that case."""
+    full = f"{namespace}.{canary_name}"
+    if len(full) <= 63 and _LABEL_VALUE_RE.match(full):
+        return full
+    digest = hashlib.sha256(full.encode("utf-8")).hexdigest()[:12]
+    return f"{full[:24]}-{digest}"
+
+def canary_label_full(namespace: str, canary_name: str) -> Optional[str]:
+    """The full ``namespace.canary_name`` value, or ``None`` when
+    ``canary_label()`` returned it verbatim (no shortening needed) — the
+    value stored under the ``flagger-recovery/canary-full`` annotation."""
+    full = f"{namespace}.{canary_name}"
+    if len(full) <= 63 and _LABEL_VALUE_RE.match(full):
+        return None
+    return full
 
 def make_key(identity: CandidateIdentity, phase: str) -> str:
     """A deterministic 32-hex-char key. Changes with template hash or phase only."""
@@ -50,19 +73,23 @@ class DeploymentRecord:
     def to_configmap(self, *, storage_namespace: str = "flagger-system") -> dict[str, Any]:
         key = make_key(self.identity, self.phase)
         payload = {"phase": self.phase, "created_at": self.created_at, "identity": self.identity.to_dict()}
+        metadata: dict[str, Any] = {
+            "name": f"{_NAME_PREFIX}{key}",
+            "namespace": storage_namespace,
+            "labels": {
+                "app.kubernetes.io/part-of": "flagger-recovery",
+                "flagger-recovery/canary": canary_label(self.identity.namespace, self.identity.canary_name),
+                "flagger-recovery/phase": self.phase,
+                "flagger-recovery/template-hash": self.identity.template_hash,
+            },
+        }
+        full_canary = canary_label_full(self.identity.namespace, self.identity.canary_name)
+        if full_canary is not None:
+            metadata["annotations"] = {_LABEL_ANNOTATION: full_canary}
         return {
             "apiVersion": "v1",
             "kind": "ConfigMap",
-            "metadata": {
-                "name": f"{_NAME_PREFIX}{key}",
-                "namespace": storage_namespace,
-                "labels": {
-                    "app.kubernetes.io/part-of": "flagger-recovery",
-                    "flagger-recovery/canary": canary_label(self.identity.namespace, self.identity.canary_name),
-                    "flagger-recovery/phase": self.phase,
-                    "flagger-recovery/template-hash": self.identity.template_hash,
-                },
-            },
+            "metadata": metadata,
             "data": {"record.json": json.dumps(payload, sort_keys=True)},
         }
 
