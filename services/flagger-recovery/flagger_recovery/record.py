@@ -1,6 +1,9 @@
 """Durable deployment records: one ConfigMap per record in ``flagger-system``,
-named from a deterministic idempotency key. The API's own ``409
-AlreadyExists`` on create *is* the duplicate check — no read-modify-write."""
+named from a deterministic idempotency key. A ``409 AlreadyExists`` on create
+proves only that the name is taken, not that the contents match: ``put``
+follows up with a GET, checks the existing ConfigMap's ownership labels, and
+reports ``PutResult.DUPLICATE`` on a match or raises ``ForeignConfigMap`` on a
+mismatch — no read-modify-write either way."""
 
 from __future__ import annotations
 
@@ -22,6 +25,12 @@ _LABEL_ANNOTATION = "flagger-recovery/canary-full"
 
 # Kubernetes label VALUES: <=63 chars, alphanumeric/./-/_ , must start and end alphanumeric.
 _LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
+
+# Record keys are always a 32-hex-char make_key() digest; reject anything
+# else before it reaches a URL path.
+_KEY_RE = re.compile(r"^[0-9a-f]{32}$")
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
 
 class PutResult(Enum):
     CREATED = "created"
@@ -148,12 +157,25 @@ class _UrllibTransport:
 
 class ConfigMapStore:
     """Create and read only: ``put`` is a POST create, ``get``/``list`` are
-    GETs. Never a PATCH, PUT or DELETE."""
+    GETs. Never a PATCH, PUT or DELETE.
+
+    A bearer ``token`` is refused at construction unless ``base_url`` is
+    ``https://`` — sending it over plain HTTP would leak it in cleartext.
+    The one exception is the ``kubectl proxy`` case: a loopback
+    ``http://127.0.0.1`` or ``http://localhost`` base URL is allowed, but
+    only with no token at all."""
 
     def __init__(
         self, base_url: str, *, namespace: str = "flagger-system", token: Optional[str] = None,
         ca_file: Optional[str] = None, timeout: float = 10.0, transport: Optional[Transport] = None,
     ) -> None:
+        parsed = urllib.parse.urlsplit(base_url)
+        is_loopback_http = parsed.scheme == "http" and parsed.hostname in _LOOPBACK_HOSTS
+        if parsed.scheme != "https" and not (is_loopback_http and token is None):
+            raise ValueError(
+                f"ConfigMapStore requires an https:// base_url (got {base_url!r}); "
+                "http:// is only allowed for loopback (127.0.0.1/localhost) and only without a token"
+            )
         self._base_url = base_url.rstrip("/")
         self._namespace = namespace
         self._token = token
@@ -173,8 +195,9 @@ class ConfigMapStore:
         if status != 409:
             raise ApiWriteError("POST", create_url, status, body)
 
-        # A 409 only proves the name is taken -- confirm the existing
-        # ConfigMap is actually our record before calling it a duplicate.
+        # A 409 only proves the name is taken, not that the contents match:
+        # GET the existing ConfigMap and check its ownership labels. A match
+        # reports PutResult.DUPLICATE; a mismatch raises ForeignConfigMap.
         get_url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{name}"
         status, body = self._request("GET", get_url, None)
         if status == 404:
@@ -201,6 +224,8 @@ class ConfigMapStore:
         raise ForeignConfigMap(name)
 
     def get(self, key: str) -> Optional[DeploymentRecord]:
+        if not _KEY_RE.match(key):
+            raise ValueError(f"invalid record key: {key!r}")
         url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{_NAME_PREFIX}{key}"
         status, body = self._request("GET", url, None)
         if status == 404:

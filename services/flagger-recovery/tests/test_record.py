@@ -175,6 +175,27 @@ class DeploymentRecordRoundTripTests(unittest.TestCase):
         self.assertEqual(metadata["annotations"]["flagger-recovery/canary-full"], f"{identity.namespace}.{identity.canary_name}")
         self.assertEqual(metadata["labels"]["flagger-recovery/canary"], canary_label(identity.namespace, identity.canary_name))
 
+class ConfigMapStoreConstructionTests(unittest.TestCase):
+    def test_https_with_token_is_allowed(self):
+        store = ConfigMapStore("https://kubernetes.default.svc", token="secret", transport=FakeTransport())
+        self.assertEqual(store._base_url, "https://kubernetes.default.svc")
+
+    def test_http_with_token_is_rejected(self):
+        with self.assertRaises(ValueError):
+            ConfigMapStore("http://kubernetes.default.svc", token="secret", transport=FakeTransport())
+
+    def test_loopback_http_without_token_is_allowed(self):
+        for base_url in ("http://127.0.0.1:8001", "http://localhost:8001"):
+            with self.subTest(base_url=base_url):
+                store = ConfigMapStore(base_url, transport=FakeTransport())
+                self.assertEqual(store._base_url, base_url)
+
+    def test_loopback_http_with_token_is_rejected(self):
+        for base_url in ("http://127.0.0.1:8001", "http://localhost:8001"):
+            with self.subTest(base_url=base_url):
+                with self.assertRaises(ValueError):
+                    ConfigMapStore(base_url, token="secret", transport=FakeTransport())
+
 class ConfigMapStoreTests(unittest.TestCase):
     def _store(self, transport):
         return ConfigMapStore("http://127.0.0.1:8001", transport=transport)
@@ -256,6 +277,13 @@ class ConfigMapStoreTests(unittest.TestCase):
     def test_get_missing_returns_none(self):
         store = self._store(FakeTransport())
         self.assertIsNone(store.get("0" * 32))
+
+    def test_get_rejects_a_key_that_is_not_32_hex_chars(self):
+        transport = FakeTransport()
+        store = self._store(transport)
+        with self.assertRaises(ValueError):
+            store.get("../../secrets")
+        self.assertEqual(transport.requests, [])
 
     def test_list_with_label_selector(self):
         transport = FakeTransport()
