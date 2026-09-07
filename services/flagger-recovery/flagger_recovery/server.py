@@ -128,7 +128,14 @@ class Receiver:
         except MalformedPayload as exc:
             return 400, {"result": "MalformedPayload", "detail": str(exc)}
 
-        if self._inbox.seen(event):
+        # ``attribution-pending`` is not terminal: the document store is
+        # create-only, so a pending event can never be overwritten in place
+        # once the candidate pods show up. A redelivery of the same hook must
+        # re-run resolution instead of short-circuiting on that stale
+        # placeholder; only a status the store actually finished with
+        # (``STATUS_RECEIVED``) is a real duplicate.
+        previous_status = self._inbox.status(event)
+        if previous_status is not None and previous_status != STATUS_ATTRIBUTION_PENDING:
             return 202, {"result": "Duplicate", "event": event.key}
         if hook == "pre-rollout":
             return self._register(event)

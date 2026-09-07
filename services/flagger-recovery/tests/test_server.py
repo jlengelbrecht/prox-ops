@@ -274,6 +274,73 @@ class DurabilityTests(ReceiverTestCase):
         status, payload = receiver.handle("pre-rollout", {}, _body())
         self.assertEqual((status, payload["result"]), (202, "Registered"))
 
+class RetryableAttributionPendingTests(ReceiverTestCase):
+    """``attribution-pending`` is not a terminal outcome: the document store
+    is create-only, so the stored event can never be flipped to a finished
+    status in place. A redelivery of the same hook must re-run resolution,
+    not answer ``Duplicate`` for a candidate that was never recorded."""
+
+    class _FlakyDocumentStore:
+        """Wraps a real store and raises once from ``put_document()``, then delegates."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.put_document_calls = 0
+
+        def put_document(self, document):
+            self.put_document_calls += 1
+            if self.put_document_calls == 1:
+                raise RuntimeError("simulated event store outage")
+            return self._inner.put_document(document)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    def test_pending_then_success_on_retry_registers_the_candidate(self):
+        self.candidates.failure = AttributionRefused("no candidate pods observed yet")
+        status, payload = self.post("pre-rollout")
+        self.assertEqual((status, payload["result"]), (202, "AttributionPending"))
+        self.assertIsNone(self.store.get(make_key_parts("flagger-pilot", "podinfo", TEMPLATE_HASH, PHASE_CANDIDATE)))
+
+        self.candidates.failure = None
+        status, payload = self.post("pre-rollout")
+
+        self.assertEqual((status, payload["result"]), (202, "Registered"))
+        self.assertEqual(len(self.candidates.reads), 2, "a pending event must re-run resolution on retry")
+        record = self.store.get(make_key_parts("flagger-pilot", "podinfo", TEMPLATE_HASH, PHASE_CANDIDATE))
+        self.assertIsNotNone(record)
+
+    def test_record_written_but_event_missing_on_retry_creates_no_second_record(self):
+        flaky = self._FlakyDocumentStore(self.store)
+        receiver = Receiver(
+            token=TOKEN, store=flaky, candidates=self.candidates, clock=lambda: "2026-09-07T00:00:00Z"
+        )
+
+        with self.assertRaises(RuntimeError):
+            receiver.handle("pre-rollout", {}, _body())
+
+        record_key = make_key_parts("flagger-pilot", "podinfo", TEMPLATE_HASH, PHASE_CANDIDATE)
+        self.assertIsNotNone(self.store.get(record_key), "the record must have landed before the event write failed")
+        self.assertEqual(len(self.store.list_documents(KIND_EVENT)), 0)
+        writes_after_first = self.store.writes
+
+        status, payload = receiver.handle("pre-rollout", {}, _body())
+
+        self.assertEqual((status, payload["result"]), (202, "Duplicate"))
+        self.assertEqual(self.store.writes, writes_after_first + 1, "only the event should be written on retry")
+        self.assertEqual(len(self.store.list_documents(KIND_EVENT)), 1)
+
+    def test_processed_event_short_circuits_with_zero_writes(self):
+        self.post("pre-rollout")
+        writes_after_first = self.store.writes
+        reads_after_first = len(self.candidates.reads)
+
+        status, payload = self.post("pre-rollout")
+
+        self.assertEqual((status, payload["result"]), (202, "Duplicate"))
+        self.assertEqual(self.store.writes, writes_after_first)
+        self.assertEqual(len(self.candidates.reads), reads_after_first, "a processed event must not re-resolve")
+
 class HttpTests(unittest.TestCase):
     """Drives the real handler over a loopback socket on an ephemeral port."""
 
