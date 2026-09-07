@@ -22,13 +22,12 @@ resources:
   # ordering note in that file.
   - edge-bazzite-5090-ca.yaml
   - edge-bazzite-5090-externalsecret.yaml
-  # STORY-034-3: auth-mechanics spike (additive - separate HTTPRoute,
-  # separate hostname, separate Secret; nothing above is modified).
-  # Lives here rather than in agentgateway-wake-gate because this
-  # Kustomization already carries `decryption: {provider: sops}` and owns
-  # the only other spike credential, while wake-gate deliberately ships no
-  # SOPS files at all and is scheduled for deletion in Story 34.11.
-  - auth-matrix-keys.sops.yaml
-  - auth-matrix-backends.yaml
-  - auth-matrix-httproute.yaml
-  - auth-matrix-policies.yaml
+  # STORY-034-3's auth-mechanics spike (its own HTTPRoute, hostname,
+  # backends, policies and Secret) is retired - the questions it was built
+  # to answer were answered in 34.3 and its findings live on in the route
+  # files above. Its two backends named no placement identity (a static
+  # backend and a single-provider one, neither of which has a name field),
+  # and a host a gateway cannot name cannot be judged human-owned or not
+  # (GATEWAY-REALIZATION.md §5). Nothing outside the spike referenced it.
+  # `decryption: {provider: sops}` stays on this app's Kustomization
+  # (../ks.yaml): spike-key.sops.yaml above is still SOPS-encrypted.
