@@ -46,10 +46,12 @@ spec:
     # STORY-034-11: originally five local chat models (see history for the
     # `x-model` dispatch mechanism); STORY-035-8c retired the four non-
     # qwen36-27b models and their rules, so qwen36-27b's `x-placement`
-    # rules below are what remains. Every rule below is an Exact
-    # path match on one of the two canonical AI paths agentgateway
-    # recognises (/v1/chat/completions, /v1/messages) - finding F3 (no
-    # PathPrefix "/" catch-all fronting a GPU). The real, unmodified
+    # rules below are what remains. Every local-model rule below is an
+    # Exact path match, with a method, on one of the two canonical AI
+    # paths agentgateway recognises (/v1/chat/completions, /v1/messages)
+    # - finding F3 (no PathPrefix "/" catch-all fronting a GPU). The two
+    # cloud rules at the end of the file are Exact matches with a method
+    # too, on /v1/responses and /v1/embeddings. The real, unmodified
     # request path is preserved in every case (no URLRewrite anywhere in
     # this file), which is deliberate: it is the one dimension every
     # proven G1/G2 test in WI-034-4 shared, and changing it for
@@ -64,7 +66,8 @@ spec:
     # spec.traffic.phase doc-string: "If the phase is PreRouting, the
     # targetRef must be a Gateway or a Listener"). A Gateway-scoped
     # policy would run body-parsing on every request through EVERY route
-    # on ai-gateway (pilot, wake-gate, auth-matrix, MCP federation) for
+    # on ai-gateway (pilot, wake-gate, MCP federation and, at the time,
+    # the auth-matrix spike) for
     # the sake of five rules on one route - out of proportion for this
     # story and not requested by the handoff. So dispatch here uses the
     # `x-model` request header instead, exactly reusing WI-034-4's
@@ -102,11 +105,13 @@ spec:
     # STORY-035-8: x-placement dispatch for qwen36-27b ONLY (R6 names this
     # model alone). Same mechanism as x-model above - Gateway API ranks a
     # header-matched rule above the headerless one below it, so
-    # `x-placement: cachyos-7900xtx` picks a dedicated rule and anything
-    # else (missing, unknown, or a stale name) falls through to the
-    # headerless default. The values are the placement names verbatim,
-    # because that is what the router hands the caller to copy - an
-    # abbreviation here would match nothing.
+    # `x-placement: cachyos-7900xtx` and `x-placement: bazzite-5090` each
+    # pick a dedicated rule, while `x-placement: kserve-a5000` and
+    # anything else (missing, unknown, or a stale name) fall through to
+    # the headerless default, which terminates on kserve-a5000. The
+    # values are the placement names verbatim, because that is what the
+    # router hands the caller to copy - an abbreviation here would match
+    # nothing.
     #
     # Access control is unaffected. The qwen36-27b authz CEL defined
     # alongside the other model policies is copied onto these same section
@@ -259,6 +264,14 @@ spec:
     # those two paths.
     #
     # /v1/models is not listed either: see the file header.
+    #
+    # Kept rather than deleted, deliberately. Only the route-level API key
+    # policy (policy.yaml, the 34.2 spike key) covers these two rules -
+    # the same and only key that could reach the old catch-all - so who
+    # can reach the cloud backend does not change here, and the backend's
+    # key has no credits either way (34.9 Decision 7). Taking the cloud
+    # pilot's last rules away is a scoping decision about that pilot, not
+    # a conformance fix, so it is left for the owner to make on its own.
     - name: pilot-responses
       matches:
         - path:

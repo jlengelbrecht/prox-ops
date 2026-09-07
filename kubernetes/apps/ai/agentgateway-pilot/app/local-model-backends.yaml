@@ -27,14 +27,16 @@
 #
 # STORY-035-8: qwen36-27b becomes a GROUPED backend - the 35.5-proven
 # `spec.ai.groups` shape (b): a passive safety net beneath proactive
-# agent-router placement, never the placement mechanism itself). Two
+# agent-router placement, never the placement mechanism itself). Three
 # AgentgatewayBackend objects below, not one, because `x-placement` has to
-# realize an EDGE-preferred order as well as a KServe-preferred one
-# (httproute.yaml picks between them on that header) - each retains the
-# other placement as its own R6 fallback group, so a header-pinned rule
-# never terminates in a single-provider backend (measured 3/3 503s
-# otherwise). This is the R6 atomic unit: grouped backend + passive health
-# (local-model-policies.yaml) + route retry (httproute.yaml) ship together.
+# realize an EDGE-preferred and a BAZZITE-preferred order as well as the
+# KServe default (httproute.yaml picks between them on that header). The
+# two placement-preferred backends each retain kserve-a5000 as their own
+# R6 fallback group, so a header-pinned rule never terminates in a
+# single-provider backend (measured 3/3 503s otherwise). This is the R6
+# atomic unit: grouped backend + passive health (local-model-policies.yaml)
+# + route retry (httproute.yaml) ship together. The default backend is the
+# one exception and carries no fallback group at all - see below.
 #
 # `qwen36-27b` keeps its name and is the FROZEN SAFE GROUPED DEFAULT:
 # kserve-a5000 only. Every existing caller that sends no `x-placement`

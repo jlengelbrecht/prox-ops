@@ -203,10 +203,20 @@ spec:
 # (grouped backend in local-model-backends.yaml + this + route retry in
 # httproute.yaml). Backend-scoped `spec.backend.health` (not
 # `spec.traffic`), targeting the GROUP-0 provider of each of qwen36-27b's
-# two backend variants by `sectionName` - kserve-a5000 in the default/
-# KServe-preferred backend, cachyos-7900xtx in the edge-preferred one. One
-# policy, two targetRefs, since the frozen values (duration: 30s,
-# consecutiveFailures: 1) are identical either way.
+# backend variants by `sectionName` - kserve-a5000 in the default backend,
+# cachyos-7900xtx in the edge-preferred one, bazzite-5090 in the
+# bazzite-preferred one. One policy, three targetRefs, since the frozen
+# values (duration: 30s, consecutiveFailures: 1) are identical either way.
+#
+# On the default backend the evicted provider is now the only one there
+# is (its cachyos-7900xtx fallback group is gone - local-model-backends.
+# yaml), so eviction there has nothing to fail over to. It is not a
+# blackout: when every provider of a backend is evicted, agentgateway's
+# load balancer falls back to returning the evicted ones (v1.3.1
+# crates/agentgateway/src/http/health.rs, eviction_decision), so a
+# headerless request keeps reaching the predictor and fails or succeeds
+# on its own outcome. What eviction adds on that backend is the health
+# score, not an alternative.
 #
 # Passive only: this reacts to real request outcomes on the provider it
 # targets. It is not an active probe and cannot be one - `health.eviction`
