@@ -35,7 +35,11 @@ class CandidateIdentity:
     namespace: str
     canary_name: str
     deployment_uid: str
-    template_hash: str
+    template_hash: str  # Canary.status.lastAppliedSpec — Flagger's own hash of the pod
+    # template. NEVER compare this to replicaset_hash: the two are computed by different
+    # hashers (Flagger's vs. the Deployment controller's) and never coincide, even for the
+    # same template.
+    replicaset_hash: str  # the selected candidate ReplicaSet's pod-template-hash label
     images: tuple[ContainerImage, ...]
     chart_name: str
     chart_version: str
@@ -156,23 +160,41 @@ def resolve(
     if not template_hash:
         raise AttributionRefused("Canary status.lastAppliedSpec is missing; cannot fix a template hash")
 
+    # Flagger's lastAppliedSpec hash and the Kubernetes pod-template-hash label are computed
+    # by two different hashers and never coincide, even for the same pod template — so the
+    # candidate ReplicaSet cannot be found by comparing them. Instead select the ReplicaSet
+    # whose deployment.kubernetes.io/revision annotation matches the Deployment's own, which
+    # is how the Deployment controller itself tracks "the ReplicaSet for my current spec".
+    deployment_revision = deployment.get("metadata", {}).get("annotations", {}).get("deployment.kubernetes.io/revision")
+    if not deployment_revision:
+        raise AttributionRefused(
+            f"Deployment {deployment_uid} has no deployment.kubernetes.io/revision annotation; "
+            "cannot select a candidate ReplicaSet"
+        )
+
     matching_replicasets = [
         rs
         for rs in candidate_replicasets
         if _controller_uid(rs) == deployment_uid
-        and rs.get("metadata", {}).get("labels", {}).get("pod-template-hash") == template_hash
+        and rs.get("metadata", {}).get("annotations", {}).get("deployment.kubernetes.io/revision") == deployment_revision
     ]
     if len(matching_replicasets) > 1:
         raise AttributionRefused(
             f"{len(matching_replicasets)} ReplicaSets owned by Deployment {deployment_uid} "
-            f"share pod-template-hash {template_hash!r}; refusing to disambiguate the candidate"
+            f"carry deployment.kubernetes.io/revision {deployment_revision!r}; refusing to disambiguate the candidate"
         )
     if not matching_replicasets:
         raise AttributionRefused(
-            f"no ReplicaSet owned by Deployment {deployment_uid} has pod-template-hash {template_hash!r}"
+            f"no ReplicaSet owned by Deployment {deployment_uid} carries deployment.kubernetes.io/revision "
+            f"{deployment_revision!r}"
         )
 
-    candidate_rs_uid = matching_replicasets[0]["metadata"]["uid"]
+    candidate_rs = matching_replicasets[0]
+    candidate_rs_uid = candidate_rs["metadata"]["uid"]
+    replicaset_hash = candidate_rs.get("metadata", {}).get("labels", {}).get("pod-template-hash")
+    if not replicaset_hash:
+        raise AttributionRefused(f"candidate ReplicaSet {candidate_rs_uid} has no pod-template-hash label")
+
     candidate_pods = [pod for pod in candidate_pods if _controller_uid(pod) == candidate_rs_uid]
     if not candidate_pods:
         raise AttributionRefused("no candidate pods observed yet; cannot read an image digest")
@@ -191,6 +213,8 @@ def resolve(
         "canary_name": "Canary.metadata.name",
         "deployment_uid": "Deployment.metadata.uid",
         "template_hash": "Canary.status.lastAppliedSpec",
+        "replicaset_hash": "ReplicaSet.metadata.labels['pod-template-hash'] "
+        "(ReplicaSet selected by matching deployment.kubernetes.io/revision)",
         "images": "Pod.status.containerStatuses[].imageID",
         "chart_name": "HelmRelease.status.history[].chartName",
         "chart_version": "HelmRelease.status.history[].chartVersion",
@@ -207,6 +231,7 @@ def resolve(
         canary_name=canary_name,
         deployment_uid=deployment_uid,
         template_hash=template_hash,
+        replicaset_hash=replicaset_hash,
         images=images,
         chart_name=chart_name,
         chart_version=chart_version,
