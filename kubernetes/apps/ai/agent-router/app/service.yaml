@@ -1,0 +1,21 @@
+---
+# ClusterIP agent-router.ai.svc.cluster.local:8080 - the contract's plaintext
+# in-cluster path (contracts/agent-router/openapi.yaml `servers[0]`).
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-router
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: agent-router
+    app.kubernetes.io/component: router
+    app.kubernetes.io/part-of: agent-router
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: agent-router
