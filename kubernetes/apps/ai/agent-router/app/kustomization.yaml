@@ -1,19 +1,9 @@
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
-# What stays with the deployment after the cutover - the credential wiring and
-# the cluster's own network policy - plus the two objects that bring the router
-# in: the source that names the release, and the Flux Kustomization that
-# consumes it and carries this cluster's patches. The Deployment, the Service
-# and the HTTPRoute are gone from here; they come from the artifact.
-#
-# No namespace transform and no patches: every file below already declares
-# `namespace: ai`, exactly as the directory this replaces did, and the
-# deployment-specific values the release base leaves open are patched in
-# ks.yaml, where the release's own manifests are rendered.
 resources:
   - externalsecret.yaml
+  - deployment.yaml
+  - service.yaml
   - networkpolicy.yaml
-  - ocirepository.yaml
-  - ks.yaml
+  - httproute.yaml
