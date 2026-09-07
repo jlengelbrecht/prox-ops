@@ -8,7 +8,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def _load(name: str):
     """Load a fixture. ``replicasets.json``/``pods.json`` are the raw ``kubectl
-    get ... -o json`` List shape (``{"items": [...]}]``, matching what
+    get ... -o json`` List shape (``{"items": [...]}``, matching what
     ``kube.ApiReader`` returns for multi-object GETs) — unwrap to the bare
     list callers expect. Single-object fixtures (canary, deployment, ...)
     have no ``items`` key and pass through unchanged."""
