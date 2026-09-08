@@ -32,8 +32,10 @@ PHASE_LABEL = "flagger-recovery/phase"
 # The webhook payload's ``checksum``, which is NOT the template hash the record
 # is keyed by — see ``checksum_label()``.
 CHECKSUM_LABEL = "flagger-recovery/checksum"
-# ``server.PHASE_CANDIDATE``, restated here because the store is the lower layer.
+# ``server.PHASE_CANDIDATE``/``server.PHASE_PROMOTED``, restated here because the store is
+# the lower layer.
 _CANDIDATE = "candidate"
+_PROMOTED = "promoted"
 
 # Which labels must match before a 409 on create counts as *our* duplicate
 # rather than someone else's ConfigMap wearing our deterministic name.
@@ -150,11 +152,22 @@ class DeploymentRecord:
 
     def to_configmap(self, *, storage_namespace: str = "flagger-system") -> dict[str, Any]:
         key = make_key(self.identity, self.phase)
+        identity_payload = self.identity.to_dict()
+        if self.phase == _PROMOTED:
+            # F20: pre-rollout resolved this identity before the candidate was
+            # promoted, so it still carries ``is_promoted: false`` and the
+            # *previous* release's ``last_promoted_spec`` — a document labelled
+            # ``phase=promoted`` contradicting both. NFR4 forbids re-resolving
+            # live state to fix that, so the document is stamped instead; the
+            # pre-rollout answer is renamed, not dropped.
+            identity_payload["last_promoted_spec_at_registration"] = identity_payload.pop("last_promoted_spec")
+            identity_payload["is_promoted"] = True
+            identity_payload["promoted_at"] = self.created_at
         payload = {
             "phase": self.phase,
             "created_at": self.created_at,
             "checksum": self.checksum,
-            "identity": self.identity.to_dict(),
+            "identity": identity_payload,
         }
         labels = {
             "app.kubernetes.io/part-of": "flagger-recovery",
@@ -183,13 +196,28 @@ class DeploymentRecord:
     @classmethod
     def from_configmap(cls, configmap: Mapping[str, Any]) -> "DeploymentRecord":
         payload = json.loads(configmap["data"]["record.json"])
+        identity_payload = dict(payload["identity"])
+        # The inverse of the promoted-write stamp above, so a ``promoted``
+        # record's ``.identity`` means the same pre-rollout thing everywhere
+        # it is read (``decide.py``, a correction proposal): the promotion
+        # stamp lives in the document, not in ``CandidateIdentity``.
+        if "last_promoted_spec_at_registration" in identity_payload:
+            identity_payload["last_promoted_spec"] = identity_payload.pop("last_promoted_spec_at_registration")
+            identity_payload.pop("promoted_at", None)
+            # Recomputed as ``identity.resolve()`` derives it, not assumed false:
+            # a candidate already equal to the promoted spec at registration
+            # (F8's manual rollback) must round-trip that fact too.
+            identity_payload["is_promoted"] = (
+                identity_payload["last_promoted_spec"] is not None
+                and identity_payload["last_promoted_spec"] == identity_payload["template_hash"]
+            )
         return cls(
             phase=payload["phase"],
             created_at=payload["created_at"],
             # Records written before the checksum index existed have no such
             # field; they read back with an empty checksum and stay unindexed.
             checksum=str(payload.get("checksum") or ""),
-            identity=CandidateIdentity.from_dict(payload["identity"]),
+            identity=CandidateIdentity.from_dict(identity_payload),
         )
 
 @dataclasses.dataclass(frozen=True)

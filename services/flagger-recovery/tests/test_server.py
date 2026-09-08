@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import threading
 import time
@@ -7,7 +8,7 @@ import urllib.request
 from pathlib import Path
 
 from flagger_recovery.auth import TOKEN_HEADER
-from flagger_recovery.identity import AttributionRefused
+from flagger_recovery.identity import AttributionRefused, resolve
 from flagger_recovery.inbox import KIND_EVENT, STATUS_ATTRIBUTION_PENDING, STATUS_RECEIVED
 from flagger_recovery.kube import ApiError
 from flagger_recovery.record import DeploymentRecord, InMemoryStore, make_key_parts
@@ -200,6 +201,98 @@ class DeciderTests(ReceiverTestCase):
         )
         status, payload = receiver.handle("event", {}, _body())
         self.assertEqual((status, payload["result"]), (202, "Refuse"))
+
+class DecisionLoggingTests(ReceiverTestCase):
+    """F16: one INFO decision line per handled hook, so a stored write, a
+    swallowed duplicate and an ``Ignore`` are distinguishable from the access
+    line alone."""
+
+    LOGGER = "flagger_recovery.server"
+
+    def test_registered_and_duplicate(self):
+        with self.assertLogs(self.LOGGER, level="INFO") as logs:
+            status, payload = self.post("pre-rollout")
+        line = logs.output[-1]
+        self.assertIn("hook=pre-rollout canary=flagger-pilot/podinfo", line)
+        self.assertIn(f"checksum={CHECKSUM}", line)
+        self.assertIn(f'result="Registered" reason="" record="{payload["record"]}" proposal=""', line)
+
+        with self.assertLogs(self.LOGGER, level="INFO") as logs:
+            self.post("pre-rollout")
+        self.assertIn('result="Duplicate" reason="" record="" proposal=""', logs.output[-1])
+
+    def test_attribution_pending(self):
+        self.candidates.failure = AttributionRefused("no candidate pods observed yet")
+        with self.assertLogs(self.LOGGER, level="INFO") as logs:
+            self.post("pre-rollout")
+        line = logs.output[-1]
+        self.assertIn('result="AttributionPending"', line)
+        self.assertIn('reason="AttributionRefused: no candidate pods observed yet"', line)
+
+    def test_register_on_a_successful_promotion(self):
+        self.post("pre-rollout")
+        with self.assertLogs(self.LOGGER, level="INFO") as logs:
+            status, payload = self.post("post-rollout", _body(phase="Succeeded"))
+        self.assertIn(f'result="Register" reason="" record="{payload["record"]}"', logs.output[-1])
+
+    def test_ignore_from_the_default_decider(self):
+        with self.assertLogs(self.LOGGER, level="INFO") as logs:
+            self.post("post-rollout", _body(phase="Failed"))
+        self.assertIn(f'result="Ignore" reason="{DECIDER_NOT_INSTALLED}"', logs.output[-1])
+
+    def test_refuse_and_propose_correction_from_an_injected_decider(self):
+        from flagger_recovery.proposal import build_proposal
+
+        receiver = Receiver(
+            token=TOKEN, store=self.store, candidates=self.candidates,
+            decider=lambda record, event: Decision(kind="Refuse", reason="not implemented yet"),
+        )
+        with self.assertLogs(self.LOGGER, level="INFO") as logs:
+            receiver.handle("event", {}, _body())
+        self.assertIn('result="Refuse" reason="not implemented yet"', logs.output[-1])
+
+        base = resolve(**FakeCandidates().read("flagger-pilot", "podinfo"))
+        proposal = build_proposal(base, dataclasses.replace(base, template_hash="other-hash"))
+        receiver = Receiver(
+            token=TOKEN, store=self.store, candidates=self.candidates,
+            decider=lambda record, event: Decision(kind="ProposeCorrection", reason=proposal.summary, proposal=proposal),
+        )
+        with self.assertLogs(self.LOGGER, level="INFO") as logs:
+            receiver.handle("event", {}, _body(checksum="a" * 10))  # a distinct event, not the Refuse above's duplicate
+        self.assertIn(
+            f'result="ProposeCorrection" reason="{proposal.summary}" record="" proposal="{proposal.key}"',
+            logs.output[-1],
+        )
+
+    def test_never_logs_metadata_and_clamps_a_hostile_optional_field(self):
+        """``metadata`` is never logged, and ``phase``/``checksum`` -- only
+        length- and whitespace-trimmed at intake, not character-restricted --
+        are reclamped through ``label_value``/``checksum_label`` before they
+        reach the line, so a newline or a forged ``key=value`` cannot ride in."""
+        with self.assertLogs(self.LOGGER, level="INFO") as logs:
+            self.post("pre-rollout", _body(
+                metadata={"token": TOKEN, "secret": "do-not-log-me"},
+                phase="fake\nhook=post-rollout result=Injected",
+            ))
+        line = logs.output[-1]
+        self.assertNotIn("do-not-log-me", line)
+        self.assertNotIn("\n", line)
+        self.assertNotIn("result=Injected", line)
+
+    def test_a_forged_checksum_cannot_split_the_line_into_a_second_result_field(self):
+        """``checksum`` reaches ``_pending``'s ``detail`` verbatim (quoted by
+        ``repr``) when no candidate record is indexed under it; ``_log_field``
+        must still keep that whole detail inside one JSON-quoted ``reason=``
+        token rather than let the embedded ``result=Injected`` read as a
+        second field."""
+        with self.assertLogs(self.LOGGER, level="INFO") as logs:
+            self.post("post-rollout", _body(phase="Succeeded", checksum="x result=Injected"))
+        line = logs.output[-1]
+        # A real ``result=`` field is followed by an opening quote; the
+        # injected copy sits unquoted inside the ``reason`` value's own
+        # quotes, so only the genuine field matches this pattern.
+        self.assertEqual(line.count('result="'), 1)
+        self.assertIn("x result=Injected", line)
 
 class RejectionTests(ReceiverTestCase):
     def assertNothingStored(self):

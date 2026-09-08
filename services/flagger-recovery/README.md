@@ -172,6 +172,16 @@ pods visible yet" is not a reason to fail somebody's release. A `Succeeded`
 because by the time this hook fires Flagger has already scaled the candidate
 pods away.
 
+A `promoted` record's identity block is the registration identity plus a
+promotion stamp, not a re-resolved one: the fields `pre-rollout` captured
+(`is_promoted: false`, `last_promoted_spec` naming the *previous* release)
+describe the moment identity was resolved, and left undecorated on a
+`phase=promoted` document they read as the receiver contradicting itself. The
+write sets `is_promoted: true`, renames `last_promoted_spec` to
+`last_promoted_spec_at_registration`, and adds `promoted_at` (`created_at`,
+restated); `from_configmap` reverses all three, so `.identity` still means
+the pre-rollout thing everywhere else it is read.
+
 Flagger keeps the connection open after a hook's response rather than closing
 it, so the handler's 15 s socket timeout expires on every single hook and
 `http.server` reports it through `log_error`. `_Handler.log_error` logs that one

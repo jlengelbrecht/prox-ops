@@ -34,6 +34,7 @@ from typing import Any, Callable, Mapping, NamedTuple, Optional, Protocol
 from . import auth
 from .identity import AttributionRefused, CandidateIdentity, resolve
 from .inbox import (
+    MAX_FIELD_LENGTH,
     STATUS_ATTRIBUTION_PENDING,
     STATUS_RECEIVED,
     Inbox,
@@ -41,7 +42,7 @@ from .inbox import (
     WebhookEvent,
 )
 from .kube import ApiError, ApiReader, CandidateReader, LiveCanary
-from .record import ConfigMapStore, DeploymentRecord, PutResult, canary_label, make_key
+from .record import ConfigMapStore, DeploymentRecord, PutResult, canary_label, checksum_label, label_value, make_key
 
 LOG = logging.getLogger("flagger_recovery.server")
 
@@ -81,6 +82,13 @@ _REQUEST_TIMED_OUT = "Request timed out:"
 
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+def _log_field(value: str) -> str:
+    """Render a dynamic decision-line value as a quoted, escaped JSON string
+    (clamped first) so a space or an embedded ``key=value`` inside it can
+    never be misread as a second field — the line stays one ``result=``
+    token no matter what a payload or an injected decider put in ``value``."""
+    return json.dumps(value[:MAX_FIELD_LENGTH])
 
 class CandidateSource(Protocol):
     """What ``identity.resolve()`` needs, fetched live. ``kube.CandidateReader``
@@ -177,12 +185,41 @@ class Receiver:
         # (``STATUS_RECEIVED``) is a real duplicate.
         previous_status = self._inbox.status(event)
         if previous_status is not None and previous_status != STATUS_ATTRIBUTION_PENDING:
+            self._log_decision(event, result="Duplicate")
             return 202, {"result": "Duplicate", "event": event.key}
         if hook == "pre-rollout":
             return self._register(event)
         if hook == "post-rollout" and event.phase == "Succeeded":
             return self._promote(event)
         return self._decide(event)
+
+    def _log_decision(
+        self, event: WebhookEvent, *, result: str, reason: str = "", record: str = "", proposal: str = ""
+    ) -> None:
+        """The one decision-shaped log line per handled hook (F16), so a stored
+        write, a swallowed duplicate and an ``Ignore`` stop being indistinguishable
+        from the access line alone. ``hook``/``namespace``/``name`` are already
+        control-character-clean (fixed route set; ``inbox._text``'s ban on
+        required fields); ``phase``/``checksum`` are reclamped through the same
+        ``label_value``/``checksum_label`` a record's own labels go through.
+        ``result``, ``reason``, ``record`` and ``proposal`` all go through
+        ``_log_field`` -- ``result`` is a decider's ``Decision.kind`` and an
+        injected decider is untrusted, and ``reason``/``record``/``proposal``
+        can echo a payload's ``detail`` or checksum straight back -- so every
+        one of them is clamped and JSON-quoted before it reaches the line.
+        ``metadata`` is never logged."""
+        LOG.info(
+            "hook=%s canary=%s/%s phase=%s checksum=%s result=%s reason=%s record=%s proposal=%s",
+            event.hook,
+            event.namespace,
+            event.name,
+            label_value(event.phase) if event.phase else "",
+            checksum_label(event.checksum) or "",
+            _log_field(result),
+            _log_field(reason),
+            _log_field(record),
+            _log_field(proposal),
+        )
 
     def _candidate_for(self, event: WebhookEvent) -> Optional[DeploymentRecord]:
         """The stored ``candidate`` record for this rollout, found through the
@@ -221,6 +258,12 @@ class Receiver:
             status=STATUS_RECEIVED,
             received_at=self._clock(),
             detail=f"{decision.kind}: {decision.reason}" if decision.reason else decision.kind,
+        )
+        # The decision itself, not ``queued or decision.kind``: a queued proposal
+        # is still a ``ProposeCorrection`` decision.
+        self._log_decision(
+            event, result=decision.kind, reason=decision.reason,
+            proposal="" if decision.proposal is None else decision.proposal.key,
         )
         return 202, {"result": queued or decision.kind, "event": event.key, "detail": decision.reason}
 
@@ -261,10 +304,14 @@ class Receiver:
             )
         )
         self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
+        record_key = make_key(identity, PHASE_CANDIDATE)
+        self._log_decision(
+            event, result="Registered" if result is PutResult.CREATED else "Duplicate", record=record_key
+        )
         return 202, {
             "result": "Registered" if result is PutResult.CREATED else "Duplicate",
             "event": event.key,
-            "record": make_key(identity, PHASE_CANDIDATE),
+            "record": record_key,
         }
 
     def _promote(self, event: WebhookEvent) -> tuple[int, dict[str, Any]]:
@@ -278,10 +325,14 @@ class Receiver:
             return self._pending(event, f"no {PHASE_CANDIDATE} record indexed under checksum {event.checksum!r}")
         promoted = write_promoted_record(self._store, record.identity, self._clock, checksum=record.checksum)
         self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
+        record_key = make_key(promoted.identity, PHASE_PROMOTED)
+        # "Register": the shared decision vocabulary decide.decide() uses for the
+        # same event; the HTTP response below keeps its "Promoted" wording.
+        self._log_decision(event, result="Register", record=record_key)
         return 202, {
             "result": "Promoted",
             "event": event.key,
-            "record": make_key(promoted.identity, PHASE_PROMOTED),
+            "record": record_key,
         }
 
     def _pending(self, event: WebhookEvent, detail: str) -> tuple[int, dict[str, Any]]:
@@ -292,6 +343,7 @@ class Receiver:
             detail=detail,
             retry_after_seconds=RETRY_AFTER_SECONDS,
         )
+        self._log_decision(event, result="AttributionPending", reason=detail)
         return 202, {
             "result": "AttributionPending",
             "event": event.key,
