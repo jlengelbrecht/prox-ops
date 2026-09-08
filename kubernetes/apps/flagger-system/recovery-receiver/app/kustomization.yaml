@@ -8,16 +8,24 @@ resources:
   - ./service.yaml
   - ./networkpolicy.yaml
   # The Git credential, commented out on purpose - see the block below.
-  - ./externalsecret-git.yaml
+  # - ./externalsecret-git.yaml
 
-# The correction window. ./externalsecret-git.yaml exists in this directory and
-# is not in the list above, so Flux never applies it and the cluster holds no
-# copy of the permanent write token between windows. Opening one is a PR to
-# `main` that uncomments that line and sets RECOVERY_GIT_WRITE to `enabled` in
-# ./deployment.yaml; closing it is the reverse PR, after which Flux prunes the
-# Secret. The credential's lifetime is a reviewed diff, and nothing breaks in
-# between: that Secret is mounted `optional` and the switch defaults to
-# `dry-run`, which reads GitHub anonymously.
+# The correction window, in its two states:
+#
+# Default (closed): the line above is commented out, so Flux never applies
+# ./externalsecret-git.yaml and the cluster holds no copy of the permanent
+# write token. ./deployment.yaml sets RECOVERY_GIT_WRITE to `dry-run`, which
+# reads GitHub anonymously; the Secret is mounted `optional`, so its absence
+# is a missing credential, never a crash loop.
+#
+# Open: the line above is uncommented, so Flux applies the ExternalSecret and
+# the cluster holds the write token; ./deployment.yaml sets RECOVERY_GIT_WRITE
+# to `enabled`.
+#
+# Opening and closing a window flips exactly those two lines - this one and
+# the RECOVERY_GIT_WRITE value in ./deployment.yaml - each a reviewed PR to
+# `main`, after which Flux applies or prunes the Secret accordingly. Never
+# edit this prose again; it already covers both states.
 
 # How the receiver's code reaches the cluster.
 #
