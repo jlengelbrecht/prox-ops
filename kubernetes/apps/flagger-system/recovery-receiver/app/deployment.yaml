@@ -81,11 +81,16 @@ spec:
               value: flagger-system
             - name: PORT
               value: "8080"
-            # off | dry-run | enabled, and `dry-run` between windows: the writer
-            # evaluates every bound and logs the commit it would have made,
-            # calling no mutating endpoint. ./kustomization.yaml has the window.
+            # off | dry-run | enabled. Default (closed window): `dry-run` - the
+            # writer evaluates every bound and logs the commit it would have
+            # made, calling no mutating endpoint, and no credential is mounted.
+            # Open: `enabled` - the writer calls the mutating endpoint using the
+            # credential ./kustomization.yaml's line adds. Opening and closing a
+            # window flips exactly this value and that line, each a reviewed PR
+            # to `main`; never edit this comment again, it already covers both
+            # states.
             - name: RECOVERY_GIT_WRITE
-              value: enabled
+              value: dry-run
             # Read at call time: the Secret below appears and disappears under
             # a running pod. Absent means unauthenticated GitHub reads.
             - name: RECOVERY_GIT_TOKEN_FILE
