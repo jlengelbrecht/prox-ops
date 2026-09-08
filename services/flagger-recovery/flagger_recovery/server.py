@@ -466,10 +466,17 @@ def git_token_reader(path: str) -> Callable[[], str]:
             return pathlib.Path(path).read_text(encoding="utf-8").strip()
         except OSError:
             return ""
+        except ValueError:
+            # Non-UTF-8 bytes (UnicodeDecodeError is a ValueError): a mangled Secret is
+            # as unusable as an absent one, but unlike "no Secret yet" it is worth a log.
+            LOG.warning("%s: %r is not valid UTF-8; treating as no credential", GIT_TOKEN_FILE_ENV, path)
+            return ""
     return _read
 
 def _git_startup_note(mode: str, credential: bool) -> str:
-    """Mode and credential as two facts: ``enabled`` without one becomes ``dry-run``."""
+    """Mode and credential as two independent facts: the configured mode is reported as
+    configured, never rewritten here, alongside whether a credential happens to be
+    readable at this instant — a fact that can flip without a restart."""
     return (f"git corrections: {mode}, no writer installed" if mode == WRITE_OFF else
             f"git corrections: {mode}, {'' if credential else 'no '}credential mounted")
 
@@ -525,13 +532,11 @@ def _main(argv: Optional[list[str]] = None) -> None:
         from .lease import Lease
         token_file = os.environ.get(GIT_TOKEN_FILE_ENV, "")
         read_token = git_token_reader(token_file)
+        # Informational only: the configured mode is never rewritten from this. Flux
+        # applies the ExternalSecret and rolls the Deployment independently, so a pod can
+        # start before a window's Secret does; the writer resolves the credential itself,
+        # at correction time, and refuses credential-unavailable if it is still missing.
         credential = bool(read_token())
-        if mode == WRITE_ENABLED and not credential:
-            # A window is one PR, but Flux applies the ExternalSecret and rolls the
-            # Deployment independently: this pod can start before a window's Secret does.
-            LOG.warning("%s=%s but no credential is readable at %r: starting in %s instead",
-                        GIT_WRITE_ENV, WRITE_ENABLED, token_file, WRITE_DRY_RUN)
-            mode = WRITE_DRY_RUN
         # The module switch ships off; this is the one place that turns it on.
         gitwriter.CORRECTIONS_ENABLED = True
         correct = queued_corrector(gitwriter.corrector(

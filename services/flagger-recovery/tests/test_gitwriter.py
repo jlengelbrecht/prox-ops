@@ -118,6 +118,21 @@ class StubGitHub:
             return self.patch_status, b'{"message": "Update is not a fast forward"}'
         raise AssertionError(f"unrouted {method} {path}")
 
+class _AnyAuthStubGitHub(StubGitHub):
+    """``StubGitHub`` that records whether each call carried an ``Authorization`` header
+    instead of asserting a fixed one, for tests where the credential changes between
+    calls on the same writer (missing, then present on a retry)."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.authorized: list[bool] = []
+
+    def request(self, method, url, *, headers, body, ca_file, timeout):
+        assert url.startswith(BASE_URL + "/repos/") and headers["User-Agent"] and timeout > 0
+        self.authorized.append("Authorization" in headers)
+        path = url.split("/repos/", 1)[1].split("/", 2)[2]
+        self.calls.append((method, "/" + path, json.loads(body) if body else None))
+        return self._route(method, "/" + path)
+
 def writer(stub, *, dry_run=False, repository=policy.ALLOWED_REPOSITORY):
     return GitWriter(lambda: TOKEN_VALUE, repository=repository, base_url=BASE_URL,
                      dry_run=dry_run, transport=stub)
@@ -171,6 +186,19 @@ class GitWriterTests(unittest.TestCase):
         self.assertEqual(result.commit["parents"], [FAILED_SHA])
         self.assertTrue(result.commit["message"].startswith("fix(flagger-pilot): restore helmrelease.yaml"))
         self.assertEqual(result.commit["tree"], "")  # the one field a dry run cannot fill
+
+    def test_no_credential_at_write_time_refuses_and_touches_nothing_mutating(self):
+        # enabled (dry_run=False) but the token callable answers empty: reads still
+        # happen (anonymously), the write does not, and nothing is claimed.
+        stub = _AnyAuthStubGitHub()
+        gw = GitWriter(lambda: "", base_url=BASE_URL, dry_run=False, transport=stub)
+        with self.assertLogs("flagger_recovery.gitwriter", "WARNING") as logged:
+            result = gw.correct(proposal(), views(FakeLive()))
+        self.assertEqual(result.verdict.reason, policy.CREDENTIAL_UNAVAILABLE)
+        self.assertEqual(result.commit_sha, "")
+        self.assertEqual(stub.mutating, [])
+        self.assertNotIn(True, stub.authorized)
+        self.assertIn("no credential is readable", logged.output[0])
 
     def test_non_fast_forward_patch_refuses_branch_moved_and_stops(self):
         result, stub = run(StubGitHub(patch_status=422))

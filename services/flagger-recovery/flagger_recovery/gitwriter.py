@@ -230,6 +230,12 @@ class GitWriter:
                        "parents": [tree.head_sha], "author": AUTHOR, "committer": AUTHOR}
         if dry:
             return Correction(verdict, tree_body, commit_body, tree.head_sha, dry_run=True)
+        # Resolved now, not at process start: the ExternalSecret can sync after this pod
+        # started, and the next attempt must not require a restart to pick it up.
+        if not self._token():
+            LOG.warning("correction for %r refused: no credential is readable right now",
+                        proposal.get("template_hash"))
+            return Correction(Refuse(policy.CREDENTIAL_UNAVAILABLE), tree_body, commit_body, tree.head_sha)
         if claim is not None and not claim(verdict):
             return Correction(Refuse(policy.ALREADY_CORRECTED), head_sha=tree.head_sha)
         commit_body = {**commit_body, "tree": self._create("/git/trees", tree_body)}

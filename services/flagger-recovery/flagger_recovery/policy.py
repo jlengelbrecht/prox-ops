@@ -43,10 +43,13 @@ SUPERSEDED, ALREADY_RESTORED = "superseded", "already-restored"
 TARGET_CHANGED, BRANCH_MOVED, ALREADY_CORRECTED = "target-changed", "branch-moved", "already-corrected"
 RESTORE_NOT_ON_BRANCH = "restore-not-on-branch"  # the revision is not in ALLOWED_REF's history
 LEASE_HELD = "lease-held"  # another writer holds the Lease; nothing was read and nothing written
+# The mode is ``enabled`` but no credential was readable when the write was about to
+# happen; nothing is claimed, so the next attempt (in-band or reconcile) retries clean.
+CREDENTIAL_UNAVAILABLE = "credential-unavailable"
 REFUSAL_REASONS = (DISABLED, REQUIRES_DECISION, UNPARSABLE, WRONG_REPOSITORY, WRONG_REF,
                    PATH_OUTSIDE_PREFIX, NOT_AN_ALLOWED_TARGET, UNUSABLE_SHA, MIXED_SCOPE, NO_CHANGE,
                    SUPERSEDED, ALREADY_RESTORED, TARGET_CHANGED, BRANCH_MOVED, ALREADY_CORRECTED,
-                   RESTORE_NOT_ON_BRANCH, LEASE_HELD)
+                   RESTORE_NOT_ON_BRANCH, LEASE_HELD, CREDENTIAL_UNAVAILABLE)
 
 class LockUnavailable(Exception):
     """The design's Lease could not be taken, so somebody else is writing. Raised by

@@ -8,6 +8,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -16,7 +17,8 @@ from flagger_recovery.gitwriter import GitWriter, corrector
 from flagger_recovery.lease import DURATION_SECONDS, LEASE_NAME, Lease, _stamp
 from flagger_recovery.policy import LockUnavailable
 from flagger_recovery.record import ApiWriteError, InMemoryStore
-from tests.test_gitwriter import BASE_URL, FakeLive, StubGitHub, proposal, writer as git_writer
+from tests.test_gitwriter import (BASE_URL, TOKEN_VALUE, FakeLive, StubGitHub, _AnyAuthStubGitHub,
+                                  proposal, writer as git_writer)
 
 BASE = "https://kubernetes.default.svc:443"
 URL = f"{BASE}/apis/coordination.k8s.io/v1/namespaces/flagger-system/leases/{LEASE_NAME}"
@@ -91,6 +93,12 @@ class LeaseTests(unittest.TestCase):
         # A lock with no holder excludes nothing, so it cannot be built at all.
         self.assertRaises(ValueError, lambda: Lease(BASE, namespace="flagger-system", holder=""))
 
+    def test_an_unexpected_status_carries_the_response_body_for_diagnosis(self):
+        forbidden = {"message": "Forbidden", "reason": "leases.coordination.k8s.io is forbidden"}
+        with self.assertRaises(ApiWriteError) as caught:
+            lease(FakeApi(get=(403, forbidden))).acquire()
+        self.assertEqual(caught.exception.body, json.dumps(forbidden).encode("utf-8"))
+
 class SwitchTests(unittest.TestCase):
     def test_a_held_lease_refuses_the_correction_and_costs_nothing(self):
         store, stub = InMemoryStore(), StubGitHub()
@@ -103,6 +111,35 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual(result.verdict.reason, policy.LEASE_HELD)
         self.assertIn(policy.LEASE_HELD, policy.REFUSAL_REASONS)
         self.assertEqual((store.writes, stub.calls), (0, []))
+
+    def test_enabled_with_no_credential_at_correction_time_refuses_with_no_marker(self):
+        # RECOVERY_GIT_WRITE=enabled (dry_run=False), but nothing readable when the
+        # writer is about to write: refused, zero mutating calls, no correction marker.
+        store, stub = InMemoryStore(), _AnyAuthStubGitHub()
+        gw = GitWriter(lambda: "", base_url=BASE_URL, dry_run=False, transport=stub)
+        with mock.patch.object(gitwriter, "CORRECTIONS_ENABLED", True), \
+                self.assertLogs("flagger_recovery.gitwriter", "WARNING"):
+            result = corrector(store, gw, lambda _ns, _name: FakeLive(),
+                               clock=lambda: "2026-09-07T21:12:42Z", lock=nullcontext)(proposal())
+        self.assertEqual(result.verdict.reason, policy.CREDENTIAL_UNAVAILABLE)
+        self.assertEqual((store.writes, stub.mutating), (0, []))
+
+    def test_a_credential_that_appears_later_lets_the_retry_write(self):
+        # The same writer, the same proposal: the first attempt has no credential and
+        # leaves no marker, so a later attempt (once the ExternalSecret has synced)
+        # finds nothing claimed and writes cleanly.
+        store, stub, token = InMemoryStore(), _AnyAuthStubGitHub(), [""]
+        gw = GitWriter(lambda: token[0], base_url=BASE_URL, dry_run=False, transport=stub)
+        attempt = lambda: corrector(store, gw, lambda _ns, _name: FakeLive(),
+                                    clock=lambda: "2026-09-07T21:12:42Z", lock=nullcontext)(proposal())
+        with mock.patch.object(gitwriter, "CORRECTIONS_ENABLED", True), \
+                self.assertLogs("flagger_recovery.gitwriter", "WARNING"):
+            first = attempt()
+        self.assertEqual((first.verdict.reason, store.writes), (policy.CREDENTIAL_UNAVAILABLE, 0))
+        token[0] = TOKEN_VALUE
+        with mock.patch.object(gitwriter, "CORRECTIONS_ENABLED", True):
+            second = attempt()
+        self.assertTrue(second.commit_sha)
 
     def test_the_mode_comes_from_the_environment_and_a_typo_is_off(self):
         for environ, expected in (({}, server.WRITE_DRY_RUN),
@@ -126,6 +163,14 @@ class SwitchTests(unittest.TestCase):
             self.assertEqual(read(), "ghp-not-a-real-token")
             path.unlink()  # and the window can close under a running pod
             self.assertEqual((read(), server.git_token_reader("")()), ("", ""))
+
+    def test_a_non_utf8_token_file_is_no_credential_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "token"
+            path.write_bytes(b"\xff\xfe not valid utf-8")
+            with self.assertLogs("flagger_recovery.server", "WARNING") as logged:
+                self.assertEqual(server.git_token_reader(str(path))(), "")
+        self.assertIn("not valid UTF-8", logged.output[0])
 
     def test_no_credential_means_an_anonymous_read_rather_than_a_401(self):
         seen = []

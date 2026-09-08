@@ -59,7 +59,9 @@ class Lease:
             method, url, headers=headers, body=None if body is None else json.dumps(body).encode("utf-8"),
             ca_file=self._ca_file, timeout=self._timeout)
         if status not in (200, 201, 404, 409):
-            raise ApiWriteError(method, url, status, b"")  # empty body: nothing to log
+            # Up to 512 bytes of what the apiserver said, matching record.ConfigMapStore:
+            # an RBAC or validation failure (400/403) is otherwise opaque.
+            raise ApiWriteError(method, url, status, raw[:512])
         payload = json.loads(raw) if raw[:1] == b"{" else {}
         return status, payload if isinstance(payload, dict) else {}  # a caller checks the status
 
