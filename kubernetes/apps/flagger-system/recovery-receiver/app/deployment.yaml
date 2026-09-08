@@ -83,7 +83,10 @@ spec:
               value: "8080"
             # off | dry-run | enabled. Default (closed window): `dry-run` - the
             # writer evaluates every bound and logs the commit it would have
-            # made, calling no mutating endpoint, and no credential is mounted.
+            # made, calling no mutating endpoint. The git-token volume below is
+            # mounted either way; with the Secret absent it is simply an empty
+            # directory, so RECOVERY_GIT_TOKEN_FILE names no file and the reads
+            # go out unauthenticated.
             # Open: `enabled` - the writer calls the mutating endpoint using the
             # credential ./kustomization.yaml's line adds. Opening and closing a
             # window flips exactly this value and that line, each a reviewed PR

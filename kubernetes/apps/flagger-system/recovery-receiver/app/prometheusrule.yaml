@@ -1,0 +1,77 @@
+---
+# The pilot's post-promotion witness.
+#
+# Flagger's analysis ends at promotion, so a release that degrades afterwards
+# gets no hook and these two rules are the only thing that notices. They watch
+# the *primary* pods - the promoted revision, the one a correction would restore
+# - and never the canary, which the Canary's own metrics already gate.
+#
+# The thresholds are that Canary's, restated as their failing side so the two
+# systems cannot disagree: analysis.metrics success-rate thresholdRange.min 99
+# is a 5xx ratio above 1, and latency thresholdRange.max 500 is a P99 above
+# 500ms (kubernetes/pilot/flagger-pilot/canary.yaml on the flagger-pilot branch;
+# the queries come from its metrictemplate-success-rate.yaml and
+# metrictemplate-latency.yaml). Moving one end without the other is the mistake
+# this paragraph exists to prevent.
+#
+# The pod matcher is the primary counterpart of those templates' candidate
+# shape. Prometheus regex matchers are fully anchored, so podinfo-primary-<rs>-
+# <pod> matches the three segments below while the canary's podinfo-<rs>-<pod>
+# has two and cannot. "or vector(0)" guards the numerator only, as it does
+# there: no 5xx at all is a ratio of 0, while no traffic at all leaves the
+# denominator empty and the rule silent, which is the right reading of a
+# primary nobody is calling.
+#
+# 2m windows against the Canary's 1m analysis interval, and `for: 2m` on top:
+# nothing waits on a post-promotion alert, so it can afford to be slower and
+# surer than the gate that ran during the rollout.
+#
+# The labels are the receiver's attribution contract (flagger_recovery/alerts):
+# namespace and canary say whose symptom this is - any other pair is held
+# `unattributed` - and severity must be exactly `critical` or the ladder holds
+# `insufficient-evidence`. `recovery` is not read by the receiver at all; it is
+# what ./alertmanagerconfig.yaml routes on, so a rule added here that should not
+# reach the receiver is one that leaves it off.
+#
+# annotations.recovery_evidence is the expression the rule evaluated, verbatim,
+# and it is the corroboration the ladder requires: an alert naming no expression
+# corroborates nothing and is held. Prometheus offers no way to interpolate a
+# rule's own expr, so it is copied - keep the pair in step, and under the
+# receiver's 512-character field clamp.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: flagger-pilot-recovery
+  labels:
+    app.kubernetes.io/name: recovery-receiver
+    app.kubernetes.io/component: alert-rules
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: flagger-pilot-recovery
+      interval: 30s
+      rules:
+        - alert: PilotPromotedReleaseErrorRate
+          expr: '100 * (sum(rate(http_requests_total{namespace="flagger-pilot",pod=~"podinfo-primary-[^-]+-[^-]+",status=~"5.."}[2m])) or vector(0)) / sum(rate(http_requests_total{namespace="flagger-pilot",pod=~"podinfo-primary-[^-]+-[^-]+"}[2m])) > 1'
+          for: 2m
+          labels:
+            namespace: flagger-pilot
+            canary: podinfo
+            severity: critical
+            recovery: "true"
+          annotations:
+            summary: "podinfo's promoted release is serving over 1% 5xx on the primary pods"
+            recovery_evidence: '100 * (sum(rate(http_requests_total{namespace="flagger-pilot",pod=~"podinfo-primary-[^-]+-[^-]+",status=~"5.."}[2m])) or vector(0)) / sum(rate(http_requests_total{namespace="flagger-pilot",pod=~"podinfo-primary-[^-]+-[^-]+"}[2m])) > 1'
+
+        - alert: PilotPromotedReleaseLatency
+          expr: 'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="flagger-pilot",pod=~"podinfo-primary-[^-]+-[^-]+"}[2m])) by (le)) * 1000 > 500'
+          for: 2m
+          labels:
+            namespace: flagger-pilot
+            canary: podinfo
+            severity: critical
+            recovery: "true"
+          annotations:
+            summary: "podinfo's promoted release is serving a P99 over 500ms on the primary pods"
+            recovery_evidence: 'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="flagger-pilot",pod=~"podinfo-primary-[^-]+-[^-]+"}[2m])) by (le)) * 1000 > 500'
