@@ -206,7 +206,7 @@ class DecisionTests(AlertTestCase):
         stored = self.documents(rules.KIND_ALERT)
         self.assertEqual(len(stored), 1)
         self.assertEqual((stored[0].payload["decision"], stored[0].payload["received_at"],
-                          stored[0].payload["labels"][rules.LABEL_NAMESPACE]),
+                          stored[0].payload["labels"][rules.LABEL_CANARY_NAMESPACE]),
                          (rules.PROPOSE_CORRECTION, self.now, NAMESPACE))
         self.assertEqual(stored[0].payload["evidence"] | {"recovery_evidence": ""},
                          {"functional_check": rules.FUNCTIONAL_NOT_CONSULTED, "recovery_evidence": "",
@@ -330,10 +330,13 @@ class HoldTests(AlertTestCase):
     # AC4's last two -- an unreadable status, an unreadable revision -- are unknown health.
     CASES = (
         ("no identity labels", rules.HOLD_UNATTRIBUTED,
-         dict(labels={rules.LABEL_NAMESPACE: None, rules.LABEL_CANARY: None}, stored=False)),
+         dict(labels={rules.LABEL_CANARY_NAMESPACE: None, rules.LABEL_CANARY: None}, stored=False)),
         ("labels naming another canary", rules.HOLD_UNATTRIBUTED,
          dict(labels={rules.LABEL_CANARY: "somebody-elses"}, stored=False,
               live=FakeLive(failure=AssertionError("another canary is never read")))),
+        ("only the operator's own namespace label, no canary_namespace", rules.HOLD_UNATTRIBUTED,
+         dict(labels={rules.LABEL_CANARY_NAMESPACE: None, "namespace": "flagger-pilot"}, stored=False,
+              live=FakeLive(failure=AssertionError("namespace alone is never read as identity")))),
         ("a notification Alertmanager truncated", rules.HOLD_INCOMPLETE_NOTIFICATION,
          dict(notification={"truncatedAlerts": 9000}, stored=False)),
         ("a recorded resolution says the symptom stopped", rules.HOLD_RESOLVED,
