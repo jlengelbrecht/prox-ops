@@ -231,6 +231,42 @@ class DeploymentRecordRoundTripTests(unittest.TestCase):
         self.assertEqual(metadata["annotations"]["flagger-recovery/canary-full"], f"{identity.namespace}.{identity.canary_name}")
         self.assertEqual(metadata["labels"]["flagger-recovery/canary"], canary_label(identity.namespace, identity.canary_name))
 
+class PromotedRecordDocumentTests(unittest.TestCase):
+    """F20: a ``phase=promoted`` document must not contradict its own label."""
+
+    def test_the_promoted_write_stamps_the_document_and_renames_the_field(self):
+        record = DeploymentRecord(phase="promoted", identity=_identity(), created_at="2026-09-07T12:34:56Z")
+        identity_payload = json.loads(record.to_configmap()["data"]["record.json"])["identity"]
+        self.assertIs(identity_payload["is_promoted"], True)
+        self.assertEqual(identity_payload["last_promoted_spec_at_registration"], "759f9fb7bd")
+        self.assertEqual(identity_payload["promoted_at"], "2026-09-07T12:34:56Z")
+        self.assertNotIn("last_promoted_spec", identity_payload)
+
+    def test_a_non_promoted_phase_document_is_unaffected(self):
+        record = DeploymentRecord(phase="candidate", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        identity_payload = json.loads(record.to_configmap()["data"]["record.json"])["identity"]
+        self.assertIs(identity_payload["is_promoted"], False)
+        self.assertEqual(identity_payload["last_promoted_spec"], "759f9fb7bd")
+        self.assertNotIn("last_promoted_spec_at_registration", identity_payload)
+        self.assertNotIn("promoted_at", identity_payload)
+
+    def test_round_trip_restores_the_pre_rollout_identity_unchanged(self):
+        record = DeploymentRecord(phase="promoted", identity=_identity(), created_at="2026-09-07T00:00:00Z")
+        restored = DeploymentRecord.from_configmap(record.to_configmap())
+        self.assertEqual(restored, record)
+        self.assertFalse(restored.identity.is_promoted)
+        self.assertEqual(restored.identity.last_promoted_spec, "759f9fb7bd")
+
+    def test_round_trip_recomputes_is_promoted_for_a_manual_rollback_candidate(self):
+        """F8: a candidate already equal to the promoted spec at registration
+        must round-trip that fact too, not have it clobbered by an assumed
+        ``False``."""
+        rollback_identity = _identity(last_promoted_spec="5b86bd6879", is_promoted=True)  # == template_hash
+        record = DeploymentRecord(phase="promoted", identity=rollback_identity, created_at="2026-09-07T00:00:00Z")
+        restored = DeploymentRecord.from_configmap(record.to_configmap())
+        self.assertEqual(restored, record)
+        self.assertTrue(restored.identity.is_promoted)
+
 class ConfigMapStoreConstructionTests(unittest.TestCase):
     def test_https_with_token_is_allowed(self):
         store = ConfigMapStore("https://kubernetes.default.svc", token="secret", transport=FakeTransport())

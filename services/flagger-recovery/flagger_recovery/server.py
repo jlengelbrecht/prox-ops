@@ -41,12 +41,13 @@ from .inbox import (
     WebhookEvent,
 )
 from .kube import ApiError, ApiReader, CandidateReader, LiveCanary
-from .record import ConfigMapStore, DeploymentRecord, PutResult, canary_label, make_key
+from .record import ConfigMapStore, DeploymentRecord, PutResult, canary_label, checksum_label, label_value, make_key
 
 LOG = logging.getLogger("flagger_recovery.server")
 
 MAX_BODY_BYTES = 64 * 1024
 RETRY_AFTER_SECONDS = 30
+MAX_LOG_FIELD_LENGTH = 512  # matches inbox.MAX_FIELD_LENGTH; a reason is never longer than the detail it echoes
 
 # The reconcile pass (FRP-006a AC5) runs at startup and then on this interval.
 # ``0`` disables the timer; anything under the floor is raised to it, so a typo
@@ -177,12 +178,37 @@ class Receiver:
         # (``STATUS_RECEIVED``) is a real duplicate.
         previous_status = self._inbox.status(event)
         if previous_status is not None and previous_status != STATUS_ATTRIBUTION_PENDING:
+            self._log_decision(event, result="Duplicate")
             return 202, {"result": "Duplicate", "event": event.key}
         if hook == "pre-rollout":
             return self._register(event)
         if hook == "post-rollout" and event.phase == "Succeeded":
             return self._promote(event)
         return self._decide(event)
+
+    def _log_decision(
+        self, event: WebhookEvent, *, result: str, reason: str = "", record: str = "", proposal: str = ""
+    ) -> None:
+        """The one decision-shaped log line per handled hook (F16), so a stored
+        write, a swallowed duplicate and an ``Ignore`` stop being indistinguishable
+        from the access line alone. ``hook``/``namespace``/``name`` are already
+        control-character-clean (fixed route set; ``inbox._text``'s ban on
+        required fields); ``phase``/``checksum`` are reclamped through the same
+        ``label_value``/``checksum_label`` a record's own labels go through, and
+        ``reason`` through ``_UNSAFE_LOG_CHARS`` — never a payload body or
+        ``metadata`` entry."""
+        LOG.info(
+            "hook=%s canary=%s/%s phase=%s checksum=%s result=%s reason=%s record=%s proposal=%s",
+            event.hook,
+            event.namespace,
+            event.name,
+            label_value(event.phase) if event.phase else "",
+            checksum_label(event.checksum) or "",
+            result,
+            _UNSAFE_LOG_CHARS.sub("?", reason)[:MAX_LOG_FIELD_LENGTH],
+            record,
+            proposal,
+        )
 
     def _candidate_for(self, event: WebhookEvent) -> Optional[DeploymentRecord]:
         """The stored ``candidate`` record for this rollout, found through the
@@ -221,6 +247,12 @@ class Receiver:
             status=STATUS_RECEIVED,
             received_at=self._clock(),
             detail=f"{decision.kind}: {decision.reason}" if decision.reason else decision.kind,
+        )
+        # The decision itself, not ``queued or decision.kind``: a queued proposal
+        # is still a ``ProposeCorrection`` decision.
+        self._log_decision(
+            event, result=decision.kind, reason=decision.reason,
+            proposal="" if decision.proposal is None else decision.proposal.key,
         )
         return 202, {"result": queued or decision.kind, "event": event.key, "detail": decision.reason}
 
@@ -261,10 +293,14 @@ class Receiver:
             )
         )
         self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
+        record_key = make_key(identity, PHASE_CANDIDATE)
+        self._log_decision(
+            event, result="Registered" if result is PutResult.CREATED else "Duplicate", record=record_key
+        )
         return 202, {
             "result": "Registered" if result is PutResult.CREATED else "Duplicate",
             "event": event.key,
-            "record": make_key(identity, PHASE_CANDIDATE),
+            "record": record_key,
         }
 
     def _promote(self, event: WebhookEvent) -> tuple[int, dict[str, Any]]:
@@ -278,10 +314,14 @@ class Receiver:
             return self._pending(event, f"no {PHASE_CANDIDATE} record indexed under checksum {event.checksum!r}")
         promoted = write_promoted_record(self._store, record.identity, self._clock, checksum=record.checksum)
         self._inbox.accept(event, status=STATUS_RECEIVED, received_at=self._clock())
+        record_key = make_key(promoted.identity, PHASE_PROMOTED)
+        # "Register": the shared decision vocabulary decide.decide() uses for the
+        # same event; the HTTP response below keeps its "Promoted" wording.
+        self._log_decision(event, result="Register", record=record_key)
         return 202, {
             "result": "Promoted",
             "event": event.key,
-            "record": make_key(promoted.identity, PHASE_PROMOTED),
+            "record": record_key,
         }
 
     def _pending(self, event: WebhookEvent, detail: str) -> tuple[int, dict[str, Any]]:
@@ -292,6 +332,7 @@ class Receiver:
             detail=detail,
             retry_after_seconds=RETRY_AFTER_SECONDS,
         )
+        self._log_decision(event, result="AttributionPending", reason=detail)
         return 202, {
             "result": "AttributionPending",
             "event": event.key,
