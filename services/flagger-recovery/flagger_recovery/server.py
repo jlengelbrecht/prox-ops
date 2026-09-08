@@ -36,6 +36,7 @@ from . import auth
 from .gitwriter import API_HOST as GITHUB_API_HOST
 from .identity import AttributionRefused, CandidateIdentity, resolve
 from .inbox import (
+    HOOKS,
     MAX_FIELD_LENGTH,
     STATUS_ATTRIBUTION_PENDING,
     STATUS_RECEIVED,
@@ -78,7 +79,11 @@ HOOK_PATHS = {
 }
 # Alertmanager's webhook receiver (FRP-008a). Not in HOOK_PATHS: its body is a
 # v4 notification, not a Flagger hook, so it never reaches ``WebhookEvent``.
+# ``HOOK_ALERT`` is the name ``handle`` dispatches on — a sentinel of its own, kept
+# out of ``inbox.HOOKS``, so route dispatch and payload dispatch are not keyed on the
+# same value an unrecognised path also produces.
 ALERT_PATH = "/hooks/alert"
+HOOK_ALERT = "alert"
 ALERTS_NOT_INSTALLED = "alerts-not-installed"
 HEALTH_PATHS = ("/healthz", "/readyz")
 
@@ -91,12 +96,16 @@ _REQUEST_TIMED_OUT = "Request timed out:"
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-def _log_field(value: str) -> str:
+def log_field(value: str) -> str:
     """Render a dynamic decision-line value as a quoted, escaped JSON string
     (clamped first) so a space or an embedded ``key=value`` inside it can
     never be misread as a second field — the line stays one ``result=``
-    token no matter what a payload or an injected decider put in ``value``."""
+    token no matter what a payload or an injected decider put in ``value``.
+    Public because it is a mandatory control every module that logs a payload
+    field reaches for, rather than an internal detail of this one."""
     return json.dumps(value[:MAX_FIELD_LENGTH])
+
+_log_field = log_field  # the name this module's own call sites have always used
 
 class CandidateSource(Protocol):
     """What ``identity.resolve()`` needs, fetched live. ``kube.CandidateReader``
@@ -185,7 +194,7 @@ class Receiver:
         the same shared token (as ``Authorization: Bearer``). Routed through
         ``handle`` rather than beside it, so it cannot skip the size, JSON-shape and
         token gate below by forgetting to re-implement one of them."""
-        return self.handle(None, headers, body)
+        return self.handle(HOOK_ALERT, headers, body)
 
     def handle(self, hook: Optional[str], headers: Optional[Mapping[str, str]],
                body: bytes) -> tuple[int, dict[str, Any]]:
@@ -200,10 +209,12 @@ class Receiver:
         if not auth.token_matches(self._token, auth.presented_token(headers, payload)):
             self.unauthorised += 1
             return 401, {"result": "Unauthorised"}
-        if hook is None:
+        if hook == HOOK_ALERT:
             # The alert route. No ``WebhookEvent`` and no inbox entry here: an alert is
             # not a Flagger hook and is keyed by fingerprint, not by a payload checksum.
             return self._alerts(payload)
+        if hook not in HOOKS:  # a route the table does not name reaches no handler at all
+            return 404, {"result": "NotFound"}
         try:
             event = WebhookEvent.parse(hook, payload)
         except MalformedPayload as exc:
@@ -400,8 +411,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's contract
         path = urllib.parse.urlsplit(self.path).path
-        hook = HOOK_PATHS.get(path)
-        if hook is None and path != ALERT_PATH:
+        hook = HOOK_PATHS.get(path) or (HOOK_ALERT if path == ALERT_PATH else None)
+        if hook is None:
             if path in HEALTH_PATHS:
                 self._respond(405, {"result": "MethodNotAllowed"})
             else:
@@ -418,10 +429,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         body = self.rfile.read(length)
         try:
-            # ``hook`` is None for ALERT_PATH, which is how ``handle`` routes it.
             status, payload = self.server.receiver.handle(hook, self.headers, body)
         except Exception:  # noqa: BLE001 - a receiver bug must not leak internals to the caller
-            LOG.exception("receiver failed handling %s", hook or "alert")
+            LOG.exception("receiver failed handling %s", hook)
             status, payload = 500, {"result": "InternalError"}
         self._respond(status, payload)
 
@@ -543,6 +553,13 @@ def queued_corrector(run_one: Callable[[Mapping[str, Any]], Any], *, depth: int 
     threading.Thread(target=_worker, name="flagger-recovery-corrections", daemon=True).start()
     _enqueue.drain_failures = _drain_failures
     return _enqueue
+
+def combined_pass(alert_sweep: Callable[[], Any], reconcile_fn: Callable[[], Any]) -> dict[str, Any]:
+    """One tick of both background paths, in one place the tests can call. The order is not
+    a dependency and must not become one: ``alert_sweep`` is ``AlertRouter.sweep_safely``,
+    which absorbs its own failures, so the rollout path's reconcile always runs. A mapping,
+    so the loop's one log line names which half each set of counts came from."""
+    return {"alerts": alert_sweep(), "reconcile": reconcile_fn()}
 
 def start_reconcile_loop(pass_fn: Callable[[], Any], interval: float) -> threading.Event:
     """Run ``pass_fn`` once, then every ``interval`` seconds if positive — all
@@ -677,14 +694,15 @@ def _main(argv: Optional[list[str]] = None) -> None:
     # ``already-restored`` (F8), so handing it over buys a guaranteed refusal.
     # The proposal is written and a human acts on it (README, "Manual recovery
     # path") until FRP-008b/c decides whether that bound should tell the two apart.
-    alerts = AlertRouter(store, live_for, revision_for, clock=now)
+    alerts = AlertRouter(store, live_for, revision_for, clock=now,
+                         canary_namespace=args.canary_namespace, canary_name=args.canary_name)
     receiver = Receiver(token=token, store=store, candidates=candidates,
                         decider=decider(store, live_for), corrector=correct, alerts=alerts.handle)
     server = build_server(receiver, port=args.port)
 
     interval = reconcile_interval()
     start_reconcile_loop(
-        lambda: (alerts.sweep(), reconcile(
+        lambda: combined_pass(alerts.sweep_safely, lambda: reconcile(
             store, live_for(args.canary_namespace, args.canary_name),
             canary=canary_label(args.canary_namespace, args.canary_name), corrector=correct,
             transport_failures=None if correct is None else correct.drain_failures,

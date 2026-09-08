@@ -288,7 +288,8 @@ class RecordStore(Protocol):
     def list(self, canary: str) -> Sequence[DeploymentRecord]: ...
     def put_document(self, document: Document) -> PutResult: ...
     def get_document(self, kind: str, key: str) -> Optional[Document]: ...
-    def list_documents(self, kind: str, *, canary: Optional[str] = None) -> Sequence[Document]: ...
+    def list_documents(self, kind: str, *, canary: Optional[str] = None,
+                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]: ...
 
 class Transport(Protocol):
     def request(
@@ -436,10 +437,14 @@ class ConfigMapStore:
     def list(self, canary: str) -> Sequence[DeploymentRecord]:
         return [DeploymentRecord.from_configmap(item) for item in self._list({CANARY_LABEL: canary})]
 
-    def list_documents(self, kind: str, *, canary: Optional[str] = None) -> Sequence[Document]:
+    def list_documents(self, kind: str, *, canary: Optional[str] = None,
+                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]:
+        """``labels`` narrows further, by whatever index the caller stamped on the
+        document — the alert path's fingerprint, say. Selectors, so the API server does
+        the filtering and one lookup does not have to list a kind in full."""
         if not _KIND_RE.match(kind):
             raise ValueError(f"invalid document kind: {kind!r}")
-        selectors = {"flagger-recovery/kind": kind}
+        selectors = {"flagger-recovery/kind": kind, **(labels or {})}
         if canary is not None:
             selectors["flagger-recovery/canary"] = canary
         return [Document.from_configmap(item) for item in self._list(selectors)]
@@ -493,12 +498,14 @@ class InMemoryStore:
     def get_document(self, kind: str, key: str) -> Optional[Document]:
         return self._documents.get((kind, key))
 
-    def list_documents(self, kind: str, *, canary: Optional[str] = None) -> Sequence[Document]:
+    def list_documents(self, kind: str, *, canary: Optional[str] = None,
+                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]:
         return [
             document
             for (document_kind, _), document in sorted(self._documents.items())
             if document_kind == kind
             and (canary is None or document.labels.get("flagger-recovery/canary") == canary)
+            and all(document.labels.get(name) == value for name, value in (labels or {}).items())
         ]
 
     def put(self, record: DeploymentRecord) -> PutResult:

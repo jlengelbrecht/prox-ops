@@ -10,6 +10,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Mapping, Optional
 
+from .identity import revision_sha
+
 _UNREAD = object()  # "this instance has not fetched yet", distinct from a fetched None
 
 class ApiError(Exception):
@@ -191,10 +193,10 @@ class LiveCanary:
 class LiveKustomization:
     """The pilot Flux ``Kustomization``'s ``status.lastAppliedRevision``, reduced
     to the commit sha in it. GET only, read once per instance — a decision is made
-    against one snapshot, so ``alerts`` builds a new one per evaluation. ``None``
-    for an absent field or anything that is not the ``<branch>@sha1:<sha>`` shape
-    Flux writes: never a guess, and never ``""``, which a caller comparing it
-    against a record's own sha could read as a match."""
+    against one snapshot, so ``alerts`` builds a new one per pass. ``None`` for an
+    absent field or anything that is not the ``<branch>@sha1:<sha>`` shape Flux
+    writes, through ``identity.revision_sha``: never a guess, never ``""``, and never
+    a second, weaker reading of a field the resolver already knows how to parse."""
 
     def __init__(self, api: ApiReader, namespace: str, name: str) -> None:
         self._api = api
@@ -207,5 +209,4 @@ class LiveKustomization:
             self._revision = self._api.get(  # failure does not cache itself here
                 f"/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{self._namespace}"
                 f"/kustomizations/{self._name}").get("status", {}).get("lastAppliedRevision")
-        _, separator, sha = str(self._revision or "").partition("@sha1:")
-        return sha if separator and sha else None
+        return revision_sha(self._revision)

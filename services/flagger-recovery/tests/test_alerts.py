@@ -14,7 +14,8 @@ from flagger_recovery.kube import ApiError
 from flagger_recovery.proposal import KIND_PROPOSAL, PHASE_ALERT_PROPOSAL
 from flagger_recovery.record import (ApiWriteError, DeploymentRecord, Document, InMemoryStore,
                                      canary_label, make_key_parts)
-from flagger_recovery.server import ALERT_PATH, PHASE_PROMOTED, Receiver, build_server
+from flagger_recovery.server import (ALERT_PATH, PHASE_PROMOTED, Receiver, build_server,
+                                     combined_pass)
 from tests.test_server import TOKEN, FakeCandidates
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -29,11 +30,11 @@ RESTORE = f"restore-file kubernetes/pilot/flagger-pilot/helmrelease.yaml to {PRI
 BASE = resolve(**FakeCandidates().read(NAMESPACE, CANARY))
 SIGNED = {BEARER_HEADER: f"Bearer {TOKEN}"}
 
-def promoted_record(template_hash, source_sha, created_at):
+def promoted_record(template_hash, source_sha, created_at, source_branch=BASE.source_branch):
     """A promoted record as the store really holds one: written out through
-    ``to_configmap`` and read back, so these tests run against the promotion stamp a
-    live promotion leaves behind rather than a hand-built dataclass."""
-    identity = dataclasses.replace(BASE, template_hash=template_hash, source_sha=source_sha)
+    ``to_configmap`` and read back, so these tests run against the real promotion stamp."""
+    identity = dataclasses.replace(BASE, template_hash=template_hash, source_sha=source_sha,
+                                   source_branch=source_branch)
     return DeploymentRecord.from_configmap(DeploymentRecord(
         phase=PHASE_PROMOTED, identity=identity, created_at=created_at).to_configmap())
 
@@ -72,8 +73,14 @@ class AlertTestCase(unittest.TestCase):
     def setUp(self):
         self.now = "2026-09-08T09:15:00Z"
         self.store, self.live, self.revision = InMemoryStore(), FakeLive(), FakeRevision()
-        self.router = rules.AlertRouter(self.store, lambda namespace, name: self.live,
-                                        lambda: self.revision, clock=lambda: self.now)
+        self.router = self.build_router()
+
+    def build_router(self, **changes):
+        """A router for the configured pilot: the canary it serves is a constructor
+        argument, so an alert naming anything else is refused."""
+        return rules.AlertRouter(self.store, lambda namespace, name: self.live,
+                                 lambda: self.revision, clock=lambda: self.now,
+                                 canary_namespace=NAMESPACE, canary_name=CANARY, **changes)
 
     def seed(self, *, prior=True, current=True):
         if prior:
@@ -99,8 +106,9 @@ class AlertTestCase(unittest.TestCase):
                 entry[field] = value
         return entry
 
-    def fire(self, **changes):
-        return self.router.handle(self.notification(alerts=[self.alert(**changes)]))
+    def fire(self, *, notification=None, **changes):
+        return self.router.handle(self.notification(alerts=[self.alert(**changes)],
+                                                    **(notification or {})))
 
     def resolution(self, **changes):
         return self.router.handle(self.notification(
@@ -114,16 +122,14 @@ class AlertTestCase(unittest.TestCase):
 
 class ParseTests(AlertTestCase):
     def test_the_documented_shape_parses_into_one_attributable_alert(self):
-        group_key, alerts = rules.parse(self.notification())
+        group_key, alerts, truncated = rules.parse(self.notification())
         self.assertIn(NAMESPACE, group_key)
-        self.assertEqual(len(alerts), 1)
-        self.assertEqual((alerts[0].status, alerts[0].canary, alerts[0].kind),
-                         (rules.STATUS_FIRING, (NAMESPACE, CANARY), rules.KIND_ALERT))
+        self.assertEqual((len(alerts), truncated, alerts[0].status, alerts[0].canary, alerts[0].kind),
+                         (1, False, rules.STATUS_FIRING, (NAMESPACE, CANARY), rules.KIND_ALERT))
         self.assertIn(rules.ANNOTATION_EVIDENCE, alerts[0].annotations)
 
     def test_every_rejected_shape_is_400_and_stores_nothing(self):
-        """Anything but the published v4 contract: this reads five fields of it and must
-        not guess at a payload that is not it."""
+        """Anything but the published v4 contract: it must not guess at what it is not."""
         for label, payload in {
             "v3": self.notification(version="3"),
             "a numeric version": self.notification(version=4),
@@ -137,19 +143,43 @@ class ParseTests(AlertTestCase):
             "no startsAt": self.notification(alerts=[self.alert(startsAt=None)]),
             "labels is not an object": self.notification(alerts=[self.alert(labels="namespace")]),
             "too many alerts": self.notification(alerts=[self.alert()] * (rules.MAX_ALERTS + 1)),
+            "a startsAt that is not a time": self.notification(alerts=[self.alert(startsAt="soon")]),
+            "an endsAt that is not a time": self.notification(alerts=[self.alert(endsAt="later")]),
+            "a resolution with no end time": self.notification(status=rules.STATUS_RESOLVED,
+                alerts=[self.alert(status=rules.STATUS_RESOLVED, endsAt=None)]),
+            # Alertmanager's group status is firing when *any* member fires, so a firing
+            # notification carrying resolved members is ordinary; the reverse is a shape
+            # only a forger holding the token can produce.
+            "resolved at the top, firing per alert": self.notification(status=rules.STATUS_RESOLVED),
         }.items():
             with self.subTest(label):
                 with self.assertRaises(rules.MalformedAlert):
                     rules.parse(payload)
                 self.assertEqual(self.router.handle(payload)[0], 400)
         self.assertEqual(self.store.writes, 0)
+        # The detail is a response body, not a place to reflect an oversized field back.
+        reflected = self.router.handle(self.notification(version="4" + "A" * 5000))[1]["detail"]
+        self.assertLess(len(reflected), 2 * rules.MAX_FIELD_LENGTH)
 
     def test_hostile_labels_are_bounded_and_claim_nothing(self):
         oversized = {f"k{index}": "v" * 4000 for index in range(rules.MAX_METADATA_ENTRIES + 20)}
-        _, alerts = rules.parse(self.notification(alerts=[{**self.alert(), "labels": oversized}]))
-        self.assertEqual(len(alerts[0].labels), rules.MAX_METADATA_ENTRIES)
+        _, alerts, _ = rules.parse(self.notification(alerts=[{**self.alert(), "labels": oversized}]))
         self.assertTrue(all(len(value) <= rules.MAX_FIELD_LENGTH for value in alerts[0].labels.values()))
-        self.assertIsNone(alerts[0].canary, "no identity labels survived, so nothing is claimed")
+        self.assertEqual((len(alerts[0].labels), alerts[0].canary),
+                         (rules.MAX_METADATA_ENTRIES, None), "nothing survived, so nothing is claimed")
+
+    def test_the_entry_cap_cannot_evict_the_labels_that_decide_attribution(self):
+        """The order Alertmanager really sends: Go emits map keys sorted, and a production
+        alert carries every metric label too, so the identity ones sort past the cap."""
+        junk = {f"a{index:02d}": "junk" for index in range(40)}  # all sort before "alertname"
+        entry = self.alert()
+        entry["labels"] = dict(sorted({**entry["labels"], **junk}.items()))
+        entry["annotations"] = dict(sorted({**entry["annotations"], **junk}.items()))
+        _, alerts, _ = rules.parse(self.notification(alerts=[entry]))
+        self.assertEqual(len(alerts[0].labels), rules.MAX_METADATA_ENTRIES)
+        self.assertEqual((alerts[0].canary, alerts[0].labels[rules.LABEL_SEVERITY]),
+                         ((NAMESPACE, CANARY), rules.REQUIRED_SEVERITY))
+        self.assertIn(rules.ANNOTATION_EVIDENCE, alerts[0].annotations)
 
 class DecisionTests(AlertTestCase):
     def test_a_firing_alert_proposes_restoring_the_promotion_before_the_serving_one(self):
@@ -159,24 +189,23 @@ class DecisionTests(AlertTestCase):
         self.assertEqual((status, answer["result"]), (202, rules.PROPOSE_CORRECTION))
         self.assertEqual(len(self.proposals()), 1)
         payload = self.proposals()[0].payload
-        # Attribution is to the promoted revision; the correction points at the promotion
-        # before it, never at "whatever changed most recently".
+        # Attribution is to the promoted revision; the correction points at the one before
+        # it, never at "whatever changed most recently".
         self.assertEqual(
             (payload["template_hash"], payload["phase"], payload["failed_source_sha"],
              payload["last_promoted_source_sha"], payload["correction"], payload["requires_decision"]),
             (PROMOTED_HASH, PHASE_ALERT_PROPOSAL, PROMOTED_SHA, PRIOR_SHA, RESTORE, False))
-        self.assertEqual(self.proposals()[0].key,
-                         make_key_parts(NAMESPACE, CANARY, PROMOTED_HASH, PHASE_ALERT_PROPOSAL))
-        self.assertEqual(answer["proposal"], self.proposals()[0].key)
+        self.assertEqual((self.proposals()[0].key, answer["proposal"]),
+                         (make_key_parts(NAMESPACE, CANARY, PROMOTED_HASH, PHASE_ALERT_PROPOSAL),) * 2)
 
     def test_the_alert_document_records_the_decision_and_the_evidence_behind_it(self):
         self.seed()
         self.fire()
         stored = self.documents(rules.KIND_ALERT)
         self.assertEqual(len(stored), 1)
-        self.assertEqual(stored[0].payload["decision"], rules.PROPOSE_CORRECTION)
-        self.assertEqual(stored[0].payload["received_at"], self.now)
-        self.assertEqual(stored[0].payload["labels"][rules.LABEL_NAMESPACE], NAMESPACE)
+        self.assertEqual((stored[0].payload["decision"], stored[0].payload["received_at"],
+                          stored[0].payload["labels"][rules.LABEL_NAMESPACE]),
+                         (rules.PROPOSE_CORRECTION, self.now, NAMESPACE))
         self.assertEqual(stored[0].payload["evidence"] | {"recovery_evidence": ""},
                          {"functional_check": rules.FUNCTIONAL_NOT_CONSULTED, "recovery_evidence": "",
                           "promoted_template_hash": PROMOTED_HASH, "promoted_source_sha": PROMOTED_SHA,
@@ -193,26 +222,43 @@ class DecisionTests(AlertTestCase):
                 self.live.functional = reported
                 self.fire()
                 stored = self.documents(rules.KIND_ALERT)[0].payload
-                self.assertEqual(stored["evidence"]["functional_check"], expected)
-                self.assertEqual(stored["decision"], rules.PROPOSE_CORRECTION)
+                self.assertEqual((stored["evidence"]["functional_check"], stored["decision"]),
+                                 (expected, rules.PROPOSE_CORRECTION))
 
-    def test_a_resolution_is_recorded_under_its_own_kind_and_decides_nothing(self):
+    def test_a_resolution_is_recorded_under_its_own_kind_and_undoes_nothing(self):
         self.seed()
+        self.fire()
+        writes = self.store.writes
         status, body = self.resolution(endsAt="2026-09-08T09:20:00Z")
         self.assertEqual((status, body["alerts"][0]["result"]), (202, rules.RECORDED))
-        self.assertEqual(self.proposals(), [])
-        self.assertEqual(self.documents(rules.KIND_ALERT), [], "a resolution is not a held alert")
+        self.assertEqual((len(self.proposals()), self.store.writes), (1, writes + 1))
         recorded = self.documents(rules.KIND_ALERT_RESOLVED)
         self.assertEqual((len(recorded), recorded[0].payload["decision"], recorded[0].payload["status"]),
                          (1, rules.RECORDED, rules.STATUS_RESOLVED))
 
-    def test_a_resolution_never_undoes_a_proposal_already_written(self):
+    def test_a_resolution_delivered_before_its_firing_prevents_the_proposal(self):
+        """A resolution has to *prevent* work, not merely fail to reverse it; delivery order is
+        not ours to choose. One that ended before this firing began is not cover, though."""
         self.seed()
-        self.fire()
+        self.resolution(startsAt="2026-09-08T08:00:00Z", endsAt="2026-09-08T08:30:00Z")
+        self.assertEqual(self.fire()[1]["alerts"][0]["result"], rules.PROPOSE_CORRECTION)
+
+        self.setUp()
+        self.seed()
+        self.resolution(endsAt="2026-09-08T09:20:00Z")
         writes = self.store.writes
-        self.resolution()
-        self.assertEqual(len(self.proposals()), 1)
-        self.assertEqual(self.store.writes, writes + 1, "only the resolution document")
+        answer = self.fire()[1]["alerts"][0]
+        self.assertEqual((answer["result"], answer["detail"]), (rules.HOLD, rules.HOLD_RESOLVED))
+        self.assertEqual(self.proposals(), [])
+        self.assertEqual(self.store.writes, writes + 1, "the held alert, and no proposal")
+
+    def test_an_alert_this_pilot_cannot_claim_is_counted_and_never_stored(self):
+        """The key is caller-supplied: one request must not grow the store by fingerprints."""
+        grouped = [self.alert(fingerprint=f"aaaa000000000{index}",
+                              labels={rules.LABEL_CANARY: f"invented-{index}"}) for index in range(3)]
+        status, body = self.router.handle(self.notification(alerts=grouped))
+        self.assertEqual((status, body["not_stored"]), (202, 3))
+        self.assertEqual((self.store.writes, self.documents(rules.KIND_ALERT)), (0, []))
 
     def test_a_repeated_firing_alert_is_a_duplicate_that_writes_nothing(self):
         self.seed()
@@ -220,8 +266,8 @@ class DecisionTests(AlertTestCase):
         writes = self.store.writes
         self.live.failure = AssertionError("a duplicate must not re-read live state")
         status, body = self.fire()
-        self.assertEqual((status, body["alerts"][0]["result"]), (202, rules.DUPLICATE))
-        self.assertEqual(self.store.writes, writes)
+        self.assertEqual((status, body["alerts"][0]["result"], self.store.writes),
+                         (202, rules.DUPLICATE, writes))
 
     def test_three_firing_alerts_on_one_revision_produce_exactly_one_proposal(self):
         self.seed()
@@ -229,34 +275,48 @@ class DecisionTests(AlertTestCase):
                               labels={"alertname": f"FlaggerPilotApexAlert{index}"})
                    for index in range(3)]
         status, body = self.router.handle(self.notification(alerts=grouped))
-        self.assertEqual(status, 202)
-        self.assertEqual([answer["result"] for answer in body["alerts"]], [rules.PROPOSE_CORRECTION] * 3)
+        self.assertEqual((status, [answer["result"] for answer in body["alerts"]]),
+                         (202, [rules.PROPOSE_CORRECTION] * 3))
         self.assertEqual(len(self.documents(rules.KIND_ALERT)), 3, "each alert is its own record")
         self.assertEqual(len(self.proposals()), 1, "one proposal per failed promoted revision")
         self.assertEqual({answer["proposal"] for answer in body["alerts"]}, {self.proposals()[0].key})
 
 class HoldTests(AlertTestCase):
-    """The closed hold set. Every one stores the alert with its reason and stores no
-    proposal: a hold is a decision on the record, not a silence."""
+    """The closed hold set: every reason paired with an input that produces it, none of
+    them writing a proposal — a hold is a decision, not a silence."""
 
-    def _hold(self, reason, *, prior=True, current=True, seed=True, live=None, revision=None, **changes):
+    def _hold(self, reason, *, prior=True, current=True, seed=True, live=None, revision=None,
+              stored=True, before=None, **changes):
         self.live, self.revision = live or self.live, revision or self.revision
         if seed:
             self.seed(prior=prior, current=current)
+        if before is not None:
+            before(self)
         status, body = self.fire(**changes)
         answer = body["alerts"][0]
         self.assertEqual((status, answer["result"], answer["detail"]), (202, rules.HOLD, reason))
-        stored = self.documents(rules.KIND_ALERT)
-        self.assertEqual(len(stored), 1)
-        self.assertEqual((stored[0].payload["decision"], stored[0].payload["reason"],
-                          stored[0].payload["proposal"]), (rules.HOLD, reason, ""))
+        documents = self.documents(rules.KIND_ALERT)
+        # A hold this pilot can claim is on the record; one it cannot is refused first.
+        self.assertEqual(len(documents), 1 if stored else 0)
+        if stored:
+            self.assertEqual((documents[0].payload["decision"], documents[0].payload["reason"],
+                              documents[0].payload["proposal"]), (rules.HOLD, reason, ""))
         self.assertEqual(self.proposals(), [], "a hold never writes a proposal")
 
-    # AC4's last two: a status that says nothing about which revision is serving, and a
-    # Flux revision that cannot be read, are unknown health -- never a success decision.
+    # AC4's last two -- an unreadable status, an unreadable revision -- are unknown health.
     CASES = (
         ("no identity labels", rules.HOLD_UNATTRIBUTED,
-         dict(labels={rules.LABEL_NAMESPACE: None, rules.LABEL_CANARY: None})),
+         dict(labels={rules.LABEL_NAMESPACE: None, rules.LABEL_CANARY: None}, stored=False)),
+        ("labels naming another canary", rules.HOLD_UNATTRIBUTED,
+         dict(labels={rules.LABEL_CANARY: "somebody-elses"}, stored=False,
+              live=FakeLive(failure=AssertionError("another canary is never read")))),
+        ("a notification Alertmanager truncated", rules.HOLD_INCOMPLETE_NOTIFICATION,
+         dict(notification={"truncatedAlerts": 9000}, stored=False)),
+        ("a recorded resolution says the symptom stopped", rules.HOLD_RESOLVED,
+         dict(before=lambda case: case.resolution(endsAt="2026-09-08T09:20:00Z"))),
+        ("the recorded promotion is not on the pilot branch", rules.HOLD_REQUIRES_DECISION,
+         dict(seed=False, before=lambda case: [case.store.put(promoted_record(*seed)) for seed in (
+             (PRIOR_HASH, PRIOR_SHA, PRIOR_AT, "main"), (PROMOTED_HASH, PROMOTED_SHA, PROMOTED_AT))])),
         ("a rollout in flight belongs to Flagger", rules.HOLD_ROLLOUT_IN_PROGRESS,
          dict(live=FakeLive(applied=OTHER_HASH))),
         ("no stored promotion for the serving spec", rules.HOLD_NO_PROMOTED_RECORD, dict(current=False)),
@@ -284,10 +344,11 @@ class HoldTests(AlertTestCase):
                 self._hold(reason, **setup)
         self.assertEqual({reason for _, reason, _ in self.CASES}, set(rules.HOLD_REASONS))
 
-    def test_an_unattributed_alert_is_labelled_as_such_rather_than_as_some_canary(self):
-        self._hold(rules.HOLD_UNATTRIBUTED, **self.CASES[0][2])
-        self.assertEqual(self.documents(rules.KIND_ALERT)[0].labels["flagger-recovery/canary"],
-                         rules.UNATTRIBUTED)
+    def test_an_alert_this_pilot_cannot_claim_is_logged_with_what_it_claimed(self):
+        """Refused with no document, so the log line is the only record it leaves."""
+        with self.assertLogs("flagger_recovery.alerts", level="INFO") as logs:
+            self._hold(rules.HOLD_UNATTRIBUTED, **self.CASES[1][2])
+        self.assertIn(f'canary="{NAMESPACE}/somebody-elses"', logs.output[-1])
 
     def test_a_promotion_newer_than_the_serving_one_is_not_something_to_restore_back_to(self):
         self.store.put(promoted_record(PROMOTED_HASH, PROMOTED_SHA, PROMOTED_AT))
@@ -295,8 +356,8 @@ class HoldTests(AlertTestCase):
         self._hold(rules.HOLD_NO_PRIOR_PROMOTED, seed=False)
 
     def test_temporal_proximity_is_never_an_input(self):
-        """AC2. The alert that proposes with its evidence holds without it, whatever the
-        clock says: only the corroboration changed."""
+        """AC2: the alert that proposes with its evidence holds without it, whatever the clock
+        says — only the corroboration changed."""
         self.seed()
         self.now = PROMOTED_AT  # firing at the very instant of the promotion
         _, body = self.fire(annotations={rules.ANNOTATION_EVIDENCE: None})
@@ -317,22 +378,39 @@ class HoldTests(AlertTestCase):
                 if "store" in setup:
                     self.store.get = _raising(setup["store"])
                 with self.assertLogs("flagger_recovery.alerts", level="WARNING") as logs:
-                    self._hold(rules.HOLD_HEALTH_UNKNOWN, live=setup.get("live"),
-                               revision=setup.get("revision"))
+                    self._hold(rules.HOLD_HEALTH_UNKNOWN, live=setup.get("live"), revision=setup.get("revision"))
                 self.assertNotIn("api.invalid", logs.output[0])
 
     def test_a_bug_in_the_ladder_is_not_laundered_into_a_hold(self):
-        """``_UNREADABLE`` is a named set, not ``Exception``: a programming error still
-        reaches the handler's 500 rather than being recorded as unknown health."""
+        """``_UNREADABLE`` is the transport and API set, not ``Exception`` and not the two
+        commonest bug signatures: a renamed status key must not turn every alert into a
+        permanent hold that looks like an outage. The 500 is safe against this store."""
+        for error in (RuntimeError("a bug, not an outage"), KeyError("lastPromotedSpec"),
+                      AttributeError("'NoneType' object has no attribute 'identity'"),
+                      ValueError("invalid literal")):
+            with self.subTest(type(error).__name__):
+                self.setUp()
+                self.seed()
+                self.live.functional_check = _raising(error)
+                with self.assertRaises(type(error)):
+                    self.fire()
+                self.assertEqual(self.documents(rules.KIND_ALERT), [])
+
+    def test_the_duplicate_probe_is_as_much_a_live_read_as_the_ladder_s(self):
+        """``ConfigMapStore.get_document`` raises on a non-200, and unreadable is a decision
+        this path makes, not a 500 Alertmanager should retry."""
         self.seed()
-        self.live.functional_check = _raising(RuntimeError("a bug, not an outage"))
-        with self.assertRaises(RuntimeError):
-            self.fire()
-        self.assertEqual(self.documents(rules.KIND_ALERT), [])
+        self.store.get_document = _raising(ApiWriteError("GET", "https://api.invalid", 503, b""))
+        writes = self.store.writes
+        with self.assertLogs("flagger_recovery.alerts", level="WARNING") as logs:
+            status, body = self.fire()
+        self.assertEqual((status, body["alerts"][0]["detail"]), (202, rules.HOLD_HEALTH_UNKNOWN))
+        self.assertEqual((self.store.writes, self.proposals()), (writes, []))
+        self.assertNotIn("api.invalid", logs.output[0])
 
 class SweepTests(AlertTestCase):
-    """AC3: durable decisions converge after an interruption, one action per failed
-    update, with the window recorded."""
+    """AC3: durable decisions converge after an interruption, one action per failed update,
+    with the window recorded."""
 
     def test_a_hold_whose_reason_has_cleared_is_re_evaluated_into_one_proposal(self):
         self.seed()
@@ -340,63 +418,103 @@ class SweepTests(AlertTestCase):
         self.fire()
         self.assertEqual(self.documents(rules.KIND_ALERT)[0].payload["reason"],
                          rules.HOLD_ROLLOUT_IN_PROGRESS)
-
         self.live = FakeLive()  # the rollout finished
         report = self.router.sweep()
-        self.assertEqual((report.alerts_held, report.alerts_resolved, report.proposals_written), (0, 1, 1))
-        self.assertEqual(len(self.proposals()), 1)
+        self.assertEqual((report.alerts_held, report.alerts_resolved, report.proposals_written,
+                          len(self.proposals())), (0, 1, 1, 1))
 
-        # A second pass re-derives the same answer and writes nothing: the proposal key is
-        # create-only, so convergence is one action, not one per tick.
+        # A second pass re-derives it and writes nothing: the key is create-only, so
+        # convergence is one action, not one per tick.
         writes = self.store.writes
         second = self.router.sweep()
         self.assertEqual((second.alerts_resolved, second.proposals_written), (1, 0))
         self.assertEqual(self.store.writes, writes)
 
-    def test_what_the_sweep_leaves_alone(self):
+    def test_a_hold_that_resolved_before_the_sweep_reached_it_writes_no_proposal(self):
+        """The reason cleared, but a resolution for the fingerprint is on record: this would
+        correct a failure the store says is over."""
+        self.seed()
+        self.live = FakeLive(applied=OTHER_HASH)  # mid-rollout
+        self.fire()
+        self.resolution(endsAt="2026-09-08T09:20:00Z")
+        self.live = FakeLive()  # the rollout finished
+        report = self.router.sweep()
+        self.assertEqual((report.alerts_held, report.proposals_written, self.proposals()), (1, 0, []))
+
+    def test_what_a_sweep_never_reads_again(self):
+        """A terminal reason (``insufficient-evidence`` judges the alert itself) can only
+        re-derive itself; a hold outside the window is nothing to escalate; one missing the
+        fields the ladder reads stays held rather than being guessed at."""
+        self.seed()
+        self.fire(annotations={rules.ANNOTATION_EVIDENCE: None})  # terminal
+        self.live.failure = AssertionError("none of these is ever re-read")
+        self.assertEqual(self.router.sweep().alerts_held, 1)
+
+        self.setUp()
         self.seed(current=False)
-        self.fire()  # held: no promoted record
-        self.resolution()  # a resolution, which no sweep reads
+        self.fire()  # held on no-promoted-record, which can clear — but not a day later
+        self.resolution()  # a resolution is not a held alert
         self.store.put_document(Document(  # a held document from before a field existed
             kind=rules.KIND_ALERT, key="0" * 32,
             labels={"flagger-recovery/canary": canary_label(NAMESPACE, CANARY)},
             payload={"decision": rules.HOLD, "reason": rules.HOLD_HEALTH_UNKNOWN, "fingerprint": "abc"}))
+        self.now = "2026-09-09T09:15:01Z"
+        self.store.put(promoted_record(PROMOTED_HASH, PROMOTED_SHA, PROMOTED_AT))
+        self.live.failure = AssertionError("none of these is ever re-read")
+        report = self.build_router().sweep()
+        self.assertEqual((report.alerts_held, report.alerts_resolved, report.proposals_written,
+                          self.proposals()), (2, 0, 0, []), "nothing escalates a hold for being old")
 
-        report = self.router.sweep()
-        self.assertEqual((report.alerts_held, report.alerts_resolved, report.proposals_written), (2, 0, 0))
-        self.assertEqual(self.proposals(), [], "nothing escalates a hold for being old")
+    def test_a_failing_sweep_still_lets_the_rollout_path_reconcile(self):
+        """One pass covers both paths, and an alert-side read failure must not take the rollout
+        path's reconcile — delayed promotions, re-offered corrections — with it."""
+        self.store.list_documents = _raising(ApiWriteError("GET", "https://api.invalid", 503, b""))
+        ran = []
+        with self.assertLogs("flagger_recovery.alerts", level="ERROR"):
+            result = combined_pass(self.router.sweep_safely, lambda: ran.append("reconciled"))
+        self.assertEqual((result["alerts"].alerts_sweep_failed, ran), (1, ["reconciled"]))
 
     def test_the_first_run_records_a_null_window_never_a_zero(self):
+        # Clock skew between nodes, or a second replica writing while this one starts, is
+        # exactly the unmeasurable case — and ``0.0`` reads as "nothing was missed".
+        self.assertIsNone(rules._seconds_between("2026-09-08T09:20:00Z", self.now))
+        self.assertIsNone(rules._seconds_between("not-a-time", self.now))
+        self.assertEqual(rules._seconds_between(self.now, self.now), 0.0)
         report = self.router.sweep()
-        self.assertIsNone(report.interruption_window_seconds)
+        self.assertIsNone(report.seconds_since_previous_start)
         runs = self.documents(rules.KIND_RECEIVER_RUN)
-        self.assertEqual((len(runs), runs[0].payload["started_at"], runs[0].payload["last_tick_at"]),
-                         (1, self.now, ""))
+        self.assertEqual((len(runs), runs[0].payload["started_at"],
+                          runs[0].payload["previous_started_at"]), (1, self.now, ""))
         writes = self.store.writes
         self.router.sweep()  # once per process, not once per pass
         self.assertEqual((self.store.writes, len(self.documents(rules.KIND_RECEIVER_RUN))), (writes, 1))
 
-    def test_a_restart_records_the_window_between_the_last_evidence_and_this_start(self):
+    def test_a_restart_records_the_gap_to_the_previous_run_and_says_so(self):
+        """Not downtime, and not "time since the last thing that happened": the gap to the
+        previous run's start is all a create-only store can honestly hold — hence the name.
+        Two receivers starting in the same second still get a document each, because a rolling
+        update starts the new pod as the old one stops and ``now()`` resolves to seconds; the
+        holder is in the key material as ``Lease`` has it."""
         self.seed(current=False)
-        self.fire()  # a held alert at 09:15:00, the last thing this receiver did
-        self.router.sweep()
-
+        self.fire()  # a held alert at 09:15:00
+        self.build_router(holder="recovery-receiver-a").sweep()
+        self.build_router(holder="recovery-receiver-b").sweep()
         self.now = "2026-09-08T09:47:30Z"  # a new process over the same durable store
-        restarted = rules.AlertRouter(self.store, lambda namespace, name: self.live,
-                                      lambda: self.revision, clock=lambda: self.now)
-        report = restarted.sweep()
+        report = self.build_router(holder="recovery-receiver-c").sweep()
 
-        self.assertEqual(report.interruption_window_seconds, 1950.0)
+        self.assertEqual(report.seconds_since_previous_start, 1950.0)
         runs = self.documents(rules.KIND_RECEIVER_RUN)
-        self.assertEqual(len(runs), 2)
+        self.assertEqual(sorted(document.payload["pod"] for document in runs),
+                         ["recovery-receiver-a", "recovery-receiver-b", "recovery-receiver-c"])
         latest = max(runs, key=lambda document: document.payload["started_at"])
-        self.assertEqual((latest.payload["last_tick_at"], latest.payload["interruption_window_seconds"]),
+        self.assertEqual((latest.payload["previous_started_at"],
+                          latest.payload["seconds_since_previous_start"]),
                          ("2026-09-08T09:15:00Z", 1950.0))
         self.assertEqual(report.alerts_held, 1, "the pass still converges over what it missed")
 
 class RouteAndAuthTests(AlertTestCase):
-    """The receiver's own gate: an alert reaches the router only once it has been
-    size-checked, parsed and authenticated."""
+    """The receiver's gate: an alert reaches the router only once it is size-checked,
+    parsed and authenticated."""
 
     def setUp(self):
         super().setUp()
@@ -424,8 +542,7 @@ class RouteAndAuthTests(AlertTestCase):
             ("a truncated bearer token", {BEARER_HEADER: f"Bearer {TOKEN[:8]}"}),
             ("an empty bearer credential", {BEARER_HEADER: "Bearer "}),
             ("another scheme", {BEARER_HEADER: f"Basic {TOKEN}"}),
-            ("the scheme name alone", {BEARER_HEADER: "Bearer"}),
-        ):
+            ("the scheme name alone", {BEARER_HEADER: "Bearer"})):
             with self.subTest(label):
                 self.assertEqual(self.receiver.handle_alert(headers, self.body()),
                                  (401, {"result": "Unauthorised"}))
@@ -436,15 +553,13 @@ class RouteAndAuthTests(AlertTestCase):
                                       ("not an object", b"[1,2]", "MalformedJSON"),
                                       ("a v3 payload", self.body(version="3"), "MalformedAlert")):
             with self.subTest(label):
-                status, answer = self.receiver.handle_alert(SIGNED, body)
-                self.assertEqual((status, answer["result"]), (400, expected))
+                self.assertEqual(self.receiver.handle_alert(SIGNED, body)[1]["result"], expected)
         self.assertEqual(self.proposals(), [])
 
     def test_the_default_handler_holds_rather_than_answering_a_success(self):
         receiver = Receiver(token=TOKEN, store=self.store, candidates=FakeCandidates())
         status, answer = receiver.handle_alert({TOKEN_HEADER: TOKEN}, self.body())
-        self.assertEqual((status, answer["result"], answer["detail"]),
-                         (202, "Hold", "alerts-not-installed"))
+        self.assertEqual((status, answer["result"], answer["detail"]), (202, "Hold", "alerts-not-installed"))
 
     def test_a_forged_label_cannot_split_the_decision_line(self):
         with self.assertLogs("flagger_recovery.alerts", level="INFO") as logs:
@@ -470,7 +585,6 @@ class RouteAndAuthTests(AlertTestCase):
             except urllib.error.HTTPError as exc:
                 with exc:
                     return exc.code, json.loads(exc.read())
-
         status, body = request("POST", self.body(), {**SIGNED, "Content-Type": "application/json"})
         self.assertEqual((status, body["alerts"][0]["result"]), (202, rules.PROPOSE_CORRECTION))
         self.assertEqual(len(self.proposals()), 1)

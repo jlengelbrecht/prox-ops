@@ -3,7 +3,8 @@ import unittest
 from pathlib import Path
 
 from flagger_recovery.identity import resolve
-from flagger_recovery.kube import ApiError, ApiReader, CandidateReader, LiveCanary
+from flagger_recovery.kube import (ApiError, ApiReader, CandidateReader, LiveCanary,
+                                   LiveKustomization)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -123,6 +124,36 @@ class LiveCanaryTests(unittest.TestCase):
         api = FakeApiReader()
         LiveCanary(api, "flagger-pilot", "../../secrets").canary_status()
         self.assertIn("canaries/..%2F..%2Fsecrets", api.paths[0])
+
+class LiveKustomizationTests(unittest.TestCase):
+    """The pilot Kustomization's applied revision, reduced to the commit sha in it through
+    ``identity.revision_sha`` — so this reader and the resolver cannot disagree about it."""
+
+    def _sha(self, status):
+        class _Api:
+            def get(self, path, *, params=None):
+                return {} if status is None else {"status": status}
+        return LiveKustomization(_Api(), "flagger-system", "flagger-pilot-app").source_sha()
+
+    def test_the_revision_the_pilot_kustomization_really_carries(self):
+        api = FakeApiReader()
+        live = LiveKustomization(api, "flagger-system", "flagger-pilot-app")
+        self.assertEqual(live.source_sha(), "99abc217d85ddcf310d1919f691f538c2a6c8082")
+        live.source_sha()
+        self.assertEqual(len(api.paths), 1, "read once per instance, not once per question")
+
+    def test_anything_but_the_shape_flux_writes_reads_as_unknown(self):
+        """``None``, never a guess and never ``""``, which a caller could read as a match."""
+        for label, status in (
+            ("no status at all", None),
+            ("no applied revision", {"observedGeneration": 1}),
+            ("a sha that is not one", {"lastAppliedRevision": "flagger-pilot@sha1:not-a-sha"}),
+            ("a short sha", {"lastAppliedRevision": "flagger-pilot@sha1:99abc217"}),
+            ("the older branch/sha shape", {"lastAppliedRevision": "flagger-pilot/99abc217"}),
+            ("a bare sha", {"lastAppliedRevision": "99abc217d85ddcf310d1919f691f538c2a6c8082"}),
+        ):
+            with self.subTest(label):
+                self.assertIsNone(self._sha(status))
 
 class ApiReaderRedirectTests(unittest.TestCase):
     """The service-account token this reader carries must not follow a redirect out to

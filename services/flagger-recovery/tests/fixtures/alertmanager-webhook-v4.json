@@ -12,16 +12,8 @@
   "alerts": [
     {
       "status": "firing",
-      "labels": {
-        "alertname": "FlaggerPilotApexErrorRatio",
-        "canary": "podinfo",
-        "namespace": "flagger-pilot",
-        "severity": "critical"
-      },
-      "annotations": {
-        "recovery_evidence": "sum(rate(envoy_cluster_upstream_rq_xx{envoy_response_code_class=\"5\",envoy_cluster_name=~\"flagger-pilot_podinfo.*\"}[5m])) / sum(rate(envoy_cluster_upstream_rq_xx{envoy_cluster_name=~\"flagger-pilot_podinfo.*\"}[5m])) > 0.05",
-        "summary": "podinfo.flagger-pilot serves 5xx on the apex route after promotion"
-      },
+      "labels": {"alertname": "FlaggerPilotApexErrorRatio", "canary": "podinfo", "namespace": "flagger-pilot", "severity": "critical"},
+      "annotations": {"recovery_evidence": "sum(rate(envoy_cluster_upstream_rq_xx{envoy_response_code_class=\"5\",envoy_cluster_name=~\"flagger-pilot_podinfo.*\"}[5m])) / sum(rate(envoy_cluster_upstream_rq_xx{envoy_cluster_name=~\"flagger-pilot_podinfo.*\"}[5m])) > 0.05", "summary": "podinfo.flagger-pilot serves 5xx on the apex route after promotion"},
       "startsAt": "2026-09-08T09:14:00Z",
       "endsAt": "0001-01-01T00:00:00Z",
       "generatorURL": "https://prometheus.example.invalid/graph?g0.expr=up",
