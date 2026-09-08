@@ -49,11 +49,6 @@ class _StaleLiveView(Exception):
     would re-check freshness against the first's memoised reads — no re-read at all.
     Raised before anything is claimed or written."""
 
-def _failed(method: str, path: str, status: int, raw: bytes) -> ApiWriteError:
-    # Carrying what GitHub answered: its own error document, which holds nothing of
-    # the request that produced it and so never the token.
-    return ApiWriteError(method, path, status, raw[:512])
-
 @dataclasses.dataclass(frozen=True)
 class Correction:
     """What the writer did, or would have done: ``commit_sha`` is empty on a refusal
@@ -119,10 +114,18 @@ class GitWriter:
         except ValueError:
             return status, {}, raw
 
+    def _failed(self, method: str, path: str, status: int, raw: bytes) -> ApiWriteError:
+        # Carrying what GitHub answered: its own error document, which holds nothing of
+        # the request that produced it and so never the token. The full URL is never
+        # logged; ``server.queued_corrector`` only parses it to tell a GitHub read
+        # apart from a GitHub write or a Kubernetes call.
+        url = f"{self._base_url}/repos/{self._repository_path}{path}"
+        return ApiWriteError(method, url, status, raw[:512])
+
     def _read(self, path: str) -> Mapping[str, Any]:
         status, payload, raw = self._call("GET", path)
         if status != 200 or not isinstance(payload, dict):
-            raise _failed("GET", path, status, raw)
+            raise self._failed("GET", path, status, raw)
         return payload
 
     def read_ref(self) -> str:  # the branch head commit sha
@@ -139,7 +142,7 @@ class GitWriter:
         if status == 404:
             return ""
         if status != 200:
-            raise _failed("GET", route, status, raw)
+            raise self._failed("GET", route, status, raw)
         # A directory answers a JSON array; a symlink or a submodule answers a type that
         # is not "file". None is a blob to install, and this filter is the whole reason
         # restating mode 100644 cannot be a silent type change.
@@ -161,7 +164,7 @@ class GitWriter:
         if status == 404:
             return "", (), True
         if status != 200 or not isinstance(payload, dict):
-            raise _failed("GET", route, status, raw)
+            raise self._failed("GET", route, status, raw)
         files = tuple(str(entry.get("filename") or "") for entry in payload.get("files") or ())
         return str(payload.get("status") or ""), files, len(files) < COMPARE_FILE_CAP
 
@@ -196,12 +199,12 @@ class GitWriter:
     def _create(self, path: str, body: Mapping[str, Any]) -> str:
         status, payload, raw = self._call("POST", path, body)
         if status not in (200, 201):
-            raise _failed("POST", path, status, raw)
+            raise self._failed("POST", path, status, raw)
         # A 2xx with no sha is a create whose result cannot be used; passing an empty
         # tree sha on would earn a confusing 422 from the next call instead.
         sha = str(payload.get("sha") or "") if isinstance(payload, dict) else ""
         if not sha:
-            raise _failed("POST", path, status, raw)
+            raise self._failed("POST", path, status, raw)
         return sha
 
     def correct(self, proposal: Mapping[str, Any], live_for: Callable[[], Any], *,

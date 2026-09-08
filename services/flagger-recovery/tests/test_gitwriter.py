@@ -529,6 +529,53 @@ class CorrectorTests(unittest.TestCase):
         linked = self.store.get_document(policy.KIND_CORRECTION_RESULT, _key(policy.KIND_CORRECTION_RESULT))
         self.assertEqual(linked.payload["new_source_sha"], NEW_COMMIT)
 
+    def _failure_from_queue(self, exc):
+        """Enqueue a ``run_one`` that raises ``exc`` and return its WARNING line. One
+        worker, strictly in order, so a marker enqueued right after ``exc`` is only
+        reached once it was fully handled (logged and counted) — no sleep, no race."""
+        processed = threading.Event()
+
+        def _run_one(payload):
+            if payload.get("marker"):
+                processed.set()
+                return None
+            raise exc
+
+        enqueue = queued_corrector(_run_one)
+        with self.assertLogs("flagger_recovery.server", level="WARNING") as logged:
+            enqueue({})
+            enqueue({"marker": True})
+            self.assertTrue(processed.wait(5))
+        self.assertEqual(enqueue.drain_failures(), 1)
+        return logged.output[0]
+
+    def test_a_github_read_failure_on_the_queue_is_transport_unavailable(self):
+        """AC F28: an ``ApiWriteError`` whose request was a GitHub GET never reached a
+        verdict, so it is named ``transport-unavailable`` like a bare ``TimeoutError``."""
+        line = self._failure_from_queue(ApiWriteError(
+            "GET", f"{BASE_URL}/repos/{policy.ALLOWED_REPOSITORY}/git/ref/heads/x", 502, b"do not log"))
+        self.assertIn(policy.TRANSPORT_UNAVAILABLE, line)
+        self.assertNotIn("do not log", line)
+
+    def test_a_github_write_failure_on_the_queue_is_a_generic_failure_with_status(self):
+        """A GitHub write (POST/PATCH) reached a verdict and failed to act on it: never
+        ``transport-unavailable``, still counted, its status code logged and not its body."""
+        line = self._failure_from_queue(ApiWriteError(
+            "POST", f"{BASE_URL}/repos/{policy.ALLOWED_REPOSITORY}/git/trees", 422, b"do not log"))
+        self.assertNotIn(policy.TRANSPORT_UNAVAILABLE, line)
+        self.assertIn("422", line)
+        self.assertNotIn("do not log", line)
+
+    def test_a_kubernetes_failure_on_the_queue_is_a_generic_failure_with_status(self):
+        """A Kubernetes fault (the store, not GitHub) is a GET just like a GitHub read,
+        but only a GitHub read is ``transport-unavailable`` — this lands as generic too."""
+        line = self._failure_from_queue(ApiWriteError(
+            "GET", "https://kubernetes.default.svc/api/v1/namespaces/flagger-system/configmaps/x",
+            403, b"do not log"))
+        self.assertNotIn(policy.TRANSPORT_UNAVAILABLE, line)
+        self.assertIn("403", line)
+        self.assertNotIn("do not log", line)
+
 @contextlib.contextmanager
 def _recording(log):
     log.append("entered")

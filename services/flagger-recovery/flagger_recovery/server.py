@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Protocol
 
 from . import auth
+from .gitwriter import API_HOST as GITHUB_API_HOST
 from .identity import AttributionRefused, CandidateIdentity, resolve
 from .inbox import (
     MAX_FIELD_LENGTH,
@@ -460,11 +461,13 @@ def queued_corrector(run_one: Callable[[Mapping[str, Any]], Any], *, depth: int 
     A fault on this thread cannot reach the pass that enqueued it — that call already
     returned — so every fault here, transport or not, is counted instead of only logged;
     ``reconcile()`` drains the count into its own report through the returned callable's
-    ``drain_failures`` attribute. ``URLError``/``TimeoutError``/``ApiWriteError`` out of
-    ``run_one``'s read path never reached a verdict at all, so they are named
-    ``transport-unavailable`` and logged at WARNING with the exception's class only —
-    never its message, which for ``ApiWriteError`` carries the request path and GitHub's
-    response body. Anything else is a genuine bug and keeps its ERROR traceback."""
+    ``drain_failures`` attribute. ``URLError``/``TimeoutError`` and an ``ApiWriteError``
+    from a GitHub GET (the writer's read path) never reached a verdict at all, so they
+    are named ``transport-unavailable`` and logged at WARNING with the exception's class
+    only. An ``ApiWriteError`` from a GitHub write or the Kubernetes API reached a
+    verdict and failed to act on it — a generic failure, counted the same and logged at
+    WARNING with the exception's class and HTTP status, never its message, which carries
+    the request path and response body. Anything else is a genuine bug, ERROR traceback."""
     pending: "queue.Queue[Mapping[str, Any]]" = queue.Queue(maxsize=depth)
     failures, failures_lock = 0, threading.Lock()
 
@@ -484,9 +487,17 @@ def queued_corrector(run_one: Callable[[Mapping[str, Any]], Any], *, depth: int 
             payload = pending.get()
             try:
                 run_one(payload)
-            except (urllib.error.URLError, TimeoutError, ApiWriteError) as exc:
+            except (urllib.error.URLError, TimeoutError) as exc:
                 LOG.warning("queued correction for %r refused: %s (%s)",
                             payload.get("template_hash"), TRANSPORT_UNAVAILABLE, type(exc).__name__)
+                _record_failure()
+            except ApiWriteError as exc:
+                if exc.method == "GET" and urllib.parse.urlsplit(exc.url).hostname == GITHUB_API_HOST:
+                    LOG.warning("queued correction for %r refused: %s (%s)",
+                                payload.get("template_hash"), TRANSPORT_UNAVAILABLE, type(exc).__name__)
+                else:
+                    LOG.warning("queued correction for %r failed: %s status=%s",
+                                payload.get("template_hash"), type(exc).__name__, exc.status)
                 _record_failure()
             except Exception:  # noqa: BLE001 - a writer fault must not end the worker
                 LOG.exception("queued correction failed for %r", payload.get("template_hash"))
