@@ -12,10 +12,11 @@ from flagger_recovery.auth import BEARER_HEADER, TOKEN_HEADER
 from flagger_recovery.identity import resolve
 from flagger_recovery.kube import ApiError
 from flagger_recovery.proposal import KIND_PROPOSAL, PHASE_ALERT_PROPOSAL
-from flagger_recovery.record import (ApiWriteError, DeploymentRecord, Document, InMemoryStore,
-                                     canary_label, make_key_parts)
+from flagger_recovery.record import (ApiWriteError, ConfigMapStore, DeploymentRecord, Document,
+                                     InMemoryStore, canary_label, label_value, make_key_parts)
 from flagger_recovery.server import (ALERT_PATH, PHASE_PROMOTED, Receiver, build_server,
                                      combined_pass)
+from tests.test_record import FakeTransport
 from tests.test_server import TOKEN, FakeCandidates
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -251,6 +252,28 @@ class DecisionTests(AlertTestCase):
         self.assertEqual((answer["result"], answer["detail"]), (rules.HOLD, rules.HOLD_RESOLVED))
         self.assertEqual(self.proposals(), [])
         self.assertEqual(self.store.writes, writes + 1, "the held alert, and no proposal")
+
+    def test_a_resolution_dated_beyond_the_clock_cannot_suppress_a_fingerprint(self):
+        """Unbounded, one ``endsAt: 2099`` gags that fingerprint for ever in a create-only store
+        nothing prunes; a real one is the instant the symptom stopped, so only skew puts it ahead
+        of the clock — and the test above covers at ``09:20``, the allowance exactly."""
+        self.seed()
+        self.resolution(endsAt="2099-01-01T00:00:00Z")
+        self.assertEqual(self.fire()[1]["alerts"][0]["result"], rules.PROPOSE_CORRECTION)
+
+    def test_a_resolution_landing_while_the_ladder_runs_still_stops_the_proposal(self):
+        """The cover check and the write are not atomic, and this is a threading server: asking
+        again immediately before the write narrows that window to the store write. This pins
+        the narrowing, not atomicity."""
+        self.seed()
+        listing = self.store.list_documents
+        def racing(kind, **selectors):  # a resolution lands between the check and the write
+            answer = listing(kind, **selectors)
+            if kind == rules.KIND_ALERT_RESOLVED and not answer:
+                self.resolution(endsAt="2026-09-08T09:20:00Z")
+            return answer
+        self.store.list_documents = racing
+        self.assertEqual((self.fire()[1]["alerts"][0]["detail"], self.proposals()), (rules.HOLD_RESOLVED, []))
 
     def test_an_alert_this_pilot_cannot_claim_is_counted_and_never_stored(self):
         """The key is caller-supplied: one request must not grow the store by fingerprints."""
@@ -511,6 +534,46 @@ class SweepTests(AlertTestCase):
                           latest.payload["seconds_since_previous_start"]),
                          ("2026-09-08T09:15:00Z", 1950.0))
         self.assertEqual(report.alerts_held, 1, "the pass still converges over what it missed")
+
+class MalformedStoredObjectTests(AlertTestCase):
+    """A stored object nothing can decode is *unreadable* — a decision this path makes, never a
+    500 on every Alertmanager retry, and never one document costing a whole sweep. Over the real
+    ``ConfigMapStore``, so the decode is the production one."""
+
+    def setUp(self):
+        super().setUp()
+        self.transport = FakeTransport()
+        self.store = ConfigMapStore("http://127.0.0.1:8001", transport=self.transport)
+        self.router = self.build_router()
+
+    def poison(self, fingerprint):
+        """One of our own resolution ConfigMaps whose payload will not decode: a truncated write."""
+        configmap = Document(kind=rules.KIND_ALERT_RESOLVED, key="1" * 32, payload={},
+                             labels={rules.FINGERPRINT_LABEL: label_value(fingerprint)}).to_configmap()
+        configmap["data"] = {"document.json": "{not json"}
+        self.transport.by_namespace.setdefault("flagger-system", {})[configmap["metadata"]["name"]] = configmap
+
+    def test_a_malformed_stored_object_holds_health_unknown_rather_than_500ing(self):
+        self.seed()
+        self.poison(self.alert()["fingerprint"])
+        with self.assertLogs("flagger_recovery.alerts", level="WARNING") as logs:
+            status, body = self.fire()
+        self.assertEqual((status, body["alerts"][0]["detail"]), (202, rules.HOLD_HEALTH_UNKNOWN))
+        # Refused before anything is stored, as every unreadable read is: a redelivery re-runs it.
+        self.assertEqual((self.proposals(), self.documents(rules.KIND_ALERT)), ([], []))
+        self.assertIn("MalformedRecord", logs.output[0])
+
+    def test_one_unreadable_alert_does_not_cost_the_other_holds_their_sweep(self):
+        """Per alert, not per pass: three holds still clear around the one that cannot."""
+        self.seed(current=False)  # every alert holds on no-promoted-record, which can clear
+        [self.fire(fingerprint=f"aaaa000000000{index}") for index in range(4)]
+        self.poison("aaaa0000000001")
+        self.store.put(promoted_record(PROMOTED_HASH, PROMOTED_SHA, PROMOTED_AT))
+        with self.assertLogs("flagger_recovery.alerts", level="WARNING") as logs:
+            report = self.router.sweep()
+        self.assertEqual((report.alerts_unreadable, report.alerts_resolved, report.alerts_held,
+                          report.proposals_written, len(self.proposals())), (1, 3, 0, 1, 1))
+        self.assertIn("flagger-recovery-alert-resolved-" + "1" * 32, logs.output[0])  # what to look at
 
 class RouteAndAuthTests(AlertTestCase):
     """The receiver's gate: an alert reaches the router only once it is size-checked,

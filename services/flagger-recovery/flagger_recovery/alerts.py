@@ -71,6 +71,10 @@ HOLD_REASONS = (HOLD_UNATTRIBUTED, HOLD_INCOMPLETE_NOTIFICATION, HOLD_RESOLVED,
 CLEARABLE_HOLDS = (HOLD_ROLLOUT_IN_PROGRESS, HOLD_NO_PROMOTED_RECORD, HOLD_REVISION_MISMATCH,
                    HOLD_HEALTH_UNKNOWN)
 SWEEP_WINDOW_SECONDS = 24 * 3600
+# How far past this receiver's clock a resolution's ``endsAt`` may sit and still be read as
+# cover. A real one is the instant the symptom stopped, never meaningfully in the future —
+# only skew is. Unbounded, one ``endsAt: 2099-01-01`` gags that fingerprint for ever.
+RESOLUTION_HORIZON_SECONDS = 300
 FUNCTIONAL_NOT_CONSULTED, FUNCTIONAL_PASSING, FUNCTIONAL_FAILING = "not-consulted", "passing", "failing"
 
 # "Could not be read", enumerated rather than a bare ``Exception``: the API client's error,
@@ -192,6 +196,7 @@ class AlertSweepReport:
     alerts_held: int = 0
     alerts_resolved: int = 0
     proposals_written: int = 0
+    alerts_unreadable: int = 0  # this pass could not read one alert's inputs; the rest ran
     alerts_sweep_failed: int = 0
     seconds_since_previous_start: Optional[float] = None
 
@@ -271,6 +276,11 @@ class AlertRouter:
             return {**answer, "stored": True, "result": RECORDED}
         decision, evidence = ((Hold(HOLD_RESOLVED), {"functional_check": FUNCTIONAL_NOT_CONSULTED})
                               if covered else self._evaluate(alert, self._snapshot()))
+        # The ladder took time and this is a threading server, so ask once more: it narrows
+        # the race to the store write (see ``_resolution_covers``). An unreadable store
+        # raises here, which is the 500 a failed write would have been anyway.
+        if decision.proposal is not None and self._resolution_covers(alert):
+            decision, evidence = Hold(HOLD_RESOLVED), {"functional_check": FUNCTIONAL_NOT_CONSULTED}
         # Before the alert is marked seen, as ``Receiver._register`` writes its record first:
         # a failed proposal write must reach the 500 and leave the alert unrecorded, so a
         # redelivery re-runs the ladder instead of answering ``Duplicate`` for nothing.
@@ -303,15 +313,21 @@ class AlertRouter:
     def _resolution_covers(self, alert: Alert) -> bool:
         """Whether a recorded resolution says this firing's symptom has already stopped: an
         ``alert-resolved`` document for the same fingerprint whose ``endsAt`` is not before
-        this alert's ``startsAt``. The firing looks, rather than the resolution arriving to
+        this alert's ``startsAt`` and not more than ``RESOLUTION_HORIZON_SECONDS`` past this
+        receiver's own clock. The firing looks, rather than the resolution arriving to
         undo something — out-of-order delivery is ordinary, since Alertmanager retries a
-        notification whose POST timed out. An unreadable ``endsAt`` counts as covering."""
-        starts_at = _at(alert.starts_at)
+        notification whose POST timed out. An unreadable ``endsAt`` counts as covering.
+        ``_one`` asks twice, the second time immediately before the proposal write: that
+        **narrows** the window to the store write, and does not close it. Nothing is atomic."""
+        starts_at, horizon = _at(alert.starts_at), _at(self._clock())
         for document in self._store.list_documents(
                 KIND_ALERT_RESOLVED, labels={FINGERPRINT_LABEL: label_value(alert.fingerprint)}):
             if str(document.payload.get("fingerprint") or "") != alert.fingerprint:
                 continue  # ``label_value`` clamps, so the label is an index, never the proof
             ends_at = _at(document.payload.get("ends_at"))
+            if (horizon is not None and ends_at is not None
+                    and (ends_at - horizon).total_seconds() > RESOLUTION_HORIZON_SECONDS):
+                continue  # dated past anything a real resolution can mean
             if starts_at is None or ends_at is None or ends_at >= starts_at:
                 return True
         return False
@@ -413,31 +429,45 @@ class AlertRouter:
         ``CLEARABLE_HOLDS`` (a rollout finishes, a record lands, Flux catches up), received
         within ``SWEEP_WINDOW_SECONDS``, and not since resolved. A terminal reason re-derives
         only itself and nothing escalates a hold for being old, so neither is read again, and
-        one live view serves the pass. A cleared hold writes through the in-band key (AC3)."""
+        one live view serves the pass. A cleared hold writes through the in-band key (AC3).
+
+        Per alert, not per pass: inputs nothing here can read — a malformed stored object,
+        a store that stops answering — cost that one alert its re-evaluation and are
+        counted, never the other held alerts theirs."""
         self._begin_run()
-        counts = {"alerts_held": 0, "alerts_resolved": 0, "proposals_written": 0}
+        counts = dict.fromkeys(("alerts_held", "alerts_resolved", "proposals_written",
+                                "alerts_unreadable"), 0)
         live_view, at = self._snapshot(), self._clock()
-        for document in self._store.list_documents(KIND_ALERT):
+        # The pilot's own alerts: the selector bounds what one pass lists, rather than every
+        # ``alert`` document ever written reaching the filters below.
+        for document in self._store.list_documents(KIND_ALERT, canary=canary_label(*self._pilot)):
             payload = document.payload
             if payload.get("decision") != HOLD:
                 continue
-            alert = _alert_from(document)
-            age = _seconds_between(str(payload.get("received_at") or ""), at)
-            if (payload.get("reason") not in CLEARABLE_HOLDS or alert is None or age is None
-                    or age > SWEEP_WINDOW_SECONDS or self._resolution_covers(alert)):
-                counts["alerts_held"] += 1
-                continue
-            decision = self._evaluate(alert, live_view)[0]
-            if decision.proposal is None:
-                counts["alerts_held"] += 1
-                continue
-            counts["alerts_resolved"] += 1
-            if self._store.put_document(decision.proposal.to_document()) is PutResult.CREATED:
-                counts["proposals_written"] += 1
-                LOG.info("alert sweep: hold %s cleared for %s; proposal %s",
-                         log_field(str(payload.get("reason") or "")),
-                         log_field(str(payload.get("fingerprint") or "")),
-                         log_field(decision.proposal.key))
+            try:  # one alert's reads, and nothing else, under this guard
+                alert = _alert_from(document)
+                age = _seconds_between(str(payload.get("received_at") or ""), at)
+                if (payload.get("reason") not in CLEARABLE_HOLDS or alert is None or age is None
+                        or age > SWEEP_WINDOW_SECONDS or self._resolution_covers(alert)):
+                    counts["alerts_held"] += 1
+                    continue
+                decision = self._evaluate(alert, live_view)[0]
+                if decision.proposal is None:
+                    counts["alerts_held"] += 1
+                    continue
+                counts["alerts_resolved"] += 1
+                if self._store.put_document(decision.proposal.to_document()) is PutResult.CREATED:
+                    counts["proposals_written"] += 1
+                    LOG.info("alert sweep: hold %s cleared for %s; proposal %s",
+                             log_field(str(payload.get("reason") or "")),
+                             log_field(str(payload.get("fingerprint") or "")),
+                             log_field(decision.proposal.key))
+            except _UNREADABLE as exc:
+                counts["alerts_unreadable"] += 1
+                # Names and a class, never a message: an ``ApiError``'s carries URL and body.
+                LOG.warning("alert sweep: %s is unreadable (%s on %s); the pass continues",
+                            log_field(document.name), type(exc).__name__,
+                            log_field(str(getattr(exc, "name", ""))))
         return AlertSweepReport(seconds_since_previous_start=self.seconds_since_previous_start,
                                 alerts_sweep_failed=self.alerts_sweep_failed, **counts)
 

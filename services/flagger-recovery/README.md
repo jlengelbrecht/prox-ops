@@ -259,12 +259,27 @@ not `Kustomization/flagger-pilot-app`'s live `lastAppliedRevision`), `no-prior-p
 unreadable. `resolved` is what makes a resolution *prevent* work rather than reverse it: `alert-resolved`
 documents are indexed by fingerprint, and a firing alert carrying one with `endsAt >= startsAt` is held,
 whichever arrived first (AC1) — so a token holder can silence a fingerprint by resolving it, as they could
-already fabricate one. The clock is never an input (AC2), unknown health never becomes a success (AC4), and
-only past every rung is a proposal built — keyed under the *promoted* template hash with phase
-`alert-proposal`, so one failed revision yields one proposal however many alerts fire.
+already fabricate one — but only until `endsAt` passes: a resolution dated over five minutes past the
+receiver's clock is ignored, a real one being the instant the symptom stopped in a store nothing prunes.
+The check is asked again immediately before the proposal write, narrowing that window without closing it.
+The clock is never an input (AC2), unknown health never becomes a success (AC4), and only past every rung
+is a proposal built — keyed under the *promoted* template hash with phase `alert-proposal`, so one failed
+revision yields one proposal however many alerts fire.
+
+Three deliberate silences. A firing alert's own `endsAt` is never read: the obvious rung — hold one whose
+`endsAt` is set and past — would take the path dark, since Alertmanager sends Go's zero time for an alert
+that has not ended and `0001-01-01T00:00:00Z` is in the past; FRP-008c's capture settles which stamp the
+wire carries. One malformed member refuses the whole notification, so the blast radius is the group, not
+the member — fail-closed, and no shape Alertmanager produces triggers it. `not_stored` counts a `Duplicate`
+alongside a refusal, so ordinary redeliveries are in it. And every logged field is JSON-quoted, so a query
+must parse `result="…"`: a forged label plants a literal `result=` inside the value, where it cannot split
+the line but does fool a naive `result=\S+`.
 
 `alerts.sweep()` runs on the reconcile loop inside its own guard, so an alert-side read failure cannot cost
-the rollout path a pass (`alerts_sweep_failed`). It re-evaluates only holds whose reason can still clear
+the rollout path a pass (`alerts_sweep_failed`); each alert's own reads sit inside a second guard, so an
+undecodable stored object costs that one alert its re-evaluation (`alerts_unreadable`), not every other
+held alert theirs. It lists the pilot's own alerts by selector, and re-evaluates only holds whose reason
+can still clear
 (`rollout-in-progress`, `no-promoted-record`, `revision-mismatch`, `health-unknown`), only within 24 h of
 the alert arriving, and against one live view per pass; every other reason can re-derive nothing but itself,
 and nothing escalates a hold for being old (AC3). Each process writes one `receiver-run` document on its

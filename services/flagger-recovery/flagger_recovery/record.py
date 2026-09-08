@@ -17,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from enum import Enum
-from typing import Any, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 from .identity import CandidateIdentity
 
@@ -45,7 +45,10 @@ _DOCUMENT_OWNERSHIP = ("app.kubernetes.io/part-of", "flagger-recovery/kind")
 _KIND_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
 
 # Kubernetes label VALUES: <=63 chars, alphanumeric/./-/_ , must start and end alphanumeric.
-_LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
+# ``\Z``, not ``$``: ``$`` also matches before a trailing newline, which is not "end".
+_LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\Z")
+# Kubernetes label NAMES: an optional DNS-subdomain prefix, then the name proper.
+_LABEL_NAME_RE = re.compile(r"^([a-z0-9]([-a-z0-9.]*[a-z0-9])?/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?\Z")
 
 # Record keys are always a 32-hex-char make_key() digest; reject anything
 # else before it reaches a URL path.
@@ -66,6 +69,27 @@ class ApiWriteError(Exception):
         self.url = url
         self.status = status
         self.body = body
+
+class MalformedRecord(ApiWriteError):
+    """A ConfigMap this store owns did not decode. ``from_configmap`` raises ``KeyError``,
+    ``TypeError`` or ``JSONDecodeError`` on a truncated or hand-edited object, which a caller
+    cannot tell from a bug in its own code. It is neither: the stored object is *input* here,
+    so an undecodable one is a read failure, and "unreadable" stays a decision it can make."""
+
+    def __init__(self, name: str, exc: Exception) -> None:
+        # The name and the failure's class only: its message can carry stored payload text.
+        Exception.__init__(self, f"ConfigMap {name!r} did not decode ({type(exc).__name__})")
+        self.method, self.url, self.status, self.body = "GET", name, 200, b""
+        self.name = name
+
+def _decoded(configmap: Mapping[str, Any], reader: Callable[[Mapping[str, Any]], Any]) -> Any:
+    """``reader(configmap)``, with a decoding failure named as this store's error."""
+    try:
+        return reader(configmap)
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        metadata = configmap.get("metadata") if isinstance(configmap, Mapping) else None
+        name = metadata.get("name") if isinstance(metadata, Mapping) else ""
+        raise MalformedRecord(str(name or "<unnamed>"), exc) from exc
 
 class ForeignConfigMap(Exception):
     """Raised by ``ConfigMapStore.put`` when a ConfigMap occupies our
@@ -411,7 +435,7 @@ class ConfigMapStore:
         if not _KEY_RE.match(key):
             raise ValueError(f"invalid record key: {key!r}")
         body = self._get_configmap(f"{_NAME_PREFIX}{key}")
-        return None if body is None else DeploymentRecord.from_configmap(body)
+        return None if body is None else _decoded(body, DeploymentRecord.from_configmap)
 
     def get_document(self, kind: str, key: str) -> Optional[Document]:
         if not _KIND_RE.match(kind):
@@ -419,7 +443,7 @@ class ConfigMapStore:
         if not _KEY_RE.match(key):
             raise ValueError(f"invalid document key: {key!r}")
         body = self._get_configmap(f"{_NAME_PREFIX}{kind}-{key}")
-        return None if body is None else Document.from_configmap(body)
+        return None if body is None else _decoded(body, Document.from_configmap)
 
     def find_candidate(self, canary: str, checksum: str) -> Optional[DeploymentRecord]:
         """The ``candidate`` record a webhook payload's ``checksum`` points at,
@@ -432,10 +456,13 @@ class ConfigMapStore:
         if label is None:
             return None
         items = self._list({CANARY_LABEL: canary, PHASE_LABEL: _CANDIDATE, CHECKSUM_LABEL: label})
-        return _unique_candidate([DeploymentRecord.from_configmap(item) for item in items], checksum)
+        return _unique_candidate([_decoded(item, DeploymentRecord.from_configmap) for item in items], checksum)
 
     def list(self, canary: str) -> Sequence[DeploymentRecord]:
-        return [DeploymentRecord.from_configmap(item) for item in self._list({CANARY_LABEL: canary})]
+        """*Records* for this canary: events, proposals and alerts carry the canary label too
+        and hold no ``record.json``, so the absence of a kind is what tells the two apart."""
+        return [_decoded(item, DeploymentRecord.from_configmap)
+                for item in self._list({CANARY_LABEL: canary}, absent=("flagger-recovery/kind",))]
 
     def list_documents(self, kind: str, *, canary: Optional[str] = None,
                        labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]:
@@ -444,10 +471,17 @@ class ConfigMapStore:
         the filtering and one lookup does not have to list a kind in full."""
         if not _KIND_RE.match(kind):
             raise ValueError(f"invalid document kind: {kind!r}")
-        selectors = {"flagger-recovery/kind": kind, **(labels or {})}
+        for name, value in (labels or {}).items():
+            # The expressions ``to_configmap`` applies on the way in: a value carrying
+            # ``,`` or ``=`` would add selector terms of its own, a second
+            # ``flagger-recovery/kind`` among them, overriding the scoping checked above.
+            if not _LABEL_NAME_RE.match(name) or not _LABEL_VALUE_RE.match(value):
+                raise ValueError(f"invalid selector label: {name!r}={value!r}")
+        # Scoping last, so a caller's own ``flagger-recovery/kind`` key cannot win the merge.
+        selectors = {**(labels or {}), "flagger-recovery/kind": kind}
         if canary is not None:
             selectors["flagger-recovery/canary"] = canary
-        return [Document.from_configmap(item) for item in self._list(selectors)]
+        return [_decoded(item, Document.from_configmap) for item in self._list(selectors)]
 
     def _get_configmap(self, name: str) -> Optional[Mapping[str, Any]]:
         url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{name}"
@@ -458,8 +492,9 @@ class ConfigMapStore:
             raise ApiWriteError("GET", url, status, body)
         return json.loads(body)
 
-    def _list(self, selectors: Mapping[str, str]) -> Sequence[Mapping[str, Any]]:
-        selector = ",".join(f"{label}={value}" for label, value in sorted(selectors.items()))
+    def _list(self, selectors: Mapping[str, str], absent: Sequence[str] = ()) -> Sequence[Mapping[str, Any]]:
+        selector = ",".join([f"{label}={value}" for label, value in sorted(selectors.items())]
+                            + [f"!{label}" for label in absent])
         query = urllib.parse.urlencode({"labelSelector": selector})
         url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps?{query}"
         status, body = self._request("GET", url, None)
