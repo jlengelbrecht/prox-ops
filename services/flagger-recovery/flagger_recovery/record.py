@@ -320,7 +320,8 @@ class RecordStore(Protocol):
     def put_document(self, document: Document) -> PutResult: ...
     def get_document(self, kind: str, key: str) -> Optional[Document]: ...
     def list_documents(self, kind: str, *, canary: Optional[str] = None,
-                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]: ...
+                       labels: Optional[Mapping[str, str]] = None,
+                       skip_malformed: bool = False) -> Any: ...
 
 class Transport(Protocol):
     def request(
@@ -472,23 +473,40 @@ class ConfigMapStore:
                 for item in self._list({CANARY_LABEL: canary}, absent=("flagger-recovery/kind",))]
 
     def list_documents(self, kind: str, *, canary: Optional[str] = None,
-                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]:
+                       labels: Optional[Mapping[str, str]] = None,
+                       skip_malformed: bool = False) -> Any:
         """``labels`` narrows further, by whatever index the caller stamped on the
         document — the alert path's fingerprint, say. Selectors, so the API server does
-        the filtering and one lookup does not have to list a kind in full."""
+        the filtering and one lookup does not have to list a kind in full.
+
+        ``skip_malformed`` trades the default fail-closed listing (one ``MalformedRecord``
+        aborts the whole selection) for a tolerant one: it returns ``(documents, names)``,
+        where ``documents`` are the ones that decoded and ``names`` are the ConfigMap names
+        of the ones that did not — never silently dropped, so the caller can count and log
+        them. Only the alert sweep's own listing asks for this; every other reader stays
+        fail-closed."""
         if not _KIND_RE.match(kind):
             raise ValueError(f"invalid document kind: {kind!r}")
         for name, value in (labels or {}).items():
             # The expressions ``to_configmap`` applies on the way in: a value carrying
             # ``,`` or ``=`` would add selector terms of its own, a second
             # ``flagger-recovery/kind`` among them, overriding the scoping checked above.
-            if not _LABEL_NAME_RE.match(name) or not _LABEL_VALUE_RE.match(value):
+            if not _LABEL_NAME_RE.match(name) or not _LABEL_VALUE_RE.match(value) or len(value) > 63:
                 raise ValueError(f"invalid selector label: {name!r}={value!r}")
         # Scoping last, so a caller's own ``flagger-recovery/kind`` key cannot win the merge.
         selectors = {**(labels or {}), "flagger-recovery/kind": kind}
         if canary is not None:
             selectors["flagger-recovery/canary"] = canary
-        return [_decoded(item, Document.from_configmap) for item in self._list(selectors)]
+        items = self._list(selectors)
+        if not skip_malformed:
+            return [_decoded(item, Document.from_configmap) for item in items]
+        documents, unreadable = [], []
+        for item in items:
+            try:
+                documents.append(_decoded(item, Document.from_configmap))
+            except MalformedRecord as exc:
+                unreadable.append(exc.name)
+        return documents, unreadable
 
     def _get_configmap(self, name: str) -> Optional[Mapping[str, Any]]:
         url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{name}"
@@ -541,14 +559,19 @@ class InMemoryStore:
         return self._documents.get((kind, key))
 
     def list_documents(self, kind: str, *, canary: Optional[str] = None,
-                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]:
-        return [
+                       labels: Optional[Mapping[str, str]] = None,
+                       skip_malformed: bool = False) -> Any:
+        documents = [
             document
             for (document_kind, _), document in sorted(self._documents.items())
             if document_kind == kind
             and (canary is None or document.labels.get("flagger-recovery/canary") == canary)
             and all(document.labels.get(name) == value for name, value in (labels or {}).items())
         ]
+        # Nothing here is ever undecoded -- every entry is a ``Document`` already -- so the
+        # tolerant mode has no names to report; it exists only to keep the sweep's call
+        # shape the same across both stores.
+        return (documents, []) if skip_malformed else documents
 
     def put(self, record: DeploymentRecord) -> PutResult:
         key = make_key(record.identity, record.phase)

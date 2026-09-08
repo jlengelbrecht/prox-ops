@@ -439,15 +439,21 @@ class AlertRouter:
                                 "alerts_unreadable"), 0)
         live_view, at = self._snapshot(), self._clock()
         # The pilot's own alerts: the selector bounds what one pass lists, rather than every
-        # ``alert`` document ever written reaching the filters below.
-        for document in self._store.list_documents(KIND_ALERT, canary=canary_label(*self._pilot)):
+        # ``alert`` document ever written reaching the filters below. Tolerant: one document
+        # that never decoded must not stop the rest from being re-evaluated (R19's residual).
+        documents, unreadable_names = self._store.list_documents(
+            KIND_ALERT, canary=canary_label(*self._pilot), skip_malformed=True)
+        for name in unreadable_names:
+            counts["alerts_unreadable"] += 1
+            LOG.warning("alert sweep: %s is unreadable (MalformedRecord); the pass continues",
+                        log_field(name))
+        for document in documents:
             try:  # one alert's reads, and nothing else, under this guard
                 payload = document.payload
                 if not isinstance(payload, Mapping):
-                    # A store that hands back a document verbatim (``InMemoryStore``, or a
-                    # ``ConfigMapStore`` read that predates this check) can still carry a
-                    # payload that decoded but was never an object; treated as unreadable
-                    # here too, the same way ``Document.from_configmap`` treats it now.
+                    # Live only for a store that hands a document back undecoded
+                    # (``InMemoryStore``): ``ConfigMapStore``'s tolerant listing above already
+                    # proved every document here is a mapping, via ``Document.from_configmap``.
                     raise MalformedRecord(document.name, TypeError("alert payload is not an object"))
                 if payload.get("decision") != HOLD:
                     continue

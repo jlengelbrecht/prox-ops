@@ -13,7 +13,8 @@ from flagger_recovery.identity import resolve
 from flagger_recovery.kube import ApiError
 from flagger_recovery.proposal import KIND_PROPOSAL, PHASE_ALERT_PROPOSAL
 from flagger_recovery.record import (ApiWriteError, ConfigMapStore, DeploymentRecord, Document,
-                                     InMemoryStore, canary_label, label_value, make_key_parts)
+                                     InMemoryStore, MalformedRecord, canary_label, label_value,
+                                     make_key_parts)
 from flagger_recovery.server import (ALERT_PATH, PHASE_PROMOTED, Receiver, build_server,
                                      combined_pass)
 from tests.test_record import FakeTransport
@@ -624,6 +625,70 @@ class MalformedStoredObjectTests(AlertTestCase):
         self.assertEqual((report.alerts_unreadable, report.alerts_resolved, report.alerts_held,
                           report.proposals_written, len(self.proposals())), (1, 3, 0, 1, 1))
         self.assertIn("flagger-recovery-alert-resolved-" + "2" * 32, logs.output[0])
+
+class TolerantAlertListingTests(AlertTestCase):
+    """R19's last residual: the sweep's own ``list_documents(KIND_ALERT, ...)`` decoded its
+    whole selection eagerly, so one malformed ``alert`` document stalled every held alert
+    forever. Over the real ``ConfigMapStore``, so the tolerant decode is the production one;
+    every other listing — records, proposals, an alert listing that does not opt in — stays
+    fail-closed."""
+
+    def setUp(self):
+        super().setUp()
+        self.transport = FakeTransport()
+        self.store = ConfigMapStore("http://127.0.0.1:8001", transport=self.transport)
+        self.router = self.build_router()
+
+    def poison(self, kind, key, data):
+        """One of our own ConfigMaps of ``kind``, whose ``data`` will not decode."""
+        configmap = Document(kind=kind, key=key, payload={},
+                             labels={"flagger-recovery/canary": canary_label(NAMESPACE, CANARY)}).to_configmap()
+        configmap["data"] = data
+        self.transport.by_namespace.setdefault("flagger-system", {})[configmap["metadata"]["name"]] = configmap
+
+    def test_a_malformed_alert_document_is_counted_and_named_while_the_rest_still_sweep(self):
+        """Bad JSON, alongside three healthy held alerts: the sweep completes, counts and
+        names the one it could not read, and the other three are re-evaluated."""
+        self.seed(current=False)  # every alert holds on no-promoted-record, which can clear
+        [self.fire(fingerprint=f"bbbb000000000{index}") for index in range(3)]
+        self.poison(rules.KIND_ALERT, "2" * 32, {"document.json": "{not json"})
+        self.store.put(promoted_record(PROMOTED_HASH, PROMOTED_SHA, PROMOTED_AT))
+        with self.assertLogs("flagger_recovery.alerts", level="WARNING") as logs:
+            report = self.router.sweep()
+        self.assertEqual((report.alerts_unreadable, report.alerts_resolved, report.alerts_held,
+                          report.proposals_written, len(self.proposals())), (1, 3, 0, 1, 1))
+        self.assertEqual(sum("flagger-recovery-alert-" + "2" * 32 in line for line in logs.output), 1)
+
+    def test_a_missing_key_alert_document_is_unreadable_the_same_way(self):
+        self.poison(rules.KIND_ALERT, "3" * 32, {})  # no "document.json" at all
+        documents, unreadable = self.store.list_documents(
+            rules.KIND_ALERT, canary=canary_label(NAMESPACE, CANARY), skip_malformed=True)
+        self.assertEqual((documents, unreadable), ([], ["flagger-recovery-alert-" + "3" * 32]))
+
+    def test_a_non_object_alert_payload_is_unreadable_the_same_way(self):
+        self.poison(rules.KIND_ALERT, "4" * 32, {"document.json": "[]"})
+        documents, unreadable = self.store.list_documents(
+            rules.KIND_ALERT, canary=canary_label(NAMESPACE, CANARY), skip_malformed=True)
+        self.assertEqual((documents, unreadable), ([], ["flagger-recovery-alert-" + "4" * 32]))
+
+    def test_tolerance_does_not_reach_records_or_a_default_alert_listing(self):
+        """Only the sweep's own ``skip_malformed=True`` call is tolerant; the identical
+        broken shape reached through a record listing, or the alert listing without that
+        flag, still raises."""
+        record = DeploymentRecord(phase="Failed", identity=BASE, created_at="2026-09-07T00:00:00Z")
+        configmap = record.to_configmap()
+        configmap["data"] = {"record.json": "{not json"}
+        self.transport.by_namespace.setdefault("flagger-system", {})[configmap["metadata"]["name"]] = configmap
+        with self.assertRaises(MalformedRecord):
+            self.store.list(canary_label(NAMESPACE, CANARY))
+
+        self.poison(KIND_PROPOSAL, "5" * 32, {"document.json": "{not json"})
+        with self.assertRaises(MalformedRecord):
+            self.store.list_documents(KIND_PROPOSAL)
+
+        self.poison(rules.KIND_ALERT, "6" * 32, {"document.json": "{not json"})
+        with self.assertRaises(MalformedRecord):
+            self.store.list_documents(rules.KIND_ALERT, canary=canary_label(NAMESPACE, CANARY))
 
 class RouteAndAuthTests(AlertTestCase):
     """The receiver's gate: an alert reaches the router only once it is size-checked,
