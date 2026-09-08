@@ -276,7 +276,10 @@ to read whole, and the non-fast-forward `PATCH`), `restore-not-on-branch`, `alre
 `lease-held` (another writer holds the Lease), `credential-unavailable` (mode is `enabled` but no
 credential is readable at the moment a write is about to happen — the ExternalSecret has not synced yet,
 or the window has already closed under this pod; nothing is claimed, so the next attempt succeeds once a
-credential is readable).
+credential is readable), `transport-unavailable` (the queued worker's own read to GitHub never got an
+answer — a connection error, a timeout, a non-2xx GET — before any verdict could be reached; manufactured
+by the worker rather than `evaluate`, logged once at WARNING with the exception's class and never its
+message, and counted into the next `reconcile()` report's `corrections_failed` rather than only traced).
 
 **The correction window, and dry-run between them.** `gitwriter.CORRECTIONS_ENABLED` is `False` in the
 source and `_main()` is the one place that turns it on, from `RECOVERY_GIT_WRITE` (`off` | `dry-run` |
@@ -300,13 +303,31 @@ rather than holding its connection for the nine round trips; one the full queue 
 **What a refusal leaves behind.** The `correction` marker is a create-only claim written after every
 read-side bound has passed and immediately before the first mutating call, so a transient refusal —
 `target-changed`, `branch-moved`, `no-change`, `mixed-scope`, `restore-not-on-branch`,
-`credential-unavailable` — leaves nothing and the next delivery retries; a duplicate is `already-corrected`
-with zero GitHub calls. A completed ref
+`credential-unavailable`, `transport-unavailable` — leaves nothing and the next delivery retries; a
+duplicate is `already-corrected` with zero GitHub calls. A completed ref
 update writes a `correction-result` linking the old head, the restored revision and the new commit, and
 `reconcile()` counts a marker with no result beside it `corrections_stale` after ten minutes without ever
 retrying it — which covers both a writer that died and a ref update GitHub refused. That refused `PATCH`
 also leaves its tree and commit objects unreferenced: no ref points at them, the API cannot remove them,
 so a dangling commit here is expected debris rather than a write that half-happened.
+
+**Who refuses what, and in which order.** Two layers see a proposal before it can ever become a commit,
+and only one of them is reachable in production. `reconcile()`'s own `settled` check —
+`lastAppliedSpec != template_hash or is_manual_rollback(...)` — runs first, over every stored proposal,
+and `continue`s past a settled one without ever calling the corrector; `decide()` answers `Ignore` before a
+proposal is even built, for the same reason. `policy.evaluate`'s `superseded` is exactly `lastAppliedSpec
+!= template_hash`, or the primary not serving `lastPromotedSpec` — the first term is strictly contained in
+`settled`, and the second cannot hold while a proposal is still unsettled, because the primary only stops
+serving `lastPromotedSpec` during a promotion, and a promotion is itself what moves `lastAppliedSpec`. So
+the writer's own `superseded` and `already-restored` (F8) refusals, and `already-corrected` on the happy
+path — a second delivery of an already-written proposal is caught by `settled` turning true the moment the
+correction lands, before the writer's own duplicate-claim check ever runs — are **defense in depth**: correct
+to keep, since nothing here guarantees `settled` stays the only gate forever, but the deployed shape never
+exercises them. `flagger-recovery-pilot/outputs/git-correction.md` F25/F27 observed exactly this on the live
+pilot: three `superseded` proposals counted as `proposals_superseded` with the corrector never called, and a
+correction whose second delivery never reached `already-corrected` because `settled` closed first. Do not
+remove the writer-level refusals on the strength of that: they are the only bound left if `reconcile()`'s own
+check is ever wrong.
 
 ## Layout
 

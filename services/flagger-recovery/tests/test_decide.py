@@ -291,6 +291,21 @@ class ReconcileProposalTests(ReconcileTestCase):
         self.assertEqual((moved_on.proposals_open, moved_on.proposals_superseded), (0, 1))
         self.assertEqual((reverted.proposals_open, reverted.proposals_superseded), (0, 1))
 
+    def test_a_settled_proposal_is_never_handed_to_the_corrector(self):
+        """F25/F27: ``settled`` is checked here, before a live proposal ever reaches a
+        corrector, so the writer's own ``superseded``/``already-restored`` refusals are
+        defense in depth the deployed shape never exercises. Pin the layering: a settled
+        proposal must produce zero calls, not a refusal from the corrector's side."""
+        self.store.put(record())
+        self.pending()
+        rules.reconcile(self.store, FakeLive(), canary=self.canary)  # writes the proposal
+
+        calls = []
+        moved_on = rules.reconcile(self.store, FakeLive(applied=OTHER_HASH), canary=self.canary,
+                                    corrector=calls.append)
+        self.assertEqual(calls, [])
+        self.assertEqual((moved_on.proposals_superseded, moved_on.corrections_reoffered), (1, 0))
+
     def test_a_restart_writes_the_missed_proposal_and_the_redelivery_adds_nothing(self):
         """AC5's restart: the durable store carries a candidate, a promoted
         record and a ``Failed`` hook that was accepted but never decided. The
@@ -308,6 +323,16 @@ class ReconcileProposalTests(ReconcileTestCase):
         self.assertEqual((status, payload["result"]), (202, "ProposeCorrection"))
         self.assertEqual(self.store.writes, writes_after_startup, "no second proposal, no second event")
         self.assertEqual(len(self.store.list_documents(proposals.KIND_PROPOSAL)), 1)
+
+class ReconcileTransportFailureTests(ReconcileTestCase):
+    def test_a_queued_workers_drained_failures_fold_into_corrections_failed(self):
+        """F28: a real corrector only ever enqueues and returns, so a fault in the write
+        it queued surfaces on the worker's own thread after this pass already moved on.
+        ``transport_failures`` is that worker's drain; its count must land in the same
+        field a synchronous fault already does, not a field of its own."""
+        report = rules.reconcile(self.store, FakeLive(), canary=self.canary, transport_failures=lambda: 2)
+        self.assertEqual(report.corrections_failed, 2)
+        self.assertEqual(rules.reconcile(self.store, FakeLive(), canary=self.canary).corrections_failed, 0)
 
 if __name__ == "__main__":
     unittest.main()

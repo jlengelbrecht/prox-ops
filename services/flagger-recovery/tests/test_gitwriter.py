@@ -118,6 +118,18 @@ class StubGitHub:
             return self.patch_status, b'{"message": "Update is not a fast forward"}'
         raise AssertionError(f"unrouted {method} {path}")
 
+class _FlakyTransport:
+    """Wraps another transport, except its very first call raises ``exc`` before
+    reaching it at all — the shape of a connect that never got an answer."""
+    def __init__(self, stub, exc):
+        self._stub, self._exc, self.calls = stub, exc, 0
+
+    def request(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise self._exc
+        return self._stub.request(*args, **kwargs)
+
 class _AnyAuthStubGitHub(StubGitHub):
     """``StubGitHub`` that records whether each call carried an ``Authorization`` header
     instead of asserting a fixed one, for tests where the credential changes between
@@ -476,6 +488,46 @@ class CorrectorTests(unittest.TestCase):
             self.assertTrue(started.wait(5))
             self.assertEqual(ran, [])  # the hook answered with the writer still in flight
             release.set()
+
+    def test_a_transport_failure_on_the_queue_is_transport_unavailable_and_counted(self):
+        """F28: a stub whose first GET times out — the shape of the live pilot's
+        ``socket.create_connection`` failures. Neither ``corrector()`` nor ``evaluate()``
+        ever sees it; only the queued worker's own except clause does, and it must count
+        it rather than only trace it. The next attempt, over the same writer, succeeds.
+
+        One worker processes the queue strictly in order, so a marker payload enqueued
+        right after the failing one is only picked up once the failure was fully handled
+        (logged and counted) — a reliable wait with no sleep and no race on ``done``."""
+        flaky = _FlakyTransport(StubGitHub(), TimeoutError("timed out"))
+        run_one = corrector(self.store, writer(flaky), lambda _ns, _name: FakeLive(),
+                            clock=self.clock, lock=contextlib.nullcontext)
+        processed = threading.Event()
+
+        def _run_one(payload):
+            if payload.get("marker"):
+                processed.set()
+                return None
+            return run_one(payload)
+
+        enqueue = queued_corrector(_run_one)
+        with self.assertLogs("flagger_recovery.server", level="WARNING") as logged:
+            enqueue(proposal())
+            enqueue({"marker": True})
+            self.assertTrue(processed.wait(5))
+        self.assertIn(policy.TRANSPORT_UNAVAILABLE, logged.output[0])
+        self.assertIn("TimeoutError", logged.output[0])
+        self.assertNotIn(gitwriter.API_HOST, logged.output[0])  # no URL, query or header
+        self.assertEqual(enqueue.drain_failures(), 1)
+        self.assertEqual(enqueue.drain_failures(), 0, "a drain must not double-count")
+        self.assertIsNone(self.store.get_document(policy.KIND_CORRECTION, _key(policy.KIND_CORRECTION)))
+
+        processed.clear()
+        enqueue(proposal())
+        enqueue({"marker": True})
+        self.assertTrue(processed.wait(5))
+        self.assertEqual(enqueue.drain_failures(), 0)
+        linked = self.store.get_document(policy.KIND_CORRECTION_RESULT, _key(policy.KIND_CORRECTION_RESULT))
+        self.assertEqual(linked.payload["new_source_sha"], NEW_COMMIT)
 
 @contextlib.contextmanager
 def _recording(log):

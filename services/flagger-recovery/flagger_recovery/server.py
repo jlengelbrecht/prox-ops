@@ -27,6 +27,7 @@ import pathlib
 import queue
 import re
 import threading
+import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, NamedTuple, Optional, Protocol
@@ -42,7 +43,9 @@ from .inbox import (
     WebhookEvent,
 )
 from .kube import ApiError, ApiReader, CandidateReader, LiveCanary
-from .record import ConfigMapStore, DeploymentRecord, PutResult, canary_label, checksum_label, label_value, make_key
+from .policy import TRANSPORT_UNAVAILABLE
+from .record import (ApiWriteError, ConfigMapStore, DeploymentRecord, PutResult, canary_label,
+                      checksum_label, label_value, make_key)
 
 LOG = logging.getLogger("flagger_recovery.server")
 
@@ -452,16 +455,42 @@ def queued_corrector(run_one: Callable[[Mapping[str, Any]], Any], *, depth: int 
     is the ``post-rollout Failed`` of a rollout that already finished — nothing in that
     response depends on the outcome, so holding the connection for a minute and a half is
     all the in-band version buys. One worker, so corrections are serialised against each
-    other too. A full queue is dropped and said so; the reconcile pass re-offers it."""
+    other too. A full queue is dropped and said so; the reconcile pass re-offers it.
+
+    A fault on this thread cannot reach the pass that enqueued it — that call already
+    returned — so every fault here, transport or not, is counted instead of only logged;
+    ``reconcile()`` drains the count into its own report through the returned callable's
+    ``drain_failures`` attribute. ``URLError``/``TimeoutError``/``ApiWriteError`` out of
+    ``run_one``'s read path never reached a verdict at all, so they are named
+    ``transport-unavailable`` and logged at WARNING with the exception's class only —
+    never its message, which for ``ApiWriteError`` carries the request path and GitHub's
+    response body. Anything else is a genuine bug and keeps its ERROR traceback."""
     pending: "queue.Queue[Mapping[str, Any]]" = queue.Queue(maxsize=depth)
+    failures, failures_lock = 0, threading.Lock()
+
+    def _record_failure() -> None:
+        nonlocal failures
+        with failures_lock:
+            failures += 1
+
+    def _drain_failures() -> int:
+        nonlocal failures
+        with failures_lock:
+            drained, failures = failures, 0
+        return drained
 
     def _worker() -> None:
         while True:
             payload = pending.get()
             try:
                 run_one(payload)
+            except (urllib.error.URLError, TimeoutError, ApiWriteError) as exc:
+                LOG.warning("queued correction for %r refused: %s (%s)",
+                            payload.get("template_hash"), TRANSPORT_UNAVAILABLE, type(exc).__name__)
+                _record_failure()
             except Exception:  # noqa: BLE001 - a writer fault must not end the worker
                 LOG.exception("queued correction failed for %r", payload.get("template_hash"))
+                _record_failure()
 
     def _enqueue(payload: Mapping[str, Any]) -> str:
         try:
@@ -472,6 +501,7 @@ def queued_corrector(run_one: Callable[[Mapping[str, Any]], Any], *, depth: int 
         return CORRECTION_QUEUED
 
     threading.Thread(target=_worker, name="flagger-recovery-corrections", daemon=True).start()
+    _enqueue.drain_failures = _drain_failures
     return _enqueue
 
 def start_reconcile_loop(pass_fn: Callable[[], Any], interval: float) -> threading.Event:
@@ -606,6 +636,7 @@ def _main(argv: Optional[list[str]] = None) -> None:
         lambda: reconcile(
             store, live_for(args.canary_namespace, args.canary_name),
             canary=canary_label(args.canary_namespace, args.canary_name), corrector=correct,
+            transport_failures=None if correct is None else correct.drain_failures,
         ),
         interval,
     )
