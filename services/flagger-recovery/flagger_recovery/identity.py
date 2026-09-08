@@ -122,6 +122,14 @@ def _resolve_oci_digest(ocirepository: Mapping[str, Any]) -> str:
         raise AttributionRefused("OCIRepository has no status.artifact.digest")
     return digest
 
+def revision_sha(value: Any) -> Optional[str]:
+    """The commit sha inside a Flux ``<branch>@sha1:<sha>`` revision, or ``None`` for
+    anything else. The one parser of that field, so a reader that only needs the sha
+    (``kube.LiveKustomization``) and the resolver below can never disagree about the
+    same string — and never ``""``, which a caller comparing shas could read as a match."""
+    match = _REVISION_RE.match(str(value or ""))
+    return match.group("sha") if match else None
+
 def _resolve_revision(kustomization: Mapping[str, Any]) -> tuple[str, str]:
     revision = kustomization.get("status", {}).get("lastAppliedRevision")
     match = _REVISION_RE.match(revision or "")

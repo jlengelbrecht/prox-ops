@@ -10,6 +10,10 @@ import urllib.parse
 import urllib.request
 from typing import Any, Mapping, Optional
 
+from .identity import revision_sha
+
+_UNREAD = object()  # "this instance has not fetched yet", distinct from a fetched None
+
 class ApiError(Exception):
     """Raised when the Kubernetes API returns a non-2xx response."""
 
@@ -185,3 +189,24 @@ class LiveCanary:
         which runs on the loadtester during an analysis and has no path back
         here. ``decide`` reads ``None`` as "not consulted", never as a pass."""
         return None
+
+class LiveKustomization:
+    """The pilot Flux ``Kustomization``'s ``status.lastAppliedRevision``, reduced
+    to the commit sha in it. GET only, read once per instance — a decision is made
+    against one snapshot, so ``alerts`` builds a new one per pass. ``None`` for an
+    absent field or anything that is not the ``<branch>@sha1:<sha>`` shape Flux
+    writes, through ``identity.revision_sha``: never a guess, never ``""``, and never
+    a second, weaker reading of a field the resolver already knows how to parse."""
+
+    def __init__(self, api: ApiReader, namespace: str, name: str) -> None:
+        self._api = api
+        self._namespace = urllib.parse.quote(namespace, safe="")
+        self._name = urllib.parse.quote(name, safe="")
+        self._revision: Any = _UNREAD
+
+    def source_sha(self) -> Optional[str]:
+        if self._revision is _UNREAD:  # left unread on an exception, so a transient
+            self._revision = self._api.get(  # failure does not cache itself here
+                f"/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{self._namespace}"
+                f"/kustomizations/{self._name}").get("status", {}).get("lastAppliedRevision")
+        return revision_sha(self._revision)

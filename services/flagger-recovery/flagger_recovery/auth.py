@@ -19,6 +19,11 @@ from typing import Any, Mapping, Optional
 TOKEN_ENV = "FLAGGER_PILOT_WEBHOOK_TOKEN"
 TOKEN_FILE_ENV = "FLAGGER_PILOT_WEBHOOK_TOKEN_FILE"
 TOKEN_HEADER = "X-Flagger-Recovery-Token"
+# Alertmanager's way of presenting the same shared token: its webhook receiver's
+# ``httpConfig.authorization`` sends ``Authorization: <type> <credentials>`` and
+# cannot be made to send a custom header (FRP-008a).
+BEARER_HEADER = "Authorization"
+BEARER_SCHEME = "bearer "  # compared lower-cased; the scheme name is case-insensitive (RFC 7235)
 
 # Short enough to be a typo or a placeholder is not a token.
 MIN_TOKEN_LENGTH = 16
@@ -49,11 +54,21 @@ def load_token(*, path: Optional[str] = None, environ: Optional[Mapping[str, str
 
 def presented_token(headers: Optional[Mapping[str, str]], payload: Mapping[str, Any]) -> Optional[str]:
     """The token the caller presented: the ``X-Flagger-Recovery-Token`` header
-    if present, else ``metadata.token`` from the webhook payload."""
+    if present, then Alertmanager's ``Authorization: Bearer <token>``, else
+    ``metadata.token`` from the webhook payload. Only the scheme name is
+    inspected here and it is not a secret; the credential is returned untouched
+    and every comparison against the configured token still happens in
+    ``token_matches``'s constant-time compare. An ``Authorization`` that is not
+    bearer-shaped falls through to the payload rather than short-circuiting."""
     if headers is not None:
         header = headers.get(TOKEN_HEADER)
         if isinstance(header, str) and header:
             return header
+        authorization = headers.get(BEARER_HEADER)
+        if isinstance(authorization, str) and authorization[: len(BEARER_SCHEME)].lower() == BEARER_SCHEME:
+            credential = authorization[len(BEARER_SCHEME) :].strip()
+            if credential:
+                return credential
     metadata = payload.get("metadata")
     if isinstance(metadata, Mapping):
         token = metadata.get("token")

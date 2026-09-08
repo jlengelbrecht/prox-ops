@@ -93,6 +93,9 @@ class FakeTransport:
         # Every term must match, as the API server does it: find_candidate()
         # selects on canary, phase and checksum at once.
         for term in filter(None, selector.split(",")):
+            if term.startswith("!"):  # "the label is absent", as list() selects records
+                items = [item for item in items if term[1:] not in item["metadata"]["labels"]]
+                continue
             key, _, value = term.partition("=")
             items = [item for item in items if item["metadata"]["labels"].get(key) == value]
         return 200, json.dumps({"items": items}).encode()
@@ -351,6 +354,19 @@ class ConfigMapStoreTests(unittest.TestCase):
         self.assertEqual(sorted(selector.split(",")), [
             f"flagger-recovery/canary={canary_label('flagger-pilot', 'other')}",
             f"{CHECKSUM_LABEL}=5f5697644f", "flagger-recovery/phase=candidate"])
+
+    def test_a_selector_label_is_validated_exactly_as_a_written_one_is(self):
+        """A read API that trusts what the matching write API refuses is the defect: a
+        value carrying ``,`` or ``=`` adds selector terms of its own, a second
+        ``flagger-recovery/kind`` among them, overriding the scoping this method checks."""
+        store = self._store(FakeTransport())
+        for label, selector in (("a value that opens a second term",
+                                 {"flagger-recovery/fingerprint": "a,flagger-recovery/kind=proposal"}),
+                                ("a value that is not a label value", {"a": "b c"}),
+                                ("a name that is not a label name", {"a=b,c": "d"})):
+            with self.subTest(label), self.assertRaises(ValueError):
+                store.list_documents("alert-resolved", labels=selector)
+        self.assertEqual(len(store.list_documents("alert-resolved", labels={"a": "b"})), 0)
 
     def test_find_candidate_refuses_when_two_records_share_a_checksum(self):
         """Impossible by construction and disastrous if guessed at (NFR4), so

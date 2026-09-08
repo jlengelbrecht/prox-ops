@@ -237,6 +237,72 @@ as `events_pending`, because Flagger redelivers it and the in-band retry re-runs
 resolution; anything else counts as `events_unattributable` and is logged with
 its reason, because that rollout is over and no record will ever appear.
 
+## The Alertmanager path
+
+A release that fails *after* it was promoted gets no Flagger hook, so the only witness is monitoring.
+`POST /hooks/alert` takes Alertmanager's v4 notification (`flagger_recovery.alerts`), authenticated with the
+same shared token presented as `Authorization: Bearer` — the only header its `httpConfig.authorization` can
+send. Any other version or shape is `400`, as is a `resolved` notification carrying a firing alert (a group
+is firing when any member is, so only the reverse is a shape Alertmanager can send). Each alert becomes one
+create-only document keyed by `(fingerprint, startsAt, status)`, so a repeat is a `Duplicate` and a grouped
+notification splits per alert. **Only alerts whose `namespace`/`canary` labels name the configured pilot are
+stored**; anything else is held, logged and counted in the response as `not_stored`. The key is
+caller-supplied and nothing prunes the store, so that bound is what keeps it growing with pilot alerts alone.
+
+A firing alert is judged by a ladder that answers `Hold(reason)` at every rung but the last: `unattributed`
+(no identity labels, or another canary's), `incomplete-notification` (`truncatedAlerts > 0`, so the group is
+knowingly partial), `resolved`, `rollout-in-progress` (`lastAppliedSpec != lastPromotedSpec` — Flagger owns
+a rollout while it runs), `no-promoted-record`, `revision-mismatch` (the promoted record's `source_sha` is
+not `Kustomization/flagger-pilot-app`'s live `lastAppliedRevision`), `no-prior-promoted`,
+`insufficient-evidence` (no `annotations.recovery_evidence` or `labels.severity != critical`),
+`requires-decision` (a malformed record, so no correction can be named) and `health-unknown` for anything
+unreadable. `resolved` is what makes a resolution *prevent* work rather than reverse it: `alert-resolved`
+documents are indexed by fingerprint, and a firing alert carrying one with `endsAt >= startsAt` is held,
+whichever arrived first (AC1) — so a token holder can silence a fingerprint by resolving it, as they could
+already fabricate one — but only until `endsAt` passes: a resolution dated over five minutes past the
+receiver's clock is ignored, a real one being the instant the symptom stopped in a store nothing prunes.
+The check is asked again immediately before the proposal write, narrowing that window without closing it.
+The clock is never an input (AC2), unknown health never becomes a success (AC4), and only past every rung
+is a proposal built — keyed under the *promoted* template hash with phase `alert-proposal`, so one failed
+revision yields one proposal however many alerts fire.
+
+Three deliberate silences. A firing alert's own `endsAt` is never read: the obvious rung — hold one whose
+`endsAt` is set and past — would take the path dark, since Alertmanager sends Go's zero time for an alert
+that has not ended and `0001-01-01T00:00:00Z` is in the past; FRP-008c's capture settles which stamp the
+wire carries. One malformed member refuses the whole notification, so the blast radius is the group, not
+the member — fail-closed, and no shape Alertmanager produces triggers it. `not_stored` counts a `Duplicate`
+alongside a refusal, so ordinary redeliveries are in it. And every logged field is JSON-quoted, so a query
+must parse `result="…"`: a forged label plants a literal `result=` inside the value, where it cannot split
+the line but does fool a naive `result=\S+`.
+
+`alerts.sweep()` runs on the reconcile loop inside its own guard, so an alert-side read failure cannot cost
+the rollout path a pass (`alerts_sweep_failed`); each alert's own reads sit inside a second guard, so an
+undecodable stored object costs that one alert its re-evaluation (`alerts_unreadable`), not every other
+held alert theirs. It lists the pilot's own alerts by selector, and re-evaluates only holds whose reason
+can still clear
+(`rollout-in-progress`, `no-promoted-record`, `revision-mismatch`, `health-unknown`), only within 24 h of
+the alert arriving, and against one live view per pass; every other reason can re-derive nothing but itself,
+and nothing escalates a hold for being old (AC3). Each process writes one `receiver-run` document on its
+first pass, keyed by start *and pod*, reporting `seconds_since_previous_start` — the gap to the previous
+run's start, which is what a create-only store can honestly hold. It is **not** downtime: a receiver up for
+a week reports a week when it restarts, and an unmeasurable or negative gap is `null`, never zero. The path
+is deliberately not wired to the Git corrector: `policy.evaluate` refuses a proposal whose `template_hash`
+is the live `lastPromotedSpec` as `already-restored` (F8), true here by construction, and widening that
+bound would weaken the rollout path's own guard. FRP-008b/c decides.
+
+### Manual recovery path
+
+Nothing on this path commits anything. When an alert produces a proposal — or holds and an operator disagrees
+with the hold — a human recovers the pilot by opening a revert PR on the `flagger-pilot` branch that restores
+`kubernetes/pilot/flagger-pilot/helmrelease.yaml` to the `last_promoted_source_sha` the proposal names:
+
+```sh
+kubectl get cm -n flagger-system -l flagger-recovery/kind=alert -L flagger-recovery/decision
+kubectl get cm -n flagger-system -l flagger-recovery/kind=proposal -o yaml   # correction, and both shas
+```
+
+The receiver holding is never a reason to wait: it says only that *it* could not establish causation.
+
 ## The Git correction writer
 
 `flagger_recovery.policy` holds the bounds as literals — `ALLOWED_REPOSITORY`, `ALLOWED_REF`,
@@ -350,6 +416,7 @@ check is ever wrong.
 - `flagger_recovery/server.py` — `Receiver`, `build_server()`, the `decider`
   hook (`Decision`, `Ignore()`, `DECIDER_NOT_INSTALLED`), the reconcile timer,
   and the in-cluster `_main()` entry point.
+- `flagger_recovery/alerts.py` — `AlertRouter`, `parse()`, `Alert`, `HOLD_REASONS`, `AlertSweepReport`.
 - `flagger_recovery/decide.py` — `decide()`, `LiveState`, `decider()`, `reconcile()`;
   `flagger_recovery/proposal.py` — `Proposal`, `build_proposal()`, branch/path bounds;
   `flagger_recovery/policy.py` — the allowlists, `evaluate()`, `Verdict`, `TreeState`, `is_stale()`;

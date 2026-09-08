@@ -265,6 +265,16 @@ class ReconcileEventTests(ReconcileTestCase):
         self.assertEqual(len(self.store.list_documents(KIND_EVENT)), 1)
 
 class ReconcileProposalTests(ReconcileTestCase):
+    def test_an_alert_path_proposal_is_not_this_path_s_to_report_or_re_offer(self):
+        """Keyed under the *promoted* hash, it is settled here by construction: counting it
+        would report a standing ``proposals_superseded``, and the corrector would refuse
+        it as ``already-restored``. ``alerts.sweep()`` owns them."""
+        offered = []
+        self.store.put_document(proposals.build_proposal(
+            identity(), promoted_identity(), phase=proposals.PHASE_ALERT_PROPOSAL).to_document())
+        report = rules.reconcile(self.store, FakeLive(), canary=self.canary, corrector=offered.append)
+        self.assertEqual((report.proposals_open, report.proposals_superseded, offered), (0, 0, []))
+
     def test_a_pending_failure_produces_one_proposal_however_often_it_runs(self):
         self.pending()
         self.store.put(record())

@@ -27,6 +27,12 @@ BRANCH = "flagger-pilot"
 PATH_PREFIX = "kubernetes/pilot/flagger-pilot/"
 HELMRELEASE_PATH = PATH_PREFIX + "helmrelease.yaml"
 KIND_PROPOSAL = "proposal"
+# The key's last part. A rollout failure is keyed ``proposal`` under the *failed
+# candidate's* template hash; the post-promotion alert path (FRP-008a) is keyed
+# ``alert-proposal`` under the *promoted* hash. Both are ``kind=proposal``
+# documents of one shape, so the writer path and ``policy.evaluate`` see one
+# thing; only the key differs, which keeps the two from ever colliding.
+PHASE_ALERT_PROPOSAL = "alert-proposal"
 
 # Why no correction can be established, and a human has to decide instead.
 NEEDS_PROMOTED_REVISION = "no last promoted source revision is recorded"
@@ -54,12 +60,13 @@ class Proposal:
     requires_decision: bool
     decision_reason: str
     ahead_by: Optional[int]  # commits the failed revision is ahead of the promoted one
+    phase: str = KIND_PROPOSAL  # which path built this; see PHASE_ALERT_PROPOSAL
 
     @property
     def key(self) -> str:
-        """One per candidate identity, so every repeated or delayed hook about
-        the same failed template hash lands on the same document."""
-        return make_key_parts(self.namespace, self.canary_name, self.template_hash, KIND_PROPOSAL)
+        """One per candidate identity and path, so every repeated or delayed
+        hook — or alert — about the same template hash lands on one document."""
+        return make_key_parts(self.namespace, self.canary_name, self.template_hash, self.phase)
 
     @property
     def summary(self) -> str:
@@ -96,7 +103,7 @@ def _blocked(failed: CandidateIdentity, promoted: Optional[CandidateIdentity]) -
     return None
 
 def build_proposal(failed: CandidateIdentity, promoted: Optional[CandidateIdentity] = None, *,
-                   ahead_by: Optional[int] = None) -> Proposal:
+                   ahead_by: Optional[int] = None, phase: str = KIND_PROPOSAL) -> Proposal:
     """Build the proposal for ``failed``, correcting back to ``promoted``.
     ``ahead_by`` is how many commits the failed source revision is ahead of the
     promoted one, when the caller can establish it. A revert is only a safe
@@ -117,5 +124,5 @@ def build_proposal(failed: CandidateIdentity, promoted: Optional[CandidateIdenti
         failed_source_sha=failed.source_sha, failed_identity=failed, promoted_identity=promoted,
         last_promoted_source_sha=None if promoted is None else promoted.source_sha,
         correction=correction, requires_decision=blocked is not None, decision_reason=blocked or "",
-        ahead_by=ahead_by,
+        ahead_by=ahead_by, phase=phase,
     )
