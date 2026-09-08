@@ -98,7 +98,13 @@ class GitWriter:
               payload: Optional[Mapping[str, Any]] = None) -> tuple[int, Any, bytes]:
         """``(status, decoded, raw)``; the raw body so a failure can say what GitHub said."""
         headers = {"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT,
-                   "X-GitHub-Api-Version": API_VERSION, "Authorization": f"Bearer {self._token()}"}
+                   "X-GitHub-Api-Version": API_VERSION}
+        # No credential, no header. Between correction windows the token Secret is not in
+        # the cluster, and a ``Bearer `` with nothing after it is a 401 rather than the
+        # anonymous read of a public repository that a dry run then runs on.
+        credential = self._token()
+        if credential:
+            headers["Authorization"] = f"Bearer {credential}"
         body = None
         if payload is not None:
             body = json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -287,6 +293,11 @@ def corrector(store: Any, writer: GitWriter, live_for: Callable[[str, str], Any]
         try:
             with lock():
                 result = writer.correct(proposal, live, claim=claim, dry_run=dry_run)
+        except policy.LockUnavailable as exc:
+            # Somebody else is writing. Nothing was read from GitHub and nothing was
+            # claimed, so the next delivery — or the reconcile pass — retries cleanly.
+            LOG.warning("correction for %r refused: %s", proposal.get("template_hash"), exc)
+            return Correction(Refuse(policy.LEASE_HELD))
         except _StaleLiveView:
             LOG.error("correction for %r refused: the live view was not fresh — live_for "
                       "answered with the same object twice", proposal.get("template_hash"))

@@ -55,6 +55,12 @@ RECONCILE_INTERVAL_ENV = "RECONCILE_INTERVAL_SECONDS"
 DEFAULT_RECONCILE_INTERVAL = 300.0
 MIN_RECONCILE_INTERVAL = 10.0
 
+# The Git correction switch (FRP-007b). ``off`` installs no writer; ``dry-run`` reads
+# GitHub and logs the commit it would have made; ``enabled`` writes. Unset is ``dry-run``.
+GIT_WRITE_ENV = "RECOVERY_GIT_WRITE"
+GIT_TOKEN_FILE_ENV = "RECOVERY_GIT_TOKEN_FILE"
+WRITE_OFF, WRITE_DRY_RUN, WRITE_ENABLED = "off", "dry-run", "enabled"
+
 PHASE_CANDIDATE = "candidate"
 PHASE_PROMOTED = "promoted"
 
@@ -438,6 +444,35 @@ def start_reconcile_loop(pass_fn: Callable[[], Any], interval: float) -> threadi
     threading.Thread(target=_loop, name="flagger-recovery-reconcile", daemon=True).start()
     return stop
 
+def git_write_mode(environ: Optional[Mapping[str, str]] = None) -> str:
+    """``off``/``dry-run``/``enabled`` from ``RECOVERY_GIT_WRITE``. Unset is ``dry-run``;
+    anything unrecognised is ``off`` with a warning — a typo in the frame must neither
+    start a writer nor stop the receiver answering hooks."""
+    raw = (os.environ if environ is None else environ).get(GIT_WRITE_ENV, "")
+    mode = raw.strip().lower() or WRITE_DRY_RUN
+    if mode not in (WRITE_OFF, WRITE_DRY_RUN, WRITE_ENABLED):
+        LOG.warning("%s=%r is not one of off/dry-run/enabled: git corrections are off", GIT_WRITE_ENV, raw)
+        return WRITE_OFF
+    return mode
+
+def git_token_reader(path: str) -> Callable[[], str]:
+    """Read the credential at call time, not at start-up: the Secret appears and disappears
+    under a running pod as windows open and close, and unreadable is "no credential" — read
+    anonymously — never an exception."""
+    def _read() -> str:
+        if not path:
+            return ""
+        try:
+            return pathlib.Path(path).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    return _read
+
+def _git_startup_note(mode: str, credential: bool) -> str:
+    """Mode and credential as two facts: ``enabled`` without one becomes ``dry-run``."""
+    return (f"git corrections: {mode}, no writer installed" if mode == WRITE_OFF else
+            f"git corrections: {mode}, {'' if credential else 'no '}credential mounted")
+
 def _reconcile_startup_note(canary_namespace: str, canary_name: str, interval: float) -> str:
     """The reconcile clause of the startup log line. ``interval <= 0`` means
     the periodic timer is off (only the startup pass runs), which reads very
@@ -480,21 +515,46 @@ def _main(argv: Optional[list[str]] = None) -> None:
         kustomization_namespace=args.kustomization_namespace,
         kustomization_name=args.kustomization_name,
     )
-    # A fresh reader per event: each caches its own reads, one snapshot per decision.
+    # A fresh reader per event: each caches its own reads, one snapshot per decision,
+    # and ``gitwriter.corrector`` refuses if handed the same view twice.
     live_for = lambda namespace, name: LiveCanary(api, namespace, name)  # noqa: E731
-    receiver = Receiver(token=token, store=store, candidates=candidates, decider=decider(store, live_for))
+
+    mode, credential, correct = git_write_mode(), False, None
+    if mode != WRITE_OFF:
+        from . import gitwriter
+        from .lease import Lease
+        token_file = os.environ.get(GIT_TOKEN_FILE_ENV, "")
+        read_token = git_token_reader(token_file)
+        credential = bool(read_token())
+        if mode == WRITE_ENABLED and not credential:
+            # A window is one PR, but Flux applies the ExternalSecret and rolls the
+            # Deployment independently: this pod can start before a window's Secret does.
+            LOG.warning("%s=%s but no credential is readable at %r: starting in %s instead",
+                        GIT_WRITE_ENV, WRITE_ENABLED, token_file, WRITE_DRY_RUN)
+            mode = WRITE_DRY_RUN
+        # The module switch ships off; this is the one place that turns it on.
+        gitwriter.CORRECTIONS_ENABLED = True
+        correct = queued_corrector(gitwriter.corrector(
+            store, gitwriter.GitWriter(read_token, dry_run=mode != WRITE_ENABLED), live_for, clock=now,
+            # Holder is the pod name, so a lease found held says which pod holds it.
+            lock=Lease(base_url, namespace=args.storage_namespace, token=api_token, ca_file=ca_file,
+                       holder=os.environ.get("HOSTNAME") or f"recovery-receiver-pid-{os.getpid()}")))
+
+    receiver = Receiver(token=token, store=store, candidates=candidates,
+                        decider=decider(store, live_for), corrector=correct)
     server = build_server(receiver, port=args.port)
 
     interval = reconcile_interval()
     start_reconcile_loop(
         lambda: reconcile(
             store, live_for(args.canary_namespace, args.canary_name),
-            canary=canary_label(args.canary_namespace, args.canary_name),
+            canary=canary_label(args.canary_namespace, args.canary_name), corrector=correct,
         ),
         interval,
     )
-    LOG.info("listening on :%d, storing records in %s, %s", args.port, args.storage_namespace,
-             _reconcile_startup_note(args.canary_namespace, args.canary_name, interval))
+    LOG.info("listening on :%d, storing records in %s, %s, %s", args.port, args.storage_namespace,
+             _reconcile_startup_note(args.canary_namespace, args.canary_name, interval),
+             _git_startup_note(mode, credential))
     server.serve_forever()
 
 if __name__ == "__main__":

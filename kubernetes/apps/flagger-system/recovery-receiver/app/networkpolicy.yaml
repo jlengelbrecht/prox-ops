@@ -7,9 +7,9 @@
 # flagger-pilot has no rule here, so a pod the pilot branch deploys cannot reach
 # this port at all, whatever token it might have scraped out of its own Canary.
 #
-# Egress: DNS and the API server. No toEntities: world, no toCIDR, no toFQDNs -
-# the process talks to one API and writes no files, so there is nothing else for
-# it to reach and nowhere for a payload to be exfiltrated to.
+# Egress: DNS, the API server, and one name on the public internet -
+# api.github.com on 443, the Git correction writer's whole reach. No
+# toEntities: world and no toCIDR, so that rule is the allowance, not a hole.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -48,6 +48,14 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
+          # What makes the toFQDNs rule below work: Cilium learns a name's
+          # addresses from this pod's own DNS answers and proxies only queries
+          # a `rules.dns` pattern selects - with none, that rule holds an empty
+          # address set and every GitHub request is dropped. "*", not the exact
+          # name: an unmatched query is refused, and the resolver expands first.
+          rules:
+            dns:
+              - matchPattern: "*"
 
     # The kube-apiserver entity, which is how the receiver reads canaries,
     # deployments, replicasets and pods and writes its records. No toPorts on
@@ -58,3 +66,14 @@ spec:
     # outside this namespace, create-and-read within it.
     - toEntities:
         - kube-apiserver
+
+    # GitHub's REST API, one name and one port. Reachable window or not: a dry
+    # run reads what a real write does, so closing a window takes the
+    # credential, not the reach. A matchName, never a matchPattern. Check the
+    # CNP is Valid after this merges; an unparsable policy is refused whole.
+    - toFQDNs:
+        - matchName: api.github.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

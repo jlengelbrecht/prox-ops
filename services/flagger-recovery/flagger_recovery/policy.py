@@ -42,10 +42,17 @@ UNUSABLE_SHA, MIXED_SCOPE, NO_CHANGE = "unusable-sha", "mixed-scope", "no-change
 SUPERSEDED, ALREADY_RESTORED = "superseded", "already-restored"
 TARGET_CHANGED, BRANCH_MOVED, ALREADY_CORRECTED = "target-changed", "branch-moved", "already-corrected"
 RESTORE_NOT_ON_BRANCH = "restore-not-on-branch"  # the revision is not in ALLOWED_REF's history
+LEASE_HELD = "lease-held"  # another writer holds the Lease; nothing was read and nothing written
 REFUSAL_REASONS = (DISABLED, REQUIRES_DECISION, UNPARSABLE, WRONG_REPOSITORY, WRONG_REF,
                    PATH_OUTSIDE_PREFIX, NOT_AN_ALLOWED_TARGET, UNUSABLE_SHA, MIXED_SCOPE, NO_CHANGE,
                    SUPERSEDED, ALREADY_RESTORED, TARGET_CHANGED, BRANCH_MOVED, ALREADY_CORRECTED,
-                   RESTORE_NOT_ON_BRANCH)
+                   RESTORE_NOT_ON_BRANCH, LEASE_HELD)
+
+class LockUnavailable(Exception):
+    """The design's Lease could not be taken, so somebody else is writing. Raised by
+    the ``lock`` a caller hands ``corrector()`` and turned into ``lease-held`` there;
+    it lives beside the reason rather than in ``lease`` so the writer can name the
+    refusal without importing a module that opens sockets."""
 
 # ``\Z``, never ``$``: ``$`` also matches before a trailing newline, and a validator
 # this much authority rests on must not read "<40 hex>\n" as a sha.
