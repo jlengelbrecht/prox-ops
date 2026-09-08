@@ -138,6 +138,10 @@ class ReconcileReport:
     proposals_open: int = 0
     proposals_superseded: int = 0
     corrections_stale: int = 0
+    # Every writer fault this pass saw: one raised synchronously out of a corrector
+    # called in-line here, plus whatever ``transport_failures`` drains from a queued
+    # worker that failed on its own thread, after this pass had already handed the
+    # proposal off and moved on.
     corrections_failed: int = 0
     corrections_reoffered: int = 0
 
@@ -147,7 +151,8 @@ def _correction_of(document: Any) -> tuple[str, str]:
             str(document.labels.get("flagger-recovery/template-hash") or ""))
 
 def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None,
-              corrector: Optional[Callable[[Mapping[str, Any]], Any]] = None) -> ReconcileReport:
+              corrector: Optional[Callable[[Mapping[str, Any]], Any]] = None,
+              transport_failures: Optional[Callable[[], int]] = None) -> ReconcileReport:
     """Re-evaluate, once, everything the receiver could not finish in-band.
     An **attribution-pending event** whose candidate record has since landed is
     decided here, because nothing decided it when it arrived; one still missing
@@ -156,9 +161,18 @@ def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None,
     **proposal** is acknowledged once the failure it describes is no longer live
     — the canary moved on, or F8's manual rollback restored the promoted spec.
     That is derived, never stored, because the document store is create-only.
-    Every write reuses its in-band key, so a second pass writes nothing."""
+    Every write reuses its in-band key, so a second pass writes nothing.
+
+    ``transport_failures`` is a queued corrector's own drain: a real ``corrector``
+    here only ever enqueues and returns at once, so a fault in the write it queued
+    surfaces on the worker's own thread, after this pass already moved on. Calling
+    it once folds whatever it drained into ``corrections_failed`` beside the faults
+    caught directly below, so the report is one number regardless of which side of
+    the queue a correction failed on."""
     status = live.canary_status() or {}
     counts = {field.name: 0 for field in dataclasses.fields(ReconcileReport)}
+    if transport_failures is not None:
+        counts["corrections_failed"] += transport_failures()
     offered: set[str] = set()  # proposals this pass has already handed to the corrector
 
     for document in store.list_documents(KIND_EVENT, canary=canary):

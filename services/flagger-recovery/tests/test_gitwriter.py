@@ -118,6 +118,18 @@ class StubGitHub:
             return self.patch_status, b'{"message": "Update is not a fast forward"}'
         raise AssertionError(f"unrouted {method} {path}")
 
+class _FlakyTransport:
+    """Wraps another transport, except its very first call raises ``exc`` before
+    reaching it at all — the shape of a connect that never got an answer."""
+    def __init__(self, stub, exc):
+        self._stub, self._exc, self.calls = stub, exc, 0
+
+    def request(self, *args, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise self._exc
+        return self._stub.request(*args, **kwargs)
+
 class _AnyAuthStubGitHub(StubGitHub):
     """``StubGitHub`` that records whether each call carried an ``Authorization`` header
     instead of asserting a fixed one, for tests where the credential changes between
@@ -476,6 +488,93 @@ class CorrectorTests(unittest.TestCase):
             self.assertTrue(started.wait(5))
             self.assertEqual(ran, [])  # the hook answered with the writer still in flight
             release.set()
+
+    def test_a_transport_failure_on_the_queue_is_transport_unavailable_and_counted(self):
+        """F28: a stub whose first GET times out — the shape of the live pilot's
+        ``socket.create_connection`` failures. Neither ``corrector()`` nor ``evaluate()``
+        ever sees it; only the queued worker's own except clause does, and it must count
+        it rather than only trace it. The next attempt, over the same writer, succeeds.
+
+        One worker processes the queue strictly in order, so a marker payload enqueued
+        right after the failing one is only picked up once the failure was fully handled
+        (logged and counted) — a reliable wait with no sleep and no race on ``done``."""
+        flaky = _FlakyTransport(StubGitHub(), TimeoutError("timed out"))
+        run_one = corrector(self.store, writer(flaky), lambda _ns, _name: FakeLive(),
+                            clock=self.clock, lock=contextlib.nullcontext)
+        processed = threading.Event()
+
+        def _run_one(payload):
+            if payload.get("marker"):
+                processed.set()
+                return None
+            return run_one(payload)
+
+        enqueue = queued_corrector(_run_one)
+        with self.assertLogs("flagger_recovery.server", level="WARNING") as logged:
+            enqueue(proposal())
+            enqueue({"marker": True})
+            self.assertTrue(processed.wait(5))
+        self.assertIn(policy.TRANSPORT_UNAVAILABLE, logged.output[0])
+        self.assertIn("TimeoutError", logged.output[0])
+        self.assertNotIn(gitwriter.API_HOST, logged.output[0])  # no URL, query or header
+        self.assertEqual(enqueue.drain_failures(), 1)
+        self.assertEqual(enqueue.drain_failures(), 0, "a drain must not double-count")
+        self.assertIsNone(self.store.get_document(policy.KIND_CORRECTION, _key(policy.KIND_CORRECTION)))
+
+        processed.clear()
+        enqueue(proposal())
+        enqueue({"marker": True})
+        self.assertTrue(processed.wait(5))
+        self.assertEqual(enqueue.drain_failures(), 0)
+        linked = self.store.get_document(policy.KIND_CORRECTION_RESULT, _key(policy.KIND_CORRECTION_RESULT))
+        self.assertEqual(linked.payload["new_source_sha"], NEW_COMMIT)
+
+    def _failure_from_queue(self, exc):
+        """Enqueue a ``run_one`` that raises ``exc`` and return its WARNING line. One
+        worker, strictly in order, so a marker enqueued right after ``exc`` is only
+        reached once it was fully handled (logged and counted) — no sleep, no race."""
+        processed = threading.Event()
+
+        def _run_one(payload):
+            if payload.get("marker"):
+                processed.set()
+                return None
+            raise exc
+
+        enqueue = queued_corrector(_run_one)
+        with self.assertLogs("flagger_recovery.server", level="WARNING") as logged:
+            enqueue({})
+            enqueue({"marker": True})
+            self.assertTrue(processed.wait(5))
+        self.assertEqual(enqueue.drain_failures(), 1)
+        return logged.output[0]
+
+    def test_a_github_read_failure_on_the_queue_is_transport_unavailable(self):
+        """AC F28: an ``ApiWriteError`` whose request was a GitHub GET never reached a
+        verdict, so it is named ``transport-unavailable`` like a bare ``TimeoutError``."""
+        line = self._failure_from_queue(ApiWriteError(
+            "GET", f"{BASE_URL}/repos/{policy.ALLOWED_REPOSITORY}/git/ref/heads/x", 502, b"do not log"))
+        self.assertIn(policy.TRANSPORT_UNAVAILABLE, line)
+        self.assertNotIn("do not log", line)
+
+    def test_a_github_write_failure_on_the_queue_is_a_generic_failure_with_status(self):
+        """A GitHub write (POST/PATCH) reached a verdict and failed to act on it: never
+        ``transport-unavailable``, still counted, its status code logged and not its body."""
+        line = self._failure_from_queue(ApiWriteError(
+            "POST", f"{BASE_URL}/repos/{policy.ALLOWED_REPOSITORY}/git/trees", 422, b"do not log"))
+        self.assertNotIn(policy.TRANSPORT_UNAVAILABLE, line)
+        self.assertIn("422", line)
+        self.assertNotIn("do not log", line)
+
+    def test_a_kubernetes_failure_on_the_queue_is_a_generic_failure_with_status(self):
+        """A Kubernetes fault (the store, not GitHub) is a GET just like a GitHub read,
+        but only a GitHub read is ``transport-unavailable`` — this lands as generic too."""
+        line = self._failure_from_queue(ApiWriteError(
+            "GET", "https://kubernetes.default.svc/api/v1/namespaces/flagger-system/configmaps/x",
+            403, b"do not log"))
+        self.assertNotIn(policy.TRANSPORT_UNAVAILABLE, line)
+        self.assertIn("403", line)
+        self.assertNotIn("do not log", line)
 
 @contextlib.contextmanager
 def _recording(log):
