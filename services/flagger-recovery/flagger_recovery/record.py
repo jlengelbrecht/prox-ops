@@ -17,7 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from enum import Enum
-from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, NamedTuple, Optional, Protocol, Sequence
 
 from .identity import CandidateIdentity
 
@@ -296,6 +296,14 @@ class Document:
             payload=payload,
         )
 
+class TolerantListing(NamedTuple):
+    """The result of ``list_documents_tolerant``: ``documents`` are the ones that
+    decoded, ``unreadable`` the ConfigMap names of the ones that did not — never
+    silently dropped, so the caller can count and log them."""
+
+    documents: Sequence[Document]
+    unreadable: Sequence[str]
+
 def _unique_candidate(matches: Sequence[DeploymentRecord], checksum: str) -> Optional[DeploymentRecord]:
     """The single candidate record for a checksum, or ``None``. Two records
     sharing one should be impossible, but ``label_value()`` can clamp two hostile
@@ -321,6 +329,8 @@ class RecordStore(Protocol):
     def get_document(self, kind: str, key: str) -> Optional[Document]: ...
     def list_documents(self, kind: str, *, canary: Optional[str] = None,
                        labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]: ...
+    def list_documents_tolerant(self, kind: str, *, canary: Optional[str] = None,
+                                labels: Optional[Mapping[str, str]] = None) -> TolerantListing: ...
 
 class Transport(Protocol):
     def request(
@@ -471,8 +481,8 @@ class ConfigMapStore:
         return [_decoded(item, DeploymentRecord.from_configmap)
                 for item in self._list({CANARY_LABEL: canary}, absent=("flagger-recovery/kind",))]
 
-    def list_documents(self, kind: str, *, canary: Optional[str] = None,
-                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]:
+    def _document_selectors(self, kind: str, *, canary: Optional[str],
+                            labels: Optional[Mapping[str, str]]) -> dict[str, str]:
         """``labels`` narrows further, by whatever index the caller stamped on the
         document — the alert path's fingerprint, say. Selectors, so the API server does
         the filtering and one lookup does not have to list a kind in full."""
@@ -482,13 +492,36 @@ class ConfigMapStore:
             # The expressions ``to_configmap`` applies on the way in: a value carrying
             # ``,`` or ``=`` would add selector terms of its own, a second
             # ``flagger-recovery/kind`` among them, overriding the scoping checked above.
-            if not _LABEL_NAME_RE.match(name) or not _LABEL_VALUE_RE.match(value):
+            if not _LABEL_NAME_RE.match(name) or not _LABEL_VALUE_RE.match(value) or len(value) > 63:
                 raise ValueError(f"invalid selector label: {name!r}={value!r}")
         # Scoping last, so a caller's own ``flagger-recovery/kind`` key cannot win the merge.
         selectors = {**(labels or {}), "flagger-recovery/kind": kind}
         if canary is not None:
             selectors["flagger-recovery/canary"] = canary
+        return selectors
+
+    def list_documents(self, kind: str, *, canary: Optional[str] = None,
+                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]:
+        """Fail-closed: one ``MalformedRecord`` aborts the whole selection. Every reader
+        but the alert sweep's own listing uses this."""
+        selectors = self._document_selectors(kind, canary=canary, labels=labels)
         return [_decoded(item, Document.from_configmap) for item in self._list(selectors)]
+
+    def list_documents_tolerant(self, kind: str, *, canary: Optional[str] = None,
+                                labels: Optional[Mapping[str, str]] = None) -> TolerantListing:
+        """The tolerant counterpart of ``list_documents``: a ``documents``/``unreadable``
+        result rather than a flag, so a shape that depends on a caller's choice cannot leak
+        past the return type. ``documents`` are the ones that decoded, ``unreadable`` the
+        ConfigMap names of the ones that did not — never silently dropped, so the caller can
+        count and log them. Only the alert sweep's own listing asks for this."""
+        selectors = self._document_selectors(kind, canary=canary, labels=labels)
+        documents, unreadable = [], []
+        for item in self._list(selectors):
+            try:
+                documents.append(_decoded(item, Document.from_configmap))
+            except MalformedRecord as exc:
+                unreadable.append(exc.name)
+        return TolerantListing(documents, unreadable)
 
     def _get_configmap(self, name: str) -> Optional[Mapping[str, Any]]:
         url = f"{self._base_url}/api/v1/namespaces/{self._namespace}/configmaps/{name}"
@@ -540,8 +573,8 @@ class InMemoryStore:
     def get_document(self, kind: str, key: str) -> Optional[Document]:
         return self._documents.get((kind, key))
 
-    def list_documents(self, kind: str, *, canary: Optional[str] = None,
-                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]:
+    def _matching_documents(self, kind: str, *, canary: Optional[str],
+                            labels: Optional[Mapping[str, str]]) -> list[Document]:
         return [
             document
             for (document_kind, _), document in sorted(self._documents.items())
@@ -549,6 +582,17 @@ class InMemoryStore:
             and (canary is None or document.labels.get("flagger-recovery/canary") == canary)
             and all(document.labels.get(name) == value for name, value in (labels or {}).items())
         ]
+
+    def list_documents(self, kind: str, *, canary: Optional[str] = None,
+                       labels: Optional[Mapping[str, str]] = None) -> Sequence[Document]:
+        return self._matching_documents(kind, canary=canary, labels=labels)
+
+    def list_documents_tolerant(self, kind: str, *, canary: Optional[str] = None,
+                                labels: Optional[Mapping[str, str]] = None) -> TolerantListing:
+        # Nothing here is ever undecoded -- every entry is a ``Document`` already -- so the
+        # tolerant mode has no names to report; it exists only to keep the sweep's call
+        # shape the same across both stores.
+        return TolerantListing(self._matching_documents(kind, canary=canary, labels=labels), [])
 
     def put(self, record: DeploymentRecord) -> PutResult:
         key = make_key(record.identity, record.phase)
