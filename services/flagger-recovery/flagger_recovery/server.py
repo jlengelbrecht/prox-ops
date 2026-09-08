@@ -34,6 +34,7 @@ from typing import Any, Callable, Mapping, NamedTuple, Optional, Protocol
 from . import auth
 from .identity import AttributionRefused, CandidateIdentity, resolve
 from .inbox import (
+    MAX_FIELD_LENGTH,
     STATUS_ATTRIBUTION_PENDING,
     STATUS_RECEIVED,
     Inbox,
@@ -47,7 +48,6 @@ LOG = logging.getLogger("flagger_recovery.server")
 
 MAX_BODY_BYTES = 64 * 1024
 RETRY_AFTER_SECONDS = 30
-MAX_LOG_FIELD_LENGTH = 512  # matches inbox.MAX_FIELD_LENGTH; a reason is never longer than the detail it echoes
 
 # The reconcile pass (FRP-006a AC5) runs at startup and then on this interval.
 # ``0`` disables the timer; anything under the floor is raised to it, so a typo
@@ -82,6 +82,13 @@ _REQUEST_TIMED_OUT = "Request timed out:"
 
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+def _log_field(value: str) -> str:
+    """Render a dynamic decision-line value as a quoted, escaped JSON string
+    (clamped first) so a space or an embedded ``key=value`` inside it can
+    never be misread as a second field — the line stays one ``result=``
+    token no matter what a payload or an injected decider put in ``value``."""
+    return json.dumps(value[:MAX_FIELD_LENGTH])
 
 class CandidateSource(Protocol):
     """What ``identity.resolve()`` needs, fetched live. ``kube.CandidateReader``
@@ -194,9 +201,13 @@ class Receiver:
         from the access line alone. ``hook``/``namespace``/``name`` are already
         control-character-clean (fixed route set; ``inbox._text``'s ban on
         required fields); ``phase``/``checksum`` are reclamped through the same
-        ``label_value``/``checksum_label`` a record's own labels go through, and
-        ``reason`` through ``_UNSAFE_LOG_CHARS`` — never a payload body or
-        ``metadata`` entry."""
+        ``label_value``/``checksum_label`` a record's own labels go through.
+        ``result``, ``reason``, ``record`` and ``proposal`` all go through
+        ``_log_field`` -- ``result`` is a decider's ``Decision.kind`` and an
+        injected decider is untrusted, and ``reason``/``record``/``proposal``
+        can echo a payload's ``detail`` or checksum straight back -- so every
+        one of them is clamped and JSON-quoted before it reaches the line.
+        ``metadata`` is never logged."""
         LOG.info(
             "hook=%s canary=%s/%s phase=%s checksum=%s result=%s reason=%s record=%s proposal=%s",
             event.hook,
@@ -204,10 +215,10 @@ class Receiver:
             event.name,
             label_value(event.phase) if event.phase else "",
             checksum_label(event.checksum) or "",
-            result,
-            _UNSAFE_LOG_CHARS.sub("?", reason)[:MAX_LOG_FIELD_LENGTH],
-            record,
-            proposal,
+            _log_field(result),
+            _log_field(reason),
+            _log_field(record),
+            _log_field(proposal),
         )
 
     def _candidate_for(self, event: WebhookEvent) -> Optional[DeploymentRecord]:
