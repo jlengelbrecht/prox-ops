@@ -22,8 +22,8 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from .inbox import MAX_FIELD_LENGTH, MAX_METADATA_ENTRIES
 from .kube import ApiError
 from .proposal import PHASE_ALERT_PROPOSAL, build_proposal
-from .record import (ApiWriteError, DeploymentRecord, Document, PutResult, canary_label,
-                     label_value, make_key_parts)
+from .record import (ApiWriteError, DeploymentRecord, Document, MalformedRecord, PutResult,
+                     canary_label, label_value, make_key_parts)
 from .server import PHASE_PROMOTED, Decision, log_field, now
 
 LOG = logging.getLogger("flagger_recovery.alerts")
@@ -441,10 +441,16 @@ class AlertRouter:
         # The pilot's own alerts: the selector bounds what one pass lists, rather than every
         # ``alert`` document ever written reaching the filters below.
         for document in self._store.list_documents(KIND_ALERT, canary=canary_label(*self._pilot)):
-            payload = document.payload
-            if payload.get("decision") != HOLD:
-                continue
             try:  # one alert's reads, and nothing else, under this guard
+                payload = document.payload
+                if not isinstance(payload, Mapping):
+                    # A store that hands back a document verbatim (``InMemoryStore``, or a
+                    # ``ConfigMapStore`` read that predates this check) can still carry a
+                    # payload that decoded but was never an object; treated as unreadable
+                    # here too, the same way ``Document.from_configmap`` treats it now.
+                    raise MalformedRecord(document.name, TypeError("alert payload is not an object"))
+                if payload.get("decision") != HOLD:
+                    continue
                 alert = _alert_from(document)
                 age = _seconds_between(str(payload.get("received_at") or ""), at)
                 if (payload.get("reason") not in CLEARABLE_HOLDS or alert is None or age is None

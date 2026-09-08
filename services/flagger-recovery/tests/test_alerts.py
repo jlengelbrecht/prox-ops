@@ -488,6 +488,23 @@ class SweepTests(AlertTestCase):
         self.assertEqual((report.alerts_held, report.alerts_resolved, report.proposals_written,
                           self.proposals()), (2, 0, 0, []), "nothing escalates a hold for being old")
 
+    def test_a_non_mapping_alert_payload_does_not_cost_the_other_holds_their_sweep(self):
+        """R28: the held alert's *own* document can carry a payload that is not an object too —
+        not just a nested resolution read, which R19b already guards — and reading its
+        ``decision`` must sit inside the same per-alert guard rather than aborting the pass."""
+        self.seed(current=False)  # every alert holds on no-promoted-record, which can clear
+        [self.fire(fingerprint=f"dddd000000000{index}") for index in range(3)]
+        self.store.put_document(Document(
+            kind=rules.KIND_ALERT, key="f" * 32,
+            labels={"flagger-recovery/canary": canary_label(NAMESPACE, CANARY)},
+            payload=["not", "an", "object"]))
+        self.store.put(promoted_record(PROMOTED_HASH, PROMOTED_SHA, PROMOTED_AT))
+        with self.assertLogs("flagger_recovery.alerts", level="WARNING") as logs:
+            report = self.router.sweep()
+        self.assertEqual((report.alerts_unreadable, report.alerts_resolved, report.alerts_held,
+                          report.proposals_written, len(self.proposals())), (1, 3, 0, 1, 1))
+        self.assertIn("flagger-recovery-alert-" + "f" * 32, logs.output[0])
+
     def test_a_failing_sweep_still_lets_the_rollout_path_reconcile(self):
         """One pass covers both paths, and an alert-side read failure must not take the rollout
         path's reconcile — delayed promotions, re-offered corrections — with it."""
@@ -574,6 +591,39 @@ class MalformedStoredObjectTests(AlertTestCase):
         self.assertEqual((report.alerts_unreadable, report.alerts_resolved, report.alerts_held,
                           report.proposals_written, len(self.proposals())), (1, 3, 0, 1, 1))
         self.assertIn("flagger-recovery-alert-resolved-" + "1" * 32, logs.output[0])  # what to look at
+
+    def poison_shape(self, fingerprint):
+        """One of our own resolution ConfigMaps whose payload decodes cleanly but is not an
+        object: a list, unlike ``poison``'s truncated write, ``json.loads`` accepts without
+        complaint, so only the shape check catches it."""
+        configmap = Document(kind=rules.KIND_ALERT_RESOLVED, key="2" * 32, payload={},
+                             labels={rules.FINGERPRINT_LABEL: label_value(fingerprint)}).to_configmap()
+        configmap["data"] = {"document.json": "[]"}
+        self.transport.by_namespace.setdefault("flagger-system", {})[configmap["metadata"]["name"]] = configmap
+
+    def test_a_non_object_stored_payload_holds_health_unknown_rather_than_500ing(self):
+        """R19's remaining half: a ``document.json`` that is valid JSON but not an object must
+        not reach ``AttributeError`` the first time a caller treats it as a mapping."""
+        self.seed()
+        self.poison_shape(self.alert()["fingerprint"])
+        with self.assertLogs("flagger_recovery.alerts", level="WARNING") as logs:
+            status, body = self.fire()
+        self.assertEqual((status, body["alerts"][0]["detail"]), (202, rules.HOLD_HEALTH_UNKNOWN))
+        self.assertEqual((self.proposals(), self.documents(rules.KIND_ALERT)), ([], []))
+        self.assertIn("MalformedRecord", logs.output[0])
+
+    def test_a_non_object_stored_payload_does_not_cost_the_other_holds_their_sweep(self):
+        """The same shape defect, met during a sweep rather than a fresh request: three holds
+        still clear around the one whose resolution check cannot be read."""
+        self.seed(current=False)  # every alert holds on no-promoted-record, which can clear
+        [self.fire(fingerprint=f"cccc000000000{index}") for index in range(4)]
+        self.poison_shape("cccc0000000001")
+        self.store.put(promoted_record(PROMOTED_HASH, PROMOTED_SHA, PROMOTED_AT))
+        with self.assertLogs("flagger_recovery.alerts", level="WARNING") as logs:
+            report = self.router.sweep()
+        self.assertEqual((report.alerts_unreadable, report.alerts_resolved, report.alerts_held,
+                          report.proposals_written, len(self.proposals())), (1, 3, 0, 1, 1))
+        self.assertIn("flagger-recovery-alert-resolved-" + "2" * 32, logs.output[0])
 
 class RouteAndAuthTests(AlertTestCase):
     """The receiver's gate: an alert reaches the router only once it is size-checked,

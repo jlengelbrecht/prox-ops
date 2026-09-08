@@ -282,11 +282,18 @@ class Document:
     @classmethod
     def from_configmap(cls, configmap: Mapping[str, Any]) -> "Document":
         labels = dict(configmap["metadata"].get("labels") or {})
+        payload = json.loads(configmap["data"]["document.json"])
+        if not isinstance(payload, Mapping):
+            # ``json.loads`` decodes a list, a string, a number, ``true`` or ``null`` just as
+            # cleanly as an object: the first caller to treat ``payload`` as one would raise
+            # ``AttributeError``, which ``_decoded`` does not catch (a bug must still 500).
+            # A ``TypeError`` here does, so a non-object payload is unreadable, not a crash.
+            raise TypeError(f"document payload is not an object: {type(payload).__name__}")
         return cls(
             kind=labels.get("flagger-recovery/kind", ""),
             key=configmap["metadata"]["name"].rsplit("-", 1)[-1],
             labels=labels,
-            payload=json.loads(configmap["data"]["document.json"]),
+            payload=payload,
         )
 
 def _unique_candidate(matches: Sequence[DeploymentRecord], checksum: str) -> Optional[DeploymentRecord]:
