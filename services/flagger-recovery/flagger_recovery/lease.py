@@ -1,8 +1,8 @@
 """The Lease the Git correction writer holds while it writes.
 
 ``coordination.k8s.io/v1``, one object, and the only thing this package updates in place.
-One replica plus ``Recreate`` is the first line against two writers; this covers the
-restart overlap and the reconcile thread. Acquire or refuse."""
+One replica plus ``Recreate`` is the first line against two writers; this covers the restart
+overlap and the reconcile thread. Acquire or refuse — and only a 201 or a 200 is holding it."""
 
 from __future__ import annotations
 
@@ -24,8 +24,7 @@ LEASE_NAME = "flagger-recovery-writer"
 # outlive its lease; the single replica and the create-only marker bound that residual.
 DURATION_SECONDS = 60
 
-def _stamp(moment: datetime) -> str:
-    # MicroTime: the API server wants exactly six fractional digits here, not zero.
+def _stamp(moment: datetime) -> str:  # MicroTime: six fractional digits here, never zero
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
 def _parse(value: Any) -> Optional[datetime]:
@@ -62,7 +61,7 @@ class Lease:
         if status not in (200, 201, 404, 409):
             raise ApiWriteError(method, url, status, b"")  # empty body: nothing to log
         payload = json.loads(raw) if raw[:1] == b"{" else {}
-        return status, payload if isinstance(payload, dict) else {}
+        return status, payload if isinstance(payload, dict) else {}  # a caller checks the status
 
     def _object(self, moment: datetime, *, acquired: datetime, holder: str,
                 resource_version: str = "") -> dict[str, Any]:
@@ -81,8 +80,8 @@ class Lease:
         if status == 404:
             status, created = self._request(
                 "POST", self._collection, self._object(moment, acquired=moment, holder=self._holder))
-            if status == 409:  # created by another writer between our GET and this call
-                raise LockUnavailable(f"lease {LEASE_NAME} was taken while it was being created")
+            if status != 201:  # 409 is another writer creating it between our GET and this call
+                raise LockUnavailable(f"lease {LEASE_NAME} was not created (HTTP {status})")
             return str(created.get("metadata", {}).get("resourceVersion") or "")
         spec = existing.get("spec") or {}
         held_by = str(spec.get("holderIdentity") or "")
@@ -95,13 +94,13 @@ class Lease:
         status, updated = self._request("PUT", self._url, self._object(
             moment, acquired=acquired or moment, holder=self._holder,
             resource_version=str(existing.get("metadata", {}).get("resourceVersion") or "")))
-        if status == 409:  # somebody else won the same expired lease; theirs, not ours
-            raise LockUnavailable(f"lease {LEASE_NAME} changed between the read and the update")
+        if status != 200:  # 409 is somebody else winning the same expired lease; theirs, not ours
+            raise LockUnavailable(f"lease {LEASE_NAME} was not taken (HTTP {status})")
         return str(updated.get("metadata", {}).get("resourceVersion") or "")
 
     def release(self, version: str) -> None:
-        """Write it back unheld — an empty ``holderIdentity`` is what the check above reads
-        as free. Failure is logged, never raised: the lease expires on its own anyway."""
+        """Write it back unheld — an empty ``holderIdentity`` is what the check above reads as
+        free — and log rather than raise on failure: the lease expires on its own anyway."""
         moment = self._clock()
         try:
             status = self._request("PUT", self._url, self._object(

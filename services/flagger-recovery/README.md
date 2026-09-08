@@ -272,8 +272,7 @@ kustomization's `resources:`, and a window is one PR to `main` that uncomments i
 reverse PR closes it and Flux prunes the Secret. Nothing breaks in between: the mount is `optional`,
 `RECOVERY_GIT_TOKEN_FILE` is read per call, and with no credential the writer omits the `Authorization`
 header and evaluates the whole ladder over anonymous reads (60 an hour, far more than a correction needs).
-`corrector(..., enabled=)` can only *narrow* the module switch. `lock=` is the design's Lease — a
-`coordination.k8s.io` `Lease` named `flagger-recovery-writer`, 60 s, holder the pod name — required rather than
+`lock=` is the design's Lease — `flagger-recovery-writer`, 60 s, holder the pod name — required rather than
 defaulted — a mutual exclusion a caller can forget into a no-op is indistinguishable from one nobody
 configured. Corrections run on one worker thread, so a `post-rollout` hook answers `CorrectionQueued`
 rather than holding its connection for the nine round trips; one the full queue drops is not lost, because

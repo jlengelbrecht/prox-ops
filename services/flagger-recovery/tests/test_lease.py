@@ -68,6 +68,8 @@ class LeaseTests(unittest.TestCase):
                 ("an unreadable renewTime fails closed", FakeApi(get=unreadable), LockUnavailable),
                 ("created under us", FakeApi(get=(404, {}), post=(409, {})), LockUnavailable),
                 ("another won the expired lease", FakeApi(get=stale, put=(409, {})), LockUnavailable),
+                ("create 404", FakeApi(get=(404, {}), post=(404, {})), LockUnavailable),  # not held
+                ("it vanished mid-takeover", FakeApi(get=stale, put=(404, {})), LockUnavailable),
                 ("the read failed", FakeApi(get=(500, {})), ApiWriteError),
                 ("the takeover failed", FakeApi(get=stale, put=(500, {})), ApiWriteError)):
             with self.subTest(label), self.assertRaises(expected):
@@ -86,8 +88,8 @@ class LeaseTests(unittest.TestCase):
                 lease(FakeApi(get=(404, {}), put=(409, {})))():
             pass
         self.assertIn("not released", logged.output[0])
-        with self.assertRaises(ValueError):  # a lock with no holder excludes nothing
-            Lease(BASE, namespace="flagger-system", holder="")
+        # A lock with no holder excludes nothing, so it cannot be built at all.
+        self.assertRaises(ValueError, lambda: Lease(BASE, namespace="flagger-system", holder=""))
 
 class SwitchTests(unittest.TestCase):
     def test_a_held_lease_refuses_the_correction_and_costs_nothing(self):
