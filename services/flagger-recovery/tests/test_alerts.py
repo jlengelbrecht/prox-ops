@@ -509,7 +509,7 @@ class SweepTests(AlertTestCase):
     def test_a_failing_sweep_still_lets_the_rollout_path_reconcile(self):
         """One pass covers both paths, and an alert-side read failure must not take the rollout
         path's reconcile — delayed promotions, re-offered corrections — with it."""
-        self.store.list_documents = _raising(ApiWriteError("GET", "https://api.invalid", 503, b""))
+        self.store.list_documents_tolerant = _raising(ApiWriteError("GET", "https://api.invalid", 503, b""))
         ran = []
         with self.assertLogs("flagger_recovery.alerts", level="ERROR"):
             result = combined_pass(self.router.sweep_safely, lambda: ran.append("reconciled"))
@@ -630,8 +630,7 @@ class TolerantAlertListingTests(AlertTestCase):
     """R19's last residual: the sweep's own ``list_documents(KIND_ALERT, ...)`` decoded its
     whole selection eagerly, so one malformed ``alert`` document stalled every held alert
     forever. Over the real ``ConfigMapStore``, so the tolerant decode is the production one;
-    every other listing — records, proposals, an alert listing that does not opt in — stays
-    fail-closed."""
+    every other listing — records, proposals, ``list_documents`` itself — stays fail-closed."""
 
     def setUp(self):
         super().setUp()
@@ -661,20 +660,19 @@ class TolerantAlertListingTests(AlertTestCase):
 
     def test_a_missing_key_alert_document_is_unreadable_the_same_way(self):
         self.poison(rules.KIND_ALERT, "3" * 32, {})  # no "document.json" at all
-        documents, unreadable = self.store.list_documents(
-            rules.KIND_ALERT, canary=canary_label(NAMESPACE, CANARY), skip_malformed=True)
+        documents, unreadable = self.store.list_documents_tolerant(
+            rules.KIND_ALERT, canary=canary_label(NAMESPACE, CANARY))
         self.assertEqual((documents, unreadable), ([], ["flagger-recovery-alert-" + "3" * 32]))
 
     def test_a_non_object_alert_payload_is_unreadable_the_same_way(self):
         self.poison(rules.KIND_ALERT, "4" * 32, {"document.json": "[]"})
-        documents, unreadable = self.store.list_documents(
-            rules.KIND_ALERT, canary=canary_label(NAMESPACE, CANARY), skip_malformed=True)
+        documents, unreadable = self.store.list_documents_tolerant(
+            rules.KIND_ALERT, canary=canary_label(NAMESPACE, CANARY))
         self.assertEqual((documents, unreadable), ([], ["flagger-recovery-alert-" + "4" * 32]))
 
     def test_tolerance_does_not_reach_records_or_a_default_alert_listing(self):
-        """Only the sweep's own ``skip_malformed=True`` call is tolerant; the identical
-        broken shape reached through a record listing, or the alert listing without that
-        flag, still raises."""
+        """Only ``list_documents_tolerant`` is tolerant; the identical broken shape reached
+        through a record listing, or ``list_documents`` on the same alert kind, still raises."""
         record = DeploymentRecord(phase="Failed", identity=BASE, created_at="2026-09-07T00:00:00Z")
         configmap = record.to_configmap()
         configmap["data"] = {"record.json": "{not json"}

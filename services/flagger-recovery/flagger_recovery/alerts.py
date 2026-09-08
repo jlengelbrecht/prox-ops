@@ -441,8 +441,8 @@ class AlertRouter:
         # The pilot's own alerts: the selector bounds what one pass lists, rather than every
         # ``alert`` document ever written reaching the filters below. Tolerant: one document
         # that never decoded must not stop the rest from being re-evaluated (R19's residual).
-        documents, unreadable_names = self._store.list_documents(
-            KIND_ALERT, canary=canary_label(*self._pilot), skip_malformed=True)
+        documents, unreadable_names = self._store.list_documents_tolerant(
+            KIND_ALERT, canary=canary_label(*self._pilot))
         for name in unreadable_names:
             counts["alerts_unreadable"] += 1
             LOG.warning("alert sweep: %s is unreadable (MalformedRecord); the pass continues",
