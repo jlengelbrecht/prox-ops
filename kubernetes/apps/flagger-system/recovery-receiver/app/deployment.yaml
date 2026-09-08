@@ -73,12 +73,26 @@ spec:
               value: flagger-system
             - name: PORT
               value: "8080"
+            # off | dry-run | enabled, and `dry-run` between windows: the writer
+            # evaluates every bound and logs the commit it would have made,
+            # calling no mutating endpoint. ./kustomization.yaml has the window.
+            - name: RECOVERY_GIT_WRITE
+              value: dry-run
+            # Read at call time: the Secret below appears and disappears under
+            # a running pod. Absent means unauthenticated GitHub reads.
+            - name: RECOVERY_GIT_TOKEN_FILE
+              value: /var/run/secrets/flagger-recovery-git/token
           volumeMounts:
             - name: code
               mountPath: /app/flagger_recovery
               readOnly: true
             - name: webhook-token
               mountPath: /var/run/secrets/flagger-recovery
+              readOnly: true
+            # A sibling of the webhook token's directory, not a subdirectory:
+            # a mount nested in a read-only mount cannot create its mount point.
+            - name: git-token
+              mountPath: /var/run/secrets/flagger-recovery-git
               readOnly: true
             # The root filesystem is read-only; give the interpreter somewhere
             # to put a temporary file if it ever wants one.
@@ -120,6 +134,14 @@ spec:
         - name: webhook-token
           secret:
             secretName: flagger-pilot-webhook-token
+            defaultMode: 0440
+        - name: git-token
+          secret:
+            secretName: flagger-recovery-git-token
+            # The between-windows design rests on this word: without it,
+            # closing a window would leave the pod in ContainerCreating.
+            # "No credential", never "no pod".
+            optional: true
             defaultMode: 0440
         - name: tmp
           emptyDir: {}

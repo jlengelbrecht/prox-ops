@@ -7,6 +7,17 @@ resources:
   - ./deployment.yaml
   - ./service.yaml
   - ./networkpolicy.yaml
+  # The Git credential, commented out on purpose - see the block below.
+  # - ./externalsecret-git.yaml
+
+# The correction window. ./externalsecret-git.yaml exists in this directory and
+# is not in the list above, so Flux never applies it and the cluster holds no
+# copy of the permanent write token between windows. Opening one is a PR to
+# `main` that uncomments that line and sets RECOVERY_GIT_WRITE to `enabled` in
+# ./deployment.yaml; closing it is the reverse PR, after which Flux prunes the
+# Secret. The credential's lifetime is a reviewed diff, and nothing breaks in
+# between: that Secret is mounted `optional` and the switch defaults to
+# `dry-run`, which reads GitHub anonymously.
 
 # How the receiver's code reaches the cluster.
 #
@@ -47,6 +58,7 @@ configMapGenerator:
       - ../../../../../services/flagger-recovery/flagger_recovery/identity.py
       - ../../../../../services/flagger-recovery/flagger_recovery/inbox.py
       - ../../../../../services/flagger-recovery/flagger_recovery/kube.py
+      - ../../../../../services/flagger-recovery/flagger_recovery/lease.py
       - ../../../../../services/flagger-recovery/flagger_recovery/policy.py
       - ../../../../../services/flagger-recovery/flagger_recovery/proposal.py
       - ../../../../../services/flagger-recovery/flagger_recovery/record.py

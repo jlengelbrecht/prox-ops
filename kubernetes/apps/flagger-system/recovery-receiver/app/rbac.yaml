@@ -23,6 +23,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: recovery-receiver
+  namespace: flagger-system
   labels:
     app.kubernetes.io/name: recovery-receiver
 rules:
@@ -48,6 +49,17 @@ rules:
     resources: ["kustomizations"]
     resourceNames: ["flagger-pilot-app"]
     verbs: ["get"]
+  # The Lease the Git correction writer holds while it writes (FRP-007): the
+  # only object this account updates in place. Split in two because RBAC cannot
+  # restrict `create` by resourceNames - the name is in the request body, which
+  # the authorizer never reads - so `get`/`update` name it and `create` cannot.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: ["flagger-recovery-writer"]
+    verbs: ["get", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
