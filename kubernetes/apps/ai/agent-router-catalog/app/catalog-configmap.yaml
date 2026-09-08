@@ -127,12 +127,13 @@ data:
     #
     # 1.4.0 (EPIC-035 bazzite bring-up, story 35.13) - ADDITIVE ONLY:
     #   - bazzite-5090 flips from planned/not-selectable to
-    #     available/selectable: host conformance 7/7 (edge/conformance.sh,
-    #     TLS+auth, no --insecure), interactive-withdrawal and fail-closed
+    #     available/selectable: host conformance 7/7 (edge/conformance.sh
+    #     in ai-control-plane, TLS+auth, no --insecure),
+    #     interactive-withdrawal and fail-closed
     #     lease drills passed, control-plane integration proven live
     #     (heartbeat accepted by agent-router, gateway-path inference via
-    #     x-placement). Evidence: edge/bazzite/ACCEPTANCE.md at the
-    #     promotion PR's SHA.
+    #     x-placement). Evidence: edge/ancestors/bazzite/ACCEPTANCE.md in
+    #     ai-control-plane, at the promotion PR's SHA.
     #   - First edge placement with a MEASURED capacity.vram_gb (31.8);
     #     any-24gb's min_vram_gb: 24 therefore now admits two placements.
     #   - qwen36-27b.placements and local-code-standard.physical gain
@@ -174,11 +175,11 @@ data:
     #     the edge as a second candidate, physical ordered edge-before-KServe
     #     to match prefer_order.
     #   Nothing was removed or re-typed, so schema_version stays 1.
-    version: "1.6.0"
+    version: "1.6.1"
     # Structural schema version. Consumers MUST refuse a major they do not
     # implement rather than best-effort parsing an unknown shape.
     schema_version: 1
-    updated: "2026-08-30"
+    updated: "2026-09-08"
     epic: EPIC-035
     story: STORY-035-1
     # Consumers: none. This is asserted, not implied - see README "Inert".
@@ -347,13 +348,15 @@ data:
       bazzite-5090:
         description: >-
           LAN edge worker on the operator's Bazzite gaming host. Brought up
-          and measured against edge/EDGE-WORKER-CONTRACT.md (35.13):
+          and measured against contracts/edge-worker/EDGE-WORKER-CONTRACT.md
+          in ai-control-plane (35.13):
           conformance 7/7 with strict TLS+bearer, interactive-withdrawal
           and fail-closed-lease drills passed, heartbeat accepted by
           agent-router. Wired into agentgateway as the
           qwen36-27b-bazzite-preferred grouped backend (x-placement:
           bazzite-5090 only; the headerless default never lands here).
-          Evidence: edge/bazzite/ACCEPTANCE.md.
+          Evidence: edge/ancestors/bazzite/ACCEPTANCE.md in
+          ai-control-plane.
         status: available
         selectable: true
         kind: edge
