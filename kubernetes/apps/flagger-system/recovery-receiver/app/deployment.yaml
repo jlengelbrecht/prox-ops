@@ -25,6 +25,14 @@ spec:
       labels:
         app.kubernetes.io/name: recovery-receiver
     spec:
+      # Names with at least one dot are tried absolutely first, so
+      # api.github.com is queried as itself and Cilium's toFQDNs allowlist
+      # matches; cluster names still resolve through the search path when
+      # the absolute query fails.
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
       serviceAccountName: recovery-receiver
       # On, unlike the loadtester's. This process is a Kubernetes API client:
       # the projected token is how it reads Canary/Deployment/ReplicaSet/Pod
