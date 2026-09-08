@@ -21,7 +21,7 @@ from typing import Any, Callable, Mapping, Optional, Protocol
 from .identity import is_manual_rollback
 from .inbox import KIND_EVENT, STATUS_ATTRIBUTION_PENDING, WebhookEvent
 from .policy import KIND_CORRECTION, KIND_CORRECTION_RESULT, STATUS_IN_PROGRESS, is_stale
-from .proposal import KIND_PROPOSAL, Proposal, build_proposal
+from .proposal import KIND_PROPOSAL, PHASE_ALERT_PROPOSAL, Proposal, build_proposal
 from .record import DeploymentRecord, PutResult, canary_label, make_key_parts
 from .server import PHASE_PROMOTED, Decision, Ignore, now, write_promoted_record
 
@@ -235,6 +235,12 @@ def reconcile(store: Any, live: LiveState, *, canary: Optional[str] = None,
                 for document in store.list_documents(KIND_CORRECTION_RESULT, canary=canary)}
 
     for document in store.list_documents(KIND_PROPOSAL, canary=canary):
+        # The alert path (FRP-008a) writes this kind too, keyed under the
+        # *promoted* hash — so ``settled`` below is true for all of them by
+        # construction, and counting them here would report a standing
+        # ``proposals_superseded`` that means nothing. ``alerts.sweep()`` owns them.
+        if document.payload.get("phase") == PHASE_ALERT_PROPOSAL:
+            continue
         failed_hash = str(document.payload.get("template_hash") or "")
         settled = status.get("lastAppliedSpec") != failed_hash or is_manual_rollback(status, failed_hash)
         counts["proposals_superseded" if settled else "proposals_open"] += 1

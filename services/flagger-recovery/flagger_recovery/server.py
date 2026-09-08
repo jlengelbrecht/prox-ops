@@ -43,7 +43,7 @@ from .inbox import (
     MalformedPayload,
     WebhookEvent,
 )
-from .kube import ApiError, ApiReader, CandidateReader, LiveCanary
+from .kube import ApiError, ApiReader, CandidateReader, LiveCanary, LiveKustomization
 from .policy import TRANSPORT_UNAVAILABLE
 from .record import (ApiWriteError, ConfigMapStore, DeploymentRecord, PutResult, canary_label,
                       checksum_label, label_value, make_key)
@@ -76,6 +76,10 @@ HOOK_PATHS = {
     "/hooks/post-rollout": "post-rollout",
     "/hooks/event": "event",
 }
+# Alertmanager's webhook receiver (FRP-008a). Not in HOOK_PATHS: its body is a
+# v4 notification, not a Flagger hook, so it never reaches ``WebhookEvent``.
+ALERT_PATH = "/hooks/alert"
+ALERTS_NOT_INSTALLED = "alerts-not-installed"
 HEALTH_PATHS = ("/healthz", "/readyz")
 
 _SERVICE_ACCOUNT = pathlib.Path("/var/run/secrets/kubernetes.io/serviceaccount")
@@ -140,6 +144,16 @@ Decider = Callable[[Optional[DeploymentRecord], WebhookEvent], Decision]
 def _default_decider(record: Optional[DeploymentRecord], event: WebhookEvent) -> Decision:
     return Ignore(DECIDER_NOT_INSTALLED)
 
+# ``alerts.AlertRouter.handle``, injected the same one-way round as ``Decider``.
+AlertHandler = Callable[[Mapping[str, Any]], tuple[int, dict[str, Any]]]
+
+def _default_alert_handler(payload: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
+    """A hold, not a 5xx: with no handler installed the receiver has decided
+    nothing and there is nothing Alertmanager could usefully retry into. AC4
+    covers a missing handler as much as a missing read — an unanswerable alert
+    never becomes a success."""
+    return 202, {"result": "Hold", "detail": ALERTS_NOT_INSTALLED}
+
 class Receiver:
     """inbox -> attribute -> store, with no HTTP in sight."""
 
@@ -152,6 +166,7 @@ class Receiver:
         clock: Any = now,
         decider: Decider = _default_decider,
         corrector: Optional[Callable[[Mapping[str, Any]], Any]] = None,
+        alerts: AlertHandler = _default_alert_handler,
     ) -> None:
         if not token:
             raise ValueError("Receiver requires a token; see auth.load_token()")
@@ -161,10 +176,19 @@ class Receiver:
         self._clock = clock
         self._decider = decider
         self._corrector = corrector
+        self._alerts = alerts
         self._inbox = Inbox(store)
         self.unauthorised = 0
 
-    def handle(self, hook: str, headers: Optional[Mapping[str, str]], body: bytes) -> tuple[int, dict[str, Any]]:
+    def handle_alert(self, headers: Optional[Mapping[str, str]], body: bytes) -> tuple[int, dict[str, Any]]:
+        """``POST /hooks/alert``: an Alertmanager v4 notification, authenticated with
+        the same shared token (as ``Authorization: Bearer``). Routed through
+        ``handle`` rather than beside it, so it cannot skip the size, JSON-shape and
+        token gate below by forgetting to re-implement one of them."""
+        return self.handle(None, headers, body)
+
+    def handle(self, hook: Optional[str], headers: Optional[Mapping[str, str]],
+               body: bytes) -> tuple[int, dict[str, Any]]:
         if len(body) > MAX_BODY_BYTES:
             return 413, {"result": "PayloadTooLarge", "limit_bytes": MAX_BODY_BYTES}
         try:
@@ -176,6 +200,10 @@ class Receiver:
         if not auth.token_matches(self._token, auth.presented_token(headers, payload)):
             self.unauthorised += 1
             return 401, {"result": "Unauthorised"}
+        if hook is None:
+            # The alert route. No ``WebhookEvent`` and no inbox entry here: an alert is
+            # not a Flagger hook and is keyed by fingerprint, not by a payload checksum.
+            return self._alerts(payload)
         try:
             event = WebhookEvent.parse(hook, payload)
         except MalformedPayload as exc:
@@ -365,7 +393,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if path in HEALTH_PATHS:
             self._respond(200, {"result": "ok"})
-        elif path in HOOK_PATHS:
+        elif path in HOOK_PATHS or path == ALERT_PATH:
             self._respond(405, {"result": "MethodNotAllowed"})
         else:
             self._respond(404, {"result": "NotFound"})
@@ -373,7 +401,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's contract
         path = urllib.parse.urlsplit(self.path).path
         hook = HOOK_PATHS.get(path)
-        if hook is None:
+        if hook is None and path != ALERT_PATH:
             if path in HEALTH_PATHS:
                 self._respond(405, {"result": "MethodNotAllowed"})
             else:
@@ -390,9 +418,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         body = self.rfile.read(length)
         try:
+            # ``hook`` is None for ALERT_PATH, which is how ``handle`` routes it.
             status, payload = self.server.receiver.handle(hook, self.headers, body)
         except Exception:  # noqa: BLE001 - a receiver bug must not leak internals to the caller
-            LOG.exception("receiver failed handling %s", hook)
+            LOG.exception("receiver failed handling %s", hook or "alert")
             status, payload = 500, {"result": "InternalError"}
         self._respond(status, payload)
 
@@ -603,9 +632,10 @@ def _main(argv: Optional[list[str]] = None) -> None:
     ca_file = str(_SERVICE_ACCOUNT / "ca.crt")
     api_token = (_SERVICE_ACCOUNT / "token").read_text(encoding="utf-8").strip()
 
-    # Imported here, not at module scope: ``decide`` imports this module for
-    # the ``Decision`` contract, so the dependency runs one way everywhere but
-    # this entry point, which is what installs the real decider.
+    # Imported here, not at module scope: ``decide`` and ``alerts`` import this
+    # module for the ``Decision`` contract, so the dependency runs one way
+    # everywhere but this entry point, which is what installs the real ones.
+    from .alerts import AlertRouter
     from .decide import decider, reconcile
 
     api = ApiReader(base_url, token=api_token, ca_file=ca_file)
@@ -618,6 +648,10 @@ def _main(argv: Optional[list[str]] = None) -> None:
     # A fresh reader per event: each caches its own reads, one snapshot per decision,
     # and ``gitwriter.corrector`` refuses if handed the same view twice.
     live_for = lambda namespace, name: LiveCanary(api, namespace, name)  # noqa: E731
+    # Likewise a fresh Kustomization reader per alert: it caches its one read, and
+    # a process-lifetime router must not judge an alert against an old revision.
+    revision_for = lambda: LiveKustomization(  # noqa: E731
+        api, args.kustomization_namespace, args.kustomization_name)
 
     mode, credential, correct = git_write_mode(), False, None
     if mode != WRITE_OFF:
@@ -638,17 +672,23 @@ def _main(argv: Optional[list[str]] = None) -> None:
             lock=Lease(base_url, namespace=args.storage_namespace, token=api_token, ca_file=ca_file,
                        holder=os.environ.get("HOSTNAME") or f"recovery-receiver-pid-{os.getpid()}")))
 
+    # No ``corrector`` on this path on purpose: an alert proposal is keyed under
+    # the *promoted* template hash, which ``policy.evaluate`` refuses as
+    # ``already-restored`` (F8), so handing it over buys a guaranteed refusal.
+    # The proposal is written and a human acts on it (README, "Manual recovery
+    # path") until FRP-008b/c decides whether that bound should tell the two apart.
+    alerts = AlertRouter(store, live_for, revision_for, clock=now)
     receiver = Receiver(token=token, store=store, candidates=candidates,
-                        decider=decider(store, live_for), corrector=correct)
+                        decider=decider(store, live_for), corrector=correct, alerts=alerts.handle)
     server = build_server(receiver, port=args.port)
 
     interval = reconcile_interval()
     start_reconcile_loop(
-        lambda: reconcile(
+        lambda: (alerts.sweep(), reconcile(
             store, live_for(args.canary_namespace, args.canary_name),
             canary=canary_label(args.canary_namespace, args.canary_name), corrector=correct,
             transport_failures=None if correct is None else correct.drain_failures,
-        ),
+        )),
         interval,
     )
     LOG.info("listening on :%d, storing records in %s, %s, %s", args.port, args.storage_namespace,

@@ -237,6 +237,50 @@ as `events_pending`, because Flagger redelivers it and the in-band retry re-runs
 resolution; anything else counts as `events_unattributable` and is logged with
 its reason, because that rollout is over and no record will ever appear.
 
+## The Alertmanager path
+
+A release that fails *after* it was promoted gets no Flagger hook, so the only witness is monitoring.
+`POST /hooks/alert` takes Alertmanager's v4 notification (`flagger_recovery.alerts`), authenticated with the
+same shared token presented as `Authorization: Bearer` — the only header its `httpConfig.authorization` can
+send. Any other version or shape is `400`. Each alert becomes one create-only document keyed by
+`(fingerprint, startsAt, status)`, so a repeat is a `Duplicate`, a grouped notification is split per alert,
+and a `resolved` one is stored under kind `alert-resolved` — a kind the sweep never reads, so no resolution
+can reverse work (AC1).
+
+A firing alert is judged by a ladder that answers `Hold(reason)` at every rung but the last:
+`unattributed` (no `namespace`/`canary` labels), `rollout-in-progress` (`lastAppliedSpec != lastPromotedSpec`
+— Flagger owns a rollout while it runs), `no-promoted-record`, `revision-mismatch` (the promoted record's
+`source_sha` is not `Kustomization/flagger-pilot-app`'s live `lastAppliedRevision`), `no-prior-promoted`,
+`insufficient-evidence` (no `annotations.recovery_evidence` or `labels.severity != critical`) and
+`health-unknown` for anything unreadable. The clock is never an input (AC2) and unknown health never becomes
+a success (AC4). Only past all of them is a proposal built — keyed under the *promoted* template hash with
+phase `alert-proposal`, `failed_source_sha` the promoted record's and `last_promoted_source_sha` the previous
+promotion's — so however many alerts fire, one failed promoted revision yields one proposal. The apex
+functional check is recorded (`not-consulted` in the deployed shape), never a gate.
+
+`alerts.sweep()` runs on the reconcile loop: it re-evaluates held alerts whose reason may since have cleared,
+reports `alerts_held`/`alerts_resolved`/`interruption_window_seconds`, and never escalates a hold for being
+old (AC3). The store is create-only, so there is no per-tick document: on its first pass each process writes
+one `receiver-run` document whose window is the gap between the newest timestamp the receiver left behind
+(a previous run's start, or an alert it recorded) and this process's start; a first run records `null`, not
+zero. The alert path is deliberately **not** wired to the Git corrector — `policy.evaluate` refuses a
+proposal whose `template_hash` is the live `lastPromotedSpec` as `already-restored` (F8), which on this path
+is true by construction. Widening that bound would weaken the rollout path's own F8 guard, so it is left to
+FRP-008b/c to decide.
+
+### Manual recovery path
+
+Nothing on this path commits anything. When an alert produces a proposal — or holds and an operator disagrees
+with the hold — a human recovers the pilot by opening a revert PR on the `flagger-pilot` branch that restores
+`kubernetes/pilot/flagger-pilot/helmrelease.yaml` to the `last_promoted_source_sha` the proposal names:
+
+```sh
+kubectl get cm -n flagger-system -l flagger-recovery/kind=alert -L flagger-recovery/decision
+kubectl get cm -n flagger-system -l flagger-recovery/kind=proposal -o yaml   # correction, and both shas
+```
+
+The receiver holding is never a reason to wait: it says only that *it* could not establish causation.
+
 ## The Git correction writer
 
 `flagger_recovery.policy` holds the bounds as literals — `ALLOWED_REPOSITORY`, `ALLOWED_REF`,
@@ -350,6 +394,7 @@ check is ever wrong.
 - `flagger_recovery/server.py` — `Receiver`, `build_server()`, the `decider`
   hook (`Decision`, `Ignore()`, `DECIDER_NOT_INSTALLED`), the reconcile timer,
   and the in-cluster `_main()` entry point.
+- `flagger_recovery/alerts.py` — `AlertRouter`, `parse()`, `Alert`, `HOLD_REASONS`, `AlertSweepReport`.
 - `flagger_recovery/decide.py` — `decide()`, `LiveState`, `decider()`, `reconcile()`;
   `flagger_recovery/proposal.py` — `Proposal`, `build_proposal()`, branch/path bounds;
   `flagger_recovery/policy.py` — the allowlists, `evaluate()`, `Verdict`, `TreeState`, `is_stale()`;
