@@ -3,9 +3,10 @@
 # body, which is the combination worth fencing. Both directions are listed, so
 # this endpoint is default-deny for everything not named below.
 #
-# Ingress: the Flagger controller and nothing else. Note what is absent -
-# flagger-pilot has no rule here, so a pod the pilot branch deploys cannot reach
-# this port at all, whatever token it might have scraped out of its own Canary.
+# Ingress: the Flagger controller and the Alertmanager, and nothing else. Note
+# what is absent - flagger-pilot has no rule here, so a pod the pilot branch
+# deploys cannot reach this port at all, whatever token it might have scraped
+# out of its own Canary.
 #
 # Egress: DNS, the API server, and one name on the public internet -
 # api.github.com on 443, the Git correction writer's whole reach. No
@@ -30,6 +31,20 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: flagger-system
             app.kubernetes.io/name: flagger
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+    # The Alertmanager pods, for ./alertmanagerconfig.yaml's webhook. The
+    # operator stamps `alertmanager: <name>` on them, which names this
+    # StatefulSet's pods and not every workload in observability - the namespace
+    # label alone would admit Grafana and Prometheus too. Same container port as
+    # above, for the same DNAT-before-policy reason.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            alertmanager: kube-prometheus-stack-alertmanager
       toPorts:
         - ports:
             - port: "8080"

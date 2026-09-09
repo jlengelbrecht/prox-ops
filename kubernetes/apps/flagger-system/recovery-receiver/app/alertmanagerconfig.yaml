@@ -1,0 +1,94 @@
+---
+# Where a pilot alert becomes an authenticated POST to ./deployment.yaml.
+#
+# The Alertmanager in observability adopts this object without being told to:
+# alertmanagerConfigSelector and alertmanagerConfigNamespaceSelector are both
+# empty, which prometheus-operator reads as "any namespaced AlertmanagerConfig".
+# Its route is appended to the shared config's root route, whose own receiver is
+# `null`, so nothing here moves an alert that already goes somewhere.
+#
+# The credential is a reference and never a value. httpConfig.authorization
+# sends `Authorization: Bearer <token>`, the one header this type can send and
+# the one flagger_recovery.auth accepts on this path. The operator resolves that
+# Secret from *this object's own* namespace, which is why the namespace is
+# declared here rather than left to the Kustomization's targetNamespace:
+# ./externalsecret.yaml materialises flagger-pilot-webhook-token in
+# flagger-system, and a copy anywhere else would be a second place the shared
+# token lives.
+#
+# sendResolved is on because this receiver has a use for a resolution that most
+# webhooks do not: it stores one as an `alert-resolved` document indexed by
+# fingerprint, which is what holds a later firing of the same symptom - a
+# symptom that stops on its own prevents a correction rather than reversing one.
+#
+# There is a third matcher below that this file does not write. The operator's
+# alertmanagerConfigMatcherStrategy defaults to `OnNamespace` and the shared
+# Alertmanager leaves the field unset, so amcfg.go's namespaceEnforcer appends
+# `namespace="flagger-system"` - this object's own namespace - to the matchers
+# below (prometheus-operator v0.87.1). That fence is the reason for two
+# otherwise odd-looking facts: this object declares its namespace rather than
+# inheriting one, and ./prometheusrule.yaml labels its alerts
+# `namespace: flagger-system` even though the symptom is the pilot's. The pilot
+# identity travels in `canary_namespace`/`canary` instead, which is what the
+# receiver attributes on. Do not restate `namespace` in the matchers here: the
+# operator supplies it, and writing it out again reads like a claim about the
+# alert's origin, which is exactly the confusion the arrangement avoids.
+#
+# What this file does match is `recovery` and `canary_namespace`, and no others.
+# `recovery` rather than `severity` or `alertname`: it is the label that says
+# "this rule was written for the receiver", so adding a pilot alert that must
+# not reach it is a matter of leaving that label off. `canary_namespace` keeps
+# the route to this pilot when a second canary's rules arrive.
+#
+# `continue: false` below is what this object asks for, not what runs. The
+# operator forces `continue: true` on every first-level route it generates
+# (amcfg.go's continueToNextRoute), so a matching alert also falls through to
+# the shared config's own routes. Nothing downstream of the root's `null`
+# receiver acts on it today.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: recovery-receiver
+  namespace: flagger-system
+  labels:
+    app.kubernetes.io/name: recovery-receiver
+    app.kubernetes.io/component: alertmanagerconfig
+spec:
+  route:
+    receiver: recovery-receiver
+    # By alert and canary, so the two rules notify separately: they are
+    # different symptoms and the receiver judges each on its own evidence.
+    groupBy: [alertname, canary]
+    groupWait: 15s
+    groupInterval: 1m
+    # Long enough that a hold the sweep may clear is not re-POSTed every minute,
+    # short enough that a receiver restart re-hears a still-firing symptom. A
+    # repeat costs nothing either way: the store is keyed by the alert, so it
+    # answers Duplicate.
+    repeatInterval: 10m
+    continue: false
+    # No matchType on either: an omitted one and a deprecated `regex: false`
+    # both render as equality (the operator's Matcher.String), and a literal
+    # `matchType: =` is a YAML 1.1 trap - kustomize emits the `=` unquoted and
+    # every 1.1 parser downstream reads it as the merge-value tag rather than a
+    # string. Equality is what these two need; spell an operator out only when
+    # something needs `=~`.
+    matchers:
+      - name: recovery
+        value: "true"
+      - name: canary_namespace
+        value: flagger-pilot
+  receivers:
+    - name: recovery-receiver
+      webhookConfigs:
+        # The Service's port 80, not the container's 8080 - this is a name
+        # resolved and dialled, not a policy decision (./networkpolicy.yaml
+        # names the port Cilium actually sees, which is the other one).
+        - url: http://recovery-receiver.flagger-system.svc.cluster.local/hooks/alert
+          sendResolved: true
+          httpConfig:
+            authorization:
+              type: Bearer
+              credentials:
+                name: flagger-pilot-webhook-token
+                key: token

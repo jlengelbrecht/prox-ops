@@ -7,6 +7,8 @@ resources:
   - ./deployment.yaml
   - ./service.yaml
   - ./networkpolicy.yaml
+  - ./prometheusrule.yaml
+  - ./alertmanagerconfig.yaml
   # The Git credential, commented out on purpose - see the block below.
   # - ./externalsecret-git.yaml
 
@@ -24,8 +26,10 @@ resources:
 #
 # Opening and closing a window flips exactly those two lines - this one and
 # the RECOVERY_GIT_WRITE value in ./deployment.yaml - each a reviewed PR to
-# `main`, after which Flux applies or prunes the Secret accordingly. Never
-# edit this prose again; it already covers both states.
+# `main`. What Flux applies or prunes is the *ExternalSecret*; the Secret is
+# external-secrets', created from that object and deleted with it
+# (creationPolicy: Owner), which is the step that actually takes the token off
+# the cluster. Never edit this prose again; it already covers both states.
 
 # How the receiver's code reaches the cluster.
 #
