@@ -234,7 +234,8 @@ data:
         """Application lifespan handler."""
         global llm_client, tts_client
 
-        logger.info("Voice Bridge starting (ConversationRelay mode)...")
+        mode = "ConversationRelay" if LLM_ENABLED else "unavailable-message"
+        logger.info(f"Voice Bridge starting ({mode} mode)...")
 
         # Validate required environment variables
         required = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER",

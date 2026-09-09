@@ -3,24 +3,26 @@
 Runs the REAL module extracted from `voice-bridge/app/configmap.yaml` (see
 extract_app.py). Third-party libraries are stubbed; the code under test is not.
 
-Behaviour under test: with LLM_ENABLED=false the outbound endpoint hands Twilio
-`<Say>...</Say><Hangup/>` TwiML instead of `<Connect><ConversationRelay/>`, so
-Twilio never receives a `wss://` URL, no session is opened, and the LLM and TTS
-paths are unreachable. Cases named `*Disabled*` cover that mode; the rest are
-regression guards on behaviour that must survive unchanged in enabled mode.
+With LLM_ENABLED=false the outbound endpoint hands Twilio `<Say/><Hangup/>`
+instead of `<Connect><ConversationRelay/>`, so no session opens and the LLM and
+TTS paths are unreachable. `*Disabled*` cases cover that mode; the rest guard
+behaviour that must survive unchanged in enabled mode.
 
 Run:  python3 -m unittest discover -s services/voice-bridge/tests -p 'test_*.py'
 """
 
 from __future__ import annotations
 
+import pathlib
+import shutil
+import tempfile
 import time
 import types
 import unittest
 
 import yaml
 
-from extract_app import BASE_ENV, REPO_ROOT, load_module, run, run_env
+from extract_app import BASE_ENV, CONFIGMAP, REPO_ROOT, load_module, run, run_env
 
 AUDIO_DIR = "/tmp/voice-bridge-tests-audio"
 DEFAULT_MESSAGE = (
@@ -32,10 +34,6 @@ ENABLED_ENV = dict(BASE_ENV, LLM_ENABLED="true", LLM_API_KEY="k",
                     LLM_BASE_URL="http://litellm.ai.svc.cluster.local:4000/v1",
                     LLM_MODEL="qwen3-30b", AUDIO_DIR=AUDIO_DIR)
 
-
-# --------------------------------------------------------------------------
-# Fakes
-# --------------------------------------------------------------------------
 
 class FakeTwilio:
     """Records `client.calls.create(**kw)`; optionally raises."""
@@ -171,9 +169,18 @@ def run_one_reaper_pass(mod):
         mod.asyncio = original
 
 
-# --------------------------------------------------------------------------
-# Disabled mode
-# --------------------------------------------------------------------------
+def run_lifespan(mod, inside=None):
+    """Enter the app lifespan, return `inside(mod)` (awaited if needed), then exit."""
+
+    async def go():
+        async with mod.lifespan(mod.app):
+            if inside is None:
+                return None
+            value = inside(mod)
+            return await value if hasattr(value, "__await__") else value
+
+    return run_env(mod, go)
+
 
 class DisabledOutbound(unittest.TestCase):
     """Disabled mode terminates the call with vendor TwiML and opens no session."""
@@ -238,21 +245,13 @@ class DisabledStartup(unittest.TestCase):
         mod = load_module(DISABLED_ENV)  # note: no LLM_API_KEY in env
         self.assertIsNone(mod._env.get("LLM_API_KEY"))
 
-        async def go():
-            async with mod.lifespan(mod.app):
-                return await mod.health()
-
-        body = run_env(mod, go)
+        body = run_lifespan(mod, lambda m: m.health())
         self.assertEqual(body["status"], "healthy")
 
     def test_llm_client_not_created_when_disabled(self):
         mod = load_module(DISABLED_ENV)
 
-        async def go():
-            async with mod.lifespan(mod.app):
-                return mod.llm_client, mod.tts_client
-
-        llm, tts = run_env(mod, go)
+        llm, tts = run_lifespan(mod, lambda m: (m.llm_client, m.tts_client))
         self.assertIsNone(llm, "no LLM client may be constructed when disabled")
         self.assertIsNotNone(tts, "TTS client is unrelated and must survive")
 
@@ -309,10 +308,6 @@ class DisabledCallRecord(unittest.TestCase):
         self.assertEqual(mod.active_calls, {}, "expired record must be swept")
 
 
-# --------------------------------------------------------------------------
-# Preserved behaviour (must pass before and after the change)
-# --------------------------------------------------------------------------
-
 class EnabledModeUnchanged(unittest.TestCase):
     EXPECTED = ('<Response><Connect><ConversationRelay url="wss://{host}/ws/{cid}" '
                 'welcomeGreeting="{greet}" dtmfDetection="true" /></Connect></Response>')
@@ -330,12 +325,8 @@ class EnabledModeUnchanged(unittest.TestCase):
         mod = load_module(dict(BASE_ENV, LLM_ENABLED="true", LLM_BASE_URL="http://x",
                                 LLM_MODEL="m", AUDIO_DIR=AUDIO_DIR))
 
-        async def go():
-            async with mod.lifespan(mod.app):
-                pass
-
         with self.assertRaises(RuntimeError) as ctx:
-            run_env(mod, go)
+            run_lifespan(mod)
         message = str(ctx.exception)
         self.assertIn("LLM_API_KEY", message)
         # LLM_API_KEY must be the ONLY thing missing - proves the env fixture is
@@ -346,11 +337,7 @@ class EnabledModeUnchanged(unittest.TestCase):
     def test_enabled_startup_creates_both_clients(self):
         mod = load_module(ENABLED_ENV)
 
-        async def go():
-            async with mod.lifespan(mod.app):
-                return mod.llm_client, mod.tts_client
-
-        llm, tts = run_env(mod, go)
+        llm, tts = run_lifespan(mod, lambda m: (m.llm_client, m.tts_client))
         self.assertIsNotNone(llm)
         self.assertIsNotNone(tts)
 
@@ -389,35 +376,27 @@ class LLMEnabledConfigValidation(unittest.TestCase):
                        **present)
             mod = load_module(env)
 
-            async def go():
-                async with mod.lifespan(mod.app):
-                    pass
-
             with self.assertRaises(RuntimeError) as ctx:
-                run_env(mod, go)
+                run_lifespan(mod)
             self.assertIn(missing, str(ctx.exception))
 
 
 class CallErrorCleanup(unittest.TestCase):
     """Twilio failure handling is mode-independent and must not regress."""
 
-    def _assert_cleanup(self, env):
-        mod = load_module(env)
-        twilio = FakeTwilio(raises=RuntimeError("twilio exploded"))
-        with self.assertRaises(mod._stubs["fastapi"].HTTPException) as ctx:
-            outbound(mod, twilio)
-        self.assertEqual(ctx.exception.status_code, 500)
-        self.assertEqual(len(mod.active_calls), 1)
-        record = next(iter(mod.active_calls.values()))
-        self.assertEqual(record["status"], "failed")
-        self.assertIn("twilio exploded", record["error"])
-        self.assertIsNone(record["twilio_sid"])
-
-    def test_cleanup_enabled(self):
-        self._assert_cleanup(ENABLED_ENV)
-
-    def test_cleanup_disabled(self):
-        self._assert_cleanup(DISABLED_ENV)
+    def test_cleanup_is_mode_independent(self):
+        for env in (ENABLED_ENV, DISABLED_ENV):
+            with self.subTest(LLM_ENABLED=env["LLM_ENABLED"]):
+                mod = load_module(env)
+                twilio = FakeTwilio(raises=RuntimeError("twilio exploded"))
+                with self.assertRaises(mod._stubs["fastapi"].HTTPException) as ctx:
+                    outbound(mod, twilio)
+                self.assertEqual(ctx.exception.status_code, 500)
+                self.assertEqual(len(mod.active_calls), 1)
+                record = next(iter(mod.active_calls.values()))
+                self.assertEqual(record["status"], "failed")
+                self.assertIn("twilio exploded", record["error"])
+                self.assertIsNone(record["twilio_sid"])
 
 
 class UnrelatedPathsIntact(unittest.TestCase):
@@ -450,6 +429,36 @@ class ManifestWiring(unittest.TestCase):
         names = [d["metadata"]["name"] for d in yaml.safe_load_all(es.read_text()) if d]
         self.assertNotIn("voice-bridge-llm", names)
         self.assertEqual(len(names), 3, f"expected exactly three ExternalSecrets, got {names}")
+
+
+class StartupModeAndManifestPath(unittest.TestCase):
+    """The banner must name the running mode, and tracebacks the running manifest."""
+
+    def test_startup_banner_names_the_mode_actually_running(self):
+        for env, expected, forbidden in ((DISABLED_ENV, "unavailable-message mode", "ConversationRelay"),
+                                         (ENABLED_ENV, "ConversationRelay mode", None)):
+            with self.subTest(LLM_ENABLED=env["LLM_ENABLED"]):
+                mod = load_module(env)  # fresh module and env per case
+                with self.assertLogs("voice-bridge", level="INFO") as captured:
+                    run_lifespan(mod)
+                lines = [ln for ln in captured.output if "Voice Bridge starting" in ln]
+                self.assertEqual(len(lines), 1, f"expected one banner, got {lines}")
+                self.assertIn(expected, lines[0])
+                if forbidden:
+                    self.assertNotIn(forbidden, lines[0], "disabled opens no session")
+
+    def test_module_file_and_tracebacks_name_the_manifest_used(self):
+        override = pathlib.Path(tempfile.mkdtemp()) / "override-configmap.yaml"
+        self.addCleanup(shutil.rmtree, override.parent, ignore_errors=True)
+        override.write_text(CONFIGMAP.read_text())
+        for supplied, expected in ((None, CONFIGMAP), (override, override)):
+            with self.subTest(configmap=expected.name):
+                mod = load_module(DISABLED_ENV, configmap_path=supplied)
+                self.assertTrue(mod.__file__.startswith(str(expected)), mod.__file__)
+                # co_filename is what a traceback or compile() error actually prints.
+                self.assertTrue(
+                    mod.cleanup_expired_calls.__code__.co_filename.startswith(str(expected)),
+                    "tracebacks must point at the manifest that was executed")
 
 
 if __name__ == "__main__":

@@ -18,10 +18,6 @@ about Twilio's runtime, FastAPI routing, pydantic validation or audible speech.
 
 The ConfigMap is located relative to this file so the tests read the checkout
 they ship in. Set VOICE_BRIDGE_CONFIGMAP to point at a different manifest.
-
-Usage:
-    from extract_app import load_module
-    mod = load_module({"LLM_ENABLED": "false", ...})
 """
 
 from __future__ import annotations
@@ -196,12 +192,13 @@ def load_module(env: dict[str, str], name: str = "voice_bridge_under_test",
     `env` fully replaces os.environ for the duration of module execution, so a
     key absent from `env` is genuinely unset for the module's `os.getenv` reads.
     """
-    source = extract_source(configmap_path)
+    resolved_configmap = pathlib.Path(configmap_path) if configmap_path else CONFIGMAP
+    source = extract_source(resolved_configmap)
     stubs = _build_stubs()
     saved_env = dict(os.environ)
     saved_modules = {k: sys.modules.get(k) for k in stubs}
     mod = types.ModuleType(name)
-    mod.__file__ = str(CONFIGMAP) + "::data.server.py"
+    mod.__file__ = str(resolved_configmap) + "::data.server.py"
     try:
         os.environ.clear()
         os.environ.update(env)
