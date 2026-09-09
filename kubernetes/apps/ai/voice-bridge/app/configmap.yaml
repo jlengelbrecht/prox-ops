@@ -4,15 +4,17 @@
 #
 # Architecture:
 #   Twilio ConversationRelay handles STT natively (Deepgram/Google).
-#   Voice-bridge routes LLM (Claude) through moltbot clawdbot gateway (OAuth)
-#   and TTS (Qwen3-TTS) through LiteLLM.
+#   Voice-bridge routes LLM through the configured OpenAI-compatible backend
+#   and TTS (Qwen3-TTS) through LiteLLM. With LLM_ENABLED=false the
+#   conversational path is retired: outbound calls get <Say> + <Hangup/> TwiML
+#   and no WebSocket session is opened.
 #   TTS audio served as WAV files via /audio endpoint for Twilio Play Media.
 #
 # Flow:
 #   1. POST /api/v1/calls/outbound -> Twilio initiates call
 #   2. Person answers -> ConversationRelay connects WebSocket -> setup message
 #   3. Person speaks -> Twilio STT -> prompt message with voicePrompt
-#   4. Voice-bridge -> Claude (moltbot clawdbot gateway /v1/chat/completions) -> response text
+#   4. Voice-bridge -> configured LLM backend (/v1/chat/completions) -> response text
 #   5. Voice-bridge -> Qwen3-TTS (LiteLLM /v1/audio/speech) -> WAV file
 #   6. Voice-bridge -> {"type": "play", "source": "https://host/audio/{id}.wav"}
 #   7. Twilio plays custom TTS audio to caller
@@ -91,11 +93,28 @@ data:
     VOICE_BRIDGE_HOST = os.getenv("VOICE_BRIDGE_HOST", "voice-bridge.homelab0.org")
     VOICE_BRIDGE_API_KEY = os.getenv("VOICE_BRIDGE_API_KEY")
 
-    # LLM configuration (moltbot clawdbot gateway - Claude via Anthropic OAuth)
+    # LLM configuration. LLM_ENABLED=false retires the conversational path:
+    # outbound calls are answered by Twilio TwiML and hung up, no session opens.
+    # Default true so an absent variable never disables a working deployment.
+    def _parse_llm_enabled(raw: str) -> bool:
+        normalized = raw.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True
+        if normalized in ("false", "0", "no", "off"):
+            return False
+        raise RuntimeError(
+            "LLM_ENABLED must be one of: true, false, 1, 0, yes, no, on, off"
+        )
+
+    LLM_ENABLED = _parse_llm_enabled(os.getenv("LLM_ENABLED", "true"))
     LLM_API_KEY = os.getenv("LLM_API_KEY")
-    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://moltbot.ai.svc.cluster.local:18789/v1")
-    LLM_MODEL = os.getenv("LLM_MODEL", "moltbot:main")
+    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
+    LLM_MODEL = os.getenv("LLM_MODEL", "")
     LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "60"))
+    LLM_UNAVAILABLE_MESSAGE = os.getenv(
+        "LLM_UNAVAILABLE_MESSAGE",
+        "The assistant is temporarily unavailable. Please try again later. Goodbye.",
+    )
 
     # TTS configuration (LiteLLM - Qwen3-TTS via vllm-omni)
     LITELLM_API_KEY = os.getenv("LITELLM_API_KEY")
@@ -218,9 +237,12 @@ data:
         logger.info("Voice Bridge starting (ConversationRelay mode)...")
 
         # Validate required environment variables
+        required = ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER",
+                    "LITELLM_API_KEY", "VOICE_BRIDGE_API_KEY"]
+        if LLM_ENABLED:
+            required.extend(["LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"])
         missing = []
-        for var in ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER",
-                     "LLM_API_KEY", "LITELLM_API_KEY", "VOICE_BRIDGE_API_KEY"]:
+        for var in required:
             if not os.getenv(var):
                 missing.append(var)
         if missing:
@@ -230,15 +252,18 @@ data:
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
         # Initialize shared HTTP clients
-        llm_client = httpx.AsyncClient(timeout=LLM_TIMEOUT)
+        llm_client = httpx.AsyncClient(timeout=LLM_TIMEOUT) if LLM_ENABLED else None
         tts_client = httpx.AsyncClient(timeout=TTS_TIMEOUT)
 
         # Start background tasks
         audio_task = asyncio.create_task(cleanup_audio_files())
         calls_task = asyncio.create_task(cleanup_expired_calls())
 
-        logger.info(f"LLM: {LLM_BASE_URL} (model: {LLM_MODEL}, max_tokens: {LLM_MAX_TOKENS})")
-        logger.info(f"LLM streaming: {'enabled' if LLM_STREAM_ENABLED else 'disabled'}")
+        if LLM_ENABLED:
+            logger.info(f"LLM: {LLM_BASE_URL} (model: {LLM_MODEL}, max_tokens: {LLM_MAX_TOKENS})")
+            logger.info(f"LLM streaming: {'enabled' if LLM_STREAM_ENABLED else 'disabled'}")
+        else:
+            logger.info("LLM disabled: calls answer with the unavailable message and hang up")
         logger.info(f"TTS: {LITELLM_BASE_URL} (model: {TTS_MODEL}, voice: {TTS_DEFAULT_VOICE})")
         logger.info(f"Audio dir: {AUDIO_DIR}")
 
@@ -246,7 +271,8 @@ data:
 
         audio_task.cancel()
         calls_task.cancel()
-        await llm_client.aclose()
+        if llm_client is not None:
+            await llm_client.aclose()
         await tts_client.aclose()
         logger.info("Voice Bridge shutting down...")
 
@@ -370,19 +396,33 @@ data:
 
         try:
             client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            ws_url = f"wss://{VOICE_BRIDGE_HOST}/ws/{call_id}"
-            safe_greeting = html_escape(call_request.greeting or "")
 
-            # ConversationRelay TwiML (replaces Media Streams <Stream>)
-            # welcomeGreeting uses Twilio built-in TTS for instant playback
-            # dtmfDetection enables keypad input events
-            twiml = (
-                '<Response><Connect>'
-                f'<ConversationRelay url="{ws_url}" '
-                f'welcomeGreeting="{safe_greeting}" '
-                'dtmfDetection="true" />'
-                '</Connect></Response>'
-            )
+            if LLM_ENABLED:
+                ws_url = f"wss://{VOICE_BRIDGE_HOST}/ws/{call_id}"
+                safe_greeting = html_escape(call_request.greeting or "")
+
+                # ConversationRelay TwiML (replaces Media Streams <Stream>)
+                # welcomeGreeting uses Twilio built-in TTS for instant playback
+                # dtmfDetection enables keypad input events
+                twiml = (
+                    '<Response><Connect>'
+                    f'<ConversationRelay url="{ws_url}" '
+                    f'welcomeGreeting="{safe_greeting}" '
+                    'dtmfDetection="true" />'
+                    '</Connect></Response>'
+                )
+            else:
+                # No conversational backend. Twilio speaks the message with its
+                # own TTS and hangs up; verbs execute top to bottom, so <Say>
+                # completes before <Hangup/>. No WebSocket URL is handed to
+                # Twilio, so no session, LLM, TTS or drain delay is involved.
+                # The caller's greeting is deliberately not spoken.
+                twiml = (
+                    '<Response>'
+                    f'<Say>{html_escape(LLM_UNAVAILABLE_MESSAGE)}</Say>'
+                    '<Hangup/>'
+                    '</Response>'
+                )
 
             call = await asyncio.to_thread(
                 client.calls.create,
@@ -506,7 +546,7 @@ data:
     # --- LLM and TTS ---
 
     async def generate_llm_response(messages: list) -> str:
-        """Send conversation to Claude via moltbot clawdbot gateway (non-streaming fallback)."""
+        """Send the conversation to the configured LLM backend (non-streaming fallback)."""
         try:
             resp = await llm_client.post(
                 f"{LLM_BASE_URL}/chat/completions",
@@ -789,6 +829,16 @@ data:
           end  - End conversation
         """
         global active_websocket_count
+
+        # Retired LLM: no conversational session may run. Unreachable via our
+        # own TwiML, which never hands Twilio this URL when LLM_ENABLED is
+        # false; refusing here also covers a forged or stale call_id. Checked
+        # before the slot lock so a refusal never takes a slot or touches an
+        # existing call record.
+        if not LLM_ENABLED:
+            logger.warning(f"WebSocket rejected - LLM disabled: {call_id}")
+            await websocket.close(code=1008, reason="LLM disabled")
+            return
 
         # Security: Enforce connection limits
         async with websocket_count_lock:

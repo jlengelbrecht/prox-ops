@@ -58,14 +58,10 @@ spec:
                   secretKeyRef:
                     name: voice-bridge-twilio
                     key: TWILIO_PHONE_NUMBER
-              # LLM configuration (moltbot clawdbot gateway - Claude via Anthropic OAuth)
-              LLM_API_KEY:
-                valueFrom:
-                  secretKeyRef:
-                    name: voice-bridge-llm
-                    key: LLM_API_KEY
-              LLM_BASE_URL: "http://moltbot.ai.svc.cluster.local:18789/v1"
-              LLM_MODEL: "moltbot:main"
+              # LLM configuration: the conversational path is retired. Outbound
+              # calls are answered with TwiML and hung up, so no LLM backend,
+              # model or credential is referenced here.
+              LLM_ENABLED: "false"
               LLM_TIMEOUT: "60"
               # Streaming LLM: sentence-level chunking for lower latency
               LLM_MAX_TOKENS: "150"
@@ -155,7 +151,7 @@ spec:
 
     defaultPodOptions:
       annotations:
-        secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm,voice-bridge-api,voice-bridge-llm"
+        secret.reloader.stakater.com/reload: "voice-bridge-twilio,voice-bridge-litellm,voice-bridge-api"
       automountServiceAccountToken: false
       # Security: fsGroup ensures volumes are writable by non-root user (65532)
       securityContext:
