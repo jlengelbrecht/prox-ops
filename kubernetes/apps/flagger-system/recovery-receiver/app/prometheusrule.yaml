@@ -26,9 +26,14 @@
 # nothing waits on a post-promotion alert, so it can afford to be slower and
 # surer than the gate that ran during the rollout.
 #
-# The labels are the receiver's attribution contract (flagger_recovery/alerts):
-# namespace and canary say whose symptom this is - any other pair is held
-# `unattributed` - and severity must be exactly `critical` or the ladder holds
+# The labels carry two namespaces on purpose, and confusing them costs a cycle.
+# `namespace` is flagger-system - the namespace this rule object lives in -
+# because that is the label the Prometheus Operator's injected matcher tests
+# (./alertmanagerconfig.yaml explains where the matcher comes from). It says
+# nothing about whose symptom this is. `canary_namespace` and `canary` are what
+# the receiver attributes on (flagger_recovery/alerts reads those two and
+# ignores `namespace` entirely): any other pair is held `unattributed`, and
+# severity must be exactly `critical` or the ladder holds
 # `insufficient-evidence`. `recovery` is not read by the receiver at all; it is
 # what ./alertmanagerconfig.yaml routes on, so a rule added here that should not
 # reach the receiver is one that leaves it off.
@@ -55,8 +60,12 @@ spec:
         - alert: PilotPromotedReleaseErrorRate
           expr: '100 * (sum(rate(http_requests_total{namespace="flagger-pilot",pod=~"podinfo-primary-[^-]+-[^-]+",status=~"5.."}[2m])) or vector(0)) / sum(rate(http_requests_total{namespace="flagger-pilot",pod=~"podinfo-primary-[^-]+-[^-]+"}[2m])) > 1'
           for: 2m
+          # `namespace` is the operator's matcher and is this rule's own
+          # namespace; `canary_namespace`/`canary` are the pilot identity the
+          # receiver attributes on. The two differ on purpose - see above.
           labels:
-            namespace: flagger-pilot
+            namespace: flagger-system
+            canary_namespace: flagger-pilot
             canary: podinfo
             severity: critical
             recovery: "true"
@@ -67,8 +76,11 @@ spec:
         - alert: PilotPromotedReleaseLatency
           expr: 'histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace="flagger-pilot",pod=~"podinfo-primary-[^-]+-[^-]+"}[2m])) by (le)) * 1000 > 500'
           for: 2m
+          # Same two namespaces as above: `namespace` for the operator's
+          # injected matcher, `canary_namespace`/`canary` for attribution.
           labels:
-            namespace: flagger-pilot
+            namespace: flagger-system
+            canary_namespace: flagger-pilot
             canary: podinfo
             severity: critical
             recovery: "true"

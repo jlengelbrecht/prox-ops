@@ -21,31 +21,30 @@
 # fingerprint, which is what holds a later firing of the same symptom - a
 # symptom that stops on its own prevents a correction rather than reversing one.
 #
-# The route matches ./prometheusrule.yaml's two labels and no others. `recovery`
-# rather than `severity` or `alertname`: it is the label that says "this rule
-# was written for the receiver", so adding a pilot alert that must not reach it
-# is a matter of leaving that label off.
+# There is a third matcher below that this file does not write. The operator's
+# alertmanagerConfigMatcherStrategy defaults to `OnNamespace` and the shared
+# Alertmanager leaves the field unset, so amcfg.go's namespaceEnforcer appends
+# `namespace="flagger-system"` - this object's own namespace - to the matchers
+# below (prometheus-operator v0.87.1). That fence is the reason for two
+# otherwise odd-looking facts: this object declares its namespace rather than
+# inheriting one, and ./prometheusrule.yaml labels its alerts
+# `namespace: flagger-system` even though the symptom is the pilot's. The pilot
+# identity travels in `canary_namespace`/`canary` instead, which is what the
+# receiver attributes on. Do not restate `namespace` in the matchers here: the
+# operator supplies it, and writing it out again reads like a claim about the
+# alert's origin, which is exactly the confusion the arrangement avoids.
+#
+# What this file does match is `recovery` and `canary_namespace`, and no others.
+# `recovery` rather than `severity` or `alertname`: it is the label that says
+# "this rule was written for the receiver", so adding a pilot alert that must
+# not reach it is a matter of leaving that label off. `canary_namespace` keeps
+# the route to this pilot when a second canary's rules arrive.
 #
 # `continue: false` below is what this object asks for, not what runs. The
 # operator forces `continue: true` on every first-level route it generates
 # (amcfg.go's continueToNextRoute), so a matching alert also falls through to
 # the shared config's own routes. Nothing downstream of the root's `null`
 # receiver acts on it today.
-#
-# KNOWN GAP - this route is inert as merged, and FRP-008c must not assume
-# otherwise. The operator's alertmanagerConfigMatcherStrategy defaults to
-# `OnNamespace` and the shared Alertmanager leaves the field unset, so
-# amcfg.go's namespaceEnforcer appends `namespace="flagger-system"` to the
-# matchers below (prometheus-operator v0.87.1). Every alert ./prometheusrule.yaml
-# stamps carries `namespace="flagger-pilot"` instead, because that is the label
-# the receiver reads to attribute a symptom to the pilot's canary; it cannot be
-# changed at this end. Two equality matchers on one label with different values
-# match nothing. Making the route live takes
-# `alertmanagerConfigMatcherStrategy: {type: None}` on the Alertmanager the
-# kube-prometheus-stack HelmRelease renders - one line, in a shared component,
-# outside this story's surface and its own decision. Landing this object anyway
-# is deliberate: inert is not wrong, and it is the thing that one line switches
-# on.
 apiVersion: monitoring.coreos.com/v1alpha1
 kind: AlertmanagerConfig
 metadata:
@@ -75,10 +74,10 @@ spec:
     # string. Equality is what these two need; spell an operator out only when
     # something needs `=~`.
     matchers:
-      - name: namespace
-        value: flagger-pilot
       - name: recovery
         value: "true"
+      - name: canary_namespace
+        value: flagger-pilot
   receivers:
     - name: recovery-receiver
       webhookConfigs:
