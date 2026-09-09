@@ -228,11 +228,16 @@ class GitWriterTests(unittest.TestCase):
         self.assertEqual(result.commit["parents"], [AHEAD_SHA])
         # 299 changed files is under GitHub's cap, so the list is whole and the prefix
         # bound is proven over all of them. It costs one request, not one per hundred.
+        # Three comparisons, each answering a different question: what landed since the
+        # failure, what the failed release itself changed, and whether the restore
+        # revision is on this branch. Only a head past the failure needs all three — with
+        # the head still on the failed commit the middle one answers the last as well.
         under_cap = StubGitHub(head=AHEAD_SHA, blobs={AHEAD_SHA: BLOB_FAILED}, compares={
             (FAILED_SHA, AHEAD_SHA): ("ahead", tuple(f"docs/{n}.md" for n in range(299)))})
         self.assertTrue(run(under_cap)[0].verdict)
         self.assertEqual([call[1] for call in under_cap.calls if call[1].startswith("/compare/")],
-                         [f"/compare/{FAILED_SHA}...{AHEAD_SHA}", f"/compare/{PROMOTED_SHA}...{AHEAD_SHA}"])
+                         [f"/compare/{FAILED_SHA}...{AHEAD_SHA}", f"/compare/{PROMOTED_SHA}...{FAILED_SHA}",
+                          f"/compare/{PROMOTED_SHA}...{AHEAD_SHA}"])
 
     def test_revert_commit_is_accepted_only_at_single_file_scope(self):
         revert = {"correction": f"revert-commit {FAILED_SHA}"}
@@ -245,6 +250,40 @@ class GitWriterTests(unittest.TestCase):
                          [f"/compare/{PROMOTED_SHA}...{FAILED_SHA}"])
         mixed = StubGitHub(compares={(PROMOTED_SHA, FAILED_SHA): ("ahead", (TARGET, "kustomization.yaml"))})
         self.assertEqual(run(mixed, **revert)[0].verdict.reason, policy.MIXED_SCOPE)
+
+    def test_a_failed_release_wider_than_its_target_refuses_in_both_modes(self):
+        """The acceptance case `reversal_conflict_or_mixed_resource_update`: one commit
+        changed `helmrelease.yaml` and a second file under the pilot prefix, and this
+        writer answered `dry-run` — an allow — four times, for a correction that would
+        have restored one of the two and left the other standing. A correction restores
+        one file, so the release it corrects has to be that one file. A second manifest
+        under the prefix stays live behind the restored one; a file outside the prefix is
+        not in this writer's reach at all, and it cannot record what it leaves behind, so
+        that is `mixed-scope` too rather than a half-fix nothing names. A comparison
+        truncated at the cap proves neither and refuses `branch-moved`, fail-closed,
+        exactly as the file list since the failure does. The refusal has to hold in
+        `dry-run` as well, or the window rehearsal keeps saying it would write."""
+        second = policy.ALLOWED_PATH_PREFIX + "ocirepository.yaml"
+        at_cap = (TARGET,) + tuple(f"docs/{n}.md" for n in range(gitwriter.COMPARE_FILE_CAP - 1))
+        for reason, changed in ((policy.MIXED_SCOPE, (TARGET, second)),
+                                (policy.MIXED_SCOPE, (TARGET, ".github/workflows/ci.yaml")),
+                                (policy.MIXED_SCOPE, (second,)),  # not even the target
+                                (policy.BRANCH_MOVED, at_cap)):
+            for dry_run in (False, True):
+                with self.subTest(reason=reason, changed=changed[:2], dry_run=dry_run):
+                    stub = StubGitHub(compares={(PROMOTED_SHA, FAILED_SHA): ("ahead", changed)})
+                    result, _ = run(stub, dry_run=dry_run)
+                    self.assertEqual(result.verdict.reason, reason)
+                    # Not the dry run's "would write" answer either: a refusal, both modes.
+                    self.assertEqual((result.commit_sha, result.dry_run, result.commit), ("", False, None))
+                    self.assertEqual(stub.mutating, [])
+                    self.assertEqual({call[0] for call in stub.calls}, {"GET"})
+                    # One comparison answers the scope bound and the on-branch bound both.
+                    self.assertEqual([call[1] for call in stub.calls if call[1].startswith("/compare/")],
+                                     [f"/compare/{PROMOTED_SHA}...{FAILED_SHA}"])
+        # The single-file release the shapes above are contrasted with still corrects.
+        single, _ = run(StubGitHub(compares={(PROMOTED_SHA, FAILED_SHA): ("ahead", (TARGET,))}))
+        self.assertEqual(single.commit_sha, NEW_COMMIT)
 
     def test_bounds_refuse_before_any_request(self):
         cases = {
@@ -417,6 +456,21 @@ class CorrectorTests(unittest.TestCase):
         # Losing the claim to a concurrent writer costs no tree, commit or ref update.
         lost = self.writer.correct(proposal(), views(FakeLive()), claim=lambda _verdict: False)
         self.assertEqual(lost.verdict.reason, policy.ALREADY_CORRECTED)
+
+    def test_a_mixed_scope_release_is_refused_with_no_claim_to_retry_past(self):
+        """The fix for this refusal is a human splitting the release, which happens after
+        it, so the retry has to stay open: `mixed-scope` lands with the read-side refusals,
+        before the create-only claim marker, and leaves nothing behind that would suppress
+        the next delivery. Storage being create-only, a marker written here would be for
+        good."""
+        wide = (TARGET, policy.ALLOWED_PATH_PREFIX + "ocirepository.yaml")
+        self.stub.compares[(PROMOTED_SHA, FAILED_SHA)] = ("ahead", wide)
+        self.assertEqual(self.correct().verdict.reason, policy.MIXED_SCOPE)
+        self.assertEqual((self.store.writes, self.stub.mutating), (0, []))
+        # The release split, the second file dealt with separately: the same proposal
+        # is corrected on the next offer.
+        self.stub.compares[(PROMOTED_SHA, FAILED_SHA)] = ("ahead", (TARGET,))
+        self.assertEqual(self.correct().commit_sha, NEW_COMMIT)
 
     def test_a_live_view_that_is_not_rebuilt_refuses_before_any_write(self):
         """R2's fix rests on a fresh view per ``evaluate`` pass: a call site closing over one
