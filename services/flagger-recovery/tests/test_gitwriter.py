@@ -264,7 +264,7 @@ class GitWriterTests(unittest.TestCase):
         exactly as the file list since the failure does. The refusal has to hold in
         `dry-run` as well, or the window rehearsal keeps saying it would write."""
         second = policy.ALLOWED_PATH_PREFIX + "ocirepository.yaml"
-        at_cap = (TARGET,) + tuple(f"docs/{n}.md" for n in range(gitwriter.COMPARE_FILE_CAP))
+        at_cap = (TARGET,) + tuple(f"docs/{n}.md" for n in range(gitwriter.COMPARE_FILE_CAP - 1))
         for reason, changed in ((policy.MIXED_SCOPE, (TARGET, second)),
                                 (policy.MIXED_SCOPE, (TARGET, ".github/workflows/ci.yaml")),
                                 (policy.MIXED_SCOPE, (second,)),  # not even the target
