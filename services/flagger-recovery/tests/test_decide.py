@@ -113,6 +113,19 @@ class ProposalTests(unittest.TestCase):
                 proposal = proposals.build_proposal(identity(), promoted_identity(), ahead_by=ahead_by)
                 self.assertEqual((proposal.correction, proposal.requires_decision), (correction, False))
 
+    def test_the_proposal_says_it_never_looked_at_the_failed_release_scope(self):
+        """A proposal states identity, never scope: this receiver holds no Git credential,
+        so it cannot know whether the failed release changed only the file its correction
+        restores. It carries the question — the writer, which has `compare`, answers it and
+        refuses `mixed-scope`. A well-formed proposal is therefore not a licence to write:
+        `requires_decision` stays false here and the correction can still be refused."""
+        for ahead_by in (None, 1, 2):
+            payload = proposals.build_proposal(identity(), promoted_identity(),
+                                               ahead_by=ahead_by).to_payload()
+            self.assertEqual((payload["scope_verified"], payload["requires_decision"]), (False, False))
+            self.assertEqual(payload["scope_note"], proposals.SCOPE_UNVERIFIED)
+            self.assertIn("failed revision's file list", payload["scope_note"])
+
     def test_everything_that_leaves_the_call_to_a_human(self):
         cases = [
             ("no promoted identity", identity(), None, proposals.NEEDS_PROMOTED_REVISION),

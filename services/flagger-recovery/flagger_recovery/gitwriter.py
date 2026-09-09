@@ -173,20 +173,21 @@ class GitWriter:
         failed = str(proposal["failed_source_sha"])
         head_sha, restore = self.read_ref(), verdict.restore_sha
         state, since, whole = ("identical", (), True) if head_sha == failed else self.compare(failed, head_sha)
-        # The restore revision decides what bytes get committed, so place it on the
-        # branch: the head is it, or descends from it. A revert asks the same of the
-        # failed revision, keeping that comparison's status and not only its file list.
-        undone_state, undone, undone_whole = "", (), True
-        if verdict.form == policy.REVERT_COMMIT:
-            undone_state, undone, undone_whole = self.compare(restore, failed)
+        # The failed release's own scope, which the proposal could not read and which
+        # ``evaluate`` bounds to the correction's one target. Both forms restore the
+        # promoted revision, so this one comparison is that release's whole diff — and
+        # it is also the restore revision's on-branch bound, the committed bytes being
+        # that revision's, so an object GitHub serves but cannot place in this branch's
+        # history fails here. Truncated at the cap it proves neither, and ``evaluate``
+        # refuses, the same fail-closed answer the file list since the failure gets.
+        undone_state, undone, undone_whole = self.compare(restore, failed)
         if head_sha in ("", restore):
             on_branch = head_sha == restore
-        elif head_sha == failed and undone_state:
+        elif head_sha == failed:
             on_branch = undone_state in ("identical", "ahead")  # the same request, just made
         else:
             on_branch = self.compare(restore, head_sha)[0] in ("identical", "ahead")
-        if verdict.form == policy.REVERT_COMMIT:
-            on_branch = on_branch and undone_state in ("identical", "ahead")
+        on_branch = on_branch and undone_state in ("identical", "ahead")
         return TreeState(
             head_sha=head_sha,
             head_tree_sha=self.read_commit(head_sha) if head_sha else "",

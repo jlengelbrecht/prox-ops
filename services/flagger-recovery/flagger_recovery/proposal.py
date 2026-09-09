@@ -40,6 +40,15 @@ NEEDS_ALLOWED_BRANCH = f"a source revision is not on {BRANCH}"
 NEEDS_USABLE_SHA = "a source revision is not a full 40-character sha"
 NEEDS_DISTINCT_REVISIONS = "the failed and promoted source revisions are identical"
 
+# A proposal is a statement about *identity* — which revision failed, which one was last
+# promoted — and never about *scope*: what the failed release actually changed. Answering
+# that needs the two revisions compared, and this receiver holds no Git credential by
+# design. So the proposal carries the question rather than a guess at the answer, and the
+# writer, which has ``compare``, refuses ``mixed-scope`` when the failed release touched
+# more than the one file the correction restores.
+SCOPE_UNVERIFIED = ("written without reading the failed revision's file list; the writer "
+                    "compares last_promoted_source_sha to failed_source_sha before writing")
+
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 @dataclasses.dataclass(frozen=True)
@@ -61,6 +70,11 @@ class Proposal:
     decision_reason: str
     ahead_by: Optional[int]  # commits the failed revision is ahead of the promoted one
     phase: str = KIND_PROPOSAL  # which path built this; see PHASE_ALERT_PROPOSAL
+    # Never true from here: see SCOPE_UNVERIFIED. ``requires_decision`` stays about
+    # identity, so the two are independent — a proposal can be perfectly well-formed
+    # and still name a correction the writer must refuse.
+    scope_verified: bool = False
+    scope_note: str = SCOPE_UNVERIFIED
 
     @property
     def key(self) -> str:

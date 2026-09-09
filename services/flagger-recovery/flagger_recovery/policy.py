@@ -99,7 +99,7 @@ class TreeState:
     restore_on_branch: bool = False  # the head is the restore revision, or a descendant of it
     paths_complete: bool = True  # every file list below was read in full, not truncated
     paths_since_failed: tuple[str, ...] = ()  # files changed between the two
-    paths_undone: tuple[str, ...] = ()  # files the correction reverses
+    paths_undone: tuple[str, ...] = ()  # the failed release's own diff: promoted..failed
 
 def evaluate(proposal: Mapping[str, Any], live: Any, tree: Optional[TreeState] = None) -> Verdict:
     """Whether ``proposal`` may be written. ``live`` is ``decide``'s four-method
@@ -172,7 +172,14 @@ def evaluate(proposal: Mapping[str, Any], live: Any, tree: Optional[TreeState] =
         or any(changed.startswith(ALLOWED_PATH_PREFIX) for changed in tree.paths_since_failed)
     ):
         return Refuse(BRANCH_MOVED)
-    if form == REVERT_COMMIT and sorted(tree.paths_undone) != [path]:
+    # What the failed release itself changed — the one thing the proposal cannot know,
+    # its author holding no Git credential (``scope_verified: false``). A correction
+    # restores one file, so the release it corrects has to be that one file: a second
+    # manifest under the prefix would stay live behind the restored one, and a file
+    # outside the prefix is not even in this writer's reach, so both are ``mixed-scope``
+    # rather than a silent half-fix. Both forms, the same bound: ``restore_sha`` is the
+    # promoted revision either way, so ``paths_undone`` is the failed release's own diff.
+    if sorted(tree.paths_undone) != [path]:
         return Refuse(MIXED_SCOPE)
     if not tree.blob_at_restore:
         return Refuse(UNUSABLE_SHA)

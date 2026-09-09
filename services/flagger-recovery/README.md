@@ -225,7 +225,17 @@ and one `correction`: `revert-commit <sha>` when the failed revision is exactly
 one commit ahead of the promoted one, otherwise `restore-file
 kubernetes/pilot/flagger-pilot/helmrelease.yaml to <sha>`; when neither can be
 established (no promoted revision, a revision off the pilot branch, an unusable
-sha) `correction` is null and `requires_decision` is true. Its key is the
+sha) `correction` is null and `requires_decision` is true.
+
+**A proposal is a statement about identity, never about scope.** It says which revision
+failed and which one was last promoted; it does not say what the failed release actually
+changed, because answering that means comparing two revisions and this receiver holds no
+Git credential by design. So it carries the question instead of a guess: `scope_verified`
+is always false and `scope_note` says why. `requires_decision` is about identity alone —
+a proposal can be perfectly well-formed, name a correction, and still be one the writer
+must refuse `mixed-scope`, which is the writer's job because the writer has `compare`.
+
+Its key is the
 candidate identity, so repeated `Failed` hooks land on the same
 `flagger-recovery/kind=proposal` document and the store's `409` deduplicates.
 `decide.reconcile(store, live)` runs at startup and every
@@ -322,9 +332,22 @@ never re-sent anywhere GitHub names.
 installs the target file as it was at that revision — the tree entry reuses the blob sha already there, so
 no content is uploaded and the commit provably carries the historical bytes. Only a blob does: a symlink,
 a submodule or a directory at that path answers `unusable-sha`, which is what makes restating mode
-`100644` safe. `revert-commit` is accepted only when the diff it undoes touches exactly one file, under
-the prefix, and that file is the target; anything wider is `mixed-scope`. Both reduce to one path in one
-tree, parented on the branch head and pushed with `"force": false`.
+`100644` safe. Both reduce to one path in one tree, parented on the branch head and pushed with
+`"force": false`.
+
+**The failed release has to be as narrow as the correction.** Both forms restore the promoted revision,
+so `compare(last_promoted_source_sha, failed_source_sha)` is the failed release's own diff, and it is
+required to touch exactly one file, under the prefix, and for that file to be the target; anything wider
+is `mixed-scope`. This is the bound the proposal could not apply and the writer can. Without it a release
+that changed `helmrelease.yaml` *and* a second manifest is corrected halfway: the image goes back, the
+tightened metric threshold or the bumped chart version stays live, and nothing records that it did.
+A file outside the prefix is refused the same way — this writer cannot reverse it and cannot record what
+it leaves behind — and a comparison truncated at GitHub's 300-file cap proves nothing either way and
+refuses `branch-moved`, fail-closed, exactly as a truncated file list since the failure does. The refusal
+sits with the read-side bounds, so it holds identically in `dry-run` and leaves no claim marker: the
+answer is a human splitting the release, and the next offer of the same proposal then succeeds.
+The acceptance run's `reversal_conflict_or_mixed_resource_update` case is what found this — four
+`dry-run` allows for a correction that would have left the second file standing.
 
 **The restore revision is bounded to this branch.** Before anything is written, `compare` must place the
 branch head on or after the revision being restored; a fork's PR head, a pre-rebase commit, or an object
@@ -339,7 +362,8 @@ field-level restore is the tightening FRP-009 may recommend.
 `requires-decision`, `unparsable-correction` (neither form, or a path/sha contradicting the proposal's own
 fields), `wrong-repository` (the proposal names another, or the writer was built for one), `wrong-ref`,
 `path-outside-prefix`, `not-an-allowed-target`, `unusable-sha` (not 40 hex, or no blob there),
-`mixed-scope`, `no-change` (the restore blob already is the head's), `superseded` (the live
+`mixed-scope` (the failed release changed more than the one file this correction restores),
+`no-change` (the restore blob already is the head's), `superseded` (the live
 `lastAppliedSpec` moved on, or the primary is not serving the promoted spec), `already-restored` (F8 — the
 primary serves the failed spec), `target-changed` (the file changed since the failure), `branch-moved` (the
 head is neither the failed revision nor a descendant that left the prefix alone; also a `compare` too long
