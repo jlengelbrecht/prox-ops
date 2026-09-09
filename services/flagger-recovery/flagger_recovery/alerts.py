@@ -160,8 +160,8 @@ class Alert:
         """``(canary_namespace, canary)`` from the alert's own labels, or ``None``. Never
         ``namespace``: the operator's matcher strategy stamps that with the rule's own
         namespace, not the pilot's."""
-        namespace, canary = self.labels.get(LABEL_CANARY_NAMESPACE, ""), self.labels.get(LABEL_CANARY, "")
-        return (namespace, canary) if namespace and canary else None
+        canary_namespace, canary = self.labels.get(LABEL_CANARY_NAMESPACE, ""), self.labels.get(LABEL_CANARY, "")
+        return (canary_namespace, canary) if canary_namespace and canary else None
 
 def parse(payload: Mapping[str, Any]) -> tuple[str, tuple[Alert, ...], bool]:
     """A v4 notification as ``(groupKey, alerts, truncated)``. ``version`` must be the

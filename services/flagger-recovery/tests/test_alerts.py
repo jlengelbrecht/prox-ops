@@ -334,7 +334,7 @@ class HoldTests(AlertTestCase):
         ("labels naming another canary", rules.HOLD_UNATTRIBUTED,
          dict(labels={rules.LABEL_CANARY: "somebody-elses"}, stored=False,
               live=FakeLive(failure=AssertionError("another canary is never read")))),
-        ("only the operator's own namespace label, no canary_namespace", rules.HOLD_UNATTRIBUTED,
+        ("namespace label is never read as identity, even set to the pilot's own name", rules.HOLD_UNATTRIBUTED,
          dict(labels={rules.LABEL_CANARY_NAMESPACE: None, "namespace": "flagger-pilot"}, stored=False,
               live=FakeLive(failure=AssertionError("namespace alone is never read as identity")))),
         ("a notification Alertmanager truncated", rules.HOLD_INCOMPLETE_NOTIFICATION,
