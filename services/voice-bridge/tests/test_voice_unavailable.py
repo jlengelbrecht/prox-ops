@@ -412,6 +412,9 @@ class UnrelatedPathsIntact(unittest.TestCase):
                                 f"{name} missing with LLM_ENABLED={env['LLM_ENABLED']}")
             self.assertEqual(mod.TTS_MODEL, "qwen-tts")
             self.assertIn("litellm", mod.LITELLM_BASE_URL)
+            expected_mode = "conversation-relay" if mod.LLM_ENABLED else "unavailable-message"
+            self.assertEqual(run(mod.health())["mode"], expected_mode,
+                              f"/health mode wrong with LLM_ENABLED={env['LLM_ENABLED']}")
 
 
 class ManifestWiring(unittest.TestCase):
