@@ -42,12 +42,18 @@ FINGERPRINT_LABEL = "flagger-recovery/fingerprint"
 # The identity FRP-008b's PrometheusRule stamps on every pilot alert: label *names*,
 # constants rather than configuration, because a rule that could rename them could
 # attribute somebody else's symptom to this pilot. The *values* are checked against the
-# configured canary, since they say whose symptom a notification carries.
-LABEL_NAMESPACE, LABEL_CANARY, LABEL_SEVERITY = "namespace", "canary", "severity"
+# configured canary, since they say whose symptom a notification carries. Deliberately
+# not ``namespace``: the Prometheus Operator injects a namespace matcher into every
+# ``AlertmanagerConfig`` route unless the shared Alertmanager sets
+# ``alertmanagerConfigMatcherStrategy: {type: None}`` (unset here), so a route defined in
+# ``flagger-system`` only ever sees alerts whose ``namespace`` label is ``flagger-system`` —
+# the rule's own namespace, never the pilot's. ``canary_namespace`` carries the pilot
+# identity instead, and ``namespace`` is ignored for attribution.
+LABEL_CANARY_NAMESPACE, LABEL_CANARY, LABEL_SEVERITY = "canary_namespace", "canary", "severity"
 LABEL_ALERTNAME, REQUIRED_SEVERITY, ANNOTATION_EVIDENCE = "alertname", "critical", "recovery_evidence"
 # What the entry cap may never evict: Go emits map keys sorted, so wire order is
 # alphabetical, and a production alert carries every metric label as well as the rule's.
-KEPT_LABELS = (LABEL_ALERTNAME, LABEL_NAMESPACE, LABEL_CANARY, LABEL_SEVERITY)
+KEPT_LABELS = (LABEL_ALERTNAME, LABEL_CANARY_NAMESPACE, LABEL_CANARY, LABEL_SEVERITY)
 KEPT_ANNOTATIONS = (ANNOTATION_EVIDENCE,)
 
 HOLD, RECORDED, DUPLICATE, PROPOSE_CORRECTION = "Hold", "Recorded", "Duplicate", "ProposeCorrection"
@@ -151,9 +157,11 @@ class Alert:
 
     @property
     def canary(self) -> Optional[tuple[str, str]]:
-        """``(namespace, canary)`` from the alert's own labels, or ``None``."""
-        namespace, canary = self.labels.get(LABEL_NAMESPACE, ""), self.labels.get(LABEL_CANARY, "")
-        return (namespace, canary) if namespace and canary else None
+        """``(canary_namespace, canary)`` from the alert's own labels, or ``None``. Never
+        ``namespace``: the operator's matcher strategy stamps that with the rule's own
+        namespace, not the pilot's."""
+        canary_namespace, canary = self.labels.get(LABEL_CANARY_NAMESPACE, ""), self.labels.get(LABEL_CANARY, "")
+        return (canary_namespace, canary) if canary_namespace and canary else None
 
 def parse(payload: Mapping[str, Any]) -> tuple[str, tuple[Alert, ...], bool]:
     """A v4 notification as ``(groupKey, alerts, truncated)``. ``version`` must be the

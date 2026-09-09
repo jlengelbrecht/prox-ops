@@ -245,9 +245,14 @@ same shared token presented as `Authorization: Bearer` — the only header its `
 send. Any other version or shape is `400`, as is a `resolved` notification carrying a firing alert (a group
 is firing when any member is, so only the reverse is a shape Alertmanager can send). Each alert becomes one
 create-only document keyed by `(fingerprint, startsAt, status)`, so a repeat is a `Duplicate` and a grouped
-notification splits per alert. **Only alerts whose `namespace`/`canary` labels name the configured pilot are
-stored**; anything else is held, logged and counted in the response as `not_stored`. The key is
-caller-supplied and nothing prunes the store, so that bound is what keeps it growing with pilot alerts alone.
+notification splits per alert. **Only alerts whose `canary_namespace`/`canary` labels name the configured
+pilot are stored**; anything else is held, logged and counted in the response as `not_stored`. Identity is
+deliberately not `namespace`: the Prometheus Operator injects a namespace matcher into every
+`AlertmanagerConfig` route unless the shared Alertmanager sets `alertmanagerConfigMatcherStrategy: {type:
+None}` (unset on this cluster), so a route defined in `flagger-system` only ever sees alerts whose
+`namespace` label is `flagger-system` — the rule's own namespace, never the pilot's. `canary_namespace`
+carries the pilot identity instead, and `namespace` is ignored for attribution. The key is caller-supplied
+and nothing prunes the store, so that bound is what keeps it growing with pilot alerts alone.
 
 A firing alert is judged by a ladder that answers `Hold(reason)` at every rung but the last: `unattributed`
 (no identity labels, or another canary's), `incomplete-notification` (`truncatedAlerts > 0`, so the group is
