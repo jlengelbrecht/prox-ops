@@ -170,7 +170,6 @@ GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Fa
 | LiteLLM (+ Postgres) | OpenAI-compatible LLM gateway |
 | KServe | Model serving runtime |
 | Model cache | Shared model artifact cache |
-| moltbot (OpenClaw) | Claude Code agent runner |
 | SearXNG | Search backend for RAG |
 | Voice bridge | Voice I/O front-end |
 | Qdrant | Vector database |
