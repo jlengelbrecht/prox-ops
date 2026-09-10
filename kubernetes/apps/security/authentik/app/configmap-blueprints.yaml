@@ -361,27 +361,6 @@ data:
             ^/wizard($|/.*)
             ^/image-proxy($|/.*)
             ^/cinema-posters($|/.*)
-      # OpenClaw - Forward Auth (Control UI, internal only)
-      - model: authentik_providers_proxy.proxyprovider
-        id: proxy-openclaw
-        identifiers:
-          name: Moltbot
-        attrs:
-          name: OpenClaw
-          mode: forward_single
-          external_host: https://openclaw.homelab0.org
-          authorization_flow: !Context authorization_flow
-          invalidation_flow: !Context invalidation_flow
-          property_mappings:
-            - !Context scope_proxy
-            - !Context scope_email
-            - !Context scope_profile
-            - !Context scope_openid
-            - !Context scope_entitlements
-          access_token_validity: hours=24
-          refresh_token_validity: days=30
-          intercept_header_auth: true
-          internal_host_ssl_validation: true
       # GlycemicGPT - Forward Auth (WebUI only, API uses native JWT)
       - model: authentik_providers_proxy.proxyprovider
         id: proxy-glycemicgpt
@@ -489,16 +468,6 @@ data:
           policy_engine_mode: any
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Wizarr"]]
       - model: authentik_core.application
-        id: app-openclaw
-        identifiers:
-          slug: moltbot
-        attrs:
-          name: OpenClaw
-          slug: openclaw
-          group: AI
-          policy_engine_mode: any
-          provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Moltbot"]]
-      - model: authentik_core.application
         id: app-glycemicgpt
         identifiers:
           slug: glycemicgpt
@@ -508,6 +477,19 @@ data:
           group: Health
           policy_engine_mode: any
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "GlycemicGPT"]]
+      # OpenClaw retirement tombstones, co-located so authentik applies them in file
+      # order inside one transaction: the application goes before the provider it
+      # pointed at. Keep them - authentik never prunes an object whose entry vanishes.
+      - model: authentik_core.application
+        id: app-openclaw
+        state: absent
+        identifiers:
+          slug: moltbot
+      - model: authentik_providers_proxy.proxyprovider
+        id: proxy-openclaw
+        state: absent
+        identifiers:
+          name: Moltbot
 
   # =============================================================
   # SOURCES BLUEPRINT
