@@ -303,6 +303,16 @@ data:
           name: Hermes
           client_id: hermes-dashboard
           client_type: public
+          # authentik >= 2026.2 stores the allowed grants per provider and the
+          # API/blueprint default is an EMPTY list (only the admin UI preselects
+          # all of them; providers that existed before the upgrade were
+          # backfilled). Without this the authorize endpoint rejects every
+          # request with invalid_request before login. Hermes' self-hosted
+          # dashboard login speaks exactly these two grants (PKCE code
+          # exchange, refresh); nothing else is allowed.
+          grant_types:
+            - authorization_code
+            - refresh_token
           authorization_flow: !Context authorization_flow
           invalidation_flow: !Context invalidation_flow
           signing_key: !Context signing_key
