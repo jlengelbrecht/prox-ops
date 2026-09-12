@@ -1,0 +1,14 @@
+---
+# Community Hermes chart (jyje/hermes-agent-helm), consumed as a published OCI
+# artifact. It runs the official nousresearch/hermes-agent image with the
+# upstream entrypoint intact; the exact chart version is pinned on the
+# HelmRelease (hermes.yaml).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: hermes-agent-helm
+  namespace: ai
+spec:
+  interval: 12h
+  type: oci
+  url: oci://ghcr.io/jyje/hermes-agent-helm

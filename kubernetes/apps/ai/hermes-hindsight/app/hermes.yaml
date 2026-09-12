@@ -1,0 +1,353 @@
+---
+# Managed-scope pins. Mounted read-only at /etc/hermes/config.yaml; the pinned
+# Hermes release overlays these leaf keys on top of the home config.yaml, .env
+# and the shell, and `hermes config set` / the dashboard refuse to change them
+# (upstream hermes_cli/managed_scope.py). Everything NOT listed here is
+# UI-owned after the first boot. `hermes doctor` reports
+# "Managed scope active: N config key(s)".
+#
+# This is a management boundary, not a sandbox: real authority is the network
+# policy, the token scope and Kubernetes access, not this file. subPath mounts
+# never refresh in place: an edit here restarts the pod through the Reloader
+# annotation on the Deployment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-managed
+  namespace: ai
+data:
+  config.yaml: |
+    # Deployment-owned Hermes settings, pinned by the administrator.
+    memory:
+      # No external memory provider yet; the built-in MEMORY.md/USER.md store
+      # is unaffected. Hindsight is wired here in a later change.
+      provider: ""
+    terminal:
+      backend: local
+    dashboard:
+      # Peers allowed to supply X-Forwarded-Proto/-For (controls the Secure
+      # cookie flag): the pod CIDR the envoy-internal gateway pods live in.
+      # Hermes rejects 0.0.0.0/0 and silently ignores malformed entries.
+      trusted_proxies:
+        - "10.42.0.0/16"
+    secrets:
+      onepassword:
+        # Native 1Password task references stay OFF until the dedicated
+        # read-only task vault and its Connect token exist (later change).
+        # Pinned so the dashboard cannot switch it on without that scope.
+        enabled: false
+        binary_path: /opt/onepassword/op
+        cache_ttl_seconds: 0
+        override_existing: true
+---
+# Hermes gateway + web dashboard. Community chart jyje/hermes-agent 1.14.0
+# running the official nousresearch/hermes-agent image with the upstream
+# entrypoint and s6 supervisor intact. Site-specific needs are expressed
+# through documented chart values; the one exception is the post-render patch
+# below (chart 1.14.0 has no dnsConfig value).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: hermes
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: hermes-agent
+      # renovate: datasource=helm registryUrl=oci://ghcr.io/jyje/hermes-agent-helm
+      version: 1.14.0
+      sourceRef:
+        kind: HelmRepository
+        name: hermes-agent-helm
+        namespace: ai
+  interval: 1h
+  # The provider egress rules in networkpolicy.yaml are toFQDNs, which only
+  # enforce correctly when the pod asks cluster DNS for the exact policed
+  # name; the default ndots:5 search path would try <name>.ai.svc.cluster.local
+  # first and the connection would be dropped (see the project note on Cilium
+  # FQDN policy vs pod ndots). Drop when the chart grows a dnsConfig value.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: hermes
+            patch: |
+              - op: add
+                path: /spec/template/spec/dnsConfig
+                value:
+                  options:
+                    - name: ndots
+                      value: "1"
+  values:
+    # Release "hermes" + chart "hermes-agent" would otherwise name everything
+    # hermes-hermes-agent.
+    fullnameOverride: hermes
+
+    image:
+      repository: docker.io/nousresearch/hermes-agent
+      # The chart prints repository:tag verbatim, so tag@digest is the pin
+      # (linux/amd64 manifest digest).
+      # renovate: datasource=docker depName=docker.io/nousresearch/hermes-agent
+      tag: "v2026.9.7@sha256:b3190406963c6b51ac955397ecef45346efaae9563ee305108f8eef0a77e267b"
+      pullPolicy: IfNotPresent
+
+    # Keep the image entrypoint (entrypoint-dispatch.sh -> s6-overlay /init).
+    command: []
+    # `gateway run` = the non-interactive gateway service; the dashboard is a
+    # supervised s6 sibling started by HERMES_DASHBOARD=1 below.
+    args: ["gateway", "run"]
+
+    controller:
+      # Deployment + persistence => the chart forces strategy Recreate, so a
+      # rollout never has two writers on the RWO home.
+      type: deployment
+    replicaCount: 1
+
+    serviceAccount:
+      create: true
+      automountServiceAccountToken: false
+
+    # Seed configuration. Copied into /opt/data/config.yaml by the chart's
+    # seed-config init container ONLY when the file does not exist yet
+    # (bootstrap.overwrite=false). After the first boot the PVC copy owns these
+    # settings and the UI / `hermes config set` may change them; a later edit
+    # here restarts the pod (checksum) but does NOT change the persisted file.
+    # Keys that must stay deployment-owned are pinned in hermes-managed above.
+    config:
+      # Schema version of the pinned release (hermes_cli DEFAULT_CONFIG, v41);
+      # without it a fresh home is reported as outdated by `hermes doctor`.
+      # Bump it with the image.
+      _config_version: 41
+      # No model/provider seeded: Josh connects one of his native AI
+      # subscriptions through Hermes's own dashboard/TUI after deployment,
+      # persisted in the Hermes home. The chart's values.yaml seeds
+      # `model: {provider: openai-api, default: gpt-4o-mini}`; Helm keeps a
+      # chart default unless the release value is null, so both leaves are
+      # nulled and the seed carries an empty `model: {}` (nulling the whole
+      # map breaks the chart's NOTES.txt). With no inference key in the
+      # environment nothing is called.
+      model:
+        default: null
+        provider: null
+      terminal:
+        backend: local
+      memory:
+        provider: ""
+      agent:
+        gateway_timeout: 1800
+      secrets:
+        onepassword:
+          enabled: false
+          binary_path: /opt/onepassword/op
+          cache_ttl_seconds: 0
+          override_existing: true
+          # Task reference map: ENV_VAR -> op://<task vault>/<item>/<field>.
+          # Empty until a task credential is approved and the task vault exists.
+          env: {}
+
+    soul:
+      text: ""
+
+    bootstrap:
+      enabled: true
+      overwrite: false
+
+    # Non-secret environment (Git-owned on every start).
+    extraEnv:
+      - name: HERMES_DASHBOARD
+        value: "1"
+      # External origin of the dashboard: OIDC callback <url>/auth/callback and
+      # the exact Host/Origin the dashboard trusts behind Envoy.
+      - name: HERMES_DASHBOARD_PUBLIC_URL
+        value: "https://hermes.homelab0.org"
+      # Native self-hosted OIDC provider against Authentik: PUBLIC client with
+      # PKCE (no client secret anywhere), discovery from
+      # <issuer>/.well-known/openid-configuration, ID token verified against
+      # the JWKS. Env wins over config.yaml for these keys, so the auth
+      # boundary stays outside the writable home. Without a provider the
+      # dashboard fails closed (port 9119 never opens). The client id is a
+      # public identifier, not a credential; it is declared once in the
+      # Authentik blueprint (kubernetes/apps/security/authentik) and once here.
+      - name: HERMES_DASHBOARD_OIDC_ISSUER
+        value: "https://authentik.homelab0.org/application/o/hermes/"
+      - name: HERMES_DASHBOARD_OIDC_CLIENT_ID
+        value: "hermes-dashboard"
+      - name: HERMES_DASHBOARD_OIDC_SCOPES
+        value: "openid profile email"
+      - name: HERMES_TIMEZONE
+        value: "America/New_York"
+
+    # No application secret is needed for this slice (public OIDC client, no
+    # memory service, no task vault). The chart's own env Secret is kept
+    # empty by nulling its example key, so `OPENAI_API_KEY: sk-REPLACE_ME`
+    # never renders. Provisioned secrets arrive later through External
+    # Secrets from 1Password (externalSecret.enabled + the target Secret).
+    env:
+      OPENAI_API_KEY: null
+    externalSecret:
+      enabled: false
+
+    auth:
+      deviceFlow:
+        enabled: false
+
+    persistence:
+      enabled: true
+      existingClaim: hermes-data
+      mountPath: /opt/data
+
+    apiServer:
+      enabled: false
+    webhook:
+      enabled: false
+
+    service:
+      enabled: true
+      type: ClusterIP
+      ports:
+        - name: dashboard
+          port: 9119
+          targetPort: 9119
+
+    # Routing and network policy are authored in Git (access.yaml,
+    # networkpolicy.yaml): the chart's HTTPRoute drops filters and its
+    # NetworkPolicy is not the repository's CiliumNetworkPolicy convention.
+    ingress:
+      enabled: false
+    httpRoute:
+      enabled: false
+    networkPolicy:
+      enabled: false
+
+    # Least startup privilege, from the chart's values-hardened.yaml and
+    # re-verified on this digest: s6-overlay starts cleanly as the image's own
+    # hermes user (10000) with a read-only rootfs once /run and /tmp are
+    # writable tmpfs. The same context also applies to the seed-config init.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10000
+      runAsGroup: 10000
+      fsGroup: 10000
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+
+    extraVolumes:
+      - name: run-tmpfs
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+      - name: tmp-tmpfs
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
+      # Shared ephemeral volume: the init container below copies the official
+      # op binary here; Hermes mounts it read-only.
+      - name: onepassword-cli
+        emptyDir:
+          sizeLimit: 128Mi
+      - name: hermes-managed
+        configMap:
+          name: hermes-managed
+          defaultMode: 0444
+    extraVolumeMounts:
+      - name: run-tmpfs
+        mountPath: /run
+      - name: tmp-tmpfs
+        mountPath: /tmp
+      - name: onepassword-cli
+        mountPath: /opt/onepassword
+        readOnly: true
+      # Single-file mount: /etc/hermes already exists in the image; never
+      # mount over the directory.
+      - name: hermes-managed
+        mountPath: /etc/hermes/config.yaml
+        subPath: config.yaml
+        readOnly: true
+
+    # Official 1Password CLI image, unmodified, copies its binary into the
+    # shared volume so the native task-reference feature only needs a config
+    # flip once the scoped token exists. Appended after the chart's
+    # seed-config init.
+    extraInitContainers:
+      - name: onepassword-cli
+        # renovate: datasource=docker depName=docker.io/1password/op
+        image: docker.io/1password/op:2.38.1@sha256:9c1824aac2a52c0b2a1cbc50049db9f122f51535f8f34d7847f0fca66be53c49
+        command:
+          - sh
+          - -c
+          - |
+            set -eu
+            cp /usr/local/bin/op /target/op
+            chmod 0555 /target/op
+            /target/op --version
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 10000
+          runAsGroup: 10000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        volumeMounts:
+          - name: onepassword-cli
+            mountPath: /target
+
+    # A dashboard that fails closed (no auth provider) never opens 9119, which
+    # makes the pod NotReady - the wanted signal. The gateway is not probed:
+    # `hermes gateway run` registers the gateway as a supervised s6 longrun and
+    # s6 restarts a crashed gateway within seconds without the container
+    # exiting, so a gateway that is down while the dashboard answers is only
+    # visible in `hermes doctor` / the dashboard. Deliberately no liveness.
+    probes:
+      startup:
+        tcpSocket:
+          port: 9119
+        periodSeconds: 5
+        failureThreshold: 60
+      readiness:
+        tcpSocket:
+          port: 9119
+        initialDelaySeconds: 20
+        periodSeconds: 10
+      liveness: {}
+
+    # Reloader replaces the pod when the managed ConfigMap changes (subPath
+    # mounts never refresh in place).
+    deploymentAnnotations:
+      configmap.reloader.stakater.com/reload: "hermes-managed"
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+
+    # No Helm test Job (it would run `hermes doctor` with the real env).
+    tests:
+      enabled: false

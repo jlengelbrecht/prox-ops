@@ -1,0 +1,82 @@
+---
+# Narrow, explicit network authorization for Hermes: DNS, the OIDC issuer and
+# a small toFQDNs allowlist for the owner's native AI subscription lanes. No
+# general internet rule. The Hermes image does not categorically disable lazy
+# installs; this egress policy is what makes any such attempt fail closed
+# (no PyPI/npm host is allowed). Changing an LLM endpoint is coupled to the
+# toFQDNs rules below. A toFQDNs rule only enforces correctly if the pod
+# queries DNS for the exact policed name - ndots:1 is patched onto the pod
+# (hermes.yaml postRenderers) so the default search path never intercepts
+# the lookup first.
+#
+# Cilium matches pod labels; the selector below is what the chart renders.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hermes
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hermes-agent
+      app.kubernetes.io/instance: hermes
+  ingress:
+    # Dashboard from the internal gateway only.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "9119"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          # L7 DNS visibility: the toFQDNs rule below only learns addresses
+          # from answers that pass through Cilium's DNS proxy, which this
+          # rule enables (same shape as the repository's other FQDN policies).
+          rules:
+            dns:
+              - matchPattern: "*"
+    # Native AI subscription lanes (owner-led setup after deployment): Hermes
+    # seeds no model/provider, so this allows every sanctioned lane Josh may
+    # choose in the dashboard/TUI without a follow-up network-policy change -
+    # opening the egress is not itself a provider choice. Claude (inference +
+    # in-process OAuth refresh + one-time interactive authorize), ChatGPT/Codex
+    # OAuth subscription (inference + OAuth refresh), MiniMax (OAuth portal +
+    # inference, one host for both paths).
+    - toFQDNs:
+        - matchName: api.anthropic.com
+        - matchName: console.anthropic.com
+        - matchName: platform.claude.com
+        - matchName: claude.ai
+        - matchName: auth.openai.com
+        - matchName: chatgpt.com
+        - matchName: api.minimax.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Dashboard OIDC: discovery, token exchange and JWKS calls go to the
+    # Authentik issuer hostname, which resolves to the internal gateway VIP
+    # (the gateway pods listen on 10443 behind the LoadBalancer's 443).
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP

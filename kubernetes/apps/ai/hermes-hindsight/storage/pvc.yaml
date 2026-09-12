@@ -1,0 +1,25 @@
+---
+# PROTECTED: lives in a separate Kustomization with prune: false (see
+# ../ks.yaml) so reconciliation or an app Kustomization removal can never
+# delete the Hermes home. A retained PVC is NOT a backup.
+#
+# hermes-data: HERMES_HOME (/opt/data) - config.yaml, .env, auth.json,
+# sessions, skills and the SQLite state db. Single writer only (ReadWriteOnce +
+# Recreate rollout); a second mounter corrupts the SQLite WAL.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-data
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: hermes
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 5Gi

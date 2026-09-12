@@ -292,6 +292,34 @@ data:
           sub_mode: hashed_user_id
           issuer_mode: per_provider
 
+      # Hermes dashboard - native self-hosted OIDC gate, PUBLIC client with
+      # PKCE (no client secret exists). The client id is a public identifier,
+      # declared literally here and in kubernetes/apps/ai/hermes-hindsight.
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-hermes
+        identifiers:
+          name: Hermes
+        attrs:
+          name: Hermes
+          client_id: hermes-dashboard
+          client_type: public
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          signing_key: !Context signing_key
+          property_mappings:
+            - !Context scope_email
+            - !Context scope_profile
+            - !Context scope_openid
+          redirect_uris:
+            - matching_mode: strict
+              url: https://hermes.homelab0.org/auth/callback
+          access_code_validity: minutes=1
+          access_token_validity: hours=1
+          refresh_token_validity: days=30
+          include_claims_in_id_token: true
+          sub_mode: hashed_user_id
+          issuer_mode: per_provider
+
   # =============================================================
   # PROXY PROVIDERS BLUEPRINT
   # Forward auth providers for n8n, Wizarr
@@ -477,6 +505,27 @@ data:
           group: Health
           policy_engine_mode: any
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "GlycemicGPT"]]
+      # Hermes dashboard: the application is bound to the built-in
+      # "authentik Admins" group, so only owner/admin accounts can reach the
+      # agent. policy_engine_mode any + a single group binding = members only.
+      - model: authentik_core.application
+        id: app-hermes
+        identifiers:
+          slug: hermes
+        attrs:
+          name: Hermes
+          slug: hermes
+          group: AI
+          policy_engine_mode: any
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "Hermes"]]
+      - model: authentik_policies.policybinding
+        id: binding-hermes-admins
+        identifiers:
+          target: !Find [authentik_core.application, [slug, hermes]]
+          order: 0
+        attrs:
+          group: !Find [authentik_core.group, [name, "authentik Admins"]]
+          enabled: true
       # OpenClaw retirement tombstones, co-located so authentik applies them in file
       # order inside one transaction: the application goes before the provider it
       # pointed at. Keep them - authentik never prunes an object whose entry vanishes.
