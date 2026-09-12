@@ -1,0 +1,49 @@
+---
+# Hermes (Nous Research agent + web dashboard). First runtime slice: the
+# dashboard behind the internal gateway with Authentik OIDC and a persistent
+# home. Hindsight memory and native 1Password task references follow in later
+# changes; the complete prepared candidate they come from is the reference.
+#
+# Storage lives in its own `prune: false` Kustomization so removing the app
+# Kustomization can never delete the Hermes home.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: hermes-hindsight-storage
+  namespace: flux-system
+spec:
+  interval: 1h
+  path: ./kubernetes/apps/ai/hermes-hindsight/storage
+  prune: false  # NEVER prune storage - retained PVCs outlive application releases
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: ai
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app hermes-hindsight
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  # The AI root applies `namespace: ai` to this tree, so both Kustomizations
+  # land in `ai` and the sibling resolves in this CR's own namespace (same
+  # shape as litellm/ks.yaml).
+  dependsOn:
+    - name: hermes-hindsight-storage
+  interval: 1h
+  retryInterval: 2m
+  timeout: 10m
+  path: ./kubernetes/apps/ai/hermes-hindsight/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

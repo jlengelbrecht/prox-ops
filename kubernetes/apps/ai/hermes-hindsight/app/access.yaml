@@ -1,0 +1,46 @@
+---
+# Private access to the Hermes dashboard through the internal Envoy gateway
+# (envoy-internal / https listener in namespace network, wildcard
+# homelab0.org certificate). The record hermes.homelab0.org is created from
+# this route by the existing DNS automation (k8s-gateway, unifi external-dns).
+#
+# ONE gate: the dashboard's own OIDC provider against Authentik (hermes.yaml
+# extraEnv). No SecurityPolicy on this route on purpose: the native gate
+# covers every path including the /api/ws and /api/pty WebSockets, and a
+# second forward-auth layer would be a second consumer of the Authorization
+# header. Who may log in is decided by the Authentik application's group
+# binding (kubernetes/apps/security/authentik blueprints).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hermes
+  namespace: ai
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: hermes.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - hermes.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: hermes
+          port: 9119
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "SAMEORIGIN"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
