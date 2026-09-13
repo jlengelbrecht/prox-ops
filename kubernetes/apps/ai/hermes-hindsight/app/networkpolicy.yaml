@@ -1,10 +1,11 @@
 ---
 # Narrow, explicit network authorization for the three workloads: DNS, the
 # OIDC issuer, the shared database, the memory API and a small toFQDNs
-# allowlist for the subscription-backed calls. No general internet rule. The
-# Hermes image does not categorically disable lazy installs; this egress
-# policy is what makes any such attempt fail closed (no PyPI/npm host is
-# allowed). Changing an LLM endpoint is coupled to the toFQDNs rules below,
+# allowlist for the subscription-backed calls and the public model-catalog
+# metadata Hermes reads before any provider is chosen. No general internet
+# rule. The Hermes image does not categorically disable lazy installs; this
+# egress policy is what makes any such attempt fail closed (no PyPI/npm host
+# is allowed). Changing an LLM endpoint is coupled to the toFQDNs rules below,
 # which only enforce when the pod queries DNS for the exact policed name
 # (ndots:1 is patched onto both affected pods in hermes.yaml and
 # hindsight.yaml).
@@ -67,6 +68,30 @@ spec:
         - matchName: auth.openai.com
         - matchName: chatgpt.com
         - matchName: api.minimax.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Model catalog metadata: the intended calls are unauthenticated JSON
+    # GETs, no inference. The provider picker in the dashboard and TUI blocks
+    # on a cold fetch of these registries (image v2026.9.7, hermes_cli
+    # 0.21.1: agent/models_dev.py MODELS_DEV_URL and
+    # hermes_cli/model_catalog.py DEFAULT_CATALOG_URL +
+    # DEFAULT_CATALOG_FALLBACK_URLS); with the hosts denied, each address
+    # times out and the picker sits on "loading" for about a minute before
+    # listing any provider. models.dev is the provider/model registry;
+    # hermes-agent.nousresearch.com serves the Hermes manifest but currently
+    # 301s to nousresearch.github.io, which urllib follows, so that redirect
+    # target is listed too; raw.githubusercontent.com is the upstream
+    # fallback copy of the same manifest (NousResearch/hermes-agent/main/...,
+    # not commit-pinned). Enforcement here is DNS-derived L3/L4 only: Cilium
+    # admits the addresses learned for the four exact names on TCP443 with no URL path, method,
+    # or credential/content restriction.
+    - toFQDNs:
+        - matchName: models.dev
+        - matchName: hermes-agent.nousresearch.com
+        - matchName: nousresearch.github.io
+        - matchName: raw.githubusercontent.com
       toPorts:
         - ports:
             - port: "443"
