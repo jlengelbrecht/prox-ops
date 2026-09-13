@@ -97,6 +97,31 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+    # Telegram Bot API: polling/webhook client and file transfer, all served
+    # from api.telegram.org. Enforcement here is DNS-derived L3/L4 only:
+    # Cilium admits the addresses learned for this exact name on TCP443, no
+    # URL path, method or credential/content restriction.
+    - toFQDNs:
+        - matchName: api.telegram.org
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Discord: REST API, initial Gateway websocket, native media/CDN
+    # (attachments, stickers) and Gateway reconnects. Discord returns a
+    # resume URL for reconnects. This bounded pattern covers matching
+    # hosts; verify the actual returned hostname after READY. Same
+    # DNS-derived L3/L4 enforcement as above, TCP443 only.
+    - toFQDNs:
+        - matchName: discord.com
+        - matchName: gateway.discord.gg
+        - matchPattern: "gateway-*.discord.gg"
+        - matchName: cdn.discordapp.com
+        - matchName: media.discordapp.net
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
     # Dashboard OIDC: discovery, token exchange and JWKS calls go to the
     # Authentik issuer hostname, which resolves to the internal gateway VIP
     # (the gateway pods listen on 10443 behind the LoadBalancer's 443).
