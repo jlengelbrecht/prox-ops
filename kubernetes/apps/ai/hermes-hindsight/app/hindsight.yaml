@@ -1,0 +1,271 @@
+---
+# Hindsight memory API + control-plane UI, official chart 0.9.2, images
+# pinned by digest. External database on the shared CloudNativePG cluster
+# (see `postgresql` below), no workers/TEI/HPA/ingress. Secrets arrive
+# through `existingSecret`; the chart never renders its own Secret.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: hindsight
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: hindsight
+      # renovate: datasource=helm registryUrl=oci://ghcr.io/vectorize-io/charts
+      version: 0.9.2
+      sourceRef:
+        kind: HelmRepository
+        name: vectorize
+        namespace: ai
+  interval: 1h
+  # First install: the full API image is ~4 GB and the shared-cluster operator
+  # creates the role, database and extensions asynchronously, so the default
+  # 5m install wait with no retries could leave the release Stalled
+  # (RetriesExceeded) on a slow pull or an early start. Upgrades: nothing is
+  # set here, and nothing set here would hold. The cluster-apps Kustomization
+  # (kubernetes/flux/cluster/ks.yaml) patches every HelmRelease with
+  # RemediateOnFailure, two retries and a rollback, and that patch overrides
+  # this file. Migrations are forward-only, so a rollback after a failed
+  # version bump puts the previous image in front of a newer schema: treat
+  # that as a stalled release, not a working one. Bumps are manual and follow
+  # a database export; recover forward from the export rather than relying
+  # on the rollback.
+  timeout: 15m
+  install:
+    remediation:
+      retries: 3
+  # Post-render patches for fields chart 0.9.2 cannot express; drop each when
+  # the chart grows a value:
+  #   1. automountServiceAccountToken: the chart has no switch, so this is the
+  #      only way to keep a Kubernetes API token out of the API/UI pods.
+  #   2. hindsight-api strategy Recreate: the default RollingUpdate would run
+  #      a second API pod (migrations at start-up, in-process worker with the
+  #      fixed HINDSIGHT_API_WORKER_ID) beside the old one; the two would reset
+  #      each other's in-flight rows. One replica must never overlap.
+  #   3. hindsight-api dnsConfig ndots:1: the toFQDNs rule for api.minimax.io
+  #      (networkpolicy.yaml) only matches a query for the exact name; the
+  #      default ndots:5 search path would try the cluster suffixes first.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              labelSelector: app.kubernetes.io/name=hindsight
+            patch: |
+              - op: add
+                path: /spec/template/spec/automountServiceAccountToken
+                value: false
+          - target:
+              kind: Deployment
+              name: hindsight-api
+            patch: |
+              - op: add
+                path: /spec/strategy
+                value:
+                  type: Recreate
+          - target:
+              kind: Deployment
+              name: hindsight-api
+            patch: |
+              - op: add
+                path: /spec/template/spec/dnsConfig
+                value:
+                  options:
+                    - name: ndots
+                      value: "1"
+  values:
+    fullnameOverride: hindsight
+
+    # All keys of this Secret become env vars in the api and control-plane
+    # containers; `postgres-password` is additionally read by secretKeyRef.
+    existingSecret: hindsight-secrets
+
+    api:
+      enabled: true
+      replicaCount: 1
+      image:
+        repository: ghcr.io/vectorize-io/hindsight-api
+        # Full image: local embeddings/reranker with the default model weights
+        # baked in (BAAI/bge-small-en-v1.5, cross-encoder/ms-marco-MiniLM-L-6-v2).
+        # renovate: datasource=docker depName=ghcr.io/vectorize-io/hindsight-api
+        tag: "0.9.2@sha256:7b14a1f4062252992d0176758753615e0a2071d9a269995be007be223ab01812"
+        pullPolicy: IfNotPresent
+      env:
+        # Memory-reasoning LLM through the native `minimax` provider, pinned
+        # to MiniMax-M2.7 standard (M3 excluded initially, no automatic
+        # escalation, no fallback chain). The endpoint is coupled to the egress
+        # rule in networkpolicy.yaml; the base URL is the provider's default,
+        # set explicitly so it is not an implicit library value.
+        HINDSIGHT_API_LLM_PROVIDER: "minimax"
+        HINDSIGHT_API_LLM_BASE_URL: "https://api.minimax.io/v1"
+        HINDSIGHT_API_LLM_MODEL: "MiniMax-M2.7"
+        # Initial ceilings: they bound concurrency and burst shape, not spend
+        # (the MiniMax plan is metered provider-side; M2.x thinking cannot be
+        # disabled and every call pays for it). A retain answer cut by the
+        # output cap fails only when the truncation breaks JSON parsing
+        # (retried once, then HTTP 500); schema-valid JSON at
+        # finish_reason=length is accepted and stored, and free-form output
+        # is not rejected for finish_reason alone. Raise a cap deliberately
+        # when finish_reason=length shows up in traces, never to hide it.
+        HINDSIGHT_API_LLM_MAX_CONCURRENT: "2"
+        HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "1"
+        HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT: "1"
+        HINDSIGHT_API_REFLECT_LLM_MAX_CONCURRENT: "1"
+        HINDSIGHT_API_LLM_MAX_RETRIES: "1"
+        # Start-up vs operation timeouts: the global value is what the
+        # start-up verification uses (3 attempts, listener closed until it
+        # returns), a per-operation value wins for that operation. With a
+        # hung endpoint (TCP accepts, TLS never answers) 3 x 30s plus backoff
+        # opens /health at ~105s measured, inside the liveness budget below;
+        # a single 120s value restart-looped the pod. A provider slower than
+        # 30s on the verification prompt only costs a start-up warning, and
+        # that warning, not a healthy process, is the inference signal.
+        HINDSIGHT_API_LLM_TIMEOUT: "30"
+        HINDSIGHT_API_RETAIN_LLM_TIMEOUT: "120"
+        # Also governs bank-mission and mental-model delta calls, which run
+        # on the reflect configuration (memory_engine.py).
+        HINDSIGHT_API_REFLECT_LLM_TIMEOUT: "120"
+        HINDSIGHT_API_CONSOLIDATION_LLM_TIMEOUT: "120"
+        HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS: "16384"
+        HINDSIGHT_API_CONSOLIDATION_MAX_COMPLETION_TOKENS: "8192"
+        # Final-synthesis and mental-model calls only; reflect's tool-selection
+        # calls carry no output cap and are bounded by the iteration limit.
+        HINDSIGHT_API_REFLECT_MAX_COMPLETION_TOKENS: "8192"
+        HINDSIGHT_API_REFLECT_MAX_ITERATIONS: "4"
+        # Outer attempts for consolidation batch calls (default 3), distinct
+        # from the per-call retries above.
+        HINDSIGHT_API_CONSOLIDATION_MAX_ATTEMPTS: "1"
+        # Automatic consolidation OFF on this release. In 0.9.2 a consolidation
+        # batch's writes are not atomic: a schema-invalid LLM response can
+        # delete the source memories without creating their replacements, and
+        # the operation still reports completed (upstream issue #3876; fixed by
+        # PR #3923, merged 2026-08-31, in no tagged release as of 2026-09-13).
+        # Retain, recall and reflect keep working; observations are only
+        # produced when consolidation is called explicitly, and that call
+        # should follow a database export. Remove this line, restoring the
+        # default, once the pinned release contains #3923.
+        HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION: "false"
+        # Built-in shared-bearer tenant auth: every API request must carry
+        # `Authorization: Bearer <HINDSIGHT_API_TENANT_API_KEY>`. The key
+        # itself comes from hindsight-secrets.
+        HINDSIGHT_API_TENANT_EXTENSION: "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension"
+        # No MCP surface on this release; MCP access is not part of it.
+        HINDSIGHT_API_MCP_ENABLED: "false"
+        # Load the baked model weights without a Hugging Face metadata call,
+        # which the egress policy drops and the hub client then fails on.
+        HF_HUB_OFFLINE: "1"
+        # The bundled LiteLLM SDK otherwise tries to fetch its cost map at
+        # import and loses ~23 s to the dropped SYN before using its local copy.
+        LITELLM_LOCAL_MODEL_COST_MAP: "True"
+        # Shared CloudNativePG instance at PostgreSQL's default
+        # max_connections=100: the image's default pool (max 100) could take
+        # every slot from the other tenants. 20 is the driver's own default;
+        # the managed role also carries connectionLimit 25 on the cluster side.
+        HINDSIGHT_API_DB_POOL_MAX_SIZE: "20"
+        HINDSIGHT_API_WORKER_ID: "hindsight-api"
+        HINDSIGHT_API_LOG_FORMAT: "json"
+      # Liveness budget (chart 0.9.2 has no startupProbe value). Earliest
+      # restart = initialDelay + (failureThreshold - 1) x period = 140 s. The
+      # chart default (~50 s) is shorter than the ~55 s start measured with an
+      # unreachable LLM endpoint; 140 s also covers the ~105 s hung-endpoint
+      # start bounded by HINDSIGHT_API_LLM_TIMEOUT above and stays under the
+      # image supervisor's 300 s ceiling. Readiness keeps the chart values.
+      livenessProbe:
+        initialDelaySeconds: 90
+        periodSeconds: 10
+        failureThreshold: 6
+      # Keep the chart's model-cache PVC OFF: it would mount over
+      # /home/hindsight/.cache and hide the baked weights.
+      persistence:
+        modelCache:
+          enabled: false
+      resources:
+        requests:
+          cpu: 500m
+          memory: 1536Mi
+        limits:
+          cpu: "2"
+          memory: 3Gi
+
+    worker:
+      enabled: false
+
+    controlPlane:
+      enabled: true
+      replicaCount: 1
+      image:
+        repository: ghcr.io/vectorize-io/hindsight-control-plane
+        # renovate: datasource=docker depName=ghcr.io/vectorize-io/hindsight-control-plane
+        tag: "0.9.2@sha256:d9bf57083f7cb0a53ee5011bdfde6aae2490dbf5c360d2d1bff10473b45eb112"
+        pullPolicy: IfNotPresent
+      # The UI reaches the API server-side with HINDSIGHT_CP_DATAPLANE_API_KEY.
+      # Its own login (HINDSIGHT_CP_ACCESS_KEY) is deliberately NOT set: the
+      # browser is gated by Authentik forward auth on the HTTPRoute (one gate).
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+
+    postgresql:
+      # Bundled database off (as released it writes the password in plain
+      # text into the API Deployment and uses the abandoned
+      # ankane/pgvector:latest image). Hindsight uses the shared CloudNativePG
+      # cluster instead: database `hindsight`, owned by the plain login role
+      # `hindsight`, with `vector` and `pg_trgm` pre-created in `public` by
+      # the operator (kubernetes/apps/database/cluster/app/
+      # database-hindsight.yaml). The API only checks that the extensions
+      # exist at start-up and runs its migrations as the database owner; it
+      # is not a superuser and cannot create roles or databases. The Flux
+      # Kustomization depends on postgres-cluster (../ks.yaml) so the role,
+      # database and credential exist before the first migration.
+      enabled: false
+      external:
+        host: postgres-rw.database.svc.cluster.local
+        port: 5432
+        database: hindsight
+        # Must equal the managed role name and postgres-cluster/HINDSIGHT_USER.
+        username: hindsight
+        # password: never set here. The chart reads hindsight-secrets/
+        # postgres-password by secretKeyRef and expands `$(POSTGRES_PASSWORD)`
+        # into HINDSIGHT_API_DATABASE_URL at pod start.
+
+    ingress:
+      enabled: false
+
+    serviceAccount:
+      create: true
+
+    podAnnotations:
+      # With existingSecret the chart drops its checksum/secret annotation, so
+      # a rotated Secret only reaches the pods through Reloader.
+      secret.reloader.stakater.com/reload: "hindsight-secrets"
+
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      allowPrivilegeEscalation: false
+      # The full image writes under /home/hindsight/.cache at runtime.
+      readOnlyRootFilesystem: false
+      capabilities:
+        drop:
+          - ALL
+
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist

@@ -1,11 +1,14 @@
 ---
-# Hermes (Nous Research agent + web dashboard). First runtime slice: the
-# dashboard behind the internal gateway with Authentik OIDC and a persistent
-# home. Hindsight memory and native 1Password task references follow in later
-# changes; the complete prepared candidate they come from is the reference.
+# Hermes (Nous Research agent + web dashboard) and Hindsight (memory API +
+# control-plane UI on the shared CloudNativePG cluster). Hermes runs behind
+# the internal gateway with Authentik OIDC; Hindsight runs as its own private
+# service with the UI behind Authentik forward auth. Hermes' memory provider
+# stays pinned off and native 1Password task references stay off until their
+# backends are live and validated; both follow in later changes.
 #
 # Storage lives in its own `prune: false` Kustomization so removing the app
-# Kustomization can never delete the Hermes home.
+# Kustomization can never delete the Hermes home. Hindsight's database is a
+# Database CR on the shared cluster (kubernetes/apps/database/cluster).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -34,9 +37,23 @@ spec:
       app.kubernetes.io/name: *app
   # The AI root applies `namespace: ai` to this tree, so both Kustomizations
   # land in `ai` and the sibling resolves in this CR's own namespace (same
-  # shape as litellm/ks.yaml).
+  # shape as litellm/ks.yaml). external-secrets-operator has no namespace
+  # transform, so its CR stays in flux-system (same as agent-router/ks.yaml);
+  # the database root applies `namespace: database`, so postgres-cluster's CR
+  # lands there (same as glycemicgpt-bot/ks.yaml). postgres-cluster reconciles
+  # with `wait: true`, so Flux has applied the hindsight role, Database CR and
+  # credential ExternalSecret (and seen the Secret synced) before this tree
+  # reconciles. Flux does not observe whether CloudNativePG has finished
+  # creating the database and extensions: the operator does that
+  # asynchronously (retrying every 30s), and the API refuses to start until
+  # the pre-created extensions exist (it cannot create them itself), so an
+  # early first start only crash-loops until the operator has caught up.
   dependsOn:
     - name: hermes-hindsight-storage
+    - name: external-secrets-operator
+      namespace: flux-system
+    - name: postgres-cluster
+      namespace: database
   interval: 1h
   retryInterval: 2m
   timeout: 10m

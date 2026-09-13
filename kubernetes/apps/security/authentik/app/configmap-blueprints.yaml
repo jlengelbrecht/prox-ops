@@ -332,7 +332,7 @@ data:
 
   # =============================================================
   # PROXY PROVIDERS BLUEPRINT
-  # Forward auth providers for n8n, Wizarr
+  # Forward auth providers for n8n, Wizarr, GlycemicGPT, Hindsight
   # =============================================================
   providers-proxy.yaml: |
     version: 1
@@ -408,6 +408,30 @@ data:
           name: GlycemicGPT
           mode: forward_single
           external_host: https://glycemicgpt.homelab0.org
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          property_mappings:
+            - !Context scope_proxy
+            - !Context scope_email
+            - !Context scope_profile
+            - !Context scope_openid
+            - !Context scope_entitlements
+          access_token_validity: hours=24
+          refresh_token_validity: days=30
+          intercept_header_auth: true
+          internal_host_ssl_validation: true
+      # Hindsight UI - Forward Auth. Assigning this provider to the embedded
+      # outpost is the same one-time admin step as for n8n, Wizarr and
+      # GlycemicGPT: a blueprint can only replace the outpost's whole provider
+      # list, so that list is deliberately not managed here.
+      - model: authentik_providers_proxy.proxyprovider
+        id: proxy-hindsight
+        identifiers:
+          name: Hindsight
+        attrs:
+          name: Hindsight
+          mode: forward_single
+          external_host: https://hindsight.homelab0.org
           authorization_flow: !Context authorization_flow
           invalidation_flow: !Context invalidation_flow
           property_mappings:
@@ -532,6 +556,26 @@ data:
         id: binding-hermes-admins
         identifiers:
           target: !Find [authentik_core.application, [slug, hermes]]
+          order: 0
+        attrs:
+          group: !Find [authentik_core.group, [name, "authentik Admins"]]
+          enabled: true
+      # Hindsight UI: same owner/admin-only binding as Hermes, enforced by the
+      # forward-auth SecurityPolicy on its route.
+      - model: authentik_core.application
+        id: app-hindsight
+        identifiers:
+          slug: hindsight
+        attrs:
+          name: Hindsight
+          slug: hindsight
+          group: AI
+          policy_engine_mode: any
+          provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Hindsight"]]
+      - model: authentik_policies.policybinding
+        id: binding-hindsight-admins
+        identifiers:
+          target: !Find [authentik_core.application, [slug, hindsight]]
           order: 0
         attrs:
           group: !Find [authentik_core.group, [name, "authentik Admins"]]

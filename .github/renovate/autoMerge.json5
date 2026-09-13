@@ -414,12 +414,15 @@
       ]
     },
     {
-      "description": "FULLY MANUAL: Hermes agent - the dashboard/config schema (_config_version) moves with the image and the chart is pinned to it; read the release notes and bump both together",
+      "description": "FULLY MANUAL: Hermes agent - the dashboard/config schema (_config_version) moves with the image and the chart is pinned to it; read the release notes and bump both together. Hindsight (api, control plane, chart) - migrations are forward-only on the shared CloudNativePG cluster, take a pg_dump -d hindsight first",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
       "matchPackageNames": [
         "docker.io/nousresearch/hermes-agent",
-        "hermes-agent"
+        "hermes-agent",
+        "ghcr.io/vectorize-io/hindsight-api",
+        "ghcr.io/vectorize-io/hindsight-control-plane",
+        "hindsight"
       ]
     },
     // NOTE: Talos talenv.yaml (ghcr.io/siderolabs/installer) updates are disabled in

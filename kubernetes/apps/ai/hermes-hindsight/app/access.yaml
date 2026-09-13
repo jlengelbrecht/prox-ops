@@ -44,3 +44,106 @@ spec:
                 value: "nosniff"
               - name: Referrer-Policy
                 value: "strict-origin-when-cross-origin"
+---
+# Hindsight UI (control plane, port 3000) on the same internal gateway, gated
+# by Authentik forward auth (SecurityPolicy below; who may log in is the
+# application's group binding in the Authentik blueprints). The UI calls the
+# API server-side with the tenant key; the API itself has no route and is
+# ClusterIP-only behind network policy.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hindsight
+  namespace: ai
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: hindsight.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - hindsight.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: hindsight-control-plane
+          port: 3000
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+---
+# Authentik outpost route for the Hindsight host (forward-auth login/callback
+# flow). No SecurityPolicy here (it would loop); the cross-namespace
+# backendRef is allowed by ReferenceGrant allow-ai-namespace-extauth.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hindsight-outpost
+  namespace: ai
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - hindsight.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /outpost.goauthentik.io/
+      backendRefs:
+        - name: authentik-server
+          namespace: security
+          port: 80
+---
+# Authentik forward auth (Envoy ext_authz) for the Hindsight UI route, same
+# shape as glycemicgpt/app/securitypolicy.yaml. failOpen: false: if Authentik
+# is unreachable, or the Hindsight provider is not yet assigned to the
+# embedded outpost, the UI is unreachable rather than open.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: hindsight-auth
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: hindsight
+  extAuth:
+    headersToExtAuth:
+      - accept
+      - cookie
+      - authorization
+      - x-forwarded-proto
+      - x-forwarded-host
+      - x-forwarded-for
+      - x-forwarded-uri
+      - x-forwarded-method
+    failOpen: false
+    http:
+      backendRefs:
+        - name: authentik-server
+          namespace: security
+          port: 80
+      path: /outpost.goauthentik.io/auth/envoy
+      headersToBackend:
+        - X-authentik-username
+        - X-authentik-groups
+        - X-authentik-email
+        - X-authentik-name
+        - X-authentik-uid

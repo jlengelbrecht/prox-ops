@@ -92,6 +92,19 @@ spec:
           createdb: false
           passwordSecret:
             name: glycemicgpt-bot-db-credentials
+        # Hindsight memory API (ai namespace). Plain login role: owner of the
+        # `hindsight` database only; the vector/pg_trgm extensions it needs
+        # are pre-created by the Database CR (database-hindsight.yaml), so it
+        # never needs superuser. connectionLimit caps this tenant's share of
+        # the instance's default max_connections=100 (the app's own pool is
+        # capped at 20 in kubernetes/apps/ai/hermes-hindsight/app/hindsight.yaml).
+        - name: hindsight
+          ensure: present
+          login: true
+          createdb: false
+          connectionLimit: 25
+          passwordSecret:
+            name: hindsight-db-credentials
 
     # Backups - disabled until S3 storage is available
     # When MinIO/S3 is ready, enable and configure:

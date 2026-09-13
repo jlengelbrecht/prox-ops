@@ -1,0 +1,30 @@
+---
+# Hindsight memory API database — declaratively managed on the shared
+# postgres cluster. Owner role is created by the Cluster's managed roles
+# block; this CR creates the database with that role as owner and installs
+# the two extensions Hindsight 0.9.2 requires. Both are pre-created here
+# because `vector` is not a trusted extension: the app checks pg_extension
+# for `vector` in schema `public` at start-up and only issues CREATE
+# EXTENSION (which needs superuser) when it is missing. No `version` is
+# pinned so the image's bundled release is used and later image bumps do not
+# fight the CR. databaseReclaimPolicy defaults to retain: removing this CR
+# leaves the database in place. Migrations are forward-only and the shared
+# cluster has no backups; pg_dump -d hindsight before any Hindsight bump.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: hindsight
+  namespace: database
+spec:
+  name: hindsight
+  owner: hindsight
+  cluster:
+    name: postgres
+  ensure: present
+  extensions:
+    - name: vector
+      ensure: present
+      schema: public
+    - name: pg_trgm
+      ensure: present
+      schema: public
