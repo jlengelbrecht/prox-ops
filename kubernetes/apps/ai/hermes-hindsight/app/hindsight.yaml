@@ -132,7 +132,15 @@ spec:
         # Final-synthesis and mental-model calls only; reflect's tool-selection
         # calls carry no output cap and are bounded by the iteration limit.
         HINDSIGHT_API_REFLECT_MAX_COMPLETION_TOKENS: "8192"
-        HINDSIGHT_API_REFLECT_MAX_ITERATIONS: "4"
+        # Reflect requests default to budget "low" when the caller omits it,
+        # which halves this cap before use (low 0.5x / mid 1x / high 2x). At
+        # "4" that left only 2 iterations, so the server's forced retrieval
+        # order (mental models, then observations, then raw-fact recall)
+        # never finished before the final synthesis turn and reflect answered
+        # from an empty search instead of reaching recall. "8" gives a
+        # low-budget request 4 iterations: the full forced sequence plus
+        # synthesis, including when the bank has mental models.
+        HINDSIGHT_API_REFLECT_MAX_ITERATIONS: "8"
         # Outer attempts for consolidation batch calls (default 3), distinct
         # from the per-call retries above.
         HINDSIGHT_API_CONSOLIDATION_MAX_ATTEMPTS: "1"
