@@ -1,15 +1,19 @@
 ---
-# Narrow, explicit network authorization for Hermes: DNS, the OIDC issuer and
-# a small toFQDNs allowlist for the owner's native AI subscription lanes. No
-# general internet rule. The Hermes image does not categorically disable lazy
-# installs; this egress policy is what makes any such attempt fail closed
-# (no PyPI/npm host is allowed). Changing an LLM endpoint is coupled to the
-# toFQDNs rules below. A toFQDNs rule only enforces correctly if the pod
-# queries DNS for the exact policed name - ndots:1 is patched onto the pod
-# (hermes.yaml postRenderers) so the default search path never intercepts
-# the lookup first.
+# Narrow, explicit network authorization for the three workloads: DNS, the
+# OIDC issuer, the shared database, the memory API and a small toFQDNs
+# allowlist for the subscription-backed calls. No general internet rule. The
+# Hermes image does not categorically disable lazy installs; this egress
+# policy is what makes any such attempt fail closed (no PyPI/npm host is
+# allowed). Changing an LLM endpoint is coupled to the toFQDNs rules below,
+# which only enforce when the pod queries DNS for the exact policed name
+# (ndots:1 is patched onto both affected pods in hermes.yaml and
+# hindsight.yaml).
 #
-# Cilium matches pod labels; the selector below is what the chart renders.
+# Cilium matches pod labels; the selectors below are what each chart renders.
+# Hermes has no rule towards the Hindsight API yet: its memory provider stays
+# pinned off until this backend is live and validated.
+#
+# Hermes (chart labels: app.kubernetes.io/name=hermes-agent, instance=hermes)
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -79,4 +83,105 @@ spec:
             - port: "443"
               protocol: TCP
             - port: "10443"
+              protocol: TCP
+---
+# Hindsight API (chart labels: name=hindsight, instance=hindsight, component=api)
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-api
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+      app.kubernetes.io/instance: hindsight
+      app.kubernetes.io/component: api
+  ingress:
+    # Approved consumer only: the Hindsight UI's server-side dataplane client.
+    # No gateway ingress; the Hermes memory client is added when it is enabled.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: hindsight
+            app.kubernetes.io/instance: hindsight
+            app.kubernetes.io/component: control-plane
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          # L7 DNS visibility so the toFQDNs rule below learns addresses.
+          rules:
+            dns:
+              - matchPattern: "*"
+    # Memory-reasoning LLM: the one host in HINDSIGHT_API_LLM_BASE_URL.
+    - toFQDNs:
+        - matchName: api.minimax.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Shared CloudNativePG cluster in the database namespace (postgres-rw);
+    # its own policy already admits ingress from this namespace on 5432.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+---
+# Hindsight UI / control plane (component=control-plane). No database access:
+# it only talks to the API.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-control-plane
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+      app.kubernetes.io/instance: hindsight
+      app.kubernetes.io/component: control-plane
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: hindsight
+            app.kubernetes.io/component: api
+      toPorts:
+        - ports:
+            - port: "8888"
               protocol: TCP
