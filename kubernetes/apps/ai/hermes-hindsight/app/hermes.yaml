@@ -221,8 +221,9 @@ spec:
 
     # Least startup privilege, from the chart's values-hardened.yaml and
     # re-verified on this digest: s6-overlay starts cleanly as the image's own
-    # hermes user (10000) with a read-only rootfs once /run and /tmp are
-    # writable tmpfs. The same context also applies to the seed-config init.
+    # hermes user (10000) with a read-only rootfs once /run (memory-backed
+    # tmpfs) and /tmp (disk-backed emptyDir, below) are writable. The same
+    # context also applies to the seed-config init.
     podSecurityContext:
       runAsNonRoot: true
       runAsUser: 10000
@@ -243,10 +244,16 @@ spec:
         emptyDir:
           medium: Memory
           sizeLimit: 16Mi
+      # /tmp is node-disk-backed, not tmpfs: the chart's 64Mi memory-backed
+      # default is sized for s6 scratch, but Hermes stages its managed uv
+      # bootstrap here (tarball + extracted binaries ~66Mi before cleanup) and
+      # the browser tooling keeps profiles and downloads in /tmp. A disk
+      # emptyDir keeps that out of the container's memory limit; sizeLimit is
+      # a kubelet eviction threshold, not a filesystem quota. The volume name
+      # is kept so the mount below stays unchanged.
       - name: tmp-tmpfs
         emptyDir:
-          medium: Memory
-          sizeLimit: 64Mi
+          sizeLimit: 1Gi
       # Shared ephemeral volume: the init container below copies the official
       # op binary here; Hermes mounts it read-only.
       - name: onepassword-cli
