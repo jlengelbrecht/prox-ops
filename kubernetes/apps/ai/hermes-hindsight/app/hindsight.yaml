@@ -22,9 +22,15 @@ spec:
   # First install: the full API image is ~4 GB and the shared-cluster operator
   # creates the role, database and extensions asynchronously, so the default
   # 5m install wait with no retries could leave the release Stalled
-  # (RetriesExceeded) on a slow pull or an early start. No upgrade
-  # remediation on purpose: migrations are forward-only, so a rollback would
-  # run the previous image against a newer schema; bumps are manual.
+  # (RetriesExceeded) on a slow pull or an early start. Upgrades: nothing is
+  # set here, and nothing set here would hold. The cluster-apps Kustomization
+  # (kubernetes/flux/cluster/ks.yaml) patches every HelmRelease with
+  # RemediateOnFailure, two retries and a rollback, and that patch overrides
+  # this file. Migrations are forward-only, so a rollback after a failed
+  # version bump puts the previous image in front of a newer schema: treat
+  # that as a stalled release, not a working one. Bumps are manual and follow
+  # a database export; recover forward from the export rather than relying
+  # on the rollback.
   timeout: 15m
   install:
     remediation:
@@ -130,6 +136,16 @@ spec:
         # Outer attempts for consolidation batch calls (default 3), distinct
         # from the per-call retries above.
         HINDSIGHT_API_CONSOLIDATION_MAX_ATTEMPTS: "1"
+        # Automatic consolidation OFF on this release. In 0.9.2 a consolidation
+        # batch's writes are not atomic: a schema-invalid LLM response can
+        # delete the source memories without creating their replacements, and
+        # the operation still reports completed (upstream issue #3876; fixed by
+        # PR #3923, merged 2026-08-31, in no tagged release as of 2026-09-13).
+        # Retain, recall and reflect keep working; observations are only
+        # produced when consolidation is called explicitly, and that call
+        # should follow a database export. Remove this line, restoring the
+        # default, once the pinned release contains #3923.
+        HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION: "false"
         # Built-in shared-bearer tenant auth: every API request must carry
         # `Authorization: Bearer <HINDSIGHT_API_TENANT_API_KEY>`. The key
         # itself comes from hindsight-secrets.
