@@ -1,0 +1,225 @@
+---
+# Hermes's browser, in its own pod. The pinned Hermes container cannot use
+# Chromium's SUID or namespace sandbox (non-root, no capabilities,
+# RuntimeDefault), so Chromium runs unsandboxed inside a separate Browserless
+# pod instead of beside the Hermes home and credentials. Hermes drives it over
+# CDP through the ClusterIP name with the pod's own API token (hermes.yaml
+# BROWSER_CDP_URL, generated in externalsecrets.yaml); the browser pod holds
+# no Hermes data, Secret, PVC or service-account token. Its CiliumNetworkPolicy
+# (networkpolicy.yaml) selects the isolation label below, admits only Hermes
+# on 3000 and lets the pod reach only DNS and public IPv4 web ports.
+#
+# The token authenticates every Browserless route except static files, so a
+# script on a visited page cannot open factory or management sockets on pod
+# loopback. It is not a per-session boundary: sessions inside the pod share
+# one process tree and browser state, and a renderer compromise can read the
+# token from the pod. The pod is the boundary. Logging is pinned below the
+# level that would print the token (DEBUG env).
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: hermes-browser
+  namespace: ai
+spec:
+  chart:
+    spec:
+      chart: app-template
+      # renovate: datasource=helm registryUrl=https://bjw-s-labs.github.io/helm-charts
+      version: 4.4.0
+      sourceRef:
+        kind: HelmRepository
+        name: bjw-s-hermes-browser
+        namespace: ai
+  interval: 1h
+  values:
+    controllers:
+      hermes-browser:
+        # One replica, one identity; nothing persists across a rollout.
+        strategy: Recreate
+        # Reloader replaces the pod when the token Secret is recreated
+        # (rotation), in step with the Hermes Deployment (hermes.yaml).
+        annotations:
+          secret.reloader.stakater.com/reload: hermes-browser-token
+        pod:
+          # Authored isolation label: the only key both network policy
+          # directions select (networkpolicy.yaml). Chart-generated labels
+          # are not relied on for the boundary; validate-browser-isolation.py
+          # asserts the rendered pod carries it and is selected.
+          labels:
+            prox-ops.io/isolation: hermes-browser
+        containers:
+          app:
+            image:
+              repository: ghcr.io/browserless/chromium
+              # renovate: datasource=docker depName=ghcr.io/browserless/chromium
+              tag: v2.56.7@sha256:b1ba7b054af2891a8199f884d4bd249cf8c3bd2fa8a97b339077e40f92803ba8
+            env:
+              # API token (externalsecrets.yaml). A hard reference: without
+              # the Secret the container never starts, so Browserless cannot
+              # come up unauthenticated by accident.
+              TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: hermes-browser-token
+                    key: TOKEN
+              # Advertised WebSocket host in /json/version and /sessions; the
+              # image default (HOST=0.0.0.0) would hand out an unusable
+              # address. Hermes no longer discovers through it (it connects
+              # to the ws:// root directly), the startup probe still does.
+              EXTERNAL: http://hermes-browser.ai.svc.cluster.local:3000
+              # Total lifetime of one browser connection (ms), not an idle
+              # timer: matches agent.gateway_timeout in hermes.yaml. A session
+              # that outlives it loses its browser state once and continues
+              # on a fresh browser. Must stay positive.
+              TIMEOUT: "1800000"
+              # Default session plus two named ones; a fourth is refused
+              # (429) rather than queued behind a held connection.
+              CONCURRENT: "3"
+              QUEUED: "0"
+              ENABLE_DEBUGGER: "false"
+              # Log namespaces (vendor-documented DEBUG knob of the `debug`
+              # module). The image default enables every level, and at the
+              # debug level this release dumps the launch options of every
+              # accepted CDP session, including the process environment and
+              # so TOKEN (the /json/version throwaway launch carries no env).
+              # Keep info/warn/error/fatal (start/stop, timeouts, 401s, the
+              # 429 capacity rejection, orphan cleanup) and drop debug and
+              # trace (session lifecycle and per-request routing lines). Any
+              # override that re-enables debug puts the token back in the
+              # container log.
+              DEBUG: "browserless*,-*:debug,-*:trace"
+            # Every route the probes touch requires the token, and the
+            # kubelet expands $(VAR) only for literal env values, so the
+            # bearer header is built inside the container by a shell that
+            # sees TOKEN. The header goes to curl as a config file on stdin,
+            # not as an argument, and the probe spec below holds no value.
+            # curl -f turns 401/500 into a failed probe. The startup budget
+            # starts after the image pull (~1 GB compressed on first
+            # schedule), not at reconciliation.
+            probes:
+              # The first /json/version launches a throwaway Chromium and
+              # caches the result, so passing startup proves Chromium can
+              # launch under this pod's restrictions, not only that the Node
+              # front door answers; later calls are cache hits.
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - sh
+                      - -c
+                      - |
+                        printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" |
+                          curl -fsS -o /dev/null --max-time 25 -K - http://127.0.0.1:3000/json/version
+                  periodSeconds: 5
+                  timeoutSeconds: 30
+                  failureThreshold: 60
+              # /active is the process-liveness route: it stays available
+              # while all three sessions are busy, so full normal capacity
+              # never removes the single Service endpoint (/pressure would).
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - sh
+                      - -c
+                      - |
+                        printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" |
+                          curl -fsS -o /dev/null --max-time 3 -K - http://127.0.0.1:3000/active
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  exec:
+                    command:
+                      - sh
+                      - -c
+                      - |
+                        printf 'header = "Authorization: Bearer %s"\n' "$TOKEN" |
+                          curl -fsS -o /dev/null --max-time 4 -K - http://127.0.0.1:3000/active
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+            # Three modest concurrent pages measured 785-796Mi with an 809Mi
+            # peak and no OOM, so the request covers configured capacity;
+            # the memory-backed /dev/shm below counts against the same limit.
+            # Representative heavy-page peak is untested: the 2Gi limit is a
+            # cap, not an established margin. Ephemeral storage covers the
+            # writable layer and logs, which no emptyDir sizeLimit accounts
+            # for.
+            resources:
+              requests:
+                cpu: 250m
+                memory: 1Gi
+                ephemeral-storage: 256Mi
+              limits:
+                cpu: "2"
+                memory: 2Gi
+                ephemeral-storage: 3Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL
+
+    defaultPodOptions:
+      automountServiceAccountToken: false
+      # The image's own blessuser (999).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+
+    # The only writable paths, all disposable: Browserless keeps profiles,
+    # downloads and scratch under /tmp and removes them when a session ends;
+    # Chromium needs a writable home for its crashpad database, font cache
+    # and NSS store (about 1.3Mi observed); /dev/shm replaces the 64Mi
+    # runtime default. An emptyDir survives a container restart and is
+    # discarded with the pod; sizeLimit is an eviction threshold, not a
+    # reservation.
+    persistence:
+      tmp:
+        type: emptyDir
+        sizeLimit: 2Gi
+        globalMounts:
+          - path: /tmp
+      shm:
+        type: emptyDir
+        medium: Memory
+        sizeLimit: 512Mi
+        globalMounts:
+          - path: /dev/shm
+      home:
+        type: emptyDir
+        sizeLimit: 256Mi
+        globalMounts:
+          - path: /home/blessuser
+
+    # ClusterIP only; no HTTPRoute or Ingress.
+    service:
+      app:
+        controller: hermes-browser
+        type: ClusterIP
+        ports:
+          http:
+            port: 3000
+            targetPort: 3000
+            protocol: TCP

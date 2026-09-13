@@ -1,5 +1,6 @@
 ---
-# Explicit network authorization for the three workloads: DNS, the OIDC
+# Explicit network authorization for the four workloads (Hermes, the two
+# Hindsight components and the Hermes browser pod at the end): DNS, the OIDC
 # issuer, the shared database, the memory API and toFQDNs allowlists for the
 # subscription-backed calls and the public model-catalog metadata Hermes
 # reads before any provider is chosen. Hermes additionally holds one general
@@ -224,6 +225,18 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    # Dedicated browser pod (browser.yaml): the authenticated CDP WebSocket
+    # on its service port. Selected by the authored isolation label the
+    # browser pod template carries, the same key its own policy below
+    # selects; nothing else in the namespace carries it.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            prox-ops.io/isolation: hermes-browser
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
 ---
 # Hindsight API (chart labels: name=hindsight, instance=hindsight, component=api)
 apiVersion: cilium.io/v2
@@ -335,4 +348,72 @@ spec:
       toPorts:
         - ports:
             - port: "8888"
+              protocol: TCP
+---
+# Hermes browser pod (browser.yaml). Selected by the authored pod label
+# prox-ops.io/isolation=hermes-browser, not by chart-generated labels, so a
+# chart label change cannot leave this endpoint unselected and therefore
+# unrestricted; validate-browser-isolation.py checks the rendered pod is
+# selected here and by the Hermes egress rule above. Ingress only from
+# Hermes on the CDP port. Egress only DNS and the same public-IPv4
+# TCP80/443 set as the Hermes public-web rule above, with the identical
+# carve-outs; no in-cluster service, FQDN, gateway or provider lane. CIDR
+# rules never select cluster pods or nodes, so Hermes, Hindsight, the
+# gateways, the API server and node addresses are not reachable from the
+# browser. Public web frontends, including public provider sites and public
+# frontends of cluster-hosted apps, remain reachable like any other public
+# address; this policy does not deny provider domains.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hermes-browser
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      prox-ops.io/isolation: hermes-browser
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: hermes-agent
+            app.kubernetes.io/instance: hermes
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 0.0.0.0/8
+            - 10.0.0.0/8
+            - 100.64.0.0/10
+            - 127.0.0.0/8
+            - 169.254.0.0/16
+            - 172.16.0.0/12
+            - 192.0.0.0/24
+            - 192.0.2.0/24
+            - 192.88.99.0/24
+            - 192.168.0.0/16
+            - 198.18.0.0/15
+            - 198.51.100.0/24
+            - 203.0.113.0/24
+            - 224.0.0.0/4
+            - 240.0.0.0/4
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+            - port: "443"
               protocol: TCP

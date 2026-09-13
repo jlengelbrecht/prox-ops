@@ -25,3 +25,15 @@ spec:
   interval: 12h
   type: oci
   url: oci://ghcr.io/vectorize-io/charts
+---
+# bjw-s app-template for the browser pod (browser.yaml). Declared under its
+# own name and owned by this tree: the shared ai/bjw-s object belongs to the
+# apps that already declare it, and a second owner would fight over it.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: bjw-s-hermes-browser
+  namespace: ai
+spec:
+  interval: 12h
+  url: https://bjw-s-labs.github.io/helm-charts

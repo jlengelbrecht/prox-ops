@@ -152,7 +152,8 @@ spec:
       enabled: true
       overwrite: false
 
-    # Non-secret environment (Git-owned on every start).
+    # Environment Git-owned on every start. Every entry is a plain value
+    # except the browser endpoint, which is a Secret reference.
     extraEnv:
       - name: HERMES_DASHBOARD
         value: "1"
@@ -176,12 +177,28 @@ spec:
         value: "openid profile email"
       - name: HERMES_TIMEZONE
         value: "America/New_York"
+      # Browser tool: drive the dedicated browser pod (browser.yaml) over CDP
+      # instead of launching Chromium here, which the pod restrictions block.
+      # The value is the direct WebSocket root plus the pod's API token,
+      # composed by the generated Secret (externalsecrets.yaml): Hermes
+      # passes a ws:// URL with a path through unchanged (BU_CDP_WS) and
+      # redacts the token in its logs, whereas an http:// root would be
+      # resolved via /json/version, which cannot carry the token in this
+      # release. Env wins over browser.cdp_url; a missing Secret keeps the
+      # pod from starting rather than falling back to a local browser.
+      - name: BROWSER_CDP_URL
+        valueFrom:
+          secretKeyRef:
+            name: hermes-browser-token
+            key: BROWSER_CDP_URL
 
-    # No application secret is needed for this slice (public OIDC client, no
-    # memory service, no task vault). The chart's own env Secret is kept
-    # empty by nulling its example key, so `OPENAI_API_KEY: sk-REPLACE_ME`
-    # never renders. Provisioned secrets arrive later through External
-    # Secrets from 1Password (externalSecret.enabled + the target Secret).
+    # No application secret from 1Password is needed for this slice (public
+    # OIDC client, no memory service, no task vault); the only Secret Hermes
+    # reads is the app-generated browser token above, one key of it. The
+    # chart's own env Secret is kept empty by nulling its example key, so
+    # `OPENAI_API_KEY: sk-REPLACE_ME` never renders. Provisioned secrets
+    # arrive later through External Secrets from 1Password
+    # (externalSecret.enabled + the target Secret).
     env:
       OPENAI_API_KEY: null
     externalSecret:
@@ -334,9 +351,11 @@ spec:
       liveness: {}
 
     # Reloader replaces the pod when the managed ConfigMap changes (subPath
-    # mounts never refresh in place).
+    # mounts never refresh in place) or when the browser token Secret is
+    # recreated, in step with the browser Deployment (browser.yaml).
     deploymentAnnotations:
       configmap.reloader.stakater.com/reload: "hermes-managed"
+      secret.reloader.stakater.com/reload: "hermes-browser-token"
 
     resources:
       requests:
