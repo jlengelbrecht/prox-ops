@@ -420,10 +420,8 @@ data:
           refresh_token_validity: days=30
           intercept_header_auth: true
           internal_host_ssl_validation: true
-      # Hindsight UI - Forward Auth. Assigning this provider to the embedded
-      # outpost is the same one-time admin step as for n8n, Wizarr and
-      # GlycemicGPT: a blueprint can only replace the outpost's whole provider
-      # list, so that list is deliberately not managed here.
+      # Hindsight UI - Forward Auth. Bound to the embedded outpost by
+      # outposts.yaml below, together with the other forward auth providers.
       - model: authentik_providers_proxy.proxyprovider
         id: proxy-hindsight
         identifiers:
@@ -444,6 +442,52 @@ data:
           refresh_token_validity: days=30
           intercept_header_auth: true
           internal_host_ssl_validation: true
+
+  # =============================================================
+  # OUTPOSTS BLUEPRINT
+  # Provider membership of the embedded outpost. An outpost entry replaces
+  # the whole provider list on every apply, so every forward auth provider
+  # that must stay on the outpost is listed here.
+  # =============================================================
+  outposts.yaml: |
+    version: 1
+    metadata:
+      name: Outposts
+      labels:
+        blueprints.goauthentik.io/description: "Embedded outpost provider assignments"
+    entries:
+      # Apply the proxy providers first so the provider lookups below resolve
+      # on a fresh restore, the same way the default blueprints order their
+      # dependencies. On a running instance this is an idempotent re-apply.
+      - model: authentik_blueprints.metaapplyblueprint
+        id: apply-proxy-providers
+        attrs:
+          identifiers:
+            name: Proxy Providers
+          required: false
+      # The embedded outpost is matched by its managed marker, never by name
+      # or pk. Only type and providers are sent; name, config and the service
+      # connection stay as authentik manages them. LightRAG is bound live but
+      # has no Git entry, so it is kept only while its provider exists: when
+      # its lookup returns nothing (a restore from Git) the list without it
+      # is used, instead of failing the whole blueprint on a null reference.
+      - model: authentik_outposts.outpost
+        id: outpost-embedded
+        identifiers:
+          managed: goauthentik.io/outposts/embedded
+        attrs:
+          type: proxy
+          providers: !If
+            - !Find [authentik_providers_proxy.proxyprovider, [name, "LightRAG"]]
+            - - !Find [authentik_providers_proxy.proxyprovider, [name, "n8n"]]
+              - !Find [authentik_providers_proxy.proxyprovider, [name, "Wizarr"]]
+              - !Find [authentik_providers_proxy.proxyprovider, [name, "GlycemicGPT"]]
+              - !Find [authentik_providers_proxy.proxyprovider, [name, "LightRAG"]]
+              - !Find [authentik_providers_proxy.proxyprovider, [name, "Hindsight"]]
+            - - !Find [authentik_providers_proxy.proxyprovider, [name, "n8n"]]
+              - !Find [authentik_providers_proxy.proxyprovider, [name, "Wizarr"]]
+              - !Find [authentik_providers_proxy.proxyprovider, [name, "GlycemicGPT"]]
+              - !Find [authentik_providers_proxy.proxyprovider, [name, "Hindsight"]]
 
   # =============================================================
   # APPLICATIONS BLUEPRINT
