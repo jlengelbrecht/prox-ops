@@ -1,16 +1,19 @@
 ---
-# Narrow, explicit network authorization for the three workloads: DNS, the
-# OIDC issuer, the shared database, the memory API and a small toFQDNs
-# allowlist for the subscription-backed calls and the public model-catalog
-# metadata Hermes reads before any provider is chosen. No general internet
-# rule. The Hermes image does not categorically disable lazy installs; a
-# separate, narrowly bounded toFQDNs rule below allows setup tool downloads
-# on TCP443 for uv, PyPI, GitHub, and npm only — see that rule's own comment
-# for what it does and does not enforce. Changing an LLM endpoint is coupled
-# to the toFQDNs rules below,
-# which only enforce when the pod queries DNS for the exact policed name
-# (ndots:1 is patched onto both affected pods in hermes.yaml and
-# hindsight.yaml).
+# Explicit network authorization for the three workloads: DNS, the OIDC
+# issuer, the shared database, the memory API and toFQDNs allowlists for the
+# subscription-backed calls and the public model-catalog metadata Hermes
+# reads before any provider is chosen. Hermes additionally holds one general
+# public-web rule (toCIDRSet below: TCP80/443 to public IPv4 addresses, with
+# private and other special-purpose ranges carved out); Hindsight has no
+# general internet rule. The Hermes image does not categorically disable lazy
+# installs; a separate toFQDNs rule below names the setup tool download hosts
+# (uv, PyPI, GitHub, npm) on TCP443 — see that rule's own comment for what it
+# does and does not enforce. The Hermes toFQDNs rules remain the documented
+# per-feature host intent, but for public IPv4 on TCP443 they are subsumed by
+# the public-web rule; for Hindsight, changing its LLM endpoint is still
+# coupled to its toFQDNs rule. toFQDNs rules only enforce when the pod queries
+# DNS for the exact policed name (ndots:1 is patched onto both affected pods
+# in hermes.yaml and hindsight.yaml).
 #
 # Cilium matches pod labels; the selectors below are what each chart renders.
 # Hermes may reach the Hindsight API on 8888: memory provider selection is
@@ -75,6 +78,46 @@ spec:
         - matchName: registry.npmjs.org
       toPorts:
         - ports:
+            - port: "443"
+              protocol: TCP
+    # Public web: HTTP/HTTPS to any public IPv4 address on TCP80/443, so
+    # ordinary websites open without a hostname entry (WebSocket upgrades
+    # ride the same TCP connections). Enforcement is L3/L4 by destination
+    # address only: no hostname, SNI, URL path or content check, and every
+    # process in the shared Hermes pod (agent, tools, browser, lazily
+    # installed binaries) gets the same reach under one pod identity. The
+    # except list carves out the private, shared/CGNAT, loopback, link-local,
+    # protocol-assignment, documentation, benchmarking, deprecated 6to4
+    # relay, multicast and reserved blocks: a conservative special-purpose
+    # set, not an exact public-address classifier. A DNS name that resolves
+    # into a carved-out block gains nothing here. CIDR rules never select
+    # cluster pods or nodes (policy-cidr-match-mode is unset), so in-cluster
+    # reach stays governed by the explicit toEndpoints rules in this policy.
+    # IPv6 is disabled on this cluster, so there is no ::/0 counterpart;
+    # other ports and UDP stay closed. The toFQDNs, OIDC and Hindsight rules
+    # in this policy are unchanged by this rule.
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 0.0.0.0/8
+            - 10.0.0.0/8
+            - 100.64.0.0/10
+            - 127.0.0.0/8
+            - 169.254.0.0/16
+            - 172.16.0.0/12
+            - 192.0.0.0/24
+            - 192.0.2.0/24
+            - 192.88.99.0/24
+            - 192.168.0.0/16
+            - 198.18.0.0/15
+            - 198.51.100.0/24
+            - 203.0.113.0/24
+            - 224.0.0.0/4
+            - 240.0.0.0/4
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
             - port: "443"
               protocol: TCP
     # Native AI subscription lanes (owner-led setup after deployment): Hermes
