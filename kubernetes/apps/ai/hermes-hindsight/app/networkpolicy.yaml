@@ -11,8 +11,9 @@
 # hindsight.yaml).
 #
 # Cilium matches pod labels; the selectors below are what each chart renders.
-# Hermes has no rule towards the Hindsight API yet: its memory provider stays
-# pinned off until this backend is live and validated.
+# Hermes may reach the Hindsight API on 8888: memory provider selection is
+# UI-owned (hermes.yaml), so the network path is admitted ahead of the owner
+# choosing and saving it in the dashboard.
 #
 # Hermes (chart labels: app.kubernetes.io/name=hermes-agent, instance=hermes)
 apiVersion: cilium.io/v2
@@ -109,6 +110,18 @@ spec:
               protocol: TCP
             - port: "10443"
               protocol: TCP
+    # Hindsight API, same namespace: the memory provider the owner may select
+    # and save in the dashboard.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: hindsight
+            app.kubernetes.io/instance: hindsight
+            app.kubernetes.io/component: api
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
 ---
 # Hindsight API (chart labels: name=hindsight, instance=hindsight, component=api)
 apiVersion: cilium.io/v2
@@ -123,14 +136,24 @@ spec:
       app.kubernetes.io/instance: hindsight
       app.kubernetes.io/component: api
   ingress:
-    # Approved consumer only: the Hindsight UI's server-side dataplane client.
-    # No gateway ingress; the Hermes memory client is added when it is enabled.
+    # Approved consumers only, no gateway ingress: the Hindsight UI's
+    # server-side dataplane client, and Hermes as a possible memory client
+    # once the owner selects and saves it in the dashboard.
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
             app.kubernetes.io/name: hindsight
             app.kubernetes.io/instance: hindsight
             app.kubernetes.io/component: control-plane
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: hermes-agent
+            app.kubernetes.io/instance: hermes
       toPorts:
         - ports:
             - port: "8888"
