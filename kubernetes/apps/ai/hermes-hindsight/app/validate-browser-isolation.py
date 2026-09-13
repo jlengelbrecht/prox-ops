@@ -116,7 +116,10 @@ def ports_of(rule):
         if tp.get("rules"):
             out.add(("L7", "L7"))
         for p in tp.get("ports") or []:
-            out.add((str(p.get("port")), p.get("protocol", "ANY")))
+            # endPort turns the entry into a range; keep it visible so the
+            # exact-set comparisons reject it.
+            port = str(p.get("port")) + (f"-{p['endPort']}" if p.get("endPort") is not None else "")
+            out.add((port, p.get("protocol", "ANY")))
     return out
 
 
@@ -370,6 +373,11 @@ class Check:
         if len(selecting) != 1:
             return f(f"expected exactly one policy to select the browser pod, found {len(selecting)}")
         cnp = selecting[0]
+        # enableDefaultDeny: false leaves the selected pod unrestricted in
+        # that direction, the same fail-open as no policy at all.
+        edd = cnp["spec"].get("enableDefaultDeny") or {}
+        if edd.get("ingress") is False or edd.get("egress") is False:
+            f(f"policy {name(cnp)} must not disable default deny; the browser would be unrestricted in that direction")
         sel = cnp["spec"]["endpointSelector"]
         if selects(sel, b_labels, b_ns) is not True:
             return f(f"policy {name(cnp)} endpointSelector must select the browser pod by matchLabels")
@@ -677,6 +685,12 @@ def mutations(docs):
         ("probe curl given --help", lambda: [curl_append(p, " --help") for p in PROBE_ROUTES]),
         ("probe curl given --version", lambda: [curl_append(p, " --version") for p in PROBE_ROUTES]),
         ("probe curl given a second config file", lambda: [curl_append(p, " -K /dev/null") for p in PROBE_ROUTES]),
+        # a port range or a default-deny opt-out widens a rule without changing its listed port
+        ("ingress port range", lambda: ingress["toPorts"][0]["ports"][0].__setitem__("endPort", 65535)),
+        ("public-web port range", lambda: web_port("80").__setitem__("endPort", 65535)),
+        ("Hermes egress port range", lambda: to_browser["toPorts"][0]["ports"][0].__setitem__("endPort", 65535)),
+        ("default deny disabled for egress", lambda: cnp["spec"].__setitem__("enableDefaultDeny", {"egress": False})),
+        ("default deny disabled for ingress", lambda: cnp["spec"].__setitem__("enableDefaultDeny", {"ingress": False})),
     ]
     return cases
 
