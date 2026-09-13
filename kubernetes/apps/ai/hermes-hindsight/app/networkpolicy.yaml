@@ -3,9 +3,11 @@
 # OIDC issuer, the shared database, the memory API and a small toFQDNs
 # allowlist for the subscription-backed calls and the public model-catalog
 # metadata Hermes reads before any provider is chosen. No general internet
-# rule. The Hermes image does not categorically disable lazy installs; this
-# egress policy is what makes any such attempt fail closed (no PyPI/npm host
-# is allowed). Changing an LLM endpoint is coupled to the toFQDNs rules below,
+# rule. The Hermes image does not categorically disable lazy installs; a
+# separate, narrowly bounded toFQDNs rule below allows setup tool downloads
+# on TCP443 for uv, PyPI, GitHub, and npm only — see that rule's own comment
+# for what it does and does not enforce. Changing an LLM endpoint is coupled
+# to the toFQDNs rules below,
 # which only enforce when the pod queries DNS for the exact policed name
 # (ndots:1 is patched onto both affected pods in hermes.yaml and
 # hindsight.yaml).
@@ -54,6 +56,27 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
+    # Setup tool downloads: uv's installer and the Python package index
+    # (Astral, PyPI), GitHub and its release-asset CDN for installer/tool
+    # releases, and the npm registry for a conditional package fetch.
+    # Enforcement here is DNS-derived L3/L4 only: Cilium admits the
+    # addresses learned for these seven exact names on TCP443, with no
+    # TLS/SNI, HTTP Host header, URL path, method, or content check, and no
+    # way to distinguish another service reached on an admitted IP.
+    # Reachability alone does not run or prove installation, or enable
+    # browser/desktop capability.
+    - toFQDNs:
+        - matchName: astral.sh
+        - matchName: releases.astral.sh
+        - matchName: pypi.org
+        - matchName: files.pythonhosted.org
+        - matchName: github.com
+        - matchName: release-assets.githubusercontent.com
+        - matchName: registry.npmjs.org
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
     # Native AI subscription lanes (owner-led setup after deployment): Hermes
     # seeds no model/provider, so this allows every sanctioned lane Josh may
     # choose in the dashboard/TUI without a follow-up network-policy change -
