@@ -189,12 +189,23 @@ spec:
             - port: "443"
               protocol: TCP
     # Dashboard OIDC: discovery, token exchange and JWKS calls go to the
-    # Authentik issuer hostname, which resolves to the internal gateway VIP
-    # (the gateway pods listen on 10443 behind the LoadBalancer's 443).
+    # Authentik issuer hostname. Authentik has an HTTPRoute on both gateways,
+    # so in-cluster DNS (CoreDNS forwarding to k8s-gateway) answers the name
+    # with both VIPs, external 10.20.67.23 and internal 10.20.67.22, in no
+    # fixed order; the LAN resolver returns only the internal VIP. With only
+    # the internal gateway admitted, a call that tried the external VIP first
+    # sat through a ~10s socket timeout before falling back, so both gateway
+    # workloads are admitted (the gateway pods listen on 10443 behind each
+    # LoadBalancer's 443). This is L3/L4 by pod identity, no hostname or SNI
+    # check: Hermes processes may now reach every host routed on either
+    # gateway, not only the issuer. The DNS answer itself is unchanged.
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
             gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-external
       toPorts:
         - ports:
             - port: "443"
