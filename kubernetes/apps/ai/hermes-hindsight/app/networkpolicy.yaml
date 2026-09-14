@@ -251,9 +251,10 @@ spec:
       app.kubernetes.io/instance: hindsight
       app.kubernetes.io/component: api
   ingress:
-    # Approved consumers only, no gateway ingress: the Hindsight UI's
-    # server-side dataplane client, and Hermes as a possible memory client
-    # once the owner selects and saves it in the dashboard.
+    # Approved consumers only: the Hindsight UI's server-side dataplane
+    # client, Hermes as a possible memory client once the owner selects and
+    # saves it in the dashboard, and the internal gateway for the
+    # hindsight-api HTTPRoute (access.yaml). All three on the API port.
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
@@ -269,6 +270,18 @@ spec:
             io.kubernetes.pod.namespace: ai
             app.kubernetes.io/name: hermes-agent
             app.kubernetes.io/instance: hermes
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+    # Internal gateway only (same selector as the control-plane policy
+    # below): the envoy-external proxy pods carry a different
+    # owning-gateway-name label and stay excluded. The route decides which
+    # paths reach here; the API's tenant key decides who may use them.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
       toPorts:
         - ports:
             - port: "8888"

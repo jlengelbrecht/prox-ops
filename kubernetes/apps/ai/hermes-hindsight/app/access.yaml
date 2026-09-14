@@ -48,8 +48,9 @@ spec:
 # Hindsight UI (control plane, port 3000) on the same internal gateway, gated
 # by Authentik forward auth (SecurityPolicy below; who may log in is the
 # application's group binding in the Authentik blueprints). The UI calls the
-# API server-side with the tenant key; the API itself has no route and is
-# ClusterIP-only behind network policy.
+# API server-side with the tenant key. The API has its own machine route
+# on a separate hostname (hindsight-api, further down); this UI host serves
+# no API path.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -109,6 +110,84 @@ spec:
         - name: authentik-server
           namespace: security
           port: 80
+---
+# Hindsight API (port 8888) for coding clients outside the cluster, on its
+# own hostname through the same internal gateway (LAN only: unifi-dns
+# publishes the record for envoy-internal routes, cloudflare-dns ignores
+# them). No SecurityPolicy on purpose: the API's own tenant extension
+# (hindsight.yaml, HINDSIGHT_API_TENANT_EXTENSION) rejects every bank
+# data operation that does not carry the shared tenant key as a bearer
+# (a validation-only import dry run and deprecated 410 paths answer
+# before that check and touch no bank data), and a
+# forward-auth layer would redirect machine clients to a browser login.
+#
+# Only two surfaces are routed. The bank prefix carries every data-plane
+# call of the coding-agents client (memories, recall, reflect, operations,
+# config, import, documents, knowledge-base) and is bearer-gated on the
+# server per operation. GET /version is the client's one unauthenticated
+# probe (version string and feature flags) for idempotent-retain
+# negotiation. Everything else the API serves without a key (health with
+# pool details, metrics, docs, schema) and the disabled MCP path stay off
+# the gateway: an unmatched path gets Envoy's own 404. No catch-all rule
+# and no auth-header rewriting. Hermes keeps using the in-cluster service,
+# not this hostname.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hindsight-api
+  namespace: ai
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: hindsight-api.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - hindsight-api.homelab0.org
+  rules:
+    # One rule, matches ORed: the bank prefix once per method the API
+    # serves, and the exact /version path for GET only.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/default/banks
+          method: GET
+        - path:
+            type: PathPrefix
+            value: /v1/default/banks
+          method: POST
+        - path:
+            type: PathPrefix
+            value: /v1/default/banks
+          method: PUT
+        - path:
+            type: PathPrefix
+            value: /v1/default/banks
+          method: PATCH
+        - path:
+            type: PathPrefix
+            value: /v1/default/banks
+          method: DELETE
+        - path:
+            type: Exact
+            value: /version
+          method: GET
+      backendRefs:
+        - name: hindsight-api
+          port: 8888
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
 ---
 # Authentik forward auth (Envoy ext_authz) for the Hindsight UI route, same
 # shape as glycemicgpt/app/securitypolicy.yaml. failOpen: false: if Authentik
