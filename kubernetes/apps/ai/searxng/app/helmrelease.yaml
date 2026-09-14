@@ -166,6 +166,29 @@ spec:
                 shortcut: w
                 disabled: false
 
+          # Limiter configuration, loaded from the same folder as settings.yml
+          # (SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml is the image
+          # default) and merged over SearXNG's built-in limiter defaults.
+          # Without this file the limiter logs "missing config file" and
+          # runs with an empty pass list.
+          limiter.toml: |
+            # Bot-detection exemption for the cluster pod network, namespace-
+            # wide in effect: every pod the searxng CiliumNetworkPolicy admits
+            # (namespace ai, TCP 8080) skips the limiter's header checks and
+            # per-IP rate limiting. Those clients are in-cluster API callers
+            # (Hermes web_search, LiteLLM, Open WebUI) whose request headers
+            # are not a browser's, so the header heuristics would reject them
+            # with 429 before any engine is asked; the network policy, not
+            # the limiter, is their access control. server.limiter stays
+            # enabled for every other source, including loopback. The pod
+            # CIDR 10.42.0.0/16 (kubernetes IPAM, per-node /24s) is the
+            # narrowest stable range: client pod addresses are dynamic.
+            # SearXNG logs one "matched PASSLIST" line per exempted request.
+            [botdetection.ip_lists]
+            pass_ip = [
+              '10.42.0.0/16',
+            ]
+
     persistence:
       config:
         enabled: true
@@ -174,6 +197,9 @@ spec:
         globalMounts:
           - path: /etc/searxng/settings.yml
             subPath: settings.yml
+            readOnly: true
+          - path: /etc/searxng/limiter.toml
+            subPath: limiter.toml
             readOnly: true
 
     service:

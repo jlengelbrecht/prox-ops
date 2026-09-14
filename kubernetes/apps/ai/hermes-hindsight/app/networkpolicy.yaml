@@ -19,7 +19,11 @@
 # Cilium matches pod labels; the selectors below are what each chart renders.
 # Hermes may reach the Hindsight API on 8888: memory provider selection is
 # UI-owned (hermes.yaml), so the network path is admitted ahead of the owner
-# choosing and saving it in the dashboard.
+# choosing and saving it in the dashboard. Hermes may also reach the
+# namespace's SearXNG on its Service port 8080: the native web_search
+# backend (web.backend=searxng, UI-owned) with its URL Git-owned through
+# SEARXNG_URL in hermes.yaml. Both are single-workload toEndpoints lanes; the
+# browser pod gets neither.
 #
 # Hermes (chart labels: app.kubernetes.io/name=hermes-agent, instance=hermes)
 apiVersion: cilium.io/v2
@@ -224,6 +228,22 @@ spec:
       toPorts:
         - ports:
             - port: "8888"
+              protocol: TCP
+    # SearXNG, same namespace: the native web_search backend the owner saved
+    # in the dashboard (web.backend=searxng); the URL is SEARXNG_URL in
+    # hermes.yaml. Selected by the labels the searxng app-template release
+    # renders (app.kubernetes.io/name and instance both "searxng"); JSON
+    # search on the Service port only. SearXNG's own policy already admits
+    # ingress from this namespace on 8080, so this side was the only drop.
+    # The browser pod isolation is unchanged (no such rule in its policy).
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: searxng
+            app.kubernetes.io/instance: searxng
+      toPorts:
+        - ports:
+            - port: "8080"
               protocol: TCP
     # Dedicated browser pod (browser.yaml): the authenticated CDP WebSocket
     # on its service port. Selected by the authored isolation label the
