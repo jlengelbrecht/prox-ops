@@ -185,6 +185,17 @@ spec:
         value: "openid profile email"
       - name: HERMES_TIMEZONE
         value: "America/New_York"
+      # Native web_search backend endpoint (search only; page content comes
+      # from the browser pod). Non-secret in-cluster Service URL, kept
+      # absolute by the ndots:1 patch above. The provider reads this key via
+      # hermes_cli/config.py get_env_value: process env first, then the home
+      # .env, so this Git-owned value wins and a SEARXNG_URL entered in the
+      # dashboard or .env is silently ignored. The backend choice itself
+      # (web.backend) stays UI-owned on the PVC and is not pinned here.
+      # Reachability is the matching Hermes -> SearXNG rule in
+      # networkpolicy.yaml.
+      - name: SEARXNG_URL
+        value: "http://searxng.ai.svc.cluster.local:8080"
       # Serve the dashboard bundle prepared by the web-dist-patch init
       # container (image-supported caller-managed dist; the image's own
       # default is /opt/hermes/hermes_cli/web_dist). Static assets only: the
