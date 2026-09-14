@@ -9,3 +9,18 @@ resources:
   - ./browser.yaml
   - ./access.yaml
   - ./networkpolicy.yaml
+
+# The dashboard bundle overlay script (see hermes.yaml, init container
+# web-dist-patch) ships as a ConfigMap generated from the file the tests in
+# test_web_dist_patch.py run against: one source of truth, nothing vendored.
+# The name is fixed because the HelmRelease values mount it by name; a content
+# change still rolls the pod through the Reloader annotation on the
+# Deployment. Keys are basenames, so the file mounts as
+# /opt/web-dist-patch/web-dist-patch.py.
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: hermes-web-dist-patch
+    namespace: ai
+    files:
+      - ./web-dist-patch.py

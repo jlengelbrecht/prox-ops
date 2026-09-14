@@ -87,6 +87,14 @@ spec:
       repository: docker.io/nousresearch/hermes-agent
       # The chart prints repository:tag verbatim, so tag@digest is the pin
       # (linux/amd64 manifest digest).
+      #
+      # COUPLED: web-dist-patch.py (the web-dist-patch init container below)
+      # carries byte-level pins of this digest's dashboard bundle. A bump
+      # must either re-pin that file against the new bundle or delete the
+      # overlay (init container, web-dist volume, HERMES_WEB_DIST) once an
+      # upstream release fixes issue #96691. An unmatched pin is not an
+      # outage: the init container serves the new bundle unchanged and logs a
+      # WARNING, and the Hindsight Local External save defect returns.
       # renovate: datasource=docker depName=docker.io/nousresearch/hermes-agent
       tag: "v2026.9.7@sha256:b3190406963c6b51ac955397ecef45346efaae9563ee305108f8eef0a77e267b"
       pullPolicy: IfNotPresent
@@ -177,6 +185,13 @@ spec:
         value: "openid profile email"
       - name: HERMES_TIMEZONE
         value: "America/New_York"
+      # Serve the dashboard bundle prepared by the web-dist-patch init
+      # container (image-supported caller-managed dist; the image's own
+      # default is /opt/hermes/hermes_cli/web_dist). Static assets only: the
+      # API, auth and routes are the image's code. Remove together with the
+      # init container and the web-dist volume.
+      - name: HERMES_WEB_DIST
+        value: "/opt/web-dist/dist"
       # Browser tool: drive the dedicated browser pod (browser.yaml) over CDP
       # instead of launching Chromium here, which the pod restrictions block.
       # The value is the direct WebSocket root plus the pod's API token,
@@ -280,6 +295,17 @@ spec:
         configMap:
           name: hermes-managed
           defaultMode: 0444
+      # Corrected dashboard bundle, produced by the web-dist-patch init
+      # container from the image's own web_dist (3.2 MiB) and served
+      # read-only through HERMES_WEB_DIST. The generated ConfigMap is the
+      # overlay script (kustomization.yaml).
+      - name: web-dist
+        emptyDir:
+          sizeLimit: 32Mi
+      - name: hermes-web-dist-patch
+        configMap:
+          name: hermes-web-dist-patch
+          defaultMode: 0444
     extraVolumeMounts:
       - name: run-tmpfs
         mountPath: /run
@@ -293,6 +319,9 @@ spec:
       - name: hermes-managed
         mountPath: /etc/hermes/config.yaml
         subPath: config.yaml
+        readOnly: true
+      - name: web-dist
+        mountPath: /opt/web-dist
         readOnly: true
 
     # Official 1Password CLI image, unmodified, copies its binary into the
@@ -330,6 +359,48 @@ spec:
         volumeMounts:
           - name: onepassword-cli
             mountPath: /target
+      # Checksum-bound overlay of the dashboard bundle (web-dist-patch.py):
+      # the pinned release drops the Hindsight API URL and key from the
+      # Plugins-page save in Local External mode (upstream #96691, unfixed in
+      # any release). Runs the same image digest as the dashboard, stdlib
+      # Python only, no network: copies the image's web_dist into the
+      # web-dist emptyDir and, only when every pinned hash and occurrence
+      # count matches, applies the one-token correction and renames the
+      # touched chunks so browsers holding the year-long immutable cache
+      # fetch the corrected copy on an ordinary reload. On any mismatch it
+      # serves the bundle unchanged, logs a WARNING and records the reason in
+      # /opt/web-dist/status.json (outside the served directory). The
+      # container never touches the Hermes home, config or secrets.
+      - name: web-dist-patch
+        # Same pin as image.tag above; the two move together.
+        # renovate: datasource=docker depName=docker.io/nousresearch/hermes-agent
+        image: docker.io/nousresearch/hermes-agent:v2026.9.7@sha256:b3190406963c6b51ac955397ecef45346efaae9563ee305108f8eef0a77e267b
+        command:
+          - python3
+          - -B
+          - /opt/web-dist-patch/web-dist-patch.py
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 10000
+          runAsGroup: 10000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        volumeMounts:
+          - name: hermes-web-dist-patch
+            mountPath: /opt/web-dist-patch
+            readOnly: true
+          - name: web-dist
+            mountPath: /opt/web-dist
 
     # A dashboard that fails closed (no auth provider) never opens 9119, which
     # makes the pod NotReady - the wanted signal. The gateway is not probed:
@@ -351,10 +422,11 @@ spec:
       liveness: {}
 
     # Reloader replaces the pod when the managed ConfigMap changes (subPath
-    # mounts never refresh in place) or when the browser token Secret is
-    # recreated, in step with the browser Deployment (browser.yaml).
+    # mounts never refresh in place), when the overlay script changes (an
+    # init container only runs at pod start) or when the browser token
+    # Secret is recreated, in step with the browser Deployment (browser.yaml).
     deploymentAnnotations:
-      configmap.reloader.stakater.com/reload: "hermes-managed"
+      configmap.reloader.stakater.com/reload: "hermes-managed,hermes-web-dist-patch"
       secret.reloader.stakater.com/reload: "hermes-browser-token"
 
     resources:
