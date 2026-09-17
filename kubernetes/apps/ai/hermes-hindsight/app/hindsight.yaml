@@ -108,6 +108,12 @@ spec:
         # rejected for good.
         HINDSIGHT_API_LLM_PROVIDER: "openai-codex"
         HINDSIGHT_API_LLM_MODEL: "gpt-5.6-luna"
+        # Per-operation model overrides; unset operations keep the global
+        # model above. Knowledge-page/mental-model refresh runs on the
+        # reflect setting, not consolidation (see local evidence for sources).
+        HINDSIGHT_API_RETAIN_LLM_MODEL: "gpt-5.6-luna"
+        HINDSIGHT_API_REFLECT_LLM_MODEL: "gpt-5.6-terra"
+        HINDSIGHT_API_CONSOLIDATION_LLM_MODEL: "gpt-5.6-terra"
         # Initial ceilings: they bound concurrency and burst shape, not spend
         # (the subscription is rate-windowed, shared with Hermes and any
         # interactive Codex use on the same account; a 429 is retried once
