@@ -43,9 +43,10 @@ spec:
   #      a second API pod (migrations at start-up, in-process worker with the
   #      fixed HINDSIGHT_API_WORKER_ID) beside the old one; the two would reset
   #      each other's in-flight rows. One replica must never overlap.
-  #   3. hindsight-api dnsConfig ndots:1: the toFQDNs rule for api.minimax.io
-  #      (networkpolicy.yaml) only matches a query for the exact name; the
-  #      default ndots:5 search path would try the cluster suffixes first.
+  #   3. hindsight-api dnsConfig ndots:1: the toFQDNs rules for the LLM
+  #      provider hosts (networkpolicy.yaml) only match a query for the exact
+  #      name; the default ndots:5 search path would try the cluster suffixes
+  #      first.
   postRenderers:
     - kustomize:
         patches:
@@ -173,6 +174,13 @@ spec:
         HINDSIGHT_API_DB_POOL_MAX_SIZE: "20"
         HINDSIGHT_API_WORKER_ID: "hindsight-api"
         HINDSIGHT_API_LOG_FORMAT: "json"
+        # Credential directory of the built-in `openai-codex` provider
+        # (ChatGPT/Codex subscription OAuth): it reads and rewrites
+        # $CODEX_HOME/auth.json in place, so the path must be the retained
+        # volume below and not the image's ~/.codex. Set ahead of the provider
+        # switch so the volume can be seeded while the release still runs on
+        # MiniMax; the current provider ignores this variable.
+        CODEX_HOME: "/home/hindsight/codex-auth"
       # Liveness budget (chart 0.9.2 has no startupProbe value). Earliest
       # restart = initialDelay + (failureThreshold - 1) x period = 140 s. The
       # chart default (~50 s) is shorter than the ~55 s start measured with an
@@ -188,6 +196,17 @@ spec:
       persistence:
         modelCache:
           enabled: false
+      # Retained CODEX_HOME volume (storage/pvc.yaml, prune: false). Writable
+      # by the pod's fsGroup 1000; the provider creates auth.json's sibling
+      # lock file here as well. Mounted before the provider switch so that
+      # the seed step has a target.
+      extraVolumes:
+        - name: codex-auth
+          persistentVolumeClaim:
+            claimName: hindsight-codex-auth
+      extraVolumeMounts:
+        - name: codex-auth
+          mountPath: /home/hindsight/codex-auth
       resources:
         requests:
           cpu: 500m
