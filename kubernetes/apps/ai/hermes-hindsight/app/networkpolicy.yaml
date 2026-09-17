@@ -321,15 +321,11 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
-    # Memory-reasoning LLM lanes. MiniMax is the host in
-    # HINDSIGHT_API_LLM_BASE_URL today; chatgpt.com (Codex Responses
-    # backend) and auth.openai.com (OAuth token refresh) are what the
-    # built-in `openai-codex` provider needs once the release switches to
-    # the ChatGPT/Codex subscription. Opened ahead of that switch, as the
-    # Hermes policy above does; opening the egress is not itself a provider
-    # choice. Drop api.minimax.io when the MiniMax lane is retired.
+    # Memory-reasoning LLM: the two hosts of the built-in `openai-codex`
+    # provider, chatgpt.com (Codex Responses backend) and auth.openai.com
+    # (OAuth token refresh). Coupled to HINDSIGHT_API_LLM_PROVIDER in
+    # hindsight.yaml.
     - toFQDNs:
-        - matchName: api.minimax.io
         - matchName: chatgpt.com
         - matchName: auth.openai.com
       toPorts:
