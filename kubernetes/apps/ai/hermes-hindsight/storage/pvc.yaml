@@ -6,6 +6,8 @@
 # hermes-data: HERMES_HOME (/opt/data) - config.yaml, .env, auth.json,
 # sessions, skills and the SQLite state db. Single writer only (ReadWriteOnce +
 # Recreate rollout); a second mounter corrupts the SQLite WAL.
+#
+# hindsight-codex-auth: see the second document below.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -23,3 +25,31 @@ spec:
   resources:
     requests:
       storage: 5Gi
+---
+# hindsight-codex-auth: CODEX_HOME for the Hindsight API (auth.json + lock)
+# once its memory-reasoning LLM runs on the ChatGPT/Codex subscription. The
+# provider rotates the OAuth refresh token on every refresh and OpenAI treats
+# a reused one as terminal, so the file on this volume is the only valid
+# copy: a read-only projection (Secret/ConfigMap) would silently lose each
+# rotation and fail on the next restart, and a copy kept elsewhere goes
+# stale after the first refresh. Seeded once out of band from a device-code
+# login done with a throwaway CODEX_HOME; never shared with Hermes or a
+# workstation Codex CLI, each of which needs its own session. Single writer
+# (ReadWriteOnce + Recreate rollout).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hindsight-codex-auth
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: hindsight
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 64Mi
