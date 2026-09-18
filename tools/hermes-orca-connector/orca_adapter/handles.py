@@ -79,12 +79,13 @@ def is_wellformed_handle(value: object, domain: str) -> bool:
 DISPLAY_MAX_CHARS = 64
 REDACTED = "[redacted]"
 
-# Conservative shapes that must never be displayed: URLs (any scheme), userinfo
-# blocks, filesystem paths, well-known token prefixes and long unbroken
-# secret-looking runs. Relative names such as ``owner/repo`` stay.
+# Conservative shapes that must never be displayed: URLs (any scheme), file
+# URIs, userinfo blocks, filesystem paths, well-known token prefixes and long
+# unbroken secret-looking runs. Relative names such as ``owner/repo`` stay.
 _SECRET_SHAPES = (
     re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://"),  # scheme://
-    re.compile(r"(?:^|(?<=[\s(\[<\"'`=]))/[^\s/]+/"),  # absolute POSIX path (two or more segments)
+    re.compile(r"(?i)file:/"),  # file URI, including the single-slash ``file:/path`` form
+    re.compile(r"(?:^|(?<=[\s(\[<\"'`=:]))/[^\s/]+/"),  # absolute POSIX path (two or more segments), also after ``label:``
     re.compile(r"^/\S+$"),  # a bare absolute path as the whole name
     re.compile(r"(?:^|(?<=[\s(\[<\"'`=]))~/"),  # home-relative path
     re.compile(r"\b[A-Za-z]:[\\/]"),  # Windows drive path

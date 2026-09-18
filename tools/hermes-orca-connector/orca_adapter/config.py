@@ -84,14 +84,22 @@ class Config:
 def check_gate_file(path: str) -> None:
     """A gate named by the environment must be a trusted local executable file.
 
-    Regular file (not a symlink), owned by the current user, not writable by
-    group or others. Anything else is ``config_error/gate_unsafe``.
+    Regular file (not a symlink), owned by the current user, executable by that
+    owner and not writable by group or others. Anything else is
+    ``config_error/gate_unsafe``. The gate is spawned directly as ``argv[0]``,
+    so a file without the owner execute bit is refused here rather than on the
+    first command.
     """
     try:
         st = os.lstat(path)
     except OSError:
         raise AdapterError(CONFIG_ERROR, "config", "gate_unsafe") from None
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o022:
+    if (
+        not stat.S_ISREG(st.st_mode)
+        or st.st_uid != os.getuid()
+        or not st.st_mode & stat.S_IXUSR
+        or stat.S_IMODE(st.st_mode) & 0o022
+    ):
         raise AdapterError(CONFIG_ERROR, "config", "gate_unsafe")
 
 
