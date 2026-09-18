@@ -1,0 +1,280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:hermes-pm-bridge:request:0.1",
+  "title": "Hermes PM bridge application request v0.1",
+  "description": "Inner JSON text envelope only. Authentication, duplicate-key parsing, expiry, network and runtime authorization require independent validation.",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "hermes-pm-bridge/0.1"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+        },
+        "operation": {
+          "const": "projects.list"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "request_id",
+        "expires_at",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "hermes-pm-bridge/0.1"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+        },
+        "operation": {
+          "const": "status.get"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "request_id",
+        "project_id",
+        "expires_at",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "hermes-pm-bridge/0.1"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+        },
+        "operation": {
+          "const": "events.read"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "request_id",
+        "project_id",
+        "expires_at",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "hermes-pm-bridge/0.1"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+        },
+        "operation": {
+          "const": "question.suggest"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "question_id": {
+              "type": "string",
+              "pattern": "^q_[A-Za-z0-9_-]{1,96}$"
+            },
+            "question_revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "question_id",
+            "question_revision",
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "request_id",
+        "project_id",
+        "expires_at",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "hermes-pm-bridge/0.1"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+        },
+        "operation": {
+          "const": "request.get"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "target_request_id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "target_request_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "request_id",
+        "project_id",
+        "expires_at",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "hermes-pm-bridge/0.1"
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+        },
+        "operation": {
+          "const": "decision.relay"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "decision_ref": {
+              "type": "string",
+              "pattern": "^d_[A-Za-z0-9_-]{16,128}$"
+            }
+          },
+          "required": [
+            "decision_ref"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "schema_version",
+        "request_id",
+        "project_id",
+        "expires_at",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
