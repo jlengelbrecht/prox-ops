@@ -402,8 +402,14 @@ class OrcaRunner:
         if command == ("agent-context",):
             # The registry read is a bare document, not an {ok, result} envelope.
             return doc
+        # Classify the envelope before reading its identity: an ``ok=false``
+        # document raises ``orca_error`` here and never pins or compares
+        # ``_meta.runtimeId`` (the same as on the nonzero-exit path above), so
+        # an error envelope can neither lose its Orca error code to a missing
+        # id nor seed the operation's pin.
+        result = _parse_envelope(doc, stage)
         self._check_runtime(command, doc, stage)
-        return _parse_envelope(doc, stage)
+        return result
 
     def _status_runtime(self, *, closing: bool) -> dict:
         """Read ``status``; its ``result.runtime.runtimeId`` must be the pinned id.
