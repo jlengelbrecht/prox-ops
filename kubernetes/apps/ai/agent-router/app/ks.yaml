@@ -8,11 +8,12 @@
 # Kustomization it renders with a spec.patches list of its own, and kustomize
 # replaces a list that has no merge key instead of merging it, so a
 # spec.patches written on a direct child of cluster-apps is dropped before it
-# is applied. The three patches below are the whole reason this object exists -
+# is applied. The four patches below are the whole reason this object exists -
 # without them the release's placeholder hostname and Gateway would ship, so
-# would its portable NetworkPolicy, and the pod would carry no credential for a
-# private image - so it is rendered one level down, where nothing rewrites it.
-# ../ks.yaml is untouched by the cutover.
+# would its portable NetworkPolicy, the pod would carry no credential for a
+# private image, and it would carry no name for its own plane - so it is
+# rendered one level down, where nothing rewrites it. ../ks.yaml is untouched
+# by the cutover.
 #
 # The object lives in `ai` because ../ks.yaml sets targetNamespace: ai on
 # everything in this directory; the namespace is written out here as well, as
@@ -48,7 +49,7 @@ spec:
   wait: true
   retryInterval: 1m
   timeout: 5m
-  # All three patches name their object outright instead of through a `target:`
+  # All four patches name their object outright instead of through a `target:`
   # selector, on purpose: kustomize treats a selector that matches nothing as
   # nothing to do, and treats a named object that is not there as an error. A
   # release that renames or drops the HTTPRoute, the NetworkPolicy or the
@@ -113,3 +114,23 @@ spec:
             spec:
               imagePullSecrets:
                 - name: agent-router-ghcr
+    # The plane's name. The base ships the placeholder `unnamed-plane`; v0.2.2+
+    # refuses to start without a real value here. `/v1/whoami` and the console
+    # answer with this name, so a client confirming the plane before a
+    # destructive act confirms something real, not the placeholder. Named
+    # outright rather than through a `target:` selector, so it fails closed the
+    # same way the other three do: a release that drops or renames this
+    # container stops the build instead of quietly shipping `unnamed-plane`.
+    - patch: |-
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: agent-router
+        spec:
+          template:
+            spec:
+              containers:
+                - name: agent-router
+                  env:
+                    - name: AGENT_ROUTER_PLANE_NAME
+                      value: homelab
