@@ -70,6 +70,70 @@ data:
 
     # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
     #
+    # 1.8.1 (STORY-035-9f, ACP-CR-AFK-20260923 rulings R1, R2, R7) - ADDITIVE
+    # SCHEMA, BUT NOT PURELY ADDITIVE FOR LAUNCHERS (the claude/opus pin,
+    # below), AND CARRIES MEASURED DATA ACP'S OWN 1.8.0 REFERENCE DOES NOT:
+    #   - adds four vendor tier profiles beside the existing strong ones:
+    #     claude/standard (claude/sonnet), claude/frontier (claude/fable),
+    #     openai/standard (openai/gpt-6-luna) and openai/frontier
+    #     (openai/gpt-6-astra), all subscription-funded from the existing
+    #     anthropic-max and openai-plus pools. No pool is renamed (R7). Both
+    #     frontier profiles declare forbidden_for: [pm] and are override-only
+    #     (R2): the router never recommends them - that is routing behaviour
+    #     and is not expressed in this catalog.
+    #   - adds the opencode harness entry exactly as ACP's reference has it:
+    #     supported: false, selectable: false, router_behaviour:
+    #     refuse-to-emit. Inactive. This PR does not activate it.
+    #   - pins claude/opus to upstream_model_id: claude-opus-5-5. A non-null
+    #     upstream_model_id is passed verbatim as the harness's --model under
+    #     the launch rule defined in ai-control-plane's
+    #     contracts/agent-router/HARNESS-LAUNCH-claude.md and
+    #     HARNESS-LAUNCH-codex.md section 4; the normative contracts moved
+    #     there and this repo's copy retains only evidence
+    #     (contracts/agent-router/README.md). null keeps the harness's own
+    #     alias. A launcher does one thing
+    #     differently for the EXISTING claude/strong route: it now passes
+    #     the pinned --model claude-opus-5-5 instead of the `opus` alias.
+    #   - MEASURED, NOT GUESSED: every vendor model this catalog pins to a
+    #     specific upstream_model_id was launched for real on this host,
+    #     through its own harness and subscription, tiny-prompt, one launch
+    #     each, no verbose/debug flags. claude/opus, claude/sonnet and
+    #     claude/fable each reported contextWindow 1000000 via the claude
+    #     CLI's own modelUsage.<reported-model>.contextWindow; openai/gpt-6-luna,
+    #     openai/gpt-6-astra and openai/gpt-6-sol each reported
+    #     model_context_window 258400 via the codex session rollout's
+    #     turn_context (model) and token_count (window) events. Every pinned
+    #     id was confirmed to launch AS ITSELF, not merely a recognised-but-
+    #     wrong id. Evidence:
+    #     .claude/.ai-docs/stories/WI-035-9f-measurements.json (raw harness
+    #     output alongside it, credential strings redacted).
+    #   - openai/strong DECISION: gpt-6-sol launched through codex on the
+    #     subscription and reported as itself (see evidence above), so
+    #     openai/strong.physical moves to the new openai/gpt-6-sol model
+    #     (upstream_model_id: gpt-6-sol, max_context: 258400) instead of
+    #     staying on openai/gpt-5.6-sol. openai/gpt-5.6-sol stays defined,
+    #     unreferenced by any profile, since the validator does not flag it
+    #     as an orphan.
+    #   - every profile whose sole physical candidate is now measured gets
+    #     that candidate's window as its min_context (README's single-
+    #     candidate rule, the minimax/strong precedent): claude/strong 1000000,
+    #     claude/standard 1000000, claude/frontier 1000000, openai/standard
+    #     258400, openai/strong 258400, openai/frontier 258400. Profiles on an
+    #     unmeasured model (devin/free) stay null.
+    #   - WHY 1.8.1, NOT 1.8.0: ACP's v0.2.3 reference catalog at this same
+    #     schema shape is version 1.8.0 with every vendor max_context left
+    #     null (their own changelog: "vendor context windows stay unmeasured
+    #     ... a deployment records measured windows in its own catalog").
+    #     This document carries that same schema plus real measured windows,
+    #     so it is a different document under upgrade-mode P4: reusing 1.8.0
+    #     for different content would be catalog_drift (a refusal) on the
+    #     next release bump, where a different version number is only a
+    #     note. ACP was told not to reuse 1.8.1.
+    #   - schema_version: no field was added, removed or re-typed - every
+    #     new value already had a place in the existing shape (upstream_model_id,
+    #     min_context, forbidden_for, harnesses.*, profiles.* all already
+    #     exist as fields) - so schema_version stays 1.
+    #
     # 1.6.0 (STORY-036-2, EPIC-036) - ADDITIVE DOCUMENTATION ONLY:
     #   - local-code-standard.notes now records the LAUNCH MECHANICS of the
     #     profile, the way minimax/strong records its own wiring: the
@@ -175,11 +239,11 @@ data:
     #     the edge as a second candidate, physical ordered edge-before-KServe
     #     to match prefer_order.
     #   Nothing was removed or re-typed, so schema_version stays 1.
-    version: "1.6.1"
+    version: "1.8.1"
     # Structural schema version. Consumers MUST refuse a major they do not
     # implement rather than best-effort parsing an unknown shape.
     schema_version: 1
-    updated: "2026-09-08"
+    updated: "2026-09-23"
     epic: EPIC-035
     story: STORY-035-1
     # Consumers: none. This is asserted, not implied - see README "Inert".
@@ -209,14 +273,21 @@ data:
       claude:
         description: >-
           Claude Code sessions driven by the operator's own Anthropic
-          subscription. The harness resolves its own model; this catalog
-          does not pin a wire-level model id for it.
+          subscription. The harness resolves its own model unless the
+          physical model it is given pins an upstream_model_id, which is
+          then passed verbatim as --model under the launch rule defined in
+          ai-control-plane's contracts/agent-router/HARNESS-LAUNCH-claude.md
+          section 4.
         supported: true
         selectable: true
       codex:
         description: >-
           OpenAI Codex CLI sessions driven by the operator's own ChatGPT
-          subscription.
+          subscription. The harness resolves its own model unless the
+          physical model it is given pins an upstream_model_id, which is
+          then passed verbatim as --model under the launch rule defined in
+          ai-control-plane's contracts/agent-router/HARNESS-LAUNCH-codex.md
+          section 4.
         supported: true
         selectable: true
       devin:
@@ -225,6 +296,17 @@ data:
           tier on the existing Teams account.
         supported: true
         selectable: true
+      opencode:
+        description: >-
+          OpenCode headless worker sessions using provider-qualified models
+          and harness-owned native subscription stores. The launch adapter and
+          approved-pair policy are implemented, but production activation is
+          held until live ChatGPT and MiniMax canaries prove subscription
+          identity, containment, sanitizer and completion behavior.
+        supported: false
+        selectable: false
+        reason: opencode-live-subscription-and-launch-canaries-required
+        router_behaviour: refuse-to-emit
       local-agent:
         description: >-
           RESERVED placeholder so the harness axis is future-proof. This is
@@ -472,20 +554,102 @@ data:
         source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
 
       # --- vendor-hosted -------------------------------------------------
-      # These are NOT wire-level model ids and NOT placed by the router.
-      # They are the selector a harness resolves against its own
-      # subscription, recorded so `physical[].model_id` always resolves.
+      # The model KEYS below are NOT wire-level model ids, and these models
+      # are NOT placed by the router. A key is the selector a harness
+      # resolves against its own subscription, recorded so
+      # `physical[].model_id` always resolves.
       # `placement` for these is null everywhere, on purpose: a placement
       # name is an agentgateway provider name, and none of this traffic
       # goes through agentgateway.
       #
-      # max_context is null for all four. This repo has measured nothing
-      # about vendor context windows and will not carry a guessed number;
-      # see README "Vendor models" for how a real value gets in here.
+      # A non-null `upstream_model_id` on one of these (1.8.1) is a harness
+      # model pin, passed verbatim as --model under the launch rule defined
+      # in ai-control-plane's contracts/agent-router/HARNESS-LAUNCH-claude.md
+      # and HARNESS-LAUNCH-codex.md section 4 (the normative copies; this
+      # repo's contracts/agent-router/ keeps only evidence). null leaves the
+      # harness to resolve its own alias.
+      #
+      # max_context: MEASURED (STORY-035-9f, 2026-09-23) for every model this
+      # catalog pins to an upstream_model_id - claude/opus, claude/sonnet,
+      # claude/fable, openai/gpt-6-luna, openai/gpt-6-astra and
+      # openai/gpt-6-sol - by launching each one for real through its own
+      # harness and subscription on this host and reading the window the
+      # harness itself reported for that exact launch. Evidence:
+      # .claude/.ai-docs/stories/WI-035-9f-measurements.json. Still null/
+      # unmeasured for every unpinned vendor model (openai/gpt-5.6-sol,
+      # swe-1-7, swe-1-7-medium) and still a plan-tier fact rather than a
+      # launch measurement for minimax/m3; see README "Vendor models" for
+      # how a real value gets in here.
       "claude/opus":
         description: >-
-          Strong-tier Anthropic model as selected by the claude harness
+          Strong-tier Anthropic model, launched by the claude harness
           against the operator's subscription.
+        hosting: vendor
+        upstream_model_id: claude-opus-5-5
+        resolved_by: harness
+        placements: []
+        capabilities: [chat, tools]
+        # Measured via `claude -p "..." --model claude-opus-5-5
+        # --output-format json`, claude CLI 2.1.281, 2026-09-23: the result
+        # JSON's modelUsage["claude-opus-5-5"].contextWindow. Evidence:
+        # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+        # WI-035-9f-raw-claude-opus.txt.
+        max_context: 1000000
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: >-
+          ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+      "claude/sonnet":
+        description: >-
+          Standard-tier Anthropic model, launched by the claude harness
+          against the operator's subscription.
+        hosting: vendor
+        upstream_model_id: claude-sonnet-5
+        resolved_by: harness
+        placements: []
+        capabilities: [chat, tools]
+        # Measured via `claude -p "..." --model claude-sonnet-5
+        # --output-format json`, claude CLI 2.1.281, 2026-09-23: the result
+        # JSON's modelUsage["claude-sonnet-5"].contextWindow. Evidence:
+        # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+        # WI-035-9f-raw-claude-sonnet.txt.
+        max_context: 1000000
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: >-
+          ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+      "claude/fable":
+        description: >-
+          Frontier-tier Anthropic model, launched by the claude harness
+          against the operator's subscription.
+        hosting: vendor
+        upstream_model_id: claude-fable-5-1
+        resolved_by: harness
+        placements: []
+        capabilities: [chat, tools]
+        # Measured via `claude -p "..." --model claude-fable-5-1
+        # --output-format json`, claude CLI 2.1.281, 2026-09-23: the result
+        # JSON's modelUsage["claude-fable-5-1"].contextWindow. Evidence:
+        # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+        # WI-035-9f-raw-claude-fable.txt.
+        max_context: 1000000
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: >-
+          ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+      "openai/gpt-5.6-sol":
+        description: >-
+          Previous strong-tier OpenAI model, selected by the codex harness
+          against the operator's subscription. Superseded 1.8.1
+          (STORY-035-9f): openai/strong now pins to openai/gpt-6-sol, which
+          launched and reported as itself on this host. Kept defined for
+          provenance; no profile's physical[] references it.
         hosting: vendor
         upstream_model_id: null
         resolved_by: harness
@@ -498,22 +662,72 @@ data:
         cold_start_source: n-a
         source: EPIC-035 section 11 route table
 
-      "openai/gpt-5.6-sol":
+      "openai/gpt-6-luna":
         description: >-
-          Strong-tier OpenAI model as selected by the codex harness against
-          the operator's subscription. Stamped as the fallback tier for
-          every claude row in EPIC-035 section 11.
+          Standard-tier OpenAI model, launched by an approved OpenAI harness
+          against the operator's subscription.
         hosting: vendor
-        upstream_model_id: null
+        upstream_model_id: gpt-6-luna
         resolved_by: harness
         placements: []
         capabilities: [chat, tools]
-        max_context: null
-        max_context_source: unmeasured
+        # Measured via `codex exec --json --skip-git-repo-check -s read-only
+        # -m gpt-6-luna "..."`, codex-cli 0.156.1, 2026-09-23: the session
+        # rollout's turn_context.payload.model (reported model) and
+        # event_msg.payload.info.model_context_window (token_count event).
+        # Evidence: .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+        # WI-035-9f-raw-openai-gpt-6-luna.txt.
+        max_context: 258400
         alignment: standard
         cold_start_s_estimate: 0
         cold_start_source: n-a
-        source: EPIC-035 section 11 route table
+        source: >-
+          ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+      "openai/gpt-6-astra":
+        description: >-
+          Frontier-tier OpenAI model, launched by an approved OpenAI harness
+          against the operator's subscription.
+        hosting: vendor
+        upstream_model_id: gpt-6-astra
+        resolved_by: harness
+        placements: []
+        capabilities: [chat, tools]
+        # Measured via `codex exec --json --skip-git-repo-check -s read-only
+        # -m gpt-6-astra "..."`, codex-cli 0.156.1, 2026-09-23: same fields
+        # as openai/gpt-6-luna above. Evidence:
+        # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+        # WI-035-9f-raw-openai-gpt-6-astra.txt.
+        max_context: 258400
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: >-
+          ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+      "openai/gpt-6-sol":
+        description: >-
+          Strong-tier OpenAI model, launched by the codex harness against the
+          operator's subscription. Added 1.8.1 (STORY-035-9f): unlike ACP's
+          reference catalog, gpt-6-sol launched successfully on this host and
+          reported as itself, so this deployment's openai/strong profile pins
+          to it instead of openai/gpt-5.6-sol.
+        hosting: vendor
+        upstream_model_id: gpt-6-sol
+        resolved_by: harness
+        placements: []
+        capabilities: [chat, tools]
+        # Measured via `codex exec --json --skip-git-repo-check -s read-only
+        # -m gpt-6-sol "..."`, codex-cli 0.156.1, 2026-09-23: same fields as
+        # openai/gpt-6-luna above. Evidence:
+        # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+        # WI-035-9f-raw-openai-gpt-6-sol.txt.
+        max_context: 258400
+        alignment: standard
+        cold_start_s_estimate: 0
+        cold_start_source: n-a
+        source: >-
+          ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
 
       swe-1-7:
         description: Free-tier Devin model on the existing Teams account.
@@ -996,6 +1210,31 @@ data:
           model decision, not broken - do not route to it and do not
           auto-substitute another model in its place.
 
+      "claude/standard":
+        description: >-
+          Standard-tier vendor model via the claude harness's own
+          subscription. Not proxied, not placed, not metered.
+        cost_class: subscription
+        hosting: vendor
+        selectable: true
+        capabilities: [chat, tools]
+        # Sole candidate (claude/sonnet) is measured: see the 1.8.1
+        # changelog and models["claude/sonnet"].max_context.
+        min_context: 1000000
+        alignment: standard
+        forbidden_for: []
+        entitlements:
+          - pool: anthropic-max
+            cost_class: subscription
+        physical:
+          - model_id: "claude/sonnet"
+            placement: null
+        notes: >-
+          The everyday Anthropic tier below claude/strong: routine,
+          well-specified work that does not need the strong model. Same
+          subscription, same isolation rules and the same `placement: null`
+          as claude/strong.
+
       "claude/strong":
         description: >-
           Strong vendor model via the claude harness's own subscription.
@@ -1004,8 +1243,9 @@ data:
         hosting: vendor
         selectable: true
         capabilities: [chat, tools]
-        # No guarantee: see models["claude/opus"].max_context.
-        min_context: null
+        # Sole candidate (claude/opus) is measured: see the 1.8.1 changelog
+        # and models["claude/opus"].max_context.
+        min_context: 1000000
         alignment: standard
         forbidden_for: []
         entitlements:
@@ -1023,23 +1263,125 @@ data:
           subscription traffic through cluster ingress, which this profile
           does not do.
 
-      "openai/strong":
+      "claude/frontier":
         description: >-
-          Strong vendor model via the codex harness's own subscription.
-          Stamped as the standing fallback tier in EPIC-035 section 11.
+          Frontier-tier vendor model via the claude harness's own
+          subscription. Not proxied, not placed, not metered.
         cost_class: subscription
         hosting: vendor
         selectable: true
         capabilities: [chat, tools]
-        min_context: null
+        # Sole candidate (claude/fable) is measured: see the 1.8.1 changelog
+        # and models["claude/fable"].max_context.
+        min_context: 1000000
+        alignment: standard
+        # A hard exclusion, like every forbidden_for entry: work tagged `pm`
+        # is never stamped onto this profile, recommended or overridden.
+        forbidden_for:
+          - pm
+        entitlements:
+          - pool: anthropic-max
+            cost_class: subscription
+        physical:
+          - model_id: "claude/fable"
+            placement: null
+        notes: >-
+          OVERRIDE-ONLY. The router never recommends this profile; a human
+          selects it deliberately for the rare task where a plausible but
+          wrong answer is expensive. That is enforced by routing, not by
+          this catalog: the router's approved pairs include
+          {harness: claude, model_profile: claude/frontier} in a frontier
+          band that band selection never returns, so an override naming it
+          passes approved_pair while no recommendation ever names it.
+          selectable here is what makes it eligible for that override. `pm`
+          in forbidden_for keeps coordinator work off it, and like every
+          forbidden_for entry no override can bypass it.
+
+      "openai/standard":
+        description: >-
+          Standard-tier vendor OpenAI model through an approved harness's own
+          subscription. Not proxied, not placed, not metered.
+        cost_class: subscription
+        hosting: vendor
+        selectable: true
+        capabilities: [chat, tools]
+        # Sole candidate (openai/gpt-6-luna) is measured: see the 1.8.1
+        # changelog and models["openai/gpt-6-luna"].max_context.
+        min_context: 258400
         alignment: standard
         forbidden_for: []
         entitlements:
           - pool: openai-plus
             cost_class: subscription
         physical:
-          - model_id: "openai/gpt-5.6-sol"
+          - model_id: "openai/gpt-6-luna"
             placement: null
+        notes: >-
+          The everyday OpenAI tier below openai/strong: routine,
+          well-specified work that does not need the strong model, funded
+          from the same ChatGPT subscription.
+
+      "openai/strong":
+        description: >-
+          Strong vendor OpenAI model through the codex harness's own
+          subscription. Stamped as the standing fallback tier in EPIC-035
+          section 11. Pinned to openai/gpt-6-sol (1.8.1, STORY-035-9f):
+          unlike ACP's own reference catalog, which keeps this profile on
+          openai/gpt-5.6-sol because gpt-6-sol was untested there, this
+          deployment measured gpt-6-sol launching through codex on the
+          subscription and reporting as itself, so it moved. OpenCode
+          remains catalog-disabled pending its live ChatGPT canary.
+        cost_class: subscription
+        hosting: vendor
+        selectable: true
+        capabilities: [chat, tools]
+        # Sole candidate (openai/gpt-6-sol) is measured: see the 1.8.1
+        # changelog and models["openai/gpt-6-sol"].max_context.
+        min_context: 258400
+        alignment: standard
+        forbidden_for: []
+        entitlements:
+          - pool: openai-plus
+            cost_class: subscription
+        physical:
+          - model_id: "openai/gpt-6-sol"
+            placement: null
+
+      "openai/frontier":
+        description: >-
+          Frontier-tier vendor OpenAI model through an approved harness's own
+          subscription. Not proxied, not placed, not metered.
+        cost_class: subscription
+        hosting: vendor
+        selectable: true
+        capabilities: [chat, tools]
+        # Sole candidate (openai/gpt-6-astra) is measured: see the 1.8.1
+        # changelog and models["openai/gpt-6-astra"].max_context.
+        min_context: 258400
+        alignment: standard
+        # A hard exclusion, like every forbidden_for entry: work tagged `pm`
+        # is never stamped onto this profile, recommended or overridden.
+        forbidden_for:
+          - pm
+        entitlements:
+          - pool: openai-plus
+            cost_class: subscription
+        physical:
+          - model_id: "openai/gpt-6-astra"
+            placement: null
+        notes: >-
+          OVERRIDE-ONLY. The router never recommends this profile; a human
+          selects it deliberately for the rare task where a plausible but
+          wrong answer is expensive. That is enforced by routing, not by
+          this catalog: the router's approved pairs include
+          {harness: codex, model_profile: openai/frontier} in a frontier
+          band that band selection never returns, so an override naming it
+          passes approved_pair while no recommendation ever names it. The
+          {harness: opencode} pairing is approved the same way and stays
+          ineligible with its harness until OpenCode is activated. selectable
+          here is what makes it eligible for an override. `pm` in
+          forbidden_for keeps coordinator work off it, and like every
+          forbidden_for entry no override can bypass it.
 
       "devin/free":
         description: >-
@@ -1067,10 +1409,11 @@ data:
 
       "minimax/strong":
         description: >-
-          Strong vendor model on the MiniMax Max Token Plan, executed by the
-          `claude` harness against MiniMax's Anthropic-compatible endpoint.
-          Physically validated by STORY-035-23 and promoted selectable by
-          owner decision, 2026-08-27.
+          Strong vendor model on the MiniMax Max Token Plan. The `claude`
+          harness path against MiniMax's Anthropic-compatible endpoint was
+          physically validated by STORY-035-23 and promoted by owner decision,
+          2026-08-27. The OpenCode pairing remains catalog-disabled with its
+          harness pending a separate live MiniMax subscription canary.
         # SUBSCRIPTION, not metered - and note how that is established: from
         # the entitlement pool below, which says the Token Plan is a fixed
         # monthly subscription. It is NOT established from the credential,

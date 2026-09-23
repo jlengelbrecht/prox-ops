@@ -155,8 +155,8 @@ prefix. That prefix is LiteLLM's, not the model's, and is not used here.
 | --- | --- | --- |
 | `description` | string | required |
 | `hosting` | enum | required. `local` \| `vendor` |
-| `upstream_model_id` | string \| null | required. `null` for vendor models |
-| `upstream_id_form` | string | local models only. How the upstream derives `upstream_model_id`; absent on vendor models, which have no upstream id |
+| `upstream_model_id` | string \| null | required. On a vendor model, the pinned model id the harness is launched with, or `null` to leave the harness its own alias |
+| `upstream_id_form` | string | local models only. How the upstream derives `upstream_model_id`; absent on vendor models, whose `upstream_model_id` is a harness model pin rather than an upstream-derived id |
 | `resolved_by` | enum | vendor models only. Always `harness` today; absent on local models |
 | `runtime` | string \| null | local models only |
 | `placements` | list | required. Placement names this model is deployed on; `[]` for vendor |
@@ -173,8 +173,8 @@ prefix. That prefix is LiteLLM's, not the model's, and is not used here.
 
 A vendor model is resolved by its harness against a subscription, so there is no upstream
 server, no local runtime and no GPU footprint to describe: `upstream_id_form`, `runtime`,
-`vram_gb_estimate`, `vram_estimate_source` and `idle_retention_min` are absent on all four
-rather than set to `null`.
+`vram_gb_estimate`, `vram_estimate_source` and `idle_retention_min` are absent on every
+vendor model rather than set to `null`.
 
 STORY-035-8c retired the other four local models (`qwen-coder`, `dolphin-chat`,
 `hermes-jarvis`, `qwen-omni`) outright - see Versioning below. `qwen36-27b` is now the only
@@ -246,7 +246,7 @@ Keyed by profile name. This is the only name BMAD stamps.
 | `capabilities` | list | the floor this profile **guarantees** |
 | `min_context` | int \| null | the context floor this profile **guarantees** |
 | `alignment` | enum | `standard` \| `unrestricted` |
-| `forbidden_for` | list | task tags this profile is never auto-selected for |
+| `forbidden_for` | list | task tags this profile is never placed on, auto-selected or overridden - see the hard-exclusion rule below |
 | `entitlements` | ordered list of `{pool, cost_class}` | required. Funding candidates, first is the default |
 | `physical` | ordered list of `{model_id, placement}` | first entry is preferred |
 | `blocked_by` | list | required when `selectable: false`; what has to be true before it flips |
@@ -280,8 +280,8 @@ Semantics that are easy to get wrong:
   are agentgateway provider names; vendor traffic never touches agentgateway, so it has no
   placement. A local model with a null placement is an error.
 - **`forbidden_for` is a hard exclusion**, not a score or a tie-break. A request carrying
-  any listed tag must never be auto-selected onto that profile, however well it otherwise
-  fits. An operator can still choose it explicitly and own the choice.
+  any listed tag must never be placed on that profile, however well it otherwise fits. A
+  deliberate human override can bypass router scoring, but never a `forbidden_for` match.
 
 `alignment: unrestricted` is an **alignment property, not a quality tier** (invariant 12).
 `local-unrestricted` is a weaker model than `local-code-standard` in every respect except
@@ -305,13 +305,23 @@ satisfied.
 
 #### Vendor models
 
-`claude/strong`, `openai/strong`, `devin/free` and `minimax/strong` describe work the
-harness does through its own entitlement. The router does not proxy, place, or hold
-credentials for any of it.
-Their `min_context` is `null` because this repository has measured nothing about vendor
-context windows and will not carry a guessed number. A real value gets in here from the
-agent-flow-kit harness registry or from the 35.16-35.18 verdicts, as a catalog PR that
-also records where the number came from.
+`claude/standard`, `claude/strong`, `claude/frontier`, `openai/standard`, `openai/strong`,
+`openai/frontier`, `devin/free` and `minimax/strong` describe work the harness does through
+its own entitlement. The router does not proxy, place, or hold credentials for any of it.
+
+`min_context` is `null` by default because this repository does not carry a guessed number
+about a vendor context window. A real value gets in here from a real harness launch - the
+harness's own subscription, its own credential, one launch of the pinned
+`upstream_model_id`, reading whatever window that harness reports for that exact launch -
+recorded as a catalog PR that also records where the number came from and points at the raw
+evidence. `claude/standard`, `claude/strong`, `claude/frontier`, `openai/standard`,
+`openai/strong` and `openai/frontier` carry exactly such a measured `min_context` in this
+deployment (STORY-035-9f, 2026-09-23); `devin/free`'s candidates remain unmeasured and its
+`min_context` stays `null`. A different deployment of this same schema is free to still
+carry `null` here - measurement is deployment data, not a schema requirement.
+
+The two `frontier` profiles are override-only: the router never recommends them, and both
+declare `forbidden_for: [pm]`, so coordinator work tagged `pm` is never stamped onto them.
 
 Two invariants to keep in view when editing these:
 
