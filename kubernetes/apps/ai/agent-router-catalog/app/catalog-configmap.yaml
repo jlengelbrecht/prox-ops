@@ -86,9 +86,12 @@ data:
     #     refuse-to-emit. Inactive. This PR does not activate it.
     #   - pins claude/opus to upstream_model_id: claude-opus-5-5. A non-null
     #     upstream_model_id is passed verbatim as the harness's --model under
-    #     the launch rule defined in contracts/agent-router/
-    #     HARNESS-LAUNCH-claude.md and HARNESS-LAUNCH-codex.md section 4;
-    #     null keeps the harness's own alias. A launcher does one thing
+    #     the launch rule defined in ai-control-plane's
+    #     contracts/agent-router/HARNESS-LAUNCH-claude.md and
+    #     HARNESS-LAUNCH-codex.md section 4; the normative contracts moved
+    #     there and this repo's copy retains only evidence
+    #     (contracts/agent-router/README.md). null keeps the harness's own
+    #     alias. A launcher does one thing
     #     differently for the EXISTING claude/strong route: it now passes
     #     the pinned --model claude-opus-5-5 instead of the `opus` alias.
     #   - MEASURED, NOT GUESSED: every vendor model this catalog pins to a
@@ -273,7 +276,8 @@ data:
           subscription. The harness resolves its own model unless the
           physical model it is given pins an upstream_model_id, which is
           then passed verbatim as --model under the launch rule defined in
-          contracts/agent-router/HARNESS-LAUNCH-claude.md section 4.
+          ai-control-plane's contracts/agent-router/HARNESS-LAUNCH-claude.md
+          section 4.
         supported: true
         selectable: true
       codex:
@@ -282,7 +286,8 @@ data:
           subscription. The harness resolves its own model unless the
           physical model it is given pins an upstream_model_id, which is
           then passed verbatim as --model under the launch rule defined in
-          contracts/agent-router/HARNESS-LAUNCH-codex.md section 4.
+          ai-control-plane's contracts/agent-router/HARNESS-LAUNCH-codex.md
+          section 4.
         supported: true
         selectable: true
       devin:
@@ -559,9 +564,10 @@ data:
       #
       # A non-null `upstream_model_id` on one of these (1.8.1) is a harness
       # model pin, passed verbatim as --model under the launch rule defined
-      # in contracts/agent-router/HARNESS-LAUNCH-claude.md and
-      # HARNESS-LAUNCH-codex.md section 4. null leaves the harness to
-      # resolve its own alias.
+      # in ai-control-plane's contracts/agent-router/HARNESS-LAUNCH-claude.md
+      # and HARNESS-LAUNCH-codex.md section 4 (the normative copies; this
+      # repo's contracts/agent-router/ keeps only evidence). null leaves the
+      # harness to resolve its own alias.
       #
       # max_context: MEASURED (STORY-035-9f, 2026-09-23) for every model this
       # catalog pins to an upstream_model_id - claude/opus, claude/sonnet,
@@ -639,9 +645,11 @@ data:
 
       "openai/gpt-5.6-sol":
         description: >-
-          Strong-tier OpenAI model as selected by the codex harness against
-          the operator's subscription. Stamped as the fallback tier for
-          every claude row in EPIC-035 section 11.
+          Previous strong-tier OpenAI model, selected by the codex harness
+          against the operator's subscription. Superseded 1.8.1
+          (STORY-035-9f): openai/strong now pins to openai/gpt-6-sol, which
+          launched and reported as itself on this host. Kept defined for
+          provenance; no profile's physical[] references it.
         hosting: vendor
         upstream_model_id: null
         resolved_by: harness

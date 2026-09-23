@@ -246,7 +246,7 @@ Keyed by profile name. This is the only name BMAD stamps.
 | `capabilities` | list | the floor this profile **guarantees** |
 | `min_context` | int \| null | the context floor this profile **guarantees** |
 | `alignment` | enum | `standard` \| `unrestricted` |
-| `forbidden_for` | list | task tags this profile is never auto-selected for |
+| `forbidden_for` | list | task tags this profile is never placed on, auto-selected or overridden - see the hard-exclusion rule below |
 | `entitlements` | ordered list of `{pool, cost_class}` | required. Funding candidates, first is the default |
 | `physical` | ordered list of `{model_id, placement}` | first entry is preferred |
 | `blocked_by` | list | required when `selectable: false`; what has to be true before it flips |
