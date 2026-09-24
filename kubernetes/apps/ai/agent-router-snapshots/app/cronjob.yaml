@@ -13,11 +13,15 @@
 #
 # Each snapshot is stamped with the router's live image and version, read
 # from the agent-router Deployment right before the snapshot is created (see
-# the narrow get/deployments rule in rbac.yaml). A rollback needs the
-# snapshot taken under the release being returned to, and scheduled runs have
-# no operator standing by to label one by hand. If either read fails, the run
-# still takes the snapshot - annotated prox-ops.io/router-image: unknown -
-# and logs why; a lookup failure must never cost us a snapshot.
+# the narrow get/deployments rule in rbac.yaml) with ONE kubectl call, so the
+# two values always describe the same Deployment revision - a second call
+# could observe a rollout that landed in between and pair an image from one
+# revision with a version label from another. A rollback needs the snapshot
+# taken under the release being returned to, and scheduled runs have no
+# operator standing by to label one by hand. If the read fails, or either
+# field comes back empty, the run still takes the snapshot - the affected
+# field falls back to prox-ops.io/router-image: unknown - and logs why; a
+# lookup failure must never cost us a snapshot.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -63,26 +67,34 @@ spec:
                   sel=app.kubernetes.io/managed-by=agent-router-snapshots
                   name="$pvc-$(date -u +%Y%m%d-%H%M%S)"
 
-                  # Read the router's live image and version before creating
-                  # the snapshot. Either read failing (RBAC hiccup, apiserver
-                  # blip, the Deployment briefly gone) falls back to "unknown"
-                  # and is logged - it never stops the snapshot itself.
+                  # Read the router's live image and version together, in one
+                  # call, separated by a tab - so a rollout landing mid-lookup
+                  # can never pair an image from one revision with a version
+                  # label from another. Split in the shell, no jq needed here
+                  # (jq below is for the separate volumesnapshot pruning list).
+                  # The whole read failing, or either field coming back empty,
+                  # falls back to "unknown" for the affected field and is
+                  # logged - it never stops the snapshot itself.
                   router_image=unknown
-                  if out=$(kubectl -n "$ns" get deploy agent-router \
-                      -o jsonpath='{.spec.template.spec.containers[?(@.name=="agent-router")].image}' 2>&1) \
-                      && [ -n "$out" ]; then
-                    router_image="$out"
-                  else
-                    echo "WARN: could not read agent-router image, annotating unknown: ${out:-empty response}" >&2
-                  fi
-
                   router_version=unknown
+                  sep=$(printf '\t')
                   if out=$(kubectl -n "$ns" get deploy agent-router \
-                      -o jsonpath="{.metadata.labels['app\.kubernetes\.io/version']}" 2>&1) \
-                      && [ -n "$out" ]; then
-                    router_version="$out"
+                      -o jsonpath="{.spec.template.spec.containers[?(@.name==\"agent-router\")].image}{\"\t\"}{.metadata.labels['app\.kubernetes\.io/version']}" 2>&1); then
+                    img_part="${out%%"$sep"*}"
+                    ver_part="${out#*"$sep"}"
+                    if [ -n "$img_part" ]; then
+                      router_image="$img_part"
+                    else
+                      echo "WARN: could not read agent-router image, annotating unknown: empty response" >&2
+                    fi
+                    if [ -n "$ver_part" ]; then
+                      router_version="$ver_part"
+                    else
+                      echo "WARN: could not read agent-router version label, annotating unknown: empty response" >&2
+                    fi
                   else
-                    echo "WARN: could not read agent-router version label, annotating unknown: ${out:-empty response}" >&2
+                    echo "WARN: could not read agent-router image, annotating unknown: $out" >&2
+                    echo "WARN: could not read agent-router version label, annotating unknown: $out" >&2
                   fi
 
                   echo "creating $ns/$name from $pvc (router-image=$router_image router-version=$router_version)"
