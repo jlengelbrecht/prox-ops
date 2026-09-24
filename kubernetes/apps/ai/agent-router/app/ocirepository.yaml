@@ -25,11 +25,14 @@ spec:
   # cutover commit sets it to the release being adopted, a rollback sets it
   # back. The artifact pins the container image by digest, so nothing else in
   # this directory names a version. Bumping it moves the Deployment, the
-  # Service and the HTTPRoute in one step, which is why the packageRules entry
-  # in .github/renovate/autoMerge.json5 (the entry this cutover added) keeps
-  # Renovate from merging a bump on its
-  # own. The comment above `ref` is the shape every OCIRepository in this tree
-  # carries; Renovate's flux manager reads the tag on its own.
+  # Service and the HTTPRoute in one step. Renovate auto-merges every final
+  # release (packageRules entry in .github/renovate/autoMerge.json5), reading
+  # the tag and digest together through the regex manager in
+  # .github/renovate/customManagers.json5; the flux manager alone sees only
+  # the digest. That manager expects the `# renovate:` line directly above
+  # `ref`, with `tag` then `digest` under it. Rollback is re-pinning the
+  # previous release's tag and digest here; the router's journal is covered
+  # by the 4-hourly snapshots in kubernetes/apps/ai/agent-router-snapshots.
   # renovate: datasource=docker depName=ghcr.io/jlengelbrecht/agent-router-base
   ref:
     tag: v0.2.4

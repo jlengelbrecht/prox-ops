@@ -464,10 +464,12 @@
     // merge key by key, and the "0" below is what overrides their 3- and
     // 5-day soaks. Leaving minimumReleaseAge out would keep those soaks.
     //
-    // Renovate refuses a rule that sets both ignoreUnstable and
-    // matchUpdateTypes, so this one matches every update type and the rule
-    // right after it hands majors and same-tag digest changes back to manual
-    // review, as for every other app.
+    // Every final release auto-merges, majors included: this entry matches
+    // every update type (Renovate refuses a rule that sets both
+    // ignoreUnstable and matchUpdateTypes) and so overrides the global
+    // major safety net above. The rule right after it sends one case back
+    // to a human: a digest change under an existing tag, which means a
+    // published release was re-tagged.
     //
     // Only the base is tracked, never the router image: the base pins the
     // image by digest. The tag and digest are read together by the custom
@@ -491,10 +493,10 @@
       "labels": ["renovate", "spektr"]
     },
     {
-      "description": "Spektr majors and same-tag digest changes stay manual (the release rule above cannot scope update types)",
+      "description": "Spektr: a digest change under an existing tag (a re-tagged release) stays manual",
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["kubernetes/apps/ai/agent-router/app/ocirepository.yaml"],
-      "matchUpdateTypes": ["major", "digest"],
+      "matchUpdateTypes": ["digest"],
       "automerge": false
     }
   ]
