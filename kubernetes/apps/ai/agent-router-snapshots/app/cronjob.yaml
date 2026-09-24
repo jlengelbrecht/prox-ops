@@ -10,6 +10,14 @@
 # Pruning runs only after the new snapshot is ready, so a broken snapshot path
 # fails the Job (visible in failedJobsHistory) and leaves the existing ready
 # snapshots alone instead of rotating them out.
+#
+# Each snapshot is stamped with the router's live image and version, read
+# from the agent-router Deployment right before the snapshot is created (see
+# the narrow get/deployments rule in rbac.yaml). A rollback needs the
+# snapshot taken under the release being returned to, and scheduled runs have
+# no operator standing by to label one by hand. If either read fails, the run
+# still takes the snapshot - annotated prox-ops.io/router-image: unknown -
+# and logs why; a lookup failure must never cost us a snapshot.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -55,7 +63,29 @@ spec:
                   sel=app.kubernetes.io/managed-by=agent-router-snapshots
                   name="$pvc-$(date -u +%Y%m%d-%H%M%S)"
 
-                  echo "creating $ns/$name from $pvc"
+                  # Read the router's live image and version before creating
+                  # the snapshot. Either read failing (RBAC hiccup, apiserver
+                  # blip, the Deployment briefly gone) falls back to "unknown"
+                  # and is logged - it never stops the snapshot itself.
+                  router_image=unknown
+                  if out=$(kubectl -n "$ns" get deploy agent-router \
+                      -o jsonpath='{.spec.template.spec.containers[?(@.name=="agent-router")].image}' 2>&1) \
+                      && [ -n "$out" ]; then
+                    router_image="$out"
+                  else
+                    echo "WARN: could not read agent-router image, annotating unknown: ${out:-empty response}" >&2
+                  fi
+
+                  router_version=unknown
+                  if out=$(kubectl -n "$ns" get deploy agent-router \
+                      -o jsonpath="{.metadata.labels['app\.kubernetes\.io/version']}" 2>&1) \
+                      && [ -n "$out" ]; then
+                    router_version="$out"
+                  else
+                    echo "WARN: could not read agent-router version label, annotating unknown: ${out:-empty response}" >&2
+                  fi
+
+                  echo "creating $ns/$name from $pvc (router-image=$router_image router-version=$router_version)"
                   kubectl create -f - <<EOF
                   apiVersion: snapshot.storage.k8s.io/v1
                   kind: VolumeSnapshot
@@ -66,6 +96,9 @@ spec:
                       app.kubernetes.io/name: agent-router
                       app.kubernetes.io/component: journal
                       app.kubernetes.io/managed-by: agent-router-snapshots
+                    annotations:
+                      prox-ops.io/router-image: "$router_image"
+                      prox-ops.io/router-version: "$router_version"
                   spec:
                     volumeSnapshotClassName: $class
                     source:
