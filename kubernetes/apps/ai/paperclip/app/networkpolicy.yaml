@@ -68,19 +68,18 @@ spec:
             - port: "5432"
               protocol: TCP
     # Hermes API over TLS (apiBaseUrl https://hermes-api.homelab0.org, the
-    # hermes-api route in hermes-hindsight/app/access.yaml). Same shape as
-    # the Hermes OIDC rule: in-cluster DNS can answer a homelab0.org name
-    # with either gateway VIP, so both gateway workloads are admitted, on
-    # the LoadBalancer port 443 and the pods' 10443 behind it. L3/L4 by pod
-    # identity, no hostname or SNI check: Paperclip may reach every host
-    # routed on either gateway, not only hermes-api.
+    # hermes-api route in hermes-hindsight/app/access.yaml) and the Hermes
+    # callback URL https://paperclip.homelab0.org. Both are envoy-internal
+    # routes, and in-cluster DNS answers them with the internal VIP only, so
+    # only the internal gateway is admitted (443 LB port, 10443 pod port).
+    # envoy-external is deliberately excluded: it would let agent code use
+    # the gateway as a proxy to every publicly routed host. L3/L4 only, so
+    # Paperclip can still reach any envoy-internal route; each enforces its
+    # own auth.
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
             gateway.envoyproxy.io/owning-gateway-name: envoy-internal
-        - matchLabels:
-            io.kubernetes.pod.namespace: network
-            gateway.envoyproxy.io/owning-gateway-name: envoy-external
       toPorts:
         - ports:
             - port: "443"
