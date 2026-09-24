@@ -53,7 +53,12 @@ spec:
               tag: 2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c
             env:
               PAPERCLIP_PUBLIC_URL: https://paperclip.homelab0.org
-              PAPERCLIP_ALLOWED_HOSTNAMES: paperclip.homelab0.org
+              # Host guard allow-list: the public name, plus the in-cluster
+              # Service name Hermes calls back on (paperclipApiUrl
+              # http://paperclip.ai.svc.cluster.local:3100), which would
+              # otherwise be refused with 403. Reachability of that name is
+              # still limited to Hermes by networkpolicy.yaml.
+              PAPERCLIP_ALLOWED_HOSTNAMES: paperclip.homelab0.org,paperclip.ai.svc.cluster.local
               # Sign-up is off: the single admin exists (bootstrapped 2026-09-24).
               # This also blocks invites, because an invitee must first create an account. To add
               # a person, set "false" temporarily, let them register, then set it back.
