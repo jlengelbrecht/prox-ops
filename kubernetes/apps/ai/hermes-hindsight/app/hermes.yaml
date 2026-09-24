@@ -263,9 +263,11 @@ spec:
             name: paperclip-agent-jarvis
             key: PAPERCLIP_API_KEY
 
-    # The only 1Password-backed value Hermes reads is the API server key
-    # above; the other Secret is the app-generated browser token. Both are
-    # single secretKeyRef entries in extraEnv. The chart's own env Secret is
+    # 1Password-backed values Hermes reads: the API server key
+    # (hermes-api-server) and the Paperclip agent key (paperclip-agent-jarvis),
+    # both above; the other Secret is the app-generated browser token. All are
+    # single secretKeyRef entries in extraEnv, and each 1Password item must
+    # exist or the pod cannot start. The chart's own env Secret is
     # kept empty by nulling its example key, so `OPENAI_API_KEY:
     # sk-REPLACE_ME` never renders, and the chart's externalSecret stays off:
     # the ExternalSecrets are authored in externalsecrets.yaml.
