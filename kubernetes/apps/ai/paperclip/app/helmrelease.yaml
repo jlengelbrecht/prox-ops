@@ -54,9 +54,10 @@ spec:
             env:
               PAPERCLIP_PUBLIC_URL: https://paperclip.homelab0.org
               PAPERCLIP_ALLOWED_HOSTNAMES: paperclip.homelab0.org
-              # Self sign-up is off: the first admin exists (bootstrapped 2026-09-24).
-              # New users join by invite. /api/auth also stays behind Authentik
-              # forward-auth (httproute.yaml).
+              # Sign-up is off: the single admin exists (bootstrapped 2026-09-24).
+              # This also blocks invites, because an invitee must first create an account. To add
+              # a person, set "false" temporarily, let them register, then set it back.
+              # /api/auth stays behind Authentik forward-auth (admins only).
               PAPERCLIP_AUTH_DISABLE_SIGN_UP: "true"
               # Peers allowed to supply X-Forwarded-*: the pod CIDR the
               # envoy-internal gateway pods live in (talos/talconfig.yaml
