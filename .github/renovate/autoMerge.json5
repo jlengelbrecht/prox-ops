@@ -453,14 +453,48 @@
         "**Talos CATTLE**: Major/minor version requires manual approval. Full VM rebuild via Terraform."
       ]
     },
-    // ai-control-plane release artifact: every bump of the OCIRepository tag is
-    // read and merged by hand. The default patch/minor rules above would
-    // otherwise auto-merge it after their soak windows; nothing else in this
-    // file matches the package name, so this entry must sit after them.
+    // Spektr deployment base (the ai-control-plane release artifact). A bump of
+    // the OCIRepository tag and digest moves the agent-router Deployment,
+    // Service and HTTPRoute in one step. Spektr is owner-maintained, so like
+    // glycemicgpt above it auto-merges every final release with no soak: the
+    // owner controls the release cadence. The PR still waits for the repo's
+    // required checks (ignoreTests stays at its default, false).
+    //
+    // This entry must sit after the default patch/minor rules: packageRules
+    // merge key by key, and the "0" below is what overrides their 3- and
+    // 5-day soaks. Leaving minimumReleaseAge out would keep those soaks.
+    //
+    // Renovate refuses a rule that sets both ignoreUnstable and
+    // matchUpdateTypes, so this one matches every update type and the rule
+    // right after it hands majors and same-tag digest changes back to manual
+    // review, as for every other app.
+    //
+    // Only the base is tracked, never the router image: the base pins the
+    // image by digest. The tag and digest are read together by the custom
+    // manager in customManagers.json5 (the flux manager reads only the digest).
+    //
+    // Rollback: set the OCIRepository tag and digest back to the previous
+    // release. The router's journal is snapshotted every 4 hours by the
+    // CronJob in kubernetes/apps/ai/agent-router-snapshots (restore runbook:
+    // .claude/.ai-docs/troubleshooting/AGENT_ROUTER_JOURNAL_SNAPSHOTS.md,
+    // kept locally). A release that needs consumer-side config
+    // (as v0.2.2 needed the plane name) shows up as a failed Flux reconcile or
+    // a crash-looping pod and is fixed by hand.
     {
-      "description": "FULLY MANUAL: ai-control-plane release artifact - the OCIRepository tag moves the agent-router Deployment/Service/HTTPRoute in one step, from a release cut in another repository. Read the release notes, then merge by hand.",
+      "description": "Auto-merge Spektr (agent-router-base) final releases with no soak - owner controls release cadence",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["ghcr.io/jlengelbrecht/agent-router-base"],
+      "ignoreUnstable": true,
+      "automerge": true,
+      "automergeType": "pr",
+      "minimumReleaseAge": "0",
+      "labels": ["renovate", "spektr"]
+    },
+    {
+      "description": "Spektr majors and same-tag digest changes stay manual (the release rule above cannot scope update types)",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["kubernetes/apps/ai/agent-router/app/ocirepository.yaml"],
+      "matchUpdateTypes": ["major", "digest"],
       "automerge": false
     }
   ]
