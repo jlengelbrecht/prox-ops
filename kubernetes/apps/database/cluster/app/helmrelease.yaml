@@ -105,6 +105,17 @@ spec:
           connectionLimit: 25
           passwordSecret:
             name: hindsight-db-credentials
+        # Paperclip. Plain login role: owner of the `paperclip` database only;
+        # the pg_trgm/fuzzystrmatch extensions its migrations need are
+        # pre-created by the Database CR (database-paperclip.yaml).
+        # connectionLimit caps its share of the default max_connections=100.
+        - name: paperclip
+          ensure: present
+          login: true
+          createdb: false
+          connectionLimit: 20
+          passwordSecret:
+            name: paperclip-db-credentials
 
     # Backups - disabled until S3 storage is available
     # When MinIO/S3 is ready, enable and configure:
