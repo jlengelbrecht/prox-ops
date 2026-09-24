@@ -174,6 +174,37 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      // The Spektr deployment base pins its release by tag AND digest. Renovate's
+      // flux manager sees the digest and drops the tag (currentValue undefined),
+      // so it can never propose a new release. This manager reads the pair
+      // together and bumps both in one commit. The flux manager's own copy of
+      // the dependency is disabled in packageRules below.
+      "description": "Track the Spektr deployment base (tag + digest) in the agent-router OCIRepository",
+      "managerFilePatterns": [
+        "/^kubernetes/apps/ai/agent-router/app/ocirepository\\.yaml$/"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=docker depName=ghcr.io/jlengelbrecht/agent-router-base
+        //          ref:
+        //            tag: v0.2.4
+        //            # comment lines...
+        //            digest: sha256:<64 hex>
+        "# renovate: datasource=docker depName=ghcr\\.io/jlengelbrecht/agent-router-base\\n\\s*ref:\\n\\s*tag:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+\\S*)\\n(?:\\s*#.*\\n)*\\s*digest:\\s*(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/jlengelbrecht/agent-router-base",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "The Spektr base OCIRepository is tracked by the custom regex manager above; the flux manager's digest-only copy would only raise a stray digest lookup",
+      "matchManagers": ["flux"],
+      "matchFileNames": ["kubernetes/apps/ai/agent-router/app/ocirepository.yaml"],
+      "enabled": false
     }
   ]
 }
