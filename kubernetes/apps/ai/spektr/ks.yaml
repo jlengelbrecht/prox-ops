@@ -1,0 +1,36 @@
+---
+# STORY-035-9g: gives ACP's Spektr operator console (served by agent-router
+# at /ui/, see agent-router/ks.yaml) its own internal hostname,
+# spektr.homelab0.org, instead of only agent-router.homelab0.org/ui/. This
+# Kustomization owns only the route; the router Deployment/Service stay in
+# ../agent-router, which is held byte-for-byte against ACP's cutover kit and
+# is not touched here.
+#
+# dependsOn namespace note (see memory: 2 prior incidents from getting this
+# wrong): the value is the DEPENDENCY'S OWN Kustomization CR namespace, not
+# this object's targetNamespace. agent-router/ks.yaml declares
+# `namespace: flux-system` in its file, but kubernetes/apps/ai/kustomization.yaml
+# transforms every Kustomization CR under this tree to `namespace: ai`, so the
+# live CR - and the value dependsOn must name - is `ai`, matching how
+# agent-router/ks.yaml itself depends on agent-router-catalog.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app spektr
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: agent-router
+      namespace: ai
+  interval: 1h
+  path: ./kubernetes/apps/ai/spektr/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

@@ -1,0 +1,74 @@
+---
+# Private access to ACP's Spektr operator console through the internal
+# Envoy gateway (envoy-internal / https listener in namespace network,
+# wildcard homelab0.org certificate). The record spektr.homelab0.org is
+# created from this route by the existing DNS automation (k8s-gateway,
+# unifi external-dns), same as every other envoy-internal route.
+#
+# The console is served by agent-router at /ui/ (STORY-035-9e) and is
+# same-origin: it calls the router API (/v1/whoami, /v1/status, ...) on
+# whatever host served the page, and the operator enters a bearer at its own
+# Connect gate. So every path on this hostname - not just /ui/ - has to reach
+# the agent-router Service, or the console's own API calls would 404.
+#
+# No Authentik forward-auth on purpose: the console already gates itself with
+# a bearer, and the same API answers unauthenticated on
+# agent-router.homelab0.org today. Adding SSO here is a separate, escalated
+# auth change (PM note, STORY-035-9g).
+#
+# This route only names the destination; the Deployment, Service and
+# CiliumNetworkPolicy it points at live in ../agent-router, which is held
+# byte-for-byte against ACP's cutover kit and is not touched by this story.
+# The existing CiliumNetworkPolicy there already admits the envoy-internal
+# gateway pods, so a second route through the same gateway needs no policy
+# change.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: spektr
+  namespace: ai
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: spektr.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - spektr.homelab0.org
+  rules:
+    # The bare hostname opens the console: redirect the exact root path to
+    # /ui/ rather than relying on the app to redirect itself.
+    - matches:
+        - path:
+            type: Exact
+            value: /
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            path:
+              type: ReplaceFullPath
+              replaceFullPath: /ui/
+            statusCode: 302
+    # Everything else - /ui/ itself, its assets, and the same-origin API
+    # calls the console makes (/v1/whoami, /v1/status, ...) - goes straight
+    # to the router Service. No CSP header here: the app sets its own.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: agent-router
+          port: 8080
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "SAMEORIGIN"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
