@@ -1,0 +1,57 @@
+---
+# Paperclip runs agent code in-pod, so this policy is the main containment
+# boundary (EPIC-036 §4).
+# - Ingress: the envoy-internal gateway pods on 3100 only. Nothing else in the
+#   ai namespace may reach Paperclip.
+# - Egress: kube-dns, the shared CloudNativePG cluster on 5432, and world:443
+#   for LLM APIs, git forges and npm. A toFQDNs allow-list replaces world:443
+#   once the agent set is known (it will need dnsConfig ndots:1 on the pod);
+#   Hermes egress follows separately.
+# The pod selector is the label app-template renders from the release name.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: paperclip
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: paperclip
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "3100"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Shared CloudNativePG cluster (postgres-rw); its own policy already
+    # admits ingress from the ai namespace on 5432.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # HTTPS to the internet: LLM provider APIs, git forges, npm.
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

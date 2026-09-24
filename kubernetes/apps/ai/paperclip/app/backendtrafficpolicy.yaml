@@ -1,0 +1,25 @@
+---
+# Long-lived connections on the API route: remote runners hold a WebSocket
+# on /api/runner/v1/connect/* and the UI streams live run output. Same shape
+# as infra-proxies/proxmox (noVNC WebSocket).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: paperclip-api
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: paperclip-api
+  timeout:
+    http:
+      # No request timeout - WebSocket sessions can run indefinitely
+      requestTimeout: 0s
+      # Connection idle timeout for WebSocket (1 hour)
+      connectionIdleTimeout: 3600s
+  # TCP keepalive to maintain WebSocket connections
+  tcpKeepalive:
+    probes: 3
+    idleTime: 60s
+    interval: 30s

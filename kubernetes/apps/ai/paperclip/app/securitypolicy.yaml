@@ -1,0 +1,41 @@
+---
+# Authentik forward auth (Envoy ext_authz) for the Paperclip UI route only,
+# same shape as hermes-hindsight/app/access.yaml. The paperclip-api and
+# paperclip-outpost routes are deliberately not targeted (httproute.yaml).
+# failOpen: false: if Authentik is unreachable, or the Paperclip provider is
+# not assigned to the embedded outpost, the UI is unreachable rather than
+# open. Who may pass is the Paperclip application's group binding in the
+# Authentik blueprints.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: paperclip-auth
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: paperclip
+  extAuth:
+    headersToExtAuth:
+      - accept
+      - cookie
+      - authorization
+      - x-forwarded-proto
+      - x-forwarded-host
+      - x-forwarded-for
+      - x-forwarded-uri
+      - x-forwarded-method
+    failOpen: false
+    http:
+      backendRefs:
+        - name: authentik-server
+          namespace: security
+          port: 80
+      path: /outpost.goauthentik.io/auth/envoy
+      headersToBackend:
+        - X-authentik-username
+        - X-authentik-groups
+        - X-authentik-email
+        - X-authentik-name
+        - X-authentik-uid

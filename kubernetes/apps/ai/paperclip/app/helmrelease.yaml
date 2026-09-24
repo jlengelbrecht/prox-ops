@@ -1,0 +1,150 @@
+---
+# Paperclip (paperclipai/paperclip) - agent-orchestration control plane.
+# UI and API share port 3100. Single instance by design: the scheduler runs
+# in-process without leader election and agent workspaces live on the RWO
+# PVC, so replicas: 1 with Recreate.
+#
+# The image already sets HOME/PAPERCLIP_HOME=/paperclip, PORT=3100,
+# HOST=0.0.0.0, SERVE_UI=true, PAPERCLIP_DEPLOYMENT_MODE=authenticated,
+# PAPERCLIP_DEPLOYMENT_EXPOSURE=private and PAPERCLIP_CONFIG; they are not
+# restated here.
+#
+# Agents run inside this pod (the image bundles the claude-code, codex,
+# opencode, gemini and kimi CLIs and a shell `process` adapter), so the pod is
+# treated as an untrusted code-execution host: non-root, no service account
+# token, no capabilities, resource limits, and a tight network policy
+# (networkpolicy.yaml). A pids limit cannot be set per pod; it is a
+# node/runtime setting.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: paperclip
+  namespace: ai
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: paperclip
+  interval: 1h
+  values:
+    controllers:
+      paperclip:
+        replicas: 1
+        # RWO Ceph RBD volume: RollingUpdate would deadlock on
+        # Multi-Attach when the new pod lands on another node.
+        strategy: Recreate
+        annotations:
+          # Roll the pod when paperclip-secrets or paperclip-db change.
+          reloader.stakater.com/auto: "true"
+        pod:
+          automountServiceAccountToken: false
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        containers:
+          app:
+            image:
+              repository: ghcr.io/paperclipai/paperclip
+              # renovate: datasource=docker depName=ghcr.io/paperclipai/paperclip
+              tag: 2026.916.1@sha256:a02ac35ac41df911af477422ea0e781cf41d2b2c600c66f0a5ac9d8c63f52c2c
+            env:
+              PAPERCLIP_PUBLIC_URL: https://paperclip.homelab0.org
+              PAPERCLIP_ALLOWED_HOSTNAMES: paperclip.homelab0.org
+              # Sign-up stays open only until the first admin exists: Better
+              # Auth's disableSignUp also blocks the first account, and the
+              # bootstrap claim promotes an existing signed-in user. Flipped
+              # to "true" in a follow-up once the owner has signed up.
+              PAPERCLIP_AUTH_DISABLE_SIGN_UP: "false"
+              # Peers allowed to supply X-Forwarded-*: the pod CIDR the
+              # envoy-internal gateway pods live in (talos/talconfig.yaml
+              # clusterPodNets).
+              TRUST_PROXY: 10.42.0.0/16
+              PAPERCLIP_STORAGE_PROVIDER: local_disk
+              # Telemetry, announcements feed and feedback sharing off.
+              # Feedback sharing is forced to "disabled" and hidden from the
+              # settings UI so it cannot be switched back on there.
+              PAPERCLIP_TELEMETRY_DISABLED: "1"
+              DO_NOT_TRACK: "1"
+              PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false"
+              PAPERCLIP_SETTING_DEFAULTS: '{"feedbackDataSharingPreference":"disabled"}'
+              PAPERCLIP_HIDDEN_SETTINGS: instance.general.feedbackDataSharingPreference
+              DATABASE_URL:
+                valueFrom:
+                  secretKeyRef:
+                    name: paperclip-db
+                    key: DATABASE_URL
+            envFrom:
+              - secretRef:
+                  name: paperclip-secrets
+            # /api/health checks the database. In authenticated mode the
+            # hostname guard answers 403 to unknown Host headers, and the
+            # kubelet sends the pod IP, so every probe sends Host: localhost.
+            probes:
+              liveness: &probes
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/health
+                    port: &port 3100
+                    httpHeaders:
+                      - name: Host
+                        value: localhost
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                <<: *probes
+                spec:
+                  httpGet:
+                    path: /api/health
+                    port: *port
+                    httpHeaders:
+                      - name: Host
+                        value: localhost
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /api/health
+                    port: *port
+                    httpHeaders:
+                      - name: Host
+                        value: localhost
+                  # Database migrations run before the server binds; allow
+                  # up to ten minutes on first boot and after upgrades.
+                  initialDelaySeconds: 10
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 60
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: ["ALL"]
+            resources:
+              requests:
+                cpu: 250m
+                memory: 1Gi
+              limits:
+                cpu: 2000m
+                memory: 4Gi
+    service:
+      app:
+        controller: paperclip
+        ports:
+          http:
+            port: *port
+    persistence:
+      data:
+        enabled: true
+        existingClaim: paperclip-data
+        globalMounts:
+          - path: /paperclip

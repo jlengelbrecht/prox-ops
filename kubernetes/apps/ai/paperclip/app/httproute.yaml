@@ -1,0 +1,111 @@
+---
+# Paperclip on one hostname, internal gateway only (no envoy-external route,
+# no Cloudflare record). The host is split by path:
+#   /                       -> UI shell, gated by Authentik forward auth
+#                              (securitypolicy.yaml targets this route only)
+#   /api                    -> NO forward auth, by design: agents, remote
+#                              runners and API clients authenticate with
+#                              Paperclip's own session and bearer keys, and a
+#                              forward-auth redirect would break them. This
+#                              includes /api/auth/*: Authentik protects the UI
+#                              shell, not the API.
+#   /outpost.goauthentik.io -> Authentik login/callback flow
+# Gateway API picks the longest matching path prefix across routes on the
+# same hostname, so /api/* always lands on paperclip-api.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: paperclip
+  namespace: ai
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: paperclip.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - paperclip.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: paperclip
+          port: 3100
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+---
+# Paperclip API, including the remote-runner WebSocket
+# (/api/runner/v1/connect/*). Envoy Gateway accepts WebSocket upgrades on
+# HTTPRoutes by default; backendtrafficpolicy.yaml lifts the timeouts that
+# would otherwise cut long-lived runner connections.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: paperclip-api
+  namespace: ai
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - paperclip.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      backendRefs:
+        - name: paperclip
+          port: 3100
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+---
+# Authentik outpost route for the Paperclip host (forward-auth login/callback
+# flow). No SecurityPolicy here (it would loop); the cross-namespace
+# backendRef is allowed by ReferenceGrant allow-ai-namespace-extauth
+# (kubernetes/apps/security/authentik/app/referencegrant-ai.yaml).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: paperclip-outpost
+  namespace: ai
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - paperclip.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /outpost.goauthentik.io/
+      backendRefs:
+        - name: authentik-server
+          namespace: security
+          port: 80
