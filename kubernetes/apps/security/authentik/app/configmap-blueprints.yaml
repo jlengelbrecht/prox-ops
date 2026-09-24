@@ -332,7 +332,7 @@ data:
 
   # =============================================================
   # PROXY PROVIDERS BLUEPRINT
-  # Forward auth providers for n8n, Wizarr, GlycemicGPT, Hindsight
+  # Forward auth providers for n8n, Wizarr, GlycemicGPT, Hindsight, Paperclip
   # =============================================================
   providers-proxy.yaml: |
     version: 1
@@ -442,6 +442,29 @@ data:
           refresh_token_validity: days=30
           intercept_header_auth: true
           internal_host_ssl_validation: true
+      # Paperclip UI - Forward Auth. Paperclip has no OIDC (email/password
+      # login only), so authentik gates the UI and Paperclip's own login sits
+      # behind it. Bound to the embedded outpost by outposts.yaml below.
+      - model: authentik_providers_proxy.proxyprovider
+        id: proxy-paperclip
+        identifiers:
+          name: Paperclip
+        attrs:
+          name: Paperclip
+          mode: forward_single
+          external_host: https://paperclip.homelab0.org
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          property_mappings:
+            - !Context scope_proxy
+            - !Context scope_email
+            - !Context scope_profile
+            - !Context scope_openid
+            - !Context scope_entitlements
+          access_token_validity: hours=24
+          refresh_token_validity: days=30
+          intercept_header_auth: true
+          internal_host_ssl_validation: true
 
   # =============================================================
   # OUTPOSTS BLUEPRINT
@@ -484,10 +507,12 @@ data:
               - !Find [authentik_providers_proxy.proxyprovider, [name, "GlycemicGPT"]]
               - !Find [authentik_providers_proxy.proxyprovider, [name, "LightRAG"]]
               - !Find [authentik_providers_proxy.proxyprovider, [name, "Hindsight"]]
+              - !Find [authentik_providers_proxy.proxyprovider, [name, "Paperclip"]]
             - - !Find [authentik_providers_proxy.proxyprovider, [name, "n8n"]]
               - !Find [authentik_providers_proxy.proxyprovider, [name, "Wizarr"]]
               - !Find [authentik_providers_proxy.proxyprovider, [name, "GlycemicGPT"]]
               - !Find [authentik_providers_proxy.proxyprovider, [name, "Hindsight"]]
+              - !Find [authentik_providers_proxy.proxyprovider, [name, "Paperclip"]]
 
   # =============================================================
   # APPLICATIONS BLUEPRINT
@@ -620,6 +645,27 @@ data:
         id: binding-hindsight-admins
         identifiers:
           target: !Find [authentik_core.application, [slug, hindsight]]
+          order: 0
+        attrs:
+          group: !Find [authentik_core.group, [name, "authentik Admins"]]
+          enabled: true
+      # Paperclip UI: same owner/admin-only binding as Hindsight, enforced by
+      # the forward-auth SecurityPolicy on its route.
+      - model: authentik_core.application
+        id: app-paperclip
+        identifiers:
+          slug: paperclip
+        attrs:
+          name: Paperclip
+          slug: paperclip
+          group: AI
+          policy_engine_mode: any
+          meta_launch_url: https://paperclip.homelab0.org
+          provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Paperclip"]]
+      - model: authentik_policies.policybinding
+        id: binding-paperclip-admins
+        identifiers:
+          target: !Find [authentik_core.application, [slug, paperclip]]
           order: 0
         attrs:
           group: !Find [authentik_core.group, [name, "authentik Admins"]]
