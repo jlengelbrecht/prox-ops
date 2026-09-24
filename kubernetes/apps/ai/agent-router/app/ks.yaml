@@ -8,12 +8,13 @@
 # Kustomization it renders with a spec.patches list of its own, and kustomize
 # replaces a list that has no merge key instead of merging it, so a
 # spec.patches written on a direct child of cluster-apps is dropped before it
-# is applied. The four patches below are the whole reason this object exists -
+# is applied. The five patches below are the whole reason this object exists -
 # without them the release's placeholder hostname and Gateway would ship, so
 # would its portable NetworkPolicy, the pod would carry no credential for a
-# private image, and it would carry no name for its own plane - so it is
-# rendered one level down, where nothing rewrites it. ../ks.yaml is untouched
-# by the cutover.
+# private image, it would carry no name for its own plane, and the journal's
+# claim would land on whatever the cluster's default storage class is - so it
+# is rendered one level down, where nothing rewrites it. ../ks.yaml is
+# untouched by the cutover.
 #
 # The object lives in `ai` because ../ks.yaml sets targetNamespace: ai on
 # everything in this directory; the namespace is written out here as well, as
@@ -40,6 +41,27 @@ spec:
   interval: 1h
   # The artifact holds the release's deploy/base at its root.
   path: ./
+  # The kernel audit journal, the release's opt-in component, relative to
+  # `path`. It adds the 1Gi claim agent-router-journal, mounts it at
+  # /var/lib/agent-router, sets AGENT_ROUTER_JOURNAL and switches the
+  # Deployment to `strategy: Recreate`. Every /v1/hosts* route and the
+  # console's host controls need it; without it they answer 503.
+  #
+  # The journal is one SQLite file with exactly one writer: the router holds an
+  # exclusive lock on it for as long as it runs, and a second router refuses
+  # to start. A RollingUpdate would start the new pod while the old one still
+  # holds that lock, so the rollout could never finish. Recreate stops the old
+  # pod first, which costs a short outage on every rollout from here on - an
+  # image bump, a catalog change, a credential rotation the reloader rolls.
+  #
+  # The claim is annotated prune: disabled by the component, so removing the
+  # component (and the claim patch below with it) turns the journal off and
+  # leaves the claim, and the history on it, in place. Deleting that history
+  # is a separate, deliberate act. The journal is backed up cold - router
+  # stopped, files copied, router started - per the release's
+  # docs/operations/journal.md, until scheduled volume snapshots exist.
+  components:
+    - ./components/journal
   prune: true
   sourceRef:
     kind: OCIRepository
@@ -49,14 +71,15 @@ spec:
   wait: true
   retryInterval: 1m
   timeout: 5m
-  # All four patches name their object outright instead of through a `target:`
+  # All five patches name their object outright instead of through a `target:`
   # selector, on purpose: kustomize treats a selector that matches nothing as
   # nothing to do, and treats a named object that is not there as an error. A
-  # release that renames or drops the HTTPRoute, the NetworkPolicy or the
-  # Deployment therefore stops this Kustomization from building, and the
-  # objects already in the cluster stay as they are, instead of a Renovate bump
-  # quietly shipping the placeholder hostname, an unexpected policy or a pod
-  # with no pull credential. Nothing in prox-ops's CI renders this object
+  # release that renames or drops the HTTPRoute, the NetworkPolicy, the
+  # Deployment or the journal's claim therefore stops this Kustomization from
+  # building, and the objects already in the cluster stay as they are, instead
+  # of a Renovate bump quietly shipping the placeholder hostname, an
+  # unexpected policy, a pod with no pull credential or a claim on the wrong
+  # storage. Nothing in prox-ops's CI renders this object
   # against the artifact, so the patches have to fail closed on their own.
   patches:
     # The HTTPRoute's deployment values: the hostname external-dns publishes
@@ -119,7 +142,7 @@ spec:
     # answer with this name, so a client confirming the plane before a
     # destructive act confirms something real, not the placeholder. Named
     # outright rather than through a `target:` selector, so it fails closed the
-    # same way the other three do: a release that drops or renames this
+    # same way the others do: a release that drops or renames this
     # container stops the build instead of quietly shipping `unnamed-plane`.
     - patch: |-
         apiVersion: apps/v1
@@ -134,3 +157,27 @@ spec:
                   env:
                     - name: AGENT_ROUTER_PLANE_NAME
                       value: homelab
+    # The journal's claim. The component ships it with no storage class, so it
+    # would take the cluster default; this pins it to ceph-block, which is
+    # block storage attached to one node at a time - what the journal's lock
+    # needs. Never a shared filesystem class such as ceph-filesystem: a lock
+    # that is not seen by every client would let two routers each believe they
+    # are the only writer. ReadWriteOncePod goes further than the lock and has
+    # the API server refuse a second pod on the claim outright; ceph-block was
+    # checked to provision and bind it before it was written here.
+    #
+    # Both fields are fixed for the life of the claim: the API server refuses
+    # a change to either once it exists, so changing storage means a new claim
+    # and a restore. The size is the one thing that can change, and only by
+    # adding spec.resources.requests.storage to this patch - never kubectl,
+    # because Flux would reapply the component's 1Gi and the API server refuses
+    # a shrink.
+    - patch: |-
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: agent-router-journal
+        spec:
+          storageClassName: ceph-block
+          accessModes:
+            - ReadWriteOncePod
