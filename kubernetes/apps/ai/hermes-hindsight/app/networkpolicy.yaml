@@ -29,6 +29,8 @@
 # lane in each direction, mirrored in Paperclip's own policy. Paperclip calls
 # the gateway API server on 8642 (Bearer API_SERVER_KEY), and Hermes calls
 # back into Paperclip's API on 3100 with the per-run key Paperclip injects.
+# The adapter reaches 8642 over TLS through the hermes-api route on the
+# internal gateway (access.yaml); the direct pod lane stays admitted.
 #
 # Hermes (chart labels: app.kubernetes.io/name=hermes-agent, instance=hermes)
 apiVersion: cilium.io/v2
@@ -42,7 +44,9 @@ spec:
       app.kubernetes.io/name: hermes-agent
       app.kubernetes.io/instance: hermes
   ingress:
-    # Dashboard from the internal gateway only.
+    # Dashboard (9119) and the gateway API server (8642, hermes-api route)
+    # from the internal gateway only. The envoy-external proxy pods carry a
+    # different owning-gateway-name label and stay excluded.
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: network
@@ -51,8 +55,10 @@ spec:
         - ports:
             - port: "9119"
               protocol: TCP
-    # Gateway API server from the Paperclip pod only (hermes_gateway
-    # adapter). No gateway route exposes 8642.
+            - port: "8642"
+              protocol: TCP
+    # Gateway API server directly from the Paperclip pod (hermes_gateway
+    # adapter).
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: ai
