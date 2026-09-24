@@ -1,0 +1,51 @@
+---
+# CSI volume snapshots: the snapshot.storage.k8s.io CRDs, the snapshot
+# controller, and one VolumeSnapshotClass for ceph-block.
+#
+# Two Kustomizations so a snapshot problem stays contained:
+#   - snapshot-controller: the chart (CRDs + controller). wait: true, so it
+#     only reports Ready once the HelmRelease is Ready and the CRDs exist.
+#   - snapshot-controller-class: the ceph-block VolumeSnapshotClass, which
+#     cannot apply before the CRDs do.
+# rook-ceph-cluster is deliberately not involved: the class does not live in
+# its storageclasses.yaml, so nothing here can block a Ceph reconcile.
+#
+# dependsOn namespace: kubernetes/apps/kube-system/kustomization.yaml applies
+# `namespace: kube-system` to every CR in this tree, overriding the
+# flux-system written below. The live CR - and the value dependsOn must name -
+# is kube-system (compare the live kube-system/reloader).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: snapshot-controller
+  namespace: flux-system
+spec:
+  interval: 1h
+  path: ./kubernetes/apps/kube-system/snapshot-controller/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: kube-system
+  timeout: 5m
+  wait: true
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: snapshot-controller-class
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: snapshot-controller
+      namespace: kube-system
+  interval: 1h
+  path: ./kubernetes/apps/kube-system/snapshot-controller/class
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  timeout: 5m
+  wait: true

@@ -1,0 +1,131 @@
+---
+# Every 4 hours: take one VolumeSnapshot of agent-router-journal with the
+# ceph-block-snapshot class, wait for it to be ReadyToUse, then keep the 12
+# newest ready snapshots this job made (two days) and delete the rest.
+#
+# Only snapshots carrying the managed-by label below are ever pruned. A
+# snapshot taken by hand before an upgrade has no such label and is never
+# touched by this job.
+#
+# Pruning runs only after the new snapshot is ready, so a broken snapshot path
+# fails the Job (visible in failedJobsHistory) and leaves the existing ready
+# snapshots alone instead of rotating them out.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: agent-router-snapshots
+spec:
+  schedule: "0 */4 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: agent-router-snapshots
+        spec:
+          serviceAccountName: agent-router-snapshots
+          automountServiceAccountToken: true
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: snapshot
+              # renovate: datasource=docker depName=alpine/k8s
+              image: alpine/k8s:1.34.11@sha256:0382123ab8ae17d8da5d43cc299242933eb012cfbe56787b43731c942c3eed80
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu -o pipefail
+                  ns=ai
+                  pvc=agent-router-journal
+                  class=ceph-block-snapshot
+                  keep=12
+                  sel=app.kubernetes.io/managed-by=agent-router-snapshots
+                  name="$pvc-$(date -u +%Y%m%d-%H%M%S)"
+
+                  echo "creating $ns/$name from $pvc"
+                  kubectl create -f - <<EOF
+                  apiVersion: snapshot.storage.k8s.io/v1
+                  kind: VolumeSnapshot
+                  metadata:
+                    name: $name
+                    namespace: $ns
+                    labels:
+                      app.kubernetes.io/name: agent-router
+                      app.kubernetes.io/component: journal
+                      app.kubernetes.io/managed-by: agent-router-snapshots
+                  spec:
+                    volumeSnapshotClassName: $class
+                    source:
+                      persistentVolumeClaimName: $pvc
+                  EOF
+
+                  # list + field selector instead of get/watch (see rbac.yaml);
+                  # a transient API error just counts as not ready yet
+                  ready=""
+                  i=0
+                  while [ "$i" -lt 60 ]; do
+                    ready=$(kubectl -n "$ns" get volumesnapshots --field-selector "metadata.name=$name" \
+                      -o jsonpath='{.items[0].status.readyToUse}' || true)
+                    [ "$ready" = true ] && break
+                    i=$((i + 1))
+                    sleep 10
+                  done
+
+                  if [ "$ready" != true ]; then
+                    err=$(kubectl -n "$ns" get volumesnapshots --field-selector "metadata.name=$name" \
+                      -o jsonpath='{.items[0].status.error.message}' || true)
+                    echo "FAIL: $name not ReadyToUse after 10m: ${err:-no error reported}" >&2
+                    kubectl -n "$ns" delete volumesnapshots --field-selector "metadata.name=$name" --wait=false
+                    exit 1
+                  fi
+                  echo "ready: $name"
+
+                  # Leftovers from runs that were killed before they could clean
+                  # up, then everything past the newest $keep ready snapshots.
+                  kubectl -n "$ns" get volumesnapshots -l "$sel" -o json \
+                    | jq -r --arg cur "$name" --argjson keep "$keep" '
+                        (.items | map(select(.status.readyToUse != true and .metadata.name != $cur)) | .[].metadata.name),
+                        (.items | map(select(.status.readyToUse == true))
+                                | sort_by(.metadata.creationTimestamp) | reverse | .[$keep:] | .[].metadata.name)' \
+                    | while read -r old; do
+                        [ -n "$old" ] || continue
+                        echo "pruning $old"
+                        kubectl -n "$ns" delete volumesnapshots --field-selector "metadata.name=$old" --wait=false
+                      done
+                  echo "done"
+              env:
+                # kubectl writes its discovery cache under $HOME
+                - name: HOME
+                  value: /tmp
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
