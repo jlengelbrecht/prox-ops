@@ -1,0 +1,28 @@
+---
+# Paperclip database — declaratively managed on the shared postgres cluster.
+# Owner role is created by the Cluster's managed roles block; this CR creates
+# the database with that role as owner and pre-creates the two extensions
+# Paperclip's migrations (0051 pg_trgm, 0080 fuzzystrmatch) issue CREATE
+# EXTENSION for. The paperclip role is not superuser, so they are installed
+# here instead. No `version` is pinned so the image's bundled release is used.
+# databaseReclaimPolicy defaults to retain: removing this CR leaves the
+# database in place. The shared cluster has no backups; pg_dump -d paperclip
+# before any Paperclip bump.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: paperclip
+  namespace: database
+spec:
+  name: paperclip
+  owner: paperclip
+  cluster:
+    name: postgres
+  ensure: present
+  extensions:
+    - name: pg_trgm
+      ensure: present
+      schema: public
+    - name: fuzzystrmatch
+      ensure: present
+      schema: public
