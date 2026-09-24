@@ -3,10 +3,12 @@
 # boundary (EPIC-036 §4).
 # - Ingress: the envoy-internal gateway pods on 3100 only. Nothing else in the
 #   ai namespace may reach Paperclip.
-# - Egress: kube-dns, the shared CloudNativePG cluster on 5432, and world:443
-#   for LLM APIs, git forges and npm. A toFQDNs allow-list replaces world:443
-#   once the agent set is known (it will need dnsConfig ndots:1 on the pod);
-#   Hermes egress follows separately.
+# - Egress: kube-dns and the shared CloudNativePG cluster on 5432, nothing
+#   else. With telemetry and announcements off and no agents enrolled,
+#   Paperclip needs no internet egress. Agent egress (LLM APIs, git forges,
+#   npm) arrives with agent enrollment as an explicit toFQDNs allow-list,
+#   with dnsConfig ndots:1 on the pod so FQDN matching sees the names the
+#   pod actually resolves. Never a blanket world:443 rule.
 # The pod selector is the label app-template renders from the release name.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -47,11 +49,4 @@ spec:
       toPorts:
         - ports:
             - port: "5432"
-              protocol: TCP
-    # HTTPS to the internet: LLM provider APIs, git forges, npm.
-    - toEntities:
-        - world
-      toPorts:
-        - ports:
-            - port: "443"
               protocol: TCP

@@ -2,16 +2,20 @@
 # Paperclip on one hostname, internal gateway only (no envoy-external route,
 # no Cloudflare record). The host is split by path:
 #   /                       -> UI shell, gated by Authentik forward auth
-#                              (securitypolicy.yaml targets this route only)
+#   /api/auth               -> Better Auth sign-in/sign-up, also gated by
+#                              Authentik (second rule of the paperclip route;
+#                              securitypolicy.yaml targets this route only).
+#                              Browsers reach it from the UI, which already
+#                              carries the Authentik session.
 #   /api                    -> NO forward auth, by design: agents, remote
 #                              runners and API clients authenticate with
-#                              Paperclip's own session and bearer keys, and a
-#                              forward-auth redirect would break them. This
-#                              includes /api/auth/*: Authentik protects the UI
-#                              shell, not the API.
+#                              Paperclip's own bearer keys, and a forward-auth
+#                              redirect would break them. They never call
+#                              /api/auth.
 #   /outpost.goauthentik.io -> Authentik login/callback flow
 # Gateway API picks the longest matching path prefix across routes on the
-# same hostname, so /api/* always lands on paperclip-api.
+# same hostname, so /api/auth/* lands on paperclip and every other /api/*
+# path lands on paperclip-api.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -31,6 +35,27 @@ spec:
         - path:
             type: PathPrefix
             value: /
+      backendRefs:
+        - name: paperclip
+          port: 3100
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+    # Longer than paperclip-api's /api prefix, so Better Auth endpoints stay
+    # behind Authentik while sign-up is open.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/auth
       backendRefs:
         - name: paperclip
           port: 3100

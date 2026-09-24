@@ -56,8 +56,11 @@ spec:
               PAPERCLIP_ALLOWED_HOSTNAMES: paperclip.homelab0.org
               # Sign-up stays open only until the first admin exists: Better
               # Auth's disableSignUp also blocks the first account, and the
-              # bootstrap claim promotes an existing signed-in user. Flipped
-              # to "true" in a follow-up once the owner has signed up.
+              # bootstrap claim promotes an existing signed-in user. While
+              # open, sign-up is reachable only through Authentik (admins):
+              # /api/auth is on the forward-auth-gated route
+              # (httproute.yaml). Flipped to "true" in a follow-up once the
+              # owner has signed up.
               PAPERCLIP_AUTH_DISABLE_SIGN_UP: "false"
               # Peers allowed to supply X-Forwarded-*: the pod CIDR the
               # envoy-internal gateway pods live in (talos/talconfig.yaml

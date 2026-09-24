@@ -1,7 +1,9 @@
 ---
-# Authentik forward auth (Envoy ext_authz) for the Paperclip UI route only,
-# same shape as hermes-hindsight/app/access.yaml. The paperclip-api and
-# paperclip-outpost routes are deliberately not targeted (httproute.yaml).
+# Authentik forward auth (Envoy ext_authz) for the paperclip route only, same
+# shape as hermes-hindsight/app/access.yaml. That route carries the UI shell
+# (/) and the Better Auth endpoints (/api/auth), so both are Authentik-gated.
+# The paperclip-api and paperclip-outpost routes are deliberately not targeted
+# (httproute.yaml).
 # failOpen: false: if Authentik is unreachable, or the Paperclip provider is
 # not assigned to the embedded outpost, the UI is unreachable rather than
 # open. Who may pass is the Paperclip application's group binding in the
