@@ -5,15 +5,16 @@
 #   3100 for its agent callbacks (paperclipApiUrl, authenticated with the
 #   per-run key Paperclip injects). Nothing else in the ai namespace may
 #   reach Paperclip.
-# - Egress: kube-dns, the shared CloudNativePG cluster on 5432 and the Hermes
-#   gateway API server on 8642 (hermes_gateway adapter, Bearer
-#   API_SERVER_KEY), nothing else. The Hermes lanes are mirrored in Hermes'
-#   own policy (hermes-hindsight/app/networkpolicy.yaml). With telemetry and
-#   announcements off, Paperclip needs no internet egress. In-pod agent
-#   egress (LLM APIs, git forges, npm) arrives with its enrollment as an
-#   explicit toFQDNs allow-list, with dnsConfig ndots:1 on the pod so FQDN
-#   matching sees the names the pod actually resolves. Never a blanket
-#   world:443 rule.
+# - Egress: kube-dns, the shared CloudNativePG cluster on 5432, the gateway
+#   pods on 443/10443 for the Hermes API over TLS (hermes-api.homelab0.org)
+#   and the Hermes gateway API server on 8642 (hermes_gateway adapter,
+#   Bearer API_SERVER_KEY), nothing else. The Hermes lanes are mirrored in
+#   Hermes' own policy (hermes-hindsight/app/networkpolicy.yaml). With
+#   telemetry and announcements off, Paperclip needs no internet egress.
+#   In-pod agent egress (LLM APIs, git forges, npm) arrives with its
+#   enrollment as an explicit toFQDNs allow-list, with dnsConfig ndots:1 on
+#   the pod so FQDN matching sees the names the pod actually resolves.
+#   Never a blanket world:443 rule.
 # The pod selector is the label app-template renders from the release name.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -66,8 +67,27 @@ spec:
         - ports:
             - port: "5432"
               protocol: TCP
-    # Hermes gateway API server (apiBaseUrl
-    # http://hermes.ai.svc.cluster.local:8642): run start, SSE events and
+    # Hermes API over TLS (apiBaseUrl https://hermes-api.homelab0.org, the
+    # hermes-api route in hermes-hindsight/app/access.yaml) and the Hermes
+    # callback URL https://paperclip.homelab0.org. Both are envoy-internal
+    # routes, and in-cluster DNS answers them with the internal VIP only, so
+    # only the internal gateway is admitted (443 LB port, 10443 pod port).
+    # envoy-external is deliberately excluded: it would let agent code use
+    # the gateway as a proxy to every publicly routed host. L3/L4 only, so
+    # Paperclip can still reach any envoy-internal route; each enforces its
+    # own auth.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP
+    # Hermes gateway API server directly
+    # (http://hermes.ai.svc.cluster.local:8642): run start, SSE events and
     # the /health check of the hermes_gateway adapter.
     - toEndpoints:
         - matchLabels:

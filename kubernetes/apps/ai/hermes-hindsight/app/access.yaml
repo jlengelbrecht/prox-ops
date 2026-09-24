@@ -45,6 +45,50 @@ spec:
               - name: Referrer-Policy
                 value: "strict-origin-when-cross-origin"
 ---
+# Hermes gateway API server (port 8642) over TLS for Paperclip's
+# hermes_gateway adapter, which refuses plain http:// to any non-loopback
+# host because API_SERVER_KEY travels as a bearer token, and pod-to-pod
+# traffic is not encrypted in this cluster. Same internal gateway and
+# wildcard homelab0.org certificate as the dashboard route above (the
+# homelab0-org-production-tls Secret on the envoy-internal https listener).
+# No Authentik forward auth: the bearer key is the auth, and a login
+# redirect would break a machine client. The hermes-api-clients
+# SecurityPolicy below limits the route to cluster pods.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: hermes-api
+  namespace: ai
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: hermes-api.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - hermes-api.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: hermes
+          port: 8642
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+---
 # Hindsight UI (control plane, port 3000) on the same internal gateway, gated
 # by Authentik forward auth (SecurityPolicy below; who may log in is the
 # application's group binding in the Authentik blueprints). The UI calls the
@@ -226,3 +270,40 @@ spec:
         - X-authentik-email
         - X-authentik-name
         - X-authentik-uid
+---
+# Client restriction for the hermes-api route: deny by default, allow only
+# the pod CIDR (clusterPodNets in talos/talconfig.yaml). Anything else,
+# including LAN clients on 10.20.x, gets Envoy's 403 before the request
+# reaches Hermes.
+#
+# Envoy matches clientCIDRs against the client address it detects, not
+# the raw TCP peer. Two things decide that address here:
+# - The TCP peer is the real source. Cilium socket LB turns a pod's connect
+#   to the gateway VIP into a direct connect to an Envoy pod, so the pod IP
+#   is kept. LAN traffic reaches the VIP through DSR load balancing
+#   (loadBalancer.mode dsr), so the LAN address is kept too.
+# - The gateway-wide ClientTrafficPolicy (network/envoy-gateway-config)
+#   sets xForwardedFor numTrustedHops: 1, so Envoy takes the client from
+#   X-Forwarded-For when the request carries one. A LAN client that sends
+#   a forged pod-range X-Forwarded-For passes this rule. Treat it as
+#   defense in depth: API_SERVER_KEY is still required on every request.
+#   Closing that gap takes a listener-scoped ClientTrafficPolicy on the
+#   envoy-internal https listener, which lives outside this app.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: hermes-api-clients
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: hermes-api
+  authorization:
+    defaultAction: Deny
+    rules:
+      - name: allow-cluster-pods
+        action: Allow
+        principal:
+          clientCIDRs:
+            - 10.42.0.0/16
