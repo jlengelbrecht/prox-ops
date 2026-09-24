@@ -1,0 +1,36 @@
+---
+# Paperclip agent-orchestration control plane (EPIC-036). The PVC lives in
+# the sibling paperclip-storage Kustomization (prune: false); the database is
+# a role + Database CR on the shared CloudNativePG cluster
+# (kubernetes/apps/database/cluster).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app paperclip
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  # The AI root applies `namespace: ai` to this tree, so both Kustomizations
+  # land in `ai` and the storage sibling resolves in this CR's own namespace.
+  # external-secrets-operator has no namespace transform, so its CR stays in
+  # flux-system; the database root applies `namespace: database`, so
+  # postgres-cluster's CR lands there (same as hermes-hindsight/ks.yaml).
+  dependsOn:
+    - name: paperclip-storage
+    - name: external-secrets-operator
+      namespace: flux-system
+    - name: postgres-cluster
+      namespace: database
+  interval: 1h
+  retryInterval: 2m
+  timeout: 10m
+  path: ./kubernetes/apps/ai/paperclip/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

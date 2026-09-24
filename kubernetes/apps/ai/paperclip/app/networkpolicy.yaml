@@ -1,0 +1,52 @@
+---
+# Paperclip runs agent code in-pod, so this policy is the main containment
+# boundary (EPIC-036 §4).
+# - Ingress: the envoy-internal gateway pods on 3100 only. Nothing else in the
+#   ai namespace may reach Paperclip.
+# - Egress: kube-dns and the shared CloudNativePG cluster on 5432, nothing
+#   else. With telemetry and announcements off and no agents enrolled,
+#   Paperclip needs no internet egress. Agent egress (LLM APIs, git forges,
+#   npm) arrives with agent enrollment as an explicit toFQDNs allow-list,
+#   with dnsConfig ndots:1 on the pod so FQDN matching sees the names the
+#   pod actually resolves. Never a blanket world:443 rule.
+# The pod selector is the label app-template renders from the release name.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: paperclip
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: paperclip
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "3100"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Shared CloudNativePG cluster (postgres-rw); its own policy already
+    # admits ingress from the ai namespace on 5432.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP

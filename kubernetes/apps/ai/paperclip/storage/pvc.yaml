@@ -1,0 +1,24 @@
+---
+# PROTECTED: This PVC is in a separate Kustomization with prune: false
+# to prevent accidental data loss during Flux reconciliation or cattle upgrades.
+# Holds PAPERCLIP_HOME: instance config, uploads (local_disk storage), agent
+# git workspaces and agent CLI logins. Workspaces are the bulk of it; 20Gi
+# leaves room for a handful of cloned repositories and ceph-block can be
+# expanded in place if agents need more.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: paperclip-data
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: paperclip
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 20Gi
