@@ -1,0 +1,16 @@
+---
+# Snapshot class for ceph-block (Rook external mode, RBD pool k8s-rbd). The
+# csi-snapshotter sidecar already runs in rook-ceph's csi-rbdplugin-provisioner.
+# Not the default class: nothing snapshots unless it names this class.
+# Snapshots are RBD snapshots in the external Proxmox Ceph pool, so they
+# consume pool space there.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: ceph-block-snapshot
+driver: rook-ceph.rbd.csi.ceph.com
+deletionPolicy: Delete
+parameters:
+  clusterID: rook-ceph
+  csi.storage.k8s.io/snapshotter-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/snapshotter-secret-namespace: rook-ceph

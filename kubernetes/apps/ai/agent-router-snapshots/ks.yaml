@@ -1,0 +1,37 @@
+---
+# Scheduled crash-consistent snapshots of the agent-router journal claim
+# (agent-router-journal), so a rollback always has a snapshot taken under the
+# release being returned to. SQLite recovers a WAL journal on open, which is
+# why crash-consistent is acceptable here; cold backups stay the method for
+# planned maintenance.
+#
+# The router's own directory (../agent-router) is held against the upstream
+# cutover kit and is not touched: this Kustomization only reads the claim by
+# name through the snapshot API.
+#
+# dependsOn namespace: the class Kustomization is declared in
+# kubernetes/apps/kube-system/snapshot-controller/ks.yaml, and that tree's
+# `namespace: kube-system` transform puts its CR in kube-system. This file's
+# own CR lands in ai (the ai tree's transform), which is not the value to
+# name here.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app agent-router-snapshots
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: snapshot-controller-class
+      namespace: kube-system
+  interval: 1h
+  path: ./kubernetes/apps/ai/agent-router-snapshots/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
