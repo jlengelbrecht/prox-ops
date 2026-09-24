@@ -1,14 +1,19 @@
 ---
 # Paperclip runs agent code in-pod, so this policy is the main containment
 # boundary (EPIC-036 §4).
-# - Ingress: the envoy-internal gateway pods on 3100 only. Nothing else in the
-#   ai namespace may reach Paperclip.
-# - Egress: kube-dns and the shared CloudNativePG cluster on 5432, nothing
-#   else. With telemetry and announcements off and no agents enrolled,
-#   Paperclip needs no internet egress. Agent egress (LLM APIs, git forges,
-#   npm) arrives with agent enrollment as an explicit toFQDNs allow-list,
-#   with dnsConfig ndots:1 on the pod so FQDN matching sees the names the
-#   pod actually resolves. Never a blanket world:443 rule.
+# - Ingress: the envoy-internal gateway pods on 3100, and the Hermes pod on
+#   3100 for its agent callbacks (paperclipApiUrl, authenticated with the
+#   per-run key Paperclip injects). Nothing else in the ai namespace may
+#   reach Paperclip.
+# - Egress: kube-dns, the shared CloudNativePG cluster on 5432 and the Hermes
+#   gateway API server on 8642 (hermes_gateway adapter, Bearer
+#   API_SERVER_KEY), nothing else. The Hermes lanes are mirrored in Hermes'
+#   own policy (hermes-hindsight/app/networkpolicy.yaml). With telemetry and
+#   announcements off, Paperclip needs no internet egress. In-pod agent
+#   egress (LLM APIs, git forges, npm) arrives with its enrollment as an
+#   explicit toFQDNs allow-list, with dnsConfig ndots:1 on the pod so FQDN
+#   matching sees the names the pod actually resolves. Never a blanket
+#   world:443 rule.
 # The pod selector is the label app-template renders from the release name.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -24,6 +29,17 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: network
             gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "3100"
+              protocol: TCP
+    # Hermes agent callbacks (chart labels of the hermes release, the same
+    # selector the Hermes policy uses).
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: hermes-agent
+            app.kubernetes.io/instance: hermes
       toPorts:
         - ports:
             - port: "3100"
@@ -49,4 +65,16 @@ spec:
       toPorts:
         - ports:
             - port: "5432"
+              protocol: TCP
+    # Hermes gateway API server (apiBaseUrl
+    # http://hermes.ai.svc.cluster.local:8642): run start, SSE events and
+    # the /health check of the hermes_gateway adapter.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: hermes-agent
+            app.kubernetes.io/instance: hermes
+      toPorts:
+        - ports:
+            - port: "8642"
               protocol: TCP
