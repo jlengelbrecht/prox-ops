@@ -413,6 +413,22 @@ data:
                   label: Sessions
                 - field: version
                   label: Version
+        - Paperclip:
+            icon: sh-paperclip-ai
+            href: https://paperclip.homelab0.org
+            description: Agent Orchestration
+            widget:
+              # /api/health is outside Authentik and needs no key; it
+              # reports ok/starting and the deployment mode.
+              type: customapi
+              url: https://paperclip.homelab0.org/api/health
+              refreshInterval: 60000
+              display: block
+              mappings:
+                - field: status
+                  label: Status
+                - field: deploymentMode
+                  label: Mode
         - Hindsight:
             icon: https://raw.githubusercontent.com/vectorize-io/hindsight/ebad478240d3171bb88201ececda5e8d9883d22d/hindsight-control-plane/public/favicon.png
             href: https://hindsight.homelab0.org
