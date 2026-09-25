@@ -1,0 +1,23 @@
+---
+# The snapshot job holds a Kubernetes credential, so it gets no ingress at
+# all and one egress: the API server. enableDefaultDeny makes both directions
+# default-deny explicitly; with no ingress rules listed, nothing gets in.
+#
+# No DNS rule: kubectl reaches the API through the KUBERNETES_SERVICE_HOST
+# address, not a name. No toPorts on the apiserver rule, for the reason in
+# flagger-system/recovery-receiver/app/networkpolicy.yaml: Cilium sees the
+# post-DNAT port of the control plane listener.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: paperclip-snapshots
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: paperclip-snapshots
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    - toEntities:
+        - kube-apiserver
