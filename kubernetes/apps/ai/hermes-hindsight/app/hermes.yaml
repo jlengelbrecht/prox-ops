@@ -227,8 +227,14 @@ spec:
       # address and key cannot drift with a chart release, and the chart
       # renders no second Service port or key Secret next to these. Bound on
       # the pod IP because the caller is another pod; the bind is admitted
-      # only for the Paperclip pod (networkpolicy.yaml) and the key is
-      # required on every request. The key is a Secret reference from
+      # only for the Paperclip pod and the envoy-internal gateway
+      # (hermes-api.homelab0.org, pod-CIDR only; networkpolicy.yaml,
+      # access.yaml) and the key is required on every request.
+      # PRECEDENCE: Hermes resolves API_SERVER_KEY with _get_scoped_secret,
+      # which prefers /opt/data/.env on the PVC over this env. A stale
+      # .env entry silently overrides the 1Password key (the first-boot
+      # entry was removed 2026-09-24). If API auth breaks, check .env first.
+      # The key is a Secret reference from
       # 1Password (externalsecrets.yaml); a missing item keeps the pod from
       # starting rather than serving the API without a key.
       - name: API_SERVER_ENABLED
@@ -242,10 +248,26 @@ spec:
           secretKeyRef:
             name: hermes-api-server
             key: API_SERVER_KEY
+      # Paperclip identity for this agent (Jarvis). With hermes_gateway,
+      # Paperclip only sends work here and passes no Paperclip key; the
+      # agent calls back with Authorization: Bearer $PAPERCLIP_API_KEY
+      # (upstream hermes adapter README, Runtime API guidance). The URL is
+      # the TLS internal hostname (/api is not Authentik-gated; reached via
+      # the existing envoy-internal 443/10443 egress in networkpolicy.yaml),
+      # never the plain-HTTP Service.
+      - name: PAPERCLIP_API_URL
+        value: "https://paperclip.homelab0.org"
+      - name: PAPERCLIP_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: paperclip-agent-jarvis
+            key: PAPERCLIP_API_KEY
 
-    # The only 1Password-backed value Hermes reads is the API server key
-    # above; the other Secret is the app-generated browser token. Both are
-    # single secretKeyRef entries in extraEnv. The chart's own env Secret is
+    # 1Password-backed values Hermes reads: the API server key
+    # (hermes-api-server) and the Paperclip agent key (paperclip-agent-jarvis),
+    # both above; the other Secret is the app-generated browser token. All are
+    # single secretKeyRef entries in extraEnv, and each 1Password item must
+    # exist or the pod cannot start. The chart's own env Secret is
     # kept empty by nulling its example key, so `OPENAI_API_KEY:
     # sk-REPLACE_ME` never renders, and the chart's externalSecret stays off:
     # the ExternalSecrets are authored in externalsecrets.yaml.
@@ -472,7 +494,7 @@ spec:
     # when the API server key is rotated in 1Password.
     deploymentAnnotations:
       configmap.reloader.stakater.com/reload: "hermes-managed,hermes-web-dist-patch"
-      secret.reloader.stakater.com/reload: "hermes-browser-token,hermes-api-server"
+      secret.reloader.stakater.com/reload: "hermes-browser-token,hermes-api-server,paperclip-agent-jarvis"
 
     resources:
       requests:
