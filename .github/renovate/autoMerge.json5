@@ -498,6 +498,18 @@
       "matchFileNames": ["kubernetes/apps/ai/agent-router/app/ocirepository.yaml"],
       "matchUpdateTypes": ["digest"],
       "automerge": false
+    },
+    // Paperclip: last in the list so no earlier patch/minor rule can auto-merge it.
+    {
+      "description": "FULLY MANUAL: Paperclip - migrations run forward-only at boot on the shared CloudNativePG cluster (no backups): take a pg_dump -d paperclip first. The image also re-pulls the bundled agent CLIs (claude-code, codex, opencode, gemini, kimi) at @latest each build, so any bump can change agent behaviour. Stable CalVer tags only (e.g. 2026.916.1); nightly, beta, canary, sha-* and the retired -cloud tags are excluded.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/paperclipai/paperclip"],
+      "allowedVersions": "/^\\d{4}\\.\\d{3,4}\\.\\d+$/",
+      "minimumReleaseAge": "2 days",
+      "automerge": false,
+      "prBodyNotes": [
+        "**Paperclip**: manual merge. Before merging, `pg_dump -d paperclip` from the shared cluster and read the release notes (bundled agent CLIs move with the image)."
+      ]
     }
   ]
 }
