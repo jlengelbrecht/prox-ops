@@ -70,6 +70,26 @@ data:
 
     # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
     #
+    # 1.9.1 (STORY-037-1, EPIC-037) - ADDITIVE; INERT ON v0.2.x, REQUIRED
+    # FROM v0.3.0:
+    #   - adds the top-level `routing_pairs` table: the harness/profile pairs
+    #     the router may recommend, their bands and their priority order. Up
+    #     to v0.2.4 this table was compiled into the router and
+    #     agent-stamp-validate (services/agent-router/internal/routing/
+    #     pairs.go). From v0.3.0 both read it ONLY from the loaded catalog,
+    #     with no built-in fallback: a catalog without it routes nothing and
+    #     every stamp fails `approved_pair`.
+    #   - the 13 entries are copied unchanged from v0.2.4's pairs.go, which is
+    #     identical to the table in ACP's reference catalog 1.9.0 at
+    #     v0.3.0-rc.2. Routing decisions do not change.
+    #   - released v0.2.x routers and validators ignore unknown catalog keys,
+    #     so the table is inert until the v0.3.0 upgrade.
+    #   - nothing else moves: every harness, placement, model, pool, profile
+    #     and policy is byte-identical to 1.8.1. The version is 1.9.1, not
+    #     1.9.0, because this document is ACP's 1.9.0 table on top of our own
+    #     1.8.1 (measured context windows and pins), which theirs lacks.
+    #   Nothing was removed or re-typed, so schema_version stays 1.
+    #
     # 1.8.1 (STORY-035-9f, ACP-CR-AFK-20260923 rulings R1, R2, R7) - ADDITIVE
     # SCHEMA, BUT NOT PURELY ADDITIVE FOR LAUNCHERS (the claude/opus pin,
     # below), AND CARRIES MEASURED DATA ACP'S OWN 1.8.0 REFERENCE DOES NOT:
@@ -239,11 +259,11 @@ data:
     #     the edge as a second candidate, physical ordered edge-before-KServe
     #     to match prefer_order.
     #   Nothing was removed or re-typed, so schema_version stays 1.
-    version: "1.8.1"
+    version: "1.9.1"
     # Structural schema version. Consumers MUST refuse a major they do not
     # implement rather than best-effort parsing an unknown shape.
     schema_version: 1
-    updated: "2026-09-23"
+    updated: "2026-09-25"
     epic: EPIC-035
     story: STORY-035-1
     # Consumers: none. This is asserted, not implied - see README "Inert".
@@ -889,6 +909,77 @@ data:
           be a separate entry with its own credential and
           `cost_class: metered`; none exists, and adding one does not by
           itself make it reachable.
+
+    # =====================================================================
+    # TABLE 4b - routing_pairs (1.9.1)
+    # The harness/profile pairs the router may recommend. Read by the router
+    # and agent-stamp-validate from v0.3.0 on; ignored by v0.2.x. There is no
+    # built-in fallback: without this table nothing routes.
+    #
+    #   bands    - task bands the pair is eligible for: docs | standard |
+    #              strong | frontier. frontier never mixes with another band
+    #              and stays override-only.
+    #   priority - unique integer; the router orders candidates by it, never
+    #              by document order. Lower is preferred.
+    #
+    # Source: v0.2.4 services/agent-router/internal/routing/pairs.go, the
+    # table this deployment routed with before v0.3.0, copied unchanged.
+    # opencode rows stay although the harness is supported: false; the
+    # router already refuses to emit an unsupported harness.
+    # =====================================================================
+    routing_pairs:
+      - harness: claude
+        model_profile: claude/strong
+        bands: [strong]
+        priority: 0
+      - harness: claude
+        model_profile: local-code-standard
+        bands: [standard]
+        priority: 1
+      - harness: claude
+        model_profile: claude/standard
+        bands: [standard]
+        priority: 2
+      - harness: codex
+        model_profile: openai/standard
+        bands: [standard]
+        priority: 3
+      - harness: codex
+        model_profile: openai/strong
+        bands: [standard, strong]
+        priority: 4
+      - harness: devin
+        model_profile: devin/free
+        bands: [standard]
+        priority: 5
+      - harness: claude
+        model_profile: local-general
+        bands: [docs]
+        priority: 6
+      - harness: claude
+        model_profile: minimax/strong
+        bands: [strong]
+        priority: 7
+      - harness: opencode
+        model_profile: openai/strong
+        bands: [standard, strong]
+        priority: 8
+      - harness: opencode
+        model_profile: minimax/strong
+        bands: [strong]
+        priority: 9
+      - harness: claude
+        model_profile: claude/frontier
+        bands: [frontier]
+        priority: 10
+      - harness: codex
+        model_profile: openai/frontier
+        bands: [frontier]
+        priority: 11
+      - harness: opencode
+        model_profile: openai/frontier
+        bands: [frontier]
+        priority: 12
 
     # =====================================================================
     # TABLE 5 - profiles

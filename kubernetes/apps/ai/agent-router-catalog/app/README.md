@@ -48,6 +48,9 @@ inference - from the provider, from the harness, or worst of all from what the c
 looks like - and every one of those inferences is wrong for at least one row in this
 catalog.
 
+`routing_pairs` is a seventh, added in 1.9.1 (STORY-037-1). It is the list of harness/profile
+pairs the router may recommend, which the router carried in its own code up to v0.2.4.
+
 Presentation order in the file is referents-before-referrers (`placements`, `models`,
 `entitlement_pools`, then `profiles`), which is not the order section 6 lists them in.
 YAML mappings are unordered; nothing reads meaning from it.
@@ -232,6 +235,39 @@ and holding one grants nothing about the other. A pay-as-you-go path would need 
 of a separately provisioned metered credential, `allow_metered` intent on the request, and
 independent metered-spend authorization held by the calling principal - which the ordinary
 automation principal does not have. Two of the three is a refusal.
+
+### `routing_pairs`
+
+An ordered list, not a keyed table. Each entry approves one harness/profile pairing for the
+router to recommend. Added in 1.9.1.
+
+| field | type | notes |
+| --- | --- | --- |
+| `harness` | string | required. A key of `harnesses` |
+| `model_profile` | string | required. A key of `profiles` |
+| `bands` | list | required, non-empty. `docs` \| `standard` \| `strong` \| `frontier` |
+| `priority` | int | required. Unique, non-negative. Lower is preferred |
+
+**No fallback from v0.3.0.** Up to v0.2.4 the router and `agent-stamp-validate` used a
+table compiled into their code (`internal/routing/pairs.go`) and ignored this key. From
+v0.3.0 they read the pairs only from here. A catalog without `routing_pairs` routes nothing:
+`/v1/route` answers with its no-candidate refusal and every stamp fails `approved_pair`
+with `pair_not_approved`. Deleting this table takes routing down.
+
+Rules `catalog-validate` enforces from v0.3.0:
+
+- a pair names a known harness and a known profile;
+- `bands` holds only known bands, is never empty, and never mixes `frontier` with another
+  band. Frontier stays override-only: the router never recommends it on its own;
+- no duplicate pair, and no duplicate, negative or non-integer priority.
+
+The router orders candidates by `priority`, never by position in the file. A pair can be
+approved for a harness that is `supported: false` (the `opencode` rows). The harness
+entry still decides whether the router may emit it, and today it refuses.
+
+The 1.9.1 entries are v0.2.4's compiled table, copied unchanged. Changing which pairs
+route is a catalog PR like any other: bump `version`, and say in the PR body which
+decisions change.
 
 ### `profiles`
 
