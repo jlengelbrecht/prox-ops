@@ -92,7 +92,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check the manifest against the catalog
+        run: bash .github/scripts/agent-router-manifest-check.sh
+
+      # Fork PRs get no secrets, so the release checksum check runs only for
+      # branches in this repository and on manual runs; the offline check
+      # above runs everywhere.
       - name: Generate GitHub App Token (ai-control-plane, read-only)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         id: app-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
@@ -102,7 +109,8 @@ jobs:
           repositories: ai-control-plane
           permission-contents: read
 
-      - name: Check the manifest against the catalog and the release checksums
+      - name: Check the validator checksums against the release
+        if: steps.app-token.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: bash .github/scripts/agent-router-manifest-check.sh --verify-release
