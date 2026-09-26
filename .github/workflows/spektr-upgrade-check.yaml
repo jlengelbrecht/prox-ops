@@ -10,6 +10,9 @@
 # manual merge (.github/renovate/autoMerge.json5). It also runs when the catalog
 # changes, since a catalog edit can break the release we already run.
 #
+# A second job checks clients/agent-router/manifest.json against the catalog
+# (offline, no token), so hosts reading the manifest always get a consistent pair.
+#
 # The releases are private. The job reads them with a short-lived homebot app
 # token scoped to ai-control-plane (Contents: read), so the app installation
 # must include that repository.
@@ -24,6 +27,8 @@ on:
       - kubernetes/apps/ai/agent-router-catalog/app/kustomization.yaml
       - .github/scripts/spektr-upgrade-check.sh
       - .github/scripts/testdata/spektr-stamp.template.json
+      - .github/scripts/agent-router-manifest-check.sh
+      - clients/agent-router/**
   workflow_dispatch:
     inputs:
       tag:
@@ -72,3 +77,19 @@ jobs:
         run: |
           TAG="${INPUT_TAG:-$(yq -r '.spec.ref.tag' kubernetes/apps/ai/agent-router/app/ocirepository.yaml)}"
           bash .github/scripts/spektr-upgrade-check.sh --tag "$TAG"
+
+  manifest:
+    # clients/agent-router/manifest.json must name the catalog the router
+    # loads. Offline, no token: a catalog change that forgets the manifest
+    # (or the reverse) fails here.
+    name: Agent Router Manifest Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check the manifest against the catalog
+        run: bash .github/scripts/agent-router-manifest-check.sh
