@@ -17,7 +17,7 @@
 #      our agent-router ks.yaml, and the result passes kubeconform.
 #
 # Usage: spektr-upgrade-check.sh --tag <vX.Y.Z[-rc.N]> [--digest <sha256:...>]
-#                                [--catalog-configmap <path>]
+#                                [--catalog <catalog.yaml>]
 # --digest defaults to the digest ocirepository.yaml pins when --tag is its tag.
 # Needs gh (authenticated with read access to the release), yq, jq, kustomize,
 # kubeconform. Runs the same locally and in .github/workflows/spektr-upgrade-check.yaml.
@@ -25,7 +25,7 @@ set -euo pipefail
 
 REPO="jlengelbrecht/ai-control-plane"
 ROOT="$(git rev-parse --show-toplevel)"
-CATALOG_CM="$ROOT/kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml"
+CATALOG="$ROOT/kubernetes/apps/ai/agent-router-catalog/app/catalog.yaml"
 KS="$ROOT/kubernetes/apps/ai/agent-router/app/ks.yaml"
 OCIREPO="$ROOT/kubernetes/apps/ai/agent-router/app/ocirepository.yaml"
 STAMP_TEMPLATE="$ROOT/.github/scripts/testdata/spektr-stamp.template.json"
@@ -36,11 +36,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --tag) TAG="$2"; shift 2 ;;
     --digest) DIGEST_PIN="$2"; shift 2 ;;
-    --catalog-configmap) CATALOG_CM="$2"; shift 2 ;;
+    --catalog) CATALOG="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$TAG" ] || { echo "usage: $0 --tag <release tag> [--digest <sha256:...>] [--catalog-configmap <path>]" >&2; exit 2; }
+[ -n "$TAG" ] || { echo "usage: $0 --tag <release tag> [--digest <sha256:...>] [--catalog <catalog.yaml>]" >&2; exit 2; }
 if [ -z "$DIGEST_PIN" ] && [ "$(yq -r '.spec.ref.tag' "$OCIREPO")" = "$TAG" ]; then
   DIGEST_PIN="$(yq -r '.spec.ref.digest' "$OCIREPO")"
 fi
@@ -95,8 +95,8 @@ else
   ok "release notes flag no consumer action"
 fi
 
-# 3. Our catalog, extracted byte-exactly (yq adds a trailing newline).
-yq -r '.data["catalog.yaml"]' "$CATALOG_CM" | head -c -1 > "$WORK/catalog.yaml"
+# 3. Our catalog: the file is the document, byte for byte.
+cp "$CATALOG" "$WORK/catalog.yaml"
 DIGEST="sha256:$(sha256sum "$WORK/catalog.yaml" | cut -d' ' -f1)"
 echo "  catalog $(yq -r '.version' "$WORK/catalog.yaml") $DIGEST"
 if "$WORK/bin/catalog-validate" -catalog "$WORK/catalog.yaml" > "$WORK/cv.json" 2> "$WORK/cv.err" \

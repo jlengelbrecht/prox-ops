@@ -1,6 +1,6 @@
 # agent-router model & capability catalog
 
-Schema document for `catalog-configmap.yaml` (ConfigMap `ai/agent-router-catalog`,
+Schema document for `catalog.yaml` (ConfigMap `ai/agent-router-catalog`,
 key `catalog.yaml`). EPIC-035 section 6, story 35.1.
 
 This file is the contract. If the data and this document disagree, that is a bug in one
@@ -29,7 +29,7 @@ Three axes, kept apart on purpose (invariant 1):
 
 BMAD stamps a **profile name**. The profile name is stable; the model behind it is data.
 Swapping `local-code-standard` from one model to another is a pull request against
-`catalog-configmap.yaml` and touches nothing else - no routing policy, no story rewrite,
+`catalog.yaml` and touches nothing else - no routing policy, no story rewrite,
 no BMAD edit. Any change that makes a profile name mean "one specific model" defeats the
 whole structure.
 
@@ -527,7 +527,7 @@ written by hand.
 ## Change protocol
 
 Changing which physical model backs a profile is a pull request against
-`catalog-configmap.yaml`. Never a BMAD policy edit, never a story rewrite, never a change
+`catalog.yaml`. Never a BMAD policy edit, never a story rewrite, never a change
 to a routing rule.
 
 Every change must bump `version`, update `updated`, keep all validation rules above true,

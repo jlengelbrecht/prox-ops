@@ -1,0 +1,1691 @@
+# =====================================================================
+# agent-router model & capability catalog
+# EPIC-035 section 6. Schema document: README.md beside this file.
+# =====================================================================
+#
+# CHANGE PROTOCOL (normative - EPIC-035 section 6, AC 5)
+#
+#   Changing which PHYSICAL MODEL backs a logical PROFILE is a pull
+#   request against THIS FILE. It is never a BMAD policy edit, never a
+#   story rewrite, and never a change to any routing rule.
+#
+#   That is the whole point of the profile indirection: BMAD stamps a
+#   stable profile name (`local-code-standard`), and the model that name
+#   resolves to is data that moves by PR underneath it.
+#
+#   Every change to this file MUST:
+#     1. bump `version` (semver; see README "Versioning");
+#     2. update `updated`;
+#     3. keep every validation rule in README "Validation rules" true -
+#        they are mechanically checkable and a reviewer is expected to
+#        check them;
+#     4. state, in the PR body, what a consumer of the catalog would do
+#        differently after the change.
+#
+#   Adding a new PLACEMENT is a Git change by design (EPIC-035 section
+#   10a): placement names are load-bearing - 35.5 froze that a placement
+#   name appears verbatim as an agentgateway provider `name` and as the
+#   value of the `x-placement` request header. Renaming one is a
+#   breaking change across this catalog, the gateway config and every
+#   caller. Choose the name once.
+#
+#   `x-placement` is a SCHEDULING signal only (owner ruling R5). Nothing
+#   in this catalog expresses authorization, and nothing added to it may.
+#   Model authorization stays where it is: the per-model CEL policy that
+#   binds the request-body model to the routed model.
+#
+# WHAT IS DELIBERATELY ABSENT
+#   - `timeouts.request` / eviction durations. Ruling R1: the 240 s in
+#     use today is PROVISIONAL, 35.7 measures cold/warm for real and
+#     35.8 sets the final values. Timeouts are gateway config, not
+#     catalog data, and are not duplicated here.
+#   - endpoints, hostnames, ports, credentials. agentgateway is the only
+#     model ingress (invariant 5); endpoint discovery is runtime state
+#     from the heartbeat contract, never Git data.
+#   - anything that collapses the three axes (harness / profile /
+#     placement) into one field (invariant 1).
+# =====================================================================
+
+# Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
+#
+# 1.9.1 (STORY-037-1, EPIC-037) - ADDITIVE; INERT ON v0.2.x, REQUIRED
+# FROM v0.3.0:
+#   - adds the top-level `routing_pairs` table: the harness/profile pairs
+#     the router may recommend, their bands and their priority order. Up
+#     to v0.2.4 this table was compiled into the router and
+#     agent-stamp-validate (services/agent-router/internal/routing/
+#     pairs.go). From v0.3.0 both read it ONLY from the loaded catalog,
+#     with no built-in fallback: a catalog without it routes nothing and
+#     every stamp fails `approved_pair`.
+#   - the 13 entries are copied unchanged from v0.2.4's pairs.go, which is
+#     identical to the table in ACP's reference catalog 1.9.0 at
+#     v0.3.0-rc.2. Routing decisions do not change.
+#   - released v0.2.x routers and validators ignore unknown catalog keys,
+#     so the table is inert until the v0.3.0 upgrade.
+#   - nothing else moves: every harness, placement, model, pool, profile
+#     and policy is byte-identical to 1.8.1. The version is 1.9.1, not
+#     1.9.0, because this document is ACP's 1.9.0 table on top of our own
+#     1.8.1 (measured context windows and pins), which theirs lacks.
+#   Nothing was removed or re-typed, so schema_version stays 1.
+#
+# 1.8.1 (STORY-035-9f, ACP-CR-AFK-20260923 rulings R1, R2, R7) - ADDITIVE
+# SCHEMA, BUT NOT PURELY ADDITIVE FOR LAUNCHERS (the claude/opus pin,
+# below), AND CARRIES MEASURED DATA ACP'S OWN 1.8.0 REFERENCE DOES NOT:
+#   - adds four vendor tier profiles beside the existing strong ones:
+#     claude/standard (claude/sonnet), claude/frontier (claude/fable),
+#     openai/standard (openai/gpt-6-luna) and openai/frontier
+#     (openai/gpt-6-astra), all subscription-funded from the existing
+#     anthropic-max and openai-plus pools. No pool is renamed (R7). Both
+#     frontier profiles declare forbidden_for: [pm] and are override-only
+#     (R2): the router never recommends them - that is routing behaviour
+#     and is not expressed in this catalog.
+#   - adds the opencode harness entry exactly as ACP's reference has it:
+#     supported: false, selectable: false, router_behaviour:
+#     refuse-to-emit. Inactive. This PR does not activate it.
+#   - pins claude/opus to upstream_model_id: claude-opus-5-5. A non-null
+#     upstream_model_id is passed verbatim as the harness's --model under
+#     the launch rule defined in ai-control-plane's
+#     contracts/agent-router/HARNESS-LAUNCH-claude.md and
+#     HARNESS-LAUNCH-codex.md section 4; the normative contracts moved
+#     there and this repo's copy retains only evidence
+#     (contracts/agent-router/README.md). null keeps the harness's own
+#     alias. A launcher does one thing
+#     differently for the EXISTING claude/strong route: it now passes
+#     the pinned --model claude-opus-5-5 instead of the `opus` alias.
+#   - MEASURED, NOT GUESSED: every vendor model this catalog pins to a
+#     specific upstream_model_id was launched for real on this host,
+#     through its own harness and subscription, tiny-prompt, one launch
+#     each, no verbose/debug flags. claude/opus, claude/sonnet and
+#     claude/fable each reported contextWindow 1000000 via the claude
+#     CLI's own modelUsage.<reported-model>.contextWindow; openai/gpt-6-luna,
+#     openai/gpt-6-astra and openai/gpt-6-sol each reported
+#     model_context_window 258400 via the codex session rollout's
+#     turn_context (model) and token_count (window) events. Every pinned
+#     id was confirmed to launch AS ITSELF, not merely a recognised-but-
+#     wrong id. Evidence:
+#     .claude/.ai-docs/stories/WI-035-9f-measurements.json (raw harness
+#     output alongside it, credential strings redacted).
+#   - openai/strong DECISION: gpt-6-sol launched through codex on the
+#     subscription and reported as itself (see evidence above), so
+#     openai/strong.physical moves to the new openai/gpt-6-sol model
+#     (upstream_model_id: gpt-6-sol, max_context: 258400) instead of
+#     staying on openai/gpt-5.6-sol. openai/gpt-5.6-sol stays defined,
+#     unreferenced by any profile, since the validator does not flag it
+#     as an orphan.
+#   - every profile whose sole physical candidate is now measured gets
+#     that candidate's window as its min_context (README's single-
+#     candidate rule, the minimax/strong precedent): claude/strong 1000000,
+#     claude/standard 1000000, claude/frontier 1000000, openai/standard
+#     258400, openai/strong 258400, openai/frontier 258400. Profiles on an
+#     unmeasured model (devin/free) stay null.
+#   - WHY 1.8.1, NOT 1.8.0: ACP's v0.2.3 reference catalog at this same
+#     schema shape is version 1.8.0 with every vendor max_context left
+#     null (their own changelog: "vendor context windows stay unmeasured
+#     ... a deployment records measured windows in its own catalog").
+#     This document carries that same schema plus real measured windows,
+#     so it is a different document under upgrade-mode P4: reusing 1.8.0
+#     for different content would be catalog_drift (a refusal) on the
+#     next release bump, where a different version number is only a
+#     note. ACP was told not to reuse 1.8.1.
+#   - schema_version: no field was added, removed or re-typed - every
+#     new value already had a place in the existing shape (upstream_model_id,
+#     min_context, forbidden_for, harnesses.*, profiles.* all already
+#     exist as fields) - so schema_version stays 1.
+#
+# 1.6.0 (STORY-036-2, EPIC-036) - ADDITIVE DOCUMENTATION ONLY:
+#   - local-code-standard.notes now records the LAUNCH MECHANICS of the
+#     profile, the way minimax/strong records its own wiring: the
+#     `claude` harness driven against the gateway's Anthropic-compatible
+#     /v1/messages endpoint with the scoped agentgateway-claude-code
+#     key; the four-variable launch contract (ANTHROPIC_BASE_URL,
+#     ANTHROPIC_AUTH_TOKEN, ANTHROPIC_MODEL, ANTHROPIC_CUSTOM_HEADERS);
+#     placement conveyed by an x-placement value copied verbatim from a
+#     /v1/place result; the frozen headerless default; and credential
+#     isolation.
+#   - ANTHROPIC_MODEL=qwen36-27b is recorded as REQUIRED, not merely
+#     preferred: unpinned Claude Code 2.1.251 sends claude-opus-5, which
+#     is outside the gateway's CEL alias list, and a real unpinned
+#     session was refused 403 end to end (evidence R1, R2).
+#   - kserve-a5000 is the ONLY placement claimed as demonstrated on this
+#     path. Both edges were offline for the entire validation window and
+#     /v1/place never emitted them (evidence R8); a later data-only
+#     catalog PR adds them when those hosts are next up.
+#   - cost_class stays `free` and gains an explicit rationale: the
+#     credential is a LAN-scoped gateway key granting no metered spend,
+#     the entitlement is pool: null, and spillover is structurally none
+#     because no metered pool exists to spill into (evidence R13-R15).
+#   - Evidence, committed and citable by path:
+#     contracts/agent-router/evidence/STORY-036-1-local-launch-validation.md
+#   - Nothing routable was added as DATA: no endpoint, hostname, port or
+#     credential enters the catalog. The launch path is prose in `notes`,
+#     per "WHAT IS DELIBERATELY ABSENT" above.
+#   - A consumer does one thing differently: one resolving
+#     {harness: claude, model_profile: local-code-standard} can now
+#     CONSTRUCT A LAUNCH, where before it could only resolve a name.
+#   No field was added, removed or re-typed - only `notes` prose, the
+#   version and the date moved - so schema_version stays 1.
+#
+# 1.5.0 (STORY-035-23, owner-directed promotion) - ADDITIVE ONLY:
+#   - minimax/strong flips to selectable: true. Its blocked_by list is
+#     cleared: five items retired with evidence, four dispositioned by
+#     owner decision (2026-08-27) - the per-item record is a comment on
+#     the profile and the full evidence is
+#     .claude/.ai-docs/stories/STORY-035-23-minimax-validation-evidence.md.
+#   - minimax/m3 and minimax/strong gain `tools`: STORY-035-23
+#     demonstrated a full Anthropic-protocol tool round trip.
+#   - minimax/m3.max_context: 1000000 (Max Token Plan tier fact,
+#     owner-recorded 2026-08-27); minimax/strong.min_context follows per
+#     validation rule 6 (sole candidate).
+#   - The endpoint (api.minimax.io, Global) and auth wiring
+#     (ANTHROPIC_AUTH_TOKEN -> Authorization: Bearer, which wins over
+#     x-api-key when both are present) are recorded as PROSE provenance
+#     in the description/notes, not as structured fields - the
+#     "endpoints are deliberately absent" rule governs routable gateway
+#     data, and vendor traffic never touches agentgateway.
+#   - A consumer does one thing differently: the router may now emit
+#     model_profile: minimax/strong (harness: claude, pool minimax-max,
+#     cost_class subscription, spillover none - unchanged).
+#   Nothing was removed or re-typed, so schema_version stays 1.
+#
+# 1.4.0 (EPIC-035 bazzite bring-up, story 35.13) - ADDITIVE ONLY:
+#   - bazzite-5090 flips from planned/not-selectable to
+#     available/selectable: host conformance 7/7 (edge/conformance.sh
+#     in ai-control-plane, TLS+auth, no --insecure),
+#     interactive-withdrawal and fail-closed
+#     lease drills passed, control-plane integration proven live
+#     (heartbeat accepted by agent-router, gateway-path inference via
+#     x-placement). Evidence: edge/ancestors/bazzite/ACCEPTANCE.md in
+#     ai-control-plane, at the promotion PR's SHA.
+#   - First edge placement with a MEASURED capacity.vram_gb (31.8);
+#     any-24gb's min_vram_gb: 24 therefore now admits two placements.
+#   - qwen36-27b.placements and local-code-standard.physical gain
+#     bazzite-5090 as a third candidate, LAST in both: its 4s cold
+#     start beats everything, but gaming/interactive use has absolute
+#     priority on this host (abrupt mid-request withdrawal is normal,
+#     ruling R2), so it is the placement of last resort, not first.
+#     prefer_order in every policy is UNCHANGED for the same reason.
+#   Nothing was removed or re-typed, so schema_version stays 1.
+#
+# 1.3.0 (STORY-035-8c, owner-directed retirement) - REMOVES MODELS, unlike
+# 1.1.0/1.2.0 which were purely additive:
+#   - qwen-coder, dolphin-chat, hermes-jarvis and qwen-omni are deleted
+#     from `models` outright. qwen36-27b becomes the only deployed KServe
+#     model. No replacement model was selected or evaluated - that is
+#     explicitly out of scope for the MVP.
+#   - local-code-fast and local-unrestricted each lost their only
+#     candidate and flip to selectable: false with an empty physical[]
+#     and a blocked_by entry; they are not broken, they are awaiting a
+#     post-MVP model decision.
+#   - local-general drops hermes-jarvis and qwen-omni, retaining
+#     qwen36-27b as its sole candidate; its capabilities/min_context floor
+#     is recomputed accordingly ([chat, tools] / 65536).
+#   - local-code-standard is unaffected: it already named qwen36-27b only.
+#   - qwen36-27b's own placements/policies/prefer_order are untouched;
+#     the R25 frozen placement table for it does not move.
+#   Fields were removed, not re-typed, so schema_version stays 1.
+#
+# 1.2.0 (STORY-035-8, R25 frozen rulings) - ADDITIVE ONLY:
+#   - cachyos-7900xtx flips from planned/not-selectable to
+#     available/selectable: 35.6/35.6a/35.7 measured and hardened it, the
+#     35.8pre DNS/TLS proof closed the last reachability gap, and the R25
+#     owner review froze the routing numbers below.
+#   - prefer-warm-local.prefer_order now leads with cachyos-7900xtx: the
+#     measured ~6s edge cold start beats the (deliberately conservative)
+#     150s KServe estimate, so preferring the edge whenever both are cold
+#     or unknown is the right default, not just the warm-preference case.
+#   - qwen36-27b.placements and local-code-standard.physical both gain
+#     the edge as a second candidate, physical ordered edge-before-KServe
+#     to match prefer_order.
+#   Nothing was removed or re-typed, so schema_version stays 1.
+version: "1.9.1"
+# Structural schema version. Consumers MUST refuse a major they do not
+# implement rather than best-effort parsing an unknown shape.
+schema_version: 1
+updated: "2026-09-25"
+epic: EPIC-035
+story: STORY-035-1
+# Consumers: none. This is asserted, not implied - see README "Inert".
+consumers: []
+
+defaults:
+  # Applied when a caller names no placement_policy. Chosen because it
+  # is the only seeded policy that both resolves today and honours the
+  # warm-GPU economics that invariant 7 protects.
+  placement_policy: prefer-warm-local
+
+# =====================================================================
+# TABLE 1 - harnesses
+# The autonomous coding harness axis. Deliberately thin: a harness entry
+# says whether the axis value exists and whether the router may emit it.
+# Nothing else, so that no harness field can smuggle in a model or a
+# placement (invariant 1).
+#
+# MINIMAX IS NOT HERE, AND THAT IS THE POINT. The MiniMax M3 execution
+# path is `harness: claude` + `model_profile: minimax/strong`, because
+# Claude Code reaches MiniMax through its Anthropic-compatible endpoint.
+# Harness and model are independent axes; a new provider does not earn a
+# harness entry. MiniMax Code is a DIFFERENT harness, is not approved,
+# and gets evaluated in its own story if it ever is.
+# =====================================================================
+harnesses:
+  claude:
+    description: >-
+      Claude Code sessions driven by the operator's own Anthropic
+      subscription. The harness resolves its own model unless the
+      physical model it is given pins an upstream_model_id, which is
+      then passed verbatim as --model under the launch rule defined in
+      ai-control-plane's contracts/agent-router/HARNESS-LAUNCH-claude.md
+      section 4.
+    supported: true
+    selectable: true
+  codex:
+    description: >-
+      OpenAI Codex CLI sessions driven by the operator's own ChatGPT
+      subscription. The harness resolves its own model unless the
+      physical model it is given pins an upstream_model_id, which is
+      then passed verbatim as --model under the launch rule defined in
+      ai-control-plane's contracts/agent-router/HARNESS-LAUNCH-codex.md
+      section 4.
+    supported: true
+    selectable: true
+  devin:
+    description: >-
+      Devin (Cognition) cloud sessions, including the free `swe-1-7*`
+      tier on the existing Teams account.
+    supported: true
+    selectable: true
+  opencode:
+    description: >-
+      OpenCode headless worker sessions using provider-qualified models
+      and harness-owned native subscription stores. The launch adapter and
+      approved-pair policy are implemented, but production activation is
+      held until live ChatGPT and MiniMax canaries prove subscription
+      identity, containment, sanitizer and completion behavior.
+    supported: false
+    selectable: false
+    reason: opencode-live-subscription-and-launch-canaries-required
+    router_behaviour: refuse-to-emit
+  local-agent:
+    description: >-
+      RESERVED placeholder so the harness axis is future-proof. This is
+      NOT a harness today and NOT a slot to be filled opportunistically.
+    supported: false
+    selectable: false
+    # Invariant 16, quoted so nobody has to go looking: llama.cpp /
+    # vLLM / llama-swap are INFERENCE RUNTIME, not autonomous coding
+    # harnesses. Routing policy must never select a local harness, and
+    # no harness may be adopted merely to fill an architectural slot. A
+    # specific harness gets evaluated and approved in its own story
+    # before this becomes selectable. No story in EPIC-035 does that.
+    reason: invariant-16-reserved-unsupported
+    # A router that emits this value is wrong. It must refuse, loudly.
+    router_behaviour: refuse-to-emit
+
+# =====================================================================
+# TABLE 2 - placements
+# Physical compute. A placement name is a public identifier: it appears
+# as an agentgateway provider `name` and as the `x-placement` header
+# value (35.5). Treat renames as breaking.
+#
+# CAPACITY NUMBERS ARE SOURCED, NOT ASSUMED.
+#   capacity.vram_gb           - only ever a number this repo can stand
+#                                behind. `null` means "no measurement
+#                                exists". A router MUST NOT satisfy
+#                                min_vram_gb / min_free_vram_gb from a
+#                                null value, and MUST NOT substitute the
+#                                nameplate figure for it.
+#   capacity.vram_gb_nameplate - vendor SKU spec, informational only,
+#                                never a scheduling input.
+#   capacity.source            - measured | nameplate | unmeasured
+# =====================================================================
+placements:
+  kserve-a5000:
+    description: >-
+      The only real placement today: KServe/Knative InferenceServices on
+      the cluster's single RTX A5000 node. Every model in this catalog
+      that has a placement, has this one.
+    status: available
+    selectable: true
+    kind: kserve
+    node: k8s-work-10
+    gpu:
+      vendor: nvidia
+      model: RTX A5000
+    capacity:
+      vram_gb: 24
+      vram_gb_nameplate: 24
+      source: measured
+    runtime: >-
+      KServe v0.13.1 on Knative Serving; per-model containers are
+      llama.cpp server-cuda or vLLM / vLLM-Omni.
+    # A cluster GPU is never taken away mid-request by a human at a
+    # desk. Contention here is queueing, not preemption.
+    preemptible: false
+    scale_to_zero: true
+    # Only ONE InferenceService fits the card at a time (maxReplicas: 1,
+    # single GPU). This is a hard capacity fact a scheduler needs.
+    concurrent_models: 1
+    # Representative wake-to-first-token for the reference model
+    # (qwen36-27b) through the gateway. Per-model figures are in the
+    # `models` table. PROVISIONAL as a distribution: ruling R1 assigns
+    # repeatable cold/warm measurement to 35.7.
+    cold_start_s_estimate: 150
+    cold_start_source: measured
+    cold_start_evidence: >-
+      130.6-150 s to first token via the gateway (34.4 kill gate);
+      120.9 s re-measured 2026-08-19. Per-model vLLM figures 97-150 s
+      from the InferenceService records.
+    notes: >-
+      Invariant 7: nothing may pin a model warm here by default.
+      Scale-to-zero and the GPU economics it buys are load-bearing.
+
+  cachyos-7900xtx:
+    description: >-
+      LAN edge worker on the operator's CachyOS workstation. Brought up
+      by 35.6/35.6a, physically validated against kserve-a5000 by 35.7,
+      and proven reachable by name with strict TLS+bearer by 35.8pre
+      (cachyos-7900xtx.homelab0.org, 200 / 401 / 401 / TLS rc=60). Wired
+      into agentgateway as a second grouped-backend placement by 35.8.
+    status: available
+    selectable: true
+    kind: edge
+    # Physical hostname deliberately not recorded here: this repo is
+    # public. 35.6 supplies the reachable endpoint as a DNS name; the OS
+    # hostname is not needed by any consumer.
+    node: null
+    gpu:
+      vendor: amd
+      model: Radeon RX 7900 XTX
+      arch: gfx1100
+    capacity:
+      # No measurement of usable VRAM on this host exists. 24 is the SKU
+      # nameplate and must not be scheduled against.
+      vram_gb: null
+      vram_gb_nameplate: 24
+      source: unmeasured
+    # Ruling R3: llama-swap is the LAN-facing service (it can require an
+    # API key and terminate TLS); llama-server runs behind it and is
+    # never LAN-exposed. Qwen runtime is llama.cpp ROCm initially.
+    runtime: llama-swap fronting llama.cpp (ROCm)
+    preemptible: true
+    scale_to_zero: null
+    concurrent_models: null
+    cold_start_s_estimate: 6
+    cold_start_source: measured
+    cold_start_evidence: >-
+      35.7 edge cold-load benchmark (unloaded model -> first token), N=5:
+      min 5.491s, median 5.520s, max 5.547s, spread 0.056s - two orders of
+      magnitude tighter than kserve-a5000's cold-start spread. Rounded up
+      for the estimate field; the distribution itself is the evidence.
+    notes: >-
+      Invariant 8: the machine's interactive desktop work outranks AI,
+      absolutely and without a cluster round-trip. Withdrawal is by
+      silence and by 503. Ruling R4's transport bar (HTTPS, bearer auth,
+      a real CA, a hostname SAN, a dedicated host key, no
+      insecureSkipVerify, secrets outside Git) is met - see 35.8's
+      agentgateway wiring in agentgateway-pilot/app.
+
+  bazzite-5090:
+    description: >-
+      LAN edge worker on the operator's Bazzite gaming host. Brought up
+      and measured against contracts/edge-worker/EDGE-WORKER-CONTRACT.md
+      in ai-control-plane (35.13):
+      conformance 7/7 with strict TLS+bearer, interactive-withdrawal
+      and fail-closed-lease drills passed, heartbeat accepted by
+      agent-router. Wired into agentgateway as the
+      qwen36-27b-bazzite-preferred grouped backend (x-placement:
+      bazzite-5090 only; the headerless default never lands here).
+      Evidence: edge/ancestors/bazzite/ACCEPTANCE.md in
+      ai-control-plane.
+    status: available
+    selectable: true
+    kind: edge
+    # Physical hostname deliberately not recorded here: this repo is
+    # public. The reachable endpoint is a DNS name (unifi-dns).
+    node: null
+    gpu:
+      vendor: nvidia
+      model: GeForce RTX 5090
+      arch: sm_120
+    capacity:
+      # MEASURED, not nameplate: nvidia-smi memory.total reports
+      # 32607 MiB = 31.8 GiB on this card (driver 610.57.04). The idle
+      # desktop typically holds ~1.4 GiB of it; the loaded qwen36-27b
+      # leaves ~9 GiB free. First edge placement to satisfy a
+      # min_vram_gb constraint with a measured figure.
+      vram_gb: 31.8
+      vram_gb_nameplate: 32
+      source: measured
+    # Ruling R3: llama-swap is the LAN-facing service (API key + TLS);
+    # llama-server runs behind it, loopback-only. CUDA build pinned to
+    # the same llama.cpp build number as kserve-a5000 (b9917).
+    runtime: llama-swap fronting llama.cpp (CUDA)
+    # Contract section 4: gaming/interactive use has absolute priority;
+    # abrupt withdrawal mid-request is expected and normal.
+    preemptible: true
+    scale_to_zero: null
+    concurrent_models: null
+    cold_start_s_estimate: 4
+    cold_start_source: measured
+    cold_start_evidence: >-
+      35.13 cold-load benchmark on-host (model unloaded -> first
+      streamed token), N=5: min 3.462s, median 3.468s, max 3.497s,
+      spread 0.035s - 17.9 GB GGUF from local NVMe. Rounded up for the
+      estimate field; the distribution itself is the evidence.
+    notes: >-
+      Ruling R2 applies hardest here: once a response stream has begun,
+      a broken stream fails the execution attempt. The gateway does not
+      rescue a mid-stream withdrawal - which on this host is a normal
+      event whenever a human takes the GPU (detection ~8s, endpoint
+      refusal ~1s later, measured). Deliberately LAST in every
+      placements/physical list and in every prefer_order: fastest cold
+      start in the fleet, least reliable tenancy.
+
+  laptop-rtx5000:
+    description: >-
+      Planned, CONDITIONAL edge worker. The hardware has not been
+      inspected: "RTX 5000" is ambiguous across generations and no SKU,
+      VRAM figure or thermal behaviour has been established.
+    status: planned
+    selectable: false
+    kind: edge
+    node: null
+    gpu:
+      vendor: nvidia
+      # UNMEASURED. Do not resolve this to a specific SKU from the name.
+      model: null
+      arch: null
+    capacity:
+      vram_gb: null
+      # Deliberately null too: there is no SKU to read a nameplate off.
+      vram_gb_nameplate: null
+      source: unmeasured
+    runtime: null
+    preemptible: true
+    scale_to_zero: null
+    concurrent_models: null
+    cold_start_s_estimate: null
+    cold_start_source: unmeasured
+    blocked_by: ["35.14"]
+    notes: >-
+      Hardware detection is task 1 of 35.14 and no profile may assume
+      model viability here until it lands. Even once detected, this host
+      advertises only when cluster-reachable AND on AC power AND GPU
+      idle AND thermally healthy.
+
+# =====================================================================
+# TABLE 3 - models
+# The referent for every `profiles[].physical[].model_id`. EPIC-035
+# section 6 defines a physical candidate as exactly {model_id,
+# placement}, so the model's own facts have to live somewhere: here.
+# One entry per model, so a model appearing in several profiles cannot
+# drift between them.
+#
+# A key in this table IS the model_id. For local models it is the
+# gateway-facing alias - the string a client puts in the request body
+# and in `x-model`, and the literal the per-model CEL authorization
+# policy compares against. `upstream_model_id` is the different string
+# agentgateway sends to the upstream server. Both are copied verbatim
+# from agentgateway-pilot/app/local-model-backends.yaml; neither is
+# invented, and they must not be swapped.
+# =====================================================================
+models:
+  qwen36-27b:
+    description: >-
+      Qwen3.6-27B, UD-Q4_K_XL GGUF on llama.cpp CUDA with MTP
+      self-speculative decoding. The reference model for EPIC-035.
+    hosting: local
+    upstream_model_id: qwen3.6-27b
+    upstream_id_form: llama-server --alias
+    runtime: llama.cpp (server-cuda)
+    placements: [kserve-a5000, cachyos-7900xtx, bazzite-5090]
+    capabilities: [chat, tools]
+    max_context: 65536
+    alignment: standard
+    vram_gb_estimate: 22
+    vram_estimate_source: >-
+      Budgeted in the InferenceService record: 17.9 GB weights + 1-2 GB
+      MTP draft buffers + ~1.3 GB KV at 64k = ~21-22 GB of 24 GB.
+    cold_start_s_estimate: 150
+    cold_start_source: measured
+    idle_retention_min: 30
+    source: kubernetes/apps/ai/agentgateway-pilot/app/local-model-backends.yaml
+
+  # --- vendor-hosted -------------------------------------------------
+  # The model KEYS below are NOT wire-level model ids, and these models
+  # are NOT placed by the router. A key is the selector a harness
+  # resolves against its own subscription, recorded so
+  # `physical[].model_id` always resolves.
+  # `placement` for these is null everywhere, on purpose: a placement
+  # name is an agentgateway provider name, and none of this traffic
+  # goes through agentgateway.
+  #
+  # A non-null `upstream_model_id` on one of these (1.8.1) is a harness
+  # model pin, passed verbatim as --model under the launch rule defined
+  # in ai-control-plane's contracts/agent-router/HARNESS-LAUNCH-claude.md
+  # and HARNESS-LAUNCH-codex.md section 4 (the normative copies; this
+  # repo's contracts/agent-router/ keeps only evidence). null leaves the
+  # harness to resolve its own alias.
+  #
+  # max_context: MEASURED (STORY-035-9f, 2026-09-23) for every model this
+  # catalog pins to an upstream_model_id - claude/opus, claude/sonnet,
+  # claude/fable, openai/gpt-6-luna, openai/gpt-6-astra and
+  # openai/gpt-6-sol - by launching each one for real through its own
+  # harness and subscription on this host and reading the window the
+  # harness itself reported for that exact launch. Evidence:
+  # .claude/.ai-docs/stories/WI-035-9f-measurements.json. Still null/
+  # unmeasured for every unpinned vendor model (openai/gpt-5.6-sol,
+  # swe-1-7, swe-1-7-medium) and still a plan-tier fact rather than a
+  # launch measurement for minimax/m3; see README "Vendor models" for
+  # how a real value gets in here.
+  "claude/opus":
+    description: >-
+      Strong-tier Anthropic model, launched by the claude harness
+      against the operator's subscription.
+    hosting: vendor
+    upstream_model_id: claude-opus-5-5
+    resolved_by: harness
+    placements: []
+    capabilities: [chat, tools]
+    # Measured via `claude -p "..." --model claude-opus-5-5
+    # --output-format json`, claude CLI 2.1.281, 2026-09-23: the result
+    # JSON's modelUsage["claude-opus-5-5"].contextWindow. Evidence:
+    # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+    # WI-035-9f-raw-claude-opus.txt.
+    max_context: 1000000
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: >-
+      ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+  "claude/sonnet":
+    description: >-
+      Standard-tier Anthropic model, launched by the claude harness
+      against the operator's subscription.
+    hosting: vendor
+    upstream_model_id: claude-sonnet-5
+    resolved_by: harness
+    placements: []
+    capabilities: [chat, tools]
+    # Measured via `claude -p "..." --model claude-sonnet-5
+    # --output-format json`, claude CLI 2.1.281, 2026-09-23: the result
+    # JSON's modelUsage["claude-sonnet-5"].contextWindow. Evidence:
+    # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+    # WI-035-9f-raw-claude-sonnet.txt.
+    max_context: 1000000
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: >-
+      ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+  "claude/fable":
+    description: >-
+      Frontier-tier Anthropic model, launched by the claude harness
+      against the operator's subscription.
+    hosting: vendor
+    upstream_model_id: claude-fable-5-1
+    resolved_by: harness
+    placements: []
+    capabilities: [chat, tools]
+    # Measured via `claude -p "..." --model claude-fable-5-1
+    # --output-format json`, claude CLI 2.1.281, 2026-09-23: the result
+    # JSON's modelUsage["claude-fable-5-1"].contextWindow. Evidence:
+    # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+    # WI-035-9f-raw-claude-fable.txt.
+    max_context: 1000000
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: >-
+      ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+  "openai/gpt-5.6-sol":
+    description: >-
+      Previous strong-tier OpenAI model, selected by the codex harness
+      against the operator's subscription. Superseded 1.8.1
+      (STORY-035-9f): openai/strong now pins to openai/gpt-6-sol, which
+      launched and reported as itself on this host. Kept defined for
+      provenance; no profile's physical[] references it.
+    hosting: vendor
+    upstream_model_id: null
+    resolved_by: harness
+    placements: []
+    capabilities: [chat, tools]
+    max_context: null
+    max_context_source: unmeasured
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: EPIC-035 section 11 route table
+
+  "openai/gpt-6-luna":
+    description: >-
+      Standard-tier OpenAI model, launched by an approved OpenAI harness
+      against the operator's subscription.
+    hosting: vendor
+    upstream_model_id: gpt-6-luna
+    resolved_by: harness
+    placements: []
+    capabilities: [chat, tools]
+    # Measured via `codex exec --json --skip-git-repo-check -s read-only
+    # -m gpt-6-luna "..."`, codex-cli 0.156.1, 2026-09-23: the session
+    # rollout's turn_context.payload.model (reported model) and
+    # event_msg.payload.info.model_context_window (token_count event).
+    # Evidence: .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+    # WI-035-9f-raw-openai-gpt-6-luna.txt.
+    max_context: 258400
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: >-
+      ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+  "openai/gpt-6-astra":
+    description: >-
+      Frontier-tier OpenAI model, launched by an approved OpenAI harness
+      against the operator's subscription.
+    hosting: vendor
+    upstream_model_id: gpt-6-astra
+    resolved_by: harness
+    placements: []
+    capabilities: [chat, tools]
+    # Measured via `codex exec --json --skip-git-repo-check -s read-only
+    # -m gpt-6-astra "..."`, codex-cli 0.156.1, 2026-09-23: same fields
+    # as openai/gpt-6-luna above. Evidence:
+    # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+    # WI-035-9f-raw-openai-gpt-6-astra.txt.
+    max_context: 258400
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: >-
+      ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+  "openai/gpt-6-sol":
+    description: >-
+      Strong-tier OpenAI model, launched by the codex harness against the
+      operator's subscription. Added 1.8.1 (STORY-035-9f): unlike ACP's
+      reference catalog, gpt-6-sol launched successfully on this host and
+      reported as itself, so this deployment's openai/strong profile pins
+      to it instead of openai/gpt-5.6-sol.
+    hosting: vendor
+    upstream_model_id: gpt-6-sol
+    resolved_by: harness
+    placements: []
+    capabilities: [chat, tools]
+    # Measured via `codex exec --json --skip-git-repo-check -s read-only
+    # -m gpt-6-sol "..."`, codex-cli 0.156.1, 2026-09-23: same fields as
+    # openai/gpt-6-luna above. Evidence:
+    # .claude/.ai-docs/stories/WI-035-9f-measurements.json,
+    # WI-035-9f-raw-openai-gpt-6-sol.txt.
+    max_context: 258400
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: >-
+      ACP-CR-AFK-20260923 ruling R1; measured 2026-09-23 (STORY-035-9f)
+
+  swe-1-7:
+    description: Free-tier Devin model on the existing Teams account.
+    hosting: vendor
+    upstream_model_id: null
+    resolved_by: harness
+    placements: []
+    capabilities: [chat, tools]
+    max_context: null
+    max_context_source: unmeasured
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: EPIC-035 section 11 route table
+
+  "minimax/m3":
+    description: >-
+      MiniMax M3 on the MiniMax Max Token Plan, reached by the `claude`
+      harness through MiniMax's Anthropic-compatible endpoint
+      (api.minimax.io, Global). Physically validated by STORY-035-23
+      (2026-08-27): real completion, tool round trip, Token Plan
+      funding proven against a zero PAYG balance.
+    hosting: vendor
+    upstream_model_id: null
+    resolved_by: harness
+    placements: []
+    # `tools` is EARNED, not assumed - exactly as the 1.1.0 comment
+    # here demanded. STORY-035-23 demonstrated the full
+    # Anthropic-protocol round trip: tool_use emitted with the correct
+    # tool and arguments, tool_result consumed, correct final
+    # synthesis. Evidence:
+    # .claude/.ai-docs/stories/STORY-035-23-minimax-validation-evidence.md
+    capabilities: [chat, tools]
+    # Max Token Plan tier fact, owner-recorded 2026-08-27 with the
+    # 35.23 validation (same tier sheet: ~5.1B M3 tokens/month).
+    max_context: 1000000
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: owner ruling R16; STORY-035-23 validation evidence
+
+  swe-1-7-medium:
+    description: Free-tier Devin model, larger sibling of swe-1-7.
+    hosting: vendor
+    upstream_model_id: null
+    resolved_by: harness
+    placements: []
+    capabilities: [chat, tools]
+    max_context: null
+    max_context_source: unmeasured
+    alignment: standard
+    cold_start_s_estimate: 0
+    cold_start_source: n-a
+    source: EPIC-035 section 11 route table
+
+# =====================================================================
+# TABLE 4 - entitlement_pools
+# WHERE THE MONEY COMES FROM. Added in 1.1.0 (owner ruling R17).
+#
+# BILLING CLASS AND CREDENTIAL TYPE ARE INDEPENDENT AXES.
+#   `cost_class` is a fact about the ENTITLEMENT the operator holds.
+#   `credential_class` is a fact about the SHAPE of the secret used to
+#   reach it. NEITHER IMPLIES THE OTHER. A consumer reads economics from
+#   this table and from nowhere else - never from what a credential
+#   looks like, never from the provider's name, never from the harness.
+#
+#   The concrete case this table exists for: MiniMax's Max Token Plan is
+#   a FIXED MONTHLY SUBSCRIPTION reached with a provider-issued,
+#   API-KEY-SHAPED credential. "It looks like an API key, therefore it
+#   is metered" is WRONG BY CONSTRUCTION. That heuristic is embedded in
+#   tooling elsewhere in this estate, so it is called out rather than
+#   left to be re-derived: a consumer that adopts it will bill a
+#   subscription as per-token spend, and will refuse work the operator
+#   has already paid for.
+#
+#   Four attributes, declared on every pool, so nothing is ever inferred
+#   from anything else:
+#     provider         - who is on the other end of the connection.
+#     cost_class       - free | subscription | metered. The economics.
+#     credential_class - the shape and provisioning of the secret.
+#                        NEVER an input to a cost decision.
+#     spillover        - what happens when the entitlement runs out.
+#
+# INVARIANT 4, WRITTEN AS DATA. `spillover: none` on every seeded pool
+# is not a default that happened to be chosen - it IS the invariant.
+# Exhaustion never promotes to billable spend; the pool simply becomes
+# unavailable and routing falls back to another approved pool, to free,
+# or to local. A metered path needs THREE things at once: a separately
+# provisioned metered credential, `allow_metered` intent on the request,
+# and independent metered-spend authorization held by the caller. Two of
+# the three is a refusal, and the ordinary automation principal does not
+# hold the third.
+# =====================================================================
+entitlement_pools:
+  anthropic-max:
+    description: >-
+      The operator's own Anthropic Max subscription, consumed by Claude
+      Code sessions.
+    provider: anthropic
+    cost_class: subscription
+    credential_class: subscription-session
+    credential_notes: >-
+      The harness's own signed-in subscription session. Invariant 10 - a
+      subscription is NOT an API key. Nothing here authorises
+      introducing ANTHROPIC_API_KEY or centralising an OAuth token as a
+      provider credential.
+    spillover: none
+
+  openai-plus:
+    description: >-
+      The operator's own ChatGPT subscription, consumed by Codex CLI
+      sessions.
+    provider: openai
+    cost_class: subscription
+    credential_class: subscription-session
+    credential_notes: >-
+      Signed-in session held by the harness. Not an API key, and not
+      proxied through the cluster.
+    spillover: none
+
+  devin-free:
+    description: >-
+      The free `swe-1-7*` tier on the existing Devin Teams account.
+    provider: cognition
+    cost_class: free
+    credential_class: account-session
+    credential_notes: >-
+      Account session on a team the operator already has. Free is not a
+      subscription: this pool consumes no pot and no metered spend, and
+      that distinction is exactly why this abstraction is called an
+      ENTITLEMENT pool rather than a subscription pool.
+    spillover: none
+
+  minimax-max:
+    description: >-
+      MiniMax Max Token Plan - a fixed monthly subscription against
+      MiniMax's Anthropic-compatible endpoint (owner ruling R16).
+    provider: minimax
+    cost_class: subscription
+    # READ THIS ONE TWICE. The credential is API-KEY-SHAPED and the
+    # entitlement behind it is a FIXED SUBSCRIPTION. The shape says
+    # nothing about the economics.
+    credential_class: provider-api-key
+    credential_notes: >-
+      A provider-issued key plus a base URL. It is a DIFFERENT
+      CREDENTIAL CLASS from MiniMax's pay-as-you-go credential:
+      different secret, different entitlement, and holding one never
+      grants the other. It reaches a MiniMax-backed worker in that
+      worker's own process or session ONLY - it must never rewrite the
+      machine's global Anthropic configuration, and the Anthropic Max
+      path continues to use no ANTHROPIC_API_KEY at all. Stored in
+      1Password, scoped to MiniMax-backed worker execution, never in Git.
+    spillover: none
+    spillover_notes: >-
+      Token Plan exhaustion MUST NEVER spill into MiniMax pay-as-you-go.
+      When the entitlement is unavailable or exhausted this pool is
+      simply unavailable, and routing falls back to another approved
+      subscription pool, to free, or to local compute. A PAYG pool would
+      be a separate entry with its own credential and
+      `cost_class: metered`; none exists, and adding one does not by
+      itself make it reachable.
+
+# =====================================================================
+# TABLE 4b - routing_pairs (1.9.1)
+# The harness/profile pairs the router may recommend. Read by the router
+# and agent-stamp-validate from v0.3.0 on; ignored by v0.2.x. There is no
+# built-in fallback: without this table nothing routes.
+#
+#   bands    - task bands the pair is eligible for: docs | standard |
+#              strong | frontier. frontier never mixes with another band
+#              and stays override-only.
+#   priority - unique integer; the router orders candidates by it, never
+#              by document order. Lower is preferred.
+#
+# Source: v0.2.4 services/agent-router/internal/routing/pairs.go, the
+# table this deployment routed with before v0.3.0, copied unchanged.
+# opencode rows stay although the harness is supported: false; the
+# router already refuses to emit an unsupported harness.
+# =====================================================================
+routing_pairs:
+  - harness: claude
+    model_profile: claude/strong
+    bands: [strong]
+    priority: 0
+  - harness: claude
+    model_profile: local-code-standard
+    bands: [standard]
+    priority: 1
+  - harness: claude
+    model_profile: claude/standard
+    bands: [standard]
+    priority: 2
+  - harness: codex
+    model_profile: openai/standard
+    bands: [standard]
+    priority: 3
+  - harness: codex
+    model_profile: openai/strong
+    bands: [standard, strong]
+    priority: 4
+  - harness: devin
+    model_profile: devin/free
+    bands: [standard]
+    priority: 5
+  - harness: claude
+    model_profile: local-general
+    bands: [docs]
+    priority: 6
+  - harness: claude
+    model_profile: minimax/strong
+    bands: [strong]
+    priority: 7
+  - harness: opencode
+    model_profile: openai/strong
+    bands: [standard, strong]
+    priority: 8
+  - harness: opencode
+    model_profile: minimax/strong
+    bands: [strong]
+    priority: 9
+  - harness: claude
+    model_profile: claude/frontier
+    bands: [frontier]
+    priority: 10
+  - harness: codex
+    model_profile: openai/frontier
+    bands: [frontier]
+    priority: 11
+  - harness: opencode
+    model_profile: openai/frontier
+    bands: [frontier]
+    priority: 12
+
+# =====================================================================
+# TABLE 5 - profiles
+# Logical, stable, and the ONLY thing BMAD stamps. A profile name
+# outlives the model behind it - that is the entire contract.
+#
+#   capabilities  - the floor this profile GUARANTEES. Every entry in
+#                   physical[] provides at least these. Individual
+#                   candidates may provide more (see models[]).
+#   min_context   - the context floor this profile GUARANTEES, i.e. the
+#                   MINIMUM max_context across physical[]. null means no
+#                   guarantee; a router must not use a null-guarantee
+#                   profile to satisfy an explicit context requirement.
+#   alignment     - standard | unrestricted (invariant 12).
+#   forbidden_for - task tags this profile must never be auto-selected
+#                   for, whatever else scores well.
+#   physical      - ORDERED preference list of {model_id, placement}.
+#                   First is preferred. Order is the only preference
+#                   expression; there are no weights here.
+# =====================================================================
+profiles:
+  local-code-fast:
+    description: >-
+      Cheap, quick, code-shaped local work where latency matters more
+      than depth. NON-SELECTABLE as of STORY-035-8c: its only model
+      (qwen-coder) was retired and no substitute was chosen - that
+      decision is explicitly out of scope for the MVP and is a
+      post-MVP follow-up.
+    cost_class: free
+    hosting: local
+    selectable: false
+    # Empty, not [chat]/8192: rules 5 and 6 define capabilities/
+    # min_context as the intersection/minimum over physical[], which is
+    # undefined over an empty set. A non-selectable profile with no
+    # candidates guarantees nothing - see README rules 5 and 6.
+    capabilities: []
+    min_context: null
+    alignment: standard
+    forbidden_for: []
+    # Local execution draws on no entitlement pool: the GPU is
+    # already paid for. `pool: null` is the correct value here,
+    # not a gap.
+    entitlements:
+      - pool: null
+        cost_class: free
+    physical: []
+    blocked_by:
+      - a post-MVP catalog PR selects and validates a replacement model
+    notes: >-
+      Retired STORY-035-8c: qwen-coder was removed from models[] and no
+      replacement was selected. This profile is awaiting a post-MVP
+      model decision, not broken - do not route to it and do not
+      auto-substitute another model in its place.
+
+  local-code-standard:
+    description: >-
+      The default local coding profile. Long context and tool calling,
+      which is what makes it usable for agentic work.
+    cost_class: free
+    hosting: local
+    selectable: true
+    capabilities: [chat, tools]
+    min_context: 65536
+    alignment: standard
+    forbidden_for: []
+    # Local execution draws on no entitlement pool: the GPU is
+    # already paid for. `pool: null` is the correct value here,
+    # not a gap.
+    #
+    # 1.6.0: this is now also EVIDENCED, not merely reasoned. The
+    # credential on the validated launch path is a LAN-scoped
+    # agentgateway key granting NO METERED SPEND: it authenticates
+    # only to this gateway's qwen36-27b sections and is refused
+    # everywhere else (evidence R13), no request reached a vendor
+    # endpoint (evidence R14), and spillover is structurally `none`
+    # because no metered entitlement exists anywhere in this catalog
+    # to spill into (evidence R15). An API-key-shaped credential does
+    # not imply metered - TABLE 4 exists to prevent exactly that
+    # inference.
+    entitlements:
+      - pool: null
+        cost_class: free
+    physical:
+      - model_id: qwen36-27b
+        placement: cachyos-7900xtx
+      - model_id: qwen36-27b
+        placement: kserve-a5000
+      - model_id: qwen36-27b
+        placement: bazzite-5090
+    notes: >-
+      Three candidates as of 1.4.0: the edge (cachyos-7900xtx) is listed
+      first to match policies.placement_policy.prefer-warm-local's
+      prefer_order, and bazzite-5090 last - its gaming/interactive
+      priority makes it the least reliable tenancy despite the fastest
+      cold start. Ordering here is a preference hint only - the
+      placement_policy on the request is what actually decides, per
+      profile/policy/placement being independent axes.
+
+      LAUNCH PATH (added 1.6.0, STORY-036-2). Until now this profile
+      resolved to a NAME and nothing more: a consumer could learn that
+      {harness: claude, model_profile: local-code-standard} was an
+      approved decision, but not how to start it. What follows is the
+      path STORY-036-1 actually validated on 2026-08-30, recorded the
+      way minimax/strong records its own wiring. Evidence:
+      contracts/agent-router/evidence/STORY-036-1-local-launch-validation.md
+      - "R1".."R17" below are that file's numbered requirements; where
+      an OWNER RULING is meant it is written as "owner ruling Rn".
+
+      The path is the `claude` harness driven against the gateway's
+      Anthropic-compatible /v1/messages endpoint, authenticated with
+      the scoped agentgateway-claude-code key and served by qwen36-27b.
+      A real Claude Code session completed successfully through it
+      (R3); the served model was established from live response bodies
+      and gateway telemetry rather than from configuration, and the
+      upstream string returned (qwen3.6-27b) differs from the string
+      the client sent, so it cannot be an echo (R4); and a full
+      tool_use -> tool_result -> synthesis round trip ran over two
+      /v1/messages calls, which is what licenses this profile's `tools`
+      guarantee ON THIS PATH specifically (R5).
+
+      THE LAUNCH CONTRACT IS EXACTLY FOUR VARIABLES, set per-process on
+      the harness: ANTHROPIC_BASE_URL (the gateway), ANTHROPIC_AUTH_TOKEN
+      (the scoped key, conveyed as an Authorization bearer header rather
+      than x-api-key), ANTHROPIC_MODEL, and ANTHROPIC_CUSTOM_HEADERS
+      carrying the placement header. This is what passed, not an
+      idealised contract: R9 confirmed the last two convey from a real
+      session both at the wire and by gateway route-section selection,
+      so the agreed degraded headerless fallback was not needed.
+
+      ANTHROPIC_MODEL=qwen36-27b IS REQUIRED, NOT PREFERRED. Unpinned
+      Claude Code 2.1.251 sends "model": "claude-opus-5" in the request
+      body (R1), which is not in the gateway's CEL alias list, and a
+      real unpinned session against the live gateway was refused with
+      403 authorization failed, the access log naming the
+      body-consistency clause (R2). The zero-config path is broken
+      today: a consumer that omits the pin gets no completion at all,
+      not a degraded one.
+
+      A KNOWN CAVEAT ON TOP OF THE CONTRACT, NOT A FIFTH VARIABLE: THE
+      CONTEXT WINDOW. Claude Code does not recognise `qwen36-27b` as a
+      model id. It emits [claude-code:unrecognized_model] on every launch
+      and assumes a 200,000-token window for auto-compaction, while this
+      profile's real max_context is 65536 - so a long session compacts
+      far too late and can overrun the model. A consumer should set
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS, or an equivalent model override, to
+      the real 65536. Note the status of this deliberately: the four
+      variables above are the contract STORY-036-1 exercised and passed,
+      whereas this window behaviour was OBSERVED during that validation
+      (evidence finding F3) and was never itself exercised - the sessions
+      were far too short to reach the boundary. It is a caveat a consumer
+      must handle. It does not make the contract five variables.
+
+      PLACEMENT IS CONVEYED BY THE x-placement REQUEST HEADER, and its
+      value is never composed by hand. It is copied verbatim from the
+      `headers` object of a POST /v1/place result (R6). Pinning was
+      settled at the routing layer, the only place it can be: pinned
+      requests selected the placement-scoped route section, distinct
+      from the headerless default section (R7).
+
+      THE UNIT OF PLACEMENT IS THE SESSION, NOT THE TURN. A place result
+      carries ttl_seconds: 30 and is therefore point-in-time, but
+      ANTHROPIC_CUSTOM_HEADERS is fixed when the harness process starts
+      and cannot be refreshed while it runs. One Claude Code session
+      therefore pins ONE placement for its entire lifetime, and
+      "resolved late, per attempt" means PER SESSION - per launch - not
+      per turn. Fetch a fresh /v1/place result immediately before
+      starting a session, and RELAUNCH a long-running session to
+      re-place it. A session cannot re-place itself and must not be
+      expected to.
+
+      The consequence is bounded, and it is a FRESHNESS limitation
+      rather than a correctness or authorization one. A session
+      outliving its 30 s TTL keeps sending the placement it started
+      with, which may since have been withdrawn - and a withdrawn or
+      stale placement degrades to the frozen headerless default and is
+      served normally rather than failing (R10, R11). What it costs is
+      latency, not an answer: with the pinned placement genuinely down,
+      the request still returned a correct completion, after roughly
+      10 s of added latency spent failing to reach it (R12). Relaunch to
+      re-place when that cost matters; nothing breaks if you do not.
+
+      PLACEMENTS DEMONSTRATED ON THIS PATH: kserve-a5000 ONLY (R6, R7).
+      cachyos-7900xtx and bazzite-5090 were held ineligible for the
+      entire validation window and /v1/place never emitted them, so
+      nothing here claims them; they are added by a later data-only
+      catalog PR once those hosts are up (R8). Their non-emission is
+      itself positive evidence of late binding: the router named both
+      edges as rejected and why, rather than silently narrowing, and
+      under edge-only it returned status: unavailable with a null
+      placement rather than falling through to the cluster placement
+      the caller had excluded (R8). Eligibility is live runtime state,
+      not catalog data - all three read available/selectable here while
+      only one was actually eligible.
+
+      x-placement REMAINS A SCHEDULING SIGNAL ONLY (owner ruling R5).
+      It is never an authorization input and nothing above makes it
+      one. Authorization stays where it has always been: the per-section
+      CEL policy binding the request-body model, which is never derived
+      from the header. R13 shows the separation directly - the same key
+      is refused 403 for any other body model no matter what placement
+      is asked for, and 401 outside its credential set entirely.
+
+      THE HEADERLESS DEFAULT IS THE FROZEN SAFE DEFAULT. An absent or
+      stale header degrades to it rather than redirecting traffic:
+      headerless requests landed on the default route section and were
+      served from kserve-a5000, by curl and by a real session alike
+      (R10), and both a stale-but-real placement name and a garbage one
+      fell through to that same default and were served normally (R11).
+      So an expired ttl_seconds: 30 place result costs correctness
+      nothing, and no missing header can silently redirect production
+      traffic onto a human's desktop. Safe is not free, though: with
+      both edges genuinely down, a request pinned at an edge still
+      returned a correct completion from the cluster provider but paid
+      roughly 10 s of added latency first (R12) - a single observation
+      under one failure mode, recorded as such and not as a guarantee.
+
+      ECONOMICS. cost_class: free is correct and now evidenced rather
+      than merely reasoned. The credential is a LAN-scoped agentgateway
+      key granting NO METERED SPEND: it authenticates only to this
+      gateway's qwen36-27b sections and is refused everywhere else
+      (R13); no request in the validation reached a vendor endpoint and
+      no ANTHROPIC_API_KEY was set at any point (R14); and spillover is
+      structurally `none` because the entitlement is pool: null and no
+      metered entitlement exists anywhere in this catalog to spill into
+      (R15). An API-key-shaped credential does not imply metered - see
+      TABLE 4. One caveat a consumer must handle - Claude Code's own
+      result envelope
+      reports a non-zero total_cost_usd on this path, computed from the
+      CLI's internal price table with costBasis: unknown. It is a
+      client-side estimate, not spend; the local model has no price.
+      Anything aggregating session cost must exclude hosting: local
+      profiles or it will over-report (R14).
+
+      CREDENTIAL ISOLATION IS PART OF THE CONTRACT, exactly as for
+      minimax/strong. The base URL and token reach the worker's own
+      process or session ONLY. STORY-036-1 set all four variables
+      per-process on the harness subprocess: no ANTHROPIC_API_KEY was
+      set at any point, CLAUDE_CONFIG_DIR was never set, the global
+      Anthropic configuration was not rewritten, and nothing was
+      exported into the operator's shell. The key lives in 1Password,
+      scoped to this gateway path, and never in Git.
+
+      The endpoint itself is deliberately NOT recorded here as data.
+      agentgateway is the only model ingress (invariant 5) and
+      endpoint discovery is runtime state from the heartbeat contract;
+      the paragraphs above are prose provenance, not routable fields.
+
+  local-general:
+    description: >-
+      Non-code local work: chat, summarisation, assistant tasks. Its two
+      other candidates (hermes-jarvis, qwen-omni) were retired in
+      STORY-035-8c with no substitute selected, leaving qwen36-27b as the
+      sole candidate.
+    cost_class: free
+    hosting: local
+    selectable: true
+    # qwen36-27b is the only remaining candidate, so the floor is exactly
+    # what it provides.
+    capabilities: [chat, tools]
+    min_context: 65536
+    alignment: standard
+    forbidden_for: []
+    # Local execution draws on no entitlement pool: the GPU is
+    # already paid for. `pool: null` is the correct value here,
+    # not a gap.
+    entitlements:
+      - pool: null
+        cost_class: free
+    physical:
+      - model_id: qwen36-27b
+        placement: kserve-a5000
+    notes: >-
+      Retired STORY-035-8c: hermes-jarvis and qwen-omni were removed from
+      models[] and no replacement was selected for either. qwen36-27b
+      remains as the sole candidate.
+
+  local-unrestricted:
+    description: >-
+      Local model with no refusal training. This is an ALIGNMENT
+      property, NOT a quality tier. NON-SELECTABLE as of STORY-035-8c:
+      its only model (dolphin-chat) was retired and no substitute was
+      chosen - that decision is explicitly out of scope for the MVP and
+      is a post-MVP follow-up.
+    cost_class: free
+    hosting: local
+    selectable: false
+    # Empty, not [chat]/8192: rules 5 and 6 define capabilities/
+    # min_context as the intersection/minimum over physical[], which is
+    # undefined over an empty set. A non-selectable profile with no
+    # candidates guarantees nothing - see README rules 5 and 6. Rule 8
+    # still applies below: non-selectable does not make this profile
+    # safe, so forbidden_for stays non-empty.
+    capabilities: []
+    min_context: null
+    alignment: unrestricted
+    # Invariant 12. This list is a MINIMUM, extensible by catalog PR,
+    # and it is a hard exclusion: it is not a score, a tie-break or a
+    # warning. A request carrying any of these tags must never be
+    # auto-selected onto this profile, however well it otherwise fits.
+    # An operator may still choose it explicitly and own that.
+    forbidden_for:
+      - security
+      - iam
+      - secrets
+      - prod-iac
+      - destructive-tools
+    # Local execution draws on no entitlement pool: the GPU is
+    # already paid for. `pool: null` is the correct value here,
+    # not a gap.
+    entitlements:
+      - pool: null
+        cost_class: free
+    physical: []
+    blocked_by:
+      - a post-MVP catalog PR selects and validates a replacement model
+    notes: >-
+      Retired STORY-035-8c: dolphin-chat was removed from models[] and no
+      replacement was selected. This profile is awaiting a post-MVP
+      model decision, not broken - do not route to it and do not
+      auto-substitute another model in its place.
+
+  "claude/standard":
+    description: >-
+      Standard-tier vendor model via the claude harness's own
+      subscription. Not proxied, not placed, not metered.
+    cost_class: subscription
+    hosting: vendor
+    selectable: true
+    capabilities: [chat, tools]
+    # Sole candidate (claude/sonnet) is measured: see the 1.8.1
+    # changelog and models["claude/sonnet"].max_context.
+    min_context: 1000000
+    alignment: standard
+    forbidden_for: []
+    entitlements:
+      - pool: anthropic-max
+        cost_class: subscription
+    physical:
+      - model_id: "claude/sonnet"
+        placement: null
+    notes: >-
+      The everyday Anthropic tier below claude/strong: routine,
+      well-specified work that does not need the strong model. Same
+      subscription, same isolation rules and the same `placement: null`
+      as claude/strong.
+
+  "claude/strong":
+    description: >-
+      Strong vendor model via the claude harness's own subscription.
+      Not proxied, not placed, not metered.
+    cost_class: subscription
+    hosting: vendor
+    selectable: true
+    capabilities: [chat, tools]
+    # Sole candidate (claude/opus) is measured: see the 1.8.1 changelog
+    # and models["claude/opus"].max_context.
+    min_context: 1000000
+    alignment: standard
+    forbidden_for: []
+    entitlements:
+      - pool: anthropic-max
+        cost_class: subscription
+    physical:
+      - model_id: "claude/opus"
+        placement: null
+    notes: >-
+      `placement: null` is the correct value, not a gap: placement names
+      are agentgateway provider names and this traffic never touches
+      agentgateway. Invariant 10 - this is a subscription, not an API
+      key; nothing here authorises introducing ANTHROPIC_API_KEY or
+      centralising an OAuth token. G9/35.17 concern proxying
+      subscription traffic through cluster ingress, which this profile
+      does not do.
+
+  "claude/frontier":
+    description: >-
+      Frontier-tier vendor model via the claude harness's own
+      subscription. Not proxied, not placed, not metered.
+    cost_class: subscription
+    hosting: vendor
+    selectable: true
+    capabilities: [chat, tools]
+    # Sole candidate (claude/fable) is measured: see the 1.8.1 changelog
+    # and models["claude/fable"].max_context.
+    min_context: 1000000
+    alignment: standard
+    # A hard exclusion, like every forbidden_for entry: work tagged `pm`
+    # is never stamped onto this profile, recommended or overridden.
+    forbidden_for:
+      - pm
+    entitlements:
+      - pool: anthropic-max
+        cost_class: subscription
+    physical:
+      - model_id: "claude/fable"
+        placement: null
+    notes: >-
+      OVERRIDE-ONLY. The router never recommends this profile; a human
+      selects it deliberately for the rare task where a plausible but
+      wrong answer is expensive. That is enforced by routing, not by
+      this catalog: the router's approved pairs include
+      {harness: claude, model_profile: claude/frontier} in a frontier
+      band that band selection never returns, so an override naming it
+      passes approved_pair while no recommendation ever names it.
+      selectable here is what makes it eligible for that override. `pm`
+      in forbidden_for keeps coordinator work off it, and like every
+      forbidden_for entry no override can bypass it.
+
+  "openai/standard":
+    description: >-
+      Standard-tier vendor OpenAI model through an approved harness's own
+      subscription. Not proxied, not placed, not metered.
+    cost_class: subscription
+    hosting: vendor
+    selectable: true
+    capabilities: [chat, tools]
+    # Sole candidate (openai/gpt-6-luna) is measured: see the 1.8.1
+    # changelog and models["openai/gpt-6-luna"].max_context.
+    min_context: 258400
+    alignment: standard
+    forbidden_for: []
+    entitlements:
+      - pool: openai-plus
+        cost_class: subscription
+    physical:
+      - model_id: "openai/gpt-6-luna"
+        placement: null
+    notes: >-
+      The everyday OpenAI tier below openai/strong: routine,
+      well-specified work that does not need the strong model, funded
+      from the same ChatGPT subscription.
+
+  "openai/strong":
+    description: >-
+      Strong vendor OpenAI model through the codex harness's own
+      subscription. Stamped as the standing fallback tier in EPIC-035
+      section 11. Pinned to openai/gpt-6-sol (1.8.1, STORY-035-9f):
+      unlike ACP's own reference catalog, which keeps this profile on
+      openai/gpt-5.6-sol because gpt-6-sol was untested there, this
+      deployment measured gpt-6-sol launching through codex on the
+      subscription and reporting as itself, so it moved. OpenCode
+      remains catalog-disabled pending its live ChatGPT canary.
+    cost_class: subscription
+    hosting: vendor
+    selectable: true
+    capabilities: [chat, tools]
+    # Sole candidate (openai/gpt-6-sol) is measured: see the 1.8.1
+    # changelog and models["openai/gpt-6-sol"].max_context.
+    min_context: 258400
+    alignment: standard
+    forbidden_for: []
+    entitlements:
+      - pool: openai-plus
+        cost_class: subscription
+    physical:
+      - model_id: "openai/gpt-6-sol"
+        placement: null
+
+  "openai/frontier":
+    description: >-
+      Frontier-tier vendor OpenAI model through an approved harness's own
+      subscription. Not proxied, not placed, not metered.
+    cost_class: subscription
+    hosting: vendor
+    selectable: true
+    capabilities: [chat, tools]
+    # Sole candidate (openai/gpt-6-astra) is measured: see the 1.8.1
+    # changelog and models["openai/gpt-6-astra"].max_context.
+    min_context: 258400
+    alignment: standard
+    # A hard exclusion, like every forbidden_for entry: work tagged `pm`
+    # is never stamped onto this profile, recommended or overridden.
+    forbidden_for:
+      - pm
+    entitlements:
+      - pool: openai-plus
+        cost_class: subscription
+    physical:
+      - model_id: "openai/gpt-6-astra"
+        placement: null
+    notes: >-
+      OVERRIDE-ONLY. The router never recommends this profile; a human
+      selects it deliberately for the rare task where a plausible but
+      wrong answer is expensive. That is enforced by routing, not by
+      this catalog: the router's approved pairs include
+      {harness: codex, model_profile: openai/frontier} in a frontier
+      band that band selection never returns, so an override naming it
+      passes approved_pair while no recommendation ever names it. The
+      {harness: opencode} pairing is approved the same way and stays
+      ineligible with its harness until OpenCode is activated. selectable
+      here is what makes it eligible for an override. `pm` in
+      forbidden_for keeps coordinator work off it, and like every
+      forbidden_for entry no override can bypass it.
+
+  "devin/free":
+    description: >-
+      Free Devin tier on the existing Teams account. Free, not
+      subscription: it consumes no pot and no metered spend.
+    cost_class: free
+    hosting: vendor
+    selectable: true
+    capabilities: [chat, tools]
+    min_context: null
+    alignment: standard
+    forbidden_for: []
+    entitlements:
+      - pool: devin-free
+        cost_class: free
+    physical:
+      - model_id: swe-1-7
+        placement: null
+      - model_id: swe-1-7-medium
+        placement: null
+    notes: >-
+      Devin's paid on-demand tier is NOT in this catalog. Invariant 4 -
+      metered use is explicit, per-attempt and recorded, so it does not
+      get a free-looking profile name to hide behind.
+
+  "minimax/strong":
+    description: >-
+      Strong vendor model on the MiniMax Max Token Plan. The `claude`
+      harness path against MiniMax's Anthropic-compatible endpoint was
+      physically validated by STORY-035-23 and promoted by owner decision,
+      2026-08-27. The OpenCode pairing remains catalog-disabled with its
+      harness pending a separate live MiniMax subscription canary.
+    # SUBSCRIPTION, not metered - and note how that is established: from
+    # the entitlement pool below, which says the Token Plan is a fixed
+    # monthly subscription. It is NOT established from the credential,
+    # which is API-key-shaped. Reading the shape instead of the
+    # entitlement is the error TABLE 4 exists to prevent.
+    cost_class: subscription
+    hosting: vendor
+    # Promoted from selectable: false by the 1.5.0 owner decision after
+    # STORY-035-23 physical validation. The former blocked_by list is
+    # fully dispositioned below - a selectable profile carries no
+    # dangling blocked_by entries.
+    selectable: true
+    # `tools` demonstrated by STORY-035-23 - see
+    # models["minimax/m3"].capabilities.
+    capabilities: [chat, tools]
+    # min_context is a GUARANTEE, not an eligibility floor (README
+    # "profiles"): it promises every candidate here provides at least
+    # this much context. It does not require a task to NEED 1M - a
+    # task needing any amount up to 1M is satisfied by this profile,
+    # so a bigger number widens eligibility rather than narrowing it.
+    # Rule 6 pins the value: it must equal the minimum max_context
+    # across physical[] (sole candidate, 1000000 - Max Token Plan
+    # tier fact, owner-recorded 2026-08-27). null would withhold the
+    # guarantee and bar this profile from explicit long-context
+    # requirements - exactly where a 1M window is its edge.
+    min_context: 1000000
+    alignment: standard
+    forbidden_for: []
+    entitlements:
+      - pool: minimax-max
+        cost_class: subscription
+      # A SECOND funding candidate would be written exactly like this,
+      # and is shown commented out because the shape is the point: one
+      # profile may have several funding sources, ordered, each with its
+      # own economics and its own preconditions. No PAYG pool exists, so
+      # this is not reachable and is not declared as data:
+      #
+      #   - pool: minimax-payg
+      #     cost_class: metered
+      #     requires: [allow_metered, metered-spend-authorization]
+      #
+      # Note what that entry does NOT do: it does not let exhaustion of
+      # minimax-max slide into it. Spillover is `none`; reaching a
+      # metered candidate takes a separate credential, explicit intent,
+      # and an authorized principal, every time.
+    physical:
+      - model_id: "minimax/m3"
+        placement: null
+    # DISPOSITION OF THE FORMER blocked_by LIST (nine items, owner
+    # decision 2026-08-27). Evidence for every "retired" line:
+    # .claude/.ai-docs/stories/STORY-035-23-minimax-validation-evidence.md
+    #   1. Token Plan billing, not PAYG      - RETIRED (req 4: every
+    #      call succeeded against a $0 PAYG balance; only the
+    #      subscription could have funded them).
+    #   2. Claude Code -> M3 end to end      - RETIRED (req 1: real
+    #      completion, is_error false, all tokens on MiniMax-M3).
+    #   3. identity from a live response     - RETIRED (req 2: body
+    #      model MiniMax-M3 + minimax-request-id/x-mm-request-id
+    #      response headers).
+    #   4. tool calling exercised            - RETIRED (req 3: full
+    #      tool_use -> tool_result -> synthesis round trip).
+    #   5. isolation from Claude Max env     - RETIRED (req 1:
+    #      per-process env only; global Anthropic config untouched).
+    #   6. quota behaviour observable        - RESOLVED by owner
+    #      rationale: per-call usage in every response is sufficient;
+    #      plan-level quota lives in the MiniMax console. Acceptable by
+    #      design under spillover: none.
+    #   7. no automatic PAYG spillover       - RESOLVED by owner
+    #      rationale: demonstrated in the $0-balance direction, and
+    #      structurally guaranteed by minimax-max spillover: none (a
+    #      PAYG pool does not exist to spill into).
+    #   8. MCP compatibility exercised       - RE-FILED to the backlog
+    #      as its own story; a capability claim, not a selectability
+    #      gate. `tools`/`chat` above claim only what was demonstrated.
+    #   9. fallback when MiniMax unavailable - RE-FILED to 35.9: router
+    #      runtime behaviour, owned by the router story, not by this
+    #      catalog row.
+    notes: >-
+      MiniMax is NOT a harness entry, deliberately. The execution path
+      is `harness: claude` + `model_profile: minimax/strong`, which is
+      the harness/model separation this catalog exists to preserve:
+      Claude Code is the harness, MiniMax M3 is the model it is pointed
+      at. MiniMax Code is a different harness, is not approved, and
+      would need its own evaluation story.
+
+      Wiring, as validated by STORY-035-23: the worker session sets
+      ANTHROPIC_BASE_URL to MiniMax's Anthropic-compatible endpoint
+      (api.minimax.io, Global) and passes the Token Plan key via
+      ANTHROPIC_AUTH_TOKEN - the Authorization: Bearer header, which
+      the endpoint prefers over x-api-key when both are present.
+      x-api-key also authenticates, but Bearer is the standard here.
+
+      Credential isolation is part of the contract, not an
+      implementation detail: the MiniMax base URL and token reach a
+      MiniMax-backed worker in that worker's own process or session
+      only. Nothing rewrites the machine's global Anthropic
+      configuration, and the Anthropic Max path keeps no
+      ANTHROPIC_API_KEY. The credential lives in 1Password, scoped to
+      MiniMax-backed worker execution, and never in Git.
+
+# =====================================================================
+# TABLE 6 - policies
+# placement_policy definitions: an ordered placement preference, how
+# hard to prefer an already-warm GPU, and hard constraints.
+#
+#   prefer_order          - ordered placement names. First is best.
+#   warm_preference       - strict   : any warm candidate beats any cold
+#                                      candidate, regardless of order.
+#                           weighted : warm moves a candidate up
+#                                      `warm_bonus_rank_shift` positions.
+#                           ignored  : warmth is not a factor.
+#   warm_bonus_rank_shift - only meaningful for `weighted`. PROVISIONAL
+#                           until 35.7 measures what a cold start
+#                           actually costs (ruling R1).
+#   allow_cold_start      - false forbids waking a scaled-to-zero
+#                           placement. Exists because invariant 7 makes
+#                           "do not wake the A5000" a real requirement,
+#                           not because anything needs it today.
+#   min_vram_gb           - hard floor on capacity.vram_gb. Satisfiable
+#                           ONLY by a measured value (see TABLE 2).
+#   min_free_vram_gb      - hard floor on runtime free VRAM from the
+#                           heartbeat. null = no constraint. No seeded
+#                           policy sets one: per-model footprints are in
+#                           models[].vram_gb_estimate and the required
+#                           headroom is 35.7/35.11 work, not a number
+#                           invented here.
+# =====================================================================
+policies:
+  placement_policy:
+    prefer-warm-local:
+      description: >-
+        Default. Take whatever is already warm; otherwise prefer the
+        edge (cachyos-7900xtx measures a ~6s cold start against
+        kserve-a5000's conservative 150s estimate), then the cluster
+        GPU, then the remaining edge hosts in order of expected
+        availability. R25 frozen decision table: edge warm/KServe cold
+        -> edge; edge cold/KServe warm -> KServe; both warm -> edge;
+        both cold or unknown -> edge; edge ineligible -> KServe. The
+        first two rows follow from warm_preference: strict alone (any
+        warm candidate beats any cold one, regardless of prefer_order);
+        the last three follow from prefer_order alone, once no candidate
+        is known-warm - which is why cachyos-7900xtx leads it.
+      prefer_order:
+        - cachyos-7900xtx
+        - kserve-a5000
+        - bazzite-5090
+        - laptop-rtx5000
+      warm_preference: strict
+      warm_bonus_rank_shift: null
+      allow_cold_start: true
+      min_vram_gb: null
+      min_free_vram_gb: null
+      resolves_today: true
+
+    cluster-only:
+      description: >-
+        Never leave the cluster. The correct policy for anything that
+        must not depend on a workstation being awake.
+      prefer_order:
+        - kserve-a5000
+      warm_preference: ignored
+      warm_bonus_rank_shift: null
+      allow_cold_start: true
+      min_vram_gb: null
+      min_free_vram_gb: null
+      resolves_today: true
+
+    edge-only:
+      description: >-
+        Never use the cluster GPU. Intended for work that must not
+        compete with cluster inference or must not wake the A5000.
+      prefer_order:
+        - cachyos-7900xtx
+        - bazzite-5090
+        - laptop-rtx5000
+      warm_preference: weighted
+      warm_bonus_rank_shift: 1
+      allow_cold_start: true
+      min_vram_gb: null
+      min_free_vram_gb: null
+      # cachyos-7900xtx and (as of 1.4.0) bazzite-5090 are both
+      # available/selectable, so this resolves with a real fallback
+      # inside the edge tier. laptop-rtx5000 remains status: planned
+      # and contributes nothing yet.
+      resolves_today: true
+
+    any-24gb:
+      description: >-
+        Any 24 GB-class GPU, cluster or edge. The size floor is the
+        point; ordering is secondary.
+      prefer_order:
+        - kserve-a5000
+        - cachyos-7900xtx
+        - bazzite-5090
+        - laptop-rtx5000
+      warm_preference: weighted
+      warm_bonus_rank_shift: 1
+      allow_cold_start: true
+      # kserve-a5000 and (as of 1.4.0) bazzite-5090 carry measured
+      # capacity.vram_gb figures, so this constraint admits two
+      # placements. cachyos-7900xtx still reports only nameplate and
+      # stays excluded: nameplate figures do not satisfy a hard
+      # constraint.
+      min_vram_gb: 24
+      min_free_vram_gb: null
+      resolves_today: true

@@ -1,8 +1,27 @@
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources:
-  # STORY-035-1: model & capability catalog (schema + seed). Data only -
-  # this Kustomization intentionally ships no workload. README.md is the
-  # schema document and is deliberately NOT a resource.
-  - catalog-configmap.yaml
+# The agent-router model & capability catalog (STORY-035-1, EPIC-035).
+#
+# catalog.yaml is the catalog document itself, byte for byte: the router
+# mounts it from this ConfigMap and reports sha256(catalog.yaml) as
+# `catalog_version` in GET /v1/status. Launch hosts take the same file from
+# Git and must get the same digest, so it lives as a plain file rather than
+# a string inside a manifest (STORY-037-3a). Edit catalog.yaml directly and
+# follow the change protocol at its top; README.md is the schema document and
+# is deliberately NOT a resource.
+#
+# The name carries no content hash: the router Deployment and Reloader
+# reference `agent-router-catalog` by name, and a changed catalog rolls the
+# router through Reloader rather than through a renamed ConfigMap.
+configMapGenerator:
+  - name: agent-router-catalog
+    namespace: ai
+    files:
+      - catalog.yaml=catalog.yaml
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/name: agent-router-catalog
+        app.kubernetes.io/component: catalog
+        app.kubernetes.io/part-of: agent-router
