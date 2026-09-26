@@ -5,7 +5,8 @@
 # tells us before a release needs changes on our side. So before a release is
 # merged, this script checks it against OUR deployment:
 #
-#   1. the release's tarballs match its SHA256SUMS;
+#   1. the release's tarballs match its SHA256SUMS, and the OCI digest we pin
+#      is the one the release published for its deploy base;
 #   2. the release body carries no "CONSUMER ACTION REQUIRED" section;
 #   3. that release's catalog-validate accepts our catalog with no warnings.
 #      Warnings count as failures: v0.3.0 only WARNS that a catalog without
@@ -15,7 +16,9 @@
 #   5. the release's deploy base renders with the components and patches from
 #      our agent-router ks.yaml, and the result passes kubeconform.
 #
-# Usage: spektr-upgrade-check.sh --tag <vX.Y.Z[-rc.N]> [--catalog-configmap <path>]
+# Usage: spektr-upgrade-check.sh --tag <vX.Y.Z[-rc.N]> [--digest <sha256:...>]
+#                                [--catalog-configmap <path>]
+# --digest defaults to the digest ocirepository.yaml pins when --tag is its tag.
 # Needs gh (authenticated with read access to the release), yq, jq, kustomize,
 # kubeconform. Runs the same locally and in .github/workflows/spektr-upgrade-check.yaml.
 set -euo pipefail
@@ -24,17 +27,23 @@ REPO="jlengelbrecht/ai-control-plane"
 ROOT="$(git rev-parse --show-toplevel)"
 CATALOG_CM="$ROOT/kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml"
 KS="$ROOT/kubernetes/apps/ai/agent-router/app/ks.yaml"
+OCIREPO="$ROOT/kubernetes/apps/ai/agent-router/app/ocirepository.yaml"
 STAMP_TEMPLATE="$ROOT/.github/scripts/testdata/spektr-stamp.template.json"
 TAG=""
+DIGEST_PIN=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --tag) TAG="$2"; shift 2 ;;
+    --digest) DIGEST_PIN="$2"; shift 2 ;;
     --catalog-configmap) CATALOG_CM="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$TAG" ] || { echo "usage: $0 --tag <release tag> [--catalog-configmap <path>]" >&2; exit 2; }
+[ -n "$TAG" ] || { echo "usage: $0 --tag <release tag> [--digest <sha256:...>] [--catalog-configmap <path>]" >&2; exit 2; }
+if [ -z "$DIGEST_PIN" ] && [ "$(yq -r '.spec.ref.tag' "$OCIREPO")" = "$TAG" ]; then
+  DIGEST_PIN="$(yq -r '.spec.ref.digest' "$OCIREPO")"
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -50,6 +59,12 @@ gh release download "$TAG" -R "$REPO" -D "$WORK" \
   -p "agent-stamp-validate_${TAG}_linux_amd64.tar.gz" \
   -p "deploy-base_${TAG}.tar.gz" \
   -p SHA256SUMS
+# --ignore-missing skips listed files we did not download; it does not require
+# every downloaded file to be listed, so check that each one is.
+for f in "catalog-validate_${TAG}_linux_amd64.tar.gz" "agent-stamp-validate_${TAG}_linux_amd64.tar.gz" "deploy-base_${TAG}.tar.gz"; do
+  awk '{ sub(/^\*?(\.\/)?/, "", $2); print $2 }' "$WORK/SHA256SUMS" | grep -qxF "$f" \
+    || { fail "SHA256SUMS has no entry for $f"; exit 1; }
+done
 if (cd "$WORK" && sha256sum -c --ignore-missing --quiet SHA256SUMS); then
   ok "release tarballs match SHA256SUMS"
 else
@@ -61,8 +76,18 @@ tar xzf "$WORK/catalog-validate_${TAG}_linux_amd64.tar.gz" -C "$WORK/bin"
 tar xzf "$WORK/agent-stamp-validate_${TAG}_linux_amd64.tar.gz" -C "$WORK/bin"
 tar xzf "$WORK/deploy-base_${TAG}.tar.gz" -C "$WORK/render"
 
-# 2. Consumer action flagged by the release itself.
+# 2. The release body names the base artifact by digest. Flux pulls by the
+#    digest we pin, so it has to be the one this release published.
 gh release view "$TAG" -R "$REPO" --json body --jq .body > "$WORK/release-body.md"
+if [ -z "$DIGEST_PIN" ]; then
+  echo "  --    OCI digest not checked (no --digest, and $TAG is not the pinned tag)"
+elif grep -qF "agent-router-base@${DIGEST_PIN}" "$WORK/release-body.md"; then
+  ok "pinned digest $DIGEST_PIN is the base $TAG published"
+else
+  fail "pinned digest $DIGEST_PIN is not the base digest $TAG published"
+fi
+
+# Consumer action flagged by the release itself.
 if grep -qi "consumer action required" "$WORK/release-body.md"; then
   fail "release notes flag CONSUMER ACTION REQUIRED - read them before merging:"
   grep -i -A15 "consumer action required" "$WORK/release-body.md" | sed 's/^/        /'

@@ -40,6 +40,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The job runs binaries downloaded from a release; they get no Git token.
+          persist-credentials: false
 
       - name: Generate GitHub App Token (ai-control-plane, read-only)
         id: app-token
@@ -55,7 +58,10 @@ jobs:
         run: |
           # renovate: datasource=github-releases depName=yannh/kubeconform
           KUBECONFORM_VERSION="v0.6.7"
-          curl -sL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" | tar xz
+          BASE="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
+          curl -sfLO "${BASE}/kubeconform-linux-amd64.tar.gz"
+          curl -sfL "${BASE}/CHECKSUMS" | grep ' kubeconform-linux-amd64.tar.gz$' | sha256sum -c -
+          tar xzf kubeconform-linux-amd64.tar.gz kubeconform
           sudo mv kubeconform /usr/local/bin/
 
       - name: Check the release against this deployment
