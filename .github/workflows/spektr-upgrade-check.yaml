@@ -11,7 +11,8 @@
 # changes, since a catalog edit can break the release we already run.
 #
 # A second job checks clients/agent-router/manifest.json against the catalog
-# (offline, no token), so hosts reading the manifest always get a consistent pair.
+# and against the validator release's SHA256SUMS, so hosts reading the
+# manifest always get a consistent, verifiable set.
 #
 # The releases are private. The job reads them with a short-lived homebot app
 # token scoped to ai-control-plane (Contents: read), so the app installation
@@ -80,8 +81,8 @@ jobs:
 
   manifest:
     # clients/agent-router/manifest.json must name the catalog the router
-    # loads. Offline, no token: a catalog change that forgets the manifest
-    # (or the reverse) fails here.
+    # loads and the real checksums of the validator it recommends: a catalog
+    # change that forgets the manifest (or the reverse) fails here.
     name: Agent Router Manifest Check
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -91,5 +92,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check the manifest against the catalog
-        run: bash .github/scripts/agent-router-manifest-check.sh
+      - name: Generate GitHub App Token (ai-control-plane, read-only)
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: jlengelbrecht
+          repositories: ai-control-plane
+          permission-contents: read
+
+      - name: Check the manifest against the catalog and the release checksums
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash .github/scripts/agent-router-manifest-check.sh --verify-release

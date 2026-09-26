@@ -18,7 +18,7 @@ host can read it without a credential, including hosts that can't reach the rout
 | `catalog.digest` | `sha256:` of the raw catalog file. Once Flux has applied the commit (minutes), it equals `catalog_version` in `GET /v1/status` |
 | `catalog.path` | Repository path of the catalog file. Follow it and never hard-code it: the path can move, the manifest can't |
 | `validator.min_version` / `max_version_exclusive` | The validator versions that accept the router's stamps against this catalog |
-| `validator.recommended_version` | The version the deployed router ships |
+| `validator.recommended_version` | A validator build verified against this catalog, inside the window. It is not tied to the router's own version: the router can move on while hosts stay on a validator the window still allows |
 | `validator.artifacts.<os>_<arch>` | Release file name and sha256 of the recommended build, for the platforms we publish |
 | `validator.source` | Where those files come from |
 

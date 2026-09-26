@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # Check that clients/agent-router/manifest.json agrees with the catalog it
-# names, and with the ConfigMap the router actually loads. Runs offline with
-# no credentials; used by .github/workflows/spektr-upgrade-check.yaml.
+# names, and with the ConfigMap the router actually loads. Runs offline with no
+# credentials; with --verify-release it also checks the artifact checksums
+# against the release's SHA256SUMS (needs gh with read access to that release).
+# Used by .github/workflows/spektr-upgrade-check.yaml.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+REPO="jlengelbrecht/ai-control-plane"
+PLATFORMS="linux_amd64 linux_arm64"
+VERIFY_RELEASE=0
+[ "${1:-}" = "--verify-release" ] && VERIFY_RELEASE=1
 MANIFEST="$ROOT/clients/agent-router/manifest.json"
 FAILED=0
 ok()   { printf '  ok    %s\n' "$1"; }
@@ -51,6 +57,11 @@ else
 fi
 
 art_ok=1
+keys="$(jq -r '.validator.artifacts // {} | keys | sort | join(" ")' "$MANIFEST")"
+if [ "$keys" != "$PLATFORMS" ]; then
+  fail "validator.artifacts must list exactly: $PLATFORMS (has: ${keys:-none})"
+  art_ok=0
+fi
 while IFS=$'\t' read -r platform file sum; do
   case "$file" in
     *"_${rec}_"*) ;;
@@ -58,7 +69,19 @@ while IFS=$'\t' read -r platform file sum; do
   esac
   [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || { fail "$platform sha256 is not a sha256: $sum"; art_ok=0; }
 done < <(jq -r '.validator.artifacts | to_entries[] | [.key, .value.file, .value.sha256] | @tsv' "$MANIFEST")
-[ "$art_ok" -eq 1 ] && ok "validator artifacts name $rec"
+[ "$art_ok" -eq 1 ] && ok "validator artifacts: $PLATFORMS for $rec"
+
+if [ "$VERIFY_RELEASE" -eq 1 ]; then
+  sums="$(gh release download "$rec" -R "$REPO" -p SHA256SUMS -O -)"
+  while IFS=$'\t' read -r platform file sum; do
+    listed="$(awk -v f="$file" '{ n = $2; sub(/^\*?(\.\/)?/, "", n) } n == f { print $1 }' <<< "$sums")"
+    if [ "$listed" = "$sum" ]; then
+      ok "$platform sha256 matches $rec SHA256SUMS"
+    else
+      fail "$platform sha256 $sum does not match $rec SHA256SUMS (${listed:-not listed})"
+    fi
+  done < <(jq -r '.validator.artifacts | to_entries[] | [.key, .value.file, .value.sha256] | @tsv' "$MANIFEST")
+fi
 
 if [ "$FAILED" -ne 0 ]; then
   echo "RESULT: manifest and catalog disagree"
