@@ -1,0 +1,73 @@
+---
+# Spektr upgrade check: before a Spektr (agent-router) release reaches the
+# cluster, check it against OUR deployment - catalog, stamp validation, and the
+# patches in kubernetes/apps/ai/agent-router/app/ks.yaml. The checks live in
+# .github/scripts/spektr-upgrade-check.sh, which runs the same way locally.
+#
+# Spektr is an upstream product we consume and it no longer warns us about
+# breaking releases, so this check is the gate: Renovate waits for it before
+# auto-merging a patch release, and minor/major releases wait for it plus a
+# manual merge (.github/renovate/autoMerge.json5). It also runs when the catalog
+# changes, since a catalog edit can break the release we already run.
+#
+# The releases are private. The job reads them with a short-lived homebot app
+# token scoped to ai-control-plane (Contents: read), so the app installation
+# must include that repository.
+name: Spektr Upgrade Check
+
+on:
+  pull_request:
+    paths:
+      - kubernetes/apps/ai/agent-router/app/ocirepository.yaml
+      - kubernetes/apps/ai/agent-router/app/ks.yaml
+      - kubernetes/apps/ai/agent-router-catalog/app/catalog-configmap.yaml
+      - .github/scripts/spektr-upgrade-check.sh
+      - .github/scripts/testdata/spektr-stamp.template.json
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to check (default is the one ocirepository.yaml pins)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Spektr Upgrade Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The job runs binaries downloaded from a release; they get no Git token.
+          persist-credentials: false
+
+      - name: Generate GitHub App Token (ai-control-plane, read-only)
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          owner: jlengelbrecht
+          repositories: ai-control-plane
+          permission-contents: read
+
+      - name: Setup kubeconform
+        run: |
+          # renovate: datasource=github-releases depName=yannh/kubeconform
+          KUBECONFORM_VERSION="v0.6.7"
+          BASE="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}"
+          curl -sfLO "${BASE}/kubeconform-linux-amd64.tar.gz"
+          curl -sfL "${BASE}/CHECKSUMS" | grep ' kubeconform-linux-amd64.tar.gz$' | sha256sum -c -
+          tar xzf kubeconform-linux-amd64.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Check the release against this deployment
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="${INPUT_TAG:-$(yq -r '.spec.ref.tag' kubernetes/apps/ai/agent-router/app/ocirepository.yaml)}"
+          bash .github/scripts/spektr-upgrade-check.sh --tag "$TAG"
