@@ -6,16 +6,16 @@ key `catalog.yaml`). EPIC-035 section 6, story 35.1.
 This file is the contract. If the data and this document disagree, that is a bug in one
 of them, not a judgement call for the reader.
 
-## Inert
+## Consumers
 
-Nothing reads this ConfigMap. There is no Deployment, no volume mount, no `envFrom`, no
-workload of any kind in this Kustomization, and no other manifest in `kubernetes/`
-references the name `agent-router-catalog`. `consumers: []` in the data asserts this
-explicitly so a future reader can tell "nothing uses it yet" from "somebody forgot to
-write it down".
+The deployed agent-router mounts this ConfigMap (`kubernetes/apps/ai/agent-router/app/ks.yaml` depends on it) and
+reports `sha256(catalog.yaml)` as `catalog_version` in `GET /v1/status`. Launch hosts running
+`agent-stamp-validate` load the same file from Git as their trusted catalog, so any change to it changes the digest
+they must pin.
 
-The consumer arrives in story 35.9 (`agent-router`). Until then the value of this file is
-that the schema can be argued about while it is still free to change.
+The document's own `consumers: []` field and its opening "inert" comments predate the router and are stale. They
+live inside the hashed document, so they are corrected at the next catalog version bump rather than in a change
+that must keep the digest.
 
 ## Why the profile indirection exists
 
