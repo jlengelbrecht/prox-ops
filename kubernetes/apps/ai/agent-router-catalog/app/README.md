@@ -1,21 +1,21 @@
 # agent-router model & capability catalog
 
-Schema document for `catalog-configmap.yaml` (ConfigMap `ai/agent-router-catalog`,
+Schema document for `catalog.yaml` (ConfigMap `ai/agent-router-catalog`,
 key `catalog.yaml`). EPIC-035 section 6, story 35.1.
 
 This file is the contract. If the data and this document disagree, that is a bug in one
 of them, not a judgement call for the reader.
 
-## Inert
+## Consumers
 
-Nothing reads this ConfigMap. There is no Deployment, no volume mount, no `envFrom`, no
-workload of any kind in this Kustomization, and no other manifest in `kubernetes/`
-references the name `agent-router-catalog`. `consumers: []` in the data asserts this
-explicitly so a future reader can tell "nothing uses it yet" from "somebody forgot to
-write it down".
+The deployed agent-router mounts this ConfigMap (`kubernetes/apps/ai/agent-router/app/ks.yaml` depends on it) and
+reports `sha256(catalog.yaml)` as `catalog_version` in `GET /v1/status`. Launch hosts running
+`agent-stamp-validate` load the same file from Git as their trusted catalog, so any change to it changes the digest
+they must pin.
 
-The consumer arrives in story 35.9 (`agent-router`). Until then the value of this file is
-that the schema can be argued about while it is still free to change.
+The document's own `consumers: []` field and its opening "inert" comments predate the router and are stale. They
+live inside the hashed document, so they are corrected at the next catalog version bump rather than in a change
+that must keep the digest.
 
 ## Why the profile indirection exists
 
@@ -29,7 +29,7 @@ Three axes, kept apart on purpose (invariant 1):
 
 BMAD stamps a **profile name**. The profile name is stable; the model behind it is data.
 Swapping `local-code-standard` from one model to another is a pull request against
-`catalog-configmap.yaml` and touches nothing else - no routing policy, no story rewrite,
+`catalog.yaml` and touches nothing else - no routing policy, no story rewrite,
 no BMAD edit. Any change that makes a profile name mean "one specific model" defeats the
 whole structure.
 
@@ -527,7 +527,7 @@ written by hand.
 ## Change protocol
 
 Changing which physical model backs a profile is a pull request against
-`catalog-configmap.yaml`. Never a BMAD policy edit, never a story rewrite, never a change
+`catalog.yaml`. Never a BMAD policy edit, never a story rewrite, never a change
 to a routing rule.
 
 Every change must bump `version`, update `updated`, keep all validation rules above true,
