@@ -45,6 +45,12 @@ spec:
       enableCephfsDriver: true
       enableGrpcMetrics: true
 
+      # Group snapshots stay off: csi-snapshotter v8.0.1 (Rook v1.15.9) only speaks
+      # v1alpha1 VolumeGroupSnapshot APIs, which the snapshot-controller v8.6 CRDs no
+      # longer serve. With the feature on, the sidecar's informer never syncs and it
+      # stops creating any VolumeSnapshots. Nothing here uses group snapshots.
+      enableVolumeGroupSnapshot: false
+
       # CSI provisioner replicas (reduced for homelab)
       provisionerReplicas: 2
 
