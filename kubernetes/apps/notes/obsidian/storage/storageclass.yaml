@@ -1,0 +1,31 @@
+---
+# RBD class for the Obsidian volume only. Same pool, image format, CSI
+# secrets and filesystem as ceph-block
+# (kubernetes/apps/rook-ceph/rook-ceph-cluster/app/storageclasses.yaml); the
+# only difference is reclaimPolicy: Retain, so deleting the claim releases
+# the volume instead of deleting the RBD image. The shared classes and every
+# existing claim are untouched. StorageClass parameters are immutable: if
+# ceph-block's parameters change, this class has to be recreated to match.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: obsidian-ceph-block-retain
+  labels:
+    app.kubernetes.io/name: obsidian
+    app.kubernetes.io/component: storage
+provisioner: rook-ceph.rbd.csi.ceph.com
+parameters:
+  clusterID: rook-ceph
+  pool: k8s-rbd
+  imageFormat: "2"
+  imageFeatures: layering
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+  csi.storage.k8s.io/fstype: ext4
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate

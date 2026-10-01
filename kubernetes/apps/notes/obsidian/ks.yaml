@@ -1,0 +1,30 @@
+---
+# Obsidian desktop (LinuxServer image) streamed to the browser on the
+# internal gateway behind Authentik forward auth. The PVC and its Retain
+# storage class live in the sibling obsidian-storage Kustomization
+# (prune: false).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app obsidian
+  namespace: flux-system
+spec:
+  targetNamespace: notes
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  # The notes root applies `namespace: notes` to this tree, so both
+  # Kustomizations land in `notes` and the storage sibling resolves in this
+  # CR's own namespace.
+  dependsOn:
+    - name: obsidian-storage
+  interval: 1h
+  retryInterval: 2m
+  timeout: 10m
+  path: ./kubernetes/apps/notes/obsidian/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

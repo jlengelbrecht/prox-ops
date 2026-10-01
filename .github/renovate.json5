@@ -692,6 +692,20 @@
       ],
     },
     {
+      description: 'LinuxServer.io Obsidian stable builds (v-prefixed app version, -ls suffix)',
+      matchDatasources: [
+        'docker',
+      ],
+      // Must stay after the generic LinuxServer rule above, which rejects the leading v.
+      // Matches: v1.13.7-ls146, v1.13.7-ls147, v1.14.0-ls150
+      // Excludes: latest, untagged app versions, arch-prefixed tags, any prerelease suffix
+      // An -ls bump on the same app version is a patch update; automerge policy is unchanged.
+      versioning: 'regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)-ls(?<revision>\\d+)$',
+      matchPackageNames: [
+        'lscr.io/linuxserver/obsidian',
+      ],
+    },
+    {
       description: 'Loose versioning for onedr0p images (4-segment versions)',
       matchDatasources: [
         'docker',

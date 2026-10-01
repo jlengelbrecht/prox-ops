@@ -1,0 +1,15 @@
+---
+# Dedicated namespace for the hosted Obsidian desktop. The LinuxServer image
+# starts as root so s6-overlay can set up the desktop session, which the
+# restricted profile of the tools namespace refuses. Baseline here keeps
+# privileged mode, host namespaces, hostPath volumes and capabilities outside
+# the default container set blocked without loosening any other namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: notes
+  labels:
+    kubernetes.io/metadata.name: notes
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline

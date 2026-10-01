@@ -1,0 +1,200 @@
+---
+# Obsidian desktop app (LinuxServer image, Selkies web streaming). One
+# personal desktop session for the owner, not a multi-user service: anyone
+# who passes the Authentik gate drives the same desktop. The internal nginx
+# serves the web client and its WebSocket stream on 3000; TLS terminates at
+# the envoy-internal gateway.
+#
+# Single instance on an RWO Ceph volume: replicas 1 with Recreate. The whole
+# home (/config) is the existing claim from the obsidian-storage Kustomization,
+# vaults go under /config/vaults. Obsidian Sync runs inside this desktop app;
+# there is deliberately no headless Sync container beside it, because two
+# Sync clients must not share one vault. Signing in to the Obsidian account
+# and unlocking an encrypted remote vault are done by hand in the app. No
+# account credential is supplied by Git; the signed-in state persists on the
+# protected /config volume. Josh enables and configures community plugins
+# inside Obsidian after deployment; no plugin, vault setting, API credential,
+# or memory bank is preinstalled here. Keep this device's community-plugin
+# lists and plugin data out of Sync so plugin settings stay local.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: obsidian
+  namespace: notes
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: obsidian
+  interval: 1h
+  values:
+    controllers:
+      obsidian:
+        replicas: 1
+        # RWO Ceph RBD volume: RollingUpdate would deadlock on
+        # Multi-Attach when the new pod lands on another node.
+        strategy: Recreate
+        pod:
+          automountServiceAccountToken: false
+          # The FQDN egress rules in networkpolicy.yaml only match when the
+          # pod asks cluster DNS for the exact name; with the default ndots:5
+          # the search path is tried first and the connection is dropped.
+          dnsConfig:
+            options:
+              - name: ndots
+                value: "1"
+          securityContext:
+            # s6-overlay init runs as root, sets up the session and then
+            # runs the desktop and Obsidian as the abc user (PUID/PGID).
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            fsGroup: 1000
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+        containers:
+          app:
+            image:
+              repository: lscr.io/linuxserver/obsidian
+              # renovate: datasource=docker depName=lscr.io/linuxserver/obsidian
+              tag: v1.13.7-ls146@sha256:0ae1b2ffe772a0b4b2107f24e3462d22fa6067706d5b2f8a7cde964f855db863
+            env:
+              TZ: America/New_York
+              PUID: "1000"
+              PGID: "1000"
+              # Selkies hardening: disables sudo, the terminal emulators and
+              # xdg-open/exo-open inside the desktop, turns off the web
+              # client's command channel and file transfers, and hides its
+              # files and apps panels. This controls the Selkies desktop
+              # wrapper, not Obsidian's built-in community-plugin browser;
+              # the owner can install plugins through that browser.
+              HARDEN_DESKTOP: "true"
+              # No view-only or collaborative sharing links to this session.
+              SELKIES_ENABLE_SHARING: "false"
+            probes:
+              liveness: &probes
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: &port 3000
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              readiness:
+                <<: *probes
+                spec:
+                  httpGet:
+                    path: /
+                    port: *port
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 3
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet:
+                    path: /
+                    port: *port
+                  # First boot sets ownership on the volume and builds the
+                  # desktop profile; allow up to ten minutes.
+                  periodSeconds: 10
+                  timeoutSeconds: 5
+                  failureThreshold: 60
+            securityContext:
+              # No privilege escalation through setuid binaries (sudo is
+              # removed by HARDEN_DESKTOP anyway). The root init keeps only
+              # what it needs: CHOWN/FOWNER/DAC_OVERRIDE to prepare files the
+              # abc user owns, SETUID/SETGID to drop to abc, and KILL so the
+              # supervisor can stop those processes on shutdown. All six are
+              # in the baseline set; the root filesystem stays writable for
+              # s6-overlay.
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                  - ALL
+                add:
+                  - CHOWN
+                  - DAC_OVERRIDE
+                  - FOWNER
+                  - KILL
+                  - SETGID
+                  - SETUID
+            # Electron renders on the CPU (no GPU in this pod) and Selkies
+            # encodes the stream on the CPU. The memory-backed /dev/shm
+            # counts against the memory limit.
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+              limits:
+                cpu: 4000m
+                memory: 4Gi
+    # LinuxServer images run every file in /custom-cont-init.d as root at the
+    # end of init, before the desktop starts. The mount is root-owned and
+    # read-only, which the image requires before it runs custom scripts.
+    configMaps:
+      init:
+        enabled: true
+        data:
+          obsidian-defaults.sh: |
+            #!/bin/bash
+            set -euo pipefail
+
+            app_dir=/config/.config/obsidian
+            cfg="${app_dir}/obsidian.json"
+
+            mkdir -p /config/vaults "${app_dir}"
+
+            # Image updates are the only update path. Turn off the in-app
+            # updater (Settings > General > Automatic updates) and remove any
+            # release it downloaded earlier: Obsidian prefers a downloaded
+            # app.asar while it is newer than the copy in the image, which
+            # would mask later image updates.
+            if [ ! -s "${cfg}" ]; then
+              printf '{"updateDisabled":true}\n' > "${cfg}"
+            elif grep -Eq '"updateDisabled"[[:space:]]*:' "${cfg}"; then
+              sed -i -E 's/"updateDisabled"[[:space:]]*:[[:space:]]*(true|false)/"updateDisabled":true/g' "${cfg}"
+            elif grep -Eq '^[[:space:]]*\{[[:space:]]*\}[[:space:]]*$' "${cfg}"; then
+              printf '{"updateDisabled":true}\n' > "${cfg}"
+            elif grep -Eq '^[[:space:]]*\{' "${cfg}"; then
+              sed -i '0,/{/s/{/{"updateDisabled":true,/' "${cfg}"
+            fi
+            if ! grep -Eq '"updateDisabled"[[:space:]]*:[[:space:]]*true([[:space:],}]|$)' "${cfg}"; then
+              echo "obsidian-defaults: cannot disable automatic updates" >&2
+              exit 1
+            fi
+            rm -f "${app_dir}"/obsidian-*.asar
+
+            chown abc:abc /config/vaults /config/.config "${app_dir}" "${cfg}"
+    service:
+      app:
+        controller: obsidian
+        ports:
+          http:
+            port: *port
+    persistence:
+      config:
+        enabled: true
+        existingClaim: obsidian-config
+        globalMounts:
+          - path: /config
+      # Electron and the Selkies capture need a larger /dev/shm than the
+      # 64Mi runtime default.
+      shm:
+        type: emptyDir
+        medium: Memory
+        sizeLimit: 1Gi
+        globalMounts:
+          - path: /dev/shm
+      custom-init:
+        type: configMap
+        identifier: init
+        # LinuxServer ignores /custom-cont-init.d files without execute bits.
+        defaultMode: 493  # 0755
+        globalMounts:
+          - path: /custom-cont-init.d
+            readOnly: true
