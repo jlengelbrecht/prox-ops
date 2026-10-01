@@ -1,0 +1,39 @@
+---
+# PROTECTED: This PVC is in a separate Kustomization with prune: false
+# to prevent accidental data loss during Flux reconciliation or cattle upgrades.
+# Holds the whole /config home of the Obsidian desktop: app settings, the
+# Sync login state and the vaults under /config/vaults. 10Gi to start;
+# the class allows in-place expansion if attachments outgrow it.
+#
+# Worker replacement: the RBD volume is ReadWriteOnce and follows the pod to
+# whichever worker it lands on; the Recreate strategy stops the old pod before
+# the new one mounts. After an unclean node loss the old attachment has to be
+# released before the pod can start elsewhere.
+#
+# Claim deletion: the obsidian-ceph-block-retain class keeps the RBD image and
+# leaves the PersistentVolume in Released state. To reattach it, stop the app,
+# clear the PV's claimRef so it becomes Available, then recreate this claim
+# with spec.volumeName set to that PV. Released volumes are never cleaned up
+# automatically.
+#
+# Limits: Retain only covers deletion of the claim object. It does not protect
+# against loss of the Ceph pool, corruption inside the volume or notes deleted
+# in the app, and it is not an off-cluster backup. Obsidian Sync version
+# history is not a backup either.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: obsidian-config
+  namespace: notes
+  labels:
+    app.kubernetes.io/name: obsidian
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: obsidian-ceph-block-retain
+  resources:
+    requests:
+      storage: 10Gi

@@ -1,0 +1,66 @@
+---
+# Obsidian on one hostname, internal gateway only (no envoy-external route,
+# no Cloudflare record). Everything the web client loads, including the
+# streaming WebSocket, sits under / on the obsidian route, which
+# securitypolicy.yaml gates with Authentik forward auth. The only other path
+# is the Authentik login/callback flow on obsidian-outpost.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: obsidian
+  namespace: notes
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: obsidian.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - obsidian.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: obsidian
+          port: 3000
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "SAMEORIGIN"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+---
+# Authentik outpost route for the Obsidian host (forward-auth login/callback
+# flow). No SecurityPolicy here (it would loop); the cross-namespace
+# backendRef is allowed by ReferenceGrant allow-notes-namespace-extauth
+# (kubernetes/apps/security/authentik/app/referencegrant-notes.yaml).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: obsidian-outpost
+  namespace: notes
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - obsidian.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /outpost.goauthentik.io/
+      backendRefs:
+        - name: authentik-server
+          namespace: security
+          port: 80

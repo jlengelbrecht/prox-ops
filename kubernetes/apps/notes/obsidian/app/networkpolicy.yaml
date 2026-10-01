@@ -1,0 +1,191 @@
+---
+# The pod runs a full desktop with the Electron sandbox off, so this policy
+# is its containment boundary.
+# - Ingress: the envoy-internal gateway pods on 3000 only. Nothing else in the
+#   cluster can open the desktop stream directly, so every session goes
+#   through the Authentik gate on the route.
+# - Egress: exact DNS queries for account/Sync, community-plugin downloads,
+#   and the Hindsight API; TCP 443 to the Obsidian and GitHub download hosts;
+#   and HTTPS through the internal gateway to the Hindsight API route. No
+#   Kubernetes API (the pod also has no service-account token) or general
+#   internet. The owner enables and configures plugins inside Obsidian.
+# Enforcement is DNS-derived L3/L4: Cilium admits the addresses learned for
+# the matched public names on TCP 443, with no TLS/SNI or URL check. The
+# gateway pod selector likewise admits any route on that gateway; the API
+# route and tenant bearer check provide the narrower HTTP boundary. ndots:1
+# on the pod (helmrelease.yaml) keeps the queried names exact.
+# The pod selector is the label app-template renders from the release name.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: obsidian
+  namespace: notes
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: obsidian
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          # Permit the apex, account API, documented Sync server range (01-100),
+          # plugin download hosts and internal API route as exact names. A DNS
+          # wildcard could carry vault content in arbitrary queries.
+          rules:
+            dns:
+              - matchName: obsidian.md
+              - matchName: api.obsidian.md
+              - matchName: raw.githubusercontent.com
+              - matchName: github.com
+              - matchName: release-assets.githubusercontent.com
+              - matchName: hindsight-api.homelab0.org
+              - matchName: "sync-01.obsidian.md"
+              - matchName: "sync-02.obsidian.md"
+              - matchName: "sync-03.obsidian.md"
+              - matchName: "sync-04.obsidian.md"
+              - matchName: "sync-05.obsidian.md"
+              - matchName: "sync-06.obsidian.md"
+              - matchName: "sync-07.obsidian.md"
+              - matchName: "sync-08.obsidian.md"
+              - matchName: "sync-09.obsidian.md"
+              - matchName: "sync-10.obsidian.md"
+              - matchName: "sync-11.obsidian.md"
+              - matchName: "sync-12.obsidian.md"
+              - matchName: "sync-13.obsidian.md"
+              - matchName: "sync-14.obsidian.md"
+              - matchName: "sync-15.obsidian.md"
+              - matchName: "sync-16.obsidian.md"
+              - matchName: "sync-17.obsidian.md"
+              - matchName: "sync-18.obsidian.md"
+              - matchName: "sync-19.obsidian.md"
+              - matchName: "sync-20.obsidian.md"
+              - matchName: "sync-21.obsidian.md"
+              - matchName: "sync-22.obsidian.md"
+              - matchName: "sync-23.obsidian.md"
+              - matchName: "sync-24.obsidian.md"
+              - matchName: "sync-25.obsidian.md"
+              - matchName: "sync-26.obsidian.md"
+              - matchName: "sync-27.obsidian.md"
+              - matchName: "sync-28.obsidian.md"
+              - matchName: "sync-29.obsidian.md"
+              - matchName: "sync-30.obsidian.md"
+              - matchName: "sync-31.obsidian.md"
+              - matchName: "sync-32.obsidian.md"
+              - matchName: "sync-33.obsidian.md"
+              - matchName: "sync-34.obsidian.md"
+              - matchName: "sync-35.obsidian.md"
+              - matchName: "sync-36.obsidian.md"
+              - matchName: "sync-37.obsidian.md"
+              - matchName: "sync-38.obsidian.md"
+              - matchName: "sync-39.obsidian.md"
+              - matchName: "sync-40.obsidian.md"
+              - matchName: "sync-41.obsidian.md"
+              - matchName: "sync-42.obsidian.md"
+              - matchName: "sync-43.obsidian.md"
+              - matchName: "sync-44.obsidian.md"
+              - matchName: "sync-45.obsidian.md"
+              - matchName: "sync-46.obsidian.md"
+              - matchName: "sync-47.obsidian.md"
+              - matchName: "sync-48.obsidian.md"
+              - matchName: "sync-49.obsidian.md"
+              - matchName: "sync-50.obsidian.md"
+              - matchName: "sync-51.obsidian.md"
+              - matchName: "sync-52.obsidian.md"
+              - matchName: "sync-53.obsidian.md"
+              - matchName: "sync-54.obsidian.md"
+              - matchName: "sync-55.obsidian.md"
+              - matchName: "sync-56.obsidian.md"
+              - matchName: "sync-57.obsidian.md"
+              - matchName: "sync-58.obsidian.md"
+              - matchName: "sync-59.obsidian.md"
+              - matchName: "sync-60.obsidian.md"
+              - matchName: "sync-61.obsidian.md"
+              - matchName: "sync-62.obsidian.md"
+              - matchName: "sync-63.obsidian.md"
+              - matchName: "sync-64.obsidian.md"
+              - matchName: "sync-65.obsidian.md"
+              - matchName: "sync-66.obsidian.md"
+              - matchName: "sync-67.obsidian.md"
+              - matchName: "sync-68.obsidian.md"
+              - matchName: "sync-69.obsidian.md"
+              - matchName: "sync-70.obsidian.md"
+              - matchName: "sync-71.obsidian.md"
+              - matchName: "sync-72.obsidian.md"
+              - matchName: "sync-73.obsidian.md"
+              - matchName: "sync-74.obsidian.md"
+              - matchName: "sync-75.obsidian.md"
+              - matchName: "sync-76.obsidian.md"
+              - matchName: "sync-77.obsidian.md"
+              - matchName: "sync-78.obsidian.md"
+              - matchName: "sync-79.obsidian.md"
+              - matchName: "sync-80.obsidian.md"
+              - matchName: "sync-81.obsidian.md"
+              - matchName: "sync-82.obsidian.md"
+              - matchName: "sync-83.obsidian.md"
+              - matchName: "sync-84.obsidian.md"
+              - matchName: "sync-85.obsidian.md"
+              - matchName: "sync-86.obsidian.md"
+              - matchName: "sync-87.obsidian.md"
+              - matchName: "sync-88.obsidian.md"
+              - matchName: "sync-89.obsidian.md"
+              - matchName: "sync-90.obsidian.md"
+              - matchName: "sync-91.obsidian.md"
+              - matchName: "sync-92.obsidian.md"
+              - matchName: "sync-93.obsidian.md"
+              - matchName: "sync-94.obsidian.md"
+              - matchName: "sync-95.obsidian.md"
+              - matchName: "sync-96.obsidian.md"
+              - matchName: "sync-97.obsidian.md"
+              - matchName: "sync-98.obsidian.md"
+              - matchName: "sync-99.obsidian.md"
+              - matchName: "sync-100.obsidian.md"
+    # Obsidian account and Sync (HTTPS and the Sync WebSocket).
+    - toFQDNs:
+        - matchName: obsidian.md
+        - matchPattern: "*.obsidian.md"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # Official community catalog/manifests/stats are served from raw GitHub;
+    # plugin release assets redirect from github.com to this exact CDN host.
+    # This admits HTTPS by learned IP, not by URL or plugin identity.
+    - toFQDNs:
+        - matchName: raw.githubusercontent.com
+        - matchName: github.com
+        - matchName: release-assets.githubusercontent.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+    # hindsight-api.homelab0.org uses the envoy-internal HTTPS listener:
+    # LoadBalancer 443 reaches gateway pods on 10443. Include 443 as in the
+    # existing Hermes gateway lane for either gateway addressing mode. Never
+    # send the plugin's bearer credential to the plaintext API service on 8888.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP

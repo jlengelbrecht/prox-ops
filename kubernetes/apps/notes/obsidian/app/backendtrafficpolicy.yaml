@@ -1,0 +1,24 @@
+---
+# The desktop streams over one long-lived WebSocket for as long as the
+# browser tab is open. Same shape as infra-proxies/proxmox (noVNC WebSocket).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: obsidian
+  namespace: notes
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: obsidian
+  timeout:
+    http:
+      # No request timeout - WebSocket sessions can run indefinitely
+      requestTimeout: 0s
+      # Connection idle timeout for WebSocket (1 hour)
+      connectionIdleTimeout: 3600s
+  # TCP keepalive to maintain WebSocket connections
+  tcpKeepalive:
+    probes: 3
+    idleTime: 60s
+    interval: 30s
