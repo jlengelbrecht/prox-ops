@@ -165,13 +165,17 @@ spec:
 # before that check and touch no bank data), and a
 # forward-auth layer would redirect machine clients to a browser login.
 #
-# Only two surfaces are routed. The bank prefix carries every data-plane
-# call of the coding-agents client (memories, recall, reflect, operations,
-# config, import, documents, knowledge-base) and is bearer-gated on the
-# server per operation. GET /version is the client's one unauthenticated
-# probe (version string and feature flags) for idempotent-retain
-# negotiation. Everything else the API serves without a key (health with
-# pool details, metrics, docs, schema) and the disabled MCP path stay off
+# Only the bank, MCP and version surfaces are routed. The bank prefix
+# carries every data-plane call of the coding-agents client (memories,
+# recall, reflect, operations, config, import, documents, knowledge-base)
+# and is bearer-gated on the
+# server per operation. The MCP path prefix covers the root transport and
+# every bank without route changes; MCP initialization and tools use the
+# same tenant bearer auth. An empty MCP GET probe carries no bank data.
+# GET /version is the client's unauthenticated probe (version string and
+# feature flags) for idempotent-retain negotiation. Everything else the API
+# serves without a key (health with
+# pool details, metrics, docs, schema) stays off
 # the gateway: an unmatched path gets Envoy's own 404. No catch-all rule
 # and no auth-header rewriting. Hermes keeps using the in-cluster service,
 # not this hostname.
@@ -191,7 +195,7 @@ spec:
     - hindsight-api.homelab0.org
   rules:
     # One rule, matches ORed: the bank prefix once per method the API
-    # serves, and the exact /version path for GET only.
+    # serves, MCP path segments for GET/POST/DELETE, and exact GET /version.
     - matches:
         - path:
             type: PathPrefix
@@ -212,6 +216,18 @@ spec:
         - path:
             type: PathPrefix
             value: /v1/default/banks
+          method: DELETE
+        - path:
+            type: PathPrefix
+            value: /mcp
+          method: GET
+        - path:
+            type: PathPrefix
+            value: /mcp
+          method: POST
+        - path:
+            type: PathPrefix
+            value: /mcp
           method: DELETE
         - path:
             type: Exact
