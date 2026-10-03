@@ -375,6 +375,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 replace = {"vault": "iam", "verb": "replace_note",
                            "arguments": {"path": "Archive/note.md", "content": "rewritten\n"}}
                 pending = (await client.call_tool("prepare_action", replace)).structured_content
+                self.assertGreater(pending["expires_at"] - time.time(), 590)
                 self.assertEqual(self.bridge.notes["iam"]["Archive/note.md"][0], "IAM")
                 unapproved = await client.call_tool("commit_action", {**replace, "pending_id": pending["id"]},
                                                     raise_on_error=False)

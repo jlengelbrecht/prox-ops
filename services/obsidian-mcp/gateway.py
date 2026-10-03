@@ -192,6 +192,7 @@ class ScopedTokens(TokenVerifier):
 
 
 _MAX_PREVIEW_TEXT = 32000
+_APPROVAL_SECONDS = 600
 
 
 def _visible(char: str) -> str:
@@ -631,7 +632,9 @@ def create_gateway(
     grants = {client: scoped if isinstance(scoped, _LiveVaults)
               else {vault: frozenset(verbs) for vault, verbs in scoped.items()}
               for client, scoped in grants.items()}
-    coordinator = ApprovalCoordinator(destructive_adapter or BridgeAdapter(bridge), enrollments)
+    # Ten minutes: long enough for the owner to notice the link and review it.
+    coordinator = ApprovalCoordinator(destructive_adapter or BridgeAdapter(bridge), enrollments,
+                                      ttl=_APPROVAL_SECONDS)
     execution = _ExecutionPool(enrollments)
     @asynccontextmanager
     async def lifespan(_server):
@@ -833,7 +836,7 @@ def create_gateway(
               trash_folder  {"path": "Folder"}              (moves it and everything in it to .trash)
             Returns an approval `url`. Give it to the user; they open it, review exactly what
             will change and approve it. Then call commit_action with the same vault, verb,
-            arguments and the returned `id` as pending_id. Approvals expire after two minutes.
+            arguments and the returned `id` as pending_id. Approvals expire after ten minutes.
             """
             deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
             context = agent()
