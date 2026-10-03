@@ -192,6 +192,12 @@ function fixture(id, name, sharedHome) {
       files.set(filePath, new TFile(filePath, bytes.length));
       return files.get(filePath);
     },
+    async createFolder(folderPath) {
+      fs.mkdirSync(path.join(root, folderPath));
+      calls.writes++;
+      folders.set(folderPath, new TFolder(folderPath));
+      return folders.get(folderPath);
+    },
     async process(file, callback) {
       const current = fs.readFileSync(path.join(root, file.path), 'utf8');
       const next = callback(current);
@@ -388,6 +394,11 @@ test('two exact vaults, typed operations, conflicts, embed and protocol rejectio
     assert.equal((await request(a.config, 'search', { query: 'init', limit: 5 })).result.matches[0].path, 'Private/note.md');
     assert.equal((await request(a.config, 'create', { path: 'Private/new.md', content: 'new' })).ok, true);
     assert.equal((await request(a.config, 'create', { path: 'Private/new.md', content: 'overwrite' })).error, 'conflict');
+    assert.equal((await request(a.config, 'create', { path: 'Projects/Deep/nested.md', content: 'nested' })).ok, true);
+    assert.equal(a.vault.getAbstractFileByPath('Projects/Deep').path, 'Projects/Deep');
+    assert.equal((await request(a.config, 'read', { path: 'Projects/Deep/nested.md' })).result.content, 'nested');
+    assert.equal((await request(a.config, 'create', { path: 'Private/note.md/child.md', content: 'x' })).error, 'invalid_path');
+    assert.equal((await request(a.config, 'create', { path: 'New/.hidden/x.md', content: 'x' })).error, 'invalid_path');
     a.add('Private/note.md', 'editor update');
     const before = a.calls.writes;
     assert.equal((await request(a.config, 'append', { path: 'Private/note.md', content: '+', expected_revision: firstRead.result.revision })).error, 'conflict');
