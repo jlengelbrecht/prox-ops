@@ -38,7 +38,11 @@ RESULT_KEYS = {
     "append": {"receipt", "status", "result", "error"}, "embed": {"path", "mime", "data"},
     "reserve": {"receipt"}, "receipt": {"receipt", "status", "result", "error"},
     "vaults": {"vaults"}, "open_vault": {"name", "opened"}, "create_vault": {"name", "created"},
+    "state": {"path", "kind", "revision", "count"}, "mkdir": {"path", "created"},
+    "move": {"source", "destination", "kind"}, "replace": {"path", "revision"},
+    "trash": {"path", "trashed"},
 }
+REVISION_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # Every plugin serves these; vault management ops are optional extras.
 BASE_CAPABILITIES = frozenset({"health", "list", "read", "search", "create", "append", "embed",
                                "reserve", "receipt"})
@@ -136,6 +140,22 @@ def _result(operation: str, value: Any, args: dict[str, Any]) -> bool:
                 all(isinstance(item, dict) and set(item) == {"name", "open"} and
                     isinstance(item["name"], str) and VAULT_NAME_RE.fullmatch(item["name"]) and
                     isinstance(item["open"], bool) for item in value["vaults"]))
+    if operation == "state":
+        return (value["path"] == args["path"] and value["kind"] in ("file", "folder", "absent")
+                and isinstance(value["count"], int) and 0 <= value["count"] <= 5000
+                and isinstance(value["revision"], str)
+                and (value["revision"] == "absent") == (value["kind"] == "absent")
+                and (value["kind"] == "absent" or REVISION_RE.fullmatch(value["revision"]) is not None))
+    if operation == "mkdir":
+        return value["path"] == args["path"] and value["created"] is True
+    if operation == "move":
+        return (value["source"] == args["source"] and value["destination"] == args["destination"]
+                and value["kind"] in ("file", "folder"))
+    if operation == "replace":
+        return (value["path"] == args["path"] and isinstance(value["revision"], str)
+                and REVISION_RE.fullmatch(value["revision"]) is not None)
+    if operation == "trash":
+        return value["path"] == args["path"] and value["trashed"] is True
     if operation in ("open_vault", "create_vault"):
         flag = "opened" if operation == "open_vault" else "created"
         return value["name"] == args["name"] and value[flag] is True
@@ -398,6 +418,22 @@ class BridgeClient:
         if not isinstance(name, str) or not VAULT_NAME_RE.fullmatch(name):
             raise BridgeError("invalid_request")
         return self._call(vault, "create_vault", {"name": name})
+
+    def path_state(self, vault: str, path: str) -> dict[str, Any]:
+        return self._call(vault, "state", {"path": path})
+
+    def make_folder(self, vault: str, path: str) -> dict[str, Any]:
+        return self._call(vault, "mkdir", {"path": path})
+
+    def move_path(self, vault: str, source: str, destination: str) -> dict[str, Any]:
+        return self._call(vault, "move", {"source": source, "destination": destination})
+
+    def replace_note(self, vault: str, path: str, content: str, expected_revision: str) -> dict[str, Any]:
+        return self._call(vault, "replace", {"path": path, "content": content,
+                                             "expected_revision": expected_revision})
+
+    def trash_path(self, vault: str, path: str, expected_revision: str) -> dict[str, Any]:
+        return self._call(vault, "trash", {"path": path, "expected_revision": expected_revision})
 
     def resolve_embed(self, vault: str, source: str, target: str) -> dict[str, Any]:
         return self._call(vault, "embed", {"source": source, "target": target})

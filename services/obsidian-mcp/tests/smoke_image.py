@@ -90,7 +90,16 @@ def operation(vault, op, args):
                       'app_name': 'IAM Team' if vault == 'iam' else 'Homelab',
                       'app_root': '/vaults/' + ('IAM Team' if vault == 'iam' else 'Homelab'),
                       'capabilities': ['health', 'list', 'read', 'search', 'create', 'append', 'embed',
-                                       'reserve', 'receipt', 'vaults', 'open_vault', 'create_vault']}
+                                       'reserve', 'receipt', 'vaults', 'open_vault', 'create_vault',
+                                       'state', 'mkdir', 'move', 'replace', 'trash']}
+    if op == 'mkdir':
+        return None, {'path': args.get('path'), 'created': True}
+    if op == 'move':
+        source, destination = args.get('source'), args.get('destination')
+        if source not in store or destination in store:
+            return 'conflict', None
+        store[destination] = store.pop(source)
+        return None, {'source': source, 'destination': destination, 'kind': 'file'}
     if op == 'vaults':
         return None, {'vaults': [{'name': 'IAM Team', 'open': True}, {'name': 'Homelab', 'open': True},
                                  {'name': 'Archive', 'open': False}]}
@@ -234,7 +243,8 @@ async def run():
     phase('app_peer_tools')
     expected = {'list_vaults', 'list_entries', 'read_note', 'search_notes',
                 'create_note', 'append_note', 'mutation_receipt', 'read_embedded_image',
-                'read_note_with_images', 'list_all_vaults', 'open_vault', 'create_vault'}
+                'read_note_with_images', 'list_all_vaults', 'open_vault', 'create_vault',
+                'create_folder', 'move', 'prepare_action', 'commit_action'}
     discovered = [{'id': 'homelab', 'name': 'Homelab'}, {'id': 'iam', 'name': 'IAM Team'}]
     for client_name in ('codex', 'claude', 'opencode', 'antigravity'):
         async with Client(URL, auth=TOKENS[client_name]) as client:
@@ -260,6 +270,8 @@ async def run():
                 'name': 'Scratch', 'created': True}
             assert (await client.call_tool('create_vault', {'name': '../escape'},
                                            raise_on_error=False)).is_error
+            assert body(await client.call_tool('create_folder', {'vault': 'homelab', 'path': 'Org/New'})) == {
+                'path': 'Org/New', 'created': True}
 
     phase('exact_mutations')
     async with Client(URL, auth=TOKENS['codex']) as client:

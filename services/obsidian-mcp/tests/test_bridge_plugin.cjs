@@ -144,8 +144,14 @@ class FileSystemAdapter {
   getBasePath() { return this.root; }
   async stat(filePath) { try { return fs.statSync(path.join(this.root, filePath)); } catch { return null; } }
 }
-class TFile { constructor(filePath, size) { this.path = filePath; this.stat = { size }; } }
-class TFolder { constructor(filePath) { this.path = filePath; } }
+class TFile {
+  constructor(filePath, size) { this.path = filePath; this.stat = { size, mtime: 1 }; }
+  get extension() { const ext = path.posix.extname(this.path); return ext ? ext.slice(1) : ''; }
+}
+class TFolder {
+  constructor(filePath, list = () => []) { this.path = filePath; this.list = list; }
+  get children() { return this.list().filter(item => path.posix.dirname(item.path) === this.path); }
+}
 // Obsidian's renderer: vault-open over ipcRenderer, trust flags in the shared localStorage.
 const ipcCalls = [];
 let onVaultOpen = null;
@@ -181,7 +187,9 @@ function fixture(name, sharedHome) {
   const root = path.join(home, name);
   fs.mkdirSync(root);
   const files = new Map();
-  const folders = new Map([['Private', new TFolder('Private')]]);
+  const folders = new Map();
+  const everything = () => [...folders.values(), ...files.values()];
+  folders.set('Private', new TFolder('Private', everything));
   fs.mkdirSync(path.join(root, 'Private'));
   function add(filePath, data) {
     const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
@@ -210,8 +218,18 @@ function fixture(name, sharedHome) {
     async createFolder(folderPath) {
       fs.mkdirSync(path.join(root, folderPath));
       calls.writes++;
-      folders.set(folderPath, new TFolder(folderPath));
+      folders.set(folderPath, new TFolder(folderPath, everything));
       return folders.get(folderPath);
+    },
+    async trash(entry, system) {
+      calls.trashed = [...(calls.trashed || []), [entry.path, system]];
+      const bin = path.join(root, '.trash');
+      fs.mkdirSync(bin, { recursive: true });
+      fs.renameSync(path.join(root, entry.path), path.join(bin, path.posix.basename(entry.path)));
+      for (const map of [files, folders]) {
+        for (const key of [...map.keys()]) if (key === entry.path || key.startsWith(entry.path + '/')) map.delete(key);
+      }
+      calls.writes++;
     },
     async process(file, callback) {
       const current = fs.readFileSync(path.join(root, file.path), 'utf8');
@@ -219,7 +237,22 @@ function fixture(name, sharedHome) {
       calls.writes++; add(file.path, next); return next;
     },
   };
-  const app = { vault, metadataCache: { getFirstLinkpathDest: (target) => {
+  const fileManager = { async renameFile(entry, destination) {
+    calls.renamed = [...(calls.renamed || []), [entry.path, destination]];
+    fs.renameSync(path.join(root, entry.path), path.join(root, destination));
+    const source = entry.path;
+    for (const map of [files, folders]) {
+      for (const [key, value] of [...map.entries()]) {
+        if (key === source || key.startsWith(source + '/')) {
+          map.delete(key);
+          value.path = destination + key.slice(source.length);
+          map.set(value.path, value);
+        }
+      }
+    }
+    calls.writes++;
+  } };
+  const app = { vault, fileManager, metadataCache: { getFirstLinkpathDest: (target) => {
     if (target === 'image.png' || target === 'Private/image.png') return files.get('Private/image.png');
     return null;
   } } };
@@ -649,6 +682,63 @@ test('vault management lists direct children, opens and creates vaults with the 
     assert.equal(fs.existsSync(path.join(f.home, 'One Too Many')), false);
   } finally {
     onVaultOpen = null;
+    if (bridge) await bridge.onunload();
+    fs.rmSync(f.home, { recursive: true, force: true });
+  }
+});
+test('organization: state, folders, link-preserving moves, revision-checked replace and trash', async () => {
+  const f = fixture('Org');
+  let bridge;
+  try {
+    bridge = await start(f);
+    assert.ok(bridge.bridgeServer);
+    const health = await request(f.config, 'health');
+    for (const op of ['state', 'mkdir', 'move', 'replace', 'trash']) assert.ok(health.result.capabilities.includes(op), op);
+
+    assert.deepEqual((await request(f.config, 'state', { path: 'Nope/x.md' })).result,
+      { path: 'Nope/x.md', kind: 'absent', revision: 'absent', count: 0 });
+    const noteState = (await request(f.config, 'state', { path: 'Private/note.md' })).result;
+    assert.equal(noteState.kind, 'file');
+    const folderBefore = (await request(f.config, 'state', { path: 'Private' })).result;
+    assert.equal(folderBefore.kind, 'folder');
+    assert.equal(folderBefore.count, 2);
+
+    assert.deepEqual((await request(f.config, 'mkdir', { path: 'Projects/2026' })).result, { path: 'Projects/2026', created: true });
+    assert.equal((await request(f.config, 'mkdir', { path: 'Projects' })).error, 'conflict');
+    assert.equal((await request(f.config, 'mkdir', { path: 'Private/note.md/sub' })).error, 'invalid_path');
+    assert.equal((await request(f.config, 'mkdir', { path: '.obsidian/x' })).error, 'invalid_path');
+
+    // Moves go through fileManager.renameFile (which updates links) and refuse occupied targets.
+    assert.deepEqual((await request(f.config, 'move', { source: 'Private/note.md', destination: 'Projects/2026/plan.md' })).result,
+      { source: 'Private/note.md', destination: 'Projects/2026/plan.md', kind: 'file' });
+    assert.deepEqual(f.calls.renamed, [['Private/note.md', 'Projects/2026/plan.md']]);
+    assert.equal(fs.readFileSync(path.join(f.root, 'Projects/2026/plan.md'), 'utf8'), 'initial');
+    assert.equal((await request(f.config, 'move', { source: 'Private/image.png', destination: 'Projects/2026/plan.md' })).error, 'invalid_request');
+    f.add('Projects/other.md', 'other');
+    assert.equal((await request(f.config, 'move', { source: 'Projects/other.md', destination: 'Projects/2026/plan.md' })).error, 'conflict');
+    assert.equal((await request(f.config, 'move', { source: 'Projects', destination: 'Projects/2026/inside' })).error, 'invalid_path');
+    assert.equal((await request(f.config, 'move', { source: 'Missing.md', destination: 'Elsewhere.md' })).error, 'not_found');
+    assert.equal((await request(f.config, 'move', { source: 'Projects/2026', destination: 'Archive/Old/2026' })).result.kind, 'folder');
+    assert.ok(f.vault.getAbstractFileByPath('Archive/Old/2026/plan.md'));
+
+    // Replace only applies on the exact current revision.
+    const current = (await request(f.config, 'read', { path: 'Archive/Old/2026/plan.md' })).result;
+    assert.equal((await request(f.config, 'replace', { path: current.path, content: 'stale', expected_revision: noteState.revision.replace(/.$/, '0') })).error, 'conflict');
+    const replaced = (await request(f.config, 'replace', { path: current.path, content: 'rewritten', expected_revision: current.revision })).result;
+    assert.equal(fs.readFileSync(path.join(f.root, current.path), 'utf8'), 'rewritten');
+    assert.equal((await request(f.config, 'replace', { path: current.path, content: 'again', expected_revision: current.revision })).error, 'conflict');
+
+    // Trash moves to the vault's .trash (system=false) and also checks the revision.
+    assert.equal((await request(f.config, 'trash', { path: current.path, expected_revision: current.revision })).error, 'conflict');
+    assert.deepEqual((await request(f.config, 'trash', { path: current.path, expected_revision: replaced.revision })).result,
+      { path: current.path, trashed: true });
+    assert.deepEqual(f.calls.trashed, [[current.path, false]]);
+    assert.ok(fs.existsSync(path.join(f.root, '.trash', 'plan.md')));
+    const archive = (await request(f.config, 'state', { path: 'Archive' })).result;
+    assert.equal((await request(f.config, 'trash', { path: 'Archive', expected_revision: folderBefore.revision })).error, 'conflict');
+    assert.equal((await request(f.config, 'trash', { path: 'Archive', expected_revision: archive.revision })).result.trashed, true);
+    assert.equal(f.vault.getAbstractFileByPath('Archive'), null);
+  } finally {
     if (bridge) await bridge.onunload();
     fs.rmSync(f.home, { recursive: true, force: true });
   }
