@@ -21,7 +21,7 @@ Client machines need neither the Obsidian app nor SSH.
 
 ## Tools
 
-`list_vaults`, `list_entries` (direct children of a folder), `read_note`, `search_notes`, `create_note`, `append_note` (requires the current `revision`), `mutation_receipt` (reconciles a create or append whose response was lost), and `read_embedded_image` (local raster images only).
+`list_vaults`, `list_entries` (direct children of a folder), `read_note`, `read_note_with_images` (text plus embedded images in reading order, 10 per page), `search_notes`, `create_note`, `append_note` (requires the current `revision`), `mutation_receipt` (reconciles a create or append whose response was lost), and `read_embedded_image` (local raster images only).
 
 There are no move, delete, plugin or settings tools yet. Those are destructive or administrative, and they will require owner approval through the `/owner/` route on `obsidian.homelab0.org`.
 
