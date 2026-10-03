@@ -41,6 +41,7 @@ RESULT_KEYS = {
     "state": {"path", "kind", "revision", "count"}, "mkdir": {"path", "created"},
     "move": {"source", "destination", "kind"}, "replace": {"path", "revision"},
     "trash": {"path", "trashed"},
+    "logs": {"entries"}, "plugins": {"community", "core"}, "settings": {"file", "settings"},
 }
 REVISION_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # Every plugin serves these; vault management ops are optional extras.
@@ -146,6 +147,25 @@ def _result(operation: str, value: Any, args: dict[str, Any]) -> bool:
                 and isinstance(value["revision"], str)
                 and (value["revision"] == "absent") == (value["kind"] == "absent")
                 and (value["kind"] == "absent" or REVISION_RE.fullmatch(value["revision"]) is not None))
+    if operation == "logs":
+        return (isinstance(value["entries"], list) and len(value["entries"]) <= 500 and
+                all(isinstance(item, dict) and set(item) == {"time", "level", "message"}
+                    and item["level"] in ("error", "warn", "info", "log")
+                    and isinstance(item["time"], str) and len(item["time"]) <= 40
+                    and isinstance(item["message"], str) and len(item["message"]) <= 1000
+                    for item in value["entries"]))
+    if operation == "plugins":
+        return (isinstance(value["community"], list) and len(value["community"]) <= 500
+                and all(isinstance(item, dict) and set(item) == {"id", "name", "version", "enabled"}
+                        and all(isinstance(item[key], str) and len(item[key]) <= 200
+                                for key in ("id", "name", "version"))
+                        and isinstance(item["enabled"], bool) for item in value["community"])
+                and isinstance(value["core"], list) and len(value["core"]) <= 200
+                and all(isinstance(item, dict) and set(item) == {"id", "enabled"}
+                        and isinstance(item["id"], str) and len(item["id"]) <= 200
+                        and isinstance(item["enabled"], bool) for item in value["core"]))
+    if operation == "settings":
+        return value["file"] == args["file"] and isinstance(value["settings"], (dict, list, str, int, float, bool))
     if operation == "mkdir":
         return value["path"] == args["path"] and value["created"] is True
     if operation == "move":
@@ -418,6 +438,15 @@ class BridgeClient:
         if not isinstance(name, str) or not VAULT_NAME_RE.fullmatch(name):
             raise BridgeError("invalid_request")
         return self._call(vault, "create_vault", {"name": name})
+
+    def logs(self, vault: str, level: str = "all", limit: int = 100) -> dict[str, Any]:
+        return self._call(vault, "logs", {"level": level, "limit": limit})
+
+    def plugins(self, vault: str) -> dict[str, Any]:
+        return self._call(vault, "plugins", {})
+
+    def settings(self, vault: str, file: str) -> dict[str, Any]:
+        return self._call(vault, "settings", {"file": file})
 
     def path_state(self, vault: str, path: str) -> dict[str, Any]:
         return self._call(vault, "state", {"path": path})

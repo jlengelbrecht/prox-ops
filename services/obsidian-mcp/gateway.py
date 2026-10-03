@@ -45,7 +45,7 @@ from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
 _SAFE_CAPABILITIES = {
     "list_notes": "list", "read_note": "read", "search": "search",
     "create_note": "create", "append_note": "append", "read_media": "embed",
-    "manage_vaults": "vaults", "create_folder": "mkdir", "move": "move",
+    "manage_vaults": "vaults", "create_folder": "mkdir", "move": "move", "diagnostics": "logs",
 }
 # Destructive verbs: each needs the owner's approval through /owner/ before it runs.
 _GUARDED_CAPABILITIES = {"replace_note": "replace", "trash_note": "trash", "trash_folder": "trash"}
@@ -55,6 +55,7 @@ _TOOL_VERBS = {
     "read_embedded_image": "read_media", "read_note_with_images": "read_media",
     "list_all_vaults": "manage_vaults", "open_vault": "manage_vaults",
     "create_vault": "manage_vaults", "create_folder": "create_folder", "move": "move",
+    "read_logs": "diagnostics", "list_plugins": "diagnostics", "read_settings": "diagnostics",
 }
 
 
@@ -781,6 +782,34 @@ def create_gateway(
                                        receipt, context.client_id, deadline=deadline, vault=vault)
         except BridgeError:
             raise ToolError("Tool request failed") from None
+
+    async def diagnostic(vault: str, function, *args):
+        deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+        await permitted(agent(), vault, "diagnostics", deadline)
+        try:
+            return await execution.run(function, vault, *args, deadline=deadline, vault=vault)
+        except BridgeError:
+            raise ToolError("Tool request failed") from None
+
+    @mcp.tool
+    async def read_logs(vault: str, level: str = "all", limit: int = 100) -> dict:
+        """Recent console output (level "all", "warn" or "error") from that vault's desktop
+        window since the bridge loaded; useful for debugging plugins."""
+        if level not in {"all", "warn", "error"} or not 1 <= limit <= 500:
+            raise ToolError("Tool request failed")
+        return await diagnostic(vault, bridge.logs, level, limit)
+
+    @mcp.tool
+    async def list_plugins(vault: str) -> dict:
+        """Community plugins installed in a vault (id, name, version, enabled) and core plugins."""
+        return await diagnostic(vault, bridge.plugins)
+
+    @mcp.tool
+    async def read_settings(vault: str, file: str) -> dict:
+        """Read a vault setting file: app, appearance, core-plugins, community-plugins, hotkeys,
+        graph, daily-notes, templates, bookmarks or workspace, or "plugin:<id>" for a plugin's
+        data.json. Values under names that look like keys, tokens or passwords are redacted."""
+        return await diagnostic(vault, bridge.settings, file)
 
     @mcp.tool
     async def create_folder(vault: str, path: str) -> dict:
