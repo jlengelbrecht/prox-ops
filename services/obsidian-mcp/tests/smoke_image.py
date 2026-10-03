@@ -430,12 +430,14 @@ def main():
                        '--mount', f'type=bind,src={peer},dst=/fixture/app_peer.py,readonly',
                        '--env-file', str(tokens),
                        '-e', 'OBSIDIAN_GATEWAY_REGISTRY=/etc/obsidian-mcp/registry.json', args.image]
-            # Bind-mounted private runtime files must belong to the runtime UID.
+            # Bind-mounted runtime files and vault roots belong to the app UID, as in the pod.
             owner = docker('run', '--rm', '--network', 'none', '--user', '0:0',
                            '--mount', f'type=bind,src={runtime},dst=/fixture/runtime',
+                           '--mount', f'type=bind,src={vaults},dst=/fixture/vaults',
                            '--entrypoint', 'python', args.image, '-c',
-                           "import os; from pathlib import Path; p=Path('/fixture/runtime'); "
-                           "[os.chown(str(x),1000,1000) for x in [p,*p.rglob('*')]]")
+                           "import os; from pathlib import Path; "
+                           "[os.lchown(str(x),1000,1000) for p in (Path('/fixture/runtime'),Path('/fixture/vaults')) "
+                           "for x in [p,*p.rglob('*')]]")
             if owner.returncode:
                 raise RuntimeError('fixture ownership setup failed')
             started = True
@@ -475,13 +477,15 @@ def main():
                 if not failed:
                     raise
             finally:
-                # Hand the runtime tree back to the invoking user so the temporary
+                # Hand the runtime and vault trees back to the invoking user so the temporary
                 # directory can be removed when that user is not UID 1000.
                 docker('run', '--rm', '--network', 'none', '--user', '0:0',
                        '--mount', f'type=bind,src={runtime},dst=/fixture/runtime',
+                       '--mount', f'type=bind,src={vaults},dst=/fixture/vaults',
                        '--entrypoint', 'python', args.image, '-c',
-                       "import os; from pathlib import Path; p=Path('/fixture/runtime'); "
-                       f"[os.lchown(str(x),{os.getuid()},{os.getgid()}) for x in [p,*p.rglob('*')]]")
+                       "import os; from pathlib import Path; "
+                       f"[os.lchown(str(x),{os.getuid()},{os.getgid()}) "
+                       "for p in (Path('/fixture/runtime'),Path('/fixture/vaults')) for x in [p,*p.rglob('*')]]")
 
 
 if __name__ == '__main__':
