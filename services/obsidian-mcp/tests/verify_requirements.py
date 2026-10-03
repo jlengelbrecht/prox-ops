@@ -51,7 +51,8 @@ def validate_requirements():
             name, version = _name(match[1]), match[2]
             if name in packages:
                 raise ValueError(f"duplicate requirement in {filename}: {name}")
-            packages[name] = (version, frozenset(hashes))
+            marker = spec.split(" ; ", 1)[1] if " ; " in spec else ""
+            packages[name] = (version, frozenset(hashes), marker)
         if not packages:
             raise ValueError(f"empty {filename}")
         manifests[filename] = packages
