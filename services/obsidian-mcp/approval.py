@@ -367,7 +367,8 @@ class ApprovalCoordinator:
     def __init__(self, adapter: TypedAdapter, registry: Mapping[str, VaultEnrollment], *,
                  clock: Callable[[], float] = time.monotonic, ttl: int = 120,
                  max_pending: int = 128):
-        if not 1 <= ttl <= 600 or not 1 <= max_pending <= 1024 or not registry:
+        # Vaults register at runtime, so an empty registry at startup is valid.
+        if not 1 <= ttl <= 600 or not 1 <= max_pending <= 1024:
             raise ValueError("invalid coordinator configuration")
         self._adapter = adapter
         self._registry = dict(registry)

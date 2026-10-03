@@ -560,11 +560,11 @@ def create_gateway(
             or (destructive_verbs and destructive_adapter is None)
             or (destructive_adapter is not None and not destructive_verbs)):
         raise ValueError("invalid gateway configuration")
-    grants = {client: {vault: frozenset(verbs) for vault, verbs in scoped.items()}
+    # Live grants stay live: vaults that register later must appear without a restart.
+    grants = {client: scoped if isinstance(scoped, _LiveVaults)
+              else {vault: frozenset(verbs) for vault, verbs in scoped.items()}
               for client, scoped in grants.items()}
     coordinator = ApprovalCoordinator(destructive_adapter or BridgeAdapter(bridge), enrollments)
-    # Synthetic guarded adapters may also serve safe calls; production always uses BridgeAdapter.
-    safe_coordinator = ApprovalCoordinator(BridgeAdapter(bridge), enrollments)
     execution = _ExecutionPool(enrollments)
     @asynccontextmanager
     async def lifespan(_server):
@@ -584,7 +584,8 @@ def create_gateway(
         token = get_access_token()
         if token is None or token.client_id not in grants:
             raise ToolError("Tool request failed")
-        return AgentContext(token.client_id, grants[token.client_id])
+        # A per-call snapshot of the (possibly live) grants.
+        return AgentContext(token.client_id, dict(grants[token.client_id]))
 
     async def permitted(context: AgentContext, vault: str, verb: str,
                         deadline: float | None = None) -> None:
@@ -602,9 +603,11 @@ def create_gateway(
         context = agent()
         await permitted(context, vault, verb, deadline)
         try:
-            coordinator = (ApprovalCoordinator(BridgeAdapter(bridge, context.client_id), enrollments)
-                           if verb in {"create_note", "append_note"} else safe_coordinator)
-            return await execution.run(coordinator.execute, context,
+            # Built per call so vaults that registered after startup are included.
+            current = ApprovalCoordinator(
+                BridgeAdapter(bridge, context.client_id if verb in {"create_note", "append_note"} else None),
+                enrollments)
+            return await execution.run(current.execute, context,
                                        Operation(vault, verb, arguments), deadline=deadline,
                                        preserve_result=verb in {"create_note", "append_note"},
                                        vault=vault)

@@ -22,7 +22,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from approval import ApprovalCoordinator, VaultEnrollment  # noqa: E402
-from gateway import create_gateway  # noqa: E402
+from gateway import _LiveVaults, create_gateway  # noqa: E402
 from owner_auth import OwnerAuthConfig, OwnerAuthenticator  # noqa: E402
 from test_gateway import BridgeFixture, GuardedFixture, SAFE, TOKENS  # noqa: E402
 
@@ -82,6 +82,27 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.check_client.aclose()
+
+    async def test_gateway_starts_without_vaults_and_serves_ones_that_register_later(self):
+        registered = []
+        self.bridge.vault_ids = lambda: sorted(registered)
+        grants = {name: _LiveVaults(self.bridge, lambda _vault: SAFE) for name in TOKENS}
+        enrollments = _LiveVaults(self.bridge, lambda _vault: VaultEnrollment(frozenset({"owner"}), {}))
+        app = create_gateway(self.bridge, TOKENS, grants, self.auth, enrollments)
+        async with running(app) as url:
+            async with Client(url + "/mcp", auth=TOKENS["claude"]) as client:
+                self.assertEqual((await client.call_tool("list_vaults")).structured_content["vaults"], [])
+                registered.append("homelab")
+                listed = (await client.call_tool("list_vaults")).structured_content["vaults"]
+                self.assertEqual([item["id"] for item in listed], ["homelab"])
+                read = await client.call_tool("read_note", {"vault": "homelab", "path": "note.md"})
+                self.assertEqual(read.structured_content["content"], "Homelab")
+                created = await client.call_tool("create_note", {"vault": "homelab", "path": "late.md",
+                                                                 "content": "x"}, raise_on_error=False)
+                self.assertFalse(created.is_error)
+                denied = await client.call_tool("read_note", {"vault": "iam", "path": "note.md"},
+                                                raise_on_error=False)
+                self.assertTrue(denied.is_error)
 
     async def test_vault_management_tools_over_http(self):
         self.bridge.extra_capabilities = ["vaults", "open_vault", "create_vault"]
