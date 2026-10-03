@@ -76,6 +76,8 @@ spec:
               SELKIES_ENABLE_SHARING: "false"
               OBSIDIAN_BRIDGE_INSTANCE: kubernetes-obsidian
               OBSIDIAN_BRIDGE_DIR: /run/obsidian-bridge
+              OBSIDIAN_BRIDGE_VAULT_PARENT: /config
+              OBSIDIAN_BRIDGE_APP_CONFIG: /config/.config/obsidian/obsidian.json
             probes:
               liveness: &probes
                 enabled: true
@@ -143,10 +145,12 @@ spec:
               repository: ghcr.io/jlengelbrecht/obsidian-mcp
               # Replace only after the main image publication receipt names its immutable digest.
               # renovate: datasource=docker depName=ghcr.io/jlengelbrecht/obsidian-mcp
-              tag: main@sha256:bb6fb924df1a230d51d541d3bb58915e47cb1dae456932fa30b280a2d0b38363
+              tag: main@sha256:e5dae76323c6af16a8be21fe2a91649f399f1f75b0fc35cda3abda86e44a57f2
             command: ["python", "/app/gateway.py"]
             env:
               OBSIDIAN_GATEWAY_REGISTRY: /etc/obsidian-mcp/registry.json
+              OBSIDIAN_BRIDGE_DIR: /run/obsidian-bridge
+              OBSIDIAN_BRIDGE_VAULT_PARENT: /config
               OBSIDIAN_MCP_TOKEN_CODEX:
                 valueFrom:
                   secretKeyRef: {name: obsidian-mcp-secret, key: CLIENT_CODEX}
@@ -201,17 +205,16 @@ spec:
             command: ["python", "-c"]
             args:
               - |
-                import json, os, re, secrets, stat, tempfile
+                import json, os, re, stat, tempfile
                 from pathlib import Path
 
                 uid = gid = 1000
                 runtime = Path('/run/obsidian-bridge')
-                cfg = json.loads(Path('/etc/obsidian-mcp/registry.json').read_text())
+                parent = Path('/config')
+                app_config = parent / '.config' / 'obsidian' / 'obsidian.json'
                 bundle = Path('/opt/obsidian-mcp/bridge-plugin')
                 plugin_id = 'obsidian-private-bridge'
-                if (set(cfg) != {'vaults', 'clients', 'owner'} or not isinstance(cfg['vaults'], dict)
-                        or not 1 <= len(cfg['vaults']) <= 8):
-                    raise RuntimeError('Invalid central enrollment')
+                reviewed_plugin_files = {'main.js', 'manifest.json'}
 
                 def private_dir(path):
                     if path.is_symlink() or (path.exists() and not path.is_dir()):
@@ -234,9 +237,9 @@ spec:
                         if os.path.exists(tmp):
                             os.unlink(tmp)
 
-                reviewed_plugin_files = {'main.js', 'manifest.json'}
-
-                def verify_installed_plugin(target):
+                def installed_state(target):
+                    # False: absent. True: this image's bundle. 'stale': exactly the two managed
+                    # regular files with other bytes (an older image); they get replaced.
                     try:
                         directory_fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
                     except FileNotFoundError:
@@ -255,8 +258,7 @@ spec:
                             raise RuntimeError('Unknown plugin drift; owner review required')
                         current = True
                         for name in reviewed_plugin_files:
-                            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                                         dir_fd=directory_fd)
+                            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
                             with os.fdopen(fd, 'rb') as installed:
                                 if not stat.S_ISREG(os.fstat(installed.fileno()).st_mode):
                                     raise RuntimeError('Unknown plugin drift; owner review required')
@@ -264,82 +266,64 @@ spec:
                                     current = False
                     finally:
                         os.close(directory_fd)
-                    # 'stale': exactly the two managed regular files with other bytes,
-                    # e.g. a previous image's bundle. They are replaced with this image's copy.
                     return True if current else 'stale'
 
-                # Validate every existing managed plugin before enabling it in any vault.
-                for entry in cfg['vaults'].values():
-                    root = Path(entry['app_root'])
-                    if (root.parent != Path('/config') or root.name != entry['app_name']
-                            or root.is_symlink() or (root.exists() and not root.is_dir())):
-                        raise RuntimeError('Unsafe enrolled vault root')
-                    if not root.is_dir():
-                        continue
-                    settings = root / '.obsidian'
-                    if settings.is_symlink() or (settings.exists() and not settings.is_dir()):
-                        raise RuntimeError('Unsafe vault settings directory')
-                    if not settings.is_dir():
-                        continue
-                    plugins = settings / 'plugins'
-                    if plugins.is_symlink() or (plugins.exists() and not plugins.is_dir()):
-                        raise RuntimeError('Unsafe plugin parent')
-                    if plugins.is_dir():
-                        verify_installed_plugin(plugins / plugin_id)
-
+                # Each vault's plugin registers itself here with a fresh credential when it loads.
                 private_dir(runtime)
-                endpoints = []
-                issued = set()
-                for vault_id, entry in cfg['vaults'].items():
-                    if not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', vault_id):
-                        raise RuntimeError('Invalid vault ID')
-                    root = Path(entry['app_root'])
-                    if (root.parent != Path('/config') or root.name != entry['app_name']
-                            or root.is_symlink() or (root.exists() and not root.is_dir())):
-                        raise RuntimeError('Unsafe enrolled vault root')
-                    directory = runtime / vault_id
-                    if (entry['socket_path'] != str(directory / (vault_id + '.sock'))
-                            or entry['credential_file'] != str(directory / 'credential')):
-                        raise RuntimeError('Unsafe bridge endpoint')
-                    private_dir(directory)
-                    credential = directory / 'credential'
-                    if credential.is_symlink():
-                        raise RuntimeError('Unsafe credential path')
-                    token = secrets.token_urlsafe(32)
-                    while token in issued:
-                        token = secrets.token_urlsafe(32)
-                    issued.add(token)
-                    atomic_bytes(credential, token.encode(), 0o600)
-                    endpoints.append({'vault_id': vault_id, 'app_name': entry['app_name'],
-                                      'app_root': str(root), 'socket': entry['socket_path'],
-                                      'credential_file': str(credential)})
 
-                    # A future enrolled but absent/closed vault cannot disable
-                    # another; never create or initialize a missing vault.
-                    if not root.is_dir():
+                # Every vault the desktop knows about, as direct children of /config. A vault
+                # the app has never set up (no .obsidian) is left alone, never initialized.
+                # A missing, symlinked or unreadable app config must not keep the desktop
+                # from starting; the plugin is then left exactly as it is.
+                known = {}
+                if app_config.is_symlink():
+                    print('obsidian.json is a symlink; skipping plugin install', flush=True)
+                elif app_config.is_file():
+                    try:
+                        document = json.loads(app_config.read_text())
+                        known = document.get('vaults', {}) if isinstance(document, dict) else {}
+                    except (OSError, UnicodeError, ValueError):
+                        print('obsidian.json is unreadable; skipping plugin install', flush=True)
+                roots = []
+                for entry in (known.values() if isinstance(known, dict) else []):
+                    location = entry.get('path') if isinstance(entry, dict) else None
+                    if not isinstance(location, str):
                         continue
-
+                    root = Path(location)
+                    # Same vault-name rule as the plugin; canonical, real directories only.
+                    if (root.parent != parent or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}', root.name)
+                            or root.name.endswith(('.', ' ')) or os.path.realpath(root) != str(root)
+                            or root.is_symlink() or not root.is_dir()):
+                        continue
                     settings = root / '.obsidian'
                     if settings.is_symlink() or (settings.exists() and not settings.is_dir()):
                         raise RuntimeError('Unsafe vault settings directory')
-                    if not settings.is_dir():
-                        continue
-                    plugins = settings / 'plugins'
+                    if settings.is_dir():
+                        roots.append(root)
+
+                # Validate every managed plugin directory before changing any vault.
+                states = {}
+                for root in roots:
+                    plugins = root / '.obsidian' / 'plugins'
                     if plugins.is_symlink() or (plugins.exists() and not plugins.is_dir()):
                         raise RuntimeError('Unsafe plugin parent')
+                    states[root] = installed_state(plugins / plugin_id) if plugins.is_dir() else False
+
+                for root, installed in states.items():
+                    settings = root / '.obsidian'
+                    plugins = settings / 'plugins'
                     plugins.mkdir(mode=0o755, exist_ok=True)
                     target = plugins / plugin_id
-                    installed = verify_installed_plugin(target)
                     if installed == 'stale':
                         if target.is_symlink() or not target.is_dir():
                             raise RuntimeError('Unknown plugin drift; owner review required')
-                        print(f'refreshing managed bridge plugin in {vault_id}', flush=True)
-                        for name in ('main.js', 'manifest.json'):
+                        print(f'refreshing managed bridge plugin in {root.name}', flush=True)
+                        for name in sorted(reviewed_plugin_files):
                             atomic_bytes(target / name, (bundle / name).read_bytes(), 0o644)
                     elif not installed:
                         staging = Path(tempfile.mkdtemp(prefix='.bridge-bootstrap-', dir=plugins))
                         try:
-                            for name in ('main.js', 'manifest.json'):
+                            for name in sorted(reviewed_plugin_files):
                                 atomic_bytes(staging / name, (bundle / name).read_bytes(), 0o644)
                             os.chown(staging, uid, gid)
                             os.replace(staging, target)
@@ -348,10 +332,11 @@ spec:
                                 for item in staging.iterdir():
                                     item.unlink()
                                 staging.rmdir()
+                        print(f'installed managed bridge plugin in {root.name}', flush=True)
                     for path in (settings, plugins, target):
                         os.chown(path, uid, gid)
 
-                    enabled = root / '.obsidian' / 'community-plugins.json'
+                    enabled = settings / 'community-plugins.json'
                     if enabled.is_symlink():
                         raise RuntimeError('Unsafe community plugin list')
                     if enabled.exists():
@@ -365,9 +350,7 @@ spec:
                     if plugin_id not in current:
                         current.append(plugin_id)
                         atomic_bytes(enabled, (json.dumps(current, indent=2) + chr(10)).encode(), 0o644)
-
-                registry = {'version': 1, 'instance': 'kubernetes-obsidian', 'endpoints': endpoints}
-                atomic_bytes(runtime / 'registry.json', json.dumps(registry).encode(), 0o600)
+                print(f'bridge plugin ready in {len(states)} vaults', flush=True)
             env: {PYTHONDONTWRITEBYTECODE: "1"}
             securityContext:
               runAsUser: 0
@@ -432,32 +415,15 @@ spec:
           obsidian:
             app:
               - path: /config
-              - path: /config/IAM Team
-                subPath: IAM Team
-              - path: /config/Homelab
-                subPath: Homelab
             prepare-mcp-runtime:
               - path: /config
-              - path: /config/IAM Team
-                subPath: IAM Team
-              - path: /config/Homelab
-                subPath: Homelab
-            mcp:
-              - path: /config/IAM Team
-                subPath: IAM Team
-                readOnly: true
-              - path: /config/Homelab
-                subPath: Homelab
-                readOnly: true
+            # The gateway mounts no vault content; it reaches vaults only through the app.
       mcp-registry:
         type: configMap
-        name: obsidian-mcp-registry-v1
+        name: obsidian-mcp-registry-v2
         defaultMode: 292  # 0444; projected ConfigMap symlinks are expected.
         advancedMounts:
           obsidian:
-            prepare-mcp-runtime:
-              - path: /etc/obsidian-mcp
-                readOnly: true
             mcp:
               - path: /etc/obsidian-mcp
                 readOnly: true
@@ -470,8 +436,10 @@ spec:
               - path: /run/obsidian-bridge
             prepare-mcp-runtime:
               - path: /run/obsidian-bridge
+            # The gateway only reads registrations; the app's plugin writes them.
             mcp:
               - path: /run/obsidian-bridge
+                readOnly: true
       # Electron and the Selkies capture need a larger /dev/shm than the
       # 64Mi runtime default.
       shm:

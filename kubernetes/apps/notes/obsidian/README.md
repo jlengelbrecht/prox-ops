@@ -6,7 +6,7 @@ The same pod runs the Obsidian MCP gateway (`services/obsidian-mcp`) at `https:/
 
 ## Connecting a coding agent
 
-The endpoint uses streamable HTTP with a per-client bearer token. It does not redirect to a browser login. One endpoint serves every enrolled vault. Call `list_vaults`, then pass `vault` on every tool call.
+The endpoint uses streamable HTTP with a per-client bearer token. It does not redirect to a browser login. One endpoint serves every vault that is open in the desktop, and all four clients can use all of them. Call `list_vaults` to get each vault's `id`, then pass `vault` on every tool call.
 
 | Client | Token variable in the pod | Example |
 |---|---|---|
@@ -21,24 +21,20 @@ Client machines need neither the Obsidian app nor SSH.
 
 ## Tools
 
-`list_vaults`, `list_entries` (direct children of a folder), `read_note`, `read_note_with_images` (text plus embedded images in reading order, 10 per page), `search_notes`, `create_note`, `append_note` (requires the current `revision`), `mutation_receipt` (reconciles a create or append whose response was lost), and `read_embedded_image` (local raster images only).
+- **Vaults:** `list_vaults` (open vaults with their ids), `list_all_vaults` (every vault the desktop knows, open or closed), `open_vault`, `create_vault`. A new vault opens in its own window and appears in `list_vaults` within a few seconds. Connecting it to Obsidian Sync is a one-time step in the desktop.
+- **Notes:** `list_entries` (direct children of a folder), `read_note`, `read_note_with_images` (text plus embedded images in reading order, 10 per page), `search_notes`, `create_note` (creates missing folders), `append_note` (requires the current `revision`), `mutation_receipt` (reconciles a create or append whose response was lost), `read_embedded_image` (local raster images only).
 
-There are no move, delete, plugin or settings tools yet. Those are destructive or administrative, and they will require owner approval through the `/owner/` route on `obsidian.homelab0.org`.
+Destructive and administrative tools (delete, overwrite, plugin and settings changes) are coming. They will require owner approval through the `/owner/` route on `obsidian.homelab0.org`.
 
 ## How it works
 
-- **Writes go through the app.** A private plugin (`obsidian-private-bridge`) performs every write through Obsidian's own API, so Sync sees normal edits. The gateway mounts each vault read-only and talks to the plugin over a per-vault abstract Unix socket, authenticated with a credential that is regenerated on every pod start.
-- **Bootstrap.** The `prepare-mcp-runtime` init container reads the `obsidian-mcp-registry-v1` ConfigMap and creates the private runtime under `/run/obsidian-bridge`. It installs the bundled plugin only into enrolled vaults that already exist, and it never creates a vault. If an older copy of the plugin is installed (exactly its two files), bootstrap replaces it with the image's copy. Anything else in that directory, such as extra files, nested directories or symlinks, stops startup for review. Other plugins, Sync and Hindsight settings are left alone.
+- **Everything goes through the app.** A private plugin (`obsidian-private-bridge`) runs in every vault window and performs reads and writes through Obsidian's own API, so Sync sees normal edits. When a vault window opens, the plugin registers itself under `/run/obsidian-bridge/<vault id>/` with a fresh credential. It deregisters when the window closes. The gateway mounts no vault content and talks to each plugin over a per-vault abstract Unix socket.
+- **Bootstrap.** The `prepare-mcp-runtime` init container creates the private runtime directory. It installs the bundled plugin into every vault listed in the desktop's `obsidian.json` that already has Obsidian settings, and it never creates or initializes a vault itself. Vaults created through `create_vault` get the plugin from the window that created them. If an older copy of the plugin is installed (exactly its two files), bootstrap replaces it with the image's copy. Anything else in that directory, such as extra files, nested directories or symlinks, stops startup for review. Other plugins, Sync and Hindsight settings are left alone.
 - **Network.** Cilium admits port 8000 only from the internal Envoy gateway. The policy applies to the whole pod, not to each container, so the gateway shares the desktop's egress (DNS, Obsidian Sync, GitHub, the internal gateway) plus the Authentik server on port 9000, which it uses for owner checks.
 
 ## Adding a vault
 
-1. Create the vault in the desktop and let Sync download it.
-2. Add it to a new version of the registry ConfigMap.
-3. Add a same-path `subPath` mount for both containers, and add client grants.
-4. Roll the pod.
-
-The MCP URL does not change.
+Create it in the desktop, or have an agent call `create_vault`. Either way it appears in `list_vaults` once its window is open, and no change in this repository is needed.
 
 ## Updating the gateway
 
