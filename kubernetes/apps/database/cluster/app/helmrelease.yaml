@@ -23,6 +23,24 @@ spec:
     remediation:
       strategy: rollback
       retries: 3
+  # cluster chart 0.5.0 only renders backup when object-store backups.enabled;
+  # patch the rendered Cluster instead of enabling that unrelated feature.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: postgresql.cnpg.io
+              version: v1
+              kind: Cluster
+              name: postgres
+            patch: |
+              - op: add
+                path: /spec/backup
+                value:
+                  volumeSnapshot:
+                    className: ceph-block-snapshot-retain
+                    snapshotOwnerReference: none
+                    online: false
   values:
     # Cluster name
     fullnameOverride: postgres
@@ -49,7 +67,9 @@ spec:
       # Storage configuration
       storage:
         size: 20Gi
-        storageClass: ceph-block
+        # CNPG 1.28 keeps existing PVCs by name and does not reconcile their
+        # storageClassName; newly created instance PVCs use this retained class.
+        storageClass: ceph-block-retain
 
       # Resource limits
       resources:
