@@ -194,7 +194,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             for name, vaults in expected.items():
                 async with Client(url + "/mcp", auth=TOKENS[name]) as client:
                     tools = {tool.name for tool in await client.list_tools()}
-                    base = {"list_vaults", "read_note", "read_embedded_image"}
+                    base = {"list_vaults", "read_note", "read_embedded_image", "read_note_with_images"}
                     if name != "antigravity":
                         base |= {"list_entries", "search_notes", "create_note", "append_note", "mutation_receipt"}
                     if name == "codex":

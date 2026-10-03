@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from approval import Preview, Snapshot, StateEntry  # noqa: E402
 from bridge import BridgeClient, BridgeError  # noqa: E402
 from gateway import (CapabilityFilter, RequestBodyLimit, _ExecutionPool, _MAX_VAULTS,
-                     _MAX_REGISTRY_BYTES, _image_content,
+                     _MAX_REGISTRY_BYTES, _image_content, _note_with_images,
                      create_gateway_from_env)  # noqa: E402
 from fastmcp.exceptions import ToolError
 
@@ -135,6 +135,43 @@ class ImageDecodeTests(unittest.TestCase):
             _image_content(bridge, "iam", "note.md", "https://remote.invalid/image.png")
         with self.assertRaises(Exception):
             _image_content(bridge, "iam", "note.md", "../outside.png")
+
+
+class NoteWithImagesTests(unittest.TestCase):
+    def test_pages_images_in_reading_order_and_marks_failures(self):
+        bridge = BridgeFixture()
+        text = ("Intro ![[one.png]] middle ![alt](two%20b.jpg) ![[bad.png|200]] "
+                "![remote](https://remote.invalid/x.png) ![[doc.pdf]] end ![[four.webp#c]]")
+        bridge.notes["iam"]["pics.md"] = (text, "sha256:" + "c" * 64)
+        first = _note_with_images(bridge, "iam", "pics.md", 0, 2)
+        self.assertEqual(first.structured_content["images_total"], 4)
+        self.assertEqual(first.structured_content["next_start"], 2)
+        self.assertEqual(first.content[1].text, text)
+        captions = [c.text for c in first.content if c.type == "text"][2:]
+        self.assertEqual(captions, ["Image 1 of 4: one.png", "Image 2 of 4: two b.jpg"])
+        self.assertEqual(sum(1 for c in first.content if c.type == "image"), 2)
+        rest = _note_with_images(bridge, "iam", "pics.md", 2, 10)
+        self.assertIsNone(rest.structured_content["next_start"])
+        self.assertNotIn(text, [c.text for c in rest.content if c.type == "text"])
+        captions = [c.text for c in rest.content if c.type == "text"][1:]
+        self.assertEqual(captions, ["Image 3 of 4: bad.png (unavailable)", "Image 4 of 4: four.webp"])
+        self.assertEqual(sum(1 for c in rest.content if c.type == "image"), 1)
+
+    def test_hostile_embed_text_is_scanned_in_linear_time(self):
+        bridge = BridgeFixture()
+        for hostile in ("![[" * 85_000, "![a](" * 50_000, "![" + "]" * 200_000):
+            bridge.notes["iam"]["hostile.md"] = (hostile, "sha256:" + "d" * 64)
+            started = time.monotonic()
+            result = _note_with_images(bridge, "iam", "hostile.md", 0, 10)
+            self.assertLess(time.monotonic() - started, 1.0)
+            self.assertEqual(result.structured_content["images_total"], 0)
+
+    def test_note_without_images_returns_text_only(self):
+        bridge = BridgeFixture()
+        result = _note_with_images(bridge, "iam", "note.md", 0, 10)
+        self.assertEqual(result.structured_content["images_total"], 0)
+        self.assertIsNone(result.structured_content["next_start"])
+        self.assertEqual([c.type for c in result.content], ["text", "text"])
 
 
 class RequestBodyTests(unittest.IsolatedAsyncioTestCase):
