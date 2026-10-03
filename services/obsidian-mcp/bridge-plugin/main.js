@@ -417,18 +417,26 @@ function trustVault(config, target) {
   if (match && globalThis.localStorage) globalThis.localStorage.setItem(`enable-plugin-${match.id}`, 'true');
 }
 function electronRenderer() {
-  try {
-    const { ipcRenderer } = require('electron');
-    if (ipcRenderer && typeof ipcRenderer.sendSync === 'function') return ipcRenderer;
-  } catch { /* fall through */ }
+  // Obsidian's own vault switcher uses window.electron.ipcRenderer.
+  const candidates = [() => globalThis.window && globalThis.window.electron && globalThis.window.electron.ipcRenderer,
+    () => require('electron').ipcRenderer];
+  for (const candidate of candidates) {
+    try {
+      const ipcRenderer = candidate();
+      if (ipcRenderer && typeof ipcRenderer.sendSync === 'function') return ipcRenderer;
+    } catch { /* try the next one */ }
+  }
   fail('unavailable');
 }
 function openWindow(config, target) {
   const electron = { ipcRenderer: electronRenderer() };
   trustVault(config, target);
-  const opened = electron.ipcRenderer.sendSync('vault-open', target, true);
-  if (opened !== true && opened !== undefined && opened !== null) fail('internal_error');
-  trustVault(config, target);
+  // vault-open(path, create): create=false opens an existing folder as a vault in a new
+  // window. The folder and its .obsidian are prepared first so the bridge loads there.
+  const opened = electron.ipcRenderer.sendSync('vault-open', target, false);
+  if (opened !== true) fail('internal_error');
+  // The window is open now; a failure to record trust must not undo the vault.
+  try { trustVault(config, target); } catch { /* the owner can trust it in the desktop */ }
 }
 function manageVaults(config, op, args) {
   if (op === 'vaults') {
@@ -451,12 +459,12 @@ function manageVaults(config, op, args) {
     fs.mkdirSync(target, { mode: 0o755 });
     try {
       ensurePlugin(config, target);
+      openWindow(config, target);
     } catch (error) {
       // Nothing but our own scaffolding exists yet, so undo it and let a retry start clean.
       fs.rmSync(target, { recursive: true, force: true });
       throw error;
     }
-    openWindow(config, target);
     return { name: args.name, created: true };
   }
   fail('unknown_operation');

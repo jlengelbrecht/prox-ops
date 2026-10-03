@@ -149,10 +149,11 @@ class TFolder { constructor(filePath) { this.path = filePath; } }
 // Obsidian's renderer: vault-open over ipcRenderer, trust flags in the shared localStorage.
 const ipcCalls = [];
 let onVaultOpen = null;
+let vaultOpenReply = true;
 const electron = { ipcRenderer: { sendSync(channel, ...args) {
   ipcCalls.push([channel, ...args]);
   if (onVaultOpen) onVaultOpen(channel, ...args);
-  return true;
+  return vaultOpenReply;
 } } };
 const storage = new Map();
 Object.defineProperty(globalThis, 'localStorage', { configurable: true, writable: true, value: {
@@ -571,7 +572,7 @@ test('vault management lists direct children, opens and creates vaults with the 
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(work, '.obsidian', 'community-plugins.json'), 'utf8')),
       ['calendar', PLUGIN_ID]);
     assert.deepEqual(fs.readdirSync(path.join(work, '.obsidian', 'plugins', PLUGIN_ID)).sort(), ['main.js', 'manifest.json']);
-    assert.deepEqual(ipcCalls, [['vault-open', work, true]]);
+    assert.deepEqual(ipcCalls, [['vault-open', work, false]]);
     // Work also enables 'calendar', so vault-wide trust is left for the owner.
     assert.equal(storage.get('enable-plugin-bbbb2222'), undefined);
     assert.equal((await request(f.config, 'open_vault', { name: 'Work' })).ok, true);
@@ -597,7 +598,7 @@ test('vault management lists direct children, opens and creates vaults with the 
       assert.deepEqual(fs.readFileSync(path.join(installed, name)), fs.readFileSync(path.join(source, name)));
     }
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target, '.obsidian', 'community-plugins.json'), 'utf8')), [PLUGIN_ID]);
-    assert.deepEqual(ipcCalls, [['vault-open', target, true]]);
+    assert.deepEqual(ipcCalls, [['vault-open', target, false]]);
     assert.equal(storage.get('enable-plugin-gggg7777'), 'true');
     assert.deepEqual((await request(f.config, 'vaults')).result.vaults.map(v => v.name), ['IAM', 'Work', 'Research Notes']);
 
@@ -633,6 +634,12 @@ test('vault management lists direct children, opens and creates vaults with the 
     assert.equal(fs.existsSync(path.join(f.home, 'Rollback')), false);
     fs.renameSync(path.join(source, 'manifest.json.bak'), path.join(source, 'manifest.json'));
     assert.equal((await request(f.config, 'create_vault', { name: 'Rollback' })).ok, true);
+
+    // Obsidian refusing to open (it returns an error string) rolls the create back.
+    vaultOpenReply = 'Vault already exists';
+    assert.equal((await request(f.config, 'create_vault', { name: 'Refused' })).error, 'internal_error');
+    assert.equal(fs.existsSync(path.join(f.home, 'Refused')), false);
+    vaultOpenReply = true;
 
     // At most 16 vaults: each open vault is another desktop window.
     const crowded = { vaults: Object.fromEntries(Array.from({ length: 16 }, (_, i) =>
