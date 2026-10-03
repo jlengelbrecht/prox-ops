@@ -10,6 +10,32 @@ const { EventEmitter } = require('node:events');
 const { spawn } = require('node:child_process');
 const REAL_IPC = process.env.OBSIDIAN_BRIDGE_REAL_IPC === '1';
 
+// The plugin only starts as the desktop identity (UID/GID 1000, no effective
+// capabilities). On hosts where the test runs as another user, present files
+// owned by that user as 1000-owned so protocol tests exercise a started bridge.
+// The identity test below swaps these out to prove enforcement.
+const HOST_UID = process.getuid();
+if (HOST_UID !== 1000 || process.getgid() !== 1000) {
+  const hostLstat = fs.lstatSync;
+  const hostRead = fs.readFileSync;
+  process.getuid = () => 1000;
+  process.getgid = () => 1000;
+  fs.lstatSync = function(...args) {
+    const value = hostLstat.apply(this, args);
+    if (!value || value.uid !== HOST_UID) return value;
+    return new Proxy(value, { get(target, key) {
+      const field = Reflect.get(target, key);
+      return key === 'uid' || key === 'gid' ? 1000 : typeof field === 'function' ? field.bind(target) : field;
+    } });
+  };
+  fs.readFileSync = function(filename, ...args) {
+    if (filename === '/proc/self/status') {
+      return hostRead.call(this, filename, ...args).replace(/^CapEff:.*$/m, 'CapEff:\t0000000000000000');
+    }
+    return hostRead.call(this, filename, ...args);
+  };
+}
+
 // The ordinary unit gate uses a stream double. REAL_IPC runs unpatched AF_UNIX.
 const listeners = new Map();
 if (!REAL_IPC) {
