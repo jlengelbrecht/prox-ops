@@ -139,7 +139,7 @@ spec:
               repository: ghcr.io/jlengelbrecht/obsidian-mcp
               # Replace only after the main image publication receipt names its immutable digest.
               # renovate: datasource=docker depName=ghcr.io/jlengelbrecht/obsidian-mcp
-              tag: main@sha256:95dbc0b02e6e306cc9b9c54a1c4e10c62b4ddf8fa65892fc99640a00ceec5317
+              tag: main@sha256:30e1b6a14141c688fb3543377000077691e4f310bc20fc8ce6e5869c5f3c3588
             command: ["python", "/app/gateway.py"]
             env:
               OBSIDIAN_GATEWAY_REGISTRY: /etc/obsidian-mcp/registry.json
@@ -249,16 +249,20 @@ spec:
                                 names.add(entry.name)
                         if names != reviewed_plugin_files:
                             raise RuntimeError('Unknown plugin drift; owner review required')
+                        current = True
                         for name in reviewed_plugin_files:
                             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                                          dir_fd=directory_fd)
                             with os.fdopen(fd, 'rb') as installed:
-                                if (not stat.S_ISREG(os.fstat(installed.fileno()).st_mode)
-                                        or installed.read() != (bundle / name).read_bytes()):
+                                if not stat.S_ISREG(os.fstat(installed.fileno()).st_mode):
                                     raise RuntimeError('Unknown plugin drift; owner review required')
+                                if installed.read() != (bundle / name).read_bytes():
+                                    current = False
                     finally:
                         os.close(directory_fd)
-                    return True
+                    # 'stale': exactly the two managed regular files with other bytes,
+                    # e.g. a previous image's bundle. They are replaced with this image's copy.
+                    return True if current else 'stale'
 
                 # Validate every existing managed plugin before enabling it in any vault.
                 for entry in cfg['vaults'].values():
@@ -321,7 +325,14 @@ spec:
                         raise RuntimeError('Unsafe plugin parent')
                     plugins.mkdir(mode=0o755, exist_ok=True)
                     target = plugins / plugin_id
-                    if not verify_installed_plugin(target):
+                    installed = verify_installed_plugin(target)
+                    if installed == 'stale':
+                        if target.is_symlink() or not target.is_dir():
+                            raise RuntimeError('Unknown plugin drift; owner review required')
+                        print(f'refreshing managed bridge plugin in {vault_id}', flush=True)
+                        for name in ('main.js', 'manifest.json'):
+                            atomic_bytes(target / name, (bundle / name).read_bytes(), 0o644)
+                    elif not installed:
                         staging = Path(tempfile.mkdtemp(prefix='.bridge-bootstrap-', dir=plugins))
                         try:
                             for name in ('main.js', 'manifest.json'):
