@@ -36,7 +36,8 @@ from starlette.requests import ClientDisconnect, Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from approval import (AdapterConflict, AgentContext, ApprovalCoordinator, ApprovalError,
-                      Operation, Preview, Snapshot, StateEntry, VaultEnrollment)
+                      Operation, PackageAttestation, PackagePreview, Preview, Snapshot, StateEntry,
+                      VaultEnrollment)
 from bridge import BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
 from owner_auth import CsrfLedger, OwnerAuthConfig, OwnerAuthenticator, OwnerAuthError
 from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
@@ -50,7 +51,8 @@ _SAFE_CAPABILITIES = {
 # Destructive verbs: each needs the owner's approval through /owner/ before it runs.
 _GUARDED_CAPABILITIES = {"replace_note": "replace", "trash_note": "trash", "trash_folder": "trash",
                          "plugin_enable": "plugin_set", "plugin_disable": "plugin_set",
-                         "plugin_uninstall": "plugin_remove", "set_setting": "setting_write"}
+                         "plugin_uninstall": "plugin_remove", "set_setting": "setting_write",
+                         "plugin_install": "plugin_install"}
 _PLUGIN_ACTIONS = frozenset({"plugin_enable", "plugin_disable", "plugin_uninstall"})
 _TOOL_VERBS = {
     "list_entries": "list_notes", "read_note": "read_note", "search_notes": "search",
@@ -59,6 +61,7 @@ _TOOL_VERBS = {
     "list_all_vaults": "manage_vaults", "open_vault": "manage_vaults",
     "create_vault": "manage_vaults", "create_folder": "create_folder", "move": "move",
     "read_logs": "diagnostics", "list_plugins": "diagnostics", "read_settings": "diagnostics",
+    "search_plugins": "diagnostics", "plugin_package": "diagnostics",
 }
 
 
@@ -92,6 +95,8 @@ _MAX_REGISTRY_TEXT = 1024
 _EXECUTION_WORKERS = 8
 _EXECUTION_WAITING = 8
 _EXECUTION_ADMISSION_TIMEOUT = 2.0
+# Plugin-store calls fetch from GitHub; they get a longer, still bounded, budget (bridge: 20-30s).
+_PACKAGE_TIMEOUT = 35.0
 _MCP_HOST = "obsidian-mcp.homelab0.org"
 _MCP_HTTPS_ORIGINS = frozenset({f"https://{_MCP_HOST}", f"https://{_MCP_HOST}:443"})
 _MCP_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
@@ -215,6 +220,7 @@ class BridgeAdapter:
         self.bridge = bridge
         self.client_id = client_id
         self._observed: dict[tuple[str, str, str], str] = {}
+        self._pins: dict[str, str] = {}
 
     def read(self, action: Operation) -> object:
         args = action.arguments
@@ -251,8 +257,50 @@ class BridgeAdapter:
         state = self.bridge.setting_state(action.vault, action.arguments["setting_id"])
         return state, StateEntry("setting", state["setting_id"], state["revision"])
 
+    def _package(self, action: Operation, pin: bool) -> dict:
+        args = action.arguments
+        package = self.bridge.plugin_package(action.vault, args["plugin_id"], args["version"], pin)
+        if package["source"] != args["source"] or package["version"] != args["version"]:
+            if package["pin"]:
+                self.bridge.plugin_release(action.vault, package["pin"])
+            raise BridgeError("conflict")
+        return package
+
+    def preview_package(self, action: Operation) -> PackagePreview:
+        package = self._package(action, False)
+        return PackagePreview(package["source"], package["version"], package["digest"])
+
+    def attest_package(self, action: Operation) -> PackageAttestation:
+        package = self._package(action, True)
+        self._pins[package["pin"]] = action.vault
+        return PackageAttestation(package["source"], package["version"], package["digest"], package["pin"])
+
+    def release_package(self, pin: str) -> None:
+        vault = self._pins.pop(pin, None)
+        if vault is not None:
+            try:
+                self.bridge.plugin_release(vault, pin)
+            except BridgeError:
+                pass  # the plugin also expires pins on its own
+
+    def _install_entries(self, action: Operation) -> tuple[StateEntry, ...]:
+        args = action.arguments
+        if self.bridge.plugin_state(action.vault, args["plugin_id"])["installed"]:
+            raise BridgeError("conflict")
+        return (StateEntry("plugin", args["plugin_id"], "absent"),
+                StateEntry("package", args["plugin_id"], "attested", args["source"], args["version"], args["digest"]))
+
     def _admin_preview(self, action: Operation) -> Preview:
         vault, args = action.vault, action.arguments
+        if action.verb == "plugin_install":
+            entries = self._install_entries(action)
+            package = self._package(action, False)
+            files = ", ".join(f"{name} ({size} bytes)" for name, size in sorted(package["sizes"].items()))
+            summary = (f"Install and enable the community plugin {package['name']} ({args['plugin_id']}) "
+                       f"version {args['version']} in vault {vault}, downloaded from {args['source']}.\n"
+                       f"Files: {files}.\nSHA-256 of the files: {package['digest']}.\n"
+                       "Enabling it runs this plugin's code inside the desktop.")
+            return Preview(Snapshot(entries, True, len(entries)), summary)
         if action.verb in _PLUGIN_ACTIONS:
             state, entry = self._plugin_entry(action)
             what = {"plugin_enable": "Enable", "plugin_disable": "Disable", "plugin_uninstall": "Uninstall"}[action.verb]
@@ -271,7 +319,7 @@ class BridgeAdapter:
 
     def preview(self, action: Operation) -> Preview:
         """Read only: exactly what the owner approves, with the revision it applies to."""
-        if action.verb in _PLUGIN_ACTIONS or action.verb == "set_setting":
+        if action.verb in _PLUGIN_ACTIONS or action.verb in {"set_setting", "plugin_install"}:
             preview = self._admin_preview(action)
             summary = unicodedata.normalize("NFC", "".join(_visible(char) for char in preview.summary))
             if len(summary) > _MAX_PREVIEW_TEXT:
@@ -296,6 +344,9 @@ class BridgeAdapter:
         return Preview(Snapshot((entry,), True, 1), summary)
 
     def observe(self, action: Operation, expected) -> Snapshot:
+        if action.verb == "plugin_install":
+            entries = self._install_entries(action)
+            return Snapshot(entries, True, len(entries))
         if action.verb in _PLUGIN_ACTIONS:
             state, entry = self._plugin_entry(action)
             self._observed[(action.vault, action.verb, state["plugin_id"])] = (
@@ -314,6 +365,11 @@ class BridgeAdapter:
     def execute(self, action: Operation, *, package=None) -> object:
         args = action.arguments
         try:
+            if action.verb == "plugin_install":
+                if package is None or package.digest != args["digest"]:
+                    raise AdapterConflict()
+                self._pins.pop(package.pin, None)
+                return self.bridge.plugin_install(action.vault, args["plugin_id"], package.pin, package.digest)
             if action.verb in _PLUGIN_ACTIONS or action.verb == "set_setting":
                 key = args["plugin_id"] if action.verb in _PLUGIN_ACTIONS else args["setting_id"]
                 expected = self._observed.pop((action.vault, action.verb, key), None)
@@ -843,11 +899,14 @@ def create_gateway(
         except BridgeError:
             raise ToolError("Tool request failed") from None
 
-    async def diagnostic(vault: str, function, *args):
-        deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+    async def diagnostic(vault: str, function, *args, budget: float = _EXECUTION_ADMISSION_TIMEOUT,
+                         vault_lock: bool = True):
+        deadline = time.monotonic() + budget
         await permitted(agent(), vault, "diagnostics", deadline)
         try:
-            return await execution.run(function, vault, *args, deadline=deadline, vault=vault)
+            # GitHub fetches touch no vault state, so they skip the per-vault lock.
+            return await execution.run(function, vault, *args, deadline=deadline,
+                                       vault=vault if vault_lock else None)
         except BridgeError:
             raise ToolError("Tool request failed") from None
 
@@ -863,6 +922,21 @@ def create_gateway(
     async def list_plugins(vault: str) -> dict:
         """Community plugins installed in a vault (id, name, version, enabled) and core plugins."""
         return await diagnostic(vault, bridge.plugins)
+
+    @mcp.tool
+    async def search_plugins(vault: str, query: str) -> dict:
+        """Search Obsidian's community plugin directory (up to 20 matches with id and repo)."""
+        if not isinstance(query, str) or not 1 <= len(query) <= 200:
+            raise ToolError("Tool request failed")
+        return await diagnostic(vault, bridge.plugin_catalog, query, budget=_PACKAGE_TIMEOUT, vault_lock=False)
+
+    @mcp.tool
+    async def plugin_package(vault: str, plugin_id: str, version: str = "latest") -> dict:
+        """Download a community plugin release and report its exact version, source and SHA-256.
+        Pass those to prepare_action with verb plugin_install to ask the owner to install it."""
+        result = await diagnostic(vault, bridge.plugin_package, plugin_id, version, False, budget=_PACKAGE_TIMEOUT,
+                                  vault_lock=False)
+        return {key: value for key, value in result.items() if key != "pin"}
 
     @mcp.tool
     async def read_settings(vault: str, file: str) -> dict:
@@ -924,13 +998,14 @@ def create_gateway(
               trash_note    {"path": "Folder/Note.md"}      (moves it to the vault's .trash)
               trash_folder  {"path": "Folder"}              (moves it and everything in it to .trash)
               plugin_enable / plugin_disable / plugin_uninstall  {"plugin_id": "<id from list_plugins>"}
+              plugin_install {"plugin_id", "version", "source", "digest"}  (all four from plugin_package)
               set_setting   {"setting_id": "<file>.<key>", "value": <string, number or boolean>}
                             where file is app, appearance or plugin:<id>; one top-level key per call
             Returns an approval `url`. Give it to the user; they open it, review exactly what
             will change and approve it. Then call commit_action with the same vault, verb,
             arguments and the returned `id` as pending_id. Approvals expire after ten minutes.
             """
-            deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+            deadline = time.monotonic() + (_PACKAGE_TIMEOUT if verb == "plugin_install" else _EXECUTION_ADMISSION_TIMEOUT)
             context = agent()
             await permitted(context, vault, verb, deadline)
             if verb not in destructive_verbs:
@@ -954,7 +1029,7 @@ def create_gateway(
             """Run an action the owner approved via prepare_action's url. Pass the same vault, verb
             and arguments, and the prepare_action id as pending_id. It runs at most once, and
             fails without changing anything if the note or folder changed since it was approved."""
-            deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+            deadline = time.monotonic() + (_PACKAGE_TIMEOUT if verb == "plugin_install" else _EXECUTION_ADMISSION_TIMEOUT)
             context = agent()
             await permitted(context, vault, verb, deadline)
             if verb not in destructive_verbs:

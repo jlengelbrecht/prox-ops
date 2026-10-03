@@ -139,6 +139,17 @@ if (REAL_IPC) test('real private AF_UNIX plugin to Python adapter, two vaults an
 });
 
 class Plugin { constructor(app) { this.app = app; } }
+// Fake GitHub for requestUrl: url -> bytes (missing -> 404).
+const remote = new Map();
+const remoteCalls = [];
+const obsidianModule = { get Plugin() { return Plugin; }, get FileSystemAdapter() { return FileSystemAdapter; },
+  get TFile() { return TFile; }, get TFolder() { return TFolder; },
+  async requestUrl({ url }) {
+    remoteCalls.push(url);
+    if (!remote.has(url)) return { status: 404, arrayBuffer: new ArrayBuffer(0) };
+    const bytes = Buffer.from(remote.get(url));
+    return { status: 200, arrayBuffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) };
+  } };
 class FileSystemAdapter {
   constructor(root) { this.root = root; }
   getBasePath() { return this.root; }
@@ -169,7 +180,7 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, writable
 } });
 const originalLoad = Module._load;
 Module._load = function(request, parent, main) {
-  if (request === 'obsidian') return { Plugin, FileSystemAdapter, TFile, TFolder };
+  if (request === 'obsidian') return obsidianModule;
   if (request === 'electron') return electron;
   return originalLoad.call(this, request, parent, main);
 };
@@ -864,6 +875,54 @@ test('administration: plugin state, toggles, uninstall and single-key settings w
       { plugin_id: 'calendar', removed: true });
     assert.equal(fs.existsSync(pluginDir), false);
   } finally {
+    if (bridge) await bridge.onunload();
+    fs.rmSync(f.home, { recursive: true, force: true });
+  }
+});
+test('community plugins: catalog search, hashed packages, pinned install of exactly the approved bytes', async () => {
+  const f = fixture('Install');
+  let bridge;
+  try {
+    remote.clear();
+    remote.set('https://raw.githubusercontent.com/obsidianmd/obsidian-releases/master/community-plugins.json',
+      JSON.stringify([{ id: 'calendar', name: 'Calendar', author: 'Liam', description: 'A calendar view', repo: 'liamcain/obsidian-calendar-plugin' },
+                      { id: 'bad', name: 'Bad', repo: '../../evil' }]));
+    const base = 'https://github.com/liamcain/obsidian-calendar-plugin/releases';
+    remote.set(`${base}/latest/download/manifest.json`, '{"id":"calendar","version":"1.5.10"}');
+    remote.set(`${base}/download/1.5.10/manifest.json`, '{"id":"calendar","version":"1.5.10"}');
+    remote.set(`${base}/download/1.5.10/main.js`, 'module.exports = class {};');
+    const enabled = new Set();
+    f.app.plugins = { manifests: {}, enabledPlugins: enabled,
+      async loadManifests() { const dir = path.join(f.root, '.obsidian', 'plugins', 'calendar');
+        if (fs.existsSync(dir)) this.manifests.calendar = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')); },
+      async enablePluginAndSave(id) { enabled.add(id); } };
+    bridge = await start(f);
+    assert.deepEqual((await request(f.config, 'plugin_catalog', { query: 'calendar' })).result.plugins.map(p => p.id), ['calendar']);
+    const preview = (await request(f.config, 'plugin_package', { plugin_id: 'calendar', version: 'latest', pin: false })).result;
+    assert.equal(preview.version, '1.5.10');
+    assert.equal(preview.source, 'github.com/liamcain/obsidian-calendar-plugin');
+    assert.deepEqual(preview.sizes, { 'manifest.json': 36, 'main.js': 26 });
+    assert.equal(preview.pin, '');
+    assert.equal((await request(f.config, 'plugin_package', { plugin_id: 'bad', version: 'latest', pin: false })).error, 'not_found');
+    assert.equal((await request(f.config, 'plugin_package', { plugin_id: PLUGIN_ID, version: 'latest', pin: false })).error, 'invalid_request');
+
+    const pinned = (await request(f.config, 'plugin_package', { plugin_id: 'calendar', version: '1.5.10', pin: true })).result;
+    assert.equal(pinned.digest, preview.digest);
+    // The release changes upstream after pinning: the install still writes only the pinned bytes.
+    remote.set(`${base}/download/1.5.10/main.js`, 'module.exports = "tampered";');
+    assert.equal((await request(f.config, 'plugin_install', { plugin_id: 'calendar', pin: pinned.pin, digest: 'f'.repeat(64) })).error, 'conflict');
+    const again = (await request(f.config, 'plugin_package', { plugin_id: 'calendar', version: '1.5.10', pin: true })).result;
+    assert.notEqual(again.digest, preview.digest);
+    assert.equal((await request(f.config, 'plugin_install', { plugin_id: 'calendar', pin: again.pin, digest: preview.digest })).error, 'conflict');
+    remote.set(`${base}/download/1.5.10/main.js`, 'module.exports = class {};');
+    const good = (await request(f.config, 'plugin_package', { plugin_id: 'calendar', version: '1.5.10', pin: true })).result;
+    assert.deepEqual((await request(f.config, 'plugin_install', { plugin_id: 'calendar', pin: good.pin, digest: preview.digest })).result,
+      { plugin_id: 'calendar', version: '1.5.10', installed: true, enabled: true });
+    assert.equal(fs.readFileSync(path.join(f.root, '.obsidian', 'plugins', 'calendar', 'main.js'), 'utf8'), 'module.exports = class {};');
+    assert.equal((await request(f.config, 'plugin_state', { plugin_id: 'calendar' })).result.digest, preview.digest);
+    assert.equal((await request(f.config, 'plugin_install', { plugin_id: 'calendar', pin: good.pin, digest: preview.digest })).error, 'conflict');
+  } finally {
+    remote.clear();
     if (bridge) await bridge.onunload();
     fs.rmSync(f.home, { recursive: true, force: true });
   }

@@ -51,7 +51,7 @@ class BridgeFixture:
     def ready(self, vault, *, deadline=None):
         if vault in self.closed:
             raise BridgeError("unavailable")
-        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed", "replace", "trash", "mkdir", "move", "logs", "plugin_set", "plugin_remove", "setting_write"]
+        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed", "replace", "trash", "mkdir", "move", "logs", "plugin_set", "plugin_remove", "setting_write", "plugin_install"]
                 + list(getattr(self, "extra_capabilities", []))}
 
     @staticmethod
@@ -111,6 +111,8 @@ class BridgeFixture:
     setting_value = False
 
     def plugin_state(self, vault, plugin_id):
+        if plugin_id in self.installed_plugins:
+            return {"plugin_id": plugin_id, "installed": True, "enabled": True, "version": "1.0.0", "digest": "e" * 64}
         if plugin_id != "calendar":
             return {"plugin_id": plugin_id, "installed": False, "enabled": False, "version": "", "digest": ""}
         return {"plugin_id": plugin_id, "installed": True, "enabled": self.plugin_enabled, "version": "2.0",
@@ -137,6 +139,30 @@ class BridgeFixture:
         self.calls.append((vault, "setting_write", setting_id, value))
         self.setting_value = value
         return {"setting_id": setting_id, "written": True}
+
+    package_digest = "d" * 64
+    installed_plugins = set()
+
+    def plugin_catalog(self, vault, query):
+        return {"plugins": [{"id": "newplug", "name": "New Plug", "author": "a", "description": "d",
+                             "repo": "a/newplug"}]}
+
+    def plugin_package(self, vault, plugin_id, version, pin):
+        self.calls.append((vault, "plugin_package", plugin_id, version, pin))
+        return {"plugin_id": plugin_id, "name": "New Plug", "version": "1.0.0" if version == "latest" else version,
+                "source": "github.com/a/newplug", "digest": self.package_digest,
+                "sizes": {"manifest.json": 30, "main.js": 100}, "pin": "p" * 32 if pin else ""}
+
+    def plugin_release(self, vault, pin):
+        self.calls.append((vault, "plugin_release", pin))
+        return {"released": True}
+
+    def plugin_install(self, vault, plugin_id, pin, digest):
+        if digest != self.package_digest:
+            raise BridgeError("conflict")
+        self.calls.append((vault, "plugin_install", plugin_id, pin))
+        self.installed_plugins.add(plugin_id)
+        return {"plugin_id": plugin_id, "version": "1.0.0", "installed": True, "enabled": True}
 
     def app_vaults(self, vault):
         self.calls.append((vault, "vaults"))
