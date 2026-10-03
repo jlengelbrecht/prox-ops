@@ -59,23 +59,18 @@ function canonicalRoot(root) {
   if (real !== root || !fs.lstatSync(root).isDirectory()) fail('unavailable');
   return real;
 }
-function attestedMount(root) {
+function identity() {
   if (process.getuid() !== 1000 || process.getgid() !== 1000) fail('unavailable');
   const status = fs.readFileSync('/proc/self/status', 'utf8');
   const caps = /^CapEff:\s*([0-9a-f]+)$/mi.exec(status);
   if (!caps || BigInt(`0x${caps[1]}`) !== 0n) fail('unavailable');
-  const mountpoints = fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\n')
-    .filter(Boolean).map(line => line.split(' '))
-    .filter(fields => fields.length >= 10 && fields.includes('-'))
-    .map(fields => fields[4].replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8))));
-  if (mountpoints.filter(point => point === root).length !== 1) fail('unavailable');
 }
 function verifyRoot(app, config) {
   try {
     if (!(app.vault.adapter instanceof FileSystemAdapter) ||
         app.vault.adapter.getBasePath() !== config.root || app.vault.getName() !== config.appName ||
-        canonicalRoot(config.root) !== config.root) fail('unavailable');
-    attestedMount(config.root);
+        canonicalRoot(config.root) !== config.root || path.dirname(config.root) !== config.parent) fail('unavailable');
+    identity();
     const current = fs.lstatSync(config.root);
     if (current.dev !== config.rootDev || current.ino !== config.rootIno) fail('unavailable');
   } catch { fail('unavailable'); }
@@ -95,53 +90,79 @@ function privateDirectory(directory) {
   if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o700 ||
       fs.realpathSync(directory) !== directory) fail('unavailable');
 }
-function bootstrap(app) {
+const VAULT_NAME = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}$/;
+const PLUGIN_ID = 'obsidian-private-bridge';
+const MAX_VAULTS = 16;
+function vaultSlug(name) {
+  let id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  if (!/^[a-z]/.test(id)) id = `v-${id}`.slice(0, 48);
+  return id.replace(/-+$/, '');
+}
+function writePrivate(filename, data) {
+  const temporary = `${filename}.${crypto.randomBytes(6).toString('hex')}`;
+  fs.writeFileSync(temporary, data, { mode: 0o600, flag: 'wx' });
+  fs.renameSync(temporary, filename);
+}
+function registration(directory, id) {
+  const runtime = path.join(directory, id);
+  try {
+    privateDirectory(runtime);
+    const endpoint = JSON.parse(privateFile(path.join(runtime, 'endpoint.json'), runtime));
+    if (!endpoint || typeof endpoint !== 'object' || typeof endpoint.app_root !== 'string') return null;
+    const token = privateFile(path.join(runtime, 'credential'), runtime).trim();
+    return { endpoint, token, socket: path.join(runtime, `${id}.sock`) };
+  } catch { return null; }
+}
+function alive(socketPath, token) {
+  // Another window already serves this vault if its registered address still answers.
+  return new Promise(resolve => {
+    const address = '\0obsidian-bridge-' + crypto.createHash('sha256').update(socketPath + '\0' + token).digest('hex');
+    const probe = net.createConnection(address);
+    const done = value => { probe.destroy(); resolve(value); };
+    probe.setTimeout(500, () => done(false));
+    probe.on('connect', () => done(true));
+    probe.on('error', () => done(false));
+  });
+}
+// Every vault window registers itself: <runtime>/<vault_id>/{credential,endpoint.json}.
+async function bootstrap(app) {
   if (process.platform !== 'linux' || process.env.OBSIDIAN_BRIDGE_INSTANCE !== 'kubernetes-obsidian') return null;
   const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
   if (nodeMajor < 20 || (nodeMajor === 20 && nodeMinor < 8)) return null;
   const directory = process.env.OBSIDIAN_BRIDGE_DIR;
-  if (!directory || !path.isAbsolute(directory) || path.normalize(directory) !== directory) return null;
+  const parentSetting = process.env.OBSIDIAN_BRIDGE_VAULT_PARENT;
+  const appConfig = process.env.OBSIDIAN_BRIDGE_APP_CONFIG || null;
+  for (const value of [directory, parentSetting]) {
+    if (!value || !path.isAbsolute(value) || path.normalize(value) !== value) return null;
+  }
+  if (appConfig !== null && (!path.isAbsolute(appConfig) || path.normalize(appConfig) !== appConfig)) return null;
   try {
     privateDirectory(directory);
+    identity();
     if (!(app.vault.adapter instanceof FileSystemAdapter)) return null;
     const appRoot = canonicalRoot(app.vault.adapter.getBasePath());
-    const registry = JSON.parse(privateFile(path.join(directory, 'registry.json'), directory, 64 * 1024));
-    if (!shape(registry, ['version', 'instance', 'endpoints']) || registry.version !== VERSION ||
-        registry.instance !== 'kubernetes-obsidian' || !Array.isArray(registry.endpoints) ||
-        registry.endpoints.length < 1 || registry.endpoints.length > 64) return null;
-    const ids = new Set(); const roots = new Set(); const tokens = new Set();
-    let selected = null; let selectedToken = null;
-    for (const config of registry.endpoints) {
-      if (!shape(config, ['vault_id', 'app_name', 'app_root', 'socket', 'credential_file']) ||
-          !/^[a-z][a-z0-9_-]{0,63}$/.test(config.vault_id) ||
-          ids.has(config.vault_id)) return null;
-      ids.add(config.vault_id);
-      string(config.app_name, 128);
-      if (typeof config.app_root !== 'string' || !path.isAbsolute(config.app_root) ||
-          path.normalize(config.app_root) !== config.app_root) return null;
-      const root = config.app_root;
-      if (root !== appRoot) {
-        try { canonicalRoot(root); }
-        catch (error) { if (error.code !== 'ENOENT') return null; }
-      }
-      if ([...roots].some(other => root === other || root.startsWith(other + path.sep) || other.startsWith(root + path.sep)) ||
-          directory === root || directory.startsWith(root + path.sep) ||
-          root.startsWith(directory + path.sep)) return null;
-      roots.add(root);
-      const runtime = path.join(directory, config.vault_id);
-      privateDirectory(runtime);
-      if (config.socket !== path.join(runtime, `${config.vault_id}.sock`) ||
-          config.credential_file !== path.join(runtime, 'credential')) return null;
-      const token = privateFile(config.credential_file, runtime).trim();
-      if (!/^[A-Za-z0-9_-]{43,128}$/.test(token) || tokens.has(token)) return null;
-      tokens.add(token);
-      if (root === appRoot) { selected = config; selectedToken = token; }
+    const parent = canonicalRoot(parentSetting);
+    const name = app.vault.getName();
+    if (path.dirname(appRoot) !== parent || name !== path.basename(appRoot) || !VAULT_NAME.test(name) ||
+        directory === appRoot || directory.startsWith(appRoot + path.sep) || appRoot.startsWith(directory + path.sep)) return null;
+    let id = vaultSlug(name);
+    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(id)) return null;
+    let existing = registration(directory, id);
+    if (existing && existing.endpoint.app_root !== appRoot) {
+      id = `${id}-${crypto.createHash('sha256').update(appRoot).digest('hex').slice(0, 8)}`;
+      existing = registration(directory, id);
     }
-    if (!selected || selected.app_name !== app.vault.getName()) return null;
-    attestedMount(appRoot);
+    if (existing && existing.endpoint.app_root === appRoot && await alive(existing.socket, existing.token)) return null;
+    const runtime = path.join(directory, id);
+    if (!fs.existsSync(runtime)) fs.mkdirSync(runtime, { mode: 0o700 });
+    privateDirectory(runtime);
+    const token = crypto.randomBytes(32).toString('base64url');
+    writePrivate(path.join(runtime, 'credential'), token);
+    writePrivate(path.join(runtime, 'endpoint.json'),
+      JSON.stringify({ version: VERSION, vault_id: id, app_name: name, app_root: appRoot }));
     const rootStat = fs.lstatSync(appRoot);
-    return { id: selected.vault_id, appName: selected.app_name, root: appRoot,
-      rootDev: rootStat.dev, rootIno: rootStat.ino, socket: selected.socket, token: selectedToken };
+    return { id, appName: name, root: appRoot, parent, appConfig, runtime,
+      rootDev: rootStat.dev, rootIno: rootStat.ino, socket: path.join(runtime, `${id}.sock`), token };
   } catch { return null; }
 }
 function safePath(value, root, create = false) {
@@ -189,7 +210,9 @@ async function execute(app, config, op, args, markStarted = () => {}) {
   const root = config.root;
   if (op === 'health') {
     argument(args, []);
-    return { protocol: VERSION, vault: config.id, app_name: vault.getName(), app_root: root, capabilities: ['health', 'list', 'read', 'search', 'create', 'append', 'embed', 'reserve', 'receipt'] };
+    return { protocol: VERSION, vault: config.id, app_name: vault.getName(), app_root: root,
+      capabilities: ['health', 'list', 'read', 'search', 'create', 'append', 'embed', 'reserve', 'receipt',
+        'vaults', 'open_vault', 'create_vault'] };
   }
   if (op === 'list') {
     argument(args, ['prefix', 'limit']);
@@ -322,10 +345,128 @@ async function execute(app, config, op, args, markStarted = () => {}) {
   fail('unknown_operation');
 }
 
+function knownVaults(config) {
+  if (!config.appConfig) fail('unavailable');
+  let document;
+  try { document = JSON.parse(fs.readFileSync(config.appConfig, 'utf8')); } catch { fail('unavailable'); }
+  const vaults = document && typeof document.vaults === 'object' && document.vaults ? document.vaults : {};
+  return Object.entries(vaults)
+    .filter(([, entry]) => entry && typeof entry.path === 'string' && path.dirname(entry.path) === config.parent &&
+      usableName(path.basename(entry.path)))
+    .slice(0, 256)
+    .map(([id, entry]) => ({ id, name: path.basename(entry.path), path: entry.path, open: entry.open === true }));
+}
+function usableName(name) {
+  return typeof name === 'string' && VAULT_NAME.test(name) && !name.endsWith('.') && !name.endsWith(' ');
+}
+function vaultTarget(config, args) {
+  argument(args, ['name']);
+  if (!usableName(args.name)) fail('invalid_request');
+  return path.join(config.parent, args.name);
+}
+function realDirectory(target) {
+  const stat = fs.lstatSync(target);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) fail('invalid_path');
+}
+// Install this plugin's own reviewed bundle into another vault and enable it there.
+function ensurePlugin(config, target) {
+  realDirectory(target);
+  const settings = path.join(target, '.obsidian');
+  if (!fs.existsSync(settings)) fs.mkdirSync(settings, { mode: 0o755 });
+  realDirectory(settings);
+  const plugins = path.join(settings, 'plugins');
+  if (!fs.existsSync(plugins)) fs.mkdirSync(plugins, { mode: 0o755 });
+  realDirectory(plugins);
+  const destination = path.join(plugins, PLUGIN_ID);
+  const source = path.join(config.root, '.obsidian', 'plugins', PLUGIN_ID);
+  const bundle = Object.fromEntries(['main.js', 'manifest.json'].map(name => [name, fs.readFileSync(path.join(source, name))]));
+  if (!fs.existsSync(destination)) fs.mkdirSync(destination, { mode: 0o755 });
+  realDirectory(destination);
+  // Only the two managed files may live here; anything else needs owner review.
+  if (fs.readdirSync(destination).some(name => !Object.hasOwn(bundle, name))) fail('conflict');
+  for (const [name, bytes] of Object.entries(bundle)) {
+    const file = path.join(destination, name);
+    if (fs.existsSync(file)) {
+      if (!fs.lstatSync(file).isFile()) fail('conflict');
+      if (fs.readFileSync(file).equals(bytes)) continue;
+    }
+    writePrivate(file, bytes);
+    fs.chmodSync(file, 0o644);
+  }
+  const enabled = path.join(settings, 'community-plugins.json');
+  let list = [];
+  if (fs.existsSync(enabled)) {
+    if (fs.lstatSync(enabled).isSymbolicLink()) fail('invalid_path');
+    try { list = JSON.parse(fs.readFileSync(enabled, 'utf8')); } catch { fail('conflict'); }
+    if (!Array.isArray(list)) fail('conflict');
+  }
+  if (!list.includes(PLUGIN_ID)) fs.writeFileSync(enabled, JSON.stringify([...list, PLUGIN_ID], null, 2));
+}
+function onlyBridgeEnabled(target) {
+  try {
+    const list = JSON.parse(fs.readFileSync(path.join(target, '.obsidian', 'community-plugins.json'), 'utf8'));
+    return Array.isArray(list) && list.every(id => id === PLUGIN_ID);
+  } catch { return false; }
+}
+function trustVault(config, target) {
+  // Obsidian keeps per-vault "trust community plugins" in the shared window localStorage.
+  // Trust is vault-wide, so it is granted only when this bridge is the vault's sole
+  // enabled community plugin; any other plugin set stays for the owner to approve.
+  if (!onlyBridgeEnabled(target)) return;
+  const match = knownVaults(config).find(entry => entry.path === target);
+  if (match && globalThis.localStorage) globalThis.localStorage.setItem(`enable-plugin-${match.id}`, 'true');
+}
+function electronRenderer() {
+  try {
+    const { ipcRenderer } = require('electron');
+    if (ipcRenderer && typeof ipcRenderer.sendSync === 'function') return ipcRenderer;
+  } catch { /* fall through */ }
+  fail('unavailable');
+}
+function openWindow(config, target) {
+  const electron = { ipcRenderer: electronRenderer() };
+  trustVault(config, target);
+  const opened = electron.ipcRenderer.sendSync('vault-open', target, true);
+  if (opened !== true && opened !== undefined && opened !== null) fail('internal_error');
+  trustVault(config, target);
+}
+function manageVaults(config, op, args) {
+  if (op === 'vaults') {
+    argument(args, []);
+    return { vaults: knownVaults(config).map(({ name, open }) => ({ name, open })) };
+  }
+  const target = vaultTarget(config, args);
+  if (op === 'open_vault') {
+    if (!knownVaults(config).some(entry => entry.path === target) &&
+        !(fs.existsSync(path.join(target, '.obsidian')))) fail('not_found');
+    ensurePlugin(config, target);
+    openWindow(config, target);
+    return { name: args.name, opened: true };
+  }
+  if (op === 'create_vault') {
+    // Each open vault is another Electron window in a memory-limited pod.
+    if (knownVaults(config).length >= MAX_VAULTS) fail('limit_exceeded');
+    electronRenderer();
+    if (fs.existsSync(target)) fail('conflict');
+    fs.mkdirSync(target, { mode: 0o755 });
+    try {
+      ensurePlugin(config, target);
+    } catch (error) {
+      // Nothing but our own scaffolding exists yet, so undo it and let a retry start clean.
+      fs.rmSync(target, { recursive: true, force: true });
+      throw error;
+    }
+    openWindow(config, target);
+    return { name: args.name, created: true };
+  }
+  fail('unknown_operation');
+}
+
 class PrivateBridge extends Plugin {
   async onload() {
-    const config = bootstrap(this.app);
+    const config = await bootstrap(this.app);
     if (!config) return;
+    this.bridgeConfig = config;
     const receipts = new Map();
     const prune = () => {
       for (const [id, entry] of receipts) {
@@ -348,6 +489,7 @@ class PrivateBridge extends Plugin {
     const dispatch = async (op, args) => {
       verifyRoot(this.app, config);
       prune();
+      if (op === 'vaults' || op === 'open_vault' || op === 'create_vault') return manageVaults(config, op, args);
       if (op === 'reserve') {
         if (!shape(args, ['client', 'operation', 'mutation'])) fail('invalid_request');
         const digest = mutationDigest(config, args.client, args.operation, args.mutation);
@@ -432,6 +574,15 @@ class PrivateBridge extends Plugin {
     if (!this.bridgeServer) return;
     await new Promise(resolve => this.bridgeServer.close(resolve));
     this.bridgeServer = null;
+    // Deregister only if the runtime entry is still this window's own.
+    const config = this.bridgeConfig;
+    try {
+      const credential = path.join(config.runtime, 'credential');
+      if (privateFile(credential, config.runtime).trim() === config.token) {
+        fs.unlinkSync(path.join(config.runtime, 'endpoint.json'));
+        fs.unlinkSync(credential);
+      }
+    } catch { /* already gone */ }
   }
 }
 module.exports = PrivateBridge;
