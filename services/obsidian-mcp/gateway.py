@@ -287,6 +287,8 @@ class CapabilityFilter(Middleware):
             verbs.update(granted & self.destructive_verbs)
         names = {"list_vaults"}
         names.update(name for name, verb in _TOOL_VERBS.items() if verb in verbs)
+        if "read_note" not in verbs:
+            names.discard("read_note_with_images")
         if verbs & {"create_note", "append_note"}:
             names.add("mutation_receipt")
         if verbs & self.destructive_verbs:
@@ -435,11 +437,16 @@ def _embed_targets(text: str) -> list[str]:
                 target = re.split(r"[|#]", inner, maxsplit=1)[0]
         else:
             middle = text.find("](", index + 2, index + 2 + 520)
-            if middle != -1:
+            # The alt text must not contain another image opener.
+            if middle != -1 and text.find("![", index + 2, middle) == -1:
                 close = text.find(")", middle + 2, middle + 2 + 1100)
                 if close != -1:
                     inner = text[middle + 2:close].strip()
-                    inner = inner.split(" ", 1)[0].strip("<>")
+                    if inner.startswith("<"):
+                        end = inner.find(">")
+                        inner = inner[1:end] if end != -1 else ""
+                    else:
+                        inner = inner.split(" ", 1)[0]
                     target = unquote(inner)
         if target is not None:
             target = target.strip()
@@ -453,6 +460,7 @@ def _embed_targets(text: str) -> list[str]:
 _MAX_EMBEDS = 1000
 _EMBED_IMAGE = re.compile(r"\.(?:png|jpe?g|webp|gif)$", re.IGNORECASE)
 _PAGE_IMAGES = 10
+_PAGE_SECONDS = 20.0
 _PAGE_IMAGE_BUDGET = 6 * 1024 * 1024
 
 
@@ -468,7 +476,9 @@ def _note_with_images(bridge: BridgeClient, vault: str, path: str, start: int,
     shown = 0
     budget = _PAGE_IMAGE_BUDGET
     index = start
-    while index < total and shown < limit:
+    stop_at = time.monotonic() + _PAGE_SECONDS
+    # Stop early on a slow page and hand the rest back through next_start.
+    while index < total and shown < limit and (shown == 0 or time.monotonic() < stop_at):
         target = targets[index]
         try:
             image = _image_content(bridge, vault, path, target)

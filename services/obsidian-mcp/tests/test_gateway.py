@@ -187,6 +187,21 @@ class NoteWithImagesTests(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 1.0)
             self.assertEqual(result.structured_content["images_total"], 0)
 
+    def test_embed_scanner_handles_malformed_and_bracketed_targets(self):
+        from gateway import _embed_targets
+        self.assertEqual(_embed_targets("![incomplete ![ok](a.png)"), ["a.png"])
+        self.assertEqual(_embed_targets("![alt](<images/my pic.png> \"title\")"), ["images/my pic.png"])
+        self.assertEqual(_embed_targets("![alt](images/my%20pic.png)"), ["images/my pic.png"])
+        self.assertEqual(_embed_targets("![[one.png|300]] ![x](<two.jpg>)"), ["one.png", "two.jpg"])
+
+    def test_slow_pages_stop_early_and_return_next_start(self):
+        bridge = BridgeFixture()
+        bridge.notes["iam"]["slow.md"] = ("![[a.png]] ![[b.png]] ![[c.png]]", "sha256:" + "e" * 64)
+        with patch("gateway._PAGE_SECONDS", 0.0):
+            result = _note_with_images(bridge, "iam", "slow.md", 0, 10)
+        self.assertEqual(result.structured_content["images_returned"], 1)
+        self.assertEqual(result.structured_content["next_start"], 1)
+
     def test_note_without_images_returns_text_only(self):
         bridge = BridgeFixture()
         result = _note_with_images(bridge, "iam", "note.md", 0, 10)
