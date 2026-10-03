@@ -370,6 +370,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
             async with Client(url + "/mcp", auth=TOKENS["claude"]) as client:
                 tools = {tool.name for tool in await client.list_tools()}
                 self.assertLessEqual({"prepare_action", "commit_action", "create_folder", "move"}, tools)
+                self.assertFalse({"read_logs", "list_plugins", "read_settings"} & tools)
                 moved = await client.call_tool("move", {"vault": "iam", "source": "note.md", "destination": "Archive/note.md"})
                 self.assertEqual(moved.structured_content["destination"], "Archive/note.md")
                 replace = {"vault": "iam", "verb": "replace_note",
@@ -420,6 +421,22 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                                                                        "arguments": {"path": "Archive"}},
                                                     raise_on_error=False)
                 self.assertTrue(wrong_kind.is_error)
+
+    async def test_diagnostic_tools_over_http(self):
+        app = create_gateway(self.bridge, TOKENS, {name: {"iam": SAFE | {"diagnostics"}} for name in TOKENS},
+                             self.auth, {"iam": VaultEnrollment(frozenset({"owner"}), {})})
+        async with running(app) as url:
+            async with Client(url + "/mcp", auth=TOKENS["opencode"]) as client:
+                tools = {tool.name for tool in await client.list_tools()}
+                self.assertLessEqual({"read_logs", "list_plugins", "read_settings"}, tools)
+                logs = (await client.call_tool("read_logs", {"vault": "iam", "level": "error"})).structured_content
+                self.assertEqual(logs["entries"][0]["message"], "boom")
+                self.assertEqual((await client.call_tool("list_plugins", {"vault": "iam"})).structured_content["community"][0]["id"], "hindsight")
+                self.assertEqual((await client.call_tool("read_settings", {"vault": "iam", "file": "app"})).structured_content["settings"],
+                                 {"alwaysUpdateLinks": True})
+                self.assertTrue((await client.call_tool("read_settings", {"vault": "iam", "file": "hotkeys"}, raise_on_error=False)).is_error)
+                self.assertTrue((await client.call_tool("read_logs", {"vault": "iam", "level": "debug"}, raise_on_error=False)).is_error)
+                self.assertTrue((await client.call_tool("read_logs", {"vault": "homelab"}, raise_on_error=False)).is_error)
 
     async def test_closed_app_fails_without_fallback(self):
         self.bridge.closed.add("iam")

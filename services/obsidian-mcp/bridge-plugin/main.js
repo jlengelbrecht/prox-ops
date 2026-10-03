@@ -205,6 +205,76 @@ async function freshSize(app, config, file, max) {
 }
 
 const MAX_TREE = 5000;
+const MAX_LOGS = 500;
+const SETTINGS_FILES = new Set(['app', 'appearance', 'core-plugins', 'community-plugins', 'hotkeys',
+  'graph', 'daily-notes', 'templates', 'bookmarks']);
+const SECRET_KEY = /(key|token|secret|password|passwd|pwd|auth|credential|cookie|session|bearer|jwt|passphras|private|signature|dsn|otp)/i;
+// Value scrubber: anything that looks like a credential is replaced before an agent sees it.
+const SECRET_VALUES = [
+  [/([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi, '$1[redacted]@'],
+  [/([?&#](?:access_token|token|key|api_key|apikey|sig|signature|auth|code|secret|password)=)[^&#\s]+/gi, '$1[redacted]'],
+  [/\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+\/=-]{8,}/gi, '$1 [redacted]'],
+  [/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/g, '[redacted-jwt]'],
+  [/\b(gh[pousr]_|github_pat_|sk-|sk_live_|xox[abprs]-|AKIA|ASIA)[A-Za-z0-9_-]{8,}/g, '[redacted]'],
+  [/\b[A-Fa-f0-9]{32,}\b/g, '[redacted-hex]'],
+  [/[A-Za-z0-9+_-]{40,}={0,2}/g, '[redacted-base64]'],
+];
+function scrub(text) {
+  let out = String(text);
+  for (const [pattern, replacement] of SECRET_VALUES) out = out.replace(pattern, replacement);
+  return out;
+}
+function describe(value) {
+  // Bounded, no deep serialization: a huge or cyclic object must not stall the window.
+  if (value instanceof Error) return `${value.name}: ${value.message}`;
+  if (value === null || ['string', 'number', 'boolean', 'undefined'].includes(typeof value)) return String(value);
+  if (Array.isArray(value)) return `[array of ${value.length}]`;
+  try { return `{${Object.keys(value).slice(0, 10).join(', ')}}`; } catch { return '[object]'; }
+}
+// Ring buffer of this window's errors and warnings since the bridge loaded, for read_logs.
+const consoleLog = globalThis[Symbol.for('obsidian.bridge.consoleLog')] ||= (() => {
+  const entries = [];
+  const record = (level, values) => {
+    const message = scrub(values.map(describe).join(' ')).slice(0, 1000);
+    entries.push({ time: new Date().toISOString(), level, message });
+    if (entries.length > MAX_LOGS) entries.shift();
+  };
+  for (const level of ['error', 'warn']) {
+    const original = console[level];
+    if (typeof original !== 'function') continue;
+    console[level] = (...values) => { try { record(level, values); } catch { /* never break logging */ } return original.apply(console, values); };
+  }
+  if (globalThis.addEventListener) {
+    globalThis.addEventListener('error', event => { try { record('error', [event.message || 'error']); } catch { /* ignore */ } });
+    globalThis.addEventListener('unhandledrejection', event => { try { record('error', [event.reason || 'unhandled rejection']); } catch { /* ignore */ } });
+  }
+  return entries;
+})();
+function redacted(value, depth = 0) {
+  // Settings can hold plugin credentials; agents never receive them.
+  if (depth > 8) return '[nested]';
+  if (Array.isArray(value)) return value.slice(0, 500).map(item => redacted(item, depth + 1));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).slice(0, 500).map(([key, item]) =>
+      // A bare "key" (hotkeys use it for the pressed key) is not a secret by name; its value
+      // still goes through the value scrubber.
+      [key, key.toLowerCase() !== 'key' && SECRET_KEY.test(key) ? '[redacted]' : redacted(item, depth + 1)]));
+  }
+  if (typeof value === 'string') return scrub(value.length > 2000 ? `${value.slice(0, 2000)}...` : value);
+  return value;
+}
+function installedPlugins(app) {
+  const plugins = app.plugins || {};
+  const manifests = plugins.manifests || {};
+  const enabled = plugins.enabledPlugins instanceof Set ? plugins.enabledPlugins : new Set();
+  const internal = (app.internalPlugins && app.internalPlugins.plugins) || {};
+  return {
+    community: Object.values(manifests).slice(0, 500).map(manifest => ({
+      id: String(manifest.id), name: String(manifest.name || manifest.id), version: String(manifest.version || ''),
+      enabled: enabled.has(manifest.id) })),
+    core: Object.entries(internal).slice(0, 200).map(([id, plugin]) => ({ id, enabled: plugin && plugin.enabled === true })),
+  };
+}
 function missingFolders(vault, folderPath) {
   // Outermost first; refuses a file standing where a folder is needed.
   const missing = [];
@@ -265,7 +335,8 @@ async function execute(app, config, op, args, markStarted = () => {}) {
     argument(args, []);
     return { protocol: VERSION, vault: config.id, app_name: vault.getName(), app_root: root,
       capabilities: ['health', 'list', 'read', 'search', 'create', 'append', 'embed', 'reserve', 'receipt',
-        'vaults', 'open_vault', 'create_vault', 'state', 'mkdir', 'move', 'replace', 'trash'] };
+        'vaults', 'open_vault', 'create_vault', 'state', 'mkdir', 'move', 'replace', 'trash',
+        'logs', 'plugins', 'settings'] };
   }
   if (op === 'list') {
     argument(args, ['prefix', 'limit']);
@@ -369,6 +440,51 @@ async function execute(app, config, op, args, markStarted = () => {}) {
     const content = await vault.read(file);
     if (Buffer.byteLength(content) > MAX_NOTE) fail('limit_exceeded');
     return { path: file.path, revision: revision(content) };
+  }
+  if (op === 'logs') {
+    argument(args, ['level', 'limit']);
+    if (!['all', 'error', 'warn'].includes(args.level)) fail('invalid_request');
+    const cap = limit(args.limit, MAX_LOGS);
+    // Only errors and warnings are captured; 'all' means both.
+    const wanted = args.level === 'error' ? ['error'] : ['error', 'warn'];
+    const entries = consoleLog.filter(entry => wanted.includes(entry.level)).slice(-cap)
+      .map(entry => ({ ...entry, message: scrub(entry.message) }));
+    return { entries };
+  }
+  if (op === 'plugins') {
+    argument(args, []);
+    return installedPlugins(app);
+  }
+  if (op === 'settings') {
+    argument(args, ['file']);
+    if (typeof args.file !== 'string') fail('invalid_request');
+    let relative;
+    if (SETTINGS_FILES.has(args.file)) relative = `${args.file}.json`;
+    else {
+      const match = /^plugin:([a-z0-9][a-z0-9_-]{0,63})$/i.exec(args.file);
+      if (!match) fail('invalid_request');
+      relative = `plugins/${match[1]}/data.json`;
+    }
+    const settingsDir = path.join(root, '.obsidian');
+    const filename = path.join(settingsDir, relative);
+    verifyRoot(app, config);
+    // Every directory on the way must resolve inside the vault; the file itself is opened
+    // without following a symlink and checked on the open descriptor.
+    try {
+      if (fs.realpathSync(path.dirname(filename)) !== path.dirname(filename) ||
+          fs.realpathSync(settingsDir) !== settingsDir) fail('invalid_path');
+    } catch (error) { if (error instanceof BridgeError) throw error; fail('not_found'); }
+    let descriptor;
+    try { descriptor = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); }
+    catch (error) { fail(error && error.code === 'ELOOP' ? 'invalid_path' : 'not_found'); }
+    let parsed;
+    try {
+      const stat = fs.fstatSync(descriptor);
+      if (!stat.isFile()) fail('invalid_path');
+      if (stat.size > MAX_NOTE) fail('limit_exceeded');
+      try { parsed = JSON.parse(fs.readFileSync(descriptor, 'utf8')); } catch { fail('invalid_request'); }
+    } finally { fs.closeSync(descriptor); }
+    return { file: args.file, settings: redacted(parsed) };
   }
   if (op === 'state') {
     argument(args, ['path']);

@@ -51,7 +51,7 @@ class BridgeFixture:
     def ready(self, vault, *, deadline=None):
         if vault in self.closed:
             raise BridgeError("unavailable")
-        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed", "replace", "trash", "mkdir", "move"]
+        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed", "replace", "trash", "mkdir", "move", "logs"]
                 + list(getattr(self, "extra_capabilities", []))}
 
     @staticmethod
@@ -94,6 +94,18 @@ class BridgeFixture:
         self.calls.append((vault, "move", source, destination))
         self.notes[vault][destination] = self.notes[vault].pop(source)
         return {"source": source, "destination": destination, "kind": "file"}
+
+    def logs(self, vault, level="all", limit=100):
+        self.calls.append((vault, "logs", level, limit))
+        return {"entries": [{"time": "2026-10-03T00:00:00Z", "level": "error", "message": "boom"}]}
+
+    def plugins(self, vault):
+        return {"community": [{"id": "hindsight", "name": "Hindsight", "version": "1", "enabled": True}], "core": []}
+
+    def settings(self, vault, file):
+        if file != "app":
+            raise BridgeError("not_found")
+        return {"file": file, "settings": {"alwaysUpdateLinks": True}}
 
     def app_vaults(self, vault):
         self.calls.append((vault, "vaults"))

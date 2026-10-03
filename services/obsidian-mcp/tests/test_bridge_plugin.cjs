@@ -743,6 +743,66 @@ test('organization: state, folders, link-preserving moves, revision-checked repl
     fs.rmSync(f.home, { recursive: true, force: true });
   }
 });
+test('diagnostics: console log capture, plugin inventory and redacted settings', async () => {
+  const f = fixture('Diag');
+  let bridge;
+  try {
+    f.app.plugins = { manifests: { hindsight: { id: 'hindsight', name: 'Hindsight', version: '1.2.0' },
+      calendar: { id: 'calendar', name: 'Calendar', version: '2.0' } }, enabledPlugins: new Set(['hindsight']) };
+    f.app.internalPlugins = { plugins: { sync: { enabled: true }, graph: { enabled: false } } };
+    fs.mkdirSync(path.join(f.root, '.obsidian', 'plugins', 'hindsight'), { recursive: true });
+    fs.writeFileSync(path.join(f.root, '.obsidian', 'app.json'), JSON.stringify({ alwaysUpdateLinks: true }));
+    fs.writeFileSync(path.join(f.root, '.obsidian', 'plugins', 'hindsight', 'data.json'),
+      JSON.stringify({ bank: 'obsidian', apiKey: 'sk-live-secret', nested: { authToken: 'x', url: 'https://h' } }));
+    bridge = await start(f);
+    console.warn('bridge diagnostic test warning');
+    console.error(new Error('bridge diagnostic test error'));
+    const logs = (await request(f.config, 'logs', { level: 'warn', limit: 50 })).result.entries;
+    assert.ok(logs.some(entry => entry.level === 'warn' && entry.message === 'bridge diagnostic test warning'));
+    assert.ok(logs.some(entry => entry.level === 'error' && entry.message === 'Error: bridge diagnostic test error'));
+    assert.ok(logs.every(entry => entry.level !== 'log'));
+    assert.equal((await request(f.config, 'logs', { level: 'debug', limit: 5 })).error, 'invalid_request');
+    const plugins = (await request(f.config, 'plugins')).result;
+    assert.deepEqual(plugins.community.find(item => item.id === 'hindsight'), { id: 'hindsight', name: 'Hindsight', version: '1.2.0', enabled: true });
+    assert.equal(plugins.community.find(item => item.id === 'calendar').enabled, false);
+    assert.deepEqual(plugins.core, [{ id: 'sync', enabled: true }, { id: 'graph', enabled: false }]);
+    assert.deepEqual((await request(f.config, 'settings', { file: 'app' })).result.settings, { alwaysUpdateLinks: true });
+    assert.deepEqual((await request(f.config, 'settings', { file: 'plugin:hindsight' })).result.settings,
+      { bank: 'obsidian', apiKey: '[redacted]', nested: { authToken: '[redacted]', url: 'https://h' } });
+    assert.equal((await request(f.config, 'settings', { file: '../../etc/passwd' })).error, 'invalid_request');
+    assert.equal((await request(f.config, 'settings', { file: 'plugin:../x' })).error, 'invalid_request');
+    assert.equal((await request(f.config, 'settings', { file: 'graph' })).error, 'not_found');
+    assert.equal((await request(f.config, 'settings', { file: 'workspace' })).error, 'invalid_request');
+
+    // Credentials in log text and in setting values are scrubbed before an agent sees them.
+    console.error('fetch https://user:hunter2@example.com/x?token=abc123&ok=1 failed', 'Bearer abcdefghijklmnop');
+    console.warn('github token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456 and ' + 'z'.repeat(48));
+    console.error({ huge: 'object', nested: { a: 1 } });
+    const scrubbed = (await request(f.config, 'logs', { level: 'all', limit: 3 })).result.entries.map(e => e.message);
+    assert.equal(scrubbed[0], 'fetch https://[redacted]@example.com/x?token=[redacted]&ok=1 failed Bearer [redacted]');
+    assert.equal(scrubbed[1], 'github token [redacted] and [redacted-base64]');
+    assert.equal(scrubbed[2], '{huge, nested}');
+    fs.writeFileSync(path.join(f.root, '.obsidian', 'plugins', 'hindsight', 'data.json'),
+      JSON.stringify({ endpoint: 'https://svc:pw@hindsight.local/api', folders: ['Daily/2026'],
+        attachmentFolderPath: 'Assets/images', bearerToken: 'x' }));
+    assert.deepEqual((await request(f.config, 'settings', { file: 'plugin:hindsight' })).result.settings,
+      { endpoint: 'https://[redacted]@hindsight.local/api', folders: ['Daily/2026'],
+        attachmentFolderPath: 'Assets/images', bearerToken: '[redacted]' });
+
+    // A symlinked plugin directory or data file is refused.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'outside-'));
+    fs.writeFileSync(path.join(outside, 'data.json'), '{"leak":true}');
+    fs.symlinkSync(outside, path.join(f.root, '.obsidian', 'plugins', 'linked'));
+    assert.equal((await request(f.config, 'settings', { file: 'plugin:linked' })).error, 'invalid_path');
+    fs.mkdirSync(path.join(f.root, '.obsidian', 'plugins', 'filelink'));
+    fs.symlinkSync(path.join(outside, 'data.json'), path.join(f.root, '.obsidian', 'plugins', 'filelink', 'data.json'));
+    assert.equal((await request(f.config, 'settings', { file: 'plugin:filelink' })).error, 'invalid_path');
+    fs.rmSync(outside, { recursive: true, force: true });
+  } finally {
+    if (bridge) await bridge.onunload();
+    fs.rmSync(f.home, { recursive: true, force: true });
+  }
+});
 test('two exact vaults, typed operations, conflicts, embed and protocol rejection', async () => {
   const a = fixture('IAM Team');
   const b = fixture('Homelab', a.home);
