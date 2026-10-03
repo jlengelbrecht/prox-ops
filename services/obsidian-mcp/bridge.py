@@ -269,7 +269,7 @@ class BridgeClient:
             result = self._call(vault, operation, {"client": client_id, "receipt": receipt,
                                                    "mutation": mutation})
         except BridgeError as error:
-            if error.code not in {"unavailable", "limit_exceeded", "internal_error"}:
+            if error.code not in {"unavailable", "internal_error"}:
                 raise
             return {"receipt": receipt, "status": "pending"}
         if result["status"] == "failed":
