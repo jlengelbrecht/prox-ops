@@ -448,6 +448,37 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(stale.is_error)
                 self.assertEqual(self.bridge.setting_value, "changed elsewhere")
 
+    async def test_plugin_install_binds_the_exact_package_bytes(self):
+        guarded = frozenset({"plugin_install"})
+        app = create_gateway(self.bridge, TOKENS, {name: {"iam": SAFE | {"diagnostics"} | guarded} for name in TOKENS},
+                             self.auth, {"iam": VaultEnrollment(frozenset({"owner"}), {})},
+                             destructive_adapter=BridgeAdapter(self.bridge), destructive_verbs=guarded)
+        async with running(app) as url:
+            async with Client(url + "/mcp", auth=TOKENS["claude"]) as client:
+                self.assertEqual((await client.call_tool("search_plugins", {"vault": "iam", "query": "new"})).structured_content["plugins"][0]["id"], "newplug")
+                package = (await client.call_tool("plugin_package", {"vault": "iam", "plugin_id": "newplug"})).structured_content
+                self.assertNotIn("pin", package)
+                install = {"vault": "iam", "verb": "plugin_install", "arguments": {
+                    "plugin_id": "newplug", "version": package["version"], "source": package["source"], "digest": package["digest"]}}
+                pending = (await client.call_tool("prepare_action", install)).structured_content
+                page = await self._approve(url, pending)
+                self.assertIn("Install and enable the community plugin New Plug (newplug) version 1.0.0", page)
+                self.assertIn("SHA-256 of the files: " + "d" * 64, page)
+                self.assertIn("runs this plugin", page)
+                # The release changes before the commit: the attested bytes no longer match the approval.
+                self.bridge.package_digest = "c" * 64
+                stale = await client.call_tool("commit_action", {**install, "pending_id": pending["id"]}, raise_on_error=False)
+                self.assertTrue(stale.is_error)
+                self.assertNotIn("newplug", self.bridge.installed_plugins)
+                self.assertTrue(any(call[1] == "plugin_release" for call in self.bridge.calls))
+                self.bridge.package_digest = "d" * 64
+                pending = (await client.call_tool("prepare_action", install)).structured_content
+                await self._approve(url, pending)
+                self.assertFalse((await client.call_tool("commit_action", {**install, "pending_id": pending["id"]})).is_error)
+                self.assertIn("newplug", self.bridge.installed_plugins)
+                again = await client.call_tool("prepare_action", install, raise_on_error=False)
+                self.assertTrue(again.is_error)
+
     async def test_diagnostic_tools_over_http(self):
         app = create_gateway(self.bridge, TOKENS, {name: {"iam": SAFE | {"diagnostics"}} for name in TOKENS},
                              self.auth, {"iam": VaultEnrollment(frozenset({"owner"}), {})})

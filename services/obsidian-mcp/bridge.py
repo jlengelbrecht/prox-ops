@@ -45,7 +45,12 @@ RESULT_KEYS = {
     "plugin_state": {"plugin_id", "installed", "enabled", "version", "digest"},
     "plugin_set": {"plugin_id", "enabled"}, "plugin_remove": {"plugin_id", "removed"},
     "setting_state": {"setting_id", "value", "revision"}, "setting_write": {"setting_id", "written"},
+    "plugin_catalog": {"plugins"},
+    "plugin_package": {"plugin_id", "name", "version", "source", "digest", "sizes", "pin"},
+    "plugin_release": {"released"},
+    "plugin_install": {"plugin_id", "version", "installed", "enabled"},
 }
+_SLOW_OPERATIONS = {"plugin_catalog": 20.0, "plugin_package": 30.0, "plugin_install": 30.0}
 REVISION_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # Every plugin serves these; vault management ops are optional extras.
 BASE_CAPABILITIES = frozenset({"health", "list", "read", "search", "create", "append", "embed",
@@ -169,6 +174,27 @@ def _result(operation: str, value: Any, args: dict[str, Any]) -> bool:
                         and isinstance(item["enabled"], bool) for item in value["core"]))
     if operation == "settings":
         return value["file"] == args["file"] and isinstance(value["settings"], (dict, list, str, int, float, bool))
+    if operation == "plugin_catalog":
+        return (isinstance(value["plugins"], list) and len(value["plugins"]) <= 20 and
+                all(isinstance(item, dict) and set(item) == {"id", "name", "author", "description", "repo"}
+                    and all(isinstance(item[key], str) and len(item[key]) <= 500 for key in item)
+                    for item in value["plugins"]))
+    if operation == "plugin_package":
+        sizes = value["sizes"]
+        return (value["plugin_id"] == args["plugin_id"] and isinstance(value["name"], str) and len(value["name"]) <= 200
+                and isinstance(value["version"], str) and re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,63}", value["version"])
+                and (args["version"] == "latest" or value["version"] == args["version"])
+                and isinstance(value["source"], str) and re.fullmatch(r"github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["source"])
+                and isinstance(value["digest"], str) and re.fullmatch(r"[0-9a-f]{64}", value["digest"])
+                and isinstance(sizes, dict) and {"manifest.json", "main.js"} <= set(sizes) <= {"manifest.json", "main.js", "styles.css"}
+                and all(isinstance(size, int) and 0 <= size <= 8 * 1024 * 1024 for size in sizes.values())
+                and isinstance(value["pin"], str) and (bool(value["pin"]) == args["pin"])
+                and (not value["pin"] or re.fullmatch(r"[A-Za-z0-9_-]{20,64}", value["pin"])))
+    if operation == "plugin_release":
+        return value["released"] is True
+    if operation == "plugin_install":
+        return (value["plugin_id"] == args["plugin_id"] and isinstance(value["version"], str)
+                and value["installed"] is True and isinstance(value["enabled"], bool))
     if operation == "plugin_state":
         return (value["plugin_id"] == args["plugin_id"] and isinstance(value["installed"], bool)
                 and isinstance(value["enabled"], bool) and isinstance(value["version"], str)
@@ -380,7 +406,8 @@ class BridgeClient:
             raise BridgeError("unavailable") from None
 
     def _call(self, vault: str, operation: str, args: dict[str, Any]) -> dict[str, Any]:
-        deadline = time.monotonic() + self._timeout
+        # Operations that fetch from GitHub get a longer, still bounded, deadline.
+        deadline = time.monotonic() + _SLOW_OPERATIONS.get(operation, self._timeout)
         if operation != "health":
             self.ready(vault, deadline=deadline)
         return self._transport(vault, operation, args, deadline)
@@ -465,6 +492,18 @@ class BridgeClient:
 
     def settings(self, vault: str, file: str) -> dict[str, Any]:
         return self._call(vault, "settings", {"file": file})
+
+    def plugin_catalog(self, vault: str, query: str) -> dict[str, Any]:
+        return self._call(vault, "plugin_catalog", {"query": query})
+
+    def plugin_package(self, vault: str, plugin_id: str, version: str, pin: bool) -> dict[str, Any]:
+        return self._call(vault, "plugin_package", {"plugin_id": plugin_id, "version": version, "pin": pin})
+
+    def plugin_release(self, vault: str, pin: str) -> dict[str, Any]:
+        return self._call(vault, "plugin_release", {"pin": pin})
+
+    def plugin_install(self, vault: str, plugin_id: str, pin: str, digest: str) -> dict[str, Any]:
+        return self._call(vault, "plugin_install", {"plugin_id": plugin_id, "pin": pin, "digest": digest})
 
     def plugin_state(self, vault: str, plugin_id: str) -> dict[str, Any]:
         return self._call(vault, "plugin_state", {"plugin_id": plugin_id})

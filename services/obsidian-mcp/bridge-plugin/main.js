@@ -1,6 +1,7 @@
 'use strict';
 
-const { Plugin, FileSystemAdapter, TFile, TFolder } = require('obsidian');
+const obsidian = require('obsidian');
+const { Plugin, FileSystemAdapter, TFile, TFolder } = obsidian;
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
@@ -320,6 +321,76 @@ function settingState(root, settingId) {
     revision: revision(raw) };
 }
 
+// Community plugin installs: the catalog and release files come from GitHub, exactly like the
+// app's own browser. Bytes are hashed for the owner's approval and pinned for the install.
+const CATALOG_URL = 'https://raw.githubusercontent.com/obsidianmd/obsidian-releases/master/community-plugins.json';
+const RELEASE_FILES = ['manifest.json', 'main.js', 'styles.css'];
+const MAX_PACKAGE = 8 * 1024 * 1024;
+const PIN_TTL_MS = 2 * 60 * 1000;
+const packagePins = new Map();
+let catalogCache = null;
+async function fetchBytes(url, optional = false) {
+  if (typeof obsidian.requestUrl !== 'function') fail('unavailable');
+  // Check the size first so an oversized asset is never buffered.
+  try {
+    const head = await obsidian.requestUrl({ url, method: 'HEAD', throw: false });
+    const length = Number(head && head.headers && (head.headers['content-length'] || head.headers['Content-Length']));
+    if (Number.isFinite(length) && length > MAX_PACKAGE) fail('limit_exceeded');
+  } catch (error) { if (error instanceof BridgeError) throw error; }
+  let response;
+  try { response = await obsidian.requestUrl({ url, method: 'GET', throw: false }); } catch { fail('unavailable'); }
+  if (response.status === 404 && optional) return null;
+  if (response.status !== 200) fail(response.status === 404 ? 'not_found' : 'unavailable');
+  const bytes = Buffer.from(response.arrayBuffer);
+  if (bytes.length > MAX_PACKAGE) fail('limit_exceeded');
+  return bytes;
+}
+async function catalog() {
+  if (catalogCache && Date.now() - catalogCache.at < 60 * 60 * 1000) return catalogCache.entries;
+  let entries;
+  try { entries = JSON.parse((await fetchBytes(CATALOG_URL)).toString('utf8')); } catch (error) {
+    if (error instanceof BridgeError) throw error; fail('unavailable');
+  }
+  if (!Array.isArray(entries)) fail('unavailable');
+  catalogCache = { at: Date.now(), entries };
+  return entries;
+}
+async function catalogEntry(id) {
+  if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id) || id === PLUGIN_ID) fail('invalid_request');
+  const entry = (await catalog()).find(item => item && item.id === id);
+  if (!entry || typeof entry.repo !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(entry.repo) ||
+      entry.repo.split('/').some(part => /^\.+$/.test(part))) fail('not_found');
+  return entry;
+}
+async function fetchPackage(id, version) {
+  const entry = await catalogEntry(id);
+  const base = `https://github.com/${entry.repo}/releases`;
+  if (version === 'latest') {
+    const manifest = JSON.parse((await fetchBytes(`${base}/latest/download/manifest.json`)).toString('utf8'));
+    version = String(manifest.version || '');
+  }
+  if (!/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/.test(version)) fail('invalid_request');
+  const files = {};
+  let total = 0;
+  for (const name of RELEASE_FILES) {
+    const bytes = await fetchBytes(`${base}/download/${version}/${name}`, name === 'styles.css');
+    if (!bytes) continue;
+    total += bytes.length;
+    if (total > MAX_PACKAGE) fail('limit_exceeded');
+    files[name] = bytes;
+  }
+  let manifest;
+  try { manifest = JSON.parse(files['manifest.json'].toString('utf8')); } catch { fail('invalid_request'); }
+  if (!manifest || manifest.id !== id || String(manifest.version) !== version) fail('conflict');
+  const hash = crypto.createHash('sha256');
+  for (const name of RELEASE_FILES) if (files[name]) hash.update(`${name}\u0000`).update(files[name]);
+  return { plugin_id: id, name: String(entry.name || id), version, source: `github.com/${entry.repo}`,
+    digest: hash.digest('hex'), sizes: Object.fromEntries(Object.entries(files).map(([k, v]) => [k, v.length])), files };
+}
+function prunePins() {
+  for (const [pin, held] of packagePins) if (Date.now() - held.at > PIN_TTL_MS) packagePins.delete(pin);
+}
+
 function installedPlugins(app) {
   const plugins = app.plugins || {};
   const manifests = plugins.manifests || {};
@@ -394,7 +465,7 @@ async function execute(app, config, op, args, markStarted = () => {}) {
       capabilities: ['health', 'list', 'read', 'search', 'create', 'append', 'embed', 'reserve', 'receipt',
         'vaults', 'open_vault', 'create_vault', 'state', 'mkdir', 'move', 'replace', 'trash',
         'logs', 'plugins', 'settings', 'plugin_state', 'plugin_set', 'plugin_remove',
-        'setting_state', 'setting_write'] };
+        'setting_state', 'setting_write', 'plugin_catalog', 'plugin_package', 'plugin_release', 'plugin_install'] };
   }
   if (op === 'list') {
     argument(args, ['prefix', 'limit']);
@@ -543,6 +614,65 @@ async function execute(app, config, op, args, markStarted = () => {}) {
       try { parsed = JSON.parse(fs.readFileSync(descriptor, 'utf8')); } catch { fail('invalid_request'); }
     } finally { fs.closeSync(descriptor); }
     return { file: args.file, settings: redacted(parsed) };
+  }
+  if (op === 'plugin_catalog') {
+    argument(args, ['query']);
+    const query = string(args.query, 200).toLowerCase();
+    const hits = (await catalog()).filter(item => item && typeof item.id === 'string' &&
+      [item.id, item.name, item.description, item.author].some(field => typeof field === 'string' && field.toLowerCase().includes(query)))
+      .slice(0, 20).map(item => ({ id: String(item.id), name: String(item.name || item.id).slice(0, 200),
+        author: String(item.author || '').slice(0, 200), description: String(item.description || '').slice(0, 500),
+        repo: String(item.repo || '').slice(0, 200) }));
+    return { plugins: hits };
+  }
+  if (op === 'plugin_package') {
+    argument(args, ['plugin_id', 'version', 'pin']);
+    if (typeof args.pin !== 'boolean' || typeof args.version !== 'string') fail('invalid_request');
+    prunePins();
+    const fetched = await fetchPackage(args.plugin_id, args.version);
+    let pin = '';
+    if (args.pin) {
+      if (packagePins.size >= 8) fail('limit_exceeded');
+      pin = crypto.randomBytes(24).toString('base64url');
+      packagePins.set(pin, { at: Date.now(), ...fetched });
+    }
+    const { files, ...summary } = fetched;
+    return { ...summary, pin };
+  }
+  if (op === 'plugin_release') {
+    argument(args, ['pin']);
+    packagePins.delete(String(args.pin));
+    return { released: true };
+  }
+  if (op === 'plugin_install') {
+    argument(args, ['plugin_id', 'pin', 'digest']);
+    prunePins();
+    const held = packagePins.get(String(args.pin));
+    packagePins.delete(String(args.pin));
+    if (!held || held.plugin_id !== args.plugin_id || held.digest !== args.digest) fail('conflict');
+    if (pluginRecord(app, root, held.plugin_id).installed) fail('conflict');
+    const pluginsDir = path.join(root, '.obsidian', 'plugins');
+    if (!fs.existsSync(pluginsDir)) fs.mkdirSync(pluginsDir, { recursive: true, mode: 0o755 });
+    if (fs.realpathSync(pluginsDir) !== pluginsDir) fail('invalid_path');
+    const target = path.join(pluginsDir, held.plugin_id);
+    if (fs.existsSync(target)) fail('conflict');
+    verifyRoot(app, config);
+    markStarted();
+    fs.mkdirSync(target, { mode: 0o755 });
+    try {
+      for (const [name, bytes] of Object.entries(held.files)) {
+        fs.writeFileSync(path.join(target, name), bytes, { mode: 0o644, flag: 'wx' });
+      }
+    } catch {
+      // Never leave a partial, unapproved copy behind.
+      fs.rmSync(target, { recursive: true, force: true });
+      fail('conflict');
+    }
+    if (typeof app.plugins.loadManifests === 'function') await app.plugins.loadManifests();
+    await app.plugins.enablePluginAndSave(held.plugin_id);
+    const now = pluginRecord(app, root, held.plugin_id);
+    if (!now.installed) fail('conflict');
+    return { plugin_id: held.plugin_id, version: held.version, installed: true, enabled: now.enabled };
   }
   if (op === 'plugin_state') {
     argument(args, ['plugin_id']);
