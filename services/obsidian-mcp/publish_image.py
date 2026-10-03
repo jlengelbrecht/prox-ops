@@ -150,5 +150,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, KeyError, OSError, RuntimeError, urllib.error.URLError, subprocess.CalledProcessError) as exc:
+    except (ValueError, RuntimeError) as exc:
+        # Fixed strings or HTTP status codes from above; JSON errors carry only a position.
+        raise SystemExit(f"image publication failed: {exc}") from None
+    except (KeyError, OSError, urllib.error.URLError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired) as exc:
         raise SystemExit(f"image publication failed: {type(exc).__name__}") from None
