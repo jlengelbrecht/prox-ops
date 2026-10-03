@@ -74,9 +74,9 @@ async def _read_body(request: Request, limit: int) -> bytes:
     body = bytearray()
     async with asyncio.timeout(_HTTP_BODY_TIMEOUT):
         async for chunk in request.stream():
-            body.extend(chunk)
-            if len(body) > limit:
+            if len(body) + len(chunk) > limit:
                 raise _BodyTooLarge
+            body.extend(chunk)
     return bytes(body)
 
 
@@ -714,8 +714,8 @@ def create_gateway_from_env():
                 or not isinstance(entry, dict)
                 or set(entry) != {"app_name", "app_root", "socket_path", "credential_file", "owner_ids"}
                 or not bounded_text(entry["app_name"], 128)
-                or any(not bounded_text(entry[field]) for field in
-                       ("app_root", "socket_path", "credential_file"))
+                or any(not bounded_text(entry[field]) or not entry[field].startswith("/")
+                       for field in ("app_root", "socket_path", "credential_file"))
                 or not bounded_ids(entry["owner_ids"])):
             raise ValueError("invalid vault enrollment")
         endpoints[vault] = VaultEndpoint(vault, entry["app_name"], Path(entry["app_root"]),
