@@ -204,6 +204,59 @@ async function freshSize(app, config, file, max) {
   return stat.size;
 }
 
+const MAX_TREE = 5000;
+function missingFolders(vault, folderPath) {
+  // Outermost first; refuses a file standing where a folder is needed.
+  const missing = [];
+  for (let folder = folderPath; folder !== '.'; folder = path.posix.dirname(folder)) {
+    const existing = vault.getAbstractFileByPath(folder);
+    if (existing instanceof TFolder) break;
+    if (existing) fail('conflict');
+    missing.unshift(folder);
+  }
+  return missing;
+}
+async function makeFolders(app, config, missing) {
+  for (const folder of missing) {
+    verifyRoot(app, config);
+    safePath(folder, config.root, true);
+    try { await app.vault.createFolder(folder); } catch { fail('conflict'); }
+    if (!(app.vault.getAbstractFileByPath(folder) instanceof TFolder)) fail('conflict');
+  }
+}
+function item(app, root, requested) {
+  // Validate the shape, allowing an absent path, so a missing source reports not_found.
+  const key = safePath(requested, root, true);
+  const found = app.vault.getAbstractFileByPath(key);
+  if (!(found instanceof TFile || found instanceof TFolder) || found.path !== key) fail('not_found');
+  return found;
+}
+async function itemState(app, config, key) {
+  // Revision of everything an approval covers: note text, file stat, or a folder's whole tree.
+  const found = app.vault.getAbstractFileByPath(key);
+  if (!found) return { path: key, kind: 'absent', revision: 'absent', count: 0 };
+  if (found instanceof TFile) {
+    if (found.extension === 'md') {
+      await freshSize(app, config, found, MAX_NOTE);
+      return { path: key, kind: 'file', revision: revision(await app.vault.read(found)), count: 1 };
+    }
+    const stat = await app.vault.adapter.stat(found.path);
+    return { path: key, kind: 'file', revision: revision(`${stat ? stat.size : -1}:${stat ? stat.mtime : -1}`), count: 1 };
+  }
+  if (!(found instanceof TFolder)) fail('not_found');
+  const entries = [];
+  const pending = [found];
+  while (pending.length) {
+    for (const child of pending.pop().children || []) {
+      entries.push(`${child.path}\u0000${child instanceof TFile ? `${child.stat ? child.stat.size : 0}:${child.stat ? child.stat.mtime : 0}` : 'dir'}`);
+      if (entries.length > MAX_TREE) fail('limit_exceeded');
+      if (child instanceof TFolder) pending.push(child);
+    }
+  }
+  entries.sort();
+  return { path: key, kind: 'folder', revision: revision(entries.join('\n')), count: entries.length };
+}
+
 async function execute(app, config, op, args, markStarted = () => {}) {
   verifyRoot(app, config);
   const vault = app.vault;
@@ -212,7 +265,7 @@ async function execute(app, config, op, args, markStarted = () => {}) {
     argument(args, []);
     return { protocol: VERSION, vault: config.id, app_name: vault.getName(), app_root: root,
       capabilities: ['health', 'list', 'read', 'search', 'create', 'append', 'embed', 'reserve', 'receipt',
-        'vaults', 'open_vault', 'create_vault'] };
+        'vaults', 'open_vault', 'create_vault', 'state', 'mkdir', 'move', 'replace', 'trash'] };
   }
   if (op === 'list') {
     argument(args, ['prefix', 'limit']);
@@ -316,6 +369,69 @@ async function execute(app, config, op, args, markStarted = () => {}) {
     const content = await vault.read(file);
     if (Buffer.byteLength(content) > MAX_NOTE) fail('limit_exceeded');
     return { path: file.path, revision: revision(content) };
+  }
+  if (op === 'state') {
+    argument(args, ['path']);
+    return itemState(app, config, safePath(args.path, root, true));
+  }
+  if (op === 'mkdir') {
+    argument(args, ['path']);
+    const key = safePath(args.path, root, true);
+    if (vault.getAbstractFileByPath(key) || fs.existsSync(path.join(root, key))) fail('conflict');
+    const missing = missingFolders(vault, key);
+    markStarted();
+    await makeFolders(app, config, missing);
+    return { path: key, created: true };
+  }
+  if (op === 'move') {
+    argument(args, ['source', 'destination']);
+    const moving = item(app, root, args.source);
+    const destination = safePath(args.destination, root, true);
+    const isFolder = moving instanceof TFolder;
+    if (destination === moving.path || (isFolder && destination.startsWith(moving.path + '/'))) fail('invalid_path');
+    if (!isFolder && path.posix.extname(destination).toLowerCase() !== path.posix.extname(moving.path).toLowerCase()) fail('invalid_request');
+    if (vault.getAbstractFileByPath(destination) || fs.existsSync(path.join(root, destination))) fail('conflict');
+    const missing = missingFolders(vault, path.posix.dirname(destination));
+    const source = moving.path;
+    markStarted();
+    await makeFolders(app, config, missing);
+    verifyRoot(app, config);
+    safePath(destination, root, true);
+    // fileManager.renameFile also rewrites links to the moved file across the vault.
+    try { await app.fileManager.renameFile(moving, destination); } catch { fail('conflict'); }
+    const moved = vault.getAbstractFileByPath(destination);
+    if (!moved || moved.path !== destination || vault.getAbstractFileByPath(source)) fail('conflict');
+    return { source, destination, kind: isFolder ? 'folder' : 'file' };
+  }
+  if (op === 'replace') {
+    argument(args, ['path', 'content', 'expected_revision']);
+    const file = note(app, root, args.path);
+    if (typeof args.content !== 'string' || Buffer.byteLength(args.content) > MAX_NOTE ||
+        !/^sha256:[0-9a-f]{64}$/.test(args.expected_revision)) fail('invalid_request');
+    await freshSize(app, config, file, MAX_NOTE);
+    verifyRoot(app, config);
+    await vault.process(file, current => {
+      verifyRoot(app, config);
+      if (revision(current) !== args.expected_revision) fail('conflict');
+      markStarted();
+      return args.content;
+    });
+    const content = await vault.read(file);
+    if (content !== args.content) fail('conflict');
+    return { path: file.path, revision: revision(content) };
+  }
+  if (op === 'trash') {
+    argument(args, ['path', 'expected_revision']);
+    const target = item(app, root, args.path);
+    if (typeof args.expected_revision !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(args.expected_revision)) fail('invalid_request');
+    const current = await itemState(app, config, target.path);
+    if (current.revision !== args.expected_revision) fail('conflict');
+    verifyRoot(app, config);
+    markStarted();
+    // false = the vault's own .trash folder, so the owner can restore it.
+    try { await vault.trash(target, false); } catch { fail('conflict'); }
+    if (vault.getAbstractFileByPath(target.path)) fail('conflict');
+    return { path: target.path, trashed: true };
   }
   if (op === 'embed') {
     argument(args, ['source', 'target']);

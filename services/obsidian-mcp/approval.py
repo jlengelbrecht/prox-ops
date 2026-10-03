@@ -43,6 +43,7 @@ _SAFE = {
     "create_folder": {"path", "expected_absent"},
     "create_attachment": {"path", "upload_ref", "digest", "size", "mime", "expected_absent"},
     "append_note": {"path", "content", "expected_revision"},
+    "move": {"source", "destination"},
 }
 _GUARDED = {
     "replace_note": {"path", "content"},
@@ -52,6 +53,7 @@ _GUARDED = {
     "rename_folder": {"source", "destination"},
     "move_folder": {"source", "destination"},
     "trash_note": {"path"},
+    "trash_folder": {"path"},
     "restore_note": {"trash_id", "destination"},
     "plugin_install": {"plugin_id", "version", "source", "digest"},
     "plugin_enable": {"plugin_id"},
@@ -71,7 +73,7 @@ _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
 _MAX_REQUEST = 8192
 _MAX_TEXT = 4096
-_MAX_PREVIEW = 2048
+_MAX_PREVIEW = 32768  # the owner always sees the whole change; previews never truncate
 _MAX_STATES = 64
 _MAX_STATE_BYTES = 16384
 
@@ -318,7 +320,8 @@ def _canonical_state(snapshot: Snapshot, action: Operation) -> tuple[tuple[str, 
         raise ApprovalError("incomplete_preview")
     primary = {
         "replace_note": ("note", "path"), "remove_property": ("note", "path"),
-        "trash_note": ("note", "path"), "rename_note": ("note", "source"),
+        "trash_note": ("note", "path"), "trash_folder": ("folder", "path"),
+        "rename_note": ("note", "source"),
         "move_note": ("note", "source"), "rename_folder": ("folder", "source"),
         "move_folder": ("folder", "source"), "restore_note": ("trash", "trash_id"),
     }.get(action.verb)
@@ -361,6 +364,32 @@ def _action_digest(client_id: str, encoded: bytes,
     return hashlib.sha256(payload).hexdigest()
 
 
+def _validated_registry(registry: Mapping[str, VaultEnrollment]) -> dict[str, VaultEnrollment]:
+    registry = dict(registry)
+    if any(type(vault) is not str or not _ID.fullmatch(vault)
+           or type(enrollment) is not VaultEnrollment
+           or type(enrollment.owner_ids) is not frozenset
+           or not enrollment.owner_ids
+           or type(enrollment.setting_rules) is not dict
+           or any(type(owner) is not str or not _ID.fullmatch(owner)
+                  for owner in enrollment.owner_ids)
+           or any(type(setting) is not str or not _ID.fullmatch(setting)
+                  or type(rule) is not SettingRule
+                  or rule.value_type not in (str, int, bool)
+                  or type(rule.allowed_values) is not tuple
+                  or not 1 <= len(rule.allowed_values) <= 16
+                  or any(type(value) is not rule.value_type
+                         or (type(value) is str and not _valid_text(value, _MAX_TEXT, empty=True))
+                         for value in rule.allowed_values)
+                  or type(rule.impact) is not str
+                  or rule.impact not in {"security", "sync", "plugin", "other"}
+                  for setting, rule in enrollment.setting_rules.items())
+           for vault, enrollment in registry.items()):
+        raise ValueError("invalid vault enrollment")
+    return {vault: VaultEnrollment(entry.owner_ids, dict(entry.setting_rules))
+            for vault, entry in registry.items()}
+
+
 class ApprovalCoordinator:
     """In-memory ledger. A new process starts with no pending grants."""
 
@@ -371,42 +400,33 @@ class ApprovalCoordinator:
         if not 1 <= ttl <= 600 or not 1 <= max_pending <= 1024:
             raise ValueError("invalid coordinator configuration")
         self._adapter = adapter
-        self._registry = dict(registry)
-        if any(type(vault) is not str or not _ID.fullmatch(vault)
-               or type(enrollment) is not VaultEnrollment
-               or type(enrollment.owner_ids) is not frozenset
-               or not enrollment.owner_ids
-               or type(enrollment.setting_rules) is not dict
-               or any(type(owner) is not str or not _ID.fullmatch(owner)
-                      for owner in enrollment.owner_ids)
-               or any(type(setting) is not str or not _ID.fullmatch(setting)
-                      or type(rule) is not SettingRule
-                      or rule.value_type not in (str, int, bool)
-                      or type(rule.allowed_values) is not tuple
-                      or not 1 <= len(rule.allowed_values) <= 16
-                      or any(type(value) is not rule.value_type
-                             or (type(value) is str and not _valid_text(value, _MAX_TEXT, empty=True))
-                             for value in rule.allowed_values)
-                      or type(rule.impact) is not str
-                      or rule.impact not in {"security", "sync", "plugin", "other"}
-                      for setting, rule in enrollment.setting_rules.items())
-               for vault, enrollment in self._registry.items()):
-            raise ValueError("invalid vault enrollment")
-        self._registry = {vault: VaultEnrollment(entry.owner_ids, dict(entry.setting_rules))
-                          for vault, entry in self._registry.items()}
+        # A live mapping (vaults that register at runtime) is re-read on each use.
+        self._source = registry
+        self._static = None if not isinstance(registry, dict) else _validated_registry(registry)
+        _validated_registry(registry)
         self._clock = clock
         self._ttl = ttl
         self._max_pending = max_pending
-        self._vault_locks = {vault: threading.Lock() for vault in self._registry}
+        self._vault_locks: dict[str, threading.Lock] = {}
+        self._locks_lock = threading.Lock()
         self._active = threading.local()
         self._ledger_lock = threading.Lock()
         self._pending: dict[str, _Pending] = {}
+
+
+    @property
+    def _registry(self) -> dict[str, VaultEnrollment]:
+        return self._static if self._static is not None else _validated_registry(self._source)
+
+    def _lock_for(self, vault: str) -> threading.Lock:
+        with self._locks_lock:
+            return self._vault_locks.setdefault(vault, threading.Lock())
 
     @contextmanager
     def _vault_guard(self, vault: str):
         if getattr(self._active, "vault", None) is not None:
             raise ApprovalError("reentrant_call")
-        with self._vault_locks[vault]:
+        with self._lock_for(vault):
             self._active.vault = vault
             try:
                 yield

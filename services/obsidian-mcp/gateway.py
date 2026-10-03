@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import base64
 import html
 import io
@@ -12,6 +13,7 @@ import re
 import secrets
 import stat
 import time
+import unicodedata
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -34,7 +36,7 @@ from starlette.requests import ClientDisconnect, Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from approval import (AdapterConflict, AgentContext, ApprovalCoordinator, ApprovalError,
-                      Operation, VaultEnrollment)
+                      Operation, Preview, Snapshot, StateEntry, VaultEnrollment)
 from bridge import BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
 from owner_auth import CsrfLedger, OwnerAuthConfig, OwnerAuthenticator, OwnerAuthError
 from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
@@ -43,14 +45,16 @@ from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
 _SAFE_CAPABILITIES = {
     "list_notes": "list", "read_note": "read", "search": "search",
     "create_note": "create", "append_note": "append", "read_media": "embed",
-    "manage_vaults": "vaults",
+    "manage_vaults": "vaults", "create_folder": "mkdir", "move": "move",
 }
+# Destructive verbs: each needs the owner's approval through /owner/ before it runs.
+_GUARDED_CAPABILITIES = {"replace_note": "replace", "trash_note": "trash", "trash_folder": "trash"}
 _TOOL_VERBS = {
     "list_entries": "list_notes", "read_note": "read_note", "search_notes": "search",
     "create_note": "create_note", "append_note": "append_note",
     "read_embedded_image": "read_media", "read_note_with_images": "read_media",
     "list_all_vaults": "manage_vaults", "open_vault": "manage_vaults",
-    "create_vault": "manage_vaults",
+    "create_vault": "manage_vaults", "create_folder": "create_folder", "move": "move",
 }
 
 
@@ -75,7 +79,7 @@ _MEDIA_MIME = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "
 _MAX_IMAGE_BYTES = 512 * 1024
 _MAX_IMAGE_PIXELS = 4_000_000
 _MAX_IMAGE_RESPONSE = 768 * 1024
-_MAX_PREVIEW_HTML = 64 * 1024
+_MAX_PREVIEW_HTML = 512 * 1024
 _DISCOVERY_TIMEOUT = 1.0
 _HTTP_BODY_TIMEOUT = 2.0
 _MAX_VAULTS = 32
@@ -187,12 +191,25 @@ class ScopedTokens(TokenVerifier):
         return AccessToken(token=token, client_id=found, scopes=[]) if found else None
 
 
+_MAX_PREVIEW_TEXT = 32000
+
+
+def _visible(char: str) -> str:
+    """Show control and invisible format characters (bidi overrides, zero-width) as escapes."""
+    if char in "\n\t":
+        return char
+    if ord(char) < 32 or unicodedata.category(char) in {"Cf", "Cc", "Co", "Cs", "Zl", "Zp"}:
+        return f"\\u{ord(char):04x}"
+    return char
+
+
 class BridgeAdapter:
     """The only production note writer; the bridge itself selects a running app."""
 
     def __init__(self, bridge: BridgeClient, client_id: str | None = None):
         self.bridge = bridge
         self.client_id = client_id
+        self._observed: dict[tuple[str, str, str], str] = {}
 
     def read(self, action: Operation) -> object:
         args = action.arguments
@@ -204,9 +221,58 @@ class BridgeAdapter:
             return self.bridge.search(action.vault, args["query"], 20)
         raise BridgeError("unknown_operation")
 
+    _GUARDED_KINDS = {"replace_note": ("note", "file"), "trash_note": ("note", "file"),
+                      "trash_folder": ("folder", "folder")}
+
+    def _guarded_state(self, action: Operation) -> tuple[dict, StateEntry]:
+        kind, expected = self._GUARDED_KINDS[action.verb]
+        path = action.arguments["path"]
+        state = self.bridge.path_state(action.vault, path)
+        if state["kind"] != expected or (kind == "note" and not path.lower().endswith(".md")):
+            raise BridgeError("not_found")
+        return state, StateEntry(kind, path, state["revision"])
+
+    def preview(self, action: Operation) -> Preview:
+        """Read only: exactly what the owner approves, with the revision it applies to."""
+        state, entry = self._guarded_state(action)
+        path, vault = action.arguments["path"], action.vault
+        if action.verb == "replace_note":
+            current = self.bridge.read_note(vault, path)["content"]
+            diff = "".join(difflib.unified_diff(current.splitlines(True), action.arguments["content"].splitlines(True),
+                                                "current", "proposed", n=1))
+            summary = f"Replace the whole note {path} in vault {vault}.\n\n" + diff
+        elif action.verb == "trash_note":
+            summary = f"Move the note {path} in vault {vault} to that vault's .trash folder."
+        else:
+            summary = (f"Move the folder {path} in vault {vault}, with its {state['count']} files and "
+                       "folders, to that vault's .trash folder.")
+        summary = unicodedata.normalize("NFC", "".join(_visible(char) for char in summary))
+        # Fail closed: an approval must show the whole change, so never truncate.
+        if len(summary) > _MAX_PREVIEW_TEXT:
+            raise BridgeError("limit_exceeded")
+        return Preview(Snapshot((entry,), True, 1), summary)
+
+    def observe(self, action: Operation, expected) -> Snapshot:
+        state, entry = self._guarded_state(action)
+        # The commit runs right after this, under the coordinator's vault lock; the plugin
+        # re-checks this exact revision so a concurrent edit makes the commit fail.
+        self._observed[(action.vault, action.verb, action.arguments["path"])] = state["revision"]
+        return Snapshot((entry,), True, 1)
+
     def execute(self, action: Operation, *, package=None) -> object:
         args = action.arguments
         try:
+            if action.verb in self._GUARDED_KINDS:
+                revision = self._observed.pop((action.vault, action.verb, args["path"]), None)
+                if revision is None:
+                    raise AdapterConflict()
+                if action.verb == "replace_note":
+                    return self.bridge.replace_note(action.vault, args["path"], args["content"], revision)
+                return self.bridge.trash_path(action.vault, args["path"], revision)
+            if action.verb == "create_folder":
+                return self.bridge.make_folder(action.vault, args["path"])
+            if action.verb == "move":
+                return self.bridge.move_path(action.vault, args["source"], args["destination"])
             if action.verb == "create_note":
                 return self.bridge.create_note(action.vault, args["path"], args["content"],
                                                client_id=self.client_id or "bridge")
@@ -506,7 +572,8 @@ def _note_with_images(bridge: BridgeClient, vault: str, path: str, start: int,
 
 def _page(view, nonce: str) -> str:
     def escaped(value: object) -> str:
-        return html.escape(str(value), quote=True)
+        # Invisible format characters are shown as escapes so the owner sees exactly what runs.
+        return html.escape("".join(_visible(char) for char in str(value)), quote=True)
     details = json.dumps(view.action.arguments, sort_keys=True, ensure_ascii=False)
     state = json.dumps([entry.__dict__ for entry in view.state], sort_keys=True, ensure_ascii=False)
     rows = (("Client", view.client_id), ("Vault", view.action.vault),
@@ -595,7 +662,8 @@ def create_gateway(
                                                      deadline=deadline)).get(vault)
         if capabilities is None:
             raise ToolError("Tool request failed") from None
-        if verb in _SAFE_CAPABILITIES and _SAFE_CAPABILITIES[verb] not in capabilities:
+        needed = _SAFE_CAPABILITIES.get(verb) or _GUARDED_CAPABILITIES.get(verb)
+        if needed and needed not in capabilities:
             raise ToolError("Tool request failed")
 
     async def call(verb: str, vault: str, arguments: dict) -> object:
@@ -712,6 +780,18 @@ def create_gateway(
             raise ToolError("Tool request failed") from None
 
     @mcp.tool
+    async def create_folder(vault: str, path: str) -> dict:
+        """Create a folder (and any missing parent folders) in a vault."""
+        return await call("create_folder", vault, {"path": path, "expected_absent": True})
+
+    @mcp.tool
+    async def move(vault: str, source: str, destination: str) -> dict:
+        """Move or rename a note, attachment or folder inside one vault. Obsidian rewrites links
+        to it in other notes, as it does when you move a file in the app; moving a folder moves
+        everything in it. Fails if the destination exists; missing destination folders are created."""
+        return await call("move", vault, {"source": source, "destination": destination})
+
+    @mcp.tool
     async def read_note_with_images(vault: str, path: str, start: int = 0,
                                     limit: int = _PAGE_IMAGES) -> ToolResult:
         """Read a note and its embedded local images in reading order. Images come in pages:
@@ -745,7 +825,16 @@ def create_gateway(
     if destructive_verbs:
         @mcp.tool
         async def prepare_action(vault: str, verb: str, arguments: dict[str, object]) -> dict:
-            """Prepare an exact supported destructive action without mutating the app."""
+            """Ask the owner to approve a destructive action. Nothing changes yet.
+
+            Verbs and arguments:
+              replace_note  {"path": "Folder/Note.md", "content": "<the whole new note>"}
+              trash_note    {"path": "Folder/Note.md"}      (moves it to the vault's .trash)
+              trash_folder  {"path": "Folder"}              (moves it and everything in it to .trash)
+            Returns an approval `url`. Give it to the user; they open it, review exactly what
+            will change and approve it. Then call commit_action with the same vault, verb,
+            arguments and the returned `id` as pending_id. Approvals expire after two minutes.
+            """
             deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
             context = agent()
             await permitted(context, vault, verb, deadline)
@@ -756,6 +845,10 @@ def create_gateway(
                                            Operation(vault, verb, arguments), deadline=deadline,
                                            vault=vault)
             except ApprovalError:
+                if verb == "replace_note":
+                    raise ToolError("Could not prepare this replacement. The owner must see the whole "
+                                    "change, so very large diffs are refused; split it into smaller "
+                                    "replacements or use append_note.") from None
                 raise ToolError("Tool request failed") from None
             return {"id": view.id, "digest": view.digest,
                     "expires_at": time.time() + max(0, view.expires_at - time.monotonic()),
@@ -763,7 +856,9 @@ def create_gateway(
 
         @mcp.tool
         async def commit_action(vault: str, verb: str, arguments: dict[str, object], pending_id: str) -> object:
-            """Commit only an exact owner approved action, once, if all state still matches."""
+            """Run an action the owner approved via prepare_action's url. Pass the same vault, verb
+            and arguments, and the prepare_action id as pending_id. It runs at most once, and
+            fails without changing anything if the note or folder changed since it was approved."""
             deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
             context = agent()
             await permitted(context, vault, verb, deadline)
@@ -788,7 +883,9 @@ def create_gateway(
         try:
             owner = await owner_auth.verify(request)
         except OwnerAuthError:
-            return PlainTextResponse("Owner session required", status_code=401, headers=_OWNER_HEADERS)
+            return PlainTextResponse(
+                "Owner session required. Sign in at " + owner_auth.config.origin + "/ in this browser, "
+                "then reload this page.", status_code=401, headers=_OWNER_HEADERS)
         try:
             view = coordinator.owner_view(owner, pending_id)
         except ApprovalError:
@@ -893,13 +990,15 @@ def create_gateway_from_env():
     bridge = BridgeClient(VaultDirectory(Path(runtime), parent=Path(parent)))
     credentials = {client: os.environ.get(f"OBSIDIAN_MCP_TOKEN_{client.upper()}", "") for client in clients}
     # Every client gets every safe capability on every vault the desktop has open.
-    every = frozenset(_SAFE_CAPABILITIES)
+    every = frozenset(_SAFE_CAPABILITIES) | frozenset(_GUARDED_CAPABILITIES)
     grants = {client: _LiveVaults(bridge, lambda _vault: every) for client in clients}
     owners = frozenset(owner_ids)
     enrollments = _LiveVaults(bridge, lambda _vault: VaultEnrollment(owners, {}))
     auth = OwnerAuthenticator(OwnerAuthConfig(owner["check_url"], owner["origin"], owners,
                                                frozenset(), vault_source=bridge.vault_ids))
-    return create_gateway(bridge, credentials, grants, auth, enrollments)
+    return create_gateway(bridge, credentials, grants, auth, enrollments,
+                          destructive_adapter=BridgeAdapter(bridge),
+                          destructive_verbs=frozenset(_GUARDED_CAPABILITIES))
 
 
 if __name__ == "__main__":

@@ -51,8 +51,49 @@ class BridgeFixture:
     def ready(self, vault, *, deadline=None):
         if vault in self.closed:
             raise BridgeError("unavailable")
-        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed"]
+        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed", "replace", "trash", "mkdir", "move"]
                 + list(getattr(self, "extra_capabilities", []))}
+
+    @staticmethod
+    def _rev(content):
+        import hashlib
+        return "sha256:" + hashlib.sha256(content.encode()).hexdigest()
+
+    def path_state(self, vault, path):
+        self.calls.append((vault, "state", path))
+        notes = self.notes[vault]
+        if path in notes:
+            return {"path": path, "kind": "file", "revision": self._rev(notes[path][0]), "count": 1}
+        inside = sorted(key for key in notes if key.startswith(path + "/"))
+        if inside:
+            return {"path": path, "kind": "folder", "revision": self._rev("\n".join(inside)), "count": len(inside)}
+        return {"path": path, "kind": "absent", "revision": "absent", "count": 0}
+
+    def replace_note(self, vault, path, content, expected_revision):
+        if self._rev(self.notes[vault][path][0]) != expected_revision:
+            raise BridgeError("conflict")
+        self.calls.append((vault, "replace", path))
+        self.notes[vault][path] = (content, self._rev(content))
+        return {"path": path, "revision": self._rev(content)}
+
+    def trash_path(self, vault, path, expected_revision):
+        if self.path_state(vault, path)["revision"] != expected_revision:
+            raise BridgeError("conflict")
+        self.calls.append((vault, "trash", path))
+        for key in [k for k in self.notes[vault] if k == path or k.startswith(path + "/")]:
+            del self.notes[vault][key]
+        return {"path": path, "trashed": True}
+
+    def make_folder(self, vault, path):
+        self.calls.append((vault, "mkdir", path))
+        return {"path": path, "created": True}
+
+    def move_path(self, vault, source, destination):
+        if source not in self.notes[vault] or destination in self.notes[vault]:
+            raise BridgeError("conflict")
+        self.calls.append((vault, "move", source, destination))
+        self.notes[vault][destination] = self.notes[vault].pop(source)
+        return {"source": source, "destination": destination, "kind": "file"}
 
     def app_vaults(self, vault):
         self.calls.append((vault, "vaults"))

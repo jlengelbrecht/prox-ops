@@ -22,7 +22,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from approval import ApprovalCoordinator, VaultEnrollment  # noqa: E402
-from gateway import _LiveVaults, create_gateway  # noqa: E402
+from gateway import BridgeAdapter, _LiveVaults, create_gateway  # noqa: E402
 from owner_auth import OwnerAuthConfig, OwnerAuthenticator  # noqa: E402
 from test_gateway import BridgeFixture, GuardedFixture, SAFE, TOKENS  # noqa: E402
 
@@ -344,6 +344,81 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 duplicate = await client.call_tool("commit_action", {**action, "pending_id": fresh["id"]}, raise_on_error=False)
                 self.assertTrue(duplicate.is_error)
                 self.assertEqual(len(self.guarded.writes), 1)
+
+    async def _approve(self, url, pending):
+        async with httpx.AsyncClient() as browser:
+            path = "/owner/" + pending["id"]
+            page = await browser.get(url + path, headers={"Cookie": "session=fixture"})
+            self.assertEqual(page.status_code, 200)
+            nonce = re.search(r'name="csrf" value="([^"]+)"', page.text).group(1)
+            cookie = page.cookies.get("__Host-obsidian_csrf")
+            approved = await browser.post(url + path, headers={
+                "Cookie": f"session=fixture; __Host-obsidian_csrf={cookie}", "Origin": self.auth.config.origin,
+            }, data={"decision": "approve", "digest": pending["digest"], "csrf": nonce})
+            self.assertEqual(approved.status_code, 200)
+            return page.text
+
+    async def test_production_adapter_replace_and_trash_need_owner_approval(self):
+        guarded = frozenset({"replace_note", "trash_note", "trash_folder"})
+        self.bridge.notes["iam"]["Projects/a.md"] = ("A", "")
+        self.bridge.notes["iam"]["Projects/b.md"] = ("B", "")
+        app = create_gateway(
+            self.bridge, TOKENS, {name: {"iam": SAFE | {"create_folder", "move"} | guarded} for name in TOKENS},
+            self.auth, {"iam": VaultEnrollment(frozenset({"owner"}), {})},
+            destructive_adapter=BridgeAdapter(self.bridge), destructive_verbs=guarded)
+        async with running(app) as url:
+            async with Client(url + "/mcp", auth=TOKENS["claude"]) as client:
+                tools = {tool.name for tool in await client.list_tools()}
+                self.assertLessEqual({"prepare_action", "commit_action", "create_folder", "move"}, tools)
+                moved = await client.call_tool("move", {"vault": "iam", "source": "note.md", "destination": "Archive/note.md"})
+                self.assertEqual(moved.structured_content["destination"], "Archive/note.md")
+                replace = {"vault": "iam", "verb": "replace_note",
+                           "arguments": {"path": "Archive/note.md", "content": "rewritten\n"}}
+                pending = (await client.call_tool("prepare_action", replace)).structured_content
+                self.assertEqual(self.bridge.notes["iam"]["Archive/note.md"][0], "IAM")
+                unapproved = await client.call_tool("commit_action", {**replace, "pending_id": pending["id"]},
+                                                    raise_on_error=False)
+                self.assertTrue(unapproved.is_error)
+                page = await self._approve(url, pending)
+                self.assertIn("Replace the whole note Archive/note.md", page)
+                self.assertIn("+rewritten", page)
+                done = await client.call_tool("commit_action", {**replace, "pending_id": pending["id"]})
+                self.assertFalse(done.is_error)
+                self.assertEqual(self.bridge.notes["iam"]["Archive/note.md"][0], "rewritten\n")
+
+                # An edit after approval makes the commit fail without writing.
+                trash = {"vault": "iam", "verb": "trash_folder", "arguments": {"path": "Projects"}}
+                pending = (await client.call_tool("prepare_action", trash)).structured_content
+                page = await self._approve(url, pending)
+                self.assertIn("with its 2 files and folders", page)
+                self.bridge.notes["iam"]["Projects/c.md"] = ("C", "")
+                stale = await client.call_tool("commit_action", {**trash, "pending_id": pending["id"]},
+                                               raise_on_error=False)
+                self.assertTrue(stale.is_error)
+                self.assertIn("Projects/a.md", self.bridge.notes["iam"])
+                pending = (await client.call_tool("prepare_action", trash)).structured_content
+                await self._approve(url, pending)
+                self.assertFalse((await client.call_tool("commit_action", {**trash, "pending_id": pending["id"]})).is_error)
+                self.assertFalse(any(key.startswith("Projects/") for key in self.bridge.notes["iam"]))
+                # The owner always sees the whole change: oversized diffs are refused, never truncated.
+                self.bridge.notes["iam"]["big.md"] = ("line\n" * 8000, "")
+                huge = await client.call_tool("prepare_action", {"vault": "iam", "verb": "replace_note",
+                                                                 "arguments": {"path": "big.md", "content": "short\n"}},
+                                              raise_on_error=False)
+                self.assertTrue(huge.is_error)
+                self.assertIn("whole", str(huge.content))
+                self.assertEqual(self.bridge.notes["iam"]["big.md"][0], "line\n" * 8000)
+                # Invisible format characters are shown as escapes on the approval page.
+                sneaky = {"vault": "iam", "verb": "replace_note",
+                          "arguments": {"path": "Archive/note.md", "content": "safe\u202etxt.exe\n"}}
+                pending = (await client.call_tool("prepare_action", sneaky)).structured_content
+                page = await self._approve(url, pending)
+                self.assertIn("\\u202e", page)
+                self.assertNotIn("\u202e", page)
+                wrong_kind = await client.call_tool("prepare_action", {"vault": "iam", "verb": "trash_note",
+                                                                       "arguments": {"path": "Archive"}},
+                                                    raise_on_error=False)
+                self.assertTrue(wrong_kind.is_error)
 
     async def test_closed_app_fails_without_fallback(self):
         self.bridge.closed.add("iam")
