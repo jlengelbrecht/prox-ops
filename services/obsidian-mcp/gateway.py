@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
+from collections.abc import Mapping as _AbcMapping
 from typing import Mapping
 from urllib.parse import parse_qs, unquote
 
@@ -34,7 +35,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
 from approval import (AdapterConflict, AgentContext, ApprovalCoordinator, ApprovalError,
                       Operation, VaultEnrollment)
-from bridge import BridgeClient, BridgeError, VaultEndpoint, _safe_relative
+from bridge import BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
 from owner_auth import CsrfLedger, OwnerAuthConfig, OwnerAuthenticator, OwnerAuthError
 from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
 
@@ -42,12 +43,34 @@ from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
 _SAFE_CAPABILITIES = {
     "list_notes": "list", "read_note": "read", "search": "search",
     "create_note": "create", "append_note": "append", "read_media": "embed",
+    "manage_vaults": "vaults",
 }
 _TOOL_VERBS = {
     "list_entries": "list_notes", "read_note": "read_note", "search_notes": "search",
     "create_note": "create_note", "append_note": "append_note",
     "read_embedded_image": "read_media", "read_note_with_images": "read_media",
+    "list_all_vaults": "manage_vaults", "open_vault": "manage_vaults",
+    "create_vault": "manage_vaults",
 }
+
+
+class _LiveVaults(_AbcMapping):
+    """A read-only mapping over the vaults the bridge currently knows about."""
+
+    def __init__(self, bridge: BridgeClient, value):
+        self._bridge = bridge
+        self._value = value
+
+    def __getitem__(self, vault):
+        if type(vault) is str and vault in self._bridge.vault_ids():
+            return self._value(vault)
+        raise KeyError(vault)
+
+    def __iter__(self):
+        return iter(self._bridge.vault_ids())
+
+    def __len__(self):
+        return len(self._bridge.vault_ids())
 _MEDIA_MIME = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
 _MAX_IMAGE_BYTES = 512 * 1024
 _MAX_IMAGE_PIXELS = 4_000_000
@@ -286,7 +309,8 @@ class _ExecutionPool:
     def __init__(self, vaults=()):
         self._slots = asyncio.Semaphore(_EXECUTION_WORKERS)
         self._admitted = asyncio.Semaphore(_EXECUTION_WORKERS + _EXECUTION_WAITING)
-        self._vault_locks = {vault: asyncio.Lock() for vault in vaults}
+        self._vaults = vaults
+        self._vault_locks = {}
         self._executor = ThreadPoolExecutor(max_workers=_EXECUTION_WORKERS,
                                             thread_name_prefix="obsidian-tool")
 
@@ -294,9 +318,11 @@ class _ExecutionPool:
                   vault: str | None = None):
         if time.monotonic() >= deadline or self._admitted.locked():
             raise ToolError("Tool request failed")
-        vault_lock = self._vault_locks.get(vault) if vault is not None else None
-        if vault is not None and vault_lock is None:
-            raise ToolError("Tool request failed")
+        vault_lock = None
+        if vault is not None:
+            if vault not in self._vaults:
+                raise ToolError("Tool request failed")
+            vault_lock = self._vault_locks.setdefault(vault, asyncio.Lock())
         await self._admitted.acquire()
         owns_slot = False
         owns_vault = False
@@ -508,7 +534,7 @@ def create_gateway(
     destructive_adapter=None,
     destructive_verbs: frozenset[str] = frozenset(),
 ):
-    if not isinstance(enrollments, Mapping) or not enrollments or len(enrollments) > _MAX_VAULTS:
+    if not isinstance(enrollments, Mapping) or len(enrollments) > _MAX_VAULTS:
         raise ValueError(f"gateway supports 1 to {_MAX_VAULTS} enrolled vaults")
     if (not isinstance(grants, Mapping)
             or any(not isinstance(scoped, Mapping) or len(scoped) > _MAX_VAULTS
@@ -517,7 +543,7 @@ def create_gateway(
     if (set(credentials) != {"codex", "claude", "opencode", "antigravity"}
             or any(not _valid_token(value) or len(value) > 128 for value in credentials.values())
             or len(set(credentials.values())) != 4
-            or set(grants) != set(credentials) or any(not scoped for scoped in grants.values())
+            or set(grants) != set(credentials)
             or any(vault not in enrollments or not verbs
                    or not verbs <= set(_SAFE_CAPABILITIES) | destructive_verbs
                    for client in grants for vault, verbs in grants[client].items())
@@ -577,9 +603,56 @@ def create_gateway(
 
     @mcp.tool
     async def list_vaults() -> dict:
-        """List enrolled vaults available to this client; pass vault on every operation."""
+        """List the open vaults this client can use. Pass a vault's `id` on every other call."""
         context = agent()
-        return {"vaults": await readiness.ready_vaults(context.grants)}
+        ready = await readiness.ready_vaults(context.grants)
+        return {"vaults": [{"id": vault, "name": bridge.vault_name(vault) or vault} for vault in ready]}
+
+    async def control_vault(context: AgentContext, deadline: float) -> str:
+        """Any open vault this client may use for app-level vault management."""
+        allowed = {vault: verbs for vault, verbs in context.grants.items() if "manage_vaults" in verbs}
+        ready = await readiness.probe_grants(allowed, deadline=deadline)
+        for vault in sorted(ready):
+            if _SAFE_CAPABILITIES["manage_vaults"] in ready[vault]:
+                return vault
+        raise ToolError("No open vault can manage vaults right now")
+
+    @mcp.tool
+    async def list_all_vaults() -> dict:
+        """Every vault the Obsidian desktop knows about, open or closed. Open a closed vault
+        with open_vault; it then appears in list_vaults."""
+        deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+        context = agent()
+        vault = await control_vault(context, deadline)
+        try:
+            known = await execution.run(bridge.app_vaults, vault, deadline=deadline)
+        except BridgeError:
+            raise ToolError("Tool request failed") from None
+        ids = {bridge.vault_name(item): item for item in bridge.vault_ids()}
+        return {"vaults": [{"name": entry["name"], "open": entry["open"], "id": ids.get(entry["name"])}
+                           for entry in known["vaults"]]}
+
+    @mcp.tool
+    async def open_vault(name: str) -> dict:
+        """Open a vault the desktop knows about (see list_all_vaults) in its own window."""
+        deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+        vault = await control_vault(agent(), deadline)
+        try:
+            return await execution.run(bridge.open_vault, vault, name, deadline=deadline)
+        except BridgeError:
+            raise ToolError("Tool request failed") from None
+
+    @mcp.tool
+    async def create_vault(name: str) -> dict:
+        """Create a new empty vault (letters, digits, spaces, '.', '_' or '-') and open it.
+        It appears in list_vaults within a few seconds. Connecting it to Obsidian Sync is a
+        one-time step in the desktop."""
+        deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+        vault = await control_vault(agent(), deadline)
+        try:
+            return await execution.run(bridge.create_vault, vault, name, deadline=deadline)
+        except BridgeError:
+            raise ToolError("Tool request failed") from None
 
     @mcp.tool
     async def list_entries(vault: str, folder: str = "") -> dict:
@@ -779,59 +852,41 @@ def create_gateway_from_env():
         document = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
         raise ValueError("invalid gateway registry JSON") from None
-    if not isinstance(document, dict) or set(document) != {"vaults", "clients", "owner"}:
+    if (not isinstance(document, dict) or set(document) != {"version", "clients", "owner"}
+            or document["version"] != 2):
         raise ValueError("invalid gateway registry")
-    vaults = document["vaults"]
     clients = document["clients"]
     owner = document["owner"]
-    if (not isinstance(vaults, dict) or not vaults or len(vaults) > _MAX_VAULTS
-            or not isinstance(clients, dict)
+    if (not isinstance(clients, list) or sorted(clients) != ["antigravity", "claude", "codex", "opencode"]
             or not isinstance(owner, dict) or set(owner) != {"check_url", "origin", "owner_ids"}):
-        raise ValueError(f"invalid gateway registry vaults (maximum {_MAX_VAULTS})")
+        raise ValueError("invalid gateway registry")
 
     def bounded_text(value, limit=_MAX_REGISTRY_TEXT):
         return type(value) is str and 0 < len(value) <= limit
 
-    def bounded_ids(values):
-        return (type(values) is list and 1 <= len(values) <= _MAX_VAULTS
-                and all(bounded_text(value, 128)
-                        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value)
-                        for value in values)
-                and len(set(values)) == len(values))
-
-    endpoints = {}
-    enrollments = {}
-    for vault, entry in vaults.items():
-        if (not bounded_text(vault, 64) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", vault)
-                or not isinstance(entry, dict)
-                or set(entry) != {"app_name", "app_root", "socket_path", "credential_file", "owner_ids"}
-                or not bounded_text(entry["app_name"], 128)
-                or any(not bounded_text(entry[field]) or not entry[field].startswith("/")
-                       for field in ("app_root", "socket_path", "credential_file"))
-                or not bounded_ids(entry["owner_ids"])):
-            raise ValueError("invalid vault enrollment")
-        endpoints[vault] = VaultEndpoint(vault, entry["app_name"], Path(entry["app_root"]),
-                                         Path(entry["socket_path"]), Path(entry["credential_file"]))
-        enrollments[vault] = VaultEnrollment(frozenset(entry["owner_ids"]), {})
+    owner_ids = owner["owner_ids"]
     if (not bounded_text(owner["check_url"]) or not bounded_text(owner["origin"])
-            or not bounded_ids(owner["owner_ids"])):
+            or type(owner_ids) is not list or not 1 <= len(owner_ids) <= 16
+            or any(not bounded_text(value, 128)
+                   or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value)
+                   for value in owner_ids)):
         raise ValueError("invalid owner registry fields")
-    if set(clients) != {"codex", "claude", "opencode", "antigravity"}:
-        raise ValueError("four clients required")
+    runtime = os.environ.get("OBSIDIAN_BRIDGE_DIR", "")
+    if not runtime or not Path(runtime).is_absolute():
+        raise ValueError("bridge runtime directory required")
+    parent = os.environ.get("OBSIDIAN_BRIDGE_VAULT_PARENT", "")
+    if not parent or not Path(parent).is_absolute():
+        raise ValueError("vault parent directory required")
+    bridge = BridgeClient(VaultDirectory(Path(runtime), parent=Path(parent)))
     credentials = {client: os.environ.get(f"OBSIDIAN_MCP_TOKEN_{client.upper()}", "") for client in clients}
-    grants = {}
-    for client, scoped in clients.items():
-        if (not isinstance(scoped, dict) or len(scoped) > _MAX_VAULTS
-                or any(not isinstance(verbs, list) or not verbs
-                       or len(verbs) > len(_SAFE_CAPABILITIES)
-                       or any(not bounded_text(verb, 128) for verb in verbs)
-                       or len(set(verbs)) != len(verbs)
-                       for verbs in scoped.values())):
-            raise ValueError("invalid grants")
-        grants[client] = {vault: frozenset(verbs) for vault, verbs in scoped.items()}
-    auth = OwnerAuthenticator(OwnerAuthConfig(owner["check_url"], owner["origin"],
-                                               frozenset(owner["owner_ids"]), frozenset(vaults)))
-    return create_gateway(BridgeClient(endpoints), credentials, grants, auth, enrollments)
+    # Every client gets every safe capability on every vault the desktop has open.
+    every = frozenset(_SAFE_CAPABILITIES)
+    grants = {client: _LiveVaults(bridge, lambda _vault: every) for client in clients}
+    owners = frozenset(owner_ids)
+    enrollments = _LiveVaults(bridge, lambda _vault: VaultEnrollment(owners, {}))
+    auth = OwnerAuthenticator(OwnerAuthConfig(owner["check_url"], owner["origin"], owners,
+                                               frozenset(), vault_source=bridge.vault_ids))
+    return create_gateway(bridge, credentials, grants, auth, enrollments)
 
 
 if __name__ == "__main__":

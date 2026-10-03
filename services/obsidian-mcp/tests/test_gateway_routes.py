@@ -83,6 +83,33 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.check_client.aclose()
 
+    async def test_vault_management_tools_over_http(self):
+        self.bridge.extra_capabilities = ["vaults", "open_vault", "create_vault"]
+        manage = SAFE | {"manage_vaults"}
+        app = create_gateway(
+            self.bridge, TOKENS,
+            {name: {"iam": manage, "homelab": manage} for name in TOKENS}, self.auth,
+            {vault: VaultEnrollment(frozenset({"owner"}), {}) for vault in ("iam", "homelab")})
+        async with running(app) as url:
+            async with Client(url + "/mcp", auth=TOKENS["opencode"]) as client:
+                tools = {tool.name for tool in await client.list_tools()}
+                self.assertLessEqual({"list_all_vaults", "open_vault", "create_vault"}, tools)
+                known = (await client.call_tool("list_all_vaults")).structured_content["vaults"]
+                self.assertEqual(known, [{"name": "IAM Team", "open": True, "id": "iam"},
+                                         {"name": "Archive", "open": False, "id": None}])
+                self.assertEqual((await client.call_tool("create_vault", {"name": "Scratch"})).structured_content,
+                                 {"name": "Scratch", "created": True})
+                self.assertEqual((await client.call_tool("open_vault", {"name": "Archive"})).structured_content,
+                                 {"name": "Archive", "opened": True})
+                failed = await client.call_tool("create_vault", {"name": "Exists"}, raise_on_error=False)
+                self.assertTrue(failed.is_error)
+        self.assertIn(("homelab", "create_vault", "Scratch"), self.bridge.calls)
+        self.bridge.extra_capabilities = []
+        async with running(self.app) as url:
+            async with Client(url + "/mcp", auth=TOKENS["codex"]) as client:
+                tools = {tool.name for tool in await client.list_tools()}
+                self.assertFalse({"list_all_vaults", "open_vault", "create_vault"} & tools)
+
     async def test_mcp_host_and_origin_boundary_over_http(self):
         initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
             "protocolVersion": "2025-06-18", "capabilities": {},
@@ -201,7 +228,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                         base |= {"prepare_action", "commit_action"}
                     self.assertEqual(tools, base)
                     listed = await client.call_tool("list_vaults")
-                    self.assertEqual(set(listed.structured_content["vaults"]), vaults)
+                    self.assertEqual({item["id"] for item in listed.structured_content["vaults"]}, vaults)
                     vault = next(iter(vaults))
                     result = await client.call_tool("read_note", {"vault": vault, "path": "note.md"})
                     self.assertFalse(result.is_error)
@@ -415,7 +442,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                         tools = {tool.name for tool in await asyncio.wait_for(listing, 1.5)}
                         self.assertEqual(tools, {"list_vaults", "read_note"})
                         listed = await asyncio.wait_for(client.call_tool("list_vaults"), 1.5)
-                        self.assertEqual(listed.structured_content["vaults"], ["homelab"])
+                        self.assertEqual(listed.structured_content["vaults"], [{"id": "homelab", "name": "Homelab"}])
                     finally:
                         release.set()
                         if not listing.done():
