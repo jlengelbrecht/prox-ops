@@ -8,6 +8,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable, Iterable
 from urllib.parse import urlsplit
 
 import httpx
@@ -31,6 +32,8 @@ class OwnerAuthConfig:
     origin: str
     owner_ids: frozenset[str]
     vault_ids: frozenset[str]
+    # Vaults appear and disappear at runtime; when set, this supplies the current IDs.
+    vault_source: Callable[[], Iterable[str]] | None = None
 
     def __post_init__(self) -> None:
         check = urlsplit(self.check_url)
@@ -41,7 +44,7 @@ class OwnerAuthConfig:
                 or check.query or check.fragment
                 or origin.scheme != "https" or not origin.hostname or origin.path
                 or origin.query or origin.fragment or origin.username or origin.password
-                or not self.owner_ids or not self.vault_ids
+                or not self.owner_ids or (not self.vault_ids and self.vault_source is None)
                 or any(not _ID.fullmatch(value) for value in self.owner_ids | self.vault_ids)):
             raise ValueError("invalid owner authentication configuration")
 
@@ -77,7 +80,9 @@ class OwnerAuthenticator:
                         raise OwnerAuthError("owner_session_required")
         except (httpx.HTTPError, TimeoutError):
             raise OwnerAuthError("owner_session_required") from None
-        return OwnerContext(owner, self.config.vault_ids)
+        vaults = (frozenset(self.config.vault_source()) if self.config.vault_source is not None
+                  else self.config.vault_ids)
+        return OwnerContext(owner, frozenset(vault for vault in vaults if _ID.fullmatch(vault)))
 
     async def aclose(self) -> None:
         if self._owned_client:

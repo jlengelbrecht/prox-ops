@@ -1,17 +1,13 @@
-"""Typed, version 1 private IPC adapter for enrolled running Obsidian vaults.
+"""Typed, version 1 private IPC adapter for running Obsidian vaults.
 
-Bootstrap is deployment-owned: all vault windows inherit
-OBSIDIAN_BRIDGE_INSTANCE=kubernetes-obsidian and OBSIDIAN_BRIDGE_DIR pointing
-to one 0700 ephemeral registry directory outside every vault. Its 0600
-registry.json contains exactly version=1, instance=kubernetes-obsidian, and
-endpoints, an array of exact vault_id/app_name/app_root/socket/credential_file
-records. Each record uses a distinct 0700 <registry>/<vault_id> directory,
-an abstract AF_UNIX address derived from <vault_id>.sock and its 0600 credential.
-No socket pathname is created. The plugin selects only the unique
-record matching its canonical FileSystemAdapter root and app name. Deployment
-recreates the registry and all per-vault directories at each app lifecycle.
-The gateway constructs VaultEndpoint values from its central trusted registry;
-client input may select only the stable vault ID. No live app setup is done here.
+All vault windows inherit OBSIDIAN_BRIDGE_INSTANCE=kubernetes-obsidian and
+OBSIDIAN_BRIDGE_DIR, one 0700 runtime directory outside every vault. When the
+bridge plugin loads in a vault it registers itself: it creates a 0700
+<runtime>/<vault_id> directory holding a fresh 0600 credential and a 0600
+endpoint.json (version, vault_id, app_name, app_root). The abstract AF_UNIX
+address is derived from <vault_id>.sock and that credential; no socket pathname
+is created. The gateway discovers vaults with VaultDirectory and never mounts
+vault contents; client input may select only a discovered vault ID.
 """
 
 from __future__ import annotations
@@ -41,7 +37,12 @@ RESULT_KEYS = {
     "search": {"matches"}, "create": {"receipt", "status", "result", "error"},
     "append": {"receipt", "status", "result", "error"}, "embed": {"path", "mime", "data"},
     "reserve": {"receipt"}, "receipt": {"receipt", "status", "result", "error"},
+    "vaults": {"vaults"}, "open_vault": {"name", "opened"}, "create_vault": {"name", "created"},
 }
+# Every plugin serves these; vault management ops are optional extras.
+BASE_CAPABILITIES = frozenset({"health", "list", "read", "search", "create", "append", "embed",
+                               "reserve", "receipt"})
+VAULT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.-]{0,99}\Z")
 RECEIPT_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z")
 
 
@@ -70,7 +71,7 @@ def _endpoint(entry: VaultEndpoint) -> None:
     shared = directory.parent
     if not root.is_absolute() or not directory.is_absolute() or not entry.credential_file.is_absolute():
         raise BridgeError("unavailable")
-    if (root.resolve(strict=True) != root or directory.resolve(strict=True) != directory
+    if (os.path.normpath(root) != str(root) or directory.resolve(strict=True) != directory
             or shared.resolve(strict=True) != shared):
         raise BridgeError("unavailable")
     if (shared == root or shared.is_relative_to(root) or root.is_relative_to(shared)
@@ -130,10 +131,20 @@ def _result(operation: str, value: Any, args: dict[str, Any]) -> bool:
         if value["status"] == "failed":
             return value["result"] is None and value["error"] in ERRORS
         return value["result"] is None and value["error"] is None
+    if operation == "vaults":
+        return (isinstance(value["vaults"], list) and len(value["vaults"]) <= 256 and
+                all(isinstance(item, dict) and set(item) == {"name", "open"} and
+                    isinstance(item["name"], str) and VAULT_NAME_RE.fullmatch(item["name"]) and
+                    isinstance(item["open"], bool) for item in value["vaults"]))
+    if operation in ("open_vault", "create_vault"):
+        flag = "opened" if operation == "open_vault" else "created"
+        return value["name"] == args["name"] and value[flag] is True
     if operation == "health":
         return (value["protocol"] == VERSION and isinstance(value["vault"], str) and
                 isinstance(value["app_name"], str) and isinstance(value["app_root"], str) and
-                value["capabilities"] == list(RESULT_KEYS))
+                isinstance(value["capabilities"], list) and
+                len(set(value["capabilities"])) == len(value["capabilities"]) and
+                BASE_CAPABILITIES <= set(value["capabilities"]) <= set(RESULT_KEYS))
     if operation == "list":
         return (isinstance(value["entries"], list) and len(value["entries"]) <= 1000 and
                 all(isinstance(item, dict) and set(item) == {"path", "kind"} and
@@ -160,20 +171,99 @@ def _result(operation: str, value: Any, args: dict[str, Any]) -> bool:
     return operation != "read" or (isinstance(value["content"], str) and len(value["content"].encode()) <= 256 * 1024)
 
 
+def _unambiguous(registry: Mapping[str, VaultEndpoint]) -> bool:
+    if any(key != entry.vault_id for key, entry in registry.items()):
+        return False
+    roots = [entry.app_root for entry in registry.values()]
+    return not any(left == right or left.is_relative_to(right) or right.is_relative_to(left)
+                   for index, left in enumerate(roots) for right in roots[index + 1:])
+
+
+class VaultDirectory:
+    """Vaults whose bridge plugin registered itself under the runtime directory."""
+
+    MAX_VAULTS = 64
+
+    def __init__(self, runtime: Path, ttl: float = 2.0, parent: Path | None = None):
+        if (not runtime.is_absolute() or not 0 < ttl <= 60
+                or (parent is not None and not parent.is_absolute())):
+            raise ValueError("Invalid vault directory")
+        self._runtime = runtime
+        self._parent = parent
+        self._ttl = ttl
+        self._cached: dict[str, VaultEndpoint] = {}
+        self._scanned = float("-inf")
+
+    def endpoints(self) -> dict[str, VaultEndpoint]:
+        if time.monotonic() - self._scanned >= self._ttl:
+            self._cached = self._scan()
+            self._scanned = time.monotonic()
+        return dict(self._cached)
+
+    def _scan(self) -> dict[str, VaultEndpoint]:
+        found: dict[str, VaultEndpoint] = {}
+        try:
+            details = self._runtime.lstat()
+            if (not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid()
+                    or stat.S_IMODE(details.st_mode) != 0o700):
+                return found
+            children = sorted(self._runtime.iterdir())
+        except OSError:
+            return found
+        for directory in children[:self.MAX_VAULTS * 2]:
+            if len(found) >= self.MAX_VAULTS:
+                break
+            vault_id = directory.name
+            if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", vault_id):
+                continue
+            try:
+                document = json.loads(_private_file(directory / "endpoint.json"))
+                if (not isinstance(document, dict)
+                        or set(document) != {"version", "vault_id", "app_name", "app_root"}
+                        or document["version"] != VERSION or document["vault_id"] != vault_id
+                        or not isinstance(document["app_name"], str)
+                        or not VAULT_NAME_RE.fullmatch(document["app_name"])
+                        or not isinstance(document["app_root"], str)
+                        or (self._parent is not None
+                            and document["app_root"] != str(self._parent / document["app_name"]))):
+                    continue
+                entry = VaultEndpoint(vault_id, document["app_name"], Path(document["app_root"]),
+                                      directory / f"{vault_id}.sock", directory / "credential")
+                _endpoint(entry)
+            except (BridgeError, OSError, ValueError, TypeError, UnicodeError):
+                continue
+            found[vault_id] = entry
+        return found if _unambiguous(found) else {}
+
+
 class BridgeClient:
     """Fixed operations only; caller never supplies a socket, token or verb."""
 
-    def __init__(self, registry: Mapping[str, VaultEndpoint], timeout: float = 3.0):
-        if not registry or not 0 < timeout <= 30:
+    def __init__(self, registry: Mapping[str, VaultEndpoint] | VaultDirectory, timeout: float = 3.0):
+        if not 0 < timeout <= 30:
             raise ValueError("Invalid bridge configuration")
-        self._registry = dict(registry)
-        if any(key != entry.vault_id for key, entry in self._registry.items()):
-            raise ValueError("Invalid bridge registry")
-        roots = [entry.app_root for entry in self._registry.values()]
-        if any(left == right or left.is_relative_to(right) or right.is_relative_to(left)
-               for index, left in enumerate(roots) for right in roots[index + 1:]):
-            raise ValueError("Ambiguous bridge registry")
+        if isinstance(registry, VaultDirectory):
+            self._directory: VaultDirectory | None = registry
+            self._static: dict[str, VaultEndpoint] = {}
+        else:
+            if not registry or any(key != entry.vault_id for key, entry in registry.items()):
+                raise ValueError("Invalid bridge registry")
+            if not _unambiguous(dict(registry)):
+                raise ValueError("Ambiguous bridge registry")
+            self._directory = None
+            self._static = dict(registry)
         self._timeout = timeout
+
+    @property
+    def _registry(self) -> dict[str, VaultEndpoint]:
+        return self._directory.endpoints() if self._directory is not None else self._static
+
+    def vault_ids(self) -> list[str]:
+        return sorted(self._registry)
+
+    def vault_name(self, vault: str) -> str | None:
+        entry = self._registry.get(vault)
+        return entry.app_name if entry else None
 
     def _transport(self, vault: str, operation: str, args: dict[str, Any], deadline: float | None = None) -> dict[str, Any]:
         if deadline is None:
@@ -294,6 +384,20 @@ class BridgeClient:
         if result["status"] == "committed":
             return {**result["result"], "receipt": receipt, "status": "committed"}
         return {"receipt": receipt, "status": result["status"]}
+
+    def app_vaults(self, vault: str) -> dict[str, Any]:
+        """Every vault the desktop app knows about, asked through one running vault."""
+        return self._call(vault, "vaults", {})
+
+    def open_vault(self, vault: str, name: str) -> dict[str, Any]:
+        if not isinstance(name, str) or not VAULT_NAME_RE.fullmatch(name):
+            raise BridgeError("invalid_request")
+        return self._call(vault, "open_vault", {"name": name})
+
+    def create_vault(self, vault: str, name: str) -> dict[str, Any]:
+        if not isinstance(name, str) or not VAULT_NAME_RE.fullmatch(name):
+            raise BridgeError("invalid_request")
+        return self._call(vault, "create_vault", {"name": name})
 
     def resolve_embed(self, vault: str, source: str, target: str) -> dict[str, Any]:
         return self._call(vault, "embed", {"source": source, "target": target})

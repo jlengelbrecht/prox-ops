@@ -42,10 +42,31 @@ class BridgeFixture:
         image.save(stream, "PNG")
         self.image = stream.getvalue()
 
+    def vault_ids(self):
+        return sorted(self.notes)
+
+    def vault_name(self, vault):
+        return {"iam": "IAM Team", "homelab": "Homelab"}.get(vault)
+
     def ready(self, vault, *, deadline=None):
         if vault in self.closed:
             raise BridgeError("unavailable")
-        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed"]}
+        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed"]
+                + list(getattr(self, "extra_capabilities", []))}
+
+    def app_vaults(self, vault):
+        self.calls.append((vault, "vaults"))
+        return {"vaults": [{"name": "IAM Team", "open": True}, {"name": "Archive", "open": False}]}
+
+    def open_vault(self, vault, name):
+        self.calls.append((vault, "open_vault", name))
+        return {"name": name, "opened": True}
+
+    def create_vault(self, vault, name):
+        if name == "Exists":
+            raise BridgeError("conflict")
+        self.calls.append((vault, "create_vault", name))
+        return {"name": name, "created": True}
 
     def list_entries(self, vault, prefix="", limit=1000):
         self.ready(vault)
@@ -573,65 +594,51 @@ class ExecutionBoundTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RegistryBoundsTests(unittest.TestCase):
-    def test_rejects_over_limit_and_malformed_registry(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "registry.json"
-            base = {"clients": {}, "owner": {"check_url": "fixture", "origin": "fixture",
-                                               "owner_ids": []}}
-            for vaults in ({f"v{index}": {} for index in range(_MAX_VAULTS + 1)},
-                           {"iam": []}):
-                path.write_text(json.dumps({**base, "vaults": vaults}))
-                with (patch.dict(os.environ, {"OBSIDIAN_GATEWAY_REGISTRY": str(path)}),
-                      patch("gateway.os.statvfs", return_value=type("Stat", (),
-                             {"f_flag": os.ST_RDONLY})())):
-                    with self.assertRaisesRegex(ValueError, "vault"):
-                        create_gateway_from_env()
-
-    def test_registry_rejects_oversize_and_invalid_arrays_before_factory(self):
+    def test_registry_rejects_oversize_and_invalid_fields_before_factory(self):
         valid = {
-            "vaults": {"iam": {"app_name": "IAM", "app_root": "/vault/iam",
-                               "socket_path": "/run/bridge/iam/iam.sock",
-                               "credential_file": "/run/bridge/iam/credential",
-                               "owner_ids": ["owner"]}},
-            "clients": {name: {"iam": ["read_note"]} for name in TOKENS},
+            "version": 2,
+            "clients": sorted(TOKENS),
             "owner": {"check_url": "http://auth.security.svc.cluster.local/outpost.goauthentik.io/auth/nginx",
                       "origin": "https://approval.example.test", "owner_ids": ["owner"]},
         }
         bad = []
-        for section in ("owner", "vaults"):
-            for values in ("owner", [], ["owner", "owner"], [""], [1], ["x" * 129],
-                           [f"o{i}" for i in range(33)]):
-                item = json.loads(json.dumps(valid))
-                target = item["owner"] if section == "owner" else item["vaults"]["iam"]
-                target["owner_ids"] = values
-                bad.append(item)
-        for values in ("read_note", [], ["read_note", "read_note"], [1], [""],
-                       ["read_note"] * 33):
+        for values in ("owner", [], [""], [1], ["x" * 129], [f"o{i}" for i in range(17)]):
             item = json.loads(json.dumps(valid))
-            item["clients"]["codex"]["iam"] = values
+            item["owner"]["owner_ids"] = values
             bad.append(item)
-        for section, key in (("vaults", "app_name"), ("owner", "origin")):
-            item = json.loads(json.dumps(valid))
-            target = item["vaults"]["iam"] if section == "vaults" else item["owner"]
-            target[key] = "x" * 1025
-            bad.append(item)
+        for clients in ([], ["codex"], sorted(TOKENS) + ["extra"], {"codex": {}}):
+            bad.append({**json.loads(json.dumps(valid)), "clients": clients})
+        bad.append({**json.loads(json.dumps(valid)), "version": 1})
+        bad.append({**json.loads(json.dumps(valid)), "vaults": {}})
+        item = json.loads(json.dumps(valid))
+        item["owner"]["origin"] = "x" * 1025
+        bad.append(item)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "registry.json"
-            with (patch.dict(os.environ, {"OBSIDIAN_GATEWAY_REGISTRY": str(path),
-                                         **{f"OBSIDIAN_MCP_TOKEN_{name.upper()}": token
-                                            for name, token in TOKENS.items()}}),
+            environment = {"OBSIDIAN_GATEWAY_REGISTRY": str(path), "OBSIDIAN_BRIDGE_DIR": directory,
+                           "OBSIDIAN_BRIDGE_VAULT_PARENT": "/config",
+                           **{f"OBSIDIAN_MCP_TOKEN_{name.upper()}": token for name, token in TOKENS.items()}}
+            with (patch.dict(os.environ, environment),
                   patch("gateway.os.statvfs", return_value=type("Stat", (),
                          {"f_flag": os.ST_RDONLY})()),
                   patch("gateway.create_gateway", return_value="accepted") as factory):
                 path.write_text(json.dumps(valid))
                 self.assertEqual(create_gateway_from_env(), "accepted")
                 self.assertEqual(factory.call_count, 1)
+                bridge, _credentials, grants, _auth, enrollments = factory.call_args.args
+                self.assertEqual(set(grants), set(TOKENS))
+                self.assertEqual(dict(grants["codex"]), {})
                 for item in bad:
                     path.write_text(json.dumps(item))
                     with self.subTest(item=item), self.assertRaises(ValueError):
                         create_gateway_from_env()
                 path.write_bytes(b" " * (_MAX_REGISTRY_BYTES + 1))
                 with self.assertRaisesRegex(ValueError, "size"):
+                    create_gateway_from_env()
+            with patch.dict(os.environ, {**environment, "OBSIDIAN_BRIDGE_DIR": ""}), \
+                    patch("gateway.os.statvfs", return_value=type("Stat", (), {"f_flag": os.ST_RDONLY})()):
+                path.write_text(json.dumps(valid))
+                with self.assertRaisesRegex(ValueError, "runtime"):
                     create_gateway_from_env()
                 self.assertEqual(factory.call_count, 1)
 

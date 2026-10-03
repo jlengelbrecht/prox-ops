@@ -88,9 +88,16 @@ def operation(vault, op, args):
     if op == 'health':
         return None, {'protocol': 1, 'vault': vault,
                       'app_name': 'IAM Team' if vault == 'iam' else 'Homelab',
-                      'app_root': '/vaults/' + vault,
+                      'app_root': '/vaults/' + ('IAM Team' if vault == 'iam' else 'Homelab'),
                       'capabilities': ['health', 'list', 'read', 'search', 'create', 'append', 'embed',
-                                       'reserve', 'receipt']}
+                                       'reserve', 'receipt', 'vaults', 'open_vault', 'create_vault']}
+    if op == 'vaults':
+        return None, {'vaults': [{'name': 'IAM Team', 'open': True}, {'name': 'Homelab', 'open': True},
+                                 {'name': 'Archive', 'open': False}]}
+    if op == 'create_vault':
+        return None, {'name': args.get('name'), 'created': True}
+    if op == 'open_vault':
+        return None, {'name': args.get('name'), 'opened': True}
     if op == 'list':
         return None, {'entries': [{'path': path, 'kind': 'file'} for path in sorted(store)]}
     if op == 'search':
@@ -227,29 +234,32 @@ async def run():
     phase('app_peer_tools')
     expected = {'list_vaults', 'list_entries', 'read_note', 'search_notes',
                 'create_note', 'append_note', 'mutation_receipt', 'read_embedded_image',
-                'read_note_with_images'}
-    for client_name, vault in (('codex', 'iam'), ('claude', 'homelab'),
-                               ('opencode', 'iam'), ('antigravity', 'homelab')):
+                'read_note_with_images', 'list_all_vaults', 'open_vault', 'create_vault'}
+    discovered = [{'id': 'homelab', 'name': 'Homelab'}, {'id': 'iam', 'name': 'IAM Team'}]
+    for client_name in ('codex', 'claude', 'opencode', 'antigravity'):
         async with Client(URL, auth=TOKENS[client_name]) as client:
             assert {tool.name for tool in await client.list_tools()} == expected
-            assert body(await client.call_tool('list_vaults')) == {'vaults': [vault]}
-            own = body(await client.call_tool('read_note', {
-                'vault': vault, 'path': 'Owners/owner.md'}))
-            assert own['content'] == '# ' + vault + ' owner\n'
-            foreign = 'homelab' if vault == 'iam' else 'iam'
+            listed = body(await client.call_tool('list_vaults'))['vaults']
+            assert sorted(listed, key=lambda item: item['id']) == discovered
+            for vault in ('iam', 'homelab'):
+                own = body(await client.call_tool('read_note', {
+                    'vault': vault, 'path': 'Owners/owner.md'}))
+                assert own['content'] == '# ' + vault + ' owner\n'
             for tool, arguments in (
                 ('read_note', {'path': 'Owners/owner.md'}),
-                ('create_note', {'path': 'Smoke/foreign.md', 'content': 'forbidden'}),
-                ('append_note', {'path': 'Owners/owner.md', 'content': 'forbidden',
-                                 'expected_revision': own['revision']}),
+                ('create_note', {'path': 'Smoke/unknown.md', 'content': 'forbidden'}),
             ):
-                denied = await client.call_tool(tool, {'vault': foreign, **arguments},
+                denied = await client.call_tool(tool, {'vault': 'unregistered', **arguments},
                                                 raise_on_error=False)
                 assert denied.is_error
                 assert TOKENS[client_name] not in str(denied.content)
-            assert (await client.call_tool('read_note', {
-                'vault': foreign, 'path': 'Smoke/foreign.md'},
-                raise_on_error=False)).is_error
+            known = body(await client.call_tool('list_all_vaults'))['vaults']
+            assert {item['name']: item['id'] for item in known} == {
+                'IAM Team': 'iam', 'Homelab': 'homelab', 'Archive': None}
+            assert body(await client.call_tool('create_vault', {'name': 'Scratch'})) == {
+                'name': 'Scratch', 'created': True}
+            assert (await client.call_tool('create_vault', {'name': '../escape'},
+                                           raise_on_error=False)).is_error
 
     phase('exact_mutations')
     async with Client(URL, auth=TOKENS['codex']) as client:
@@ -314,11 +324,10 @@ asyncio.run(run())
 '''
 
 PEER_READY = (
-    "import json; from pathlib import Path; from bridge import BridgeClient,VaultEndpoint; "
-    "d=json.loads(Path('/etc/obsidian-mcp/registry.json').read_text()); "
-    "e={k:VaultEndpoint(k,v['app_name'],Path(v['app_root']),Path(v['socket_path']),"
-    "Path(v['credential_file'])) for k,v in d['vaults'].items()}; "
-    "c=BridgeClient(e); assert all(c.ready(k)['vault']==k for k in ('iam','homelab'))"
+    "from pathlib import Path; from bridge import BridgeClient,VaultDirectory; "
+    "c=BridgeClient(VaultDirectory(Path('/run/obsidian-bridge'))); "
+    "assert c.vault_ids()==['homelab','iam']; "
+    "assert all(c.ready(k)['vault']==k for k in ('iam','homelab'))"
 )
 
 
@@ -390,20 +399,20 @@ def main():
             credential = directory / 'credential'
             credential.write_text(secrets.token_urlsafe(32))
             credential.chmod(0o600)
+            # What the bridge plugin writes when its vault window loads.
+            endpoint = directory / 'endpoint.json'
+            endpoint.write_text(json.dumps({'version': 1, 'vault_id': vault,
+                                            'app_name': 'IAM Team' if vault == 'iam' else 'Homelab',
+                                            'app_root': '/vaults/' + ('IAM Team' if vault == 'iam' else 'Homelab')}))
+            endpoint.chmod(0o600)
             (vaults / vault).mkdir(mode=0o700)
         registry_dir = root / 'registry'
         registry_dir.mkdir(mode=0o755)
         registry = registry_dir / 'registry.json'
-        verbs = ['list_notes', 'read_note', 'search', 'create_note', 'append_note', 'read_media']
-        grants = {'codex': 'iam', 'claude': 'homelab',
-                  'opencode': 'iam', 'antigravity': 'homelab'}
+        grants = ['codex', 'claude', 'opencode', 'antigravity']
         registry.write_text(json.dumps({
-            'vaults': {vault: {'app_name': 'IAM Team' if vault == 'iam' else 'Homelab',
-                               'app_root': '/vaults/' + vault,
-                               'socket_path': '/run/obsidian-bridge/' + vault + '/' + vault + '.sock',
-                               'credential_file': '/run/obsidian-bridge/' + vault + '/credential',
-                               'owner_ids': ['owner-uid']} for vault in ('iam', 'homelab')},
-            'clients': {client: {vault: verbs} for client, vault in grants.items()},
+            'version': 2,
+            'clients': grants,
             'owner': {'check_url': 'http://authentik.security.svc.cluster.local:9000/outpost.goauthentik.io/auth/nginx',
                       'origin': 'https://approval.example.test', 'owner_ids': ['owner-uid']},
         }))
@@ -430,7 +439,9 @@ def main():
                        '--mount', f'type=bind,src={vaults / "homelab"},dst=/vaults/homelab,readonly',
                        '--mount', f'type=bind,src={peer},dst=/fixture/app_peer.py,readonly',
                        '--env-file', str(tokens),
-                       '-e', 'OBSIDIAN_GATEWAY_REGISTRY=/etc/obsidian-mcp/registry.json', args.image]
+                       '-e', 'OBSIDIAN_GATEWAY_REGISTRY=/etc/obsidian-mcp/registry.json',
+                       '-e', 'OBSIDIAN_BRIDGE_DIR=/run/obsidian-bridge',
+                       '-e', 'OBSIDIAN_BRIDGE_VAULT_PARENT=/vaults', args.image]
             # Bind-mounted runtime files and vault roots belong to the app UID, as in the pod.
             owner = docker('run', '--rm', '--network', 'none', '--user', '0:0',
                            '--mount', f'type=bind,src={runtime},dst=/fixture/runtime',
