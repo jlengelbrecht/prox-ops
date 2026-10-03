@@ -263,6 +263,63 @@ function redacted(value, depth = 0) {
   if (typeof value === 'string') return scrub(value.length > 2000 ? `${value.slice(0, 2000)}...` : value);
   return value;
 }
+function pluginRecord(app, root, id) {
+  // State an approval covers: install, enabled flag, version and the installed bytes' digest.
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id)) fail('invalid_request');
+  const manifests = (app.plugins && app.plugins.manifests) || {};
+  const manifest = manifests[id];
+  const enabled = app.plugins && app.plugins.enabledPlugins instanceof Set && app.plugins.enabledPlugins.has(id);
+  if (!manifest) return { plugin_id: id, installed: false, enabled: false, version: '', digest: '' };
+  const hash = crypto.createHash('sha256');
+  for (const name of ['manifest.json', 'main.js', 'styles.css']) {
+    const file = path.join(root, '.obsidian', 'plugins', id, name);
+    try {
+      const stat = fs.lstatSync(file);
+      if (stat.isFile()) hash.update(`${name}\u0000`).update(fs.readFileSync(file));
+    } catch { /* optional file */ }
+  }
+  return { plugin_id: id, installed: true, enabled: Boolean(enabled), version: String(manifest.version || ''), digest: hash.digest('hex') };
+}
+function settingTarget(root, settingId) {
+  // "<file>.<key>": a top-level key in app.json, appearance.json or a plugin's data.json.
+  const match = /^(app|appearance|plugin:[a-z0-9][a-z0-9_-]{0,63})\.([A-Za-z_][A-Za-z0-9_-]{0,127})$/i.exec(settingId || '');
+  if (!match) fail('invalid_request');
+  const [, file, key] = match;
+  if (key.toLowerCase() !== 'key' && SECRET_KEY.test(key)) fail('invalid_request');
+  if (['__proto__', 'constructor', 'prototype'].includes(key)) fail('invalid_request');
+  // The bridge's own settings and anything that loads code or lifts restrictions stay with the owner.
+  if (file.toLowerCase() === `plugin:${PLUGIN_ID}`) fail('invalid_request');
+  if (!file.startsWith('plugin:') && /(plugin|snippet|safe|restrict)/i.test(key)) fail('invalid_request');
+  const relative = file.startsWith('plugin:') ? `plugins/${file.slice(7)}/data.json` : `${file}.json`;
+  return { file, key, filename: path.join(root, '.obsidian', relative), plugin: file.startsWith('plugin:') ? file.slice(7) : null };
+}
+function readSettingFile(root, filename) {
+  const directory = path.dirname(filename);
+  try {
+    if (fs.realpathSync(directory) !== directory) fail('invalid_path');
+  } catch (error) { if (error instanceof BridgeError) throw error; fail('not_found'); }
+  let descriptor;
+  try { descriptor = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); }
+  catch (error) { if (error && error.code === 'ENOENT') return { raw: '', data: {} }; fail('invalid_path'); }
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > MAX_NOTE) fail('invalid_path');
+    const raw = fs.readFileSync(descriptor, 'utf8');
+    let data;
+    try { data = JSON.parse(raw); } catch { fail('conflict'); }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) fail('conflict');
+    return { raw, data };
+  } finally { fs.closeSync(descriptor); }
+}
+function settingState(root, settingId) {
+  const target = settingTarget(root, settingId);
+  const { raw, data } = readSettingFile(root, target.filename);
+  const value = Object.hasOwn(data, target.key) ? data[target.key] : null;
+  const shown = value === null || ['string', 'number', 'boolean'].includes(typeof value) ? value : '[complex value]';
+  return { setting_id: settingId, value: typeof shown === 'string' ? scrub(shown).slice(0, 2000) : shown,
+    revision: revision(raw) };
+}
+
 function installedPlugins(app) {
   const plugins = app.plugins || {};
   const manifests = plugins.manifests || {};
@@ -336,7 +393,8 @@ async function execute(app, config, op, args, markStarted = () => {}) {
     return { protocol: VERSION, vault: config.id, app_name: vault.getName(), app_root: root,
       capabilities: ['health', 'list', 'read', 'search', 'create', 'append', 'embed', 'reserve', 'receipt',
         'vaults', 'open_vault', 'create_vault', 'state', 'mkdir', 'move', 'replace', 'trash',
-        'logs', 'plugins', 'settings'] };
+        'logs', 'plugins', 'settings', 'plugin_state', 'plugin_set', 'plugin_remove',
+        'setting_state', 'setting_write'] };
   }
   if (op === 'list') {
     argument(args, ['prefix', 'limit']);
@@ -485,6 +543,67 @@ async function execute(app, config, op, args, markStarted = () => {}) {
       try { parsed = JSON.parse(fs.readFileSync(descriptor, 'utf8')); } catch { fail('invalid_request'); }
     } finally { fs.closeSync(descriptor); }
     return { file: args.file, settings: redacted(parsed) };
+  }
+  if (op === 'plugin_state') {
+    argument(args, ['plugin_id']);
+    return pluginRecord(app, root, args.plugin_id);
+  }
+  if (op === 'plugin_set' || op === 'plugin_remove') {
+    argument(args, op === 'plugin_set' ? ['plugin_id', 'enabled', 'expected_digest'] : ['plugin_id', 'expected_digest']);
+    if (args.plugin_id === PLUGIN_ID) fail('invalid_request');
+    const current = pluginRecord(app, root, args.plugin_id);
+    if (!current.installed) fail('not_found');
+    if (`${current.enabled}:${current.digest}` !== args.expected_digest) fail('conflict');
+    const plugins = app.plugins;
+    markStarted();
+    if (op === 'plugin_set') {
+      if (typeof args.enabled !== 'boolean') fail('invalid_request');
+      if (args.enabled) await plugins.enablePluginAndSave(args.plugin_id);
+      else await plugins.disablePluginAndSave(args.plugin_id);
+      return { plugin_id: args.plugin_id, enabled: pluginRecord(app, root, args.plugin_id).enabled };
+    }
+    await plugins.uninstallPlugin(args.plugin_id);
+    if (pluginRecord(app, root, args.plugin_id).installed) fail('conflict');
+    return { plugin_id: args.plugin_id, removed: true };
+  }
+  if (op === 'setting_state') {
+    argument(args, ['setting_id']);
+    return settingState(root, args.setting_id);
+  }
+  if (op === 'setting_write') {
+    argument(args, ['setting_id', 'value', 'expected_revision']);
+    if (!['string', 'number', 'boolean'].includes(typeof args.value) ||
+        (typeof args.value === 'string' && Buffer.byteLength(args.value) > 4096) ||
+        (typeof args.value === 'number' && !Number.isFinite(args.value))) fail('invalid_request');
+    const target = settingTarget(root, args.setting_id);
+    verifyRoot(app, config);
+    const { raw, data } = readSettingFile(root, target.filename);
+    if (revision(raw) !== args.expected_revision) fail('conflict');
+    markStarted();
+    if (!target.plugin) {
+      // Obsidian's own config API keeps the running app and app.json/appearance.json in step.
+      app.vault.setConfig(target.key, args.value);
+      if (typeof app.vault.saveConfig === 'function') await app.vault.saveConfig();
+      if (typeof app.vault.getConfig === 'function' && app.vault.getConfig(target.key) !== args.value) fail('conflict');
+    } else {
+      if (!fs.existsSync(path.dirname(target.filename))) fail('not_found');
+      const plugins = app.plugins;
+      const running = Boolean(plugins && plugins.enabledPlugins instanceof Set && plugins.enabledPlugins.has(target.plugin));
+      // Stop the plugin first so its own save on unload cannot overwrite the approved value.
+      if (running) await plugins.disablePlugin(target.plugin);
+      try {
+        let mode = 0o644;
+        try { mode = fs.statSync(target.filename).mode & 0o777; } catch { /* new file */ }
+        const latest = readSettingFile(root, target.filename);
+        writePrivate(target.filename, JSON.stringify({ ...latest.data, [target.key]: args.value }, null, 2));
+        fs.chmodSync(target.filename, mode);
+      } finally {
+        // Never leave the owner's plugin switched off because a write failed.
+        if (running) await plugins.enablePlugin(target.plugin);
+      }
+      if (readSettingFile(root, target.filename).data[target.key] !== args.value) fail('conflict');
+    }
+    return { setting_id: args.setting_id, written: true };
   }
   if (op === 'state') {
     argument(args, ['path']);

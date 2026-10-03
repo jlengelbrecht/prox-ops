@@ -51,7 +51,7 @@ class BridgeFixture:
     def ready(self, vault, *, deadline=None):
         if vault in self.closed:
             raise BridgeError("unavailable")
-        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed", "replace", "trash", "mkdir", "move", "logs"]
+        return {"capabilities": ["health", "list", "read", "search", "create", "append", "embed", "replace", "trash", "mkdir", "move", "logs", "plugin_set", "plugin_remove", "setting_write"]
                 + list(getattr(self, "extra_capabilities", []))}
 
     @staticmethod
@@ -106,6 +106,37 @@ class BridgeFixture:
         if file != "app":
             raise BridgeError("not_found")
         return {"file": file, "settings": {"alwaysUpdateLinks": True}}
+
+    plugin_enabled = True
+    setting_value = False
+
+    def plugin_state(self, vault, plugin_id):
+        if plugin_id != "calendar":
+            return {"plugin_id": plugin_id, "installed": False, "enabled": False, "version": "", "digest": ""}
+        return {"plugin_id": plugin_id, "installed": True, "enabled": self.plugin_enabled, "version": "2.0",
+                "digest": "c" * 64}
+
+    def set_plugin(self, vault, plugin_id, enabled, expected):
+        if expected != f"{'true' if self.plugin_enabled else 'false'}:{'c' * 64}":
+            raise BridgeError("conflict")
+        self.calls.append((vault, "plugin_set", plugin_id, enabled))
+        self.plugin_enabled = enabled
+        return {"plugin_id": plugin_id, "enabled": enabled}
+
+    def remove_plugin(self, vault, plugin_id, expected):
+        self.calls.append((vault, "plugin_remove", plugin_id))
+        return {"plugin_id": plugin_id, "removed": True}
+
+    def setting_state(self, vault, setting_id):
+        return {"setting_id": setting_id, "value": self.setting_value,
+                "revision": self._rev(json.dumps(self.setting_value))}
+
+    def write_setting(self, vault, setting_id, value, expected_revision):
+        if expected_revision != self._rev(json.dumps(self.setting_value)):
+            raise BridgeError("conflict")
+        self.calls.append((vault, "setting_write", setting_id, value))
+        self.setting_value = value
+        return {"setting_id": setting_id, "written": True}
 
     def app_vaults(self, vault):
         self.calls.append((vault, "vaults"))

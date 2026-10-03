@@ -422,6 +422,32 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                                                     raise_on_error=False)
                 self.assertTrue(wrong_kind.is_error)
 
+    async def test_plugin_and_setting_changes_need_owner_approval(self):
+        guarded = frozenset({"plugin_enable", "plugin_disable", "plugin_uninstall", "set_setting"})
+        app = create_gateway(self.bridge, TOKENS, {name: {"iam": SAFE | guarded} for name in TOKENS}, self.auth,
+                             {"iam": VaultEnrollment(frozenset({"owner"}), {})},
+                             destructive_adapter=BridgeAdapter(self.bridge), destructive_verbs=guarded)
+        async with running(app) as url:
+            async with Client(url + "/mcp", auth=TOKENS["codex"]) as client:
+                disable = {"vault": "iam", "verb": "plugin_disable", "arguments": {"plugin_id": "calendar"}}
+                pending = (await client.call_tool("prepare_action", disable)).structured_content
+                page = await self._approve(url, pending)
+                self.assertIn("Disable the community plugin calendar (version 2.0, currently enabled)", page)
+                self.assertFalse((await client.call_tool("commit_action", {**disable, "pending_id": pending["id"]})).is_error)
+                self.assertFalse(self.bridge.plugin_enabled)
+                missing = await client.call_tool("prepare_action", {"vault": "iam", "verb": "plugin_uninstall",
+                                                                    "arguments": {"plugin_id": "nope"}}, raise_on_error=False)
+                self.assertTrue(missing.is_error)
+                setting = {"vault": "iam", "verb": "set_setting",
+                           "arguments": {"setting_id": "app.alwaysUpdateLinks", "value": True}}
+                pending = (await client.call_tool("prepare_action", setting)).structured_content
+                page = await self._approve(url, pending)
+                self.assertIn("Change the setting alwaysUpdateLinks in app of vault iam from false to true.", page)
+                self.bridge.setting_value = "changed elsewhere"
+                stale = await client.call_tool("commit_action", {**setting, "pending_id": pending["id"]}, raise_on_error=False)
+                self.assertTrue(stale.is_error)
+                self.assertEqual(self.bridge.setting_value, "changed elsewhere")
+
     async def test_diagnostic_tools_over_http(self):
         app = create_gateway(self.bridge, TOKENS, {name: {"iam": SAFE | {"diagnostics"}} for name in TOKENS},
                              self.auth, {"iam": VaultEnrollment(frozenset({"owner"}), {})})
