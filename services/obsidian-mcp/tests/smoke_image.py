@@ -417,8 +417,11 @@ def main():
         tokens.chmod(0o600)
         started = False
         try:
+            user = docker('image', 'inspect', '-f', '{{.Config.User}}', args.image)
+            if user.returncode or user.stdout.strip() != '1000:1000':
+                raise RuntimeError('image does not run as 1000:1000')
             command = ['run', '-d', '--name', name, '--read-only', '--network', 'none',
-                       '--user', '1000:1000', '--cap-drop', 'ALL',
+                       '--cap-drop', 'ALL',
                        '--security-opt', 'no-new-privileges',
                        '--mount', f'type=bind,src={registry_dir},dst=/etc/obsidian-mcp,readonly',
                        '--mount', f'type=bind,src={runtime},dst=/run/obsidian-bridge',
@@ -471,6 +474,14 @@ def main():
             except (OSError, RuntimeError, subprocess.TimeoutExpired):
                 if not failed:
                     raise
+            finally:
+                # Hand the runtime tree back to the invoking user so the temporary
+                # directory can be removed when that user is not UID 1000.
+                docker('run', '--rm', '--network', 'none', '--user', '0:0',
+                       '--mount', f'type=bind,src={runtime},dst=/fixture/runtime',
+                       '--entrypoint', 'python', args.image, '-c',
+                       "import os; from pathlib import Path; p=Path('/fixture/runtime'); "
+                       f"[os.lchown(str(x),{os.getuid()},{os.getgid()}) for x in [p,*p.rglob('*')]]")
 
 
 if __name__ == '__main__':
