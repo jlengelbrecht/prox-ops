@@ -31,6 +31,10 @@ spec:
         # RWO Ceph RBD volume: RollingUpdate would deadlock on
         # Multi-Attach when the new pod lands on another node.
         strategy: Recreate
+        annotations:
+          # Roll the pod when the MCP client tokens or vault registry change;
+          # the gateway reads both only at startup.
+          reloader.stakater.com/auto: "true"
         pod:
           automountServiceAccountToken: false
           hostNetwork: false
