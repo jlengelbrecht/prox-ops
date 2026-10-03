@@ -226,7 +226,8 @@ async def run():
 
     phase('app_peer_tools')
     expected = {'list_vaults', 'list_entries', 'read_note', 'search_notes',
-                'create_note', 'append_note', 'mutation_receipt', 'read_embedded_image'}
+                'create_note', 'append_note', 'mutation_receipt', 'read_embedded_image',
+                'read_note_with_images'}
     for client_name, vault in (('codex', 'iam'), ('claude', 'homelab'),
                                ('opencode', 'iam'), ('antigravity', 'homelab')):
         async with Client(URL, auth=TOKENS[client_name]) as client:

@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
 from typing import Mapping
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -46,7 +46,7 @@ _SAFE_CAPABILITIES = {
 _TOOL_VERBS = {
     "list_entries": "list_notes", "read_note": "read_note", "search_notes": "search",
     "create_note": "create_note", "append_note": "append_note",
-    "read_embedded_image": "read_media",
+    "read_embedded_image": "read_media", "read_note_with_images": "read_media",
 }
 _MEDIA_MIME = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
 _MAX_IMAGE_BYTES = 512 * 1024
@@ -393,6 +393,81 @@ def _image_content(bridge: BridgeClient, vault: str, source: str, target: str) -
                                             mimeType="image/png")])
 
 
+def _embed_targets(text: str) -> list[str]:
+    """Local image embeds in reading order: ![[target|...]] and ![alt](target "title").
+
+    A bounded str.find scan instead of a regex, so hostile notes cannot cause backtracking.
+    """
+    targets = []
+    index = text.find("![")
+    while index != -1 and len(targets) < _MAX_EMBEDS:
+        target = None
+        if text.startswith("![[", index):
+            close = text.find("]]", index + 3, index + 3 + 1100)
+            if close != -1:
+                inner = text[index + 3:close]
+                target = re.split(r"[|#]", inner, maxsplit=1)[0]
+        else:
+            middle = text.find("](", index + 2, index + 2 + 520)
+            if middle != -1:
+                close = text.find(")", middle + 2, middle + 2 + 1100)
+                if close != -1:
+                    inner = text[middle + 2:close].strip()
+                    inner = inner.split(" ", 1)[0].strip("<>")
+                    target = unquote(inner)
+        if target is not None:
+            target = target.strip()
+            if ("\n" not in target and "://" not in target and 0 < len(target) <= 512
+                    and _EMBED_IMAGE.search(target)):
+                targets.append(target)
+        index = text.find("![", index + 2)
+    return targets
+
+
+_MAX_EMBEDS = 1000
+_EMBED_IMAGE = re.compile(r"\.(?:png|jpe?g|webp|gif)$", re.IGNORECASE)
+_PAGE_IMAGES = 10
+_PAGE_IMAGE_BUDGET = 6 * 1024 * 1024
+
+
+def _note_with_images(bridge: BridgeClient, vault: str, path: str, start: int,
+                      limit: int) -> ToolResult:
+    """The note text plus one page of its local image embeds, in reading order."""
+    note = bridge.read_note(vault, path)
+    targets = _embed_targets(note["content"])
+    total = len(targets)
+    content = []
+    if start == 0:
+        content.append(TextContent(type="text", text=note["content"]))
+    shown = 0
+    budget = _PAGE_IMAGE_BUDGET
+    index = start
+    while index < total and shown < limit:
+        target = targets[index]
+        try:
+            image = _image_content(bridge, vault, path, target)
+            size = len(image.content[1].data)
+        except (ToolError, BridgeError, ValueError, TypeError, KeyError,
+                UnidentifiedImageError, OSError, Image.DecompressionBombWarning):
+            content.append(TextContent(type="text", text=f"Image {index + 1} of {total}: {target[:128]} (unavailable)"))
+        else:
+            if shown and size > budget:
+                break
+            budget -= size
+            content.append(TextContent(type="text", text=f"Image {index + 1} of {total}: {target[:128]}"))
+            content.append(image.content[1])
+        shown += 1
+        index += 1
+    summary = {"vault": vault, "path": note["path"], "revision": note["revision"],
+               "images_total": total, "images_start": start, "images_returned": index - start,
+               "next_start": index if index < total else None}
+    content.insert(0, TextContent(type="text", text=(
+        f"Note {note['path']} in {vault}: {total} embedded images; this page has images "
+        f"{start + 1 if index > start else 0}-{index}."
+        + (f" Call again with start={index} for the rest." if index < total else ""))))
+    return ToolResult(content=content, structured_content=summary)
+
+
 def _page(view, nonce: str) -> str:
     def escaped(value: object) -> str:
         return html.escape(str(value), quote=True)
@@ -548,6 +623,23 @@ def create_gateway(
             return await execution.run(bridge.mutation_receipt, vault, operation, mutation,
                                        receipt, context.client_id, deadline=deadline, vault=vault)
         except BridgeError:
+            raise ToolError("Tool request failed") from None
+
+    @mcp.tool
+    async def read_note_with_images(vault: str, path: str, start: int = 0,
+                                    limit: int = _PAGE_IMAGES) -> ToolResult:
+        """Read a note and its embedded local images in reading order. Images come in pages:
+        the first call returns the text and up to `limit` images; use `next_start` for more."""
+        if not 0 <= start <= 10_000 or not 1 <= limit <= _PAGE_IMAGES:
+            raise ToolError("Tool request failed")
+        deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+        context = agent()
+        await permitted(context, vault, "read_note", deadline)
+        await permitted(context, vault, "read_media", deadline)
+        try:
+            return await execution.run(_note_with_images, bridge, vault, path, start, limit,
+                                       deadline=deadline)
+        except (BridgeError, ValueError, TypeError, KeyError):
             raise ToolError("Tool request failed") from None
 
     @mcp.tool
