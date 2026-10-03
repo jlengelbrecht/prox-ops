@@ -51,6 +51,8 @@ net.createServer = function(handler) {
 };
 net.createConnection = function(filename) {
   const client = new EventEmitter();
+  client.setTimeout = () => {};
+  client.destroy = () => {};
   const handler = listeners.get(filename);
   if (!handler) { process.nextTick(() => client.emit('error', Error('unavailable'))); return client; }
   const remote = new EventEmitter();
@@ -65,11 +67,10 @@ net.createConnection = function(filename) {
 }
 
 if (REAL_IPC) test('real private AF_UNIX plugin to Python adapter, two vaults and auth isolation', async () => {
-  const a = fixture('iam', 'IAM Team');
-  const b = fixture('homelab', 'Homelab', a.home);
+  const a = fixture('IAM');
+  const b = fixture('Homelab', a.home);
   let first, second;
   try {
-    assert.notEqual(a.config.testToken, b.config.testToken);
     a.add('Private/note.md', 'from iam');
     b.add('Private/note.md', 'from homelab');
     const createBinary = a.vault.createBinary.bind(a.vault);
@@ -87,10 +88,13 @@ if (REAL_IPC) test('real private AF_UNIX plugin to Python adapter, two vaults an
     first = await start(a); second = await start(b);
     assert.ok(first.bridgeServer, 'real AF_UNIX bind failed for iam');
     assert.ok(second.bridgeServer, 'real AF_UNIX bind failed for homelab');
+    assert.equal(a.config.vault_id, 'iam');
+    assert.equal(b.config.vault_id, 'homelab');
+    assert.notEqual(a.config.testToken, b.config.testToken);
+    assert.equal(fs.statSync(a.runtime).mode & 0o777, 0o700);
     for (const f of [a, b]) {
-      assert.equal(fs.statSync(f.registry).mode & 0o777, 0o700);
-      assert.equal(fs.statSync(f.runtime).mode & 0o777, 0o700);
-      assert.equal(fs.statSync(f.registryFile).mode & 0o777, 0o600);
+      assert.equal(fs.statSync(path.dirname(f.config.socket)).mode & 0o777, 0o700);
+      assert.equal(fs.statSync(f.config.endpoint_file).mode & 0o777, 0o600);
       assert.equal(fs.statSync(f.config.credential_file).mode & 0o777, 0o600);
       assert.equal(fs.existsSync(f.config.socket), false);
     }
@@ -116,6 +120,8 @@ if (REAL_IPC) test('real private AF_UNIX plugin to Python adapter, two vaults an
     await new Promise((resolve, reject) => { foreign.once('error', reject); foreign.listen(a.config.socket, resolve); });
     try {
       await first.onunload(); first = null;
+      assert.equal(fs.existsSync(a.config.endpoint_file), false);
+      assert.equal(fs.existsSync(a.config.credential_file), false);
       assert.equal(fs.lstatSync(a.config.socket).isSocket(), true);
       const answer = await new Promise((resolve, reject) => {
         const connection = net.createConnection(a.config.socket);
@@ -140,31 +146,39 @@ class FileSystemAdapter {
 }
 class TFile { constructor(filePath, size) { this.path = filePath; this.stat = { size }; } }
 class TFolder { constructor(filePath) { this.path = filePath; } }
+// Obsidian's renderer: vault-open over ipcRenderer, trust flags in the shared localStorage.
+const ipcCalls = [];
+let onVaultOpen = null;
+const electron = { ipcRenderer: { sendSync(channel, ...args) {
+  ipcCalls.push([channel, ...args]);
+  if (onVaultOpen) onVaultOpen(channel, ...args);
+  return true;
+} } };
+const storage = new Map();
+Object.defineProperty(globalThis, 'localStorage', { configurable: true, writable: true, value: {
+  getItem: key => storage.has(key) ? storage.get(key) : null,
+  setItem: (key, value) => { storage.set(key, String(value)); },
+  removeItem: key => { storage.delete(key); },
+} });
 const originalLoad = Module._load;
 Module._load = function(request, parent, main) {
   if (request === 'obsidian') return { Plugin, FileSystemAdapter, TFile, TFolder };
+  if (request === 'electron') return electron;
   return originalLoad.call(this, request, parent, main);
 };
 const Bridge = require('../bridge-plugin/main.js');
-Module._load = originalLoad;
-const mountedRoots = new Set();
-const originalReadFileSync = fs.readFileSync;
-fs.readFileSync = function(filename, ...args) {
-  if (filename === '/proc/self/mountinfo') {
-    return [...mountedRoots].map((root, index) =>
-      `${100 + index} 1 0:1 / ${root.replace(/ /g, '\\040')} rw - tmpfs tmpfs rw`).join('\n') + '\n';
-  }
-  return originalReadFileSync.call(this, filename, ...args);
-};
-function fixture(id, name, sharedHome) {
-  const home = sharedHome || fs.mkdtempSync(path.join(os.tmpdir(), `bridge-${id}-`));
-  const root = path.join(home, `${id}-vault`);
-  const registry = path.join(home, 'runtime');
-  const runtime = path.join(registry, id);
-  fs.mkdirSync(root); fs.mkdirSync(registry, { recursive: true, mode: 0o700 });
-  mountedRoots.add(root);
-  fs.mkdirSync(runtime, { mode: 0o700 });
-  fs.chmodSync(registry, 0o700); fs.chmodSync(runtime, 0o700);
+const PLUGIN_SOURCE = path.join(__dirname, '..', 'bridge-plugin');
+const PLUGIN_ID = 'obsidian-private-bridge';
+
+// One vault window: the root is <home>/<name>, so the vault name is its basename.
+// All windows of a home share the 0700 runtime directory <home>/.runtime.
+function fixture(name, sharedHome) {
+  const home = sharedHome || fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-')));
+  const runtime = path.join(home, '.runtime');
+  if (!fs.existsSync(runtime)) fs.mkdirSync(runtime, { mode: 0o700 });
+  fs.chmodSync(runtime, 0o700);
+  const root = path.join(home, name);
+  fs.mkdirSync(root);
   const files = new Map();
   const folders = new Map([['Private', new TFolder('Private')]]);
   fs.mkdirSync(path.join(root, 'Private'));
@@ -208,17 +222,23 @@ function fixture(id, name, sharedHome) {
     if (target === 'image.png' || target === 'Private/image.png') return files.get('Private/image.png');
     return null;
   } } };
-  const config = { vault_id: id, app_name: name, app_root: root,
-    socket: path.join(runtime, `${id}.sock`), credential_file: path.join(runtime, 'credential') };
-  const token = crypto.randomBytes(32).toString('base64url');
-  const registryFile = path.join(registry, 'registry.json');
-  const previous = fs.existsSync(registryFile) ? JSON.parse(fs.readFileSync(registryFile, 'utf8')).endpoints : [];
-  fs.writeFileSync(registryFile, JSON.stringify({ version: 1, instance: 'kubernetes-obsidian',
-    endpoints: [...previous, config] }), { mode: 0o600 });
-  fs.writeFileSync(config.credential_file, token, { mode: 0o600 });
-  fs.chmodSync(registryFile, 0o600);
-  fs.chmodSync(config.credential_file, 0o600);
-  return { home, root, runtime, registry, registryFile, config: { ...config, testToken: token }, app, vault, calls, add };
+  return { home, root, runtime, name, appConfig: path.join(home, 'obsidian.json'),
+    config: { app_name: name, app_root: root }, app, vault, calls, add };
+}
+// The registration the plugin wrote for this root, read back the way the gateway would.
+function registered(f) {
+  for (const id of fs.readdirSync(f.runtime)) {
+    const directory = path.join(f.runtime, id);
+    const endpointFile = path.join(directory, 'endpoint.json');
+    const credentialFile = path.join(directory, 'credential');
+    if (!fs.existsSync(endpointFile) || !fs.existsSync(credentialFile)) continue;
+    const endpoint = JSON.parse(fs.readFileSync(endpointFile, 'utf8'));
+    if (endpoint.app_root !== f.root) continue;
+    return { endpoint, vault_id: endpoint.vault_id, app_name: endpoint.app_name, app_root: endpoint.app_root,
+      socket: path.join(directory, `${id}.sock`), endpoint_file: endpointFile, credential_file: credentialFile,
+      testToken: fs.readFileSync(credentialFile, 'utf8').trim() };
+  }
+  return null;
 }
 async function request(config, op, args = {}, options = {}) {
   if (op === 'create' || op === 'append') {
@@ -251,16 +271,25 @@ function rawRequest(config, bytes) {
 function address(config) {
   return '\0obsidian-bridge-' + crypto.createHash('sha256').update(config.socket + '\0' + config.testToken).digest('hex');
 }
-async function start(f) {
-  process.env.OBSIDIAN_BRIDGE_INSTANCE = 'kubernetes-obsidian';
-  process.env.OBSIDIAN_BRIDGE_DIR = f.registry;
+// Start one window with the cluster environment; `env` overrides (undefined deletes) a variable.
+async function start(f, env = {}) {
+  const settings = { OBSIDIAN_BRIDGE_INSTANCE: 'kubernetes-obsidian', OBSIDIAN_BRIDGE_DIR: f.runtime,
+    OBSIDIAN_BRIDGE_VAULT_PARENT: f.home, OBSIDIAN_BRIDGE_APP_CONFIG: f.appConfig, ...env };
+  for (const [key, value] of Object.entries(settings)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
   const bridge = new Bridge(f.app);
   await bridge.onload();
+  if (bridge.bridgeServer) f.config = registered(f);
   return bridge;
+}
+function writeOwned(filename, data) {
+  fs.writeFileSync(filename, data, { mode: 0o600 });
+  fs.chmodSync(filename, 0o600);
 }
 if (!REAL_IPC) {
 test('running receipt survives disconnect window and restart refuses replay', async () => {
-  const f = fixture('lifetime', 'Lifetime');
+  const f = fixture('Lifetime');
   let bridge;
   try {
     bridge = await start(f);
@@ -286,15 +315,18 @@ test('running receipt survives disconnect window and restart refuses replay', as
     release();
     assert.equal((await inFlight).result.status, 'committed');
     assert.equal(f.calls.writes, 1);
+    const oldToken = f.config.testToken;
     await bridge.onunload();
     bridge = await start(f);
+    assert.ok(bridge.bridgeServer);
+    assert.notEqual(f.config.testToken, oldToken);
     assert.equal((await request(f.config, 'receipt', { ...args, operation: 'append' })).result.status, 'indeterminate');
     assert.equal((await request(f.config, 'mutate', args, { op: 'append' })).error, 'unknown_receipt');
     assert.equal(f.calls.writes, 1);
   } finally { if (bridge) await bridge.onunload(); fs.rmSync(f.home, { recursive: true, force: true }); }
 });
 test('receipt binds exact mutation and replay returns the committed append once', async () => {
-  const f = fixture('receipt', 'Receipts');
+  const f = fixture('Receipts');
   let bridge;
   try {
     bridge = await start(f);
@@ -323,21 +355,28 @@ test('receipt binds exact mutation and replay returns the committed append once'
   } finally { if (bridge) await bridge.onunload(); fs.rmSync(f.home, { recursive: true, force: true }); }
 });
 test('desktop identity requires UID 1000, GID 1000 and zero effective capabilities', async () => {
-  const f = fixture('identity', 'Identity');
+  const f = fixture('Identity');
   const originalUid = process.getuid;
   const originalGid = process.getgid;
   const read = fs.readFileSync;
   const lstat = fs.lstatSync;
+  let bridge;
   try {
     for (const [uid, gid, caps] of [[1001, 1000, '0000000000000000'],
                                     [1000, 1001, '0000000000000000'],
                                     [1000, 1000, '0000000000000001']]) {
       process.getuid = () => uid;
       process.getgid = () => gid;
+      // Fixture files appear owned by the simulated identity, so only identity() can refuse.
       fs.lstatSync = function(filename, ...args) {
         const value = lstat.call(this, filename, ...args);
-        if ([f.registry, f.runtime, f.registryFile, f.config.credential_file].includes(filename)) {
-          return new Proxy(value, { get(target, key) { return key === 'uid' ? uid : Reflect.get(target, key); } });
+        if (typeof filename === 'string' && (filename === f.home || filename.startsWith(f.home + path.sep))) {
+          return new Proxy(value, { get(target, key) {
+            if (key === 'uid') return uid;
+            if (key === 'gid') return gid;
+            const field = Reflect.get(target, key);
+            return typeof field === 'function' ? field.bind(target) : field;
+          } });
         }
         return value;
       };
@@ -347,41 +386,276 @@ test('desktop identity requires UID 1000, GID 1000 and zero effective capabiliti
       };
       const off = await start(f);
       assert.equal(off.bridgeServer, undefined);
+      assert.deepEqual(fs.readdirSync(f.runtime), []);
     }
+    process.getuid = originalUid;
+    process.getgid = originalGid;
+    fs.readFileSync = read;
+    fs.lstatSync = lstat;
+    bridge = await start(f);
+    assert.ok(bridge.bridgeServer, 'desktop identity should start');
   } finally {
     process.getuid = originalUid;
     process.getgid = originalGid;
     fs.readFileSync = read;
     fs.lstatSync = lstat;
+    if (bridge) await bridge.onunload();
     fs.rmSync(f.home, { recursive: true, force: true });
   }
 });
-test('noncluster and wrong app identity stay inert', async () => {
-  const f = fixture('iam', 'IAM Team');
+test('noncluster, mismatched or invalid vault names stay inert', async () => {
+  const f = fixture('IAM Team');
+  const dash = fixture('-dash', f.home);
   try {
-    delete process.env.OBSIDIAN_BRIDGE_INSTANCE;
-    process.env.OBSIDIAN_BRIDGE_DIR = f.registry;
-    const off = new Bridge(f.app); await off.onload();
-    assert.equal(off.bridgeServer, undefined);
-    assert.equal(fs.existsSync(f.config.socket), false);
-    process.env.OBSIDIAN_BRIDGE_INSTANCE = 'kubernetes-obsidian';
+    for (const env of [{ OBSIDIAN_BRIDGE_INSTANCE: undefined }, { OBSIDIAN_BRIDGE_INSTANCE: 'other' },
+                       { OBSIDIAN_BRIDGE_DIR: undefined }, { OBSIDIAN_BRIDGE_VAULT_PARENT: undefined },
+                       { OBSIDIAN_BRIDGE_APP_CONFIG: 'relative/obsidian.json' }]) {
+      const off = await start(f, env);
+      assert.equal(off.bridgeServer, undefined);
+    }
     f.vault.getName = () => 'Wrong';
-    await off.onload();
-    assert.equal(off.bridgeServer, undefined);
-    assert.equal(fs.existsSync(f.config.socket), false);
-    assert.equal(f.calls.writes, 0);
+    assert.equal((await start(f)).bridgeServer, undefined);
+    f.vault.getName = () => 'iam team';
+    assert.equal((await start(f)).bridgeServer, undefined);
+    assert.equal((await start(dash)).bridgeServer, undefined);
+    assert.deepEqual(fs.readdirSync(f.runtime), []);
+    assert.equal(f.calls.writes + dash.calls.writes, 0);
   } finally { fs.rmSync(f.home, { recursive: true, force: true }); }
 });
+test('vault outside the parent, aliased roots and runtime inside the vault stay inert', async () => {
+  const f = fixture('IAM Team');
+  let bridge;
+  try {
+    const elsewhere = path.join(f.home, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    assert.equal((await start(f, { OBSIDIAN_BRIDGE_VAULT_PARENT: elsewhere })).bridgeServer, undefined);
+    assert.equal((await start(f, { OBSIDIAN_BRIDGE_VAULT_PARENT: 'relative' })).bridgeServer, undefined);
+    assert.equal((await start(f, { OBSIDIAN_BRIDGE_VAULT_PARENT: f.home + '/' })).bridgeServer, undefined);
+    const parentAlias = path.join(elsewhere, 'home-alias');
+    fs.symlinkSync(f.home, parentAlias);
+    assert.equal((await start(f, { OBSIDIAN_BRIDGE_VAULT_PARENT: parentAlias })).bridgeServer, undefined);
+    // Two levels below the parent, with a matching basename.
+    const nested = path.join(f.home, 'Group', 'IAM Team');
+    fs.mkdirSync(nested, { recursive: true });
+    f.vault.adapter = new FileSystemAdapter(nested);
+    assert.equal((await start(f)).bridgeServer, undefined);
+    // A symlink directly under the parent that resolves to the real root.
+    const alias = path.join(f.home, 'Alias');
+    fs.symlinkSync(f.root, alias);
+    f.vault.adapter = new FileSystemAdapter(alias);
+    f.vault.getName = () => 'Alias';
+    assert.equal((await start(f)).bridgeServer, undefined);
+    f.vault.adapter = new FileSystemAdapter(f.root);
+    f.vault.getName = () => 'IAM Team';
+    const inside = path.join(f.root, '.bridge');
+    fs.mkdirSync(inside, { mode: 0o700 }); fs.chmodSync(inside, 0o700);
+    assert.equal((await start(f, { OBSIDIAN_BRIDGE_DIR: inside })).bridgeServer, undefined);
+    assert.deepEqual(fs.readdirSync(inside), []);
+    fs.chmodSync(f.runtime, 0o750);
+    assert.equal((await start(f)).bridgeServer, undefined);
+    fs.chmodSync(f.runtime, 0o700);
+    assert.deepEqual(fs.readdirSync(f.runtime), []);
+    bridge = await start(f);
+    assert.ok(bridge.bridgeServer);
+    assert.equal(f.config.vault_id, 'iam-team');
+    assert.equal(f.calls.writes, 0);
+  } finally { if (bridge) await bridge.onunload(); fs.rmSync(f.home, { recursive: true, force: true }); }
+});
+test('second window for a live vault stays inert; unload deregisters and a new window takes over', async () => {
+  const f = fixture('IAM Team');
+  let first, next;
+  try {
+    first = await start(f);
+    const original = f.config;
+    assert.equal(original.vault_id, 'iam-team');
+    assert.deepEqual(original.endpoint, { version: 1, vault_id: 'iam-team', app_name: 'IAM Team', app_root: f.root });
+    assert.match(original.testToken, /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(fs.statSync(path.dirname(original.socket)).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(original.endpoint_file).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(original.credential_file).mode & 0o777, 0o600);
+    const competing = await start(f);
+    assert.equal(competing.bridgeServer, undefined);
+    await competing.onunload();
+    assert.equal(registered(f).testToken, original.testToken);
+    assert.equal((await request(original, 'health')).result.vault, 'iam-team');
+    await first.onunload(); first = null;
+    assert.equal(fs.existsSync(original.endpoint_file), false);
+    assert.equal(fs.existsSync(original.credential_file), false);
+    await assert.rejects(request(original, 'health'));
+    next = await start(f);
+    assert.ok(next.bridgeServer);
+    assert.equal(f.config.vault_id, 'iam-team');
+    assert.notEqual(f.config.testToken, original.testToken);
+    assert.equal((await request(f.config, 'health')).ok, true);
+    assert.equal((await request(original, 'health', {}, { vault: 'iam-team' }).catch(() => null)), null);
+    // A newer window took the entry over: unload must leave that registration alone.
+    const takeover = crypto.randomBytes(32).toString('base64url');
+    writeOwned(f.config.credential_file, takeover);
+    await next.onunload(); next = null;
+    assert.equal(fs.readFileSync(f.config.credential_file, 'utf8'), takeover);
+    assert.equal(fs.existsSync(f.config.endpoint_file), true);
+    // That registration answers nowhere (a crashed window), so the next window replaces it.
+    next = await start(f);
+    assert.ok(next.bridgeServer);
+    assert.equal(f.config.vault_id, 'iam-team');
+    assert.notEqual(f.config.testToken, takeover);
+    assert.equal((await request(f.config, 'health')).ok, true);
+  } finally {
+    if (first) await first.onunload(); if (next) await next.onunload();
+    fs.rmSync(f.home, { recursive: true, force: true });
+  }
+});
+test('different roots with the same slug get distinct vault ids', async () => {
+  const a = fixture('IAM Team');
+  const b = fixture('IAM.Team', a.home);
+  const c = fixture('2026 Notes', a.home);
+  let first, second, third;
+  try {
+    first = await start(a); second = await start(b); third = await start(c);
+    const suffix = crypto.createHash('sha256').update(b.root).digest('hex').slice(0, 8);
+    assert.equal(a.config.vault_id, 'iam-team');
+    assert.equal(b.config.vault_id, `iam-team-${suffix}`);
+    assert.equal(c.config.vault_id, 'v-2026-notes');
+    assert.equal(b.config.endpoint.app_root, b.root);
+    const ha = (await request(a.config, 'health')).result;
+    const hb = (await request(b.config, 'health')).result;
+    assert.deepEqual([ha.vault, ha.app_name, ha.app_root], ['iam-team', 'IAM Team', a.root]);
+    assert.deepEqual([hb.vault, hb.app_name, hb.app_root], [`iam-team-${suffix}`, 'IAM.Team', b.root]);
+    assert.equal((await request(a.config, 'health', {}, { vault: b.config.vault_id })).error, 'unauthorized');
+    assert.equal((await request({ ...b.config, testToken: a.config.testToken }, 'health').catch(() => null)), null);
+    // A restart of the suffixed window keeps its own id.
+    await second.onunload(); second = null;
+    second = await start(b);
+    assert.equal(b.config.vault_id, `iam-team-${suffix}`);
+    assert.equal((await request(b.config, 'read', { path: 'Private/note.md' })).result.content, 'initial');
+  } finally {
+    if (first) await first.onunload(); if (second) await second.onunload(); if (third) await third.onunload();
+    fs.rmSync(a.home, { recursive: true, force: true });
+  }
+});
+test('vault management lists direct children, opens and creates vaults with the bridge enabled', async () => {
+  const f = fixture('IAM');
+  let bridge;
+  ipcCalls.length = 0; storage.clear(); onVaultOpen = null;
+  try {
+    const source = path.join(f.root, '.obsidian', 'plugins', PLUGIN_ID);
+    fs.mkdirSync(source, { recursive: true });
+    for (const name of ['main.js', 'manifest.json']) fs.copyFileSync(path.join(PLUGIN_SOURCE, name), path.join(source, name));
+    fs.writeFileSync(path.join(source, 'data.json'), '{"private":true}');
+    const work = path.join(f.home, 'Work');
+    fs.mkdirSync(path.join(work, '.obsidian'), { recursive: true });
+    fs.writeFileSync(path.join(work, '.obsidian', 'community-plugins.json'), JSON.stringify(['calendar']));
+    const appConfig = { vaults: {
+      aaaa1111: { path: f.root, ts: 1, open: true },
+      bbbb2222: { path: work, ts: 2 },
+      cccc3333: { path: path.join(f.home, 'Group', 'Deep'), ts: 3 },
+      dddd4444: { path: '/elsewhere/Other', ts: 4 },
+      eeee5555: { path: path.join(f.home, '.hidden'), ts: 5 },
+      ffff6666: { path: 42 },
+    } };
+    fs.writeFileSync(f.appConfig, JSON.stringify(appConfig));
+    bridge = await start(f);
+    assert.ok(bridge.bridgeServer);
+    const health = await request(f.config, 'health');
+    for (const op of ['vaults', 'open_vault', 'create_vault']) assert.ok(health.result.capabilities.includes(op));
+    assert.deepEqual((await request(f.config, 'vaults')).result,
+      { vaults: [{ name: 'IAM', open: true }, { name: 'Work', open: false }] });
+    assert.equal((await request(f.config, 'vaults', { extra: 1 })).error, 'invalid_request');
+
+    assert.equal((await request(f.config, 'open_vault', { name: 'Missing' })).error, 'not_found');
+    assert.equal(fs.existsSync(path.join(f.home, 'Missing')), false);
+    assert.equal(ipcCalls.length, 0);
+
+    const opened = await request(f.config, 'open_vault', { name: 'Work' });
+    assert.deepEqual(opened.result, { name: 'Work', opened: true });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(work, '.obsidian', 'community-plugins.json'), 'utf8')),
+      ['calendar', PLUGIN_ID]);
+    assert.deepEqual(fs.readdirSync(path.join(work, '.obsidian', 'plugins', PLUGIN_ID)).sort(), ['main.js', 'manifest.json']);
+    assert.deepEqual(ipcCalls, [['vault-open', work, true]]);
+    // Work also enables 'calendar', so vault-wide trust is left for the owner.
+    assert.equal(storage.get('enable-plugin-bbbb2222'), undefined);
+    assert.equal((await request(f.config, 'open_vault', { name: 'Work' })).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(work, '.obsidian', 'community-plugins.json'), 'utf8')),
+      ['calendar', PLUGIN_ID]);
+
+    // Obsidian records the new vault in obsidian.json while it opens the window.
+    const target = path.join(f.home, 'Research Notes');
+    onVaultOpen = (channel, opening) => {
+      const document = JSON.parse(fs.readFileSync(f.appConfig, 'utf8'));
+      if (!Object.values(document.vaults).some(entry => entry.path === opening)) {
+        document.vaults.gggg7777 = { path: opening, ts: 7, open: true };
+        fs.writeFileSync(f.appConfig, JSON.stringify(document));
+      }
+    };
+    ipcCalls.length = 0;
+    const created = await request(f.config, 'create_vault', { name: 'Research Notes' });
+    assert.deepEqual(created.result, { name: 'Research Notes', created: true });
+    assert.equal(fs.lstatSync(target).isDirectory(), true);
+    const installed = path.join(target, '.obsidian', 'plugins', PLUGIN_ID);
+    assert.deepEqual(fs.readdirSync(installed).sort(), ['main.js', 'manifest.json']);
+    for (const name of ['main.js', 'manifest.json']) {
+      assert.deepEqual(fs.readFileSync(path.join(installed, name)), fs.readFileSync(path.join(source, name)));
+    }
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target, '.obsidian', 'community-plugins.json'), 'utf8')), [PLUGIN_ID]);
+    assert.deepEqual(ipcCalls, [['vault-open', target, true]]);
+    assert.equal(storage.get('enable-plugin-gggg7777'), 'true');
+    assert.deepEqual((await request(f.config, 'vaults')).result.vaults.map(v => v.name), ['IAM', 'Work', 'Research Notes']);
+
+    ipcCalls.length = 0;
+    assert.equal((await request(f.config, 'create_vault', { name: 'Research Notes' })).error, 'conflict');
+    assert.equal((await request(f.config, 'create_vault', { name: 'Work' })).error, 'conflict');
+    const entries = fs.readdirSync(f.home).sort();
+    for (const name of ['../x', '.hidden', 'a/b', '', 'x'.repeat(101), 'trailing.', 'trailing ', 'tab\there', 7]) {
+      assert.equal((await request(f.config, 'create_vault', { name })).error, 'invalid_request', `create ${name}`);
+      assert.equal((await request(f.config, 'open_vault', { name })).error, 'invalid_request', `open ${name}`);
+    }
+    assert.equal((await request(f.config, 'create_vault', { name: 'Extra', more: 1 })).error, 'invalid_request');
+    assert.deepEqual(fs.readdirSync(f.home).sort(), entries);
+    assert.equal(fs.existsSync(path.join(path.dirname(f.home), 'x')), false);
+    assert.equal(ipcCalls.length, 0);
+    assert.equal(f.calls.writes, 0);
+
+    // A partial or outdated managed install in another vault is repaired on open;
+    // a foreign file in that directory is refused.
+    const partial = path.join(work, '.obsidian', 'plugins', PLUGIN_ID);
+    fs.mkdirSync(partial, { recursive: true });
+    fs.writeFileSync(path.join(partial, 'main.js'), '// older image');
+    assert.equal((await request(f.config, 'open_vault', { name: 'Work' })).ok, true);
+    for (const name of ['main.js', 'manifest.json']) {
+      assert.ok(fs.readFileSync(path.join(partial, name)).equals(fs.readFileSync(path.join(PLUGIN_SOURCE, name))), name);
+    }
+    fs.writeFileSync(path.join(partial, 'styles.css'), 'x');
+    assert.equal((await request(f.config, 'open_vault', { name: 'Work' })).error, 'conflict');
+
+    // A failed create leaves nothing behind, so a retry starts clean.
+    fs.renameSync(path.join(source, 'manifest.json'), path.join(source, 'manifest.json.bak'));
+    assert.equal((await request(f.config, 'create_vault', { name: 'Rollback' })).ok, false);
+    assert.equal(fs.existsSync(path.join(f.home, 'Rollback')), false);
+    fs.renameSync(path.join(source, 'manifest.json.bak'), path.join(source, 'manifest.json'));
+    assert.equal((await request(f.config, 'create_vault', { name: 'Rollback' })).ok, true);
+
+    // At most 16 vaults: each open vault is another desktop window.
+    const crowded = { vaults: Object.fromEntries(Array.from({ length: 16 }, (_, i) =>
+      [`v${String(i).padStart(15, '0')}`, { path: path.join(f.home, `Vault ${i}`) }])) };
+    fs.writeFileSync(f.appConfig, JSON.stringify(crowded));
+    assert.equal((await request(f.config, 'create_vault', { name: 'One Too Many' })).error, 'limit_exceeded');
+    assert.equal(fs.existsSync(path.join(f.home, 'One Too Many')), false);
+  } finally {
+    onVaultOpen = null;
+    if (bridge) await bridge.onunload();
+    fs.rmSync(f.home, { recursive: true, force: true });
+  }
+});
 test('two exact vaults, typed operations, conflicts, embed and protocol rejection', async () => {
-  const a = fixture('iam', 'IAM Team');
-  const b = fixture('homelab', 'Homelab', a.home);
+  const a = fixture('IAM Team');
+  const b = fixture('Homelab', a.home);
   let first, second;
   try {
     first = await start(a); second = await start(b);
     const competing = await start(a);
     assert.equal(competing.bridgeServer, undefined);
     await competing.onunload();
-    assert.equal((await request(a.config, 'health')).result.vault, 'iam');
+    assert.equal((await request(a.config, 'health')).result.vault, 'iam-team');
     assert.equal((await request(b.config, 'health')).result.app_name, 'Homelab');
     assert.equal((await request(a.config, 'health', {}, { vault: 'homelab' })).error, 'unauthorized');
     const listed = await request(a.config, 'list', { prefix: '', limit: 100 });
@@ -417,6 +691,7 @@ test('two exact vaults, typed operations, conflicts, embed and protocol rejectio
     assert.equal((await request(a.config, 'create', { path: '../escape.md', content: 'x' })).error, 'invalid_path');
     assert.equal((await request(a.config, 'create', { path: '.obsidian/config.md', content: 'x' })).error, 'invalid_path');
     assert.equal((await request(a.config, 'create', { path: 'Private/new.md', content: 'x' }, { token: 'bad' })).error, 'unauthorized');
+    assert.equal((await request(a.config, 'create', { path: 'Private/other.md', content: 'x' }, { token: b.config.testToken })).error, 'unauthorized');
     assert.equal((await request(a.config, 'delete', {})).error, 'unknown_operation');
     assert.equal((await request(a.config, 'read', { path: 'Private/note.md', extra: true })).error, 'invalid_request');
     assert.equal((await request(a.config, 'read', { path: 'Private/note.md' }, { token: undefined })).error, 'unauthorized');
@@ -439,19 +714,23 @@ test('two exact vaults, typed operations, conflicts, embed and protocol rejectio
   }
 });
 test('stale pathname does not affect abstract listener or get unlinked', async () => {
-  const f = fixture('iam', 'IAM Team');
+  const f = fixture('IAM Team');
   try {
-    fs.writeFileSync(f.config.socket, 'foreign');
+    const directory = path.join(f.runtime, 'iam-team');
+    fs.mkdirSync(directory, { mode: 0o700 }); fs.chmodSync(directory, 0o700);
+    const stale = path.join(directory, 'iam-team.sock');
+    fs.writeFileSync(stale, 'foreign');
     const bridge = await start(f);
     assert.ok(bridge.bridgeServer);
+    assert.equal(f.config.socket, stale);
     assert.equal((await request(f.config, 'health')).ok, true);
-    assert.equal(fs.readFileSync(f.config.socket, 'utf8'), 'foreign');
+    assert.equal(fs.readFileSync(stale, 'utf8'), 'foreign');
     await bridge.onunload();
-    assert.equal(fs.readFileSync(f.config.socket, 'utf8'), 'foreign');
+    assert.equal(fs.readFileSync(stale, 'utf8'), 'foreign');
   } finally { fs.rmSync(f.home, { recursive: true, force: true }); }
 });
 test('search counts actual app read bytes when file metadata is stale', async () => {
-  const f = fixture('iam', 'IAM Team');
+  const f = fixture('IAM Team');
   let bridge;
   try {
     for (let i = 0; i < 17; i++) {
@@ -469,7 +748,7 @@ test('search counts actual app read bytes when file metadata is stale', async ()
   }
 });
 test('fresh adapter stat rejects oversized underreported note and media before full reads', async () => {
-  const f = fixture('iam', 'IAM Team');
+  const f = fixture('IAM Team');
   let bridge;
   try {
     f.add('Private/huge.md', 'x'.repeat(256 * 1024 + 1));
@@ -486,7 +765,7 @@ test('fresh adapter stat rejects oversized underreported note and media before f
   } finally { if (bridge) await bridge.onunload(); fs.rmSync(f.home, { recursive: true, force: true }); }
 });
 test('root replacement before create refuses all outside writes', async () => {
-  const f = fixture('iam', 'IAM Team');
+  const f = fixture('IAM Team');
   const outside = path.join(f.home, 'outside');
   let bridge;
   try {
@@ -501,25 +780,22 @@ test('root replacement before create refuses all outside writes', async () => {
   } finally { if (bridge) await bridge.onunload(); fs.rmSync(f.home, { recursive: true, force: true }); }
 });
 test('different directory at the enrolled root is rejected by inode identity', async () => {
-  const f = fixture('iam', 'IAM Team');
+  const f = fixture('IAM Team');
   let bridge;
   try {
     bridge = await start(f);
     fs.renameSync(f.root, f.root + '-old');
     fs.mkdirSync(f.root);
     assert.equal((await request(f.config, 'create', { path: 'new.md', content: 'unsafe' })).error, 'unavailable');
+    assert.equal((await request(f.config, 'vaults')).error, 'unavailable');
     assert.equal(fs.existsSync(path.join(f.root, 'new.md')), false);
     assert.equal(f.calls.writes, 0);
   } finally { if (bridge) await bridge.onunload(); fs.rmSync(f.home, { recursive: true, force: true }); }
 });
-test('ordinary unpinned root is inert and externally created destination retains bytes', async () => {
-  const f = fixture('iam', 'IAM Team');
+test('externally created destination retains its bytes and receipt is indeterminate', async () => {
+  const f = fixture('IAM Team');
   let bridge;
   try {
-    mountedRoots.delete(f.root);
-    const off = await start(f);
-    assert.equal(off.bridgeServer, undefined);
-    mountedRoots.add(f.root);
     bridge = await start(f);
     assert.ok(bridge.bridgeServer);
     f.vault.externalCreateAtWrite = key => fs.writeFileSync(path.join(f.root, key), 'external', { flag: 'wx' });
@@ -533,51 +809,7 @@ test('ordinary unpinned root is inert and externally created destination retains
     assert.equal(fs.readFileSync(path.join(f.root, 'Private/unicode.md'), 'utf8'), 'café');
   } finally {
     if (bridge) await bridge.onunload();
-    mountedRoots.delete(f.root);
     fs.rmSync(f.home, { recursive: true, force: true });
-  }
-});
-test('shared registry enrolls a third vault and rejects absent or duplicate roots', async () => {
-  const a = fixture('iam', 'IAM Team');
-  const b = fixture('homelab', 'Homelab', a.home);
-  const c = fixture('third', 'Third', a.home);
-  let first, second, third;
-  try {
-    first = await start(a); second = await start(b); third = await start(c);
-    assert.equal(process.env.OBSIDIAN_BRIDGE_DIR, a.registry);
-    assert.equal((await request(c.config, 'health')).result.vault, 'third');
-    assert.equal((await request(a.config, 'health')).result.vault, 'iam');
-    await first.onunload(); first = null;
-    fs.renameSync(c.root, c.root + '-closed');
-    first = await start(a);
-    assert.ok(first.bridgeServer);
-    assert.equal((await request(a.config, 'health')).result.vault, 'iam');
-    fs.renameSync(c.root + '-closed', c.root);
-    const absent = { vault: { ...c.vault, adapter: new FileSystemAdapter(path.join(a.home, 'absent')) } };
-    fs.mkdirSync(path.join(a.home, 'absent'));
-    const off = new Bridge(absent); await off.onload();
-    assert.equal(off.bridgeServer, undefined);
-    const entries = JSON.parse(fs.readFileSync(a.registryFile, 'utf8'));
-    entries.endpoints[2].app_root = a.root;
-    fs.writeFileSync(a.registryFile, JSON.stringify(entries));
-    await first.onunload(); first = null;
-    const duplicate = new Bridge(a.app); await duplicate.onload();
-    assert.equal(duplicate.bridgeServer, undefined);
-    entries.endpoints[2].app_root = c.root;
-    fs.writeFileSync(a.registryFile, JSON.stringify(entries));
-    fs.symlinkSync(a.root, path.join(a.home, 'iam-alias'));
-    entries.endpoints[2].app_root = path.join(a.home, 'iam-alias');
-    fs.writeFileSync(a.registryFile, JSON.stringify(entries));
-    const aliased = new Bridge(a.app); await aliased.onload();
-    assert.equal(aliased.bridgeServer, undefined);
-    entries.endpoints[2].app_root = c.root;
-    fs.writeFileSync(a.registryFile, JSON.stringify(entries));
-    fs.writeFileSync(c.config.credential_file, a.config.testToken);
-    const reusedCredential = new Bridge(a.app); await reusedCredential.onload();
-    assert.equal(reusedCredential.bridgeServer, undefined);
-  } finally {
-    if (first) await first.onunload(); if (second) await second.onunload(); if (third) await third.onunload();
-    fs.rmSync(a.home, { recursive: true, force: true });
   }
 });
 }
