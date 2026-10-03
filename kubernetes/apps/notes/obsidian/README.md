@@ -24,7 +24,7 @@ Client machines need neither the Obsidian app nor SSH.
 - **Vaults:** `list_vaults` (open vaults with their ids), `list_all_vaults` (every vault the desktop knows, open or closed), `open_vault`, `create_vault`. A new vault opens in its own window and appears in `list_vaults` within a few seconds. Connecting it to Obsidian Sync is a one-time step in the desktop.
 - **Notes:** `list_entries` (direct children of a folder), `read_note`, `read_note_with_images` (text plus embedded images in reading order, 10 per page), `search_notes`, `create_note` (creates missing folders), `append_note` (requires the current `revision`), `mutation_receipt` (reconciles a create or append whose response was lost), `read_embedded_image` (local raster images only).
 - **Organizing:** `create_folder`, `move` (moves or renames a note, attachment or folder; Obsidian rewrites links to it, as it does when you move a file in the app).
-- **Needs your approval:** `replace_note`, `trash_note` and `trash_folder`, through `prepare_action` and `commit_action`. The agent gets a link on `https://obsidian.homelab0.org/owner/...`. Open it while signed in to the desktop, check the exact change (replacements show a full diff), and approve. The approval lasts two minutes. Trashed items go to that vault's `.trash` folder and can be restored from there.
+- **Needs your approval:** `replace_note`, `trash_note` and `trash_folder`, through `prepare_action` and `commit_action`. The agent gets a link on `https://obsidian.homelab0.org/owner/...`. Open it while signed in to the desktop, check the exact change (replacements show a full diff), and approve. The approval lasts ten minutes. Trashed items go to that vault's `.trash` folder and can be restored from there.
 
 ## How it works
 
