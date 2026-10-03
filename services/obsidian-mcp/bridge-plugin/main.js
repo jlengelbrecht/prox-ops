@@ -249,12 +249,25 @@ async function execute(app, config, op, args, markStarted = () => {}) {
     if (!key.toLowerCase().endsWith('.md') || typeof args.content !== 'string' || Buffer.byteLength(args.content) > MAX_NOTE) fail('invalid_request');
     if (vault.getAbstractFileByPath(key) || fs.existsSync(path.join(root, key))) fail('conflict');
     const parent = path.posix.dirname(key);
-    if (parent !== '.' && !(vault.getAbstractFileByPath(parent) instanceof TFolder)) fail('not_found');
+    const missing = [];
+    for (let folder = parent; folder !== '.'; folder = path.posix.dirname(folder)) {
+      const existing = vault.getAbstractFileByPath(folder);
+      if (existing instanceof TFolder) break;
+      if (existing) fail('conflict');
+      missing.unshift(folder);
+    }
     verifyRoot(app, config);
     safePath(key, root, true);
     const bytes = Buffer.from(args.content, 'utf8');
     const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     markStarted();
+    // Missing parent folders are created through the app, outermost first.
+    for (const folder of missing) {
+      verifyRoot(app, config);
+      safePath(folder, root, true);
+      try { await vault.createFolder(folder); } catch { fail('conflict'); }
+      if (!(vault.getAbstractFileByPath(folder) instanceof TFolder)) fail('conflict');
+    }
     try { await vault.createBinary(key, data); } catch { fail('conflict'); }
     const created = note(app, root, key);
     await freshSize(app, config, created, MAX_NOTE);
