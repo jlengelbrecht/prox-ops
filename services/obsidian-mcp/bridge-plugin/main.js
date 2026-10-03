@@ -411,6 +411,7 @@ class PrivateBridge extends Plugin {
         server.once('error', reject);
         server.listen(socketAddress(config), () => { server.removeListener('error', reject); resolve(); });
       });
+      server.on('error', () => { if (this.bridgeServer === server) this.bridgeServer = null; server.close(); });
       this.bridgeServer = server;
     } catch { if (server.listening) server.close(); }
   }
