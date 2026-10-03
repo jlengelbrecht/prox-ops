@@ -1,0 +1,54 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: obsidian-mcp
+  namespace: notes
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: obsidian-mcp.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - obsidian-mcp.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /mcp
+      backendRefs:
+        - name: obsidian
+          port: 8000
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: [X-authentik-uid, X-authentik-groups, X-authentik-username, X-authentik-email, X-authentik-name]
+---
+# The existing Obsidian Authentik provider and admin group bind to this host.
+# A fresh internal outpost cookie check in the gateway authenticates every
+# owner GET/POST; browser identity headers are stripped and are never proof.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: obsidian-mcp-owner
+  namespace: notes
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - obsidian.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /owner/
+      backendRefs:
+        - name: obsidian
+          port: 8000
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: [X-authentik-uid, X-authentik-groups, X-authentik-username, X-authentik-email, X-authentik-name]

@@ -1,19 +1,21 @@
 ---
 # The pod runs a full desktop with the Electron sandbox off, so this policy
 # is its containment boundary.
-# - Ingress: the envoy-internal gateway pods on 3000 only. Nothing else in the
-#   cluster can open the desktop stream directly, so every session goes
-#   through the Authentik gate on the route.
+# - Ingress: the envoy-internal gateway pods on desktop port 3000 and MCP
+#   port 8000 only. Nothing else in the cluster can open either port directly.
+#   The desktop route retains Authentik; MCP uses per-client bearer auth.
 # - Egress: exact DNS queries for account/Sync, community-plugin downloads,
 #   and the Hindsight API; TCP 443 to the Obsidian and GitHub download hosts;
 #   and HTTPS through the internal gateway to the Hindsight API route. No
 #   Kubernetes API (the pod also has no service-account token) or general
-#   internet. The owner enables and configures plugins inside Obsidian.
+#   internet. The bounded bootstrap installs only the private bridge plugin.
 # Enforcement is DNS-derived L3/L4: Cilium admits the addresses learned for
 # the matched public names on TCP 443, with no TLS/SNI or URL check. The
 # gateway pod selector likewise admits any route on that gateway; the API
 # route and tenant bearer check provide the narrower HTTP boundary. ndots:1
 # on the pod (helmrelease.yaml) keeps the queried names exact.
+# The gateway sidecar also verifies owner browser cookies against only the
+# internal Authentik server on its pod port 9000.
 # The pod selector is the label app-template renders from the release name.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -32,6 +34,8 @@ spec:
       toPorts:
         - ports:
             - port: "3000"
+              protocol: TCP
+            - port: "8000"
               protocol: TCP
   egress:
     # DNS
@@ -56,6 +60,7 @@ spec:
               - matchName: github.com
               - matchName: release-assets.githubusercontent.com
               - matchName: hindsight-api.homelab0.org
+              - matchName: authentik-server.security.svc.cluster.local
               - matchName: "sync-01.obsidian.md"
               - matchName: "sync-02.obsidian.md"
               - matchName: "sync-03.obsidian.md"
@@ -188,4 +193,13 @@ spec:
             - port: "443"
               protocol: TCP
             - port: "10443"
+              protocol: TCP
+    # Fixed server-side owner session check; no generic security-namespace egress.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: security
+            app.kubernetes.io/name: authentik
+      toPorts:
+        - ports:
+            - port: "9000"
               protocol: TCP

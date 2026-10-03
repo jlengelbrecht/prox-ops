@@ -7,15 +7,13 @@
 #
 # Single instance on an RWO Ceph volume: replicas 1 with Recreate. The whole
 # home (/config) is the existing claim from the obsidian-storage Kustomization,
-# vaults go under /config/vaults. Obsidian Sync runs inside this desktop app;
+# enrolled roots are /config/IAM Team and /config/Homelab. Sync runs inside this app;
 # there is deliberately no headless Sync container beside it, because two
 # Sync clients must not share one vault. Signing in to the Obsidian account
 # and unlocking an encrypted remote vault are done by hand in the app. No
 # account credential is supplied by Git; the signed-in state persists on the
-# protected /config volume. Josh enables and configures community plugins
-# inside Obsidian after deployment; no plugin, vault setting, API credential,
-# or memory bank is preinstalled here. Keep this device's community-plugin
-# lists and plugin data out of Sync so plugin settings stay local.
+# protected /config volume. The deployment bootstrap installs and enables only
+# the pinned private bridge plugin; all other plugin data and Sync stay owner-owned.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -35,6 +33,7 @@ spec:
         strategy: Recreate
         pod:
           automountServiceAccountToken: false
+          hostNetwork: false
           # The FQDN egress rules in networkpolicy.yaml only match when the
           # pod asks cluster DNS for the exact name; with the default ndots:5
           # the search path is tried first and the connection is dropped.
@@ -71,6 +70,8 @@ spec:
               HARDEN_DESKTOP: "true"
               # No view-only or collaborative sharing links to this session.
               SELKIES_ENABLE_SHARING: "false"
+              OBSIDIAN_BRIDGE_INSTANCE: kubernetes-obsidian
+              OBSIDIAN_BRIDGE_DIR: /run/obsidian-bridge
             probes:
               liveness: &probes
                 enabled: true
@@ -133,6 +134,236 @@ spec:
               limits:
                 cpu: 4000m
                 memory: 4Gi
+          mcp:
+            image: &mcp-image
+              repository: ghcr.io/jlengelbrecht/obsidian-mcp
+              # Replace only after the main image publication receipt names its immutable digest.
+              # renovate: datasource=docker depName=ghcr.io/jlengelbrecht/obsidian-mcp
+              tag: main@sha256:95dbc0b02e6e306cc9b9c54a1c4e10c62b4ddf8fa65892fc99640a00ceec5317
+            command: ["python", "/app/gateway.py"]
+            env:
+              OBSIDIAN_GATEWAY_REGISTRY: /etc/obsidian-mcp/registry.json
+              OBSIDIAN_MCP_TOKEN_CODEX:
+                valueFrom:
+                  secretKeyRef: {name: obsidian-mcp-secret, key: CLIENT_CODEX}
+              OBSIDIAN_MCP_TOKEN_CLAUDE:
+                valueFrom:
+                  secretKeyRef: {name: obsidian-mcp-secret, key: CLIENT_CLAUDE_CODE}
+              OBSIDIAN_MCP_TOKEN_OPENCODE:
+                valueFrom:
+                  secretKeyRef: {name: obsidian-mcp-secret, key: CLIENT_OPENCODE}
+              OBSIDIAN_MCP_TOKEN_ANTIGRAVITY:
+                valueFrom:
+                  secretKeyRef: {name: obsidian-mcp-secret, key: CLIENT_ANTIGRAVITY}
+            probes:
+              startup:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet: {path: /health, port: 8000}
+                  periodSeconds: 5
+                  timeoutSeconds: 3
+                  failureThreshold: 24
+              readiness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet: {path: /health, port: 8000}
+                  periodSeconds: 10
+                  timeoutSeconds: 3
+                  failureThreshold: 3
+              liveness:
+                enabled: true
+                custom: true
+                spec:
+                  httpGet: {path: /health, port: 8000}
+                  periodSeconds: 30
+                  timeoutSeconds: 3
+                  failureThreshold: 3
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              runAsNonRoot: true
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: {drop: [ALL]}
+              seccompProfile: {type: RuntimeDefault}
+            resources:
+              requests: {cpu: 100m, memory: 256Mi}
+              limits: {cpu: 1000m, memory: 1Gi}
+        initContainers:
+          prepare-mcp-runtime:
+            image: *mcp-image
+            command: ["python", "-c"]
+            args:
+              - |
+                import json, os, re, secrets, stat, tempfile
+                from pathlib import Path
+
+                uid = gid = 1000
+                runtime = Path('/run/obsidian-bridge')
+                cfg = json.loads(Path('/etc/obsidian-mcp/registry.json').read_text())
+                bundle = Path('/opt/obsidian-mcp/bridge-plugin')
+                plugin_id = 'obsidian-private-bridge'
+                if (set(cfg) != {'vaults', 'clients', 'owner'} or not isinstance(cfg['vaults'], dict)
+                        or not 1 <= len(cfg['vaults']) <= 8):
+                    raise RuntimeError('Invalid central enrollment')
+
+                def private_dir(path):
+                    if path.is_symlink() or (path.exists() and not path.is_dir()):
+                        raise RuntimeError('Unsafe runtime directory')
+                    path.mkdir(mode=0o700, exist_ok=True)
+                    os.chown(path, uid, gid)
+                    os.chmod(path, 0o700)
+
+                def atomic_bytes(path, content, mode):
+                    fd, tmp = tempfile.mkstemp(dir=path.parent)
+                    try:
+                        os.fchmod(fd, mode)
+                        os.fchown(fd, uid, gid)
+                        with os.fdopen(fd, 'wb') as out:
+                            out.write(content)
+                            out.flush()
+                            os.fsync(out.fileno())
+                        os.replace(tmp, path)
+                    finally:
+                        if os.path.exists(tmp):
+                            os.unlink(tmp)
+
+                reviewed_plugin_files = {'main.js', 'manifest.json'}
+
+                def verify_installed_plugin(target):
+                    try:
+                        directory_fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    except FileNotFoundError:
+                        return False
+                    except OSError as exc:
+                        raise RuntimeError('Unknown plugin installation') from exc
+                    try:
+                        with os.scandir(directory_fd) as entries:
+                            names = set()
+                            for entry in entries:
+                                if (entry.name not in reviewed_plugin_files
+                                        or not entry.is_file(follow_symlinks=False)):
+                                    raise RuntimeError('Unknown plugin drift; owner review required')
+                                names.add(entry.name)
+                        if names != reviewed_plugin_files:
+                            raise RuntimeError('Unknown plugin drift; owner review required')
+                        for name in reviewed_plugin_files:
+                            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                         dir_fd=directory_fd)
+                            with os.fdopen(fd, 'rb') as installed:
+                                if (not stat.S_ISREG(os.fstat(installed.fileno()).st_mode)
+                                        or installed.read() != (bundle / name).read_bytes()):
+                                    raise RuntimeError('Unknown plugin drift; owner review required')
+                    finally:
+                        os.close(directory_fd)
+                    return True
+
+                # Validate every existing managed plugin before enabling it in any vault.
+                for entry in cfg['vaults'].values():
+                    root = Path(entry['app_root'])
+                    if (root.parent != Path('/config') or root.name != entry['app_name']
+                            or root.is_symlink() or (root.exists() and not root.is_dir())):
+                        raise RuntimeError('Unsafe enrolled vault root')
+                    if not root.is_dir():
+                        continue
+                    settings = root / '.obsidian'
+                    if settings.is_symlink() or (settings.exists() and not settings.is_dir()):
+                        raise RuntimeError('Unsafe vault settings directory')
+                    if not settings.is_dir():
+                        continue
+                    plugins = settings / 'plugins'
+                    if plugins.is_symlink() or (plugins.exists() and not plugins.is_dir()):
+                        raise RuntimeError('Unsafe plugin parent')
+                    if plugins.is_dir():
+                        verify_installed_plugin(plugins / plugin_id)
+
+                private_dir(runtime)
+                endpoints = []
+                issued = set()
+                for vault_id, entry in cfg['vaults'].items():
+                    if not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', vault_id):
+                        raise RuntimeError('Invalid vault ID')
+                    root = Path(entry['app_root'])
+                    if (root.parent != Path('/config') or root.name != entry['app_name']
+                            or root.is_symlink() or (root.exists() and not root.is_dir())):
+                        raise RuntimeError('Unsafe enrolled vault root')
+                    directory = runtime / vault_id
+                    if (entry['socket_path'] != str(directory / (vault_id + '.sock'))
+                            or entry['credential_file'] != str(directory / 'credential')):
+                        raise RuntimeError('Unsafe bridge endpoint')
+                    private_dir(directory)
+                    credential = directory / 'credential'
+                    if credential.is_symlink():
+                        raise RuntimeError('Unsafe credential path')
+                    token = secrets.token_urlsafe(32)
+                    while token in issued:
+                        token = secrets.token_urlsafe(32)
+                    issued.add(token)
+                    atomic_bytes(credential, token.encode(), 0o600)
+                    endpoints.append({'vault_id': vault_id, 'app_name': entry['app_name'],
+                                      'app_root': str(root), 'socket': entry['socket_path'],
+                                      'credential_file': str(credential)})
+
+                    # A future enrolled but absent/closed vault cannot disable
+                    # another; never create or initialize a missing vault.
+                    if not root.is_dir():
+                        continue
+
+                    settings = root / '.obsidian'
+                    if settings.is_symlink() or (settings.exists() and not settings.is_dir()):
+                        raise RuntimeError('Unsafe vault settings directory')
+                    if not settings.is_dir():
+                        continue
+                    plugins = settings / 'plugins'
+                    if plugins.is_symlink() or (plugins.exists() and not plugins.is_dir()):
+                        raise RuntimeError('Unsafe plugin parent')
+                    plugins.mkdir(mode=0o755, exist_ok=True)
+                    target = plugins / plugin_id
+                    if not verify_installed_plugin(target):
+                        staging = Path(tempfile.mkdtemp(prefix='.bridge-bootstrap-', dir=plugins))
+                        try:
+                            for name in ('main.js', 'manifest.json'):
+                                atomic_bytes(staging / name, (bundle / name).read_bytes(), 0o644)
+                            os.chown(staging, uid, gid)
+                            os.replace(staging, target)
+                        finally:
+                            if staging.exists():
+                                for item in staging.iterdir():
+                                    item.unlink()
+                                staging.rmdir()
+                    for path in (settings, plugins, target):
+                        os.chown(path, uid, gid)
+
+                    enabled = root / '.obsidian' / 'community-plugins.json'
+                    if enabled.is_symlink():
+                        raise RuntimeError('Unsafe community plugin list')
+                    if enabled.exists():
+                        if not stat.S_ISREG(enabled.stat().st_mode):
+                            raise RuntimeError('Invalid community plugin list')
+                        current = json.loads(enabled.read_text())
+                        if not isinstance(current, list) or any(not isinstance(x, str) for x in current):
+                            raise RuntimeError('Invalid community plugin list')
+                    else:
+                        current = []
+                    if plugin_id not in current:
+                        current.append(plugin_id)
+                        atomic_bytes(enabled, (json.dumps(current, indent=2) + chr(10)).encode(), 0o644)
+
+                registry = {'version': 1, 'instance': 'kubernetes-obsidian', 'endpoints': endpoints}
+                atomic_bytes(runtime / 'registry.json', json.dumps(registry).encode(), 0o600)
+            env: {PYTHONDONTWRITEBYTECODE: "1"}
+            securityContext:
+              runAsUser: 0
+              runAsGroup: 0
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: {drop: [ALL], add: [CHOWN, DAC_OVERRIDE, FOWNER]}
+              seccompProfile: {type: RuntimeDefault}
+            resources:
+              requests: {cpu: 10m, memory: 32Mi}
+              limits: {cpu: 100m, memory: 128Mi}
     # LinuxServer images run every file in /custom-cont-init.d as root at the
     # end of init, before the desktop starts. The mount is root-owned and
     # read-only, which the image requires before it runs custom scripts.
@@ -176,25 +407,73 @@ spec:
         ports:
           http:
             port: *port
+          mcp:
+            port: 8000
     persistence:
       config:
         enabled: true
         existingClaim: obsidian-config
-        globalMounts:
-          - path: /config
+        advancedMounts:
+          obsidian:
+            app:
+              - path: /config
+              - path: /config/IAM Team
+                subPath: IAM Team
+              - path: /config/Homelab
+                subPath: Homelab
+            prepare-mcp-runtime:
+              - path: /config
+              - path: /config/IAM Team
+                subPath: IAM Team
+              - path: /config/Homelab
+                subPath: Homelab
+            mcp:
+              - path: /config/IAM Team
+                subPath: IAM Team
+                readOnly: true
+              - path: /config/Homelab
+                subPath: Homelab
+                readOnly: true
+      mcp-registry:
+        type: configMap
+        name: obsidian-mcp-registry-v1
+        defaultMode: 292  # 0444; projected ConfigMap symlinks are expected.
+        advancedMounts:
+          obsidian:
+            prepare-mcp-runtime:
+              - path: /etc/obsidian-mcp
+                readOnly: true
+            mcp:
+              - path: /etc/obsidian-mcp
+                readOnly: true
+      mcp-runtime:
+        type: emptyDir
+        sizeLimit: 16Mi
+        advancedMounts:
+          obsidian:
+            app:
+              - path: /run/obsidian-bridge
+            prepare-mcp-runtime:
+              - path: /run/obsidian-bridge
+            mcp:
+              - path: /run/obsidian-bridge
       # Electron and the Selkies capture need a larger /dev/shm than the
       # 64Mi runtime default.
       shm:
         type: emptyDir
         medium: Memory
         sizeLimit: 1Gi
-        globalMounts:
-          - path: /dev/shm
+        advancedMounts:
+          obsidian:
+            app:
+              - path: /dev/shm
       custom-init:
         type: configMap
         identifier: init
         # LinuxServer ignores /custom-cont-init.d files without execute bits.
         defaultMode: 493  # 0755
-        globalMounts:
-          - path: /custom-cont-init.d
-            readOnly: true
+        advancedMounts:
+          obsidian:
+            app:
+              - path: /custom-cont-init.d
+                readOnly: true

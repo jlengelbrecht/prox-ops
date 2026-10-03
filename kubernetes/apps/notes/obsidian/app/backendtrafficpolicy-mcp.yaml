@@ -1,0 +1,22 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: obsidian-mcp
+  namespace: notes
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: obsidian-mcp
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: obsidian-mcp-owner
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit:
+            requests: 600
+            unit: Minute
+  requestBuffer:
+    limit: 1Mi
