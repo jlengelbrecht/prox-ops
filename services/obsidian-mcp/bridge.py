@@ -1,0 +1,299 @@
+"""Typed, version 1 private IPC adapter for enrolled running Obsidian vaults.
+
+Bootstrap is deployment-owned: all vault windows inherit
+OBSIDIAN_BRIDGE_INSTANCE=kubernetes-obsidian and OBSIDIAN_BRIDGE_DIR pointing
+to one 0700 ephemeral registry directory outside every vault. Its 0600
+registry.json contains exactly version=1, instance=kubernetes-obsidian, and
+endpoints, an array of exact vault_id/app_name/app_root/socket/credential_file
+records. Each record uses a distinct 0700 <registry>/<vault_id> directory,
+an abstract AF_UNIX address derived from <vault_id>.sock and its 0600 credential.
+No socket pathname is created. The plugin selects only the unique
+record matching its canonical FileSystemAdapter root and app name. Deployment
+recreates the registry and all per-vault directories at each app lifecycle.
+The gateway constructs VaultEndpoint values from its central trusted registry;
+client input may select only the stable vault ID. No live app setup is done here.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import time
+from typing import Any, Mapping
+
+
+VERSION = 1
+MAX_REQUEST = 384 * 1024
+MAX_RESPONSE = 1024 * 1024
+ERRORS = frozenset({"invalid_request", "invalid_path", "not_found", "conflict",
+                    "limit_exceeded", "unsupported_media", "unknown_operation",
+                    "unauthorized", "internal_error", "unknown_receipt"})
+RESULT_KEYS = {
+    "health": {"protocol", "vault", "app_name", "app_root", "capabilities"},
+    "list": {"entries"}, "read": {"path", "content", "revision"},
+    "search": {"matches"}, "create": {"receipt", "status", "result", "error"},
+    "append": {"receipt", "status", "result", "error"}, "embed": {"path", "mime", "data"},
+    "reserve": {"receipt"}, "receipt": {"receipt", "status", "result", "error"},
+}
+RECEIPT_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z")
+
+
+class BridgeError(Exception):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+@dataclass(frozen=True)
+class VaultEndpoint:
+    vault_id: str
+    app_name: str
+    app_root: Path
+    socket_path: Path
+    credential_file: Path
+
+
+def _endpoint(entry: VaultEndpoint) -> None:
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", entry.vault_id):
+        raise BridgeError("unavailable")
+    if not entry.app_name or len(entry.app_name) > 128:
+        raise BridgeError("unavailable")
+    root = entry.app_root
+    directory = entry.socket_path.parent
+    shared = directory.parent
+    if not root.is_absolute() or not directory.is_absolute() or not entry.credential_file.is_absolute():
+        raise BridgeError("unavailable")
+    if (root.resolve(strict=True) != root or directory.resolve(strict=True) != directory
+            or shared.resolve(strict=True) != shared):
+        raise BridgeError("unavailable")
+    if (shared == root or shared.is_relative_to(root) or root.is_relative_to(shared)
+            or directory == root or directory.is_relative_to(root) or root.is_relative_to(directory)):
+        raise BridgeError("unavailable")
+    if (directory.name != entry.vault_id or entry.socket_path != directory / f"{entry.vault_id}.sock"
+            or entry.credential_file != directory / "credential"):
+        raise BridgeError("unavailable")
+    for location in (shared, directory):
+        details = location.lstat()
+        if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o700:
+            raise BridgeError("unavailable")
+
+
+def _private_file(path: Path) -> str:
+    details = path.lstat()
+    if (not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid()
+            or stat.S_IMODE(details.st_mode) != 0o600 or details.st_size > 4096):
+        raise BridgeError("unavailable")
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _socket_address(entry: VaultEndpoint, token: str) -> str:
+    digest = hashlib.sha256((str(entry.socket_path) + "\0" + token).encode()).hexdigest()
+    return "\0obsidian-bridge-" + digest
+
+
+def _safe_relative(value: Any) -> bool:
+    return (isinstance(value, str) and 0 < len(value.encode("utf-8")) <= 1024 and
+            not value.startswith("/") and "\\" not in value and "%" not in value and
+            not any(ord(char) < 32 or ord(char) == 127 for char in value) and
+            all(part and not part.startswith(".") for part in value.split("/")))
+
+
+def _result(operation: str, value: Any, args: dict[str, Any]) -> bool:
+    if not isinstance(value, dict) or set(value) != RESULT_KEYS[operation]:
+        return False
+    if operation == "reserve":
+        return isinstance(value["receipt"], str) and RECEIPT_RE.fullmatch(value["receipt"]) is not None
+    if operation in ("receipt", "create", "append"):
+        if not isinstance(value["receipt"], str) or RECEIPT_RE.fullmatch(value["receipt"]) is None:
+            return False
+        if operation != "receipt" and value["receipt"] != args["receipt"]:
+            return False
+        if operation == "receipt" and value["receipt"] != args["receipt"]:
+            return False
+        if value["status"] not in ("pending", "committed", "indeterminate", "failed"):
+            return False
+        if value["status"] == "committed":
+            original = args["mutation"]
+            result = value["result"]
+            return (isinstance(result, dict) and set(result) == {"path", "revision"} and
+                    result["path"] == original["path"] and
+                    isinstance(result["revision"], str) and
+                    re.fullmatch(r"sha256:[0-9a-f]{64}", result["revision"]) is not None and
+                    value["error"] is None)
+        if value["status"] == "failed":
+            return value["result"] is None and value["error"] in ERRORS
+        return value["result"] is None and value["error"] is None
+    if operation == "health":
+        return (value["protocol"] == VERSION and isinstance(value["vault"], str) and
+                isinstance(value["app_name"], str) and isinstance(value["app_root"], str) and
+                value["capabilities"] == list(RESULT_KEYS))
+    if operation == "list":
+        return (isinstance(value["entries"], list) and len(value["entries"]) <= 1000 and
+                all(isinstance(item, dict) and set(item) == {"path", "kind"} and
+                    _safe_relative(item["path"]) and item["kind"] in ("file", "folder")
+                    for item in value["entries"]))
+    if operation == "search":
+        return (isinstance(value["matches"], list) and len(value["matches"]) <= 50 and
+                all(isinstance(item, dict) and set(item) == {"path", "offset", "revision"} and
+                    _safe_relative(item["path"]) and isinstance(item["offset"], int) and
+                    item["offset"] >= 0 and isinstance(item["revision"], str) and
+                    re.fullmatch(r"sha256:[0-9a-f]{64}", item["revision"])
+                    for item in value["matches"]))
+    if not _safe_relative(value["path"]):
+        return False
+    if operation == "embed":
+        if value["mime"] not in ("image/png", "image/jpeg", "image/webp", "image/gif") or not isinstance(value["data"], str):
+            return False
+        try:
+            return len(base64.b64decode(value["data"], validate=True)) <= 512 * 1024
+        except ValueError:
+            return False
+    if value["path"] != args["path"] or not isinstance(value["revision"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["revision"]):
+        return False
+    return operation != "read" or (isinstance(value["content"], str) and len(value["content"].encode()) <= 256 * 1024)
+
+
+class BridgeClient:
+    """Fixed operations only; caller never supplies a socket, token or verb."""
+
+    def __init__(self, registry: Mapping[str, VaultEndpoint], timeout: float = 3.0):
+        if not registry or not 0 < timeout <= 30:
+            raise ValueError("Invalid bridge configuration")
+        self._registry = dict(registry)
+        if any(key != entry.vault_id for key, entry in self._registry.items()):
+            raise ValueError("Invalid bridge registry")
+        roots = [entry.app_root for entry in self._registry.values()]
+        if any(left == right or left.is_relative_to(right) or right.is_relative_to(left)
+               for index, left in enumerate(roots) for right in roots[index + 1:]):
+            raise ValueError("Ambiguous bridge registry")
+        self._timeout = timeout
+
+    def _transport(self, vault: str, operation: str, args: dict[str, Any], deadline: float | None = None) -> dict[str, Any]:
+        if deadline is None:
+            deadline = time.monotonic() + self._timeout
+        def remaining() -> float:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise BridgeError("unavailable")
+            return left
+        if operation not in RESULT_KEYS:
+            raise BridgeError("unknown_operation")
+        if not isinstance(vault, str):
+            raise BridgeError("unknown_vault")
+        entry = self._registry.get(vault)
+        if entry is None:
+            raise BridgeError("unknown_vault")
+        try:
+            _endpoint(entry)
+            token = _private_file(entry.credential_file)
+            if not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", token):
+                raise BridgeError("unavailable")
+            payload = json.dumps({"v": VERSION, "vault": vault, "token": token,
+                                  "op": operation, "args": args}, ensure_ascii=False).encode() + b"\n"
+            if len(payload) > MAX_REQUEST:
+                raise BridgeError("limit_exceeded")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(remaining())
+                connection.connect(_socket_address(entry, token))
+                connection.settimeout(remaining())
+                connection.sendall(payload)
+                response = bytearray()
+                while True:
+                    connection.settimeout(remaining())
+                    chunk = connection.recv(min(65536, MAX_RESPONSE + 1 - len(response)))
+                    remaining()
+                    if not chunk:
+                        raise BridgeError("unavailable")
+                    response.extend(chunk)
+                    if len(response) > MAX_RESPONSE:
+                        raise BridgeError("limit_exceeded")
+                    if b"\n" in chunk:
+                        break
+            if response.count(b"\n") != 1 or not response.endswith(b"\n"):
+                raise BridgeError("unavailable")
+            reply = json.loads(response[:-1])
+            if not isinstance(reply, dict) or set(reply) not in ({"v", "vault", "ok", "result"}, {"v", "vault", "ok", "error"}) or reply.get("v") != VERSION or reply.get("vault") != vault:
+                raise BridgeError("unavailable")
+            if reply["ok"] is True and _result(operation, reply.get("result"), args):
+                return reply["result"]
+            if reply["ok"] is False and reply.get("error") in ERRORS:
+                raise BridgeError(reply["error"])
+            raise BridgeError("unavailable")
+        except BridgeError:
+            raise
+        except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+            raise BridgeError("unavailable") from None
+
+    def _call(self, vault: str, operation: str, args: dict[str, Any]) -> dict[str, Any]:
+        deadline = time.monotonic() + self._timeout
+        if operation != "health":
+            self.ready(vault, deadline=deadline)
+        return self._transport(vault, operation, args, deadline)
+
+    def ready(self, vault: str, *, deadline: float | None = None) -> dict[str, Any]:
+        result = self._transport(vault, "health", {}, deadline)
+        entry = self._registry[vault]
+        if result.get("protocol") != VERSION or result.get("vault") != vault or result.get("app_name") != entry.app_name or result.get("app_root") != str(entry.app_root):
+            raise BridgeError("unavailable")
+        return result
+
+    def list_entries(self, vault: str, prefix: str = "", limit: int = 1000) -> dict[str, Any]:
+        return self._call(vault, "list", {"prefix": prefix, "limit": limit})
+
+    def read_note(self, vault: str, path: str) -> dict[str, Any]:
+        return self._call(vault, "read", {"path": path})
+
+    def search(self, vault: str, query: str, limit: int = 50) -> dict[str, Any]:
+        return self._call(vault, "search", {"query": query, "limit": limit})
+
+    def create_note(self, vault: str, path: str, content: str, *, client_id: str = "bridge") -> dict[str, Any]:
+        return self._mutation(vault, "create", {"path": path, "content": content}, client_id)
+
+    def append_note(self, vault: str, path: str, content: str, expected_revision: str,
+                    *, client_id: str = "bridge") -> dict[str, Any]:
+        return self._mutation(vault, "append", {"path": path, "content": content,
+                                                 "expected_revision": expected_revision}, client_id)
+
+    def _mutation(self, vault: str, operation: str, mutation: dict[str, Any], client_id: str) -> dict[str, Any]:
+        reservation = self._call(vault, "reserve", {"client": client_id, "operation": operation,
+                                                    "mutation": mutation})
+        receipt = reservation["receipt"]
+        try:
+            result = self._call(vault, operation, {"client": client_id, "receipt": receipt,
+                                                   "mutation": mutation})
+        except BridgeError as error:
+            if error.code not in {"unavailable", "internal_error"}:
+                raise
+            return {"receipt": receipt, "status": "pending"}
+        if result["status"] == "failed":
+            raise BridgeError(result["error"])
+        if result["status"] == "committed":
+            return {**result["result"], "receipt": receipt, "status": "committed"}
+        return {"receipt": receipt, "status": result["status"]}
+
+    def mutation_receipt(self, vault: str, operation: str, mutation: dict[str, Any],
+                         receipt: str, client_id: str) -> dict[str, Any]:
+        if not isinstance(receipt, str) or RECEIPT_RE.fullmatch(receipt) is None:
+            raise BridgeError("invalid_request")
+        try:
+            result = self._call(vault, "receipt", {"client": client_id, "operation": operation,
+                                                   "mutation": mutation, "receipt": receipt})
+        except BridgeError as error:
+            if error.code != "unavailable":
+                raise
+            return {"receipt": receipt, "status": "indeterminate"}
+        if result["status"] == "failed":
+            return {"receipt": receipt, "status": "failed", "error": result["error"]}
+        if result["status"] == "committed":
+            return {**result["result"], "receipt": receipt, "status": "committed"}
+        return {"receipt": receipt, "status": result["status"]}
+
+    def resolve_embed(self, vault: str, source: str, target: str) -> dict[str, Any]:
+        return self._call(vault, "embed", {"source": source, "target": target})
