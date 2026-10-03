@@ -42,6 +42,9 @@ RESULT_KEYS = {
     "move": {"source", "destination", "kind"}, "replace": {"path", "revision"},
     "trash": {"path", "trashed"},
     "logs": {"entries"}, "plugins": {"community", "core"}, "settings": {"file", "settings"},
+    "plugin_state": {"plugin_id", "installed", "enabled", "version", "digest"},
+    "plugin_set": {"plugin_id", "enabled"}, "plugin_remove": {"plugin_id", "removed"},
+    "setting_state": {"setting_id", "value", "revision"}, "setting_write": {"setting_id", "written"},
 }
 REVISION_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # Every plugin serves these; vault management ops are optional extras.
@@ -166,6 +169,21 @@ def _result(operation: str, value: Any, args: dict[str, Any]) -> bool:
                         and isinstance(item["enabled"], bool) for item in value["core"]))
     if operation == "settings":
         return value["file"] == args["file"] and isinstance(value["settings"], (dict, list, str, int, float, bool))
+    if operation == "plugin_state":
+        return (value["plugin_id"] == args["plugin_id"] and isinstance(value["installed"], bool)
+                and isinstance(value["enabled"], bool) and isinstance(value["version"], str)
+                and len(value["version"]) <= 64 and isinstance(value["digest"], str)
+                and (re.fullmatch(r"[0-9a-f]{64}", value["digest"]) is not None) == value["installed"])
+    if operation == "plugin_set":
+        return value["plugin_id"] == args["plugin_id"] and value["enabled"] is args["enabled"]
+    if operation == "plugin_remove":
+        return value["plugin_id"] == args["plugin_id"] and value["removed"] is True
+    if operation == "setting_state":
+        return (value["setting_id"] == args["setting_id"]
+                and (value["value"] is None or isinstance(value["value"], (str, int, float, bool)))
+                and isinstance(value["revision"], str) and REVISION_RE.fullmatch(value["revision"]) is not None)
+    if operation == "setting_write":
+        return value["setting_id"] == args["setting_id"] and value["written"] is True
     if operation == "mkdir":
         return value["path"] == args["path"] and value["created"] is True
     if operation == "move":
@@ -447,6 +465,23 @@ class BridgeClient:
 
     def settings(self, vault: str, file: str) -> dict[str, Any]:
         return self._call(vault, "settings", {"file": file})
+
+    def plugin_state(self, vault: str, plugin_id: str) -> dict[str, Any]:
+        return self._call(vault, "plugin_state", {"plugin_id": plugin_id})
+
+    def set_plugin(self, vault: str, plugin_id: str, enabled: bool, expected: str) -> dict[str, Any]:
+        return self._call(vault, "plugin_set", {"plugin_id": plugin_id, "enabled": enabled,
+                                                "expected_digest": expected})
+
+    def remove_plugin(self, vault: str, plugin_id: str, expected: str) -> dict[str, Any]:
+        return self._call(vault, "plugin_remove", {"plugin_id": plugin_id, "expected_digest": expected})
+
+    def setting_state(self, vault: str, setting_id: str) -> dict[str, Any]:
+        return self._call(vault, "setting_state", {"setting_id": setting_id})
+
+    def write_setting(self, vault: str, setting_id: str, value, expected_revision: str) -> dict[str, Any]:
+        return self._call(vault, "setting_write", {"setting_id": setting_id, "value": value,
+                                                   "expected_revision": expected_revision})
 
     def path_state(self, vault: str, path: str) -> dict[str, Any]:
         return self._call(vault, "state", {"path": path})

@@ -803,6 +803,71 @@ test('diagnostics: console log capture, plugin inventory and redacted settings',
     fs.rmSync(f.home, { recursive: true, force: true });
   }
 });
+test('administration: plugin state, toggles, uninstall and single-key settings writes', async () => {
+  const f = fixture('Admin');
+  let bridge;
+  try {
+    const pluginDir = path.join(f.root, '.obsidian', 'plugins', 'calendar');
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'manifest.json'), '{"id":"calendar","version":"2.0"}');
+    fs.writeFileSync(path.join(pluginDir, 'main.js'), 'module.exports = {};');
+    fs.writeFileSync(path.join(pluginDir, 'data.json'), JSON.stringify({ weekStart: 'monday', apiKey: 'secret' }));
+    fs.writeFileSync(path.join(f.root, '.obsidian', 'app.json'), JSON.stringify({ alwaysUpdateLinks: false }));
+    const enabled = new Set(['calendar']);
+    const pluginCalls = [];
+    f.app.plugins = { manifests: { calendar: { id: 'calendar', version: '2.0' } }, enabledPlugins: enabled,
+      async enablePluginAndSave(id) { pluginCalls.push(['enable', id]); enabled.add(id); },
+      async disablePluginAndSave(id) { pluginCalls.push(['disable', id]); enabled.delete(id); },
+      async enablePlugin(id) { pluginCalls.push(['reload-on', id]); enabled.add(id); },
+      async disablePlugin(id) { pluginCalls.push(['reload-off', id]); enabled.delete(id); },
+      async uninstallPlugin(id) { pluginCalls.push(['uninstall', id]); fs.rmSync(path.join(f.root, '.obsidian', 'plugins', id), { recursive: true }); delete this.manifests[id]; enabled.delete(id); } };
+    const config = {};
+    f.vault.setConfig = (key, value) => { config[key] = value; };
+    bridge = await start(f);
+    const state = (await request(f.config, 'plugin_state', { plugin_id: 'calendar' })).result;
+    assert.equal(state.installed, true); assert.equal(state.enabled, true); assert.match(state.digest, /^[0-9a-f]{64}$/);
+    assert.deepEqual((await request(f.config, 'plugin_state', { plugin_id: 'nope' })).result,
+      { plugin_id: 'nope', installed: false, enabled: false, version: '', digest: '' });
+    const expected = `true:${state.digest}`;
+    assert.equal((await request(f.config, 'plugin_set', { plugin_id: 'calendar', enabled: false, expected_digest: 'false:x' })).error, 'conflict');
+    assert.deepEqual((await request(f.config, 'plugin_set', { plugin_id: 'calendar', enabled: false, expected_digest: expected })).result,
+      { plugin_id: 'calendar', enabled: false });
+    assert.equal((await request(f.config, 'plugin_set', { plugin_id: PLUGIN_ID, enabled: false, expected_digest: expected })).error, 'invalid_request');
+    assert.equal((await request(f.config, 'plugin_remove', { plugin_id: PLUGIN_ID, expected_digest: expected })).error, 'invalid_request');
+
+    // Settings: one top-level key, never a secret-looking one, guarded by the file revision.
+    const appSetting = (await request(f.config, 'setting_state', { setting_id: 'app.alwaysUpdateLinks' })).result;
+    assert.equal(appSetting.value, false);
+    assert.deepEqual((await request(f.config, 'setting_write', { setting_id: 'app.alwaysUpdateLinks', value: true,
+      expected_revision: appSetting.revision })).result, { setting_id: 'app.alwaysUpdateLinks', written: true });
+    assert.deepEqual(config, { alwaysUpdateLinks: true });
+    assert.equal((await request(f.config, 'setting_state', { setting_id: 'plugin:calendar.apiKey' })).error, 'invalid_request');
+    assert.equal((await request(f.config, 'setting_state', { setting_id: 'hotkeys.x' })).error, 'invalid_request');
+    for (const blocked of ['plugin:obsidian-private-bridge.anything', 'app.__proto__', 'appearance.enabledCssSnippets',
+                           'app.safeMode', 'app.communityPluginsRestricted']) {
+      assert.equal((await request(f.config, 'setting_state', { setting_id: blocked })).error, 'invalid_request', blocked);
+    }
+    const weekStart = (await request(f.config, 'setting_state', { setting_id: 'plugin:calendar.weekStart' })).result;
+    assert.equal((await request(f.config, 'setting_write', { setting_id: 'plugin:calendar.weekStart', value: 'sunday',
+      expected_revision: appSetting.revision })).error, 'conflict');
+    enabled.add('calendar');
+    assert.equal((await request(f.config, 'setting_write', { setting_id: 'plugin:calendar.weekStart', value: 'sunday',
+      expected_revision: weekStart.revision })).result.written, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(pluginDir, 'data.json'), 'utf8')), { weekStart: 'sunday', apiKey: 'secret' });
+    assert.deepEqual(pluginCalls.slice(-2), [['reload-off', 'calendar'], ['reload-on', 'calendar']]);
+    assert.equal(fs.statSync(path.join(pluginDir, 'data.json')).mode & 0o777, 0o644);
+    assert.equal((await request(f.config, 'setting_write', { setting_id: 'plugin:calendar.weekStart', value: { nested: 1 },
+      expected_revision: weekStart.revision })).error, 'invalid_request');
+
+    const now = (await request(f.config, 'plugin_state', { plugin_id: 'calendar' })).result;
+    assert.deepEqual((await request(f.config, 'plugin_remove', { plugin_id: 'calendar', expected_digest: `${now.enabled}:${now.digest}` })).result,
+      { plugin_id: 'calendar', removed: true });
+    assert.equal(fs.existsSync(pluginDir), false);
+  } finally {
+    if (bridge) await bridge.onunload();
+    fs.rmSync(f.home, { recursive: true, force: true });
+  }
+});
 test('two exact vaults, typed operations, conflicts, embed and protocol rejection', async () => {
   const a = fixture('IAM Team');
   const b = fixture('Homelab', a.home);

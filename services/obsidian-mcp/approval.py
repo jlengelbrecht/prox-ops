@@ -61,6 +61,7 @@ _GUARDED = {
     "plugin_update": {"plugin_id", "version", "source", "digest"},
     "plugin_uninstall": {"plugin_id"},
     "setting_update": {"setting_id", "value"},
+    "set_setting": {"setting_id", "value"},
 }
 _OPTIONAL = {"list_notes": {"folder"}, "list_folders": {"folder"}, "plugin_catalog": {"query"}}
 _READ_ONLY = frozenset({"read_note", "list_notes", "list_folders", "search", "read_media",
@@ -321,6 +322,7 @@ def _canonical_state(snapshot: Snapshot, action: Operation) -> tuple[tuple[str, 
     primary = {
         "replace_note": ("note", "path"), "remove_property": ("note", "path"),
         "trash_note": ("note", "path"), "trash_folder": ("folder", "path"),
+        "set_setting": ("setting", "setting_id"),
         "rename_note": ("note", "source"),
         "move_note": ("note", "source"), "rename_folder": ("folder", "source"),
         "move_folder": ("folder", "source"), "restore_note": ("trash", "trash_id"),

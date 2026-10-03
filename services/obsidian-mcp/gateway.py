@@ -48,7 +48,10 @@ _SAFE_CAPABILITIES = {
     "manage_vaults": "vaults", "create_folder": "mkdir", "move": "move", "diagnostics": "logs",
 }
 # Destructive verbs: each needs the owner's approval through /owner/ before it runs.
-_GUARDED_CAPABILITIES = {"replace_note": "replace", "trash_note": "trash", "trash_folder": "trash"}
+_GUARDED_CAPABILITIES = {"replace_note": "replace", "trash_note": "trash", "trash_folder": "trash",
+                         "plugin_enable": "plugin_set", "plugin_disable": "plugin_set",
+                         "plugin_uninstall": "plugin_remove", "set_setting": "setting_write"}
+_PLUGIN_ACTIONS = frozenset({"plugin_enable", "plugin_disable", "plugin_uninstall"})
 _TOOL_VERBS = {
     "list_entries": "list_notes", "read_note": "read_note", "search_notes": "search",
     "create_note": "create_note", "append_note": "append_note",
@@ -234,8 +237,46 @@ class BridgeAdapter:
             raise BridgeError("not_found")
         return state, StateEntry(kind, path, state["revision"])
 
+    def _plugin_entry(self, action: Operation) -> tuple[dict, StateEntry]:
+        state = self.bridge.plugin_state(action.vault, action.arguments["plugin_id"])
+        if not state["installed"]:
+            raise BridgeError("not_found")
+        return state, StateEntry("plugin", state["plugin_id"], "enabled" if state["enabled"] else "disabled",
+                                 "installed", state["version"] or "unknown", state["digest"])
+
+    def _setting_entry(self, action: Operation) -> tuple[dict, StateEntry]:
+        if not re.fullmatch(r"(app|appearance|plugin:[a-z0-9][a-z0-9_-]{0,63})\.[A-Za-z_][A-Za-z0-9_-]{0,127}",
+                            action.arguments["setting_id"], re.IGNORECASE):
+            raise BridgeError("invalid_request")
+        state = self.bridge.setting_state(action.vault, action.arguments["setting_id"])
+        return state, StateEntry("setting", state["setting_id"], state["revision"])
+
+    def _admin_preview(self, action: Operation) -> Preview:
+        vault, args = action.vault, action.arguments
+        if action.verb in _PLUGIN_ACTIONS:
+            state, entry = self._plugin_entry(action)
+            what = {"plugin_enable": "Enable", "plugin_disable": "Disable", "plugin_uninstall": "Uninstall"}[action.verb]
+            summary = (f"{what} the community plugin {state['plugin_id']} (version {state['version'] or 'unknown'}, "
+                       f"currently {'enabled' if state['enabled'] else 'disabled'}) in vault {vault}.")
+            if action.verb == "plugin_uninstall":
+                summary += " This deletes its folder, including its settings."
+            if action.verb == "plugin_enable":
+                summary += " Enabling it runs this plugin's code inside the desktop."
+        else:
+            state, entry = self._setting_entry(action)
+            file, _, key = args["setting_id"].rpartition(".")
+            summary = (f"Change the setting {key} in {file} of vault {vault} from "
+                       f"{json.dumps(state['value'])} to {json.dumps(args['value'])}.")
+        return Preview(Snapshot((entry,), True, 1), summary)
+
     def preview(self, action: Operation) -> Preview:
         """Read only: exactly what the owner approves, with the revision it applies to."""
+        if action.verb in _PLUGIN_ACTIONS or action.verb == "set_setting":
+            preview = self._admin_preview(action)
+            summary = unicodedata.normalize("NFC", "".join(_visible(char) for char in preview.summary))
+            if len(summary) > _MAX_PREVIEW_TEXT:
+                raise BridgeError("limit_exceeded")
+            return Preview(preview.snapshot, summary)
         state, entry = self._guarded_state(action)
         path, vault = action.arguments["path"], action.vault
         if action.verb == "replace_note":
@@ -255,6 +296,15 @@ class BridgeAdapter:
         return Preview(Snapshot((entry,), True, 1), summary)
 
     def observe(self, action: Operation, expected) -> Snapshot:
+        if action.verb in _PLUGIN_ACTIONS:
+            state, entry = self._plugin_entry(action)
+            self._observed[(action.vault, action.verb, state["plugin_id"])] = (
+                f"{'true' if state['enabled'] else 'false'}:{state['digest']}")
+            return Snapshot((entry,), True, 1)
+        if action.verb == "set_setting":
+            state, entry = self._setting_entry(action)
+            self._observed[(action.vault, action.verb, state["setting_id"])] = state["revision"]
+            return Snapshot((entry,), True, 1)
         state, entry = self._guarded_state(action)
         # The commit runs right after this, under the coordinator's vault lock; the plugin
         # re-checks this exact revision so a concurrent edit makes the commit fail.
@@ -264,6 +314,16 @@ class BridgeAdapter:
     def execute(self, action: Operation, *, package=None) -> object:
         args = action.arguments
         try:
+            if action.verb in _PLUGIN_ACTIONS or action.verb == "set_setting":
+                key = args["plugin_id"] if action.verb in _PLUGIN_ACTIONS else args["setting_id"]
+                expected = self._observed.pop((action.vault, action.verb, key), None)
+                if expected is None:
+                    raise AdapterConflict()
+                if action.verb == "plugin_uninstall":
+                    return self.bridge.remove_plugin(action.vault, key, expected)
+                if action.verb == "set_setting":
+                    return self.bridge.write_setting(action.vault, key, args["value"], expected)
+                return self.bridge.set_plugin(action.vault, key, action.verb == "plugin_enable", expected)
             if action.verb in self._GUARDED_KINDS:
                 revision = self._observed.pop((action.vault, action.verb, args["path"]), None)
                 if revision is None:
@@ -863,6 +923,9 @@ def create_gateway(
               replace_note  {"path": "Folder/Note.md", "content": "<the whole new note>"}
               trash_note    {"path": "Folder/Note.md"}      (moves it to the vault's .trash)
               trash_folder  {"path": "Folder"}              (moves it and everything in it to .trash)
+              plugin_enable / plugin_disable / plugin_uninstall  {"plugin_id": "<id from list_plugins>"}
+              set_setting   {"setting_id": "<file>.<key>", "value": <string, number or boolean>}
+                            where file is app, appearance or plugin:<id>; one top-level key per call
             Returns an approval `url`. Give it to the user; they open it, review exactly what
             will change and approve it. Then call commit_action with the same vault, verb,
             arguments and the returned `id` as pending_id. Approvals expire after ten minutes.
