@@ -1,6 +1,7 @@
 """Offline contract check for the pinned CNPG chart and Flux post-render patch."""
 
 import pathlib
+import os
 import shutil
 import subprocess
 import tempfile
@@ -11,32 +12,39 @@ import yaml
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-CHART = ROOT / "_bmad-output/implementation-artifacts/cluster-0.5.0.tgz"
+CHART_CACHE = ROOT / "_bmad-output/implementation-artifacts/cluster-0.5.0.tgz"
 RELEASE = ROOT / "kubernetes/apps/database/cluster/app/helmrelease.yaml"
 NATIVE_KUSTOMIZE = pathlib.Path.home() / ".local/share/mise/installs/aqua-kubernetes-sigs-kustomize/5.7.1/kustomize"
 
 
 class PinnedChartRenderTests(unittest.TestCase):
     def test_cluster_snapshot_and_future_storage_contract(self):
-        self.assertTrue(CHART.is_file(), "supplied pinned chart is required")
+        chart = pathlib.Path(os.environ.get("HINDSIGHT_CNPG_CHART") or CHART_CACHE)
+        self.assertTrue(chart.is_file(),
+                        f"Pinned CNPG chart missing at {chart}. Set HINDSIGHT_CNPG_CHART "
+                        "to a local cluster-0.5.0.tgz, or fetch it to the documented "
+                        "cache path; see docs/operations/hindsight-maintenance.md")
         release = yaml.safe_load(RELEASE.read_text())
+        self.assertEqual(release["spec"]["chart"]["spec"]["chart"], "cluster")
         self.assertEqual(release["spec"]["chart"]["spec"]["version"], "0.5.0")
         values = release["spec"]["values"]
         self.assertEqual(values["cluster"]["storage"]["storageClass"], "ceph-block-retain")
         self.assertIs(values["backups"]["enabled"], False)
         patches = release["spec"]["postRenderers"][0]["kustomize"]["patches"]
         chart_metadata = subprocess.run(
-            ["helm", "show", "chart", str(CHART)],
+            ["helm", "show", "chart", str(chart)],
             check=True, capture_output=True, text=True,
         )
-        self.assertEqual(yaml.safe_load(chart_metadata.stdout)["version"], "0.5.0")
+        metadata = yaml.safe_load(chart_metadata.stdout)
+        self.assertEqual(metadata["name"], "cluster", "CNPG chart name must be cluster")
+        self.assertEqual(metadata["version"], "0.5.0", "CNPG chart version must be 0.5.0")
 
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             values_file = directory / "values.yaml"
             values_file.write_text(yaml.safe_dump(values))
             helm = subprocess.run(
-                ["helm", "template", "postgres-cluster", str(CHART),
+                ["helm", "template", "postgres-cluster", str(chart),
                  "--namespace", "database", "--values", str(values_file)],
                 check=True, capture_output=True, text=True,
             )

@@ -355,15 +355,28 @@ class CheckpointTests(unittest.TestCase):
             with self.subTest(state=state):
                 kube = self.retained()
                 old_create = kube.create
+                backup_created = False
                 def set_state(document):
+                    nonlocal backup_created
                     old_create(document)
                     if document["kind"] == "Backup":
+                        backup_created = True
                         kube.objects[("backup", document["metadata"]["name"], "database")]["status"]["phase"] = state
                 kube.create = set_state
-                ticks = iter((0, 0, 2))
-                with self.assertRaises(maintenance.MaintenanceError):
-                    self.run_checkpoint(kube, timeout=1, clock=lambda: next(ticks), sleep=lambda _: None)
+                backup_polls = 0
+                def clock():
+                    nonlocal backup_polls
+                    if state == "pending" and backup_created:
+                        backup_polls += 1
+                        return 2 if backup_polls > 1 else 0
+                    return 0
+                expected = "database Backup failed" if state == "failed" else "timed out waiting for backup"
+                with self.assertRaisesRegex(maintenance.MaintenanceError, expected):
+                    self.run_checkpoint(kube, timeout=1, clock=clock, sleep=lambda _: None)
+                self.assertEqual([c[1]["kind"] for c in kube.calls if c[0] == "create"],
+                                 ["VolumeSnapshot", "Backup"])
                 self.assertFalse(any(c[0] == "run" for c in kube.calls))
+                pathlib.Path(self.record).unlink()
 
     def test_retained_content_and_backup_linkage_required(self):
         for mutation in (lambda k: k.objects[("volumesnapshotcontent", "content-db", None)]["spec"].update(deletionPolicy="Delete"),

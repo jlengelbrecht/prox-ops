@@ -97,6 +97,22 @@ only gate backup rendering through object-store settings, so the Flux
 post-render patch adds exactly `spec.backup.volumeSnapshot` while leaving
 `backups.enabled: false`.
 
+To run the offline chart render test from a clean checkout, fetch the pinned
+chart with the already required Helm CLI into a local directory you choose:
+
+```sh
+mkdir -p /path/to/chart-cache
+helm pull cluster --version 0.5.0 --repo https://cloudnative-pg.github.io/charts --destination /path/to/chart-cache
+HINDSIGHT_CNPG_CHART=/path/to/chart-cache/cluster-0.5.0.tgz python3 -m unittest discover -s tests/hindsight-maintenance -v
+```
+
+The standard local cache path is
+`_bmad-output/implementation-artifacts/cluster-0.5.0.tgz` from the repository
+root; placing the archive there lets the same test command run without the
+environment variable. The chart archive is a test input and is not committed.
+The test checks that Helm reports chart name `cluster` and version `0.5.0`;
+a missing archive or different chart fails the test.
+
 ## Periodic isolated restore rehearsal
 
 In a scheduled operator-run exercise, select a completed record and check each referenced snapshot and retained content. Recover a new CNPG Cluster in `database` from the named snapshots with distinct PVCs, credentials and blocked client access; keep `database/postgres` and its PVCs untouched. Restore only a copy of the `hindsight` database into a test target. Apply the role, ownership, grant, extension, connection-target and rollback checks above. Through application checks, verify both banks, representative memories, configured agents, operations and schema compatibility with the intended application image. Restore the auth snapshot to a separate test claim and verify login or perform normal reauthentication if the OAuth state is stale. Record the rehearsal outcome and clean up test resources only under a separate approved procedure. Repeat after material schema or image changes and periodically as part of recovery readiness. A server checkpoint does not cover host-owned local agent configuration; verify its existing host backup during the same exercise.
