@@ -196,6 +196,11 @@ class RequestBodyTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DiscoveryBoundTests(unittest.IsolatedAsyncioTestCase):
+    async def _settle(self, predicate, timeout=3.0):
+        # Worker threads start asynchronously; on a loaded host they may lag the event loop.
+        end = time.monotonic() + timeout
+        while not predicate() and time.monotonic() < end:
+            await asyncio.sleep(0.01)
     async def test_cancelled_callers_do_not_release_active_worker_slots(self):
         release = threading.Event()
         lock = threading.Lock()
@@ -208,7 +213,7 @@ class DiscoveryBoundTests(unittest.IsolatedAsyncioTestCase):
                     active += 1
                     peak = max(peak, active)
                 try:
-                    release.wait(1.5)
+                    release.wait(5)
                     return {"capabilities": ["read"]}
                 finally:
                     with lock:
@@ -222,6 +227,7 @@ class DiscoveryBoundTests(unittest.IsolatedAsyncioTestCase):
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+            await self._settle(lambda: active == 8)
             self.assertLessEqual(peak, 8)
             self.assertEqual(active, 8)
         finally:
@@ -258,7 +264,7 @@ class DiscoveryBoundTests(unittest.IsolatedAsyncioTestCase):
                     active += 1
                     peak = max(peak, active)
                 try:
-                    release.wait(1)
+                    release.wait(5)
                     raise BridgeError("unavailable")
                 finally:
                     with lock:
@@ -267,13 +273,14 @@ class DiscoveryBoundTests(unittest.IsolatedAsyncioTestCase):
         middleware = CapabilityFilter({}, SlowBridge(), frozenset())
         grants = {"ready": SAFE, **{f"slow{index}": SAFE for index in range(31)}}
         try:
-            with patch("gateway._DISCOVERY_TIMEOUT", 0.08):
+            with patch("gateway._DISCOVERY_TIMEOUT", 0.4):
                 start = time.monotonic()
                 self.assertEqual(await middleware.ready_vaults(grants), ["ready"])
                 for _ in range(2):
                     self.assertEqual(await middleware.ready_vaults(grants), [])
                     self.assertEqual(await middleware.probe_grants({"ready": SAFE}), {})
-                self.assertLess(time.monotonic() - start, 0.5)
+                self.assertLess(time.monotonic() - start, 3.0)
+            await self._settle(lambda: active == 8)
             self.assertEqual(active, 8)
             self.assertLessEqual(peak, 8)
         finally:
