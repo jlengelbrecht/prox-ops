@@ -888,7 +888,9 @@ test('community plugins: catalog search, hashed packages, pinned install of exac
       JSON.stringify([{ id: 'calendar', name: 'Calendar', author: 'Liam', description: 'A calendar view', repo: 'liamcain/obsidian-calendar-plugin' },
                       { id: 'bad', name: 'Bad', repo: '../../evil' }]));
     const base = 'https://github.com/liamcain/obsidian-calendar-plugin/releases';
-    remote.set(`${base}/latest/download/manifest.json`, '{"id":"calendar","version":"1.5.10"}');
+    // GitHub's latest release is a different (beta) plugin; "latest" must follow the default branch.
+    remote.set(`${base}/latest/download/manifest.json`, '{"id":"calendar-beta","version":"2.0.0"}');
+    remote.set('https://raw.githubusercontent.com/liamcain/obsidian-calendar-plugin/HEAD/manifest.json', '{"id":"calendar","version":"1.5.10"}');
     remote.set(`${base}/download/1.5.10/manifest.json`, '{"id":"calendar","version":"1.5.10"}');
     remote.set(`${base}/download/1.5.10/main.js`, 'module.exports = class {};');
     const enabled = new Set();

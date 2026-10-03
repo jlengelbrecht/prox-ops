@@ -366,7 +366,12 @@ async function fetchPackage(id, version) {
   const entry = await catalogEntry(id);
   const base = `https://github.com/${entry.repo}/releases`;
   if (version === 'latest') {
-    const manifest = JSON.parse((await fetchBytes(`${base}/latest/download/manifest.json`)).toString('utf8'));
+    // Same as Obsidian's own installer: the version in the repo's default-branch manifest.json
+    // (GitHub's "latest release" can be a different, e.g. beta, plugin).
+    let manifest;
+    try { manifest = JSON.parse((await fetchBytes(`https://raw.githubusercontent.com/${entry.repo}/HEAD/manifest.json`)).toString('utf8')); }
+    catch (error) { if (error instanceof BridgeError) throw error; fail('not_found'); }
+    if (!manifest || manifest.id !== id) fail('conflict');
     version = String(manifest.version || '');
   }
   if (!/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/.test(version)) fail('invalid_request');
