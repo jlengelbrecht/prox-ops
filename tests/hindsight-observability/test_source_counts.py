@@ -262,16 +262,8 @@ class SourceCountTests(unittest.TestCase):
         key = (UUID, CONTAINER, 'current')
         observed = dict(zip(MODULE.IDENTITY, key))
         event = line(f'Task {UUID} failed: synthetic-secret').encode()
-        class FakeProcess:
-            def __init__(self, status=0):
-                self.stdout = io.BytesIO(event)
-                self.status = status
-            def wait(self, timeout=None):
-                return self.status
-            def kill(self):
-                pass
         with mock.patch.object(MODULE, 'observed_source', side_effect=[observed, observed]), \
-             mock.patch.object(MODULE.subprocess, 'Popen', return_value=FakeProcess()):
+             mock.patch.object(MODULE, '_run_child', return_value=(MODULE.counts([event.decode()], START, END), 0)):
             receipt = MODULE.capture_source('hindsight-api-abcde', key, START, END)
         self.assertEqual((receipt['worker_failed'], receipt['source_lines']), (1, 1))
         self.assertEqual(receipt['capture_before'], receipt['capture_after'])
@@ -282,26 +274,9 @@ class SourceCountTests(unittest.TestCase):
         ]:
             with self.subTest(status=status, before=before, after=after), \
                  mock.patch.object(MODULE, 'observed_source', side_effect=[before, after]), \
-                 mock.patch.object(MODULE.subprocess, 'Popen', return_value=FakeProcess(status)):
+                 mock.patch.object(MODULE, '_run_child', return_value=(MODULE.counts([event.decode()], START, END), status)):
                 with self.assertRaisesRegex(ValueError, '^source coverage unknown$'):
                     MODULE.capture_source('hindsight-api-abcde', key, START, END)
-
-    def test_capture_deadline_covers_stalled_and_continuous_stdout(self):
-        key = (UUID, CONTAINER, 'current')
-        observed = dict(zip(MODULE.IDENTITY, key))
-        for script in ('import time; time.sleep(3)',
-                       'import sys, time; end=time.monotonic()+3\nwhile time.monotonic()<end: sys.stdout.write("x\\n"); sys.stdout.flush()'):
-            with self.subTest(script=script):
-                process = subprocess.Popen([sys.executable, '-c', script], stdout=subprocess.PIPE)
-                started = time.monotonic()
-                with mock.patch.object(MODULE, 'observed_source', return_value=observed), \
-                     mock.patch.object(MODULE.subprocess, 'Popen', return_value=process), \
-                     mock.patch.object(MODULE, 'CAPTURE_TIMEOUT', 0.15, create=True):
-                    with self.assertRaisesRegex(ValueError, '^source coverage unknown$'):
-                        MODULE.capture_source('hindsight-api-abcde', key, START, END)
-                self.assertLess(time.monotonic() - started, 2)
-                self.assertIsNotNone(process.poll())
-                self.assertTrue(process.stdout.closed)
 
     def test_observed_current_and_previous_are_distinct_physical_containers(self):
         prior = 'containerd://' + 'b' * 64
@@ -309,14 +284,133 @@ class SourceCountTests(unittest.TestCase):
             {'name': 'api', 'containerID': CONTAINER,
              'lastState': {'terminated': {'containerID': prior}}}]}}
         def response(data, code=0):
-            return subprocess.CompletedProcess([], code, json.dumps(data).encode(), b'')
-        with mock.patch.object(MODULE.subprocess, 'run', return_value=response(pod)):
+            return json.dumps(data).encode(), code
+        with mock.patch.object(MODULE, '_run_child', return_value=response(pod)):
             self.assertEqual(MODULE.observed_source('hindsight-api-abcde', 'current')['container_id'], CONTAINER)
             self.assertEqual(MODULE.observed_source('hindsight-api-abcde', 'previous')['container_id'], prior)
-        with mock.patch.object(MODULE.subprocess, 'run', return_value=response({**pod,
+        with mock.patch.object(MODULE, '_run_child', return_value=response({**pod,
                 'status': {'containerStatuses': [{'name': 'api', 'containerID': CONTAINER}]}})):
             with self.assertRaisesRegex(ValueError, '^source coverage unknown$'):
                 MODULE.observed_source('hindsight-api-abcde', 'previous')
+
+    def test_child_capture_deadline_covers_stall_and_continuous_output(self):
+        key = (UUID, CONTAINER, 'current')
+        observed = dict(zip(MODULE.IDENTITY, key))
+        scripts = (
+            'import time; time.sleep(5)',
+            'import os, time\nwhile True: os.write(1, b"synthetic-secret\\n")',
+        )
+        original = subprocess.Popen
+        for script in scripts:
+            children = []
+            def launch(_command, **kwargs):
+                child = original([sys.executable, '-c', script], **kwargs)
+                children.append(child)
+                return child
+            began = time.monotonic()
+            with self.subTest(script=script), \
+                 mock.patch.object(MODULE, 'observed_source', return_value=observed), \
+                 mock.patch.object(MODULE.subprocess, 'Popen', side_effect=launch), \
+                 mock.patch.object(MODULE, 'CHILD_TIMEOUT', .15):
+                with self.assertRaisesRegex(ValueError, '^source coverage unknown$') as caught:
+                    MODULE.capture_source('hindsight-api-abcde', key, START, END)
+            self.assertLess(time.monotonic() - began, 1.5)
+            self.assertEqual(len(children), 1)
+            self.assertIsNotNone(children[0].poll())
+            self.assertTrue(children[0].stdout.closed)
+            self.assertNotIn('synthetic-secret', str(caught.exception))
+
+    def test_metadata_stream_and_protected_file_caps(self):
+        prior = 'containerd://' + 'b' * 64
+        pod = {'metadata': {'uid': UUID}, 'status': {'containerStatuses': [
+            {'name': 'api', 'containerID': CONTAINER,
+             'lastState': {'terminated': {'containerID': prior}}}]}}
+        original = subprocess.Popen
+        def launch(script):
+            return lambda _command, **kwargs: original([sys.executable, '-c', script], **kwargs)
+        script = 'import sys; sys.stdout.write(' + repr(json.dumps(pod)) + ')'
+        with mock.patch.object(MODULE.subprocess, 'Popen', side_effect=launch(script)):
+            self.assertEqual(MODULE.observed_source('hindsight-api-abcde', 'current')['container_id'], CONTAINER)
+        oversized = 'import os; os.write(1, b"x" * 1100000)'
+        with mock.patch.object(MODULE.subprocess, 'Popen', side_effect=launch(oversized)):
+            with self.assertRaisesRegex(ValueError, '^source coverage unknown$'):
+                MODULE.observed_source('hindsight-api-abcde', 'current')
+        children = []
+        def stalled(_command, **kwargs):
+            child = original([sys.executable, '-c', 'import time; time.sleep(5)'], **kwargs)
+            children.append(child)
+            return child
+        began = time.monotonic()
+        with mock.patch.object(MODULE.subprocess, 'Popen', side_effect=stalled), \
+             mock.patch.object(MODULE, 'CHILD_TIMEOUT', .15):
+            with self.assertRaisesRegex(ValueError, '^source coverage unknown$'):
+                MODULE.observed_source('hindsight-api-abcde', 'current')
+        self.assertLess(time.monotonic() - began, 1.5)
+        self.assertIsNotNone(children[0].poll())
+        self.assertTrue(children[0].stdout.closed)
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / 'protected.json'
+            for cap in (MODULE.MAX_RECORD, MODULE.MAX_MANIFEST):
+                path.write_bytes(b'x' * (cap + 1))
+                with self.assertRaisesRegex(ValueError, '^source coverage unknown$'):
+                    MODULE._read_json(path, cap)
+            path.write_bytes(b'\xff')
+            with self.assertRaises(UnicodeError):
+                MODULE._read_json(path, MODULE.MAX_RECORD)
+
+    def test_native_synthetic_capture_success_and_failed_status(self):
+        key = (UUID, CONTAINER, 'current')
+        observed = dict(zip(MODULE.IDENTITY, key))
+        event = line(f'Task {UUID} failed: synthetic-secret')
+        original = subprocess.Popen
+        for status in (0, 7):
+            script = ('import sys; sys.stdout.write(' + repr(event) +
+                      '); sys.stdout.flush(); sys.exit(' + str(status) + ')')
+            def launch(_command, **kwargs):
+                return original([sys.executable, '-c', script], **kwargs)
+            with self.subTest(status=status), \
+                 mock.patch.object(MODULE, 'observed_source', return_value=observed), \
+                 mock.patch.object(MODULE.subprocess, 'Popen', side_effect=launch):
+                if status:
+                    with self.assertRaisesRegex(ValueError, '^source coverage unknown$'):
+                        MODULE.capture_source('hindsight-api-abcde', key, START, END)
+                else:
+                    receipt = MODULE.capture_source('hindsight-api-abcde', key, START, END)
+                    self.assertEqual((receipt['worker_failed'], receipt['source_lines']), (1, 1))
+                    self.assertNotIn('synthetic-secret', json.dumps(receipt))
+
+    def test_cli_bounds_manifest_and_each_receipt_before_decode(self):
+        source = dict(pod_uid=UUID, container_id=CONTAINER, log_source='current',
+                      interval_start=START, interval_end=END, lifecycle_start=START,
+                      lifecycle_end=END, first_timestamp=None, last_timestamp=None,
+                      source_lines=0, producer_exit_code=0, lifecycle_verified=True,
+                      rotation_verified=True, retention_verified=True)
+        manifest = dict(complete=True, inventory_complete=True, lifecycle_complete=True,
+                        sources=[source])
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            coverage = root / 'coverage.json'
+            receipts = root / 'receipts'
+            receipts.mkdir()
+            receipt = receipts / 'one.json'
+            argv = ['source-counts', '--start-utc', START, '--end-utc', END,
+                    '--coverage-file', str(coverage), '--receipts-dir', str(receipts)]
+            def run_cli():
+                with mock.patch.object(sys, 'argv', argv), \
+                     mock.patch('sys.stdout', new_callable=io.StringIO) as out, \
+                     mock.patch('sys.stderr', new_callable=io.StringIO) as err:
+                    status = MODULE.main()
+                return status, out.getvalue(), err.getvalue()
+            coverage.write_bytes(b'x' * (MODULE.MAX_MANIFEST + 1))
+            self.assertEqual(run_cli(), (1, '', 'source coverage unknown\n'))
+            coverage.write_text(json.dumps(manifest))
+            for data in (b'x' * (MODULE.MAX_RECORD + 1), b'\xff', b'{bad'):
+                receipt.write_bytes(data)
+                self.assertEqual(run_cli(), (1, '', 'source coverage unknown\n'))
+            receipt.write_text(json.dumps(receipt_for(MODULE.counts([], START, END), source)))
+            status, output, error = run_cli()
+            self.assertEqual((status, error), (0, ''))
+            self.assertEqual(json.loads(output)['verified_sources'], 1)
 
 
 if __name__ == '__main__':
