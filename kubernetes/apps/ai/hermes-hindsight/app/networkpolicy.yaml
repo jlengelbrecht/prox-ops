@@ -338,6 +338,20 @@ spec:
         - ports:
             - port: "8888"
               protocol: TCP
+    # Additional GET /metrics lane for the stack Prometheus service account;
+    # the approved API clients above retain their existing TCP 8888 access.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            io.cilium.k8s.policy.serviceaccount: kube-prometheus-stack-prometheus
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: /metrics
   egress:
     - toEndpoints:
         - matchLabels:

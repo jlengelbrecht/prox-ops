@@ -1,0 +1,66 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: hindsight-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: hindsight
+      interval: 30s
+      rules:
+        - alert: HindsightMetricsAbsent
+          expr: absent(up{namespace="ai",service="hindsight-api"}) or up{namespace="ai",service="hindsight-api"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Hindsight API metrics scrape missing
+            description: Check the ServiceMonitor target, API readiness and Cilium scrape lane. Paging is not configured.
+        - alert: HindsightNativeGaugeAbsent
+          expr: up{namespace="ai",service="hindsight-api"} == 1 unless on (namespace,service) hindsight_db_pool_waiting{namespace="ai",service="hindsight-api"}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Hindsight native DB pool gauge missing from successful scrape
+            description: Target is up but the always exported native DB pool waiting gauge is absent. Check exposition and relabeling; quiet backlog or worker counters alone are not failures.
+        # Native pending includes retry-deferred children and is a status
+        # count, not eligible queue depth or oldest runnable job age.
+        # Provisional before-Obsidian devb0x retain p99 end-to-end was 284s
+        # across 1376 completions. Twice that (~568s), rounded to 10m,
+        # is a measured starting window, subject to passive comparison with ordinary activity.
+        - alert: HindsightRetainPendingWithoutCompletion
+          expr: '(sum by (bank_id) (hindsight_async_operations{namespace="ai",service="hindsight-api",status="pending",operation_type="retain"}) > 0) and on (bank_id) (sum by (bank_id) (hindsight_async_operations{namespace="ai",service="hindsight-api",status="pending",operation_type="retain"} offset 10m) > 0) unless on (bank_id) (sum by (bank_id) (increase(hindsight_operation_operations_total{namespace="ai",service="hindsight-api",operation="retain",source="worker"}[10m])) > 0)'
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Hindsight retain pending without worker completion
+            description: Pending retain status, including deferred children, persisted without a worker completion with a 10m-old pending reference and a 10m rule hold. This is not job age or a new-failure count; inspect deferred rows, handled failures and worker state. Repeated handled failures can suppress this warning.
+        - alert: HindsightMetricSeriesGrowth
+          expr: count({__name__=~"hindsight_.*",namespace="ai",service="hindsight-api"}) > 4000
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Hindsight native series above provisional full-family budget
+            description: Provisional 4000 threshold is estimated from 1168 unlabelled native series before bank/backlog opt-ins plus two-bank multiplicity and headroom; rebase from ordinary labelled scrape after rollout. No bank allowlist.
+        - alert: HindsightMetricSeriesChurn
+          expr: count(count_over_time({__name__=~"hindsight_.*",namespace="ai",service="hindsight-api"}[30m])) > 6000
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Hindsight distinct native series in 30 minutes exceed provisional churn budget
+            description: Provisional 6000 distinct-series threshold includes short-lived bank IDs; inspect ordinary labelled scrape and rebase. No bank allowlist.
+        - alert: HindsightDBPoolWaiting
+          expr: hindsight_db_pool_waiting{namespace="ai"} > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Hindsight database pool has waiting callers
+            description: Inspect pool acquisition latency and shared database connection budget.
