@@ -6,6 +6,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -284,6 +285,23 @@ class SourceCountTests(unittest.TestCase):
                  mock.patch.object(MODULE.subprocess, 'Popen', return_value=FakeProcess(status)):
                 with self.assertRaisesRegex(ValueError, '^source coverage unknown$'):
                     MODULE.capture_source('hindsight-api-abcde', key, START, END)
+
+    def test_capture_deadline_covers_stalled_and_continuous_stdout(self):
+        key = (UUID, CONTAINER, 'current')
+        observed = dict(zip(MODULE.IDENTITY, key))
+        for script in ('import time; time.sleep(3)',
+                       'import sys, time; end=time.monotonic()+3\nwhile time.monotonic()<end: sys.stdout.write("x\\n"); sys.stdout.flush()'):
+            with self.subTest(script=script):
+                process = subprocess.Popen([sys.executable, '-c', script], stdout=subprocess.PIPE)
+                started = time.monotonic()
+                with mock.patch.object(MODULE, 'observed_source', return_value=observed), \
+                     mock.patch.object(MODULE.subprocess, 'Popen', return_value=process), \
+                     mock.patch.object(MODULE, 'CAPTURE_TIMEOUT', 0.15, create=True):
+                    with self.assertRaisesRegex(ValueError, '^source coverage unknown$'):
+                        MODULE.capture_source('hindsight-api-abcde', key, START, END)
+                self.assertLess(time.monotonic() - started, 2)
+                self.assertIsNotNone(process.poll())
+                self.assertTrue(process.stdout.closed)
 
     def test_observed_current_and_previous_are_distinct_physical_containers(self):
         prior = 'containerd://' + 'b' * 64

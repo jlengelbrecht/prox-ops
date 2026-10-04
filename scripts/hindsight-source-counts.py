@@ -7,6 +7,8 @@ import math
 import re
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 UUID = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
@@ -14,6 +16,7 @@ WORKER = re.compile(rf'^Task {UUID} (scheduled for retry at|deferred until|timed
 CATEGORIES = ('worker_retry', 'worker_deferred', 'worker_timeout', 'worker_failed',
               'provider_429_evidence', 'auth_refresh_error')
 MAX_LINE = 65536
+CAPTURE_TIMEOUT = 15
 MIN_P95_OBSERVATIONS = 100  # at least five observations in the upper 5% tail
 WORKER_LOGGER = 'hindsight_api.worker.poller'
 CODEX_LLM_LOGGER = 'hindsight_api.engine.providers.codex_llm'
@@ -275,14 +278,26 @@ def capture_source(pod, key, start, end):
         command.append('--previous')
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + CAPTURE_TIMEOUT
+    timer = threading.Timer(CAPTURE_TIMEOUT, process.kill)
+    timer.daemon = True
+    timer.start()
     try:
         result = counts(bounded_lines(process.stdout), start, end)
-        status = process.wait(timeout=15)
-    except BaseException:
+        status = process.wait(timeout=max(0, deadline - time.monotonic()))
+        if time.monotonic() >= deadline:
+            raise ValueError('source coverage unknown')
+    except BaseException as exc:
         process.kill()
-        process.wait()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise ValueError('source coverage unknown') from None
         raise
     finally:
+        timer.cancel()
         process.stdout.close()
     if status != 0:
         raise ValueError('source coverage unknown')
