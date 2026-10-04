@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Verify logging tool archives and safe members before writing required binaries."""
+import hashlib
+import pathlib
+import stat
+import sys
+import tarfile
+import zipfile
+
+HELM_ARCHIVE = 'a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496'
+HELM_BINARY = 'e4722a77de9df824214aaf19d43687c49f7cbcf3b107905acea002173777d486'
+PROMTAIL_ARCHIVE = 'b70d5a5e259a64f6f9b6805bd42d725e50978bcd520fb46113a86cd8b418bbca'
+PROMTAIL_BINARY = '3b0e6d48f9973244e0b17c79e478eae53edae60378eaeaad32b749d42dbe4609'
+MAX_MEMBER = 200_000_000
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def write_verified(payload, expected, destination):
+    if len(payload) > MAX_MEMBER or hashlib.sha256(payload).hexdigest() != expected:
+        raise ValueError('binary checksum mismatch')
+    destination = pathlib.Path(destination)
+    if destination.exists():
+        raise ValueError('destination exists')
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination.write_bytes(payload)
+    destination.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+
+def verified_helm(archive, destination):
+    if digest(archive) != HELM_ARCHIVE:
+        raise ValueError('archive checksum mismatch')
+    with tarfile.open(archive, 'r:gz') as tar:
+        members = tar.getmembers()
+        names = [member.name.rstrip('/') for member in members]
+        allowed = {'linux-amd64', 'linux-amd64/helm', 'linux-amd64/LICENSE', 'linux-amd64/README.md'}
+        if len(names) != len(set(names)) or not set(names) <= allowed or 'linux-amd64/helm' not in names:
+            raise ValueError('unsafe archive members')
+        if any(member.size > MAX_MEMBER or not (member.isfile() or member.isdir()) for member in members):
+            raise ValueError('unsafe archive members')
+        member = tar.getmember('linux-amd64/helm')
+        if not member.isfile():
+            raise ValueError('unsafe archive members')
+        source = tar.extractfile(member)
+        if source is None:
+            raise ValueError('unsafe archive members')
+        write_verified(source.read(MAX_MEMBER + 1), HELM_BINARY, destination)
+
+
+def verified_promtail(archive, destination):
+    if digest(archive) != PROMTAIL_ARCHIVE:
+        raise ValueError('archive checksum mismatch')
+    with zipfile.ZipFile(archive) as zf:
+        entries = zf.infolist()
+        if len(entries) != 1 or entries[0].filename != 'promtail-linux-amd64' or (
+                entries[0].file_size > MAX_MEMBER or entries[0].is_dir()):
+            raise ValueError('unsafe archive members')
+        write_verified(zf.read(entries[0]), PROMTAIL_BINARY, destination)
+
+
+def main(argv):
+    if len(argv) != 4:
+        raise ValueError('usage')
+    helm_archive, promtail_archive, output_dir = map(pathlib.Path, argv[1:])
+    verified_helm(helm_archive, output_dir / 'helm')
+    verified_promtail(promtail_archive, output_dir / 'promtail-linux-amd64')
+
+
+if __name__ == '__main__':
+    try:
+        main(sys.argv)
+    except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile):
+        print('logging assets unavailable: integrity or member check failed', file=sys.stderr)
+        sys.exit(1)
