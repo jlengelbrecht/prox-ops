@@ -105,6 +105,10 @@ class ManifestTests(unittest.TestCase):
         self.assertIn('operation_type="retain"', exprs)
         self.assertNotIn('operation_type="batch_retain"', exprs)
         dash = docs(OBS / 'dashboards/hindsight-dashboard.yaml')[0]
+        release = docs(OBS / 'helmrelease.yaml')[0]
+        folder_key = release['spec']['values']['grafana']['sidecar']['dashboards']['folderAnnotation']
+        self.assertEqual(dash['metadata']['labels']['grafana_dashboard'], '1')
+        self.assertEqual(dash['metadata']['annotations'][folder_key], 'Observability')
         data = json.loads(dash['data']['hindsight-ingestion.json'])
         self.assertGreaterEqual(len(data['panels']), 8)
         self.assertTrue(any('batch_retain' in p['targets'][0]['expr'] for p in data['panels']))
