@@ -1,0 +1,359 @@
+---
+# Isolated restore rehearsal for the retained pre-upgrade snapshots. Loki and
+# Grafana run offline on disposable clones; the original claims are never
+# mounted. No Service exists and all pod traffic is denied, so the copies are
+# reachable only through kubectl port-forward. Removing this file prunes the
+# clones; the retained snapshots are unaffected.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: logging-upgrade-rehearsal-loki-storage
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-rehearsal
+spec:
+  storageClassName: ceph-block
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Gi
+  dataSource:
+    apiGroup: snapshot.storage.k8s.io
+    kind: VolumeSnapshot
+    name: logging-upgrade-20261004-storage-loki-0
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: logging-upgrade-rehearsal-grafana-storage
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-rehearsal
+spec:
+  storageClassName: ceph-block
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  dataSource:
+    apiGroup: snapshot.storage.k8s.io
+    kind: VolumeSnapshot
+    name: logging-upgrade-20261004-grafana
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: logging-upgrade-rehearsal-deny-all
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-rehearsal
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: logging-upgrade-rehearsal
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Same schema, paths and tenant mode as production, but a private in-memory
+# ring, no memberlist or compactor address, and retention deletion disabled.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logging-upgrade-rehearsal-loki-config
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-rehearsal
+data:
+  config.yaml: |
+    auth_enabled: true
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9095
+      log_level: info
+      log_format: logfmt
+    common:
+      path_prefix: /var/loki
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+      storage:
+        filesystem:
+          chunks_directory: /var/loki/chunks
+          rules_directory: /var/loki/rules
+    ingester:
+      lifecycler:
+        ring:
+          replication_factor: 1
+    schema_config:
+      configs:
+        - from: "2024-01-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: loki_index_
+            period: 24h
+    storage_config:
+      tsdb_shipper:
+        active_index_directory: /var/loki/tsdb-index
+        cache_location: /var/loki/tsdb-cache
+        cache_ttl: 24h
+      filesystem:
+        directory: /var/loki/chunks
+    compactor:
+      working_directory: /var/loki/compactor
+      retention_enabled: false
+      delete_request_store: filesystem
+    limits_config:
+      retention_period: 336h
+      max_query_length: 0h
+      max_query_lookback: 336h
+      max_query_series: 10000
+      max_entries_limit_per_query: 5000
+      max_streams_per_user: 10000
+      ingestion_rate_mb: 15
+      ingestion_burst_size_mb: 20
+      per_stream_rate_limit: 5MB
+      per_stream_rate_limit_burst: 15MB
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      creation_grace_period: 10m
+      max_cache_freshness_per_query: 10m
+      split_queries_by_interval: 15m
+    analytics:
+      reporting_enabled: false
+---
+# Prints only PASS or FAIL. Opening the clone read-write lets SQLite replay a
+# crash-consistent WAL or hot journal; the checkpoint folds it into the main
+# file before Grafana starts.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logging-upgrade-rehearsal-sqlite-check
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-rehearsal
+data:
+  sqlite-check.py: |
+    import os
+    import pathlib
+    import sys
+
+
+    def healthy(path):
+        import sqlite3
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            return False
+        with open(path, 'rb') as handle:
+            if handle.read(16) != b'SQLite format 3\x00':
+                return False
+        connection = sqlite3.connect(pathlib.Path(path).resolve().as_uri() + '?mode=rw',
+                                     uri=True, isolation_level=None)
+        try:
+            connection.execute('PRAGMA temp_store=MEMORY')
+            rows = connection.execute('PRAGMA integrity_check').fetchall()
+            if connection.execute('PRAGMA journal_mode').fetchone()[0].lower() == 'wal':
+                if connection.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] != 0:
+                    return False
+        finally:
+            connection.close()
+        return rows == [('ok',)]
+
+
+    def main():
+        try:
+            ok = len(sys.argv) == 2 and healthy(sys.argv[1])
+        except Exception:
+            ok = False
+        print('PASS' if ok else 'FAIL')
+        return 0 if ok else 1
+
+
+    if __name__ == '__main__':
+        sys.exit(main())
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: logging-upgrade-rehearsal-loki
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-rehearsal
+    app.kubernetes.io/name: logging-upgrade-rehearsal-loki
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: loki
+      image: docker.io/grafana/loki:3.6.3
+      imagePullPolicy: IfNotPresent
+      args:
+        - -config.file=/etc/loki/config/config.yaml
+        - -target=all
+      ports:
+        - name: http
+          containerPort: 3100
+          protocol: TCP
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: 2000m
+          memory: 2Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: config
+          mountPath: /etc/loki/config
+        - name: storage
+          mountPath: /var/loki
+  volumes:
+    - name: tmp
+      emptyDir: {}
+    - name: config
+      configMap:
+        name: logging-upgrade-rehearsal-loki-config
+    - name: storage
+      persistentVolumeClaim:
+        claimName: logging-upgrade-rehearsal-loki-storage
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: logging-upgrade-rehearsal-grafana
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-rehearsal
+    app.kubernetes.io/name: logging-upgrade-rehearsal-grafana
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsUser: 472
+    runAsGroup: 472
+    fsGroup: 472
+    fsGroupChangePolicy: OnRootMismatch
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  initContainers:
+    - name: sqlite-check
+      image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -I
+        - -B
+        - /scripts/sqlite-check.py
+        - /var/lib/grafana/grafana.db
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: sqlite-check
+          mountPath: /scripts
+          readOnly: true
+        - name: storage
+          mountPath: /var/lib/grafana
+  containers:
+    - name: grafana
+      image: docker.io/grafana/grafana:12.3.0
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: GF_PATHS_DATA
+          value: /var/lib/grafana/
+        - name: GF_PATHS_LOGS
+          value: /var/log/grafana
+        - name: GF_PATHS_PLUGINS
+          value: /var/lib/grafana/plugins
+        - name: GF_LOG_MODE
+          value: console
+        - name: GF_SERVER_ROOT_URL
+          value: http://localhost:3000
+        - name: GF_ANALYTICS_REPORTING_ENABLED
+          value: "false"
+        - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+          value: "false"
+        - name: GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES
+          value: "false"
+        - name: GF_ANALYTICS_FEEDBACK_LINKS_ENABLED
+          value: "false"
+        - name: GF_NEWS_NEWS_FEED_ENABLED
+          value: "false"
+        - name: GF_PLUGINS_PREINSTALL_DISABLED
+          value: "true"
+        - name: GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED
+          value: "true"
+        - name: GF_SNAPSHOTS_EXTERNAL_ENABLED
+          value: "false"
+        - name: GF_AUTH_ANONYMOUS_ENABLED
+          value: "false"
+        - name: GF_UNIFIED_ALERTING_EXECUTE_ALERTS
+          value: "false"
+      ports:
+        - name: http
+          containerPort: 3000
+          protocol: TCP
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: logs
+          mountPath: /var/log/grafana
+        - name: storage
+          mountPath: /var/lib/grafana
+  volumes:
+    - name: tmp
+      emptyDir: {}
+    - name: logs
+      emptyDir: {}
+    - name: sqlite-check
+      configMap:
+        name: logging-upgrade-rehearsal-sqlite-check
+    - name: storage
+      persistentVolumeClaim:
+        claimName: logging-upgrade-rehearsal-grafana-storage
