@@ -1,0 +1,45 @@
+---
+# One-time retained snapshots taken before logging upgrades. Prune is disabled
+# so removing this file never deletes them; clean up by hand once a restore
+# rehearsal has proven newer backups.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: logging-upgrade-20261004-grafana
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-20261004
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  volumeSnapshotClassName: ceph-block-snapshot-retain
+  source:
+    persistentVolumeClaimName: kube-prometheus-stack-grafana
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: logging-upgrade-20261004-prometheus-db
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-20261004
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  volumeSnapshotClassName: ceph-block-snapshot-retain
+  source:
+    persistentVolumeClaimName: prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-0
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: logging-upgrade-20261004-alertmanager-db
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-20261004
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  volumeSnapshotClassName: ceph-block-snapshot-retain
+  source:
+    persistentVolumeClaimName: alertmanager-kube-prometheus-stack-alertmanager-db-alertmanager-kube-prometheus-stack-alertmanager-0
