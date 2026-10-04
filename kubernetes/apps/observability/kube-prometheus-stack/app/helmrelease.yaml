@@ -112,6 +112,9 @@ spec:
         accessModes:
           - ReadWriteOnce
         size: 10Gi
+        # Helm leaves the claim in place on uninstall or a failed-upgrade cleanup
+        annotations:
+          helm.sh/resource-policy: keep
 
       # Service configuration for LoadBalancer
       service:
@@ -186,6 +189,10 @@ spec:
                     matcherRegex: "traceID=(\\w+)"
                     name: TraceID
                     url: "$${__value.raw}"
+                # Loki runs multi-tenant; match the tenant Promtail pushes to
+                httpHeaderName1: X-Scope-OrgID
+              secureJsonData:
+                httpHeaderValue1: "1"
 
       # Dashboard providers for external dashboards (gnetId)
       dashboardProviders:

@@ -24,7 +24,7 @@ spec:
     cleanupOnFail: true
     remediation:
       retries: 3
-      # Uninstall would delete the StatefulSet claim along with the release
+      # Roll back rather than uninstall so a failed upgrade cannot tear down Loki storage
       strategy: rollback
   values:
     # Deployment mode - single binary for homelab simplicity
@@ -48,6 +48,8 @@ spec:
         enabled: true
         storageClass: ceph-block
         size: 200Gi
+        # Omit the StatefulSet PVC retention policy so Kubernetes defaults it to
+        # Retain and storage-loki-0 survives StatefulSet deletion or scale-down
         enableStatefulSetAutoDeletePVC: false
 
       # Pod configuration
