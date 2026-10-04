@@ -4,11 +4,13 @@ import argparse
 import datetime as dt
 import json
 import math
+import os
 import re
+import selectors
 import subprocess
 import sys
-import threading
 import time
+from itertools import islice
 from pathlib import Path
 
 UUID = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
@@ -16,7 +18,12 @@ WORKER = re.compile(rf'^Task {UUID} (scheduled for retry at|deferred until|timed
 CATEGORIES = ('worker_retry', 'worker_deferred', 'worker_timeout', 'worker_failed',
               'provider_429_evidence', 'auth_refresh_error')
 MAX_LINE = 65536
-CAPTURE_TIMEOUT = 15
+MAX_SOURCES = 128  # one physical container per receipt, at most one UTC day
+MAX_RECORD = 4096  # exceeds the fixed identity, bounds, counters and flags schema
+MAX_MANIFEST = MAX_SOURCES * MAX_RECORD
+MAX_POD_METADATA = 1024 * 1024  # one pinned API pod JSON object
+CHILD_TIMEOUT = 15
+REAP_TIMEOUT = 0.5
 MIN_P95_OBSERVATIONS = 100  # at least five observations in the upper 5% tail
 WORKER_LOGGER = 'hindsight_api.worker.poller'
 CODEX_LLM_LOGGER = 'hindsight_api.engine.providers.codex_llm'
@@ -38,6 +45,108 @@ def bounded_lines(stream):
             yield chunk.decode('utf-8')
         except UnicodeDecodeError:
             yield None
+
+
+def _child_chunks(process, deadline):
+    """Read a pipe only while its monotonic deadline remains live."""
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise ValueError('source coverage unknown')
+            chunk = os.read(process.stdout.fileno(), MAX_LINE)
+            if not chunk:
+                return
+            yield chunk
+
+
+def _lines_from_chunks(chunks):
+    line = bytearray()
+    oversized = False
+    for chunk in chunks:
+        parts = chunk.split(b'\n')
+        for index, part in enumerate(parts):
+            if index < len(parts) - 1:
+                part += b'\n'
+            if not part:
+                continue
+            if not oversized and len(line) + len(part) <= MAX_LINE:
+                line.extend(part)
+            else:
+                oversized = True
+            if part.endswith(b'\n'):
+                if oversized:
+                    yield None
+                else:
+                    try:
+                        yield line.decode('utf-8')
+                    except UnicodeDecodeError:
+                        yield None
+                line.clear()
+                oversized = False
+    if line or oversized:
+        if oversized:
+            yield None
+        else:
+            try:
+                yield line.decode('utf-8')
+            except UnicodeDecodeError:
+                yield None
+
+
+def _limited_bytes(chunks, limit):
+    data = bytearray()
+    for chunk in chunks:
+        if len(data) + len(chunk) > limit:
+            raise ValueError('source coverage unknown')
+        data.extend(chunk)
+    return bytes(data)
+
+
+def _run_child(command, consume, timeout=None):
+    if timeout is None:
+        timeout = CHILD_TIMEOUT
+    deadline = time.monotonic() + timeout
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        result = consume(_child_chunks(process, deadline))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError('source coverage unknown')
+        status = process.wait(timeout=remaining)
+        return result, status
+    except BaseException as error:
+        try:
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=REAP_TIMEOUT)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    process.wait(timeout=REAP_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        raise ValueError('source coverage unknown') from None
+    finally:
+        process.stdout.close()
+
+
+def _read_json(path, limit):
+    with path.open('rb') as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError('source coverage unknown')
+    return json.loads(data.decode('utf-8'))
 
 
 def bound(value):
@@ -246,13 +355,12 @@ def identity(source):
 def observed_source(pod, log_source):
     if not re.fullmatch(r'hindsight-api-[a-z0-9-]{1,63}', pod):
         raise ValueError('source coverage unknown')
-    run = subprocess.run(['kubectl', 'get', 'pod', pod, '-n', 'ai', '-o', 'json'],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                         stderr=subprocess.DEVNULL, timeout=15, check=False)
-    if run.returncode or len(run.stdout) > 1024 * 1024:
+    data, status = _run_child(['kubectl', 'get', 'pod', pod, '-n', 'ai', '-o', 'json'],
+                              lambda chunks: _limited_bytes(chunks, MAX_POD_METADATA))
+    if status:
         raise ValueError('source coverage unknown')
     try:
-        item = json.loads(run.stdout)
+        item = json.loads(data)
         uid = item['metadata']['uid']
         statuses = [x for x in item['status']['containerStatuses'] if x['name'] == 'api']
         if len(statuses) != 1:
@@ -276,29 +384,8 @@ def capture_source(pod, key, start, end):
                '--since-time=' + bound(start).isoformat(), '--timestamps=false']
     if key[2] == 'previous':
         command.append('--previous')
-    process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    deadline = time.monotonic() + CAPTURE_TIMEOUT
-    timer = threading.Timer(CAPTURE_TIMEOUT, process.kill)
-    timer.daemon = True
-    timer.start()
-    try:
-        result = counts(bounded_lines(process.stdout), start, end)
-        status = process.wait(timeout=max(0, deadline - time.monotonic()))
-        if time.monotonic() >= deadline:
-            raise ValueError('source coverage unknown')
-    except BaseException as exc:
-        process.kill()
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            pass
-        if isinstance(exc, subprocess.TimeoutExpired):
-            raise ValueError('source coverage unknown') from None
-        raise
-    finally:
-        timer.cancel()
-        process.stdout.close()
+    result, status = _run_child(command, lambda chunks:
+                                counts(_lines_from_chunks(chunks), start, end))
     if status != 0:
         raise ValueError('source coverage unknown')
     after = observed_source(pod, key[2])
@@ -317,7 +404,7 @@ def validate_coverage(manifest, start, end):
             ('complete', 'inventory_complete', 'lifecycle_complete')):
         raise ValueError('source coverage unknown')
     sources = manifest.get('sources')
-    if not isinstance(sources, list) or not sources:
+    if not isinstance(sources, list) or not sources or len(sources) > MAX_SOURCES:
         raise ValueError('source coverage unknown')
     seen, intervals = set(), []
     for source in sources:
@@ -423,13 +510,15 @@ def main():
     parser.add_argument('--receipts-dir', type=Path)
     args = parser.parse_args()
     try:
-        manifest = json.loads(args.coverage_file.read_text(encoding='utf-8'))
+        manifest = _read_json(args.coverage_file, MAX_MANIFEST)
         sources = validate_coverage(manifest, args.start_utc, args.end_utc)
         if args.receipts_dir:
             if any((args.pod_uid, args.container_id, args.log_source, args.capture_pod)):
                 raise ValueError('source coverage unknown')
-            files = sorted(args.receipts_dir.glob('*.json'))
-            result = aggregate_receipts(manifest, [json.loads(p.read_text()) for p in files],
+            files = sorted(islice(args.receipts_dir.glob('*.json'), MAX_SOURCES + 1))
+            if len(files) != len(sources):
+                raise ValueError('source coverage unknown')
+            result = aggregate_receipts(manifest, [_read_json(p, MAX_RECORD) for p in files],
                                         args.start_utc, args.end_utc)
         else:
             key = (args.pod_uid, args.container_id, args.log_source)
