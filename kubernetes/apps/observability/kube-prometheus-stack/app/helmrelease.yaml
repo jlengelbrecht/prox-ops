@@ -186,6 +186,10 @@ spec:
                     matcherRegex: "traceID=(\\w+)"
                     name: TraceID
                     url: "$${__value.raw}"
+                # Loki runs multi-tenant; match the tenant Promtail pushes to
+                httpHeaderName1: X-Scope-OrgID
+              secureJsonData:
+                httpHeaderValue1: "1"
 
       # Dashboard providers for external dashboards (gnetId)
       dashboardProviders:
