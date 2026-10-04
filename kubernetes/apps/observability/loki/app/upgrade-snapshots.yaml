@@ -1,0 +1,31 @@
+---
+# One-time retained snapshots taken before logging upgrades. Prune is disabled
+# so removing this file never deletes them; clean up by hand once a restore
+# rehearsal has proven newer backups.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: logging-upgrade-20261004-storage-loki-0
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-20261004
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  volumeSnapshotClassName: ceph-block-snapshot-retain
+  source:
+    persistentVolumeClaimName: storage-loki-0
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: logging-upgrade-20261004-loki-data
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-20261004
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  volumeSnapshotClassName: ceph-block-snapshot-retain
+  source:
+    persistentVolumeClaimName: loki-data
