@@ -1,0 +1,340 @@
+---
+# Isolated restore rehearsal for the retained Prometheus and Alertmanager
+# snapshots. The target releases open disposable clones offline; the original
+# claims are never mounted. There is no Service, no scraping, no alert delivery
+# and no peer clustering, and all pod traffic is denied, so the copies are
+# reachable only through kubectl port-forward. Removing this file prunes the
+# clones; the retained snapshots are unaffected.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: metrics-upgrade-rehearsal-prometheus-db
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+spec:
+  storageClassName: ceph-block
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  dataSource:
+    apiGroup: snapshot.storage.k8s.io
+    kind: VolumeSnapshot
+    name: logging-upgrade-20261004-prometheus-db
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: metrics-upgrade-rehearsal-alertmanager-db
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+spec:
+  storageClassName: ceph-block
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  dataSource:
+    apiGroup: snapshot.storage.k8s.io
+    kind: VolumeSnapshot
+    name: logging-upgrade-20261004-alertmanager-db
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: metrics-upgrade-rehearsal-deny-all
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# No scrape, rule, alerting or remote storage sections: the clone only serves
+# queries over the restored TSDB.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metrics-upgrade-rehearsal-prometheus-config
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+data:
+  prometheus.yaml: |
+    global:
+      scrape_interval: 1m
+      evaluation_interval: 1m
+---
+# A single receiver without integrations, so nothing can be delivered even if
+# an alert arrived.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metrics-upgrade-rehearsal-alertmanager-config
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+data:
+  alertmanager.yaml: |
+    route:
+      receiver: "null"
+    receivers:
+      - name: "null"
+---
+# Prints only PASS or FAIL, reading the clone read-only. Both servers start
+# silently on an empty directory, so a missing TSDB or state file must fail
+# here; a corrupt one fails in the server itself. An empty state file is valid.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metrics-upgrade-rehearsal-precheck
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+data:
+  precheck.py: |
+    import json
+    import os
+    import sys
+
+
+    def prometheus(root):
+        if not os.path.isdir(os.path.join(root, 'wal')):
+            return False
+        blocks = 0
+        for name in os.listdir(root):
+            meta = os.path.join(root, name, 'meta.json')
+            if not os.path.isfile(meta):
+                continue
+            with open(meta) as handle:
+                data = json.load(handle)
+            if (data.get('ulid') != name or data.get('minTime', 0) >= data.get('maxTime', 0)
+                    or not os.path.isfile(os.path.join(root, name, 'index'))
+                    or not os.path.isdir(os.path.join(root, name, 'chunks'))):
+                return False
+            blocks += 1
+        return blocks > 0
+
+
+    def alertmanager(root):
+        return all(os.path.isfile(os.path.join(root, name)) for name in ('nflog', 'silences'))
+
+
+    def main():
+        checks = {'prometheus': prometheus, 'alertmanager': alertmanager}
+        try:
+            ok = len(sys.argv) == 3 and checks[sys.argv[1]](sys.argv[2])
+        except Exception:
+            ok = False
+        print('PASS' if ok else 'FAIL')
+        return 0 if ok else 1
+
+
+    if __name__ == '__main__':
+        sys.exit(main())
+---
+# The operator mounts the claim with subPath prometheus-db at /prometheus.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: metrics-upgrade-rehearsal-prometheus
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+    app.kubernetes.io/component: rehearsal-prometheus
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 2000
+    fsGroup: 2000
+    fsGroupChangePolicy: OnRootMismatch
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  initContainers:
+    - name: precheck
+      image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -I
+        - -B
+        - /scripts/precheck.py
+        - prometheus
+        - /data/prometheus-db
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: precheck
+          mountPath: /scripts
+          readOnly: true
+        - name: storage
+          mountPath: /data
+          readOnly: true
+  containers:
+    - name: prometheus
+      image: quay.io/prometheus/prometheus:v3.15.0-distroless
+      imagePullPolicy: IfNotPresent
+      # Retention far beyond production so the clone never deletes the
+      # history it is being compared on.
+      args:
+        - --config.file=/etc/prometheus/prometheus.yaml
+        - --storage.tsdb.path=/prometheus
+        - --storage.tsdb.retention.time=3650d
+        - --web.listen-address=:9090
+      ports:
+        - name: http
+          containerPort: 9090
+          protocol: TCP
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+          readOnly: true
+        - name: storage
+          mountPath: /prometheus
+          subPath: prometheus-db
+  volumes:
+    - name: precheck
+      configMap:
+        name: metrics-upgrade-rehearsal-precheck
+    - name: config
+      configMap:
+        name: metrics-upgrade-rehearsal-prometheus-config
+    - name: storage
+      persistentVolumeClaim:
+        claimName: metrics-upgrade-rehearsal-prometheus-db
+---
+# The operator mounts the claim with subPath alertmanager-db at /alertmanager.
+# An empty cluster listen address disables gossip with any peer.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: metrics-upgrade-rehearsal-alertmanager
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+    app.kubernetes.io/component: rehearsal-alertmanager
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 2000
+    fsGroup: 2000
+    fsGroupChangePolicy: OnRootMismatch
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  initContainers:
+    - name: precheck
+      image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -I
+        - -B
+        - /scripts/precheck.py
+        - alertmanager
+        - /data/alertmanager-db
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: precheck
+          mountPath: /scripts
+          readOnly: true
+        - name: storage
+          mountPath: /data
+          readOnly: true
+  containers:
+    - name: alertmanager
+      image: quay.io/prometheus/alertmanager:v0.34.1
+      imagePullPolicy: IfNotPresent
+      # Retention far beyond production so maintenance never expires the
+      # silences and notification log being compared.
+      args:
+        - --config.file=/etc/alertmanager/alertmanager.yaml
+        - --storage.path=/alertmanager
+        - --data.retention=8760h
+        - --cluster.listen-address=
+        - --web.listen-address=:9093
+      ports:
+        - name: http
+          containerPort: 9093
+          protocol: TCP
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: config
+          mountPath: /etc/alertmanager
+          readOnly: true
+        - name: storage
+          mountPath: /alertmanager
+          subPath: alertmanager-db
+  volumes:
+    - name: precheck
+      configMap:
+        name: metrics-upgrade-rehearsal-precheck
+    - name: config
+      configMap:
+        name: metrics-upgrade-rehearsal-alertmanager-config
+    - name: storage
+      persistentVolumeClaim:
+        claimName: metrics-upgrade-rehearsal-alertmanager-db
