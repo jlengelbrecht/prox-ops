@@ -2,8 +2,9 @@
 """Native PostgreSQL SELECT-only proof of the actual newest-cohort query."""
 import importlib.util
 import json
+import os
 import pathlib
-import subprocess
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('baseline', ROOT / 'scripts/hindsight-timing-baseline.py')
@@ -23,18 +24,22 @@ rows += [
     "(UUID '00000000-0000-0000-0000-000000000000','devb0x','retain','completed',TIMESTAMPTZ '2026-10-03 08:57+00',TIMESTAMPTZ '2026-10-03 08:58+00',TIMESTAMPTZ '2026-10-03 08:59+00',0)",
     "(UUID '00000000-0000-0000-0000-000000000000','devb0x','batch_retain','completed',TIMESTAMPTZ '2026-10-03 09:23+00',TIMESTAMPTZ '2026-10-03 09:24+00',TIMESTAMPTZ '2026-10-03 09:25+00',0)",
     "(UUID '00000000-0000-0000-0000-000000000000','obsidian','retain','completed',TIMESTAMPTZ '2026-10-03 09:23+00',TIMESTAMPTZ '2026-10-03 09:24+00',TIMESTAMPTZ '2026-10-03 09:25+00',1)",
+    "(UUID '00000000-0000-0000-0000-000000000001','obsidian','recall','completed',TIMESTAMPTZ '2026-10-03 09:28+00',TIMESTAMPTZ '2026-10-03 09:29+00',TIMESTAMPTZ '2026-10-03 09:30+00',0)",
 ]
 fixture = 'WITH fixture(operation_id,bank_id,operation_type,status,created_at,claimed_at,completed_at,retry_count) AS (VALUES ' + ','.join(rows) + '), eligible AS MATERIALIZED ('
 query = BASE.SQL.replace('WITH eligible AS MATERIALIZED (', fixture, 1).replace('FROM public.async_operations', 'FROM fixture', 1)
 assert 'FROM public.async_operations' not in query
-sql = 'BEGIN TRANSACTION READ ONLY; SET LOCAL statement_timeout = 15000; ' + query.format(start=start, end=end, limit=2) + ' COMMIT;'
-result = subprocess.run(['psql', '-X', '-q', '-A', '-t', '-w', '-v', 'ON_ERROR_STOP=1', '-c', sql],
-                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                        text=True, timeout=25, check=False)
-if result.returncode:
-    raise SystemExit('native PostgreSQL fixture unavailable or failed')
-items = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+with mock.patch.object(BASE, 'SQL', query), mock.patch.object(BASE, 'MAX_SAMPLES_PER_GROUP', 2), \
+     mock.patch.dict(os.environ, {'PGTZ': 'America/New_York'}):
+    try:
+        lines = list(BASE.query_lines(start, end))
+    except (OSError, ValueError) as error:
+        raise SystemExit('native PostgreSQL fixture unavailable or failed') from error
+    summary = BASE.summarize(lines, start, end)
+items = [json.loads(line) for line in lines if line.strip()]
 assert len(items) == 8, 'newest cohort size mismatch'
+assert all(item['completed_at'].endswith('+00:00') for item in items), 'session did not render UTC'
+assert len(summary['groups']) == 4 and summary['sampled_rows'] == 8, 'UTC cohort rejected'
 for bank in ('devb0x', 'obsidian'):
     for kind in ('retain', 'recall'):
         group = [item for item in items if item['bank_id'] == bank and item['operation_type'] == kind]

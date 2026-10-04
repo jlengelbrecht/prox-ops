@@ -100,6 +100,10 @@ class TimingBaselineTests(unittest.TestCase):
             result = MODULE.summarize(MODULE.query_lines(START, END), START, END)
         self.assertEqual(result['sampled_rows'], 1)
         self.assertIn("TIMESTAMPTZ '2026-10-03T09:00:00+00:00'", seen[0][0][-1])
+        command = seen[0][0][-1]
+        self.assertLess(command.index('SET LOCAL statement_timeout = 15000;'),
+                        command.index("SET LOCAL TIME ZONE 'UTC';"))
+        self.assertLess(command.index("SET LOCAL TIME ZONE 'UTC';"), command.index('WITH eligible'))
         self.assertIn('-w', seen[0][0])
         self.assertIs(seen[0][1]['stdin'], subprocess.DEVNULL)
 

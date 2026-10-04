@@ -154,7 +154,7 @@ def query_lines(start, end, *, deadline_seconds=25):
     first, last = bounds(start, end)
     sql = SQL.format(start=first.isoformat(), end=last.isoformat(), limit=MAX_SAMPLES_PER_GROUP)
     command = ['psql', '-X', '-q', '-A', '-t', '-w', '-v', 'ON_ERROR_STOP=1', '-c',
-               'BEGIN TRANSACTION READ ONLY; SET LOCAL statement_timeout = 15000; ' + sql + ' COMMIT;']
+               "BEGIN TRANSACTION READ ONLY; SET LOCAL statement_timeout = 15000; SET LOCAL TIME ZONE 'UTC'; " + sql + ' COMMIT;']
     env = os.environ.copy()
     env['PGCONNECT_TIMEOUT'] = '5'
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
