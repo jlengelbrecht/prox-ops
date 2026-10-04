@@ -21,6 +21,95 @@ CHART = pathlib.Path(os.environ.get('PROMTAIL_CHART', ROOT / '_bmad-output/imple
 HELM = os.environ.get('HINDSIGHT_HELM', 'helm')
 UUID = '12345678-1234-1234-1234-123456789abc'
 
+ORIGINAL_RUNTIME = yaml.safe_load('''
+server:
+  log_level: info
+  log_format: logfmt
+  http_listen_port: 3101
+positions:
+  filename: /run/promtail/positions.yaml
+clients:
+- backoff_config:
+    max_period: 5m
+    max_retries: 10
+    min_period: 500ms
+  batchsize: 102400
+  batchwait: 1s
+  tenant_id: 1
+  timeout: 10s
+  url: http://loki:3100/loki/api/v1/push
+broad:
+  job_name: kubernetes-pods
+  pipeline_stages:
+  - cri: {}
+  kubernetes_sd_configs:
+  - role: pod
+  relabel_configs:
+  - source_labels:
+    - __meta_kubernetes_pod_controller_name
+    regex: ([0-9a-z-.]+?)(-[0-9a-f]{8,10})?
+    action: replace
+    target_label: __tmp_controller_name
+  - source_labels:
+    - __meta_kubernetes_pod_label_app_kubernetes_io_name
+    - __meta_kubernetes_pod_label_app
+    - __tmp_controller_name
+    - __meta_kubernetes_pod_name
+    regex: ^;*([^;]+)(;.*)?$
+    action: replace
+    target_label: app
+  - source_labels:
+    - __meta_kubernetes_pod_label_app_kubernetes_io_instance
+    - __meta_kubernetes_pod_label_instance
+    regex: ^;*([^;]+)(;.*)?$
+    action: replace
+    target_label: instance
+  - source_labels:
+    - __meta_kubernetes_pod_label_app_kubernetes_io_component
+    - __meta_kubernetes_pod_label_component
+    regex: ^;*([^;]+)(;.*)?$
+    action: replace
+    target_label: component
+  - action: replace
+    source_labels:
+    - __meta_kubernetes_pod_node_name
+    target_label: node_name
+  - action: replace
+    source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - action: replace
+    replacement: $1
+    separator: /
+    source_labels:
+    - namespace
+    - app
+    target_label: job
+  - action: replace
+    source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - action: replace
+    source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - action: replace
+    replacement: /var/log/pods/*$1/*.log
+    separator: /
+    source_labels:
+    - __meta_kubernetes_pod_uid
+    - __meta_kubernetes_pod_container_name
+    target_label: __path__
+  - action: replace
+    regex: true/(.*)
+    replacement: /var/log/pods/*$1/*.log
+    separator: /
+    source_labels:
+    - __meta_kubernetes_pod_annotationpresent_kubernetes_io_config_hash
+    - __meta_kubernetes_pod_annotation_kubernetes_io_config_hash
+    - __meta_kubernetes_pod_container_name
+    target_label: __path__
+''')
 
 def render(values):
     rendered = subprocess.run([HELM, 'template', 'promtail', str(CHART), '--namespace',
@@ -56,9 +145,9 @@ class NativeCollectorTests(unittest.TestCase):
         self.assertEqual(api_env['HINDSIGHT_API_LOG_LEVEL'], 'info')
         self.assertEqual(api_env['HINDSIGHT_API_LOG_FORMAT'], 'json')
         self.assertEqual(api_env['HINDSIGHT_API_LOG_JSON_FIELDS'], 'severity,message,timestamp,logger')
-        baseline_values = yaml.safe_load(PROMTAIL.read_text())['spec']['values']
-        del baseline_values['config']['snippets']
-        original = render(baseline_values)['scrape_configs'][0]
+        for key in ('server', 'positions', 'clients'):
+            self.assertEqual(self.runtime[key], ORIGINAL_RUNTIME[key])
+        original = ORIGINAL_RUNTIME['broad']
         self.assertEqual(self.broad['job_name'], 'kubernetes-pods')
         self.assertEqual(self.broad['pipeline_stages'], original['pipeline_stages'])
         self.assertEqual(self.broad['relabel_configs'][:-2], original['relabel_configs'])
@@ -192,6 +281,7 @@ class NativeCollectorTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/hindsight-logging.yaml').read_text()
         self.assertIn('permissions:\n  contents: read', workflow)
         self.assertIn('hindsight-logging-ci-assets.py', workflow)
+        self.assertIn('persist-credentials: false', workflow)
         spec = importlib.util.spec_from_file_location('logging_assets', ROOT / 'scripts/hindsight-logging-ci-assets.py')
         assets = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(assets)
