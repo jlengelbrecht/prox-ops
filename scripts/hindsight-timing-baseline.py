@@ -19,6 +19,8 @@ MAX_GROUPS = 64
 MAX_LINE = 4096
 FIELDS = ('queue_seconds', 'claimed_wall_seconds', 'total_seconds')
 IDENTIFIER = re.compile(r'[A-Za-z0-9_-]{1,64}\Z')
+FRACTIONAL_TIMESTAMP = re.compile(
+    r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.)(\d*)(Z|[+-]\d{2}:\d{2})\Z')
 SQL = """WITH eligible AS MATERIALIZED (
  SELECT operation_id, bank_id, operation_type, created_at, claimed_at, completed_at
  FROM public.async_operations
@@ -42,6 +44,13 @@ FROM ranked WHERE rn <= {limit} ORDER BY bank_id, operation_type, completed_at D
 
 def parse_bound(value):
     try:
+        if isinstance(value, str):
+            match = FRACTIONAL_TIMESTAMP.fullmatch(value)
+            if match:
+                prefix, fraction, timezone = match.groups()
+                if not 1 <= len(fraction) <= 6:
+                    raise ValueError
+                value = prefix + fraction.ljust(6, '0') + timezone
         result = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
         if result.tzinfo is None or result.utcoffset() != dt.timedelta(0):
             raise ValueError

@@ -43,6 +43,27 @@ class TimingBaselineTests(unittest.TestCase):
                 MODULE.summarize([sample], START, END)
             self.assertNotIn('synthetic-secret', str(failure.exception))
 
+    def test_fractional_seconds_preserve_utc_cohort(self):
+        for width in range(1, 7):
+            fraction = '123456'[:width]
+            timestamp = f'2026-10-03T09:10:00.{fraction}Z'
+            with self.subTest(width=width):
+                result = MODULE.summarize([row(completed=timestamp)], START, END)
+                self.assertEqual(result['sampled_rows'], 1)
+                self.assertEqual(result['observed_completion_range'],
+                                 [f'2026-10-03T09:10:00.{fraction.ljust(6, "0")}+00:00'] * 2)
+                self.assertEqual(MODULE.parse_bound(timestamp).microsecond,
+                                 int(fraction.ljust(6, '0')))
+        self.assertEqual(MODULE.parse_bound('2026-10-03T09:10:00.1+00:00').microsecond,
+                         100000)
+
+    def test_fractional_seconds_reject_malformed_and_non_utc(self):
+        for timestamp in ('2026-10-03T09:10:00.Z', '2026-10-03T09:10:00.12xZ',
+                          '2026-10-03T09:10:00.12', '2026-10-03T09:10:00.1+01:00',
+                          '2026-10-03T09:10:00.1-01:00', '2026-10-03T09:10:00.1234567Z'):
+            with self.subTest(timestamp=timestamp), self.assertRaises(ValueError):
+                MODULE.summarize([row(completed=timestamp)], START, END)
+
     def test_per_bank_limit_and_coverage(self):
         with mock.patch.object(MODULE, 'MAX_SAMPLES_PER_GROUP', 2):
             result = MODULE.summarize([row(eligible=3), row(eligible=3), row('obsidian')], START, END)
@@ -55,6 +76,10 @@ class TimingBaselineTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/hindsight-baseline.yaml').read_text()
         self.assertIn('permissions:\n  contents: read', workflow)
         self.assertIn('check_postgres_newest.py', workflow)
+        self.assertIn('actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0\n'
+                      '        with:\n          persist-credentials: false', workflow)
+        self.assertIn("python-version: ['3.10', '3.12']", workflow)
+        self.assertIn('python-version: ${{ matrix.python-version }}', workflow)
         sql = MODULE.SQL.lower()
         for fragment in ('partition by bank_id, operation_type', 'completed_at >= timestamptz',
                          'completed_at < timestamptz', "status = 'completed'", "operation_type <> 'batch_retain'",
