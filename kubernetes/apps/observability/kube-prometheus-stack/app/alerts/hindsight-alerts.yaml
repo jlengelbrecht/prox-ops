@@ -49,7 +49,7 @@ spec:
             summary: Hindsight native series above provisional full-family budget
             description: Provisional 4000 threshold is estimated from 1168 unlabelled native series before bank/backlog opt-ins plus two-bank multiplicity and headroom; rebase from ordinary labelled scrape after rollout. No bank allowlist.
         - alert: HindsightMetricSeriesChurn
-          expr: count(count_over_time({__name__=~"hindsight_.*",namespace="ai",service="hindsight-api"}[30m])) > 6000
+          expr: count(last_over_time({__name__=~"hindsight_.*",namespace="ai",service="hindsight-api"}[30m])) > 6000
           for: 10m
           labels:
             severity: warning

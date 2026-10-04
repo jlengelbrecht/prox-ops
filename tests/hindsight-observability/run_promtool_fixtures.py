@@ -5,6 +5,7 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+import copy
 
 import yaml
 
@@ -18,7 +19,8 @@ if not pathlib.Path(PROMTOOL).is_file():
     raise SystemExit('native promtool required')
 
 RULES = {r['alert']: r for r in RULE['spec']['groups'][0]['rules']}
-NAMES = tuple(RULES)
+NAMES = tuple(name for name in RULES if name != 'HindsightMetricSeriesChurn')
+CHURN = 'HindsightMetricSeriesChurn'
 UP = {'series': 'up{namespace="ai",service="hindsight-api"}', 'values': '1+0x25'}
 PENDING = {'series': 'hindsight_async_operations{namespace="ai",service="hindsight-api",bank_id="newbank",operation_type="retain",status="pending"}', 'values': '1+0x25'}
 PARENT = {'series': 'hindsight_async_operations{namespace="ai",bank_id="newbank",operation_type="batch_retain",status="failed"}', 'values': '1+0x25'}
@@ -75,19 +77,19 @@ cases = [
     ('steady_below_budget', [UP, GAUGE, *series_group(3999)], checks('20m')),
     ('steady_over_budget', [UP, GAUGE, *series_group(4000)], checks('20m', {
         'HindsightMetricSeriesGrowth': [{}]})),
-    ('churn_over_budget', [UP, GAUGE, *series_group(6000, 'churn', '1 _x25')],
-     checks('20m', {'HindsightMetricSeriesChurn': [{}]})),
 ]
 
 with tempfile.TemporaryDirectory() as directory:
     path = pathlib.Path(directory)
     rules_path = path / 'rules.yaml'
-    rules_path.write_text(yaml.safe_dump({'groups': RULE['spec']['groups']}))
+    group = copy.deepcopy(RULE['spec']['groups'][0])
+    group['rules'] = [rule for rule in group['rules'] if rule['alert'] != CHURN]
+    rules_path.write_text(yaml.safe_dump({'groups': [group]}))
     histogram = [{'series': f'hindsight_llm_duration_seconds_bucket{{namespace="ai",scope="retain",le="{le}"}}',
                   'values': values} for le, values in [('1', '0+1x25'), ('2', '0+2x25'), ('+Inf', '0+2x25')]]
     tests = [{'name': name, 'interval': '1m',
               'input_series': series if name in ('scrape_loss', 'scrape_down', 'native_gauge_missing', 'genuinely_quiet',
-                                                 'steady_below_budget', 'steady_over_budget', 'churn_over_budget')
+                                                 'steady_below_budget', 'steady_over_budget')
               else [*series, GAUGE], 'alert_rule_test': alerts}
              for name, series, alerts in cases]
     dashboard_series = [UP, *histogram,
@@ -128,3 +130,53 @@ with tempfile.TemporaryDirectory() as directory:
     fixture.write_text(yaml.safe_dump({'rule_files': [str(rules_path)], 'evaluation_interval': '1m', 'tests': tests}))
     subprocess.run([PROMTOOL, 'test', 'rules', str(fixture)], check=True)
     subprocess.run([PROMTOOL, 'check', 'rules', str(rules_path)], check=True)
+
+    churn_rule = copy.deepcopy(RULES[CHURN])
+    assert churn_rule['expr'].endswith('> 6000') and churn_rule['for'] == '10m'
+    churn_rule['expr'] = churn_rule['expr'].removesuffix('6000') + '2'
+    churn_rules = path / 'churn-rules.yaml'
+    churn_rules.write_text(yaml.safe_dump({'groups': [{**group, 'rules': [churn_rule]}]}))
+    same_labels = {'series': 'hindsight_llm_calls_total{namespace="ai",service="hindsight-api",bank_id="first"}',
+                   'values': '1+0x25'}
+    other_name = {'series': 'hindsight_operation_operations_total{namespace="ai",service="hindsight-api",bank_id="first"}',
+                  'values': '1 _x25'}
+    transient_bank = {'series': 'hindsight_llm_calls_total{namespace="ai",service="hindsight-api",bank_id="later"}',
+                      'values': '_ 1 _x24'}
+    expired_bank = dict(transient_bank, values='1 _x200')
+    off_grid_bank = dict(transient_bank, values='_x181 1 _x20')
+    outside_family = dict(transient_bank, series=transient_bank['series'].replace('hindsight_llm_calls_total', 'other_llm_calls_total'))
+    outside_service = dict(transient_bank, series=transient_bank['series'].replace('service="hindsight-api"', 'service="other"'))
+    steady_for_boundary = [dict(same_labels, values='1+0x201'),
+                           dict(other_name, values='1+0x201')]
+    churn_fixture = path / 'churn-fixture.yaml'
+    churn_fixture.write_text(yaml.safe_dump({
+        'rule_files': [str(churn_rules)], 'evaluation_interval': '10s',
+        'tests': [
+            {'name': 'two_metric_names_at_threshold', 'interval': '1m',
+             'input_series': [same_labels, other_name],
+             'alert_rule_test': [{'eval_time': '20m', 'alertname': CHURN, 'exp_alerts': []}]},
+            {'name': 'short_lived_distinct_bank_above_threshold', 'interval': '1m',
+             'input_series': [same_labels, other_name, transient_bank],
+             'alert_rule_test': [{'eval_time': '20m', 'alertname': CHURN,
+                                  'exp_alerts': [expected(CHURN, {})]}]},
+            {'name': 'sample_at_cutoff_is_expired', 'interval': '10s',
+             'input_series': [*steady_for_boundary, expired_bank],
+             'promql_expr_test': [{'expr': churn_rule['expr'], 'eval_time': '30m',
+                                   'exp_samples': []}]},
+            {'name': 'off_grid_sample_inside_window_counts', 'interval': '10s',
+             'input_series': [*steady_for_boundary, off_grid_bank],
+             'promql_expr_test': [{'expr': churn_rule['expr'], 'eval_time': '30m20s',
+                                   'exp_samples': [{'labels': '{}', 'value': 3}]}]},
+            {'name': 'expired_sample_is_not_lookback_carried', 'interval': '10s',
+             'input_series': [*steady_for_boundary, expired_bank],
+             'promql_expr_test': [{'expr': churn_rule['expr'], 'eval_time': '30m20s',
+                                   'exp_samples': []}]},
+            {'name': 'whole_family_with_scoped_selectors', 'interval': '1m',
+             'input_series': [same_labels, other_name, transient_bank, outside_family, outside_service],
+             'promql_expr_test': [{'expr': churn_rule['expr'], 'eval_time': '20m',
+                                   'exp_samples': [{'labels': '{}', 'value': 3}]}]},
+        ]}))
+    subprocess.run([PROMTOOL, 'test', 'rules', str(churn_fixture)], check=True)
+    subprocess.run([PROMTOOL, 'check', 'rules', str(churn_rules)], check=True)
+    assert RULES[CHURN]['expr'] == ('count(last_over_time({__name__=~"hindsight_.*",'
+                                    'namespace="ai",service="hindsight-api"}[30m])) > 6000')
