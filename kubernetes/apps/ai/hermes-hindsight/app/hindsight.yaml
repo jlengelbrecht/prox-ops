@@ -189,7 +189,11 @@ spec:
         # the managed role also carries connectionLimit 25 on the cluster side.
         HINDSIGHT_API_DB_POOL_MAX_SIZE: "20"
         HINDSIGHT_API_WORKER_ID: "hindsight-api"
+        HINDSIGHT_API_LOG_LEVEL: "info"
         HINDSIGHT_API_LOG_FORMAT: "json"
+        # The collector emits only recognized, fixed-shape events. These
+        # fields reduce source output but are not a content sanitizer.
+        HINDSIGHT_API_LOG_JSON_FIELDS: "severity,message,timestamp,logger"
         # Credential directory of the built-in `openai-codex` provider
         # (ChatGPT/Codex subscription OAuth): it reads and rewrites
         # $CODEX_HOME/auth.json in place, so the path must be the retained

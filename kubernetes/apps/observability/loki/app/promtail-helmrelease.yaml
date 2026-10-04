@@ -64,66 +64,86 @@ spec:
       positions:
         filename: /run/promtail/positions.yaml
 
-      # Scrape configs
-      scrape_configs:
-        # Kubernetes pods
-        - job_name: kubernetes-pods
-          pipeline_stages:
-            # Extract metadata from Kubernetes labels
-            - docker: {}
-            - cri: {}
-            # Add common labels
-            - labeldrop:
-                - filename
-            # Drop noisy logs
-            - match:
-                selector: '{app="promtail"}'
-                action: drop
-            - match:
-                selector: '{container="promtail"}'
-                action: drop
-          kubernetes_sd_configs:
-            - role: pod
-          relabel_configs:
-            # Only scrape running pods
-            - source_labels:
-                - __meta_kubernetes_pod_phase
-              action: keep
-              regex: Running
-            # Add namespace label
-            - source_labels:
-                - __meta_kubernetes_namespace
-              action: replace
-              target_label: namespace
-            # Add pod name label
-            - source_labels:
-                - __meta_kubernetes_pod_name
-              action: replace
-              target_label: pod
-            # Add container name label
-            - source_labels:
-                - __meta_kubernetes_pod_container_name
-              action: replace
-              target_label: container
-            # Add node name label
-            - source_labels:
-                - __meta_kubernetes_pod_node_name
-              action: replace
-              target_label: node
-            # Add pod labels as labels (with prefix)
-            - action: labelmap
-              regex: __meta_kubernetes_pod_label_(.+)
-            # Add pod annotations as labels (with prefix)
-            - action: labelmap
-              regex: __meta_kubernetes_pod_annotation_(.+)
-            # Set path to pod logs
-            - source_labels:
-                - __meta_kubernetes_pod_uid
-                - __meta_kubernetes_pod_container_name
-              action: replace
-              separator: /
-              target_label: __path__
-              replacement: /var/log/pods/*$1/*.log
+      # The chart's own kubernetes-pods scrape job stays intact. This
+      # rules exclude the verified API pod and quarantine any same-prefix
+      # metadata drift before the broad pipeline can forward free text.
+      snippets:
+        extraRelabelConfigs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name, __meta_kubernetes_pod_controller_kind, __meta_kubernetes_pod_controller_name, __meta_kubernetes_pod_label_app_kubernetes_io_name, __meta_kubernetes_pod_label_app_kubernetes_io_instance, __meta_kubernetes_pod_label_app_kubernetes_io_component]
+            separator: ;
+            action: drop
+            regex: ai;hindsight-api-.+;ReplicaSet;hindsight-api-.+;hindsight;hindsight;api
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name]
+            separator: ;
+            action: drop
+            regex: ai;hindsight-api-.+
+        extraScrapeConfigs: |-
+          # Only a fixed, low-content operation event is centralized. Every
+          # unknown, malformed, oversized, or free-form API line is dropped.
+          - job_name: hindsight-api-safe
+            pipeline_stages:
+              - drop:
+                  longer_than: 4096
+                  drop_counter_reason: hindsight_oversized
+              - docker: {}
+              - cri: {}
+              - json:
+                  expressions:
+                    message: message
+                    logger: logger
+              - regex:
+                  source: logger
+                  expression: '^(?P<worker_logger>hindsight_api[.]worker[.]poller)$'
+              - regex:
+                  source: message
+                  expression: '^Task (?P<operation_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) (?P<event>scheduled for retry at|deferred until|timed out:|failed:) .*$'
+              - labels:
+                  event:
+                  worker_logger:
+              - match:
+                  selector: '{event!~"scheduled for retry at|deferred until|timed out:|failed:"}'
+                  action: drop
+                  drop_counter_reason: hindsight_unrecognized
+              - match:
+                  selector: '{worker_logger!="hindsight_api.worker.poller"}'
+                  action: drop
+                  drop_counter_reason: hindsight_unrecognized
+              - template:
+                  source: safe_line
+                  # Escape Promtail template placeholders through Helm's tpl.
+                  template: '{"event":"{{ "{{ .event }}" }}","operation_id":"{{ "{{ .operation_id }}" }}"}'
+              - output:
+                  source: safe_line
+              - labeldrop:
+                  - event
+                  - worker_logger
+            kubernetes_sd_configs:
+              - role: pod
+            relabel_configs:
+              # Terminal targets remain eligible while Kubernetes and the
+              # node retain their final log files; deletion cannot be healed.
+              - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_name, __meta_kubernetes_pod_controller_kind, __meta_kubernetes_pod_controller_name, __meta_kubernetes_pod_label_app_kubernetes_io_name, __meta_kubernetes_pod_label_app_kubernetes_io_instance, __meta_kubernetes_pod_label_app_kubernetes_io_component]
+                separator: ;
+                action: keep
+                regex: ai;hindsight-api-.+;ReplicaSet;hindsight-api-.+;hindsight;hindsight;api
+              - source_labels: [__meta_kubernetes_pod_container_name]
+                action: keep
+                regex: api
+              - source_labels: [__meta_kubernetes_namespace]
+                target_label: namespace
+              - replacement: hindsight
+                target_label: app
+              - source_labels: [__meta_kubernetes_pod_container_name]
+                target_label: container
+              # One API replica plus bounded rollout overlap; review series growth.
+              - source_labels: [__meta_kubernetes_pod_uid]
+                target_label: pod_uid
+              - source_labels:
+                  - __meta_kubernetes_pod_uid
+                  - __meta_kubernetes_pod_container_name
+                separator: /
+                target_label: __path__
+                replacement: /var/log/pods/*$1/*.log
 
     # Service configuration
     service:
