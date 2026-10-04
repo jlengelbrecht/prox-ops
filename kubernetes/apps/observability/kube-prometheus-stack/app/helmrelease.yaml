@@ -112,6 +112,9 @@ spec:
         accessModes:
           - ReadWriteOnce
         size: 10Gi
+        # Helm leaves the claim in place on uninstall or a failed-upgrade cleanup
+        annotations:
+          helm.sh/resource-policy: keep
 
       # Service configuration for LoadBalancer
       service:
