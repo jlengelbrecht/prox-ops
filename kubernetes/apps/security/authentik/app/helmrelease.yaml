@@ -126,6 +126,22 @@ spec:
             secretKeyRef:
               name: authentik-secret
               key: AUTHENTIK_UID_CONSUMER_SECRET
+        # Microsoft Entra ID Source (tenant homelab0org)
+        - name: AUTHENTIK_ENTRA_TENANT_ID
+          valueFrom:
+            secretKeyRef:
+              name: authentik-entra
+              key: AUTHENTIK_ENTRA_TENANT_ID
+        - name: AUTHENTIK_ENTRA_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: authentik-entra
+              key: AUTHENTIK_ENTRA_CLIENT_ID
+        - name: AUTHENTIK_ENTRA_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: authentik-entra
+              key: AUTHENTIK_ENTRA_CLIENT_SECRET
 
     authentik:
       error_reporting:
@@ -140,7 +156,7 @@ spec:
     server:
       replicas: 1
       podAnnotations:
-        secret.reloader.stakater.com/reload: "authentik-secret"
+        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra"
       resources:
         requests:
           cpu: 100m
@@ -165,7 +181,7 @@ spec:
     worker:
       replicas: 1
       podAnnotations:
-        secret.reloader.stakater.com/reload: "authentik-secret"
+        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra"
         configmap.reloader.stakater.com/reload: "authentik-blueprints"
       resources:
         requests:

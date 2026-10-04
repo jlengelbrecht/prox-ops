@@ -782,3 +782,59 @@ data:
           provider_type: openidconnect
           consumer_key: !Env AUTHENTIK_UID_CONSUMER_KEY
           consumer_secret: !Env AUTHENTIK_UID_CONSUMER_SECRET
+
+  # =============================================================
+  # ENTRA ID SOURCE BLUEPRINT
+  # Kept separate from sources.yaml so it validates and applies on its own.
+  # =============================================================
+  source-entra.yaml: |
+    version: 1
+    metadata:
+      name: Entra ID Source
+      labels:
+        blueprints.goauthentik.io/description: "Microsoft Entra ID (homelab0org) as an upstream login"
+    context:
+      authentication_flow: !Find [authentik_flows.flow, [slug, default-source-authentication]]
+      enrollment_flow: !Find [authentik_flows.flow, [slug, default-source-enrollment]]
+    entries:
+      # Microsoft Entra ID Source (homelab0org tenant, single-tenant app).
+      # Users are matched by Entra identifier, not email, so an Entra login
+      # never auto-links to an existing Authentik account (akadmin included).
+      # Who may sign in is controlled in Entra: the app requires assignment
+      # and only the authentik-users group is assigned.
+      - model: authentik_sources_oauth.oauthsource
+        id: source-entra
+        identifiers:
+          slug: entra-id
+        attrs:
+          name: Sign in with Microsoft
+          slug: entra-id
+          enabled: true
+          authentication_flow: !Context authentication_flow
+          enrollment_flow: !Context enrollment_flow
+          policy_engine_mode: any
+          user_matching_mode: identifier
+          group_matching_mode: identifier
+          provider_type: entraid
+          consumer_key: !Env AUTHENTIK_ENTRA_CLIENT_ID
+          consumer_secret: !Env AUTHENTIK_ENTRA_CLIENT_SECRET
+          authorization_url: !Format ["https://login.microsoftonline.com/%s/oauth2/v2.0/authorize", !Env AUTHENTIK_ENTRA_TENANT_ID]
+          access_token_url: !Format ["https://login.microsoftonline.com/%s/oauth2/v2.0/token", !Env AUTHENTIK_ENTRA_TENANT_ID]
+          oidc_jwks_url: !Format ["https://login.microsoftonline.com/%s/discovery/v2.0/keys", !Env AUTHENTIK_ENTRA_TENANT_ID]
+          profile_url: https://graph.microsoft.com/v1.0/me
+      # Show the Entra button next to UID on the login pages that offer UID
+      # today. The full source list is set here, so UID stays listed.
+      - model: authentik_stages_identification.identificationstage
+        identifiers:
+          name: default-authentication-identification
+        attrs:
+          sources:
+            - !Find [authentik_core.source, [slug, unifi-identity-enterprise]]
+            - !KeyOf source-entra
+      - model: authentik_stages_identification.identificationstage
+        identifiers:
+          name: external-authentication-identification
+        attrs:
+          sources:
+            - !Find [authentik_core.source, [slug, unifi-identity-enterprise]]
+            - !KeyOf source-entra
