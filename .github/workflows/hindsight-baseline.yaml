@@ -1,0 +1,38 @@
+name: Hindsight baseline fixture
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - tests/hindsight-observability/check_postgres_newest.py
+      - .github/workflows/hindsight-baseline.yaml
+      - scripts/hindsight-timing-baseline.py
+      - tests/hindsight-observability/test_timing_baseline.py
+permissions:
+  contents: read
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      PGDATABASE: postgres
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_timing_baseline.py -v
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: python tests/hindsight-observability/check_postgres_newest.py
