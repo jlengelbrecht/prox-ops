@@ -23,7 +23,8 @@ VOLUMES = set(SOURCES)
 OPT_OUT = 'homelab0.org/helm-defaults'
 FLUX_DEFAULTS = ('kubernetes/flux/cluster/ks.yaml', 'templates/config/kubernetes/flux/cluster/ks.yaml.j2')
 SNAPSHOT_CLASSES = 'kubernetes/apps/kube-system/snapshot-controller/class/volumesnapshotclass.yaml'
-WATCHED = ('kubernetes/apps/observability/kube-prometheus-stack/app/helmrelease.yaml',
+WATCHED = ('kubernetes/apps/observability/kustomization.yaml',
+           'kubernetes/apps/observability/kube-prometheus-stack/app/helmrelease.yaml',
            'kubernetes/apps/observability/kube-prometheus-stack/ks.yaml',
            'kubernetes/apps/observability/kube-prometheus-stack-upgrade-snapshots/**',
            SNAPSHOT_CLASSES, *FLUX_DEFAULTS,
@@ -71,6 +72,11 @@ class UpgradeSnapshotTests(unittest.TestCase):
         ks = yaml.safe_load((OBS / 'kube-prometheus-stack/ks.yaml').read_text())
         self.assertIn({'name': 'kube-prometheus-stack-upgrade-snapshots', 'namespace': 'flux-system'},
                       ks['spec']['dependsOn'])
+        # An unregistered dependency is never applied, so the release would wait on it indefinitely
+        snapshot_ks = yaml.safe_load((OBS / 'kube-prometheus-stack-upgrade-snapshots/ks.yaml').read_text())['metadata']
+        self.assertIn({'name': snapshot_ks['name'], 'namespace': snapshot_ks['namespace']}, ks['spec']['dependsOn'])
+        self.assertIn('./kube-prometheus-stack-upgrade-snapshots/ks.yaml',
+                      yaml.safe_load((OBS / 'kustomization.yaml').read_text())['resources'])
 
     def test_workflow_runs_on_every_input(self):
         workflow = yaml.safe_load((ROOT / '.github/workflows/hindsight-metrics.yaml').read_text())
