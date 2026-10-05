@@ -1,0 +1,13 @@
+---
+# Crash-consistent copy of the live Grafana volume, taken before the provisioning
+# archive init is added. Retained by its class and never pruned; clean up by hand
+# once newer backups are proven.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: grafana-pre-provisioning-archive-20261005
+  namespace: observability
+  annotations: {kustomize.toolkit.fluxcd.io/prune: disabled}
+spec:
+  volumeSnapshotClassName: ceph-block-snapshot-retain
+  source: {persistentVolumeClaimName: kube-prometheus-stack-grafana}
