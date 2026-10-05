@@ -1,6 +1,9 @@
 ---
 # Names carry the target chart version and date so each upgrade gets fresh
 # snapshots instead of matching ones left behind by an earlier revision.
+# A chart bump must rename all three to kps-pre-<version>-<yyyymmdd>-<volume>
+# (CI fails until it does), and the new names must not already exist in the
+# cluster when it merges, or Flux treats the old snapshots as ready.
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot
 metadata:

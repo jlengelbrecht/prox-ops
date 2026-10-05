@@ -49,9 +49,12 @@ spec:
                     remediation:
                       remediateLastFailure: true
                       retries: 2
+              # A HelmRelease whose upgrade must never auto-rollback opts out
+              # with this annotation and sets its own policy; an absent key matches
               target:
                 group: helm.toolkit.fluxcd.io
                 kind: HelmRelease
+                annotationSelector: homelab0.org/helm-defaults!=disabled
       target:
         group: kustomize.toolkit.fluxcd.io
         kind: Kustomization
