@@ -1,0 +1,291 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: alloy
+  namespace: observability
+spec:
+  chart:
+    spec:
+      chart: alloy
+      version: 1.13.0
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: observability
+  interval: 1h
+  timeout: 15m
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    # Node-local files only: no PodLogs CRD, and the chart role (cluster-wide
+    # Secret reads) is replaced by pod reads alone in ./alloy-rbac.yaml.
+    crds:
+      create: false
+    rbac:
+      create: false
+    image:
+      registry: docker.io
+      repository: grafana/alloy
+      tag: v1.20.1
+    alloy:
+      enableReporting: false
+      # Persistent on the Talos EPHEMERAL partition, unlike /run (tmpfs).
+      storagePath: /var/lib/alloy
+      mounts:
+        varlog: true
+        extra:
+          - name: promtail-positions
+            mountPath: /run/promtail
+            readOnly: true
+          - name: alloy-storage
+            mountPath: /var/lib/alloy
+      # Root matches the existing collector: pod log files are root-owned 0640.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        privileged: false
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      configMap:
+        # Rendered through Helm tpl: sanitizer template placeholders are
+        # escaped so the literal {{ .event }} and {{ .operation_id }} survive.
+        content: |-
+          livedebugging {
+            enabled = false
+          }
+          discovery.kubernetes "pods" {
+            role = "pod"
+            selectors {
+              role  = "pod"
+              field = "spec.nodeName=" + sys.env("HOSTNAME")
+            }
+          }
+          // Promtail chart kubernetes-pods job, in order, then both Hindsight
+          // exclusions so no raw API line can reach Loki from this path.
+          discovery.relabel "broad" {
+            targets = discovery.kubernetes.pods.targets
+            rule {
+              source_labels = ["__meta_kubernetes_pod_controller_name"]
+              regex         = "([0-9a-z-.]+?)(-[0-9a-f]{8,10})?"
+              target_label  = "__tmp_controller_name"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_label_app", "__tmp_controller_name", "__meta_kubernetes_pod_name"]
+              regex         = "^;*([^;]+)(;.*)?$"
+              target_label  = "app"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_instance", "__meta_kubernetes_pod_label_instance"]
+              regex         = "^;*([^;]+)(;.*)?$"
+              target_label  = "instance"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_component", "__meta_kubernetes_pod_label_component"]
+              regex         = "^;*([^;]+)(;.*)?$"
+              target_label  = "component"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_node_name"]
+              target_label  = "node_name"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+            rule {
+              source_labels = ["namespace", "app"]
+              separator     = "/"
+              replacement   = "$1"
+              target_label  = "job"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_name"]
+              target_label  = "pod"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+              separator     = "/"
+              replacement   = "/var/log/pods/*$1/*.log"
+              target_label  = "__path__"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_annotationpresent_kubernetes_io_config_hash", "__meta_kubernetes_pod_annotation_kubernetes_io_config_hash", "__meta_kubernetes_pod_container_name"]
+              separator     = "/"
+              regex         = "true/(.*)"
+              replacement   = "/var/log/pods/*$1/*.log"
+              target_label  = "__path__"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_name", "__meta_kubernetes_pod_controller_kind", "__meta_kubernetes_pod_controller_name", "__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_label_app_kubernetes_io_instance", "__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+              separator     = ";"
+              action        = "drop"
+              regex         = "ai;hindsight-api-.+;ReplicaSet;hindsight-api-.+;hindsight;hindsight;api"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_name"]
+              separator     = ";"
+              action        = "drop"
+              regex         = "ai;hindsight-api-.+"
+            }
+          }
+          local.file_match "broad" {
+            path_targets = discovery.relabel.broad.output
+          }
+          // Promtail's offsets are imported once, then Alloy keeps its own.
+          loki.source.file "broad" {
+            targets               = local.file_match.broad.targets
+            forward_to            = [loki.process.broad.receiver]
+            legacy_positions_file = "/run/promtail/positions.yaml"
+          }
+          loki.process "broad" {
+            forward_to = [loki.write.default.receiver]
+            stage.cri {}
+          }
+          discovery.relabel "hindsight_safe" {
+            targets = discovery.kubernetes.pods.targets
+            rule {
+              source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_name", "__meta_kubernetes_pod_controller_kind", "__meta_kubernetes_pod_controller_name", "__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_label_app_kubernetes_io_instance", "__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+              separator     = ";"
+              action        = "keep"
+              regex         = "ai;hindsight-api-.+;ReplicaSet;hindsight-api-.+;hindsight;hindsight;api"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              action        = "keep"
+              regex         = "api"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_namespace"]
+              target_label  = "namespace"
+            }
+            rule {
+              replacement  = "hindsight"
+              target_label = "app"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_container_name"]
+              target_label  = "container"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_uid"]
+              target_label  = "pod_uid"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+              separator     = "/"
+              replacement   = "/var/log/pods/*$1/*.log"
+              target_label  = "__path__"
+            }
+          }
+          local.file_match "hindsight_safe" {
+            path_targets = discovery.relabel.hindsight_safe.output
+          }
+          loki.source.file "hindsight_safe" {
+            targets               = local.file_match.hindsight_safe.targets
+            forward_to            = [loki.process.hindsight_safe.receiver]
+            legacy_positions_file = "/run/promtail/positions.yaml"
+          }
+          // Only a fixed, low-content operation event is centralized. Every
+          // unknown, malformed, oversized, or free-form API line is dropped.
+          loki.process "hindsight_safe" {
+            forward_to = [loki.write.default.receiver]
+            stage.drop {
+              longer_than         = "4KiB"
+              drop_counter_reason = "hindsight_oversized"
+            }
+            stage.docker {}
+            stage.cri {}
+            stage.json {
+              expressions = {message = "message", logger = "logger"}
+            }
+            stage.regex {
+              source     = "logger"
+              expression = "^(?P<worker_logger>hindsight_api[.]worker[.]poller)$"
+            }
+            stage.regex {
+              source     = "message"
+              expression = "^Task (?P<operation_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) (?P<event>scheduled for retry at|deferred until|timed out:|failed:) .*$"
+            }
+            stage.labels {
+              values = {event = "", worker_logger = ""}
+            }
+            stage.match {
+              selector            = "{event!~\"scheduled for retry at|deferred until|timed out:|failed:\"}"
+              action              = "drop"
+              drop_counter_reason = "hindsight_unrecognized"
+            }
+            stage.match {
+              selector            = "{worker_logger!=\"hindsight_api.worker.poller\"}"
+              action              = "drop"
+              drop_counter_reason = "hindsight_unrecognized"
+            }
+            stage.template {
+              source   = "safe_line"
+              template = "{\"event\":\"{{ "{{ .event }}" }}\",\"operation_id\":\"{{ "{{ .operation_id }}" }}\"}"
+            }
+            stage.output {
+              source = "safe_line"
+            }
+            stage.label_drop {
+              values = ["event", "worker_logger"]
+            }
+          }
+          loki.write "default" {
+            endpoint {
+              url                 = "http://loki:3100/loki/api/v1/push"
+              tenant_id           = "1"
+              batch_wait          = "1s"
+              batch_size          = "100KiB"
+              min_backoff_period  = "500ms"
+              max_backoff_period  = "5m"
+              max_backoff_retries = 10
+              remote_timeout      = "10s"
+            }
+          }
+    configReloader:
+      securityContext:
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+    controller:
+      type: daemonset
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      volumes:
+        extra:
+          - name: promtail-positions
+            hostPath:
+              path: /run/promtail
+              type: DirectoryOrCreate
+          - name: alloy-storage
+            hostPath:
+              path: /var/lib/alloy
+              type: DirectoryOrCreate
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        prometheus: kube-prometheus-stack
+      interval: 30s
