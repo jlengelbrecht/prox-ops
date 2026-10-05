@@ -33,6 +33,8 @@ spec:
           volumeMounts:
             - {name: storage, mountPath: /var/lib/grafana}
             - {name: checker, mountPath: /opt/rehearsal, readOnly: true}
+            # Writes the stored dashboard providers, at the path Grafana reads them from.
+            - {name: provisioning, mountPath: /etc/grafana/provisioning}
         # Native sidecar: the checker starts only once Grafana's startup probe passes.
         - name: grafana
           image: docker.io/grafana/grafana:13.2.3-distroless@sha256:202e5d5b3f8499e70ccac7991eea6d7da72d2790eb2e0597e7987acf724e7180
@@ -65,7 +67,8 @@ spec:
             - {name: tmp, mountPath: /tmp}
             - {name: storage, mountPath: /var/lib/grafana}
             - {name: search, mountPath: /var/lib/grafana-search}
-            # Empty on purpose: no datasource file may re-encrypt the stored
+            # Dashboard providers only: with none, startup cleanup deletes every
+            # provisioned dashboard. No datasource file may re-encrypt the stored
             # Loki secret, so its health check proves the migrated decrypt.
             - {name: provisioning, mountPath: /etc/grafana/provisioning}
       containers:

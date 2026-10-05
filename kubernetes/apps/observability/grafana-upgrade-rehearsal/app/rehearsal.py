@@ -12,6 +12,8 @@ DATA = Path(os.environ.get('GRAFANA_DATA', '/var/lib/grafana'))
 DB = DATA / 'grafana.db'
 EVIDENCE = DATA / '.g13-rehearsal'
 PRE, POST = EVIDENCE / 'pre.json', EVIDENCE / 'post.json'
+PROVISIONING = Path(os.environ.get('GRAFANA_PROVISIONING', '/etc/grafana/provisioning'))
+PROVIDERS = PROVISIONING / 'dashboards/providers.yaml'
 # v13.2.3 resource_mig.go, resources.go, migration_registrar.go: org 1 is namespace "default", action 3 is a
 # deletion marker, and folders/dashboards read as unified only once their MigrationID row logged success.
 NAMESPACE = 'default'
@@ -124,12 +126,42 @@ def state(con, migrated):
     return found
 
 
+def stored_providers(con):
+    """Every file-provider name the 12 database stored, with an org it provisioned into."""
+    tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if 'dashboard_provisioning' not in tables:
+        return []
+    return values(con, "SELECT coalesce(p.name, ''), coalesce(min(d.org_id), 1) FROM dashboard_provisioning p"
+                       ' LEFT JOIN dashboard d ON d.id = p.dashboard_id GROUP BY p.name')
+
+
+def write_providers(providers):
+    """v13.2.3 deletes, in every org, each provisioned dashboard whose provider name is not configured.
+    Naming every stored provider keeps them; an absent path stops walkDisk at its os.Stat before any
+    sync, and disableDeletion only unprovisions should a path ever appear empty."""
+    if any(not name or '$' in name for name, _ in providers):
+        return 'stored provider name cannot be configured verbatim'
+    absent = PROVISIONING / 'absent'
+    if absent.exists():
+        return 'provider path placeholder already exists'
+    entries = [{'name': name, 'type': 'file', 'orgId': org, 'disableDeletion': True,
+                'options': {'path': str(absent / str(i))}} for i, (name, org) in enumerate(providers)]
+    PROVIDERS.parent.mkdir(parents=True, exist_ok=True)
+    PROVIDERS.write_text(json.dumps({'apiVersion': 1, 'providers': entries}, indent=1))
+    return None
+
+
 def counts(found):
     return {k: len(v) if isinstance(v, list) else v for k, v in found.items()}
 
 
 def precheck():
     if PRE.exists():
+        # Provisioning lives in a pod-scoped emptyDir, so a new pod must get the recorded providers back.
+        providers = json.loads(PRE.read_text()).get('providers')
+        reason = 'recorded state has no provider list' if providers is None else write_providers(providers)
+        if reason:
+            return emit({'precheck': 'failed', 'reason': reason}, 2)
         return emit({'precheck': 'skipped', 'reason': '12-schema state already recorded'}, 0)
     if not DB.is_file():
         return emit({'precheck': 'failed', 'reason': 'grafana.db missing'}, 2)
@@ -160,14 +192,18 @@ def precheck():
         if integrity != ['ok']:
             return emit({'precheck': 'failed', 'reason': 'integrity_check', 'problems': len(integrity)}, 2)
         found = state(con, migrated=False)
+        providers = stored_providers(con)
         con.close()
     except sqlite3.DatabaseError as exc:
         return emit({'precheck': 'failed', 'reason': f'{type(exc).__name__}: {exc}'}, 2)
+    reason = write_providers(providers)
+    if reason:
+        return emit({'precheck': 'failed', 'reason': reason}, 2)
     record = {'recorded_at': time.time(), 'journal_mode': mode, 'wal_committed_frames': committed,
               'side_files_before': before, 'side_files_after': side_files(), 'db_bytes': DB.stat().st_size}
     plugins = plugin_ids()
-    write(PRE, dict(record, files=files, plugins=plugins, state=found))
-    return emit(dict(record, precheck='ok', counts=counts(found), plugins=len(plugins)), 0)
+    write(PRE, dict(record, files=files, plugins=plugins, providers=providers, state=found))
+    return emit(dict(record, precheck='ok', counts=counts(found), plugins=len(plugins), providers=len(providers)), 0)
 
 
 def wait():
