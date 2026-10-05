@@ -1,4 +1,5 @@
 """Counts-only SQLite evidence for the Grafana 13 rehearsal; never selects titles, JSON, secrets or hashes."""
+import hashlib
 import json
 import os
 import sqlite3
@@ -10,11 +11,14 @@ from pathlib import Path
 DATA = Path(os.environ.get('GRAFANA_DATA', '/var/lib/grafana'))
 DB = DATA / 'grafana.db'
 EVIDENCE = DATA / '.g13-rehearsal'
+PRE, POST = EVIDENCE / 'pre.json', EVIDENCE / 'post.json'
 # v13.2.3 resource_mig.go, resources.go, migration_registrar.go: org 1 is namespace "default", action 3 is a
 # deletion marker, and folders/dashboards read as unified only once their MigrationID row logged success.
 NAMESPACE = 'default'
-UNIFIED = {'unified_dashboard_uids': ('dashboard.grafana.app', 'dashboards'),
-           'unified_folder_uids': ('folder.grafana.app', 'folders')}
+# The migration walks every org and counts every non-deleted row, provisioned ones included.
+ORG_NAMESPACE = f"CASE WHEN org_id = 1 THEN '{NAMESPACE}' ELSE 'org-' || org_id END"
+UNIFIED = {'unified_dashboards': ('dashboard.grafana.app', 'dashboards'),
+           'unified_folders': ('folder.grafana.app', 'folders')}
 MIGRATION_LOG = 'unifiedstorage_migration_log'
 FOLDERS_DASHBOARDS = 'folders and dashboards migration'
 
@@ -56,6 +60,10 @@ def values(con, sql, params=()):
     return sorted(row[0] if len(row) == 1 else list(row) for row in con.execute(sql, params))
 
 
+def sha256(data):
+    return hashlib.sha256(data if isinstance(data, bytes) else json.dumps(data, sort_keys=True).encode()).hexdigest()
+
+
 def checksum(data, big, s0=0, s1=0):
     words = struct.unpack(('>' if big else '<') + f'{len(data) // 4}I', data)
     for i in range(0, len(words), 2):
@@ -90,24 +98,29 @@ def state(con, migrated):
     need = {'data_source', 'user'} | ({'resource', MIGRATION_LOG} if migrated else {'dashboard'})
     if need - names:
         raise sqlite3.DatabaseError(f'missing tables {sorted(need - names)}')
-    found = {'datasources': values(con, 'SELECT uid, type, name, length(secure_json_data) > 2 FROM data_source'),
-             'user_ids': values(con, 'SELECT id FROM "user" WHERE is_service_account = 0')}
+    found = {'datasources': values(con, 'SELECT org_id, uid, type, name, length(secure_json_data) > 2 FROM data_source'),
+             'user_ids': values(con, 'SELECT id FROM "user" WHERE is_service_account = 0'),
+             'org_ids': values(con, 'SELECT id FROM org') if 'org' in names else None}
     if MIGRATION_LOG in names:
         found['migrations_ok'] = values(con, f'SELECT migration_id FROM {MIGRATION_LOG} WHERE success')
         found['migrations_failed'] = con.execute(f'SELECT count(*) FROM {MIGRATION_LOG} WHERE NOT success').fetchone()[0]
     if migrated:
         for key, (group, resource) in UNIFIED.items():
-            found[key] = values(con, 'SELECT name FROM resource WHERE namespace = ? AND "group" = ? AND resource = ?'
-                                     ' AND action != 3', (NAMESPACE, group, resource))
+            found[key] = values(con, 'SELECT namespace, name FROM resource WHERE "group" = ? AND resource = ?'
+                                     ' AND action != 3', (group, resource))
+        if 'resource_history' in names:
+            # Tells a row the migration never wrote apart from one it wrote and something later removed.
+            found['history_dashboards'] = values(con, 'SELECT DISTINCT namespace, name FROM resource_history'
+                                                      ' WHERE "group" = ? AND resource = ?', UNIFIED['unified_dashboards'])
         return found
     provisioned = ('SELECT dashboard_id FROM dashboard_provisioning WHERE dashboard_id IS NOT NULL'
                    if 'dashboard_provisioning' in names else 'SELECT 0 WHERE 0')
-    found['dashboard_uids_user'] = values(
-        con, f'SELECT uid FROM dashboard WHERE org_id = 1 AND is_folder = 0 AND id NOT IN ({provisioned})')
-    found['dashboards_total'] = con.execute(
-        'SELECT count(*) FROM dashboard WHERE org_id = 1 AND is_folder = 0').fetchone()[0]
-    found['folder_uids'] = values(con, 'SELECT uid FROM dashboard WHERE org_id = 1 AND is_folder = 1')
-    found['org_count'] = con.execute('SELECT count(*) FROM org').fetchone()[0] if 'org' in names else None
+    live = 'deleted IS NULL' if 'deleted' in {row[1] for row in con.execute('PRAGMA table_info(dashboard)')} else '1'
+    found['dashboards'] = values(
+        con, f'SELECT {ORG_NAMESPACE}, uid, id IN ({provisioned}) FROM dashboard WHERE is_folder = 0 AND {live}')
+    found['folders'] = values(con, f'SELECT {ORG_NAMESPACE}, uid FROM dashboard WHERE is_folder = 1 AND {live}')
+    found['dashboards_soft_deleted'] = con.execute(
+        f'SELECT count(*) FROM dashboard WHERE is_folder = 0 AND NOT ({live})').fetchone()[0]
     return found
 
 
@@ -116,7 +129,7 @@ def counts(found):
 
 
 def precheck():
-    if (EVIDENCE / 'pre.json').exists():
+    if PRE.exists():
         return emit({'precheck': 'skipped', 'reason': '12-schema state already recorded'}, 0)
     if not DB.is_file():
         return emit({'precheck': 'failed', 'reason': 'grafana.db missing'}, 2)
@@ -153,59 +166,105 @@ def precheck():
     record = {'recorded_at': time.time(), 'journal_mode': mode, 'wal_committed_frames': committed,
               'side_files_before': before, 'side_files_after': side_files(), 'db_bytes': DB.stat().st_size}
     plugins = plugin_ids()
-    write(EVIDENCE / 'pre.json', dict(record, files=files, plugins=plugins, state=found))
+    write(PRE, dict(record, files=files, plugins=plugins, state=found))
     return emit(dict(record, precheck='ok', counts=counts(found), plugins=len(plugins)), 0)
 
 
 def wait():
     ready = EVIDENCE / 'ready.json'
     if not ready.exists():
-        pre = json.loads((EVIDENCE / 'pre.json').read_text())
+        pre = json.loads(PRE.read_text())
         write(ready, {'seconds_precheck_to_ready': round(time.time() - pre['recorded_at'], 1)})
     print(ready.read_text(), flush=True)
     while not (EVIDENCE / 'finish').exists():
         time.sleep(5)
-    return 0
+    # The Job's own exit code is the record, so it must not trust the marker alone.
+    reason = verdict()
+    return emit({'rehearsal': 'fail' if reason else 'pass', 'reason': reason}, 1 if reason else 0)
 
 
-def postcheck():
-    pre = json.loads((EVIDENCE / 'pre.json').read_text())
+def evaluate(pre):
+    con = sqlite3.connect(DB, isolation_level=None, timeout=30)
     try:
-        con = sqlite3.connect(DB, isolation_level=None, timeout=30)
         con.execute('PRAGMA query_only = 1')
         con.execute('PRAGMA temp_store = MEMORY')
         post = state(con, migrated=True)
         integrity = values(con, 'PRAGMA integrity_check')
+    finally:
         con.close()
-    except sqlite3.DatabaseError as exc:
-        # A missing unified table fails here; legacy rows never stand in for migrated ones.
-        return emit({'postcheck': 'fail', 'reason': f'{type(exc).__name__}: {exc}'}, 1)
     old = pre['state']
+    kept = {tuple(row) for row in post['unified_dashboards']}
+    lost = [row for row in old['dashboards'] if (row[0], row[1]) not in kept]
     checks = {
         'integrity': integrity == ['ok'],
         'datasources_unchanged': post['datasources'] == old['datasources'],
         'users_unchanged': post['user_ids'] == old['user_ids'],
-        'user_dashboards_kept': set(old['dashboard_uids_user']) <= set(post['unified_dashboard_uids']),
-        'folders_unchanged': post['unified_folder_uids'] == old['folder_uids'],
+        'orgs_unchanged': post['org_ids'] == old['org_ids'],
+        'dashboards_kept': not lost,
+        'folders_unchanged': post['unified_folders'] == old['folders'],
         'folders_dashboards_migrated': FOLDERS_DASHBOARDS in post['migrations_ok'],
         'plugins_unchanged': plugin_ids() == pre['plugins'],
     }
+    return post, checks, lost
+
+
+def postcheck():
+    pre_raw = PRE.read_bytes()
+    pre = json.loads(pre_raw)
+    binding = {'pre_sha256': sha256(pre_raw), 'checker_sha256': sha256(Path(__file__).read_bytes())}
+    try:
+        post, checks, lost = evaluate(pre)
+    except sqlite3.DatabaseError as exc:
+        # A missing unified table fails here; legacy rows never stand in for migrated ones.
+        record = {'postcheck': 'fail', 'reason': f'{type(exc).__name__}: {exc}'}
+        write(POST, {**record, **binding, 'passed': False})  # supersedes any earlier pass
+        return emit(record, 1)
+    old = pre['state']
+    history = {tuple(row) for row in post.get('history_dashboards', [])}
     record = {'checks': checks, 'counts_pre': counts(old), 'counts_post': counts(post),
+              'lost_dashboards': {'user': sum(1 for row in lost if not row[2]),
+                                  'provisioned': sum(1 for row in lost if row[2]),
+                                  'seen_in_history': sum(1 for row in lost if (row[0], row[1]) in history)},
               'new_migrations': len(set(post['migrations_ok']) - set(old.get('migrations_ok', []))),
               'folders_dashboards_preexisting': FOLDERS_DASHBOARDS in old.get('migrations_ok', []),
-              'provisioned_delta': len(post['unified_dashboard_uids']) - old['dashboards_total'],
               'new_files': {k: v for k, v in data_files().items() if k not in pre['files']},
               'db_bytes': DB.stat().st_size, 'side_files': side_files()}
     if (EVIDENCE / 'ready.json').exists():
         record.update(json.loads((EVIDENCE / 'ready.json').read_text()))
-    write(EVIDENCE / 'post.json', dict(record, state=post))
     passed = all(checks.values())
+    write(POST, {**record, **binding, 'passed': passed, 'state': post, 'state_sha256': sha256(post)})
     return emit(dict(record, postcheck='pass' if passed else 'fail'), 0 if passed else 1)
 
 
+def verdict():
+    """Why the rehearsal may not be recorded as a success, or None once it may."""
+    try:
+        receipt, pre_raw = json.loads(POST.read_text()), PRE.read_bytes()
+    except (OSError, ValueError):
+        return 'no postcheck receipt'
+    if receipt.get('passed') is not True:
+        return 'last postcheck failed'
+    bound = receipt.get('pre_sha256') == sha256(pre_raw)
+    if not bound or receipt.get('checker_sha256') != sha256(Path(__file__).read_bytes()):
+        return 'postcheck receipt belongs to another precheck or checker'
+    try:
+        post, checks, _ = evaluate(json.loads(pre_raw))
+    except sqlite3.DatabaseError:
+        return 'migrated state no longer readable'
+    if not all(checks.values()) or sha256(post) != receipt.get('state_sha256'):
+        return 'state changed since the passing postcheck'
+    return None
+
+
+def finish():
+    # The marker always ends the hold; only a current, bound pass lets the Job succeed.
+    reason = verdict()
+    write(EVIDENCE / 'finish', {'finished_at': time.time(), 'passed': reason is None})
+    return emit({'finish': 'fail' if reason else 'pass', 'reason': reason}, 1 if reason else 0)
+
+
 if __name__ == '__main__':
-    commands = {'precheck': precheck, 'wait': wait, 'postcheck': postcheck,
-                'finish': lambda: write(EVIDENCE / 'finish', {'finished_at': time.time()}) or 0}
+    commands = {'precheck': precheck, 'wait': wait, 'postcheck': postcheck, 'finish': finish}
     if len(sys.argv) != 2 or sys.argv[1] not in commands:
         sys.exit(f'usage: rehearsal.py {{{"|".join(commands)}}}')
     sys.exit(commands[sys.argv[1]]())
