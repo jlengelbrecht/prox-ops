@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -437,6 +438,53 @@ class NativeAlloyTests(unittest.TestCase):
         second = run_alloy(self.config, work, lambda e: has_sentinel(e) and any(RESTART_UUID in x[2] for x in e),
                            root, [ORDINARY, api], legacy_file)
         self.assertEqual(sorted(x[2] for x in second.entries), sorted(['after restart ' + SENTINEL, safe_line('failed:', RESTART_UUID)]))
+
+    def test_short_lived_files_born_after_discovery_are_kept_whole(self):
+        """A short Job's files appear after the first scan and are deleted five seconds later."""
+        root, lines = self.dir / 'short-pods', 177
+        job = pod('media', 'report-29310240-q7xkz', 'report-29310240', 'report', 'report-prod', 'cron', 'report',
+                  uid(94), pod_controller_kind='Job')
+        api = hindsight(uid(95))
+        stamps = [f'2026-10-03T09:01:00.{n:06d}Z' for n in range(lines)]
+        kinds = [EVENTS[n % len(EVENTS)] for n in range(lines)]
+        write_pod(root, ORDINARY, [cri(SENTINEL)])
+
+        def churn():
+            paths = [write_pod(root, job, [cri(f'short line {n}', ts) for n, ts in enumerate(stamps)]),
+                     write_pod(root, api, [cri(event(uid(1000 + n), kind, 'synthetic-secret'), ts)
+                                           for n, (kind, ts) in enumerate(zip(kinds, stamps))])]
+            time.sleep(5)
+            for path in paths:
+                shutil.rmtree(path.parents[1])
+
+        writer = threading.Thread(target=churn)
+
+        def done(entries):
+            # The sentinel proves the source is tailing, so both files are born after discovery.
+            if has_sentinel(entries) and writer.ident is None:
+                writer.start()
+            short = sum(uid(94) in labels.get('filename', '') or labels.get('pod_uid') == uid(95) for labels, _, _ in entries)
+            return short >= 2 * lines and writer.ident is not None and not writer.is_alive()
+
+        try:
+            run = run_alloy(self.config, self.dir / 'short-lived', done, root, [ORDINARY, job, api], self.dir / 'absent.yaml')
+        finally:
+            if writer.ident is not None:
+                writer.join()
+        broad = [(labels, ts, line) for labels, ts, line in run.entries if uid(94) in labels.get('filename', '')]
+        self.assertEqual(sorted((ts, line) for _, ts, line in broad),
+                         sorted((ns(ts), f'short line {n}') for n, ts in enumerate(stamps)))
+        self.assertEqual({tuple(sorted((k, v) for k, v in labels.items() if k != 'filename')) for labels, _, _ in broad},
+                         {tuple(sorted({'app': 'report', 'instance': 'report-prod', 'component': 'cron', 'node_name': 'work-1',
+                                        'namespace': 'media', 'job': 'media/report', 'pod': 'report-29310240-q7xkz',
+                                        'container': 'report', 'stream': 'stdout'}.items()))})
+        safe = [(labels, ts, line) for labels, ts, line in run.entries if labels.get('pod_uid') == uid(95)]
+        self.assertEqual(sorted((ts, line) for _, ts, line in safe),
+                         sorted((ns(ts), safe_line(kind, uid(1000 + n))) for n, (kind, ts) in enumerate(zip(kinds, stamps))))
+        self.assertTrue(all(set(labels) == {*SAFE_LABELS, 'pod_uid', 'filename'} and SAFE_LABELS.items() <= labels.items()
+                            for labels, _, _ in safe))
+        self.assertFalse([line for labels, _, line in run.entries
+                          if 'synthetic-secret' in line or (uid(95) in labels.get('filename', '') and 'pod_uid' not in labels)])
 
 if __name__ == '__main__':
     unittest.main()

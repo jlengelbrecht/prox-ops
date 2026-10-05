@@ -148,14 +148,17 @@ spec:
               regex         = "ai;hindsight-api-.+"
             }
           }
-          local.file_match "broad" {
-            path_targets = discovery.relabel.broad.output
-          }
           // Promtail's offsets are imported once, then Alloy keeps its own.
+          // Globs are expanded in-component every second: the 10s default
+          // misses files of pods that live and die between two scans.
           loki.source.file "broad" {
-            targets               = local.file_match.broad.targets
+            targets               = discovery.relabel.broad.output
             forward_to            = [loki.process.broad.receiver]
             legacy_positions_file = "/run/promtail/positions.yaml"
+            file_match {
+              enabled     = true
+              sync_period = "1s"
+            }
           }
           loki.process "broad" {
             forward_to = [loki.write.default.receiver]
@@ -197,13 +200,14 @@ spec:
               target_label  = "__path__"
             }
           }
-          local.file_match "hindsight_safe" {
-            path_targets = discovery.relabel.hindsight_safe.output
-          }
           loki.source.file "hindsight_safe" {
-            targets               = local.file_match.hindsight_safe.targets
+            targets               = discovery.relabel.hindsight_safe.output
             forward_to            = [loki.process.hindsight_safe.receiver]
             legacy_positions_file = "/run/promtail/positions.yaml"
+            file_match {
+              enabled     = true
+              sync_period = "1s"
+            }
           }
           // Only a fixed, low-content operation event is centralized. Every
           // unknown, malformed, oversized, or free-form API line is dropped.
