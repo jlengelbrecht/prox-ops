@@ -1,0 +1,12 @@
+---
+# Disposable clone of the dated snapshot. Only the rehearsal Job mounts it.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-upgrade-rehearsal
+  namespace: observability
+spec:
+  storageClassName: ceph-block
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 10Gi}}
+  dataSource: {apiGroup: snapshot.storage.k8s.io, kind: VolumeSnapshot, name: kube-prometheus-stack-grafana-20261004-g13}

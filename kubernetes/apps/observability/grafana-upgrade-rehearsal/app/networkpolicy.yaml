@@ -1,0 +1,20 @@
+---
+# No ingress (the operator uses port-forward). Egress is DNS plus Loki, the only
+# backend the stored-secret decrypt check needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-upgrade-rehearsal
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: grafana-upgrade-rehearsal}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - podSelector: {matchLabels: {app.kubernetes.io/name: loki, app.kubernetes.io/component: single-binary}}
+      ports: [{protocol: TCP, port: 3100}]

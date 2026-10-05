@@ -1,0 +1,15 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ./pvc.yaml
+  - ./networkpolicy.yaml
+  - ./job.yaml
+configMapGenerator:
+  - name: grafana-upgrade-rehearsal-checker
+    files:
+      - ./rehearsal.py
+generatorOptions:
+  # A Job pod template is immutable; a hash suffix would turn any script edit
+  # into a failed apply instead of a no-op on the running rehearsal.
+  disableNameSuffixHash: true

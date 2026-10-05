@@ -1,0 +1,12 @@
+---
+# Crash-consistent copy of the live Grafana 12 volume. The live claim is only
+# read by the snapshotter; nothing in the rehearsal mounts it.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: kube-prometheus-stack-grafana-20261004-g13
+  namespace: observability
+  annotations: {kustomize.toolkit.fluxcd.io/prune: disabled} # survives the parent's WaitForTermination teardown
+spec:
+  volumeSnapshotClassName: ceph-block-snapshot-retain
+  source: {persistentVolumeClaimName: kube-prometheus-stack-grafana}
