@@ -526,12 +526,17 @@
     // Logging: after every patch/minor/digest opt-in so none of them can auto-merge it.
     {
       "description": "FULLY MANUAL: Loki, Promtail and Alloy - an update can change the log sanitizer or replace Loki storage, and the logging fixture is path-filtered rather than a required check",
-      "matchDatasources": ["docker", "helm"],
+      "matchDatasources": ["docker", "helm", "github-release-attachments"],
       "matchPackageNames": [
         "loki", "promtail", "alloy",
         "grafana/loki", "grafana/promtail", "grafana/alloy",
         "docker.io/grafana/loki", "docker.io/grafana/promtail", "docker.io/grafana/alloy"
       ],
+      "automerge": false
+    },
+    {
+      "description": "FULLY MANUAL: the logging fixture's pinned Alloy binary and chart move only with the deployed image and chart",
+      "matchFileNames": ["scripts/hindsight-logging-ci-assets.py"],
       "automerge": false
     },
     // kube-prometheus-stack HelmRelease pins no image today; last so no opt-in can auto-merge one pinned later.
