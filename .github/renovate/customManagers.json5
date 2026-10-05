@@ -197,6 +197,25 @@
       "datasourceTemplate": "docker",
       "depNameTemplate": "ghcr.io/jlengelbrecht/agent-router-base",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      // The metrics workflow pins the Prometheus release archive by tag AND by the
+      // archive's SHA-256. github-release-attachments resolves the new digest from
+      // the release's checksum file, so a bump rewrites both values in one match.
+      "description": "Track the Prometheus release archive (tag + archive SHA-256) used for promtool in the Hindsight metrics workflow",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/hindsight-metrics\\.yaml$/"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=github-release-attachments depName=prometheus/prometheus
+        //          PROMETHEUS_VERSION: "v3.15.0"
+        //          PROMETHEUS_ARCHIVE_SHA256: "<64 hex>"
+        "# renovate: datasource=github-release-attachments depName=prometheus/prometheus\\n\\s*PROMETHEUS_VERSION:\\s*\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"\\n\\s*PROMETHEUS_ARCHIVE_SHA256:\\s*\"(?<currentDigest>[a-f0-9]{64})\""
+      ],
+      "datasourceTemplate": "github-release-attachments",
+      "depNameTemplate": "prometheus/prometheus",
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
@@ -205,6 +224,17 @@
       "matchManagers": ["flux"],
       "matchFileNames": ["kubernetes/apps/ai/agent-router/app/ocirepository.yaml"],
       "enabled": false
+    },
+    {
+      // This preset loads after autoMerge.json5, so no patch/minor rule there can auto-merge it.
+      "description": "FULLY MANUAL: Prometheus archive for CI promtool - every update type, including a digest-only change under an existing tag",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [".github/workflows/hindsight-metrics.yaml"],
+      "matchPackageNames": ["prometheus/prometheus"],
+      "automerge": false,
+      "prBodyNotes": [
+        "**Prometheus CI archive**: manual merge. Version and archive SHA-256 move together; the Hindsight metrics fixtures workflow must pass against the new promtool."
+      ]
     }
   ]
 }
