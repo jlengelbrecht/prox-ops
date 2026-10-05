@@ -8,10 +8,10 @@ spec:
   chart:
     spec:
       chart: loki
-      version: 6.49.0
+      version: 18.13.7
       sourceRef:
         kind: HelmRepository
-        name: grafana
+        name: grafana-community
         namespace: observability
   interval: 1h
   timeout: 20m
@@ -28,7 +28,7 @@ spec:
       strategy: rollback
   values:
     # Deployment mode - single binary for homelab simplicity
-    deploymentMode: SingleBinary
+    deploymentMode: Monolithic
 
     # Single binary configuration
     singleBinary:
@@ -43,13 +43,11 @@ spec:
           cpu: 2000m
           memory: 2Gi
 
-      # Use existing PVC
+      # Data lives on the StatefulSet claim storage-loki-0, not on loki-data
       persistence:
         enabled: true
         storageClass: ceph-block
         size: 200Gi
-        # Use existing PVC we created
-        existingClaim: loki-data
         # Omit the StatefulSet PVC retention policy so Kubernetes defaults it to
         # Retain and storage-loki-0 survives StatefulSet deletion or scale-down
         enableStatefulSetAutoDeletePVC: false
@@ -65,6 +63,8 @@ spec:
 
     # Loki configuration
     loki:
+      auth_enabled: true
+
       # Storage configuration
       storage:
         type: filesystem
@@ -173,10 +173,6 @@ spec:
         enabled: true
         labels:
           prometheus: kube-prometheus-stack
-      selfMonitoring:
-        enabled: false
-        grafanaAgent:
-          installOperator: false
 
     # Loki service
     service:
@@ -230,10 +226,6 @@ spec:
 
     # Index gateway disabled (using single binary)
     indexGateway:
-      replicas: 0
-
-    # Bloom compactor disabled
-    bloomCompactor:
       replicas: 0
 
     # Bloom gateway disabled
