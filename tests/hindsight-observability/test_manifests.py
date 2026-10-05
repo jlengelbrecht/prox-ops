@@ -115,9 +115,9 @@ class ManifestTests(unittest.TestCase):
 
     def test_prometheus_discovers_hindsight_monitor(self):
         release = docs(OBS / 'helmrelease.yaml')[0]
-        self.assertEqual(release['spec']['chart']['spec']['version'], '80.4.2')
+        self.assertEqual(release['spec']['chart']['spec']['version'], '91.9.0')
         spec = release['spec']['values']['prometheus']['prometheusSpec']
-        # Pinned chart 80.4.2 renders these absent selectors as {}; the flag
+        # Pinned chart 91.9.0 renders these absent selectors as {}; the flag
         # prevents a release-label selector from replacing the empty monitor selector.
         self.assertIs(spec['serviceMonitorSelectorNilUsesHelmValues'], False)
         monitor = docs(APP / 'servicemonitor.yaml')[0]

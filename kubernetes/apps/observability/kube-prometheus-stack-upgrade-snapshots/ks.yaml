@@ -1,0 +1,27 @@
+---
+# Takes retained snapshots of the monitoring volumes before a chart upgrade.
+# kube-prometheus-stack depends on this Kustomization, and Flux only treats a
+# dependency as ready once it has applied the current Git revision, so the
+# upgrade cannot start until snapshots that exist only in that revision are
+# readyToUse. Prune stays off so removing these files never deletes a snapshot.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kube-prometheus-stack-upgrade-snapshots
+  namespace: flux-system
+spec:
+  interval: 1h
+  path: ./kubernetes/apps/observability/kube-prometheus-stack-upgrade-snapshots/app
+  prune: false
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: observability
+  wait: true
+  timeout: 30m
+  healthCheckExprs:
+    - apiVersion: snapshot.storage.k8s.io/v1
+      kind: VolumeSnapshot
+      current: has(status.readyToUse) && status.readyToUse == true
+      failed: has(status.error)

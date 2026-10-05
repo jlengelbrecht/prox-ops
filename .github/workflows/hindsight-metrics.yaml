@@ -13,6 +13,13 @@ on:
       - kubernetes/apps/observability/kube-prometheus-stack/app/dashboards/kustomization.yaml
       - kubernetes/apps/observability/kube-prometheus-stack/app/alerts/hindsight-alerts.yaml
       - kubernetes/apps/observability/kube-prometheus-stack/app/dashboards/hindsight-dashboard.yaml
+      - kubernetes/apps/observability/kustomization.yaml
+      - kubernetes/apps/observability/kube-prometheus-stack/ks.yaml
+      - kubernetes/apps/observability/kube-prometheus-stack-upgrade-snapshots/**
+      - kubernetes/apps/kube-system/snapshot-controller/class/volumesnapshotclass.yaml
+      - kubernetes/flux/cluster/ks.yaml
+      - templates/config/kubernetes/flux/cluster/ks.yaml.j2
+      - tests/kube-prometheus-stack/test_upgrade_snapshots.py
 permissions:
   contents: read
 jobs:
@@ -42,3 +49,6 @@ jobs:
           echo "PROMTOOL_BIN=$work/bin/promtool" >> "$GITHUB_ENV"
       - run: python -m unittest discover -s tests/hindsight-observability -p test_manifests.py -v
       - run: python tests/hindsight-observability/run_promtool_fixtures.py
+      # Shares this job so a kube-prometheus-stack chart bump cannot merge with
+      # snapshot names left over from an earlier upgrade, or with rollback restored
+      - run: python -m unittest discover -s tests/kube-prometheus-stack -p test_upgrade_snapshots.py -v
