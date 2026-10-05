@@ -533,6 +533,13 @@
         "docker.io/grafana/loki", "docker.io/grafana/promtail", "docker.io/grafana/alloy"
       ],
       "automerge": false
+    },
+    // kube-prometheus-stack HelmRelease pins no image today; last so no opt-in can auto-merge one pinned later.
+    {
+      "description": "FULLY MANUAL: any container image later pinned in the kube-prometheus-stack HelmRelease (none today; the chart supplies them) - an image bump can migrate the Grafana database or Prometheus storage",
+      "matchFileNames": ["kubernetes/apps/observability/kube-prometheus-stack/app/helmrelease.yaml"],
+      "matchDatasources": ["docker"],
+      "automerge": false
     }
   ]
 }
