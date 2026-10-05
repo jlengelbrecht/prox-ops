@@ -4,28 +4,49 @@ kind: HelmRelease
 metadata:
   name: kube-prometheus-stack
   namespace: observability
+  annotations:
+    # The cluster-wide HelmRelease defaults roll back failed upgrades and
+    # replace CRDs; this release sets its own install, upgrade and rollback
+    homelab0.org/helm-defaults: disabled
 spec:
   chart:
     spec:
       chart: kube-prometheus-stack
       # renovate: datasource=helm registryUrl=https://prometheus-community.github.io/helm-charts
-      version: 80.4.2
+      version: 91.9.0
       sourceRef:
         kind: HelmRepository
         name: prometheus-community
         namespace: observability
   interval: 1h
-  timeout: 15m
+  # Covers the Grafana startupProbe budget below plus the rest of the rollout
+  timeout: 40m
+  # The prometheus-operator-crds release is the only owner of the CRDs
   install:
     remediation:
       retries: 3
-    crds: CreateReplace
+    crds: Skip
+    strategy:
+      name: RetryOnFailure
   upgrade:
     cleanupOnFail: true
+    # Grafana 13 migrates its database in place and the migration cannot be
+    # undone. A rollback would start Grafana 12 on the migrated database, so a
+    # failed upgrade stays failed until a reviewed fix or restore lands.
     remediation:
-      retries: 3
-    crds: CreateReplace
+      retries: 0
+      remediateLastFailure: false
+    crds: Skip
+    strategy:
+      name: RemediateOnFailure
+  rollback:
+    cleanupOnFail: true
+    recreate: true
   values:
+    crds:
+      enabled: false
+
+
     # Prometheus configuration
     prometheus:
       enabled: true
@@ -60,7 +81,8 @@ spec:
                 requests:
                   storage: 100Gi
 
-        # Service monitors
+        # Select every ServiceMonitor, PodMonitor and PrometheusRule instead of
+        # only those carrying the release label
         serviceMonitorSelectorNilUsesHelmValues: false
         podMonitorSelectorNilUsesHelmValues: false
         ruleSelectorNilUsesHelmValues: false
@@ -141,6 +163,89 @@ spec:
       deploymentStrategy:
         type: Recreate
 
+      # Recreate stops the old pod before this one starts, so this copy is
+      # taken with the database closed, as the Grafana 13 upgrade guide asks.
+      # The first run writes the marker last; later runs only verify the copy
+      # and never replace it with a migrated database. Any partial or damaged
+      # copy stops the pod for a human to look at.
+      extraInitContainers:
+        - name: pre-13-backup
+          image: docker.io/library/busybox:1.38.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: GRAFANA_DATA
+              value: /var/lib/grafana
+            - name: BACKUP_TAG
+              value: grafana-12-before-13.2.3
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              src="$GRAFANA_DATA"
+              dst="$GRAFANA_DATA/pre-13-backup"
+              marker="$dst/COMPLETE"
+              files="grafana.db grafana.db-wal grafana.db-shm grafana.db-journal"
+              fail() { echo "pre-13-backup: $1" >&2; exit 1; }
+              digest() { sha256sum "$1" | cut -d' ' -f1; }
+              if [ -e "$marker" ]; then
+                [ "$(sed -n 1p "$marker")" = "$BACKUP_TAG" ] || fail "marker is for another backup"
+                [ "$(sed -n 2p "$marker")" = "$(digest "$dst/SHA256SUMS")" ] || fail "checksum list changed"
+                grep -q '  grafana.db$' "$dst/SHA256SUMS" || fail "checksum list has no grafana.db"
+                (cd "$dst" && sha256sum -c SHA256SUMS >/dev/null) || fail "copy does not match its checksums"
+                echo "pre-13-backup: verified existing copy"
+                exit 0
+              fi
+              [ ! -e "$dst" ] || fail "incomplete copy found; refusing to overwrite it"
+              [ -f "$src/grafana.db" ] || fail "no grafana.db to copy"
+              mkdir "$dst"
+              for f in $files; do
+                if [ -e "$src/$f" ]; then cp -p "$src/$f" "$dst/$f"; fi
+              done
+              sync
+              for f in $files; do
+                if [ -e "$dst/$f" ]; then
+                  sum="$(digest "$dst/$f")"
+                  [ "$sum" = "$(digest "$src/$f")" ] || fail "copy of $f differs from the source"
+                  echo "$sum  $f" >> "$dst/SHA256SUMS"
+                fi
+              done
+              printf '%s\n%s\n' "$BACKUP_TAG" "$(digest "$dst/SHA256SUMS")" > "$dst/.COMPLETE.tmp"
+              sync
+              mv "$dst/.COMPLETE.tmp" "$marker"
+              sync
+              echo "pre-13-backup: copy complete"
+          securityContext:
+            runAsUser: 472
+            runAsGroup: 472
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/grafana
+
+      # The Grafana 13 database migration runs before /api/health answers;
+      # 360 x 5s gives it 30 minutes before liveness can restart the pod
+      startupProbe:
+        httpGet:
+          path: /api/health
+          port: grafana
+        periodSeconds: 5
+        timeoutSeconds: 5
+        failureThreshold: 360
+
       # Grafana configuration
       grafana.ini:
         server:
@@ -156,6 +261,9 @@ spec:
           logs: /var/log/grafana
           plugins: /var/lib/grafana/plugins
           provisioning: /etc/grafana/provisioning
+        # Newer grafana charts dropped this default; keep the value Grafana ran with
+        grafana_net:
+          url: https://grafana.net
 
       # Default dashboards
       defaultDashboardsEnabled: true
