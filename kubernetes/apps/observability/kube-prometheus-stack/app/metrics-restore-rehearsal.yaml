@@ -92,6 +92,9 @@ data:
 # Prints only PASS or FAIL, reading the clone read-only. Both servers start
 # silently on an empty directory, so a missing TSDB or state file must fail
 # here; a corrupt one fails in the server itself. An empty state file is valid.
+# Only directories named as valid ULIDs are blocks: Prometheus ignores and
+# removes anything else, such as an interrupted compaction caught by the
+# crash-consistent snapshot, so those must not fail the check either.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -105,12 +108,20 @@ data:
     import os
     import sys
 
+    ULID_ALPHABET = frozenset('0123456789ABCDEFGHJKMNPQRSTVWXYZ')
+
+
+    def is_block_name(name):
+        return len(name) == 26 and name[0] <= '7' and set(name) <= ULID_ALPHABET
+
 
     def prometheus(root):
         if not os.path.isdir(os.path.join(root, 'wal')):
             return False
         blocks = 0
         for name in os.listdir(root):
+            if not is_block_name(name):
+                continue
             meta = os.path.join(root, name, 'meta.json')
             if not os.path.isfile(meta):
                 continue
