@@ -11,7 +11,12 @@ HELM_ARCHIVE = 'a7f81ce08007091b86d8bd696eb4d86b8d0f2e1b9f6c714be62f82f96a594496
 HELM_BINARY = 'e4722a77de9df824214aaf19d43687c49f7cbcf3b107905acea002173777d486'
 PROMTAIL_ARCHIVE = 'b70d5a5e259a64f6f9b6805bd42d725e50978bcd520fb46113a86cd8b418bbca'
 PROMTAIL_BINARY = '3b0e6d48f9973244e0b17c79e478eae53edae60378eaeaad32b749d42dbe4609'
+# grafana/alloy v1.20.1 alloy-linux-amd64.zip
+ALLOY_ARCHIVE = '451fe650e8277d22d69cb8db50bba809f581fe78decba7fce4027ef185457be9'
+ALLOY_BINARY = '4d73d544c8c2baa779bf7efbe8c3906b655416684ff503adfbb5e18c94dbb58d'
 MAX_MEMBER = 200_000_000
+# Alloy bundles every component into one binary, several times Promtail's size.
+MAX_ALLOY_MEMBER = 800_000_000
 
 
 def digest(path):
@@ -22,8 +27,8 @@ def digest(path):
     return h.hexdigest()
 
 
-def write_verified(payload, expected, destination):
-    if len(payload) > MAX_MEMBER or hashlib.sha256(payload).hexdigest() != expected:
+def write_verified(payload, expected, destination, limit=MAX_MEMBER):
+    if len(payload) > limit or hashlib.sha256(payload).hexdigest() != expected:
         raise ValueError('binary checksum mismatch')
     destination = pathlib.Path(destination)
     if destination.exists():
@@ -64,12 +69,25 @@ def verified_promtail(archive, destination):
         write_verified(zf.read(entries[0]), PROMTAIL_BINARY, destination)
 
 
+def verified_alloy(archive, destination):
+    if digest(archive) != ALLOY_ARCHIVE:
+        raise ValueError('archive checksum mismatch')
+    with zipfile.ZipFile(archive) as zf:
+        entries = zf.infolist()
+        if len(entries) != 1 or entries[0].filename != 'alloy-linux-amd64' or (
+                entries[0].file_size > MAX_ALLOY_MEMBER or entries[0].is_dir()):
+            raise ValueError('unsafe archive members')
+        with zf.open(entries[0]) as source:
+            write_verified(source.read(MAX_ALLOY_MEMBER + 1), ALLOY_BINARY, destination, MAX_ALLOY_MEMBER)
+
+
 def main(argv):
-    if len(argv) != 4:
+    if len(argv) != 5:
         raise ValueError('usage')
-    helm_archive, promtail_archive, output_dir = map(pathlib.Path, argv[1:])
+    helm_archive, promtail_archive, alloy_archive, output_dir = map(pathlib.Path, argv[1:])
     verified_helm(helm_archive, output_dir / 'helm')
     verified_promtail(promtail_archive, output_dir / 'promtail-linux-amd64')
+    verified_alloy(alloy_archive, output_dir / 'alloy-linux-amd64')
 
 
 if __name__ == '__main__':
