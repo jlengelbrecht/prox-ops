@@ -522,6 +522,17 @@
       "prBodyNotes": [
         "**Paperclip**: manual merge. Before merging, `pg_dump -d paperclip` from the shared cluster and read the release notes (bundled agent CLIs move with the image)."
       ]
+    },
+    // Logging: after every patch/minor/digest opt-in so none of them can auto-merge it.
+    {
+      "description": "FULLY MANUAL: Loki, Promtail and Alloy - an update can change the log sanitizer or replace Loki storage, and the logging fixture is path-filtered rather than a required check",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackageNames": [
+        "loki", "promtail", "alloy",
+        "grafana/loki", "grafana/promtail", "grafana/alloy",
+        "docker.io/grafana/loki", "docker.io/grafana/promtail", "docker.io/grafana/alloy"
+      ],
+      "automerge": false
     }
   ]
 }
