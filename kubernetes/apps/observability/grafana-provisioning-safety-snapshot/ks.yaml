@@ -1,5 +1,8 @@
 ---
-# prune off: removing the snapshot from Git must never delete the recovery point.
+# prune: false alone does not retain the snapshot: the cluster patch sets
+# deletionPolicy: WaitForTermination, so deleting this Kustomization still deletes
+# its objects. The VolumeSnapshot's own kustomize.toolkit.fluxcd.io/prune: disabled
+# annotation keeps the object, and the Retain class keeps the stored snapshot data.
 # kube-prometheus-stack depends on this, so the provisioning archive init cannot
 # run before the snapshot is ready.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
