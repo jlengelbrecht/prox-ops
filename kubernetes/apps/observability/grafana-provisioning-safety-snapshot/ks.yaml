@@ -1,0 +1,28 @@
+---
+# prune: false alone does not retain the snapshot: the cluster patch sets
+# deletionPolicy: WaitForTermination, so deleting this Kustomization still deletes
+# its objects. The VolumeSnapshot's own kustomize.toolkit.fluxcd.io/prune: disabled
+# annotation keeps the object, and the Retain class keeps the stored snapshot data.
+# kube-prometheus-stack depends on this, so the provisioning archive init cannot
+# run before the snapshot is ready.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: grafana-provisioning-safety-snapshot
+  namespace: flux-system
+spec:
+  healthCheckExprs:
+    - apiVersion: snapshot.storage.k8s.io/v1
+      kind: VolumeSnapshot
+      current: has(status.readyToUse) && status.readyToUse == true
+      failed: has(status.error) && has(status.error.message)
+  interval: 1h
+  path: ./kubernetes/apps/observability/grafana-provisioning-safety-snapshot/app
+  prune: false
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: observability
+  wait: true
+  timeout: 15m
