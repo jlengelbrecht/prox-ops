@@ -369,6 +369,11 @@ class NativeAlloyTests(unittest.TestCase):
         result = subprocess.run([ALLOY, 'fmt', str(self.dir / 'fmt.alloy')], text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_rendered_chart_matches_release_chart_version(self):
+        version = yaml.safe_load(RELEASE.read_text())['spec']['chart']['spec']['version']
+        daemonset = next(d for d in self.docs if d['kind'] == 'DaemonSet')
+        self.assertEqual(daemonset['metadata']['labels'].get('helm.sh/chart'), f'alloy-{version}')
+
     def test_chart_role_or_widened_grant_is_rejected(self):
         self.assertIn('ClusterRole', token_problems(rendered(rbac={'create': True}), RBAC.read_text()))
         self.assertEqual(token_problems(self.docs, swap(RBAC.read_text(), '[pods]', '[pods, secrets]', 1)), {'grant'})

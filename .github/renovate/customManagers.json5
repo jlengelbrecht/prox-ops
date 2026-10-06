@@ -216,6 +216,44 @@
       "datasourceTemplate": "github-release-attachments",
       "depNameTemplate": "prometheus/prometheus",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      // The logging fixture runs the real Alloy release binary, which must match
+      // the deployed image tag. The tag and the official zip digest are read as
+      // one dependency; the datasource finds the new digest in the release's
+      // checksum file. Grouped with the image and kept manual (groups/autoMerge).
+      "description": "Track the native Alloy CI binary (release tag + archive digest) in the logging fixture assets script",
+      "managerFilePatterns": ["/^scripts/hindsight-logging-ci-assets\\.py$/"],
+      "matchStrings": [
+        // Matches: # renovate: datasource=github-release-attachments depName=grafana/alloy
+        //          ALLOY_VERSION = 'v1.20.1'
+        //          ALLOY_ARCHIVE = '<64 hex>'
+        "# renovate: datasource=github-release-attachments depName=grafana/alloy\\nALLOY_VERSION = '(?<currentValue>v\\d+\\.\\d+\\.\\d+)'\\nALLOY_ARCHIVE = '(?<currentDigest>[a-f0-9]{64})'"
+      ],
+      "datasourceTemplate": "github-release-attachments",
+      "depNameTemplate": "grafana/alloy",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      // The same fixture renders the deployed Alloy chart, so its pin must follow the
+      // HelmRelease chart version. grafana/helm-charts releases every chart as
+      // <chart>-<version>; the full tag is kept as currentValue so the digest lookup
+      // finds the release by tag, and the anchored regex versioning skips the other
+      // charts (alloy-operator-*, loki-*, ...). Grouped and kept manual (groups/autoMerge).
+      "description": "Track the native Alloy CI chart (grafana/helm-charts release tag + chart archive digest) in the logging fixture assets script",
+      "managerFilePatterns": ["/^scripts/hindsight-logging-ci-assets\\.py$/"],
+      "matchStrings": [
+        // Matches: # renovate: datasource=github-release-attachments depName=alloy packageName=grafana/helm-charts
+        //          ALLOY_CHART_TAG = 'alloy-1.13.0'
+        //          ALLOY_CHART_ARCHIVE = '<64 hex>'
+        "# renovate: datasource=github-release-attachments depName=alloy packageName=grafana/helm-charts\\nALLOY_CHART_TAG = '(?<currentValue>alloy-\\d+\\.\\d+\\.\\d+)'\\nALLOY_CHART_ARCHIVE = '(?<currentDigest>[a-f0-9]{64})'"
+      ],
+      "datasourceTemplate": "github-release-attachments",
+      "depNameTemplate": "alloy",
+      "packageNameTemplate": "grafana/helm-charts",
+      "versioningTemplate": "regex:^alloy-(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
     }
   ],
   "packageRules": [

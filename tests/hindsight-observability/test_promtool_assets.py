@@ -141,11 +141,31 @@ class RenovateTests(unittest.TestCase):
 
     def test_unrelated_managers_extract_nothing_here(self):
         config = renovate_config()
+        text = WORKFLOW.read_text()
         others = [m for m in config['customManagers'] if m.get('depNameTemplate') != 'prometheus/prometheus']
-        self.assertEqual([m['description'] for m in others
-                          if extract(m, WORKFLOW_PATH, WORKFLOW.read_text())], [])
-        self.assertFalse(any('github-release-attachments' in json.dumps(m) for m in others))
+        self.assertEqual([m['description'] for m in others if extract(m, WORKFLOW_PATH, text)], [])
+        # Other release-attachment pins may exist, but must be gated away from this
+        # workflow and unable to read the Prometheus pair even if the gate widened.
+        for manager in (m for m in others if 'github-release-attachments' in json.dumps(m)):
+            with self.subTest(manager['description']):
+                self.assertFalse(any(re.search(p[1:-1], WORKFLOW_PATH) for p in manager['managerFilePatterns']))
+                self.assertEqual([s for s in manager['matchStrings']
+                                  if re.search(s.replace('(?<', '(?P<'), text)], [])
+                self.assertNotEqual(manager.get('packageNameTemplate'), 'prometheus/prometheus')
         self.assertNotIn('postUpgradeTasks', MANAGERS.read_text())
+
+    def test_sibling_release_pin_is_not_captured_as_promtool(self):
+        text = WORKFLOW.read_text()
+        env = workflow_env()
+        anchor = '# renovate: datasource=github-release-attachments depName=prometheus/prometheus'
+        self.assertEqual(text.count(anchor), 1)
+        sibling = (f'# renovate: datasource=github-release-attachments depName=grafana/alloy\n'
+                   f'          ALLOY_VERSION: "v1.20.1"\n'
+                   f'          ALLOY_ARCHIVE_SHA256: "{hashlib.sha256(b"other release archive").hexdigest()}"\n'
+                   f'          ')
+        matches = extract(prometheus_manager(), WORKFLOW_PATH, text.replace(anchor, sibling + anchor))
+        self.assertEqual([(m['currentValue'], m['currentDigest']) for m in matches],
+                         [(env['PROMETHEUS_VERSION'], env['PROMETHEUS_ARCHIVE_SHA256'])])
 
     def test_update_rewrites_version_and_digest_together(self):
         text = WORKFLOW.read_text()

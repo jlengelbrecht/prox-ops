@@ -156,11 +156,22 @@
       "separateMinorPatch": true
     },
     {
-      // After the Prometheus group so grafana/alloy lands here despite its "grafana" match
+      // After the Prometheus group so grafana/alloy lands here despite its "grafana" match.
+      // github-release-attachments is the CI Alloy binary, so it moves with the image tag.
       "description": "Observability - Loki Logging",
       "groupName": "📊 Observability: Loki",
-      "matchDatasources": ["docker", "helm"],
+      "matchDatasources": ["docker", "helm", "github-release-attachments"],
       "matchPackagePatterns": ["loki", "promtail", "^alloy$", "^(docker\\.io/)?grafana/alloy$"],
+      "separateMinorPatch": true
+    },
+    {
+      // The CI Alloy chart pin's package is the whole grafana/helm-charts repo, so it
+      // is matched by file and dep name, never by package, to keep other charts out.
+      "description": "Observability - Loki Logging (CI Alloy chart pin follows the HelmRelease chart)",
+      "groupName": "📊 Observability: Loki",
+      "matchDatasources": ["github-release-attachments"],
+      "matchFileNames": ["scripts/hindsight-logging-ci-assets.py"],
+      "matchDepNames": ["alloy"],
       "separateMinorPatch": true
     },
     {
