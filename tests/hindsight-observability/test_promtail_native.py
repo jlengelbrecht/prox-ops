@@ -148,16 +148,19 @@ class NativeCollectorTests(unittest.TestCase):
         for key in ('server', 'positions', 'clients'):
             self.assertEqual(self.runtime[key], ORIGINAL_RUNTIME[key])
         original = ORIGINAL_RUNTIME['broad']
+        chart = len(original['relabel_configs'])
+        hindsight, runner = self.broad['relabel_configs'][chart:chart + 2], self.broad['relabel_configs'][chart + 2:]
         self.assertEqual(self.broad['job_name'], 'kubernetes-pods')
         self.assertEqual(self.broad['pipeline_stages'], original['pipeline_stages'])
-        self.assertEqual(self.broad['relabel_configs'][:-2], original['relabel_configs'])
-        self.assertEqual(self.broad['relabel_configs'][-1]['action'], 'drop')
-        self.assertEqual(self.broad['relabel_configs'][-1]['source_labels'],
+        self.assertEqual(self.broad['relabel_configs'][:chart], original['relabel_configs'])
+        self.assertEqual(hindsight[1]['action'], 'drop')
+        self.assertEqual(hindsight[1]['source_labels'],
                          ['__meta_kubernetes_namespace', '__meta_kubernetes_pod_name'])
+        self.assertEqual([x.get('action') for x in runner], ['replace', 'drop', 'drop'])
         self.assertEqual(self.safe['job_name'], 'hindsight-api-safe')
-        self.assertEqual(original['relabel_configs'][-1], self.broad['relabel_configs'][-3])
         verified = 'ai;hindsight-api-.+;ReplicaSet;hindsight-api-.+;hindsight;hindsight;api'
-        self.assertEqual(self.broad['relabel_configs'][-2]['regex'], verified)
+        self.assertEqual(hindsight[0]['action'], 'drop')
+        self.assertEqual(hindsight[0]['regex'], verified)
         self.assertTrue(any(x.get('action') == 'keep' and x.get('regex') == verified
                             for x in self.safe['relabel_configs']))
         self.assertFalse(any('__meta_kubernetes_pod_phase' in x.get('source_labels', [])
@@ -276,6 +279,20 @@ class NativeCollectorTests(unittest.TestCase):
         self.assertIn('"event":"failed:"', result.stdout)
         self.assertIn(UUID, result.stdout)
         self.assertNotIn('synthetic-secret', result.stdout)
+
+    def test_runner_output_dropped_controller_and_ordinary_kept(self):
+        import test_alloy_native as native
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / 'pods'
+            targets = native.build_tree(root)
+            entries = native.run_promtail(self.runtime, pathlib.Path(directory) / 'rendered', root, targets, native.ready)
+            leaky = json.loads(json.dumps(self.runtime))
+            leaky['scrape_configs'][0]['relabel_configs'] = [
+                x for x in leaky['scrape_configs'][0]['relabel_configs'] if x.get('regex') != 'github-actions;']
+            self.assertEqual(len(leaky['scrape_configs'][0]['relabel_configs']), len(self.broad['relabel_configs']) - 1)
+            leaks = native.run_promtail(leaky, pathlib.Path(directory) / 'leaky', root, targets, native.leaked)
+        self.assertEqual(native.runner_problems(entries), set())
+        self.assertIn('runner', native.runner_problems(leaks))
 
     def test_logging_archive_rejects_extra_member_and_workflow_is_read_only(self):
         workflow = (ROOT / '.github/workflows/hindsight-logging.yaml').read_text()
