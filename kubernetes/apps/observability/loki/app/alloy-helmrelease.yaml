@@ -147,6 +147,28 @@ spec:
               action        = "drop"
               regex         = "ai;hindsight-api-.+"
             }
+            // Actions job output stays in GitHub. Only the ARC controller's
+            // manager container is kept from github-actions; runner, listener
+            // (job context) and workflow pods are dropped wherever they run.
+            // Long generateName bases are truncated, so the pod name is loose.
+            rule {
+              source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_controller_kind", "__meta_kubernetes_pod_controller_name", "__meta_kubernetes_pod_name", "__meta_kubernetes_pod_label_app_kubernetes_io_name", "__meta_kubernetes_pod_container_name"]
+              separator     = ";"
+              regex         = "github-actions;ReplicaSet;gha-runner-scale-set-controller-gha-rs-controller-[bcdfghjklmnpqrstvwxz2456789]{1,10};gha-runner-scale-set-controller-gha-rs-controller-[bcdfghjklmnpqrstvwxz2456789-]+;gha-rs-controller;manager"
+              replacement   = "manager"
+              target_label  = "__tmp_gha_controller"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_namespace", "__tmp_gha_controller"]
+              separator     = ";"
+              action        = "drop"
+              regex         = "github-actions;"
+            }
+            rule {
+              source_labels = ["__meta_kubernetes_pod_controller_kind"]
+              action        = "drop"
+              regex         = "EphemeralRunner|AutoscalingListener"
+            }
           }
           // Promtail's offsets are imported once, then Alloy keeps its own.
           // Globs are expanded in-component every second: the 10s default

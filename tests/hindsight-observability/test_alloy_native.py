@@ -71,6 +71,50 @@ ROUTES = [({}, (False, True)),
           ({'__meta_kubernetes_pod_name': 'unrelated-abcde'}, (True, False)),
           ({'__meta_kubernetes_namespace': 'other'}, (True, False))]
 
+# Actions runner scale set, shaped as ARC 0.13.0 and the github-actions manifests create it.
+GHA = 'github-actions'
+CONTROLLER_RS = 'gha-runner-scale-set-controller-gha-rs-controller-6b8f7d9c5c'
+# Pod generateName bases longer than 58 characters are truncated before the random suffix.
+CONTROLLER = pod(GHA, CONTROLLER_RS[:58] + 'x4kzq', CONTROLLER_RS, 'gha-rs-controller',
+                 'gha-runner-scale-set-controller', '', 'manager', uid(80))
+CONTROLLER_SENTINEL = 'Ephemeral runner counts'
+CONTROLLER_LINES = [
+    ('2026-10-03T09:00:03Z', json.dumps({'level': 'info', 'ts': '2026-10-03T09:00:03Z', 'logger': 'EphemeralRunnerSet',
+                                         'msg': 'Reconciling EphemeralRunnerSet', 'version': '0.13.0'})),
+    ('2026-10-03T09:00:04Z', json.dumps({'level': 'info', 'ts': '2026-10-03T09:00:04Z', 'logger': 'EphemeralRunnerSet',
+                                         'msg': CONTROLLER_SENTINEL, 'version': '0.13.0', 'pending': 0, 'running': 3})),
+]
+CONTROLLER_LABELS = {'app': 'gha-rs-controller', 'instance': 'gha-runner-scale-set-controller', 'node_name': 'work-1',
+                     'namespace': GHA, 'job': 'github-actions/gha-rs-controller', 'pod': CONTROLLER_RS[:58] + 'x4kzq',
+                     'container': 'manager', 'stream': 'stdout'}
+NEAR_RS = 'gha-runner-scale-set-controller-gha-rs-controller-extra-6b8f7d9c5c'
+# (metadata, job output carrying a synthetic credential marker) that must never reach Loki.
+RUNNER_OUTPUT = [
+    (pod(GHA, 'gha-runner-scale-set-7xk2p-runner-9zt4m', 'gha-runner-scale-set-7xk2p-runner-9zt4m', '',
+         'gha-runner-scale-set', 'runner', 'runner', uid(81), pod_controller_kind='EphemeralRunner'),
+     '##[debug]Evaluating: secrets.DEPLOY_TOKEN => runner-job-secret'),
+    (pod(GHA, 'gha-runner-scale-set-754b578d-listener', 'gha-runner-scale-set-754b578d-listener', '',
+         'gha-runner-scale-set', 'runner-scale-set-listener', 'listener', uid(82), pod_controller_kind='AutoscalingListener'),
+     json.dumps({'level': 'info', 'logger': 'listener-app.worker.kubernetesworker', 'msg': 'Job started',
+                 'workflowRunName': 'listener-job-secret', 'jobRequestId': 42})),
+    (pod(GHA, 'gha-runner-scale-set-7xk2p-runner-9zt4m-workflow', '', '', '', '', '$job', uid(83),
+         pod_controller_kind=''),
+     'terraform apply -var token=workflow-secret'),
+    (pod(GHA, 'impostor-5f6d7c8b9-q2w4z', 'impostor-5f6d7c8b9', 'gha-rs-controller',
+         'gha-runner-scale-set-controller', '', 'manager', uid(84)),
+     'fake app label fakeapp-secret'),
+    (pod(GHA, NEAR_RS[:58] + 'q2w4z', NEAR_RS, 'gha-rs-controller',
+         'gha-runner-scale-set-controller', '', 'manager', uid(85)),
+     'near name nearname-secret'),
+    ({**CONTROLLER, '__meta_kubernetes_pod_container_name': 'kube-rbac-proxy'},
+     'unlisted controller container sidecar-secret'),
+    (pod('ci', 'gha-runner-scale-set-4hq8n-runner-b7m2x', 'gha-runner-scale-set-4hq8n-runner-b7m2x', '',
+         'gha-runner-scale-set', 'runner', 'runner', uid(86), pod_controller_kind='EphemeralRunner'),
+     '##[debug]wrong namespace wrongns-runner-secret'),
+]
+RUNNER_MARKERS = ('runner-job-secret', 'listener-job-secret', 'workflow-secret', 'fakeapp-secret',
+                  'nearname-secret', 'sidecar-secret', 'wrongns-runner-secret')
+
 def ns(text):
     match = re.fullmatch(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:?\d\d)', text.strip())
     if not match:
@@ -125,7 +169,28 @@ def build_tree(root):
         write_pod(root, meta, [cri(event(UUID, 'failed:', f'route-{n}'))])
     for name, lines in zip(('0.log', '1.log'), sanitizer_payload()):
         write_pod(root, targets[1], lines, name)
-    return targets
+    write_pod(root, CONTROLLER, [cri(line, ts) for ts, line in CONTROLLER_LINES])
+    for meta, line in RUNNER_OUTPUT:
+        write_pod(root, meta, [cri(line)])
+    return targets + [CONTROLLER] + [meta for meta, _ in RUNNER_OUTPUT]
+
+def file_of(meta):
+    m = {k.removeprefix('__meta_kubernetes_'): v for k, v in meta.items()}
+    return f"{m['pod_uid']}/{m['pod_container_name']}/"
+
+def runner_problems(entries):
+    """Runner job output must be absent, controller and ordinary output intact, from either collector."""
+    found = set()
+    if any(marker in line for _, _, line in entries for marker in RUNNER_MARKERS) or any(
+            file_of(meta) in labels.get('filename', '') for labels, _, _ in entries for meta, _ in RUNNER_OUTPUT):
+        found.add('runner')
+    controller = [(labels, ts, line) for labels, ts, line in entries if file_of(CONTROLLER) in labels.get('filename', '')]
+    if sorted((ts, line) for _, ts, line in controller) != [(ns(ts), line) for ts, line in CONTROLLER_LINES] or any(
+            {k: v for k, v in labels.items() if k != 'filename'} != CONTROLLER_LABELS for labels, _, _ in controller):
+        found.add('controller')
+    if not has_sentinel(entries):
+        found.add('ordinary')
+    return found
 
 def rendered(**overrides):
     values = {**yaml.safe_load(RELEASE.read_text())['spec']['values'], **overrides}
@@ -312,9 +377,38 @@ def run_alloy(config, work, done, root, targets, legacy_positions):
 def has_sentinel(entries):
     return any(SENTINEL in line for _, _, line in entries)
 
+def ready(entries):
+    return has_sentinel(entries) and any(CONTROLLER_SENTINEL in line for _, _, line in entries)
+
+def leaked(entries):
+    return ready(entries) and 'runner' in runner_problems(entries)
+
+def run_promtail(runtime, work, root, targets, done):
+    """Run the pinned Promtail binary in dry-run on the rendered scrape jobs over static targets."""
+    if not pathlib.Path(PROMTAIL).is_file():
+        raise AssertionError(f'native Promtail binary required: {PROMTAIL}')
+    jobs = [json.loads(json.dumps(job).replace('/var/log/pods/', f'{root}/')) for job in runtime['scrape_configs']]
+    for job in jobs:
+        del job['kubernetes_sd_configs']
+        job['static_configs'] = [{'targets': ['localhost'], 'labels': t} for t in targets]
+    work.mkdir(parents=True)
+    (work / 'promtail.yaml').write_text(yaml.safe_dump({
+        'server': {'disable': True}, 'scrape_configs': jobs, 'positions': {'filename': str(work / 'positions.yaml')},
+        'clients': [{'url': 'http://127.0.0.1:1/loki/api/v1/push'}]}))
+    out = work / 'promtail.out'
+
+    def entries():
+        text = re.sub(r'\x1b\[[0-9;]*m', '', out.read_text()) if out.exists() else ''
+        return [(labels_of(m['labels']), ns(m['ts']), m['line']) for m in map(DRY_RUN.fullmatch, text.splitlines()) if m]
+
+    log = run_until([PROMTAIL, '--dry-run', '--log.level=warn', f'--config.file={work / "promtail.yaml"}'], out, entries, done)
+    if not done(entries()):
+        raise AssertionError('Promtail run incomplete: ' + log[-3000:])
+    return entries()
+
 def problems(receiver):
     """Classify every semantic failure of one run; an empty set means the pipeline behaved."""
-    found, entries = set(), receiver.entries
+    found, entries = runner_problems(receiver.entries), receiver.entries
     if receiver.tenants != {'1'}:
         found.add('tenant')
     if any(marker in line for _, _, line in entries for marker in PRIVATE_MARKERS):
@@ -356,9 +450,9 @@ class NativeAlloyTests(unittest.TestCase):
         cls.base = cls.collect(cls.config, 'base')
 
     @classmethod
-    def collect(cls, config, name):
+    def collect(cls, config, name, done=ready):
         # The legacy file is absent here, as it is on a node after reboot or once Promtail is gone.
-        return run_alloy(config, cls.dir / name, has_sentinel, cls.root, cls.targets, cls.dir / 'absent.yaml')
+        return run_alloy(config, cls.dir / name, done, cls.root, cls.targets, cls.dir / 'absent.yaml')
 
     def test_binary_matches_image_tag_and_formats_config(self):
         tag = yaml.safe_load(RELEASE.read_text())['spec']['values']['image']['tag']
@@ -395,35 +489,27 @@ class NativeAlloyTests(unittest.TestCase):
             'broad cri': (without(self.config, 'loki.process "broad"', 'stage.cri'), {'timestamps'}),
             'safe pod_uid label': (without(self.config, safe, 'rule', 'target_label = "pod_uid"'), {'labels'}),
             'tenant': (re.sub(r'(tenant_id\s*=\s*)"1"', r'\1"2"', self.config), {'tenant'}),
+            'runner namespace drop': (without(self.config, broad, 'rule', 'regex = "github-actions;"'), {'runner'}),
+            'runner kind drop': (without(self.config, broad, 'rule', 'EphemeralRunner|AutoscalingListener'), {'runner'}),
+            'controller allowlist': (without(self.config, broad, 'rule', 'target_label = "__tmp_gha_controller"'),
+                                     {'controller'}),
         }
+        waits = {'runner namespace drop': leaked, 'runner kind drop': leaked, 'controller allowlist': has_sentinel}
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-            runs = {name: pool.submit(self.collect, config, f'mutation-{i}')
+            runs = {name: pool.submit(self.collect, config, f'mutation-{i}', waits.get(name, ready))
                     for i, (name, (config, _)) in enumerate(mutations.items())}
         for name, (_, expected) in mutations.items():
             with self.subTest(mutation=name):
                 self.assertTrue(expected <= problems(runs[name].result()), name)
 
+    def test_runner_output_absent_controller_and_ordinary_kept(self):
+        self.assertEqual(runner_problems(self.base.entries), set())
+
     def test_labels_timestamps_and_lines_match_promtail(self):
-        self.assertTrue(pathlib.Path(PROMTAIL).is_file(), f'native Promtail binary required: {PROMTAIL}')
         runtime = legacy.render(yaml.safe_load(legacy.PROMTAIL.read_text())['spec']['values'])
-        jobs = [json.loads(json.dumps(job).replace('/var/log/pods/', f'{self.root}/')) for job in runtime['scrape_configs']]
-        for job in jobs:
-            del job['kubernetes_sd_configs']
-            job['static_configs'] = [{'targets': ['localhost'], 'labels': t} for t in self.targets]
-        (work := self.dir / 'promtail').mkdir()
-        (work / 'promtail.yaml').write_text(yaml.safe_dump({
-            'server': {'disable': True}, 'scrape_configs': jobs, 'positions': {'filename': str(work / 'positions.yaml')},
-            'clients': [{'url': 'http://127.0.0.1:1/loki/api/v1/push'}]}))
-        out = work / 'promtail.out'
-
-        def entries():
-            text = re.sub(r'\x1b\[[0-9;]*m', '', out.read_text()) if out.exists() else ''
-            return [(labels_of(m['labels']), ns(m['ts']), m['line']) for m in map(DRY_RUN.fullmatch, text.splitlines()) if m]
-
-        log = run_until([PROMTAIL, '--dry-run', '--log.level=warn', f'--config.file={work / "promtail.yaml"}'], out, entries, has_sentinel)
-        self.assertTrue(has_sentinel(entries()), log[-3000:])
+        entries = run_promtail(runtime, self.dir / 'promtail', self.root, self.targets, ready)
         self.assertEqual(*(sorted((sorted(labels.items()), ts, line) for labels, ts, line in run)
-                           for run in (entries(), self.base.entries)))
+                           for run in (entries, self.base.entries)))
 
     def test_legacy_positions_import_once_then_own_storage(self):
         root, work, api = self.dir / 'positions-pods', self.dir / 'positions', hindsight(uid(0))
