@@ -14,6 +14,9 @@ on:
       - kubernetes/apps/database/hindsight-backlog/app/runnable-backlog.sql
       - tests/hindsight-observability/test_backlog_function.py
       - tests/hindsight-observability/check_postgres_backlog_function.py
+      - kubernetes/apps/database/hindsight-backlog/db-acl/db-acl.sql
+      - tests/hindsight-observability/test_backlog_db_acl.py
+      - tests/hindsight-observability/check_postgres_backlog_hardening.py
       # The function is qualified for this pinned API image; a bump must re-run --check.
       - kubernetes/apps/ai/hermes-hindsight/app/hindsight.yaml
 permissions:
@@ -50,6 +53,7 @@ jobs:
       - run: python -m unittest discover -s tests/hindsight-observability -p test_timing_baseline.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_queue_backlog.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_function.py -v
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_db_acl.py -v
       - run: python scripts/hindsight-backlog-function.py --check kubernetes/apps/database/hindsight-backlog/app/runnable-backlog.sql
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: python tests/hindsight-observability/check_postgres_newest.py
@@ -57,3 +61,39 @@ jobs:
       - run: python tests/hindsight-observability/check_postgres_backlog_function.py
         env:
           HINDSIGHT_BACKLOG_FIXTURE: '1'
+      # Service containers take no server flags, and turning ssl on in the shared
+      # service would move the checkers above to TLS, so the TLS proof gets its own
+      # throwaway server. The key and certificate are generated here, live one day
+      # and are never committed or printed.
+      - name: Start TLS PostgreSQL fixture
+        run: |
+          tls="$RUNNER_TEMP/hindsight-tls"
+          mkdir -m 700 "$tls"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+            -addext subjectAltName=DNS:localhost,IP:127.0.0.1 \
+            -keyout "$tls/server.key" -out "$tls/server.crt"
+          chmod 600 "$tls/server.key"
+          # The server refuses a key not owned by its user; 999 is postgres in the official image.
+          sudo chown -R 999:999 "$tls"
+          docker run -d --name hindsight-tls-fixture -p 127.0.0.1:5433:5432 \
+            -e POSTGRES_HOST_AUTH_METHOD=trust -v "$tls:/tls:ro" \
+            postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36 \
+            -c ssl=on -c ssl_cert_file=/tls/server.crt -c ssl_key_file=/tls/server.key
+          # The image's init server listens only on its Unix socket, so probing TCP
+          # inside the container answers only once the final TLS server is up.
+          for _ in $(seq 30); do
+            docker exec hindsight-tls-fixture pg_isready -q -h 127.0.0.1 -p 5432 -U postgres && exit 0
+            sleep 2
+          done
+          docker logs --tail 20 hindsight-tls-fixture
+          exit 1
+      - run: python tests/hindsight-observability/check_postgres_backlog_hardening.py
+        env:
+          HINDSIGHT_BACKLOG_FIXTURE: '1'
+          PGHOST: 127.0.0.1
+          PGPORT: '5433'
+      - name: Remove TLS PostgreSQL fixture
+        if: always()
+        run: |
+          docker rm -f -v hindsight-tls-fixture || true
+          sudo rm -rf "$RUNNER_TEMP/hindsight-tls"
