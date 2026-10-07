@@ -188,7 +188,12 @@ class MainTests(unittest.TestCase):
 
 # The generated SQL's directory, file, function, or schema. The directory name is a whole path segment, so
 # unrelated resources that only share its prefix (hindsight-backlog-metrics-db-credentials) do not match.
-SQL_REFERENCE = re.compile(r'(?<![\w-])hindsight-backlog(?![\w-])|runnable[-_]backlog|hindsight_metrics')
+# Exactly two paths below it are exempt: its ks.yaml and the db-acl tree, each ending there, so traversal
+# (db-acl/../app) and lookalikes (db-acl-x, ks.yaml.bak) still match.
+SQL_REFERENCE = re.compile(r'(?<![\w-])hindsight-backlog(?![\w-]|/(?:ks\.ya?ml|db-acl)(?![\w./-]))'
+                           r'|runnable[-_]backlog|hindsight_metrics')
+BACKLOG = ROOT / 'kubernetes/apps/database/hindsight-backlog'
+ACL_TREE = BACKLOG / 'db-acl'
 
 
 def sql_references(text):
@@ -199,9 +204,18 @@ def sql_references(text):
 
 class DeploymentTests(unittest.TestCase):
     def test_no_kustomization_maps_the_generated_sql(self):
-        self.assertEqual(list((ROOT / TARGET).parent.parent.glob('**/kustomization.y*ml')), [])
+        self.assertEqual(sorted(BACKLOG.glob('**/kustomization.y*ml')), [ACL_TREE / 'kustomization.yaml'])
         for path in (ROOT / 'kubernetes').rglob('*.y*ml'):
             self.assertEqual(sql_references(path.read_text(errors='replace')), [], path)
+        # The ACL tree, its SQL included, never names the function or its schema.
+        for path in ACL_TREE.iterdir():
+            self.assertEqual(sql_references(path.read_text()), [], path)
+
+    def test_backlog_flux_entry_applies_only_the_acl_tree(self):
+        ks = (BACKLOG / 'ks.yaml').read_text()
+        self.assertEqual(re.findall(r'(?m)^kind: (\S+)', ks), ['Kustomization'])
+        self.assertEqual(re.findall(r'(?m)^  name: (.+)', ks), ['&app hindsight-backlog-db-acl'])
+        self.assertEqual(re.findall(r'(?m)^\s*path: (.+)', ks), ['./kubernetes/apps/database/hindsight-backlog/db-acl'])
 
     def test_sql_reference_guard_flags_mappings_and_ignores_unrelated_names(self):
         mappings = {
@@ -212,6 +226,12 @@ class DeploymentTests(unittest.TestCase):
             'named configmap': 'kind: ConfigMap\nmetadata:\n  name: hindsight-backlog\n',
             'inlined sql': 'data:\n  apply.sql: |\n    CREATE SCHEMA hindsight_metrics;\n',
             'function call': '    command: [psql, -c, "SELECT hindsight_metrics.runnable_backlog()"]\n',
+            'traversal': '  path: ./kubernetes/apps/database/hindsight-backlog/db-acl/../app\n',
+            'dot segment': '  - ./hindsight-backlog/./db-acl\n',
+            'lookalike tree': '  path: ./kubernetes/apps/database/hindsight-backlog/db-acl-x\n',
+            'tree file': '      - ../hindsight-backlog/db-acl/job.yaml\n',
+            'lookalike ks': '  - hindsight-backlog/ks.yaml.bak\n',
+            'other ks': '  - hindsight-backlog/app/ks.yaml\n',
         }
         for label, text in mappings.items():
             with self.subTest(label):
@@ -222,6 +242,9 @@ class DeploymentTests(unittest.TestCase):
             'role name': '  - host all hindsight_backlog_metrics all reject\n',
             'comment': '# Mounted later from hindsight-backlog/app/runnable-backlog.sql\n',
             'trailing comment': '  name: reader  # not yet hindsight_metrics.runnable_backlog()\n',
+            'acl flux entry': '  - hindsight-backlog/ks.yaml\n',
+            'acl flux path': '  path: ./kubernetes/apps/database/hindsight-backlog/db-acl\n',
+            'acl resource name': '  name: hindsight-backlog-db-acl\n',
         }
         for label, text in unrelated.items():
             with self.subTest(label):
