@@ -10,6 +10,11 @@ on:
       - scripts/hindsight-queue-backlog.py
       - tests/hindsight-observability/test_queue_backlog.py
       - tests/hindsight-observability/check_postgres_queue_backlog.py
+      - scripts/hindsight-backlog-function.py
+      - kubernetes/apps/database/hindsight-backlog/app/runnable-backlog.sql
+      - tests/hindsight-observability/test_backlog_function.py
+      # The function is qualified for this pinned API image; a bump must re-run --check.
+      - kubernetes/apps/ai/hermes-hindsight/app/hindsight.yaml
 permissions:
   contents: read
 jobs:
@@ -43,6 +48,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m unittest discover -s tests/hindsight-observability -p test_timing_baseline.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_queue_backlog.py -v
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_function.py -v
+      - run: python scripts/hindsight-backlog-function.py --check kubernetes/apps/database/hindsight-backlog/app/runnable-backlog.sql
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: python tests/hindsight-observability/check_postgres_newest.py
       - run: python tests/hindsight-observability/check_postgres_queue_backlog.py
