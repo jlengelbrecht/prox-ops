@@ -89,6 +89,18 @@ spec:
       # Superuser credentials from ExternalSecret
       superuserSecret: postgres-superuser
 
+      # Host-based access for the backlog metrics role only. CNPG places user
+      # rules after its fixed rules and before the default rule, and reloads
+      # them without a restart. Line 1 admits the role over TLS to `hindsight`
+      # only; line 2 rejects everything else it tries, including plain TCP to
+      # `hindsight` and every other database (PUBLIC has CONNECT on all of
+      # them by default). Both lines name the role, so no other role's
+      # authentication changes.
+      postgresql:
+        pg_hba:
+          - hostssl hindsight hindsight_backlog_metrics all scram-sha-256
+          - host all hindsight_backlog_metrics all reject
+
       # Declarative role management - each app gets a dedicated user
       # Passwords managed via ExternalSecrets from 1Password
       # See: https://cloudnative-pg.io/documentation/current/declarative_role_management/
@@ -125,6 +137,25 @@ spec:
           connectionLimit: 25
           passwordSecret:
             name: hindsight-db-credentials
+        # Read-only Hindsight backlog metrics. Every privilege-bearing
+        # attribute is pinned off explicitly rather than left to CREATE ROLE
+        # defaults, and inherit is off so a later stray membership grants
+        # nothing. No memberships, no ownership, no table grants: its only
+        # future access is EXECUTE/USAGE on one fixed aggregate function.
+        # pg_hba (cluster.postgresql above) confines it to TLS logins to the
+        # `hindsight` database. connectionLimit 2 bounds a single collector.
+        - name: hindsight_backlog_metrics
+          ensure: present
+          login: true
+          inherit: false
+          superuser: false
+          createdb: false
+          createrole: false
+          replication: false
+          bypassrls: false
+          connectionLimit: 2
+          passwordSecret:
+            name: hindsight-backlog-metrics-db-credentials
         # Paperclip. Plain login role: owner of the `paperclip` database only;
         # the pg_trgm/fuzzystrmatch extensions its migrations need are
         # pre-created by the Database CR (database-paperclip.yaml).
