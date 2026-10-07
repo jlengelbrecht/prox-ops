@@ -7,6 +7,9 @@ on:
       - .github/workflows/hindsight-baseline.yaml
       - scripts/hindsight-timing-baseline.py
       - tests/hindsight-observability/test_timing_baseline.py
+      - scripts/hindsight-queue-backlog.py
+      - tests/hindsight-observability/test_queue_backlog.py
+      - tests/hindsight-observability/check_postgres_queue_backlog.py
 permissions:
   contents: read
 jobs:
@@ -39,5 +42,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m unittest discover -s tests/hindsight-observability -p test_timing_baseline.py -v
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_queue_backlog.py -v
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: python tests/hindsight-observability/check_postgres_newest.py
+      - run: python tests/hindsight-observability/check_postgres_queue_backlog.py
