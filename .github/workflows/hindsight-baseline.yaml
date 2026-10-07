@@ -21,6 +21,9 @@ on:
       - kubernetes/apps/database/hindsight-backlog/db-acl/kustomization.yaml
       - kubernetes/apps/database/hindsight-backlog/db-acl/job.yaml
       - kubernetes/apps/database/hindsight-backlog/db-acl/networkpolicy.yaml
+      - kubernetes/apps/database/hindsight-backlog/role-limits/role-limits.sql
+      - tests/hindsight-observability/test_backlog_role_limits.py
+      - tests/hindsight-observability/check_postgres_backlog_role_limits.py
       - kubernetes/apps/database/kustomization.yaml
       # The revoke's role roster and the Job's egress are checked against these.
       - kubernetes/apps/database/cluster/app/helmrelease.yaml
@@ -64,6 +67,7 @@ jobs:
       - run: python -m unittest discover -s tests/hindsight-observability -p test_queue_backlog.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_function.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_db_acl.py -v
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_role_limits.py -v
       - run: python scripts/hindsight-backlog-function.py --check kubernetes/apps/database/hindsight-backlog/app/runnable-backlog.sql
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: python tests/hindsight-observability/check_postgres_newest.py
@@ -98,6 +102,11 @@ jobs:
           docker logs --tail 20 hindsight-tls-fixture
           exit 1
       - run: python tests/hindsight-observability/check_postgres_backlog_hardening.py
+        env:
+          HINDSIGHT_BACKLOG_FIXTURE: '1'
+          PGHOST: 127.0.0.1
+          PGPORT: '5433'
+      - run: python tests/hindsight-observability/check_postgres_backlog_role_limits.py
         env:
           HINDSIGHT_BACKLOG_FIXTURE: '1'
           PGHOST: 127.0.0.1
