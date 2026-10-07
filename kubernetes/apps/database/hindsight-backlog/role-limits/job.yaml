@@ -1,0 +1,103 @@
+---
+# Runs the committed role-limits.sql once as the CNPG superuser over verified
+# TLS. The name carries the first 12 hex of the file's sha256 and a revision,
+# so a changed file or a deliberate -r<N> bump is a new Job; nothing else
+# reruns it. Every guard in the SQL refuses and rolls back on drift, including
+# a connected reader session: this Job never ends sessions. Deleting or
+# pruning the Job does not undo the role setting.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hindsight-backlog-role-limits-c31f58b6d229-r1
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  parallelism: 1
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight-backlog-role-limits
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26
+        runAsGroup: 26
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: psql
+          # The running primary's image, so the client is the qualified psql 16.11.
+          image: ghcr.io/cloudnative-pg/postgresql@sha256:368c1a13935ff8850d76cfb427d5c29877a74de0531e198a7a683d4cfb97260b
+          command:
+            - psql
+            - -X
+            - -q
+            - -v
+            - ON_ERROR_STOP=1
+            - -f
+            - /sql/role-limits.sql
+          env:
+            # The FQDN is a SAN on the CNPG server certificate, so verify-full holds.
+            - name: PGHOST
+              value: postgres-rw.database.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: hindsight
+            - name: PGSSLMODE
+              value: verify-full
+            - name: PGSSLROOTCERT
+              value: /tls/ca.crt
+            - name: PGCONNECT_TIMEOUT
+              value: "10"
+            - name: PGAPPNAME
+              value: hindsight-backlog-role-limits
+            # The cluster's existing superuserSecret; temp_file_limit is
+            # superuser-context, so no lesser role can write the cap.
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-superuser
+                  key: password
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+              readOnly: true
+            - name: ca
+              mountPath: /tls
+              readOnly: true
+      volumes:
+        - name: sql
+          configMap:
+            name: hindsight-backlog-role-limits
+            items:
+              - key: role-limits.sql
+                path: role-limits.sql
+        # Only the public CA certificate; the Secret's ca.key is never projected.
+        - name: ca
+          secret:
+            secretName: postgres-ca
+            items:
+              - key: ca.crt
+                path: ca.crt

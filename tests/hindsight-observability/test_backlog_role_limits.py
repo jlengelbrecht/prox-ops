@@ -1,12 +1,15 @@
-"""The reader's temp_file_limit cap is one guarded ALTER ROLE, not yet mapped to any Job, and its native TLS
+"""The reader's temp_file_limit cap is one guarded ALTER ROLE applied by one superuser Job, and its native TLS
 proof refuses anything but an empty fixture."""
 import contextlib
+import hashlib
 import importlib.util
 import json
 import pathlib
 import re
 import unittest
 from unittest import mock
+
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location(
@@ -21,6 +24,16 @@ SQL = NATIVE.SQL.read_text()
 TREE = NATIVE.SQL.parent
 ALTER = "ALTER ROLE hindsight_backlog_metrics SET temp_file_limit = '128MB';"
 PREIMAGE = "set_config('hindsight_role_limits.preimage',"
+APP_NAME = 'hindsight-backlog-role-limits'
+POD_LABELS = {'app.kubernetes.io/name': APP_NAME}
+# The only lines that may name the backlog function or its schema: the grant shape the guard accepts.
+ACCEPTED_GRANTS = ["      'function hindsight_metrics.runnable_backlog() owner EXECUTE from owner',",
+                   "      'schema hindsight_metrics owner USAGE from owner'] END) THEN"]
+
+
+def rendered():
+    return [doc for doc in yaml.safe_load_all(ACL.subprocess.run(
+        [ACL.KUSTOMIZE, 'build', str(TREE)], check=True, capture_output=True, text=True).stdout) if doc]
 
 
 def violations(sql):
@@ -79,7 +92,7 @@ class SqlTests(unittest.TestCase):
 
     def test_every_native_refusal_names_a_guard_the_sql_raises(self):
         raised = re.findall(r"RAISE EXCEPTION '([^']*)'", SQL)
-        cases = {**NATIVE.PRE_APPLY_REFUSALS, **NATIVE.POST_APPLY_REFUSALS,
+        cases = {**NATIVE.PRE_APPLY_REFUSALS, **NATIVE.METRICS_REFUSALS, **NATIVE.POST_APPLY_REFUSALS,
                  'revoke': (None, None, None, NATIVE.REVOKE_MISSING), 'hba': (None, None, None, NATIVE.HBA_MISSING),
                  'held session': (None, None, None, NATIVE.SESSION_REFUSAL)}
         for label, (_, _, _, message) in cases.items():
@@ -91,12 +104,47 @@ class SqlTests(unittest.TestCase):
         self.assertEqual(re.findall(r"'([^']*)'", literal), sorted(NATIVE.DEFAULTS))
         self.assertEqual(len(set(entry.split('=')[0] for entry in NATIVE.DEFAULTS)), 5)
 
-    def test_sql_is_inactive_and_never_names_the_function(self):
-        # Nothing applies the file yet: no manifest, Flux entry or Job maps it.
-        self.assertEqual(sorted(path.name for path in TREE.iterdir()), ['role-limits.sql'])
-        self.assertEqual([path for path in (ROOT / 'kubernetes').rglob('*.y*ml')
-                          if 'role-limits' in path.read_text(errors='replace')], [])
-        self.assertEqual(re.findall(r'runnable[-_]backlog|hindsight_metrics|db-acl', SQL), [])
+    def test_sql_is_mapped_only_by_its_own_tree_and_names_the_function_only_in_the_accepted_grants(self):
+        self.assertEqual(sorted(path.name for path in TREE.iterdir()),
+                         ['README.md', 'job.yaml', 'kustomization.yaml', 'networkpolicy.yaml', 'role-limits.sql'])
+        mapping = {path.relative_to(ROOT).as_posix() for path in (ROOT / 'kubernetes').rglob('*.y*ml')
+                   if 'role-limits' in path.read_text(errors='replace')}
+        self.assertEqual(mapping, {f'kubernetes/apps/database/hindsight-backlog/{name}' for name in (
+            'ks.yaml', 'role-limits/kustomization.yaml', 'role-limits/job.yaml', 'role-limits/networkpolicy.yaml')})
+        named = [line for line in SQL.splitlines() if re.search(r'runnable|hindsight_metrics|backlog\(', line)]
+        self.assertEqual(named, ACCEPTED_GRANTS)
+        self.assertEqual(re.findall(r'runnable-backlog|db-acl|\bGRANT\b|\bCREATE (?:SCHEMA|FUNCTION)', SQL), [])
+
+    def test_accepted_grants_are_the_function_ddl_grants_without_grant_option(self):
+        ddl = (ROOT / 'kubernetes/apps/database/hindsight-backlog/app/runnable-backlog.sql').read_text()
+        self.assertIn('GRANT USAGE ON SCHEMA hindsight_metrics TO hindsight_backlog_metrics;', ddl)
+        self.assertIn('GRANT EXECUTE ON FUNCTION hindsight_metrics.runnable_backlog() TO hindsight_backlog_metrics;',
+                      ddl)
+        self.assertNotIn('GRANT OPTION', ddl)
+        # The native positive case grants exactly the same, as the owner.
+        self.assertEqual(re.findall(r'(?m)^GRANT .*$', NATIVE.METRICS),
+                         ['GRANT USAGE ON SCHEMA hindsight_metrics TO hindsight_backlog_metrics;',
+                          'GRANT EXECUTE ON FUNCTION hindsight_metrics.runnable_backlog() TO hindsight_backlog_metrics;'])
+        # Every way the shape can differ is a native refusal: object, owner, privilege, grant option, PUBLIC.
+        self.assertEqual(sorted(NATIVE.METRICS_REFUSALS), sorted([
+            'reader CREATE on the function schema', 'PUBLIC CREATE on the function schema',
+            'schema USAGE with grant option', 'function EXECUTE with grant option',
+            'another function in the schema granted', 'same name with an argument in its place',
+            'function schema owned by another role']))
+        self.assertIn('two owner grants on other objects', NATIVE.PRE_APPLY_REFUSALS)
+        self.assertIn('PUBLIC CREATE on schema public', NATIVE.PRE_APPLY_REFUSALS)
+
+    def test_hba_guard_claims_presence_and_order_only(self):
+        raised = re.findall(r"RAISE EXCEPTION '([^']*)'", SQL)
+        self.assertIn('pg_hba lacks the reader TLS rule ahead of the reader reject rule, or has an error', raised)
+        self.assertNotRegex(SQL.lower(), r'confine')
+        # The fixture puts the production rules ahead of its own catch-all, and the earlier permissive rule
+        # case shows the guard passing while that rule decides reader logins.
+        self.assertEqual(NATIVE.READER_HBA, ['hostssl hindsight hindsight_backlog_metrics all scram-sha-256',
+                                             'host all hindsight_backlog_metrics all reject'])
+        release = yaml.safe_load((ROOT / 'kubernetes/apps/database/cluster/app/helmrelease.yaml').read_text())
+        self.assertEqual(release['spec']['values']['cluster']['postgresql']['pg_hba'], NATIVE.READER_HBA)
+        self.assertEqual(NATIVE.PERMISSIVE_HBA, 'host all hindsight_backlog_metrics all trust')
 
     def test_workflow_triggers_on_the_sql_and_runs_the_native_proof_on_the_tls_fixture(self):
         workflow = (ROOT / '.github/workflows/hindsight-baseline.yaml').read_text()
@@ -116,6 +164,106 @@ class SqlTests(unittest.TestCase):
         self.assertLess(workflow.index('-p 127.0.0.1:5433:5432'), workflow.index(step))
         self.assertLess(workflow.index(step), workflow.index('Remove TLS PostgreSQL fixture'))
         self.assertEqual(workflow.count('pip install PyYAML==6.0.3'), 1)
+
+
+class ActivationManifestTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.docs = rendered()
+        cls.job = ACL.one(cls.docs, 'Job')
+        cls.pod = cls.job['spec']['template']['spec']
+        cls.policy = ACL.one(cls.docs, 'CiliumNetworkPolicy')
+
+    def test_renders_one_configmap_one_job_and_one_policy_deterministically(self):
+        self.assertEqual(sorted(doc['kind'] for doc in self.docs), ['CiliumNetworkPolicy', 'ConfigMap', 'Job'])
+        self.assertEqual(rendered(), self.docs)
+        config = ACL.one(self.docs, 'ConfigMap')
+        self.assertEqual(config['metadata']['name'], APP_NAME)
+        self.assertEqual(config['data'], {'role-limits.sql': SQL})
+
+    def test_job_name_is_the_sql_hash_and_a_revision_and_nothing_forces_a_rerun(self):
+        digest = hashlib.sha256(NATIVE.SQL.read_bytes()).hexdigest()
+        self.assertEqual(self.job['metadata'], {'name': f'{APP_NAME}-{digest[:12]}-r1'})
+        spec = {key: value for key, value in self.job['spec'].items() if key != 'template'}
+        # No ttlSecondsAfterFinished: the completed Job stays as the record Flux waits on.
+        self.assertEqual(spec, {'backoffLimit': 2, 'activeDeadlineSeconds': 300, 'parallelism': 1, 'completions': 1})
+        self.assertEqual(self.job['spec']['template']['metadata'], {'labels': POD_LABELS})
+        self.assertNotIn('kustomize.toolkit.fluxcd.io/force', yaml.safe_dump(self.docs))
+
+    def test_pod_runs_the_pinned_client_unprivileged_without_a_token(self):
+        pod = self.pod
+        self.assertEqual({key: pod[key] for key in pod if key not in ('containers', 'volumes')}, {
+            'restartPolicy': 'Never', 'automountServiceAccountToken': False, 'enableServiceLinks': False,
+            'securityContext': {'runAsNonRoot': True, 'runAsUser': 26, 'runAsGroup': 26,
+                                'seccompProfile': {'type': 'RuntimeDefault'}}})
+        [container] = pod['containers']
+        self.assertEqual(container['image'], ACL.IMAGE)
+        self.assertEqual(container['securityContext'], {'allowPrivilegeEscalation': False,
+                                                        'readOnlyRootFilesystem': True,
+                                                        'capabilities': {'drop': ['ALL']}})
+        self.assertEqual(sorted(container), ['command', 'env', 'image', 'name', 'resources', 'securityContext',
+                                             'volumeMounts'])
+        self.assertEqual(container['resources'], {'requests': {'cpu': '10m', 'memory': '32Mi'},
+                                                  'limits': {'memory': '128Mi'}})
+
+    def test_psql_runs_the_mounted_file_with_fixed_argv_over_verified_tls_as_the_superuser(self):
+        [container] = self.pod['containers']
+        self.assertEqual(container['command'], ['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-f', '/sql/role-limits.sql'])
+        env = {item['name']: item.get('value', item.get('valueFrom')) for item in container['env']}
+        self.assertEqual(len(env), len(container['env']))
+        self.assertEqual(env, {
+            'PGHOST': 'postgres-rw.database.svc.cluster.local', 'PGPORT': '5432', 'PGDATABASE': 'hindsight',
+            'PGSSLMODE': 'verify-full', 'PGSSLROOTCERT': '/tls/ca.crt', 'PGCONNECT_TIMEOUT': '10',
+            'PGAPPNAME': APP_NAME,
+            'PGUSER': {'secretKeyRef': {'name': 'postgres-superuser', 'key': 'username'}},
+            'PGPASSWORD': {'secretKeyRef': {'name': 'postgres-superuser', 'key': 'password'}}})
+        self.assertEqual(container['volumeMounts'], [{'name': 'sql', 'mountPath': '/sql', 'readOnly': True},
+                                                     {'name': 'ca', 'mountPath': '/tls', 'readOnly': True}])
+        self.assertEqual(self.pod['volumes'], [
+            {'name': 'sql', 'configMap': {'name': APP_NAME,
+                                          'items': [{'key': 'role-limits.sql', 'path': 'role-limits.sql'}]}},
+            {'name': 'ca', 'secret': {'secretName': 'postgres-ca', 'items': [{'key': 'ca.crt', 'path': 'ca.crt'}]}}])
+        # The cluster's existing superuser Secret in the same namespace, and the CA's public half; no Secret copy.
+        external = yaml.safe_load((ACL.DATABASE / 'cluster/app/externalsecret.yaml').read_text())
+        self.assertEqual((external['metadata']['namespace'], external['spec']['target']['name']),
+                         ('database', 'postgres-superuser'))
+        release = yaml.safe_load((ACL.DATABASE / 'cluster/app/helmrelease.yaml').read_text())
+        self.assertEqual(release['spec']['values']['cluster']['superuserSecret'], 'postgres-superuser')
+        self.assertEqual(ACL.secret_names(self.docs), {'postgres-ca', 'postgres-superuser'})
+        self.assertNotIn('Secret', [doc['kind'] for doc in self.docs])
+
+    def test_policy_admits_only_dns_and_the_cnpg_instances(self):
+        cluster = yaml.safe_load((ACL.DATABASE / 'cluster/app/networkpolicy.yaml').read_text())['spec']
+        dns = cluster['egress'][0]
+        self.assertEqual(dns['toEndpoints'], [{'matchLabels': {'io.kubernetes.pod.namespace': 'kube-system',
+                                                               'k8s-app': 'kube-dns'}}])
+        postgres = {'io.kubernetes.pod.namespace': 'database', **cluster['endpointSelector']['matchLabels']}
+        self.assertEqual(self.policy['metadata'], {'name': APP_NAME})
+        self.assertEqual(self.policy['spec'], {
+            'endpointSelector': {'matchLabels': POD_LABELS},
+            'enableDefaultDeny': {'ingress': True, 'egress': True},
+            'egress': [dns, {'toEndpoints': [{'matchLabels': postgres}],
+                             'toPorts': [{'ports': [{'port': '5432', 'protocol': 'TCP'}]}]}]})
+
+    def test_flux_entry_waits_on_the_revoke_and_nothing_waits_on_it(self):
+        acl, limits = yaml.safe_load_all((TREE.parent / 'ks.yaml').read_text())
+        self.assertEqual(acl['metadata']['name'], 'hindsight-backlog-db-acl')
+        self.assertEqual(acl['spec']['dependsOn'], [{'name': 'postgres-cluster', 'namespace': 'database'}])
+        self.assertEqual((limits['kind'], limits['metadata']), ('Kustomization', {'name': APP_NAME,
+                                                                                  'namespace': 'flux-system'}))
+        self.assertEqual(limits['spec'], {
+            'targetNamespace': 'database', 'commonMetadata': {'labels': POD_LABELS},
+            'dependsOn': [{'name': 'hindsight-backlog-db-acl', 'namespace': 'database'}],
+            'path': './kubernetes/apps/database/hindsight-backlog/role-limits', 'prune': True,
+            'sourceRef': {'kind': 'GitRepository', 'name': 'flux-system', 'namespace': 'flux-system'},
+            'wait': True, 'interval': '1h', 'retryInterval': '2m', 'timeout': '6m'})
+        for path in (ROOT / 'kubernetes').rglob('ks.yaml'):
+            for doc in yaml.safe_load_all(path.read_text()):
+                with self.subTest(path=path.relative_to(ROOT)):
+                    depends = [entry['name'] for entry in (doc or {}).get('spec', {}).get('dependsOn', [])]
+                    self.assertNotIn(APP_NAME, depends)
+                    if (doc or {}).get('metadata', {}).get('name') != APP_NAME:
+                        self.assertNotIn('hindsight-backlog-db-acl', depends)
 
 
 class FixtureSafetyTests(unittest.TestCase):

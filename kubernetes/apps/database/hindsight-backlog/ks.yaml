@@ -28,3 +28,31 @@ spec:
   interval: 1h
   retryInterval: 2m
   timeout: 6m
+---
+# Writes the reader's temp_file_limit cap, as the CNPG superuser, after the
+# TEMPORARY revoke its guard requires. It depends on the revoke tree only;
+# nothing depends on it, so a failed Job holds back no other tree. Same
+# dependsOn namespace and timeout reasoning as above.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app hindsight-backlog-role-limits
+  namespace: flux-system
+spec:
+  targetNamespace: database
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: hindsight-backlog-db-acl
+      namespace: database
+  path: ./kubernetes/apps/database/hindsight-backlog/role-limits
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 1h
+  retryInterval: 2m
+  timeout: 6m
