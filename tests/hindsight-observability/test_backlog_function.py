@@ -19,6 +19,7 @@ def load(name, relative):
 
 
 MODULE = load('backlog_function', 'scripts/hindsight-backlog-function.py')
+NATIVE = load('backlog_function_native', 'tests/hindsight-observability/check_postgres_backlog_function.py')
 TARGET = 'kubernetes/apps/database/hindsight-backlog/app/runnable-backlog.sql'
 
 
@@ -197,13 +198,103 @@ class DeploymentTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/hindsight-baseline.yaml').read_text()
         for path in ('scripts/hindsight-backlog-function.py', TARGET,
                      'tests/hindsight-observability/test_backlog_function.py',
+                     'tests/hindsight-observability/check_postgres_backlog_function.py',
                      'kubernetes/apps/ai/hermes-hindsight/app/hindsight.yaml', 'scripts/hindsight-queue-backlog.py'):
             self.assertIn('      - ' + path + '\n', workflow)
         self.assertIn('python -m unittest discover -s tests/hindsight-observability -p test_backlog_function.py -v',
                       workflow)
         # --check must run on the committed file; regenerating first would hide drift.
-        self.assertIn(f'python scripts/hindsight-backlog-function.py --check {TARGET}\n', workflow)
+        drift = f'python scripts/hindsight-backlog-function.py --check {TARGET}\n'
+        self.assertIn(drift, workflow)
         self.assertNotIn('--write', workflow)
+        native = ('      - run: python tests/hindsight-observability/check_postgres_backlog_function.py\n'
+                  '        env:\n'
+                  "          HINDSIGHT_BACKLOG_FIXTURE: '1'\n")
+        self.assertEqual(workflow.count(native), 1)
+        self.assertLess(workflow.index(drift), workflow.index(native))
+
+
+class NativeFixtureSafetyTests(unittest.TestCase):
+    SAFE = {'HINDSIGHT_BACKLOG_FIXTURE': '1', 'PGHOST': 'localhost', 'PGUSER': 'postgres', 'PATH': '/usr/bin'}
+
+    def test_refuses_anything_but_an_explicit_loopback_or_socket_fixture(self):
+        unsafe = [
+            {'HINDSIGHT_BACKLOG_FIXTURE': None}, {'HINDSIGHT_BACKLOG_FIXTURE': 'true'},
+            {'PGHOST': 'hindsight-rw.database.svc'}, {'PGHOST': '10.20.0.5'}, {'PGHOST': '172.17.0.2'},
+            {'PGHOST': 'localhost,10.20.0.5'}, {'PGHOST': '/tmp,10.20.0.5'}, {'PGHOSTADDR': '10.20.0.5'},
+            {'PGSERVICE': 'prod'}, {'PGDATABASE': 'hindsight'}, {'PGUSER': 'hindsight'},
+            {'PGUSER': 'hindsight_backlog_metrics'},
+        ]
+        for change in unsafe:
+            environ = {k: v for k, v in {**self.SAFE, **change}.items() if v is not None}
+            with self.subTest(change=change), self.assertRaises(NATIVE.Refused):
+                NATIVE.fixture_env(environ)
+        for host in ('localhost', '127.0.0.1', '::1', '/var/run/postgresql', None):
+            environ = {k: v for k, v in {**self.SAFE, 'PGHOST': host, 'PGOPTIONS': '-c x=y'}.items() if v is not None}
+            with self.subTest(host=host):
+                env = NATIVE.fixture_env(environ)
+                self.assertEqual((env['PGDATABASE'], env['PGUSER']), ('postgres', 'postgres'))
+                self.assertNotIn('PGOPTIONS', env)
+
+    def test_refusal_exits_nonzero_before_any_connection_or_bootstrap(self):
+        with mock.patch.dict(NATIVE.os.environ, {'HINDSIGHT_BACKLOG_FIXTURE': '0'}), \
+             mock.patch.object(NATIVE.subprocess, 'run', side_effect=AssertionError('connected')), \
+             self.assertRaises(SystemExit) as refused:
+            NATIVE.main()
+        self.assertTrue(str(refused.exception.code).startswith('refused:'))
+        for change in ({'databases': ['hindsight', 'postgres', 'template0', 'template1']}, {'roles': 1},
+                       {'relations': 1}, {'schemas': 1}, {'superuser': False}, {'major': 17},
+                       {'reserved_user': True}):
+            busy = {**NATIVE.EMPTY_SERVER, **change}
+            with self.subTest(change=change), mock.patch.dict(NATIVE.os.environ, self.SAFE, clear=True), \
+                 mock.patch.object(NATIVE, 'server_state', return_value=busy), \
+                 mock.patch.object(NATIVE, 'ok', side_effect=AssertionError('bootstrapped')), \
+                 self.assertRaises(SystemExit) as refused:
+                NATIVE.main()
+            self.assertTrue(str(refused.exception.code).startswith('refused:'))
+
+    def test_connecting_as_a_fixture_role_with_pguser_unset_is_refused_before_bootstrap(self):
+        # fixture_env cannot see the OS user libpq falls back to; only the server inspection can.
+        unset = {k: v for k, v in self.SAFE.items() if k != 'PGUSER'}
+        self.assertNotIn('PGUSER', NATIVE.fixture_env(unset))
+        reserved = NATIVE.SERVER_STATE.split("'reserved_user', current_user IN (", 1)[1].split(')', 1)[0]
+        self.assertEqual(reserved, f"'{NATIVE.OWNER}', '{NATIVE.READER}', '{NATIVE.OTHER}'")
+        # The connecting role is excluded from the role count, so every other field reads as empty.
+        as_owner = {**NATIVE.EMPTY_SERVER, 'reserved_user': True}
+        with mock.patch.dict(NATIVE.os.environ, unset, clear=True), \
+             mock.patch.object(NATIVE, 'server_state', return_value=as_owner), \
+             mock.patch.object(NATIVE, 'ok', side_effect=AssertionError('bootstrapped')), \
+             self.assertRaises(SystemExit) as refused:
+            NATIVE.main()
+        self.assertTrue(str(refused.exception.code).startswith('refused:'))
+
+    def test_unavailable_server_fails_instead_of_skipping(self):
+        down = mock.Mock(returncode=2, stdout='', stderr='could not connect to server')
+        with mock.patch.dict(NATIVE.os.environ, self.SAFE, clear=True), \
+             mock.patch.object(NATIVE, 'psql', return_value=down), self.assertRaises(SystemExit) as failed:
+            NATIVE.main()
+        self.assertEqual(failed.exception.code, 'native PostgreSQL fixture unavailable')
+
+    def test_fixture_revision_is_independent_of_the_renderer(self):
+        with mock.patch.object(NATIVE.RENDERER, 'SUPPORTED_SCHEMA_HEAD', 'ffffffffffff'):
+            self.assertIn("VALUES ('d1e2f3a4b5c6');", NATIVE.bootstrap_sql())
+
+    def test_drift_cases_cover_owners_acls_and_both_membership_directions(self):
+        changes = ' '.join(change for change, _ in NATIVE.APPLY_REFUSALS.values())
+        for fragment in ('ALTER SCHEMA hindsight_metrics OWNER TO', 'runnable_backlog() OWNER TO',
+                         'GRANT CREATE ON SCHEMA', 'GRANT EXECUTE ON FUNCTION', 'GRANT hindsight TO',
+                         'GRANT hindsight_backlog_metrics TO'):
+            self.assertIn(fragment, changes)
+        self.assertIn('TO PUBLIC', NATIVE.PUBLIC_GRANTS)
+
+    def test_unknown_accepts_only_the_fixed_message(self):
+        fixed = 'psql:<stdin>:1: ERROR:  HSB01: hindsight backlog unknown\nCONTEXT:  PL/pgSQL function\n'
+        for stderr, leaks in ((fixed, False), (fixed + 'HINT:  No operator matches\n', True),
+                              (fixed + 'DETAIL:  Key (bank_id)\n', True), (fixed.replace('unknown', 'doc-a'), True)):
+            result = mock.Mock(returncode=3, stdout='', stderr=stderr)
+            with self.subTest(stderr=stderr), mock.patch.object(NATIVE, 'psql', return_value=result), \
+                 (self.assertRaises(NATIVE.Failed) if leaks else contextlib.nullcontext()):
+                NATIVE.unknown({}, 'SELECT 1;', 'case')
 
 
 if __name__ == '__main__':
