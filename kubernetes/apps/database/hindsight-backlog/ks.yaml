@@ -1,0 +1,30 @@
+---
+# Revokes PUBLIC's TEMPORARY on database hindsight, as its owner. Only this
+# tree depends on postgres-cluster, never the reverse, so a failed Job leaves
+# the shared database tree alone. dependsOn namespace: the database root's
+# `namespace: database` transform puts postgres-cluster's CR there.
+# The timeout outlasts the Job's 300 s deadline, so Flux reports the Job's own
+# outcome rather than racing it.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app hindsight-backlog-db-acl
+  namespace: flux-system
+spec:
+  targetNamespace: database
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: postgres-cluster
+      namespace: database
+  path: ./kubernetes/apps/database/hindsight-backlog/db-acl
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 1h
+  retryInterval: 2m
+  timeout: 6m

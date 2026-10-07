@@ -135,6 +135,10 @@ APPLY = (OWNER, DB, 'require')
 PRE_APPLY_REFUSALS = {
     'non-TLS session': (None, None, (OWNER, DB, 'disable'), 'this session is not using TLS'),
     'superuser caller': (None, None, (None, DB, 'require'), 'apply as a non-superuser session'),
+    # The right role name is not enough: the guard must refuse by attribute when
+    # the owner itself is a superuser. Only the fixture's own owner is altered.
+    'owner promoted to superuser': (f'ALTER ROLE {OWNER} SUPERUSER;', f'ALTER ROLE {OWNER} NOSUPERUSER;', APPLY,
+                                    'apply as a non-superuser session'),
     'wrong database': (None, None, (OWNER, 'postgres', 'require'), 'run in database hindsight'),
     'undeclared role': (f'CREATE ROLE {UNDECLARED} NOLOGIN;', f'DROP ROLE {UNDECLARED};', APPLY,
                         'a role outside the declared roster'),

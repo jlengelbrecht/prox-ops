@@ -1,0 +1,35 @@
+---
+# The owner-credential Job gets no ingress and two egress paths: cluster DNS
+# and the CNPG instances on 5432. Both selectors are the ones the
+# postgres-cluster policy (cluster/app/networkpolicy.yaml) already uses, and
+# that policy admits 5432 from namespace database, so it needs no change.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-backlog-db-acl
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight-backlog-db-acl
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
