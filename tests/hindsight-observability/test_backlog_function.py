@@ -186,13 +186,46 @@ class MainTests(unittest.TestCase):
             self.assertEqual(target.read_text(), 'unchanged')
 
 
+# The generated SQL's directory, file, function, or schema. The directory name is a whole path segment, so
+# unrelated resources that only share its prefix (hindsight-backlog-metrics-db-credentials) do not match.
+SQL_REFERENCE = re.compile(r'(?<![\w-])hindsight-backlog(?![\w-])|runnable[-_]backlog|hindsight_metrics')
+
+
+def sql_references(text):
+    """References to the generated SQL in a manifest, ignoring YAML comments."""
+    return [match.group() for line in text.splitlines()
+            for match in SQL_REFERENCE.finditer(re.sub(r'(?:^|\s)#.*', '', line))]
+
+
 class DeploymentTests(unittest.TestCase):
     def test_no_kustomization_maps_the_generated_sql(self):
         self.assertEqual(list((ROOT / TARGET).parent.parent.glob('**/kustomization.y*ml')), [])
         for path in (ROOT / 'kubernetes').rglob('*.y*ml'):
-            text = path.read_text(errors='replace')
-            self.assertNotIn('hindsight-backlog', text, path)
-            self.assertNotIn('runnable-backlog', text, path)
+            self.assertEqual(sql_references(path.read_text(errors='replace')), [], path)
+
+    def test_sql_reference_guard_flags_mappings_and_ignores_unrelated_names(self):
+        mappings = {
+            'configmap file': 'configMapGenerator:\n  - name: backlog\n    files:\n      - runnable-backlog.sql\n',
+            'configmap path': '    files:\n      - ../../hindsight-backlog/app/runnable-backlog.sql\n',
+            'resource directory': 'resources:\n  - ./hindsight-backlog\n',
+            'flux path': '  path: ./kubernetes/apps/database/hindsight-backlog/app\n',
+            'named configmap': 'kind: ConfigMap\nmetadata:\n  name: hindsight-backlog\n',
+            'inlined sql': 'data:\n  apply.sql: |\n    CREATE SCHEMA hindsight_metrics;\n',
+            'function call': '    command: [psql, -c, "SELECT hindsight_metrics.runnable_backlog()"]\n',
+        }
+        for label, text in mappings.items():
+            with self.subTest(label):
+                self.assertNotEqual(sql_references(text), [])
+        unrelated = {
+            'credential secret': '  passwordSecret:\n    name: hindsight-backlog-metrics-db-credentials\n',
+            'credential file': 'resources:\n  - externalsecret-hindsight-backlog-metrics.yaml\n',
+            'role name': '  - host all hindsight_backlog_metrics all reject\n',
+            'comment': '# Mounted later from hindsight-backlog/app/runnable-backlog.sql\n',
+            'trailing comment': '  name: reader  # not yet hindsight_metrics.runnable_backlog()\n',
+        }
+        for label, text in unrelated.items():
+            with self.subTest(label):
+                self.assertEqual(sql_references(text), [])
 
     def test_workflow_triggers_on_bound_paths_and_runs_every_gate(self):
         workflow = (ROOT / '.github/workflows/hindsight-baseline.yaml').read_text()
