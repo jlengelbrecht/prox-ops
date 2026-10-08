@@ -127,12 +127,12 @@ spec:
                 path: /spec/template/spec/terminationGracePeriodSeconds
                 value: 60
               - op: test
-                path: /spec/template/spec/containers/0/env/38
+                path: /spec/template/spec/containers/0/env/39
                 value:
                   name: HINDSIGHT_API_WORKER_ID
                   value: hindsight-api
               - op: remove
-                path: /spec/template/spec/containers/0/env/38
+                path: /spec/template/spec/containers/0/env/39
               - op: add
                 path: /spec/template/spec/affinity/podAffinity
                 value:
@@ -316,6 +316,11 @@ spec:
     # caps have not been qualified yet. Before any replica runs, the API pool
     # (20) and LLM ceiling (2) must come down, or the shared role
     # connectionLimit 25 and the subscription budget are exceeded.
+    # Each worker process can hold its pool plus one direct connection per
+    # busy slot (vector index maintenance opens its own connection for
+    # CREATE INDEX CONCURRENTLY), so its database peak is pool max + slots.
+    # The pool minimum is set because its default (5) is above the max here
+    # and the pool would refuse to start.
     # It mounts the API's CODEX_HOME claim as the whole directory, never an
     # auth.json subPath: the provider swaps the file with os.replace, and a
     # subPath mount would keep pointing at the old inode.
@@ -326,7 +331,8 @@ spec:
       env:
         <<: *hindsight-env
         HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
-        HINDSIGHT_API_DB_POOL_MAX_SIZE: "5"
+        HINDSIGHT_API_DB_POOL_MIN_SIZE: "2"
+        HINDSIGHT_API_DB_POOL_MAX_SIZE: "4"
         HINDSIGHT_API_WORKER_MAX_SLOTS: "2"
         HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS: "0"
         # The API stays the only migrator.

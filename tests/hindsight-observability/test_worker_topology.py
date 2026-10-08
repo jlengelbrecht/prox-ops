@@ -27,7 +27,8 @@ WORKER = 'hindsight-worker'
 WORKER_ID = 'HINDSIGHT_API_WORKER_ID'
 OVERRIDES = {
     'HINDSIGHT_API_LLM_MAX_CONCURRENT': '1',
-    'HINDSIGHT_API_DB_POOL_MAX_SIZE': '5',
+    'HINDSIGHT_API_DB_POOL_MIN_SIZE': '2',
+    'HINDSIGHT_API_DB_POOL_MAX_SIZE': '4',
     'HINDSIGHT_API_WORKER_MAX_SLOTS': '2',
     'HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS': '0',
     'HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP': 'false',
@@ -45,6 +46,17 @@ INLINE_WORKER = 'HINDSIGHT_API_WORKER_ENABLED'
 # Connections kept free on the shared role for one-shot jobs (exports,
 # maintenance) that log in as the same role.
 JOB_RESERVE = 3
+# Room for the API's start-up migrations next to running workers. An
+# allowance, not a measured bound: the real migration peak is unobserved.
+MIGRATION_ALLOWANCE = 2
+# hindsight-api 0.9.2 defaults (config.py): pool min 5, worker slots 10,
+# consolidation reserves 2 slots unless overridden.
+DEFAULT_POOL_MIN = 5
+DEFAULT_SLOTS = 10
+DEFAULT_RESERVED = {'CONSOLIDATION': 2}
+# Activation shape the budget is checked against. Neither is rendered today.
+CANDIDATE_API_POOL, CANDIDATE_REPLICAS = 8, 2
+OLD_API_POOL, OLD_WORKER_POOL = 10, 5
 # Concurrent subscription calls the account is budgeted for today; raised only
 # with a measured provider budget.
 LLM_BUDGET = 2
@@ -160,8 +172,22 @@ def role_connection_limit(name):
     return int(limits[0])
 
 
-def db_fits(api_pool, worker_pool, replicas, limit):
-    return api_pool + replicas * worker_pool + JOB_RESERVE <= limit
+def task_bound(env):
+    """Most tasks one process runs at once: the shared pool plus reservations.
+
+    Each running vector_index_maintenance task holds a direct connection
+    outside the pool, so this is also that process's direct-connection bound.
+    """
+    reserved = dict(DEFAULT_RESERVED)
+    for name, value in env.items():
+        match = re.fullmatch(r'HINDSIGHT_API_WORKER_([A-Z_]+)_RESERVED_SLOTS', name)
+        if match:
+            reserved[match.group(1)] = int(value)
+    return max(int(env.get('HINDSIGHT_API_WORKER_MAX_SLOTS', DEFAULT_SLOTS)), sum(reserved.values()))
+
+
+def db_fits(api_conns, worker_peak, replicas, limit):
+    return api_conns + replicas * worker_peak + JOB_RESERVE + MIGRATION_ALLOWANCE <= limit
 
 
 def llm_fits(api_global, worker_global, replicas):
@@ -302,11 +328,40 @@ class WorkerTopologyTests(unittest.TestCase):
         worker = {k: v.get('value') for k, v in env_by_name(only_container(self.worker)).items()}
         limit = role_connection_limit('hindsight')
         replicas = self.worker['spec']['replicas']
-        api_pool, worker_pool = int(api['HINDSIGHT_API_DB_POOL_MAX_SIZE']), int(worker['HINDSIGHT_API_DB_POOL_MAX_SIZE'])
-        self.assertTrue(db_fits(api_pool, worker_pool, replicas, limit))
-        # Two workers next to today's API pool would overrun the role; any
-        # activation must lower the API pool and re-run this budget.
-        self.assertFalse(db_fits(api_pool, worker_pool, 2, limit))
+        self.assertEqual(limit, 25)
+        self.assertEqual(replicas, 0)
+        api_pool = int(api['HINDSIGHT_API_DB_POOL_MAX_SIZE'])
+        self.assertEqual(api_pool, 20, 'API pool is unchanged by this release')
+
+        worker_pool = int(worker['HINDSIGHT_API_DB_POOL_MAX_SIZE'])
+        worker_min = int(worker.get('HINDSIGHT_API_DB_POOL_MIN_SIZE', DEFAULT_POOL_MIN))
+        self.assertLessEqual(worker_min, worker_pool, 'asyncpg refuses a pool whose min exceeds its max')
+        self.assertFalse([k for k in worker if re.fullmatch(r'HINDSIGHT_API_WORKER_[A-Z_]+_MAX_SLOTS', k)],
+                         'deprecated reservation alias would bypass the bound below')
+        worker_tasks = task_bound(worker)
+        self.assertEqual(worker_tasks, 2)
+        worker_peak = worker_pool + worker_tasks
+
+        # Conditional activation budget only: an API pool of 8 with its
+        # in-process worker off and two workers. Not a qualified bound until
+        # the migration peak and pool waits have been observed.
+        self.assertTrue(db_fits(CANDIDATE_API_POOL, worker_peak, CANDIDATE_REPLICAS, limit))
+        self.assertFalse(db_fits(CANDIDATE_API_POOL, worker_peak, CANDIDATE_REPLICAS + 1, limit))
+        self.assertFalse(db_fits(api_pool, worker_peak, CANDIDATE_REPLICAS, limit),
+                         'two workers next to the current API pool overrun the role')
+        # The earlier 10 + 2 x 5 proposal fit only while direct connections
+        # were left out.
+        old_peak = OLD_WORKER_POOL + worker_tasks
+        self.assertLessEqual(OLD_API_POOL + CANDIDATE_REPLICAS * OLD_WORKER_POOL + JOB_RESERVE, limit)
+        self.assertFalse(db_fits(OLD_API_POOL, old_peak, CANDIDATE_REPLICAS, limit))
+
+        api_direct = task_bound(api)
+        print(f'\nDB role limit {limit}; rendered: API pool {api_pool} + {replicas} workers.'
+              f'\nUNQUALIFIED (unchanged): API in-process worker may add up to {api_direct} direct'
+              f' connections ({api_pool + api_direct} potential); not shown to fit.'
+              f'\nCONDITIONAL: {CANDIDATE_API_POOL} + {CANDIDATE_REPLICAS} x ({worker_pool} + {worker_tasks})'
+              f' + reserve {JOB_RESERVE} + migration allowance {MIGRATION_ALLOWANCE}'
+              f' = {CANDIDATE_API_POOL + CANDIDATE_REPLICAS * worker_peak + JOB_RESERVE + MIGRATION_ALLOWANCE}')
 
         api_global, worker_global = int(api['HINDSIGHT_API_LLM_MAX_CONCURRENT']), int(worker['HINDSIGHT_API_LLM_MAX_CONCURRENT'])
         self.assertTrue(llm_fits(api_global, worker_global, replicas))

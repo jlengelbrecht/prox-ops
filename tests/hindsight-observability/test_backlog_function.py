@@ -217,6 +217,13 @@ class DeploymentTests(unittest.TestCase):
             if path.name != 'role-limits.sql':
                 self.assertEqual(sql_references(path.read_text()), [], path)
 
+    def test_collector_tree_holds_only_the_unmapped_module(self):
+        # The collector ships inert: no manifest beside it, and any YAML naming its path trips the guard above.
+        tree = BACKLOG / 'collector'
+        self.assertEqual(sorted(str(path.relative_to(tree)) for path in tree.rglob('*')
+                                if path.is_file() and path.suffix != '.pyc'), ['collector.py'])
+        self.assertNotEqual(sql_references('  path: ./kubernetes/apps/database/hindsight-backlog/collector\n'), [])
+
     def test_backlog_flux_entries_apply_only_the_acl_and_role_limit_trees(self):
         ks = (BACKLOG / 'ks.yaml').read_text()
         self.assertEqual(re.findall(r'(?m)^kind: (\S+)', ks), ['Kustomization', 'Kustomization'])
