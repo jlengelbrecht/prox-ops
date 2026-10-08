@@ -16,6 +16,19 @@ DECLARE
  reader_deps bigint := (SELECT count(*) FROM pg_shdepend
                         WHERE refclassid = 'pg_authid'::regclass AND refobjid = reader_oid);
  reader_config text[] := (SELECT setconfig FROM pg_db_role_setting WHERE setdatabase = 0 AND setrole = reader_oid);
+ -- Every schema and routine privilege the reader holds here: on whose object, from
+ -- which grantor, and whether it may pass the privilege on.
+ reader_grants text[] := ARRAY(SELECT g FROM (
+   SELECT 'schema ' || n.nspname || CASE WHEN n.nspowner = owner_oid THEN ' owner ' ELSE ' other ' END
+          || a.privilege_type || CASE WHEN a.grantor = owner_oid THEN ' from owner' ELSE ' from other' END
+          || CASE WHEN a.is_grantable THEN ' grantable' ELSE '' END AS g
+     FROM pg_namespace n, aclexplode(n.nspacl) a WHERE a.grantee = reader_oid
+   UNION ALL
+   SELECT CASE WHEN p.prokind = 'f' THEN 'function ' ELSE 'routine ' END || p.oid::regprocedure::text
+          || CASE WHEN p.proowner = owner_oid THEN ' owner ' ELSE ' other ' END
+          || a.privilege_type || CASE WHEN a.grantor = owner_oid THEN ' from owner' ELSE ' from other' END
+          || CASE WHEN a.is_grantable THEN ' grantable' ELSE '' END
+     FROM pg_proc p, aclexplode(p.proacl) a WHERE a.grantee = reader_oid) t ORDER BY g COLLATE "C");
  preimage text;
 BEGIN
  -- By attribute, never by name: the superuser's name is a private value.
@@ -69,6 +82,9 @@ BEGIN
             WHERE s.setrole = 0 AND split_part(c, '=', 1) = 'temp_file_limit') THEN
   RAISE EXCEPTION 'a temp_file_limit default for every role exists';
  END IF;
+ -- Evidence of configuration only: both reader rules exist, in this order, in a file
+ -- that parsed cleanly. An earlier rule matching the reader would still decide its
+ -- logins, so this does not show where the reader can authenticate.
  IF EXISTS (SELECT 1 FROM pg_hba_file_rules WHERE error IS NOT NULL)
     OR NOT EXISTS (SELECT 1 FROM pg_hba_file_rules a, pg_hba_file_rules b
                    WHERE a.type = 'hostssl' AND a.database = ARRAY['hindsight']
@@ -77,21 +93,26 @@ BEGIN
                      AND b.type = 'host' AND b.database = ARRAY['all']
                      AND b.user_name = ARRAY['hindsight_backlog_metrics'] AND b.address = 'all'
                      AND b.auth_method = 'reject' AND a.rule_number < b.rule_number) THEN
-  RAISE EXCEPTION 'pg_hba does not confine hindsight_backlog_metrics to TLS logins to hindsight';
+  RAISE EXCEPTION 'pg_hba lacks the reader TLS rule ahead of the reader reject rule, or has an error';
  END IF;
- -- None, or exactly USAGE on one owner schema and EXECUTE on one owner routine in it.
- IF reader_deps NOT IN (0, 2) OR (reader_deps = 2 AND NOT EXISTS (
-      SELECT 1 FROM pg_shdepend ns
-        JOIN pg_namespace n ON n.oid = ns.objid
-        JOIN pg_shdepend fn ON fn.refclassid = 'pg_authid'::regclass AND fn.refobjid = reader_oid
-         AND fn.dbid = db_oid AND fn.classid = 'pg_proc'::regclass AND fn.deptype = 'a'
-        JOIN pg_proc p ON p.oid = fn.objid
-       WHERE ns.refclassid = 'pg_authid'::regclass AND ns.refobjid = reader_oid AND ns.dbid = db_oid
-         AND ns.classid = 'pg_namespace'::regclass AND ns.deptype = 'a'
-         AND n.nspowner = owner_oid AND p.proowner = owner_oid AND p.pronamespace = n.oid)) THEN
+ -- None, or exactly the two grants of the backlog function's own DDL: USAGE on its
+ -- owner schema and EXECUTE on its owner zero-argument function, both from the owner
+ -- without grant option. Those two are the reader's only shared dependencies, in
+ -- any database, so no other object, owner or policy names it. The CASE is in
+ -- parentheses because PL/pgSQL ends an IF condition at the first unnested THEN.
+ IF reader_deps NOT IN (0, 2) OR reader_grants <> (CASE reader_deps WHEN 0 THEN '{}'::text[] ELSE ARRAY[
+      'function hindsight_metrics.runnable_backlog() owner EXECUTE from owner',
+      'schema hindsight_metrics owner USAGE from owner'] END) THEN
   RAISE EXCEPTION 'hindsight_backlog_metrics holds privileges this file does not expect';
  END IF;
- -- A live session keeps its old setting until it reconnects.
+ -- Temporary files are not its only way to fill disk: CREATE on any schema, whether
+ -- granted to it or to PUBLIC, would let it write tables.
+ IF EXISTS (SELECT 1 FROM pg_namespace WHERE has_schema_privilege(reader_oid, oid, 'CREATE')) THEN
+  RAISE EXCEPTION 'hindsight_backlog_metrics can create objects in a schema';
+ END IF;
+ -- A live session keeps its old setting until it reconnects, and a login between
+ -- this check and the commit is not seen here: reader sessions are counted again in
+ -- a fresh transaction after the commit, before anything connects as the reader.
  IF EXISTS (SELECT 1 FROM pg_stat_activity WHERE usesysid = reader_oid) THEN
   RAISE EXCEPTION 'a hindsight_backlog_metrics session is connected';
  END IF;

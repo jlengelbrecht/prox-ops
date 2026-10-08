@@ -3,14 +3,16 @@
 
 Only for a dedicated, otherwise empty, TLS-enabled fixture server reached over TCP loopback: it creates its own
 roles and database hindsight, applies the committed TEMPORARY revoke and then the committed cap, drops only what it
-created, and refuses (never skips) otherwise.
+created, restores its pg_hba byte for byte, and refuses (never skips) otherwise.
 """
 import contextlib
 import importlib.util
 import json
 import os
 import pathlib
+import secrets
 import subprocess
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SQL = ROOT / 'kubernetes/apps/database/hindsight-backlog/role-limits/role-limits.sql'
@@ -33,8 +35,27 @@ RESTORE_DEFAULTS = f'ALTER ROLE {READER} RESET ALL;' + SET_DEFAULTS
 WRITABLE = '-c default_transaction_read_only=off'
 # Settings of other roles the apply must leave byte-identical.
 OWN_SETTINGS = f"ALTER ROLE {APP} SET work_mem = '8MB'; ALTER ROLE {OWNER} SET lock_timeout = '10s';"
-# Appended after the image's own rules, so authentication in the fixture is unchanged.
+# Ahead of the image's own rules, its trust catch-all included, so these two decide every reader login while
+# every other role still authenticates as before.
 READER_HBA = [f'hostssl {DB} {READER} all scram-sha-256', f'host all {READER} all reject']
+# Ahead of both: it matches the reader first, which the presence-and-order guard cannot see past.
+PERMISSIVE_HBA = f'host all {READER} all trust'
+HBA_REJECTED, SCRAM_FAILED = 'pg_hba.conf rejects connection', 'password authentication failed'
+# PostgreSQL 16 system_user is the authentication method and identity, NULL under trust.
+LOGIN = 'SELECT system_user, ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid();'
+READER_SESSIONS = f"SELECT count(*) FROM pg_stat_activity WHERE usename = '{READER}';"
+# The backlog function's grants as its owner applies them, over a stub body: the guard reads only the catalog.
+METRICS = f"""BEGIN;
+CREATE SCHEMA hindsight_metrics;
+CREATE FUNCTION hindsight_metrics.runnable_backlog() RETURNS int LANGUAGE sql STABLE AS 'SELECT 1';
+REVOKE ALL ON SCHEMA hindsight_metrics FROM PUBLIC;
+REVOKE ALL ON FUNCTION hindsight_metrics.runnable_backlog() FROM PUBLIC;
+GRANT USAGE ON SCHEMA hindsight_metrics TO {READER};
+GRANT EXECUTE ON FUNCTION hindsight_metrics.runnable_backlog() TO {READER};
+COMMIT;
+"""
+METRICS_CALL = 'SELECT hindsight_metrics.runnable_backlog();'
+METRICS_UNDO = 'BEGIN; DROP FUNCTION hindsight_metrics.runnable_backlog(); DROP SCHEMA hindsight_metrics; COMMIT;'
 LEFTOVERS = 'SELECT json_build_array((SELECT count(*) FROM pg_db_role_setting), (SELECT count(*) FROM pg_parameter_acl));'
 # Added to the revoke proof's catalog snapshot: every role setting and parameter privilege.
 SETTINGS_SNAPSHOT = f"""SELECT json_build_object(
@@ -70,10 +91,11 @@ SPILL_STOPPED = 'temporary file size exceeds temp_file_limit (131072kB)'
 SPILL_UNDER, SPILL_OVER = 20000, 300000
 
 SUPER = (None, DB, 'require')
-REVOKE_MISSING, HBA_MISSING = 'does not carry the TEMPORARY revoke', 'pg_hba does not confine'
+REVOKE_MISSING, HBA_MISSING = 'does not carry the TEMPORARY revoke', 'pg_hba lacks the reader TLS rule'
 SESSION_REFUSAL = 'a hindsight_backlog_metrics session is connected'
 SETTINGS, DRIFT = 'carries settings this file does not accept', 'attributes or memberships drifted'
 PER_DATABASE = 'a per-database setting exists'
+PRIVILEGES, CREATE = 'holds privileges this file does not expect', 'can create objects in a schema'
 
 
 def setting(target, name, value):
@@ -104,7 +126,47 @@ PRE_APPLY_REFUSALS = {
     'reader member of the owner': (f'GRANT {OWNER} TO {READER};', f'REVOKE {OWNER} FROM {READER};', SUPER, DRIFT),
     'a role is a member of the reader': (f'GRANT {READER} TO {APP};', f'REVOKE {READER} FROM {APP};', SUPER, DRIFT),
     'one unexpected reader grant': (f'CREATE SCHEMA lone AUTHORIZATION {OWNER}; GRANT USAGE ON SCHEMA lone TO {READER};',
-                                    'DROP SCHEMA lone;', SUPER, 'holds privileges this file does not expect'),
+                                    'DROP SCHEMA lone;', SUPER, PRIVILEGES),
+    # Owner objects and the accepted privileges, two dependencies, but not the function and its schema.
+    'two owner grants on other objects': (
+        f"CREATE SCHEMA stand_in AUTHORIZATION {OWNER}; "
+        "CREATE FUNCTION stand_in.probe() RETURNS int LANGUAGE sql STABLE AS 'SELECT 1'; "
+        f'ALTER FUNCTION stand_in.probe() OWNER TO {OWNER}; GRANT USAGE ON SCHEMA stand_in TO {READER}; '
+        f'GRANT EXECUTE ON FUNCTION stand_in.probe() TO {READER};',
+        'DROP FUNCTION stand_in.probe(); DROP SCHEMA stand_in;', SUPER, PRIVILEGES),
+    'PUBLIC CREATE on schema public': ('GRANT CREATE ON SCHEMA public TO PUBLIC;',
+                                       'REVOKE CREATE ON SCHEMA public FROM PUBLIC;', SUPER, CREATE),
+}
+# Over the applied cap with METRICS in place, which each undo restores exactly. A superuser's grant or revoke
+# acts as the object owner, so grantors stay the owner throughout.
+METRICS_REFUSALS = {
+    'reader CREATE on the function schema': (f'GRANT CREATE ON SCHEMA hindsight_metrics TO {READER};',
+                                             f'REVOKE CREATE ON SCHEMA hindsight_metrics FROM {READER};', SUPER,
+                                             PRIVILEGES),
+    'PUBLIC CREATE on the function schema': ('GRANT CREATE ON SCHEMA hindsight_metrics TO PUBLIC;',
+                                             'REVOKE CREATE ON SCHEMA hindsight_metrics FROM PUBLIC;', SUPER, CREATE),
+    'schema USAGE with grant option': (f'GRANT USAGE ON SCHEMA hindsight_metrics TO {READER} WITH GRANT OPTION;',
+                                       f'REVOKE GRANT OPTION FOR USAGE ON SCHEMA hindsight_metrics FROM {READER};',
+                                       SUPER, PRIVILEGES),
+    'function EXECUTE with grant option': (
+        f'GRANT EXECUTE ON FUNCTION hindsight_metrics.runnable_backlog() TO {READER} WITH GRANT OPTION;',
+        f'REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION hindsight_metrics.runnable_backlog() FROM {READER};',
+        SUPER, PRIVILEGES),
+    'another function in the schema granted': (
+        "CREATE FUNCTION hindsight_metrics.other() RETURNS int LANGUAGE sql STABLE AS 'SELECT 2'; "
+        f'ALTER FUNCTION hindsight_metrics.other() OWNER TO {OWNER}; '
+        f'GRANT EXECUTE ON FUNCTION hindsight_metrics.other() TO {READER};',
+        'DROP FUNCTION hindsight_metrics.other();', SUPER, PRIVILEGES),
+    # Still two dependencies, on the right schema and name, but not the zero-argument function.
+    'same name with an argument in its place': (
+        f'REVOKE EXECUTE ON FUNCTION hindsight_metrics.runnable_backlog() FROM {READER}; '
+        "CREATE FUNCTION hindsight_metrics.runnable_backlog(int) RETURNS int LANGUAGE sql STABLE AS 'SELECT 1'; "
+        f'ALTER FUNCTION hindsight_metrics.runnable_backlog(int) OWNER TO {OWNER}; '
+        f'GRANT EXECUTE ON FUNCTION hindsight_metrics.runnable_backlog(int) TO {READER};',
+        'DROP FUNCTION hindsight_metrics.runnable_backlog(int); '
+        f'GRANT EXECUTE ON FUNCTION hindsight_metrics.runnable_backlog() TO {READER};', SUPER, PRIVILEGES),
+    'function schema owned by another role': (f'ALTER SCHEMA hindsight_metrics OWNER TO {APP};',
+                                              f'ALTER SCHEMA hindsight_metrics OWNER TO {OWNER};', SUPER, PRIVILEGES),
 }
 # Over the completed cap and defaults, which the undo restores in place; the refused value stays meanwhile.
 POST_APPLY_REFUSALS = {
@@ -168,30 +230,92 @@ def refusal(env, label, arrange, undo, run_as, message, held=OWNER):
         raise Failed(f'{label}: undo did not restore the catalog')
 
 
-def hba_rules(env):
-    text = ok(connection(env, 'postgres'), "SELECT pg_read_file(current_setting('hba_file'));", 'read pg_hba')
-    return [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith('#')]
+def hba_text(env):
+    # psql -A -t ends its output with one newline of its own.
+    return ok(connection(env, 'postgres'), "SELECT pg_read_file(current_setting('hba_file'));", 'read pg_hba')[:-1]
 
 
 def write_hba(env, lines):
-    """Server-side rewrite of the fixture's pg_hba, one rule per line, then a reload."""
-    path = ok(connection(env, 'postgres'), 'SHOW hba_file;', 'pg_hba path').strip()
+    """Server-side rewrite of the fixture's pg_hba, one line each, then a reload that every new session sees."""
+    postgres = connection(env, 'postgres')
+    path = ok(postgres, 'SHOW hba_file;', 'pg_hba path').strip()
+    loaded = ok(postgres, 'SELECT pg_conf_load_time();', 'configuration load time').strip()
     rows = ', '.join(map(literal, lines))
-    # Control-character delimiter and quote, so CSV output never quotes or splits a rule.
-    ok(connection(env, 'postgres'), f'COPY (SELECT line FROM unnest(ARRAY[{rows}]::text[]) WITH ORDINALITY u(line, n) '
+    # Control-character delimiter and quote, so CSV output never quotes or splits a line; a blank line goes out
+    # as NULL, which CSV writes unquoted, where an empty string would be written as two quote characters.
+    ok(postgres, f"COPY (SELECT nullif(line, '') FROM unnest(ARRAY[{rows}]::text[]) WITH ORDINALITY u(line, n) "
        f"ORDER BY n) TO {literal(path)} (FORMAT csv, DELIMITER E'\\x01', QUOTE E'\\x02'); SELECT pg_reload_conf();",
        'write pg_hba')
+    # A new backend inherits the postmaster's load time, so a later one means new logins use the new rules.
+    deadline = time.monotonic() + 10
+    while ok(postgres, f'SELECT pg_conf_load_time() > {literal(loaded)}::timestamptz;', 'pg_hba reload').strip() != 't':
+        if time.monotonic() > deadline:
+            raise Failed('the fixture did not reload pg_hba')
+        time.sleep(0.1)
 
 
 @contextlib.contextmanager
 def reader_hba(env):
-    """The production reader rules in the fixture's pg_hba for the duration; comments are not restored."""
-    original = hba_rules(env)
-    write_hba(env, original + READER_HBA)
+    """The production reader rules ahead of the fixture's own for the duration, then its original bytes back."""
+    original = hba_text(env)
+    if not original.endswith('\n'):
+        raise Failed('the fixture pg_hba does not end in a newline, so it cannot be restored byte for byte')
+    lines = original.split('\n')[:-1]
+    write_hba(env, READER_HBA + lines)
     try:
-        yield
+        yield lines
     finally:
-        write_hba(env, original)
+        write_hba(env, lines)
+    if hba_text(env) != original:
+        raise Failed('the fixture pg_hba was not restored byte for byte')
+
+
+def reader_login(env, database=DB, sslmode='require', password=None):
+    run_env = {**connection(env, database, sslmode), 'PGUSER': READER}
+    if password is not None:
+        run_env['PGPASSWORD'] = password
+    return subprocess.run(['psql', '-X', '-q', '-A', '-t', '-w', '-c', LOGIN], env=run_env, capture_output=True,
+                          text=True, timeout=60)
+
+
+def readers_gone(env):
+    """Wait for reader backends in any database to exit; the apply refuses while one is connected."""
+    deadline = time.monotonic() + 10
+    while ok(connection(env, 'postgres'), READER_SESSIONS, 'reader session probe').strip() != '0':
+        if time.monotonic() > deadline:
+            raise Failed('an earlier reader session is still connected')
+        time.sleep(0.1)
+
+
+def prove_reader_logins(env):
+    """With the reader rules first: SCRAM over TLS to hindsight only, every other reader login rejected."""
+    login = reader_login(env)
+    if login.returncode != 0 or login.stdout.strip() != f'scram-sha-256:{READER}|t':
+        raise Failed(f'a TLS reader login to {DB} did not authenticate by SCRAM: {login.stderr.strip()[-300:]}')
+    for label, kwargs, message in (('wrong password', {'password': secrets.token_hex(16)}, SCRAM_FAILED),
+                                   ('non-TLS', {'sslmode': 'disable'}, HBA_REJECTED),
+                                   ('other database over TLS', {'database': 'postgres'}, HBA_REJECTED)):
+        result = reader_login(env, **kwargs)
+        if result.returncode == 0 or message not in result.stderr or result.stdout.strip():
+            raise Failed(f'reader {label} login: expected "{message}", got rc={result.returncode} '
+                         f'{result.stderr.strip()[-300:]}')
+    readers_gone(env)
+
+
+def prove_hba_evidence_is_limited(env, lines, after):
+    """An earlier rule admitting the reader decides its logins, and the guard still passes: it shows the rules are
+    present and ordered, never that they confine the reader."""
+    write_hba(env, [PERMISSIVE_HBA] + READER_HBA + lines)
+    try:
+        login = reader_login(env, 'postgres', 'disable')
+        if login.returncode != 0 or login.stdout.strip() != '|f':
+            raise Failed('the earlier permissive rule did not admit a non-TLS reader login without a password')
+        readers_gone(env)
+        applied(env, 'rerun with an earlier rule admitting the reader')
+        if snapshot(env) != after:
+            raise Failed('the rerun with an earlier permissive rule was not a no-op')
+    finally:
+        write_hba(env, READER_HBA + lines)
 
 
 def reader_cap(env, label, sql='SHOW temp_file_limit;'):
@@ -239,12 +363,17 @@ def prove_runtime(env, after):
 
 
 def prove(env):
+    # A throwaway password of the fixture's own reader, so its rule really runs SCRAM; trust ignores it elsewhere.
+    password = secrets.token_hex(16)
+    ok(connection(env), f'ALTER ROLE {READER} PASSWORD {literal(password)};', 'fixture reader password')
+    env = {**env, 'PGPASSWORD': password}
     ok(connection(env), OWN_SETTINGS, 'settings of other roles')
     start = snapshot(env)
     refusal(env, 'TEMPORARY revoke not applied', None, None, SUPER, REVOKE_MISSING)
     HARDENING.applied(env, 'committed TEMPORARY revoke as the owner over TLS')
     refusal(env, 'reader rules missing from pg_hba', None, None, SUPER, HBA_MISSING)
-    with reader_hba(env):
+    with reader_hba(env) as lines:
+        prove_reader_logins(env)
         before = snapshot(env)
         if before != {**start, 'datacl': before['datacl']} or before['settings'] is None:
             raise Failed('the revoke changed role settings, or the fixture lacks settings of other roles')
@@ -276,15 +405,22 @@ def prove(env):
         if snapshot(env) != after:
             raise Failed('the rerun or the reader attempts changed a setting or a privilege')
 
-        ok(connection(env), HARDENING.STAND_IN, 'owner stand-in routine granted to the reader', user=OWNER)
+        ok(connection(env), METRICS, 'the function grants as its owner applies them', user=OWNER)
         granted = snapshot(env)
         if granted['acl_dependencies'] != after['acl_dependencies'] + 2:
-            raise Failed('the stand-in grants did not record two reader object ACL dependencies')
-        applied(env, 'rerun with exactly two owner object grants to the reader')
+            raise Failed('the function grants did not record two reader object ACL dependencies')
+        if ok(connection(env), METRICS_CALL, 'reader function call', user=READER).strip() != '1':
+            raise Failed('the reader cannot call the function its grants name')
+        applied(env, 'rerun with exactly the function grants to the reader')
         if snapshot(env) != granted:
-            raise Failed('the rerun with reader object grants was not a no-op')
-        ok(connection(env), HARDENING.STAND_IN_UNDO, 'drop the stand-in routine', user=OWNER)
+            raise Failed('the rerun with the function grants was not a no-op')
+        for label, case in METRICS_REFUSALS.items():
+            refusal(env, label, *case)
+        ok(connection(env), METRICS_UNDO, 'drop the function and its schema', user=OWNER)
+        if snapshot(env) != after:
+            raise Failed('dropping the function grants did not return to the applied state')
 
+        prove_hba_evidence_is_limited(env, lines, after)
         for label, case in POST_APPLY_REFUSALS.items():
             refusal(env, label, *case)
         final = snapshot(env)

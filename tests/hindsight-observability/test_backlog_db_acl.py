@@ -234,9 +234,11 @@ class ActivationManifestTests(unittest.TestCase):
                                               {'port': '8000', 'protocol': 'TCP'},
                                               {'port': '9187', 'protocol': 'TCP'}]}]}, cluster['ingress'])
 
-    def test_flux_entry_waits_on_postgres_cluster_and_nothing_waits_on_it(self):
-        [ks] = list(yaml.safe_load_all((ACL_TREE.parent / 'ks.yaml').read_text()))
-        self.assertEqual((ks['kind'], ks['metadata']['name']), ('Kustomization', 'hindsight-backlog-db-acl'))
+    def test_flux_entry_waits_on_postgres_cluster_and_only_the_role_limits_entry_waits_on_it(self):
+        entries = {doc['metadata']['name']: doc for doc in yaml.safe_load_all((ACL_TREE.parent / 'ks.yaml').read_text())}
+        self.assertEqual(sorted(entries), ['hindsight-backlog-db-acl', 'hindsight-backlog-role-limits'])
+        ks = entries['hindsight-backlog-db-acl']
+        self.assertEqual(ks['kind'], 'Kustomization')
         spec = ks['spec']
         self.assertEqual({key: spec[key] for key in ('targetNamespace', 'path', 'prune', 'wait', 'dependsOn')}, {
             'targetNamespace': 'database', 'path': './kubernetes/apps/database/hindsight-backlog/db-acl',
@@ -246,11 +248,16 @@ class ActivationManifestTests(unittest.TestCase):
         self.assertEqual((root['namespace'], root['resources'].count('hindsight-backlog/ks.yaml')), ('database', 1))
         self.assertEqual(root['resources'].index('hindsight-backlog/ks.yaml'),
                          root['resources'].index('cluster/ks.yaml') + 1)
+        # The role-limits cap needs this revoke first; no other tree, shared ones included, may wait on it.
+        waiting = set()
         for path in (ROOT / 'kubernetes').rglob('ks.yaml'):
             for doc in yaml.safe_load_all(path.read_text()):
-                with self.subTest(path=path.relative_to(ROOT)):
-                    depends = (doc or {}).get('spec', {}).get('dependsOn', [])
-                    self.assertNotIn('hindsight-backlog-db-acl', [entry['name'] for entry in depends])
+                depends = (doc or {}).get('spec', {}).get('dependsOn', [])
+                if 'hindsight-backlog-db-acl' in [entry['name'] for entry in depends]:
+                    waiting.add((path.relative_to(ROOT).as_posix(), doc['metadata']['name'], doc['spec']['path']))
+        self.assertEqual(waiting, {('kubernetes/apps/database/hindsight-backlog/ks.yaml',
+                                    'hindsight-backlog-role-limits',
+                                    './kubernetes/apps/database/hindsight-backlog/role-limits')})
 
 
 class FixtureSafetyTests(unittest.TestCase):
