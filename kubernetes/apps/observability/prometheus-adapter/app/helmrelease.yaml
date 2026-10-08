@@ -1,0 +1,96 @@
+---
+# prometheus-adapter: one external metric, hindsight_worker_runnable, for the
+# inactive HPA in ai/hermes-hindsight/app/worker-autoscaling.yaml. Chart 5.3.0:
+# rules.default false and no custom or resource rules render only the
+# external.metrics.k8s.io APIService (metrics-server keeps metrics.k8s.io).
+# rbac.externalMetrics.resources names only this metric in the chart role, but
+# that is no access boundary: RBAC is additive, and bootstrap RBAC already lets
+# the HPA controller, like any holder of external.metrics get/list, read it.
+# certManager: TLS is verified once cainjector fills the APIService caBundle
+# (confirm live before activation); no key material sits in values.
+# The token stays mounted for TokenReview/SubjectAccessReview.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: prometheus-adapter
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: prometheus-adapter
+  interval: 1h
+  # rbac.create, which the auth bindings need, also renders a resource-reader:
+  # cluster-wide read on namespaces, pods, services, configmaps. Only custom and resource
+  # metrics providers (both off) read those; the external provider reads
+  # Prometheus plus API discovery, which system:discovery already grants.
+  # Delegated authn keeps its kube-system configmap through auth-reader. That
+  # the adapter serves without it is unproven until a live APIService check.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: ClusterRole
+              name: prometheus-adapter-resource-reader
+            patch: |
+              $patch: delete
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: ClusterRole
+              metadata:
+                name: prometheus-adapter-resource-reader
+          - target:
+              kind: ClusterRoleBinding
+              name: prometheus-adapter-resource-reader
+            patch: |
+              $patch: delete
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: ClusterRoleBinding
+              metadata:
+                name: prometheus-adapter-resource-reader
+  values:
+    logLevel: 2
+    image:
+      repository: registry.k8s.io/prometheus-adapter/prometheus-adapter
+      # The chart renders repository:tag, so the digest rides in the tag.
+      tag: v0.12.0@sha256:932eae60e2bcf9c4660d6442da066ef1a79b4ea7cc232c61c7303069216ca006
+    prometheus:
+      url: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local
+      port: 9090
+    certManager:
+      enabled: true
+    rbac:
+      externalMetrics:
+        resources:
+          - hindsight_worker_runnable
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    rules:
+      default: false
+      external:
+        # Runnable root demand from the backlog collector's global count; its
+        # claim predicate already leaves out queued parents and failed,
+        # deferred and serialization-blocked rows. A sample exists only while
+        # one collector scrape is up, valid, within capacity and observed
+        # under 180 s ago (the collector's last-good bound) and not in the
+        # future, joined on that scrape's labels. Otherwise the result is
+        # empty, never zero, so the HPA holds; a known empty backlog is one 0.
+        # No <<.LabelMatchers>>: no HPA selector or namespace reaches the
+        # query. max, not sum, of one global count; disagreeing targets keep the higher.
+        # Before activation, prove live a single collector target with honorLabels false.
+        - seriesQuery: 'hindsight_backlog_runnable{namespace="database",service="hindsight-backlog-collector"}'
+          resources:
+            # Source in database, HPA in ai.
+            namespaced: false
+          name:
+            matches: ^hindsight_backlog_runnable$
+            as: hindsight_worker_runnable
+          metricsQuery: |
+            max(
+              hindsight_backlog_runnable{namespace="database",service="hindsight-backlog-collector"} >= 0
+              and on (namespace, service, job, instance) hindsight_backlog_sample_valid{namespace="database",service="hindsight-backlog-collector"} == 1
+              and on (namespace, service, job, instance) hindsight_backlog_capacity_exceeded{namespace="database",service="hindsight-backlog-collector"} == 0
+              and on (namespace, service, job, instance) up{namespace="database",service="hindsight-backlog-collector"} == 1
+              and on (namespace, service, job, instance) (time() - hindsight_backlog_observed_timestamp_seconds{namespace="database",service="hindsight-backlog-collector"}) >= 0 < 180
+            )

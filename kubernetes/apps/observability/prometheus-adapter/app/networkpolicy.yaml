@@ -1,0 +1,47 @@
+---
+# prometheus-adapter: both directions listed, so default-deny otherwise.
+# Ingress: the aggregation layer on the container port 6443 (Cilium sees the
+# post-DNAT port, not the Service's 443). Kubelet probes come from the local
+# host, which Cilium's allow-localhost default admits. That aggregator traffic
+# carries the kube-apiserver identity is confirmed live (APIService
+# Available) before activation, not assumed.
+# Egress: DNS, the stack Prometheus on 9090, and the API server for delegated
+# authn/authz (no toPorts: Cilium sees the control plane's real listener).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: prometheus-adapter
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-adapter
+      app.kubernetes.io/instance: prometheus-adapter
+  ingress:
+    - fromEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+            io.cilium.k8s.policy.serviceaccount: kube-prometheus-stack-prometheus
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+    - toEntities:
+        - kube-apiserver
