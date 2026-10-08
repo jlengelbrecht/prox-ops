@@ -545,6 +545,20 @@
       "matchFileNames": ["kubernetes/apps/observability/kube-prometheus-stack/app/helmrelease.yaml"],
       "matchDatasources": ["docker"],
       "automerge": false
+    },
+    // Restore rehearsals: last so no opt-in can auto-merge them. A rehearsal binds
+    // its evidence to the exact binaries it runs, and a bot merge mid-rehearsal
+    // restarts the pods on new ones. No matchUpdateTypes, so digest, pin and
+    // pinDigest updates are covered too; updates are still raised for review.
+    {
+      "description": "FULLY MANUAL: images in the metrics and Loki restore rehearsals - a merge during a long restore replaces the binaries the evidence is bound to",
+      "matchFileNames": [
+        "kubernetes/apps/observability/kube-prometheus-stack/app/metrics-restore-rehearsal.yaml",
+        "kubernetes/apps/observability/loki/app/restore-rehearsal.yaml"
+      ],
+      "matchDatasources": ["docker"],
+      "automerge": false,
+      "ignoreTests": false
     }
   ]
 }
