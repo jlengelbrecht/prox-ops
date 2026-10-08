@@ -349,3 +349,122 @@ spec:
     - name: storage
       persistentVolumeClaim:
         claimName: metrics-upgrade-rehearsal-alertmanager-db
+---
+# Second Prometheus clone, from the snapshot taken after a clean shutdown.
+# New claim and pod names; the first clone and its snapshot stay as they are.
+# The part-of label keeps it under the deny-all policy above.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: metrics-clean-rehearsal-prometheus-db
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+spec:
+  storageClassName: ceph-block
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  dataSource:
+    apiGroup: snapshot.storage.k8s.io
+    kind: VolumeSnapshot
+    name: metrics-clean-shutdown-prometheus-db
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: metrics-clean-rehearsal-prometheus
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: metrics-upgrade-rehearsal
+    app.kubernetes.io/component: rehearsal-prometheus-clean
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 2000
+    fsGroup: 2000
+    fsGroupChangePolicy: OnRootMismatch
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  initContainers:
+    - name: precheck
+      image: python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -I
+        - -B
+        - /scripts/precheck.py
+        - prometheus
+        - /data/prometheus-db
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: precheck
+          mountPath: /scripts
+          readOnly: true
+        - name: storage
+          mountPath: /data
+          readOnly: true
+  containers:
+    - name: prometheus
+      image: quay.io/prometheus/prometheus:v3.15.0-distroless
+      imagePullPolicy: IfNotPresent
+      # Retention far beyond production so the clone never deletes the
+      # history it is being compared on.
+      args:
+        - --config.file=/etc/prometheus/prometheus.yaml
+        - --storage.tsdb.path=/prometheus
+        - --storage.tsdb.retention.time=3650d
+        - --web.listen-address=:9090
+      ports:
+        - name: http
+          containerPort: 9090
+          protocol: TCP
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: 2000m
+          memory: 4Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: config
+          mountPath: /etc/prometheus
+          readOnly: true
+        - name: storage
+          mountPath: /prometheus
+          subPath: prometheus-db
+  volumes:
+    - name: precheck
+      configMap:
+        name: metrics-upgrade-rehearsal-precheck
+    - name: config
+      configMap:
+        name: metrics-upgrade-rehearsal-prometheus-config
+    - name: storage
+      persistentVolumeClaim:
+        claimName: metrics-clean-rehearsal-prometheus-db
