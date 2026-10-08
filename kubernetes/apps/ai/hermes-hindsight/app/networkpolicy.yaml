@@ -1,5 +1,5 @@
 ---
-# Explicit network authorization for the four workloads (Hermes, the two
+# Explicit network authorization for the five workloads (Hermes, the three
 # Hindsight components and the Hermes browser pod at the end): DNS, the OIDC
 # issuer, the shared database, the memory API and toFQDNs allowlists for the
 # subscription-backed calls and the public model-catalog metadata Hermes
@@ -13,7 +13,7 @@
 # per-feature host intent, but for public IPv4 on TCP443 they are subsumed by
 # the public-web rule; for Hindsight, changing its LLM endpoint is still
 # coupled to its toFQDNs rule. toFQDNs rules only enforce when the pod queries
-# DNS for the exact policed name (ndots:1 is patched onto both affected pods
+# DNS for the exact policed name (ndots:1 is patched onto every affected pod
 # in hermes.yaml and hindsight.yaml).
 #
 # Cilium matches pod labels; the selectors below are what each chart renders.
@@ -380,6 +380,53 @@ spec:
               protocol: TCP
     # Shared CloudNativePG cluster in the database namespace (postgres-rw);
     # its own policy already admits ingress from this namespace on 5432.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+---
+# Hindsight worker (component=worker, zero replicas until qualified). The
+# single empty ingress rule is Cilium's default-deny form: no peer may
+# connect. Egress is exactly the API's: DNS with the L7 rule the toFQDNs lane
+# needs, the two openai-codex provider hosts and the shared database.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-worker
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight
+      app.kubernetes.io/instance: hindsight
+      app.kubernetes.io/component: worker
+  ingress:
+    - {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toFQDNs:
+        - matchName: chatgpt.com
+        - matchName: auth.openai.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: database

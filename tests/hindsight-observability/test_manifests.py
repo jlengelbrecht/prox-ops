@@ -54,8 +54,10 @@ class ManifestTests(unittest.TestCase):
                            'HINDSIGHT_API_METRICS_BACKLOG_ENABLED': 'true',
                            'HINDSIGHT_API_METRICS_INCLUDE_BANK_ID': 'true'}.items():
             self.assertEqual(env[key], value)
-        self.assertFalse(any(x and x.get('kind') == 'StatefulSet' for x in rendered))
-        self.assertEqual(values['worker']['enabled'], False)
+        self.assertEqual([x['metadata']['name'] for x in rendered if x and x.get('kind') == 'StatefulSet'],
+                         ['hindsight-worker'])
+        self.assertEqual(values['worker']['enabled'], True)
+        self.assertEqual(values['worker']['replicaCount'], 0)
         self.assertEqual(values['api']['replicaCount'], 1)
         self.assertEqual(values['api']['extraVolumes'][0]['persistentVolumeClaim']['claimName'], 'hindsight-codex-auth')
         self.assertIn('@sha256:', values['api']['image']['tag'])
