@@ -32,6 +32,21 @@ on:
       - kubernetes/apps/database/hindsight-backlog/app/networkpolicy.yaml
       - tests/hindsight-observability/test_backlog_function_activation.py
       - tests/hindsight-observability/check_postgres_backlog_function_activation.py
+      - kubernetes/apps/database/hindsight-backlog/collector/collector.py
+      - kubernetes/apps/database/hindsight-backlog/collector/runtime.py
+      - tests/hindsight-observability/test_backlog_collector.py
+      - tests/hindsight-observability/test_backlog_collector_runtime.py
+      - kubernetes/apps/database/hindsight-backlog/kustomization.yaml
+      - kubernetes/apps/database/hindsight-backlog/collector.ks.yaml
+      - kubernetes/apps/database/hindsight-backlog/collector-qualification/kustomization.yaml
+      - kubernetes/apps/database/hindsight-backlog/collector-qualification/job.yaml
+      - kubernetes/apps/database/hindsight-backlog/collector-qualification/networkpolicy.yaml
+      - kubernetes/apps/database/hindsight-backlog/collector-runtime/kustomization.yaml
+      - kubernetes/apps/database/hindsight-backlog/collector-runtime/deployment.yaml
+      - kubernetes/apps/database/hindsight-backlog/collector-runtime/service.yaml
+      - kubernetes/apps/database/hindsight-backlog/collector-runtime/servicemonitor.yaml
+      - kubernetes/apps/database/hindsight-backlog/collector-runtime/networkpolicy.yaml
+      - tests/hindsight-observability/test_backlog_collector_deployment.py
       - kubernetes/apps/database/kustomization.yaml
       # The revoke's role roster and the Job's egress are checked against these.
       - kubernetes/apps/database/cluster/app/helmrelease.yaml
@@ -77,6 +92,36 @@ jobs:
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_db_acl.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_role_limits.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_function_activation.py -v
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_collector.py -v
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_collector_runtime.py -v
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_collector_deployment.py -v
+      # The collector's own interpreter: Python 3.9 in the pinned CloudNativePG image, offline, read-only and as
+      # UID 26, with only the two sources and their two test files mounted. Zero tests or any skip fails the step.
+      - name: Native Python 3.9 collector tests
+        if: matrix.python-version == '3.12'
+        timeout-minutes: 6
+        env:
+          IMAGE: ghcr.io/cloudnative-pg/postgresql@sha256:368c1a13935ff8850d76cfb427d5c29877a74de0531e198a7a683d4cfb97260b
+          NAME: hindsight-collector-native-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -f "$RUNNER_TEMP/collector-native.log"' EXIT
+          docker pull -q "$IMAGE" >/dev/null
+          src=kubernetes/apps/database/hindsight-backlog/collector
+          tests=tests/hindsight-observability
+          log="$RUNNER_TEMP/collector-native.log"
+          for suite in test_backlog_collector.py test_backlog_collector_runtime.py; do
+            timeout 120 docker run --rm --name "$NAME" --network none --user 26:26 --read-only \
+              --tmpfs /tmp:rw,size=16m --entrypoint python3 \
+              -v "$PWD/$src/collector.py:/src/$src/collector.py:ro" \
+              -v "$PWD/$src/runtime.py:/src/$src/runtime.py:ro" \
+              -v "$PWD/$tests/test_backlog_collector.py:/src/$tests/test_backlog_collector.py:ro" \
+              -v "$PWD/$tests/test_backlog_collector_runtime.py:/src/$tests/test_backlog_collector_runtime.py:ro" \
+              "$IMAGE" -I -S -m unittest discover -s "/src/$tests" -p "$suite" -v >"$log" 2>&1 \
+              || { tail -n 30 "$log"; exit 1; }
+            tail -n 3 "$log"
+            grep -Eq '^Ran [1-9][0-9]* tests? in ' "$log"
+            if grep -q 'skipped=' "$log"; then exit 1; fi
+          done
       - run: python scripts/hindsight-backlog-function.py --check kubernetes/apps/database/hindsight-backlog/app/runnable-backlog.sql
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: python tests/hindsight-observability/check_postgres_newest.py

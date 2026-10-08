@@ -1,0 +1,80 @@
+---
+# The backlog collector in three steps, each waiting on the one before: code
+# ConfigMap, one-shot qualification Job, daemon. A failed Job leaves its entry
+# not Ready, so the daemon entry is never applied. dependsOn namespace: the
+# database root's `namespace: database` transform puts every CR there.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app hindsight-backlog-collector-code
+  namespace: flux-system
+spec:
+  targetNamespace: database
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  path: ./kubernetes/apps/database/hindsight-backlog
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 1h
+  retryInterval: 2m
+  timeout: 2m
+---
+# The reader holds two connections, so the Job's poll must finish before the
+# daemon's first. The timeout outlasts the Job's 90 s deadline, so Flux reports
+# the Job's own outcome rather than racing it.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app hindsight-backlog-collector-qualification
+  namespace: flux-system
+spec:
+  targetNamespace: database
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: hindsight-backlog-collector-code
+      namespace: database
+    - name: hindsight-backlog-function
+      namespace: database
+  path: ./kubernetes/apps/database/hindsight-backlog/collector-qualification
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 1h
+  retryInterval: 2m
+  timeout: 3m
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app hindsight-backlog-collector
+  namespace: flux-system
+spec:
+  targetNamespace: database
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: hindsight-backlog-collector-code
+      namespace: database
+    - name: hindsight-backlog-collector-qualification
+      namespace: database
+  path: ./kubernetes/apps/database/hindsight-backlog/collector-runtime
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 1h
+  retryInterval: 2m
+  timeout: 5m
