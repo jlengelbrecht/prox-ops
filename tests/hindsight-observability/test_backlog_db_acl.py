@@ -236,7 +236,8 @@ class ActivationManifestTests(unittest.TestCase):
 
     def test_flux_entry_waits_on_postgres_cluster_and_only_the_role_limits_entry_waits_on_it(self):
         entries = {doc['metadata']['name']: doc for doc in yaml.safe_load_all((ACL_TREE.parent / 'ks.yaml').read_text())}
-        self.assertEqual(sorted(entries), ['hindsight-backlog-db-acl', 'hindsight-backlog-role-limits'])
+        self.assertEqual(sorted(entries), ['hindsight-backlog-db-acl', 'hindsight-backlog-function',
+                                           'hindsight-backlog-role-limits'])
         ks = entries['hindsight-backlog-db-acl']
         self.assertEqual(ks['kind'], 'Kustomization')
         spec = ks['spec']
