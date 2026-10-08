@@ -43,3 +43,22 @@ spec:
   volumeSnapshotClassName: ceph-block-snapshot-retain
   source:
     persistentVolumeClaimName: alertmanager-kube-prometheus-stack-alertmanager-db-alertmanager-kube-prometheus-stack-alertmanager-0
+---
+# Requested only after Prometheus has shut down cleanly and its volume is
+# detached. The cut is asynchronous, so the copy counts as clean only if its
+# creationTime falls between that detach and the next attach. Otherwise it is
+# kept but not used for the restore test. The crash-consistent copy above is
+# kept unchanged for forensics.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: metrics-clean-shutdown-prometheus-db
+  namespace: observability
+  labels:
+    app.kubernetes.io/part-of: logging-upgrade-20261004
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  volumeSnapshotClassName: ceph-block-snapshot-retain
+  source:
+    persistentVolumeClaimName: prometheus-kube-prometheus-stack-prometheus-db-prometheus-kube-prometheus-stack-prometheus-0
