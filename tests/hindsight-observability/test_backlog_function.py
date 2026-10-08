@@ -205,6 +205,10 @@ ACTIVATION_REFERENCES = {
     'kubernetes/apps/database/hindsight-backlog/app/kustomization.yaml': ['runnable-backlog'],
     'kubernetes/apps/database/hindsight-backlog/app/job.yaml': ['runnable-backlog'] * 3,
 }
+# The collector's registration and three Flux paths name only the directory; test_backlog_collector_deployment.py
+# pins each exactly and holds the backlog root to the code ConfigMap alone, so none reaches app/ or its SQL.
+COLLECTOR_REFERENCES = {'kubernetes/apps/database/kustomization.yaml': ['hindsight-backlog'],
+                        'kubernetes/apps/database/hindsight-backlog/collector.ks.yaml': ['hindsight-backlog'] * 3}
 
 
 def sql_references(text):
@@ -216,8 +220,9 @@ def sql_references(text):
 class DeploymentTests(unittest.TestCase):
     def test_only_the_function_activation_tree_maps_the_generated_sql(self):
         self.assertEqual(sorted(BACKLOG.glob('**/kustomization.y*ml')),
-                         [FUNCTION_TREE / 'kustomization.yaml', ACL_TREE / 'kustomization.yaml',
-                          LIMITS_TREE / 'kustomization.yaml'])
+                         [FUNCTION_TREE / 'kustomization.yaml', BACKLOG / 'collector-qualification/kustomization.yaml',
+                          BACKLOG / 'collector-runtime/kustomization.yaml', ACL_TREE / 'kustomization.yaml',
+                          BACKLOG / 'kustomization.yaml', LIMITS_TREE / 'kustomization.yaml'])
         self.assertEqual(sorted(path.name for path in FUNCTION_TREE.iterdir()),
                          ['job.yaml', 'kustomization.yaml', 'networkpolicy.yaml', 'runnable-backlog.sql'])
         found = {}
@@ -225,7 +230,7 @@ class DeploymentTests(unittest.TestCase):
             references = sql_references(path.read_text(errors='replace'))
             if references:
                 found[path.relative_to(ROOT).as_posix()] = references
-        self.assertEqual(found, ACTIVATION_REFERENCES)
+        self.assertEqual(found, {**ACTIVATION_REFERENCES, **COLLECTOR_REFERENCES})
         # The ACL tree, its SQL included, never names the function or its schema.
         for path in ACL_TREE.iterdir():
             self.assertEqual(sql_references(path.read_text()), [], path)
@@ -234,11 +239,11 @@ class DeploymentTests(unittest.TestCase):
             if path.name != 'role-limits.sql':
                 self.assertEqual(sql_references(path.read_text()), [], path)
 
-    def test_collector_tree_holds_only_the_unmapped_module(self):
-        # The collector ships inert: no manifest beside it, and any YAML naming its path trips the guard above.
+    def test_collector_tree_holds_only_the_two_modules(self):
+        # No manifest sits beside the modules, and any YAML naming their path trips the guard above.
         tree = BACKLOG / 'collector'
         self.assertEqual(sorted(str(path.relative_to(tree)) for path in tree.rglob('*')
-                                if path.is_file() and path.suffix != '.pyc'), ['collector.py'])
+                                if path.is_file() and path.suffix != '.pyc'), ['collector.py', 'runtime.py'])
         self.assertNotEqual(sql_references('  path: ./kubernetes/apps/database/hindsight-backlog/collector\n'), [])
 
     def test_backlog_flux_entries_apply_only_the_acl_role_limit_and_function_trees(self):

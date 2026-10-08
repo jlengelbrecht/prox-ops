@@ -1,0 +1,16 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hindsight-backlog-collector
+  labels:
+    app.kubernetes.io/name: hindsight-backlog-collector
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hindsight-backlog-collector
+  ports:
+    - name: metrics
+      port: 9810
+      targetPort: metrics
+      protocol: TCP
