@@ -53,6 +53,14 @@ on:
       - kubernetes/apps/database/cluster/app/networkpolicy.yaml
       # The function is qualified for this pinned API image; a bump must re-run --check.
       - kubernetes/apps/ai/hermes-hindsight/app/hindsight.yaml
+      # The CODEX_HOME placement Job, checked against the release and claim above and below.
+      - kubernetes/apps/ai/hermes-hindsight/storage/pvc.yaml
+      - kubernetes/apps/ai/kustomization.yaml
+      - kubernetes/apps/ai/hermes-hindsight/auth-placement.ks.yaml
+      - kubernetes/apps/ai/hermes-hindsight/auth-placement/kustomization.yaml
+      - kubernetes/apps/ai/hermes-hindsight/auth-placement/job.yaml
+      - kubernetes/apps/ai/hermes-hindsight/auth-placement/networkpolicy.yaml
+      - tests/hindsight-observability/test_auth_placement.py
 permissions:
   contents: read
 jobs:
@@ -95,6 +103,7 @@ jobs:
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_collector.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_collector_runtime.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_collector_deployment.py -v
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_auth_placement.py -v
       # The collector's own interpreter: Python 3.9 in the pinned CloudNativePG image, offline, read-only and as
       # UID 26, with only the two sources and their two test files mounted. Zero tests or any skip fails the step.
       - name: Native Python 3.9 collector tests

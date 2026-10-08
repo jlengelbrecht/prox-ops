@@ -1,0 +1,14 @@
+---
+# The placement Job needs no network: default deny both ways and no allow
+# rule, so no DNS, Kubernetes API or provider traffic.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-worker-auth-placement
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight-worker-auth-placement
+  enableDefaultDeny:
+    ingress: true
+    egress: true
