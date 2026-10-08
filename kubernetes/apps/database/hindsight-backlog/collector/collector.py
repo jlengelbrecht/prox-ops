@@ -1,11 +1,10 @@
 """Contract core of the read-only collector for the Hindsight runnable-backlog aggregate.
 
-A poll feeds POLL_SCRIPT to one fresh psql session: a budgeted READ ONLY transaction that prechecks its
-own identity, cap, TLS and budgets from the catalog, then calls hindsight_metrics.runnable_backlog().
-This module holds the pure parts of a poll. Every failure is a fixed result class meaning unknown, never
-zero. It has no process runner, schedule, HTTP server or signal handling, so it spawns, listens and
-starts nothing. Written to the Python 3.9 standard library of the pinned CloudNativePG image; nothing
-deploys it yet.
+A poll feeds POLL_SCRIPT to one fresh psql session: a budgeted READ ONLY transaction that prechecks its own
+identity, cap, TLS and budgets from the catalog, then calls hindsight_metrics.runnable_backlog(). This module
+holds the pure parts of a poll; every failure is a fixed result class meaning unknown, never zero. It has no
+process runner, schedule, HTTP server or signal handling, and nothing deploys it yet. It is written to the
+Python 3.9 standard library of the pinned CloudNativePG image.
 """
 import collections
 import datetime
@@ -35,7 +34,8 @@ SQLSTATES = {'HSC01': 'precheck_cap', 'HSC02': 'precheck_temp', 'HSC03': 'preche
              '42501': 'permission', '42883': 'permission', '3F000': 'permission',
              '28P01': 'auth', '28000': 'auth', '53300': 'connect'}
 # libpq connection failures carry no SQLSTATE; LC_ALL=C keeps these phrases untranslated.
-AUTH_PHRASES = ('password authentication failed', 'scram', 'no password supplied')
+AUTH_PHRASES = ('password authentication failed', 'scram', 'no password supplied', 'pg_hba.conf',
+                'not permitted to log in')
 TLS_PHRASES = ('ssl', 'certificate')
 
 COUNTS = ('pending', 'payload_null_pending', 'deferred', 'due', 'runnable', 'serialization_blocked',
@@ -47,13 +47,12 @@ GROUP_KEYS = frozenset(('bank', 'operation_type', AGE, LATENESS) + COUNTS)
 # The rendering of the committed function's observed_at is assumed, not yet
 # proven against a live server; a different rendering is malformed, never loosened.
 OBSERVED_AT = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}\+00:00')
-OPERATION = re.compile(r'[a-z][a-z0-9_]{0,63}')
+OPERATION = re.compile(r'[A-Za-z0-9_-]{1,64}')
 SAFE_BANK = re.compile(r'[A-Za-z0-9._:@-]{1,128}')
 SQLSTATE = re.compile(r'\b(?:ERROR|FATAL):\s+([0-9A-Z]{5})[ ]*$', re.M)
 
-# The fixed environment for psql. Nothing is inherited, so PGOPTIONS, PGSERVICE,
-# PGPASSFILE, HOME and any other PG* variable cannot reach libpq. The PostgreSQL
-# bin directory comes first so the real psql runs, not the Debian wrapper.
+# The fixed psql environment. Nothing is inherited, so PGOPTIONS, PGSERVICE, PGPASSFILE, HOME and any other PG*
+# variable cannot reach libpq. The PostgreSQL bin directory comes first, so the real psql runs, not the Debian wrapper.
 CHILD_ENV = {
     'PATH': '/usr/lib/postgresql/16/bin:/usr/bin:/bin', 'LC_ALL': 'C',
     'PGHOST': 'postgres-rw.database.svc.cluster.local', 'PGPORT': '5432', 'PGDATABASE': 'hindsight',
@@ -62,9 +61,8 @@ CHILD_ENV = {
 }
 PSQL_ARGV = ('psql', '-X', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=sqlstate', '-f', '-')
 
-# The budgets are re-issued in every transaction and verified by HSC05, so no
-# role default, RESET or inherited option can loosen a poll. The precheck reads
-# only the catalog; ON_ERROR_STOP keeps the function from running after a failure.
+# The budgets are re-issued in every transaction and verified by HSC05, so no role default, RESET or inherited
+# option can loosen a poll. The precheck reads only the catalog; ON_ERROR_STOP skips the function on any failure.
 POLL_SCRIPT = b"""BEGIN READ ONLY;
 SET LOCAL search_path = pg_catalog, pg_temp;
 SET LOCAL statement_timeout = '5s';
@@ -259,9 +257,9 @@ def _validate(doc):
         # runnable is the unblocked part of due, and the ages exist only for runnable rows.
         # Lateness is a nullable minimum, so runnable rows without a retry time leave it null.
         _require(c['pending'] == c['payload_null_pending'] + c['deferred'] + c['due']
-                 and c['runnable'] <= c['due'] and c['serialization_blocked'] == c['due'] - c['runnable']
-                 and c['assigned_pending'] <= c['pending'] and c['assigned_runnable'] <= c['runnable']
-                 and c['future_created_runnable'] <= c['runnable'] and c['pending'] + c['processing'] >= 1
+                 and c['serialization_blocked'] == c['due'] - c['runnable'] and c['pending'] + c['processing'] >= 1
+                 and c['assigned_runnable'] <= c['assigned_pending'] <= c['pending']
+                 and max(c['assigned_runnable'], c['future_created_runnable']) <= c['runnable']
                  and (c['runnable'] == 0) == (age is None) and (c['runnable'] > 0 or lateness is None))
         parsed.append((key[0], key[1], c, age, lateness))
     labels = {bank: bank_label(bank) for bank in registered}
@@ -327,7 +325,7 @@ def render(status, sample=None):
 
     family('collector_info', 'gauge', 'Collector build; version is a sha256 prefix of collector.py.',
            [('', (('version', status.version),), 1)])
-    gauge('sample_valid', '1 only when the latest poll returned a valid sample.', int(status.valid))
+    gauge('sample_valid', '1 only while serving a valid latest sample.', int(status.valid and sample is not None))
     gauge('capacity_exceeded', '1 when the latest poll reported more than 256 groups or banks.',
           int(status.capacity))
     family('polls_total', 'counter', 'Polls by result class; every class except ok means unknown.',
@@ -371,8 +369,8 @@ def _render_data(sample, family, gauge):
 
 def publish(status, sample=None, expires=0.0):
     """Render both variants once, so a scrape only selects bytes and never sees a partial update."""
-    # Withdrawn data is never valid, so a stalled poller cannot hold sample_valid at 1 past expiry.
-    without = render(status if sample is None else status._replace(valid=False))
+    # render() never claims validity without data, so a stalled poller cannot hold sample_valid at 1 past expiry.
+    without = render(status)
     if sample is None:
         return Snapshot(None, without, 0.0)
     return Snapshot(render(status, sample), without, expires)

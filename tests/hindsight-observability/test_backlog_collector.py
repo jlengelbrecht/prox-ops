@@ -92,8 +92,7 @@ def status(**changes):
 def held(stdout=MIXED, received=T0, mono=MONO, **changes):
     """The snapshot a scheduler publishes for a sample received at (received, mono)."""
     sample = C.parse_sample(stdout, received)
-    fields = dict(valid=True, last_success=received, observed=sample.observed)
-    fields.update(changes)
+    fields = {'valid': True, 'last_success': received, 'observed': sample.observed, **changes}
     return C.publish(status(**fields), sample, C.hold_expiry(sample, received, mono))
 
 
@@ -148,6 +147,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(value(series, 'sample_valid'), 0)
         self.assertFalse(names(series) & (DATA | {'last_success_timestamp_seconds', 'observed_timestamp_seconds'}))
         self.assertEqual((value(series, 'capacity_exceeded'), value(series, 'collector_info', version='test')), (0, 1))
+        self.assertEqual(value(scrape(C.publish(status(valid=True, last_success=T0))), 'sample_valid'), 0)
 
     def test_known_empty_sample_is_explicit_zero_not_absence(self):
         series = scrape(held(body([('idle', True)])))
@@ -186,7 +186,7 @@ class ContractTests(unittest.TestCase):
                   dict(pending=1, due=1, runnable=1, assigned_runnable=2, age=1),
                   dict(pending=1, due=1, runnable=1, future_created_runnable=2, age=1),
                   dict(pending=1, due=1, runnable=1), dict(pending=1, due=1, serialization_blocked=1, age=3),
-                  dict(processing=1, late=2), {}]
+                  dict(processing=1, late=2), dict(pending=1, due=1, runnable=1, assigned_runnable=1, age=1), {}]
         for fields in broken:
             with self.subTest(fields=fields):
                 self.assertEqual(outcome(one(**fields)), 'malformed')
@@ -220,6 +220,7 @@ class ContractTests(unittest.TestCase):
     def test_bank_and_group_identity_bounds(self):
         many = [('b%d' % n, True) for n in range(257)]
         self.assertEqual(outcome(body(many[:256])), 'ok')
+        self.assertEqual(outcome(body([('a', True)], [group('a', t, processing=1) for t in ('9A-z_', 'r' * 64)])), 'ok')
         cases = {
             'duplicate bank': body([('a', True), ('a', False)]),
             'duplicate group': body([('a', True)], [group('a', 'retain', processing=1)] * 2),
@@ -230,7 +231,7 @@ class ContractTests(unittest.TestCase):
             '257 groups': body(many[:256], [group(b, 'retain', processing=1) for b, _ in many[:256]]
                                + [group('b0', 'consolidation', processing=1)]),
         }
-        for bad in ('Retain', 'retain-x', '', 'r' * 65, 'retain\n', '1retain'):
+        for bad in ('', 'r' * 65, 'retain\n', 'ret ain', 'a"b', 'retaín', 'a\\b'):
             cases['operation %r' % bad] = body([('a', True)], [group('a', bad, processing=1)])
         for label, stdout in cases.items():
             with self.subTest(label):
@@ -283,6 +284,8 @@ class FailureTests(unittest.TestCase):
         connection = 'psql: error: connection to server at "postgres-rw" (10.0.0.1), port 5432 failed: %s\n'
         cases += [(3, CANARY_STDERR, 'other_sqlstate'),
                   (2, connection % 'FATAL:  password authentication failed for user "x"', 'auth'),
+                  (2, 'FATAL:  no pg_hba.conf entry for host "a", user "u", database "d", SSL encryption', 'auth'),
+                  (2, connection % 'FATAL:  role "x" is not permitted to log in', 'auth'),
                   (2, connection % 'server certificate for "a" does not match host name "b"', 'tls'),
                   (2, connection % 'SSL error: certificate verify failed', 'tls'),
                   (2, connection % 'Connection refused ' + CANARY_STDERR, 'connect'),
