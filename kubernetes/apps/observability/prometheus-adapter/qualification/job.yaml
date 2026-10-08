@@ -1,0 +1,158 @@
+---
+# Read-only check of the external metrics API over the API server's own TLS
+# (cluster CA, hostname verified), within 120 s: the APIService is Available;
+# hindsight_worker_runnable in ai returns exactly one unlabelled item (the
+# rule's max() drops the labels its database/collector matchers pinned), a
+# non-negative quantity stamped within 180 s; an unserved name returns the
+# adapter's own 404. Prints fixed result classes only, never a body, value,
+# label or token. Readiness is polled to a deadline; nothing is written.
+# backoffLimit 0 and no TTL: a rerun needs a reviewed revision, new -r<N>.
+# Not shown here: what the HPA controller does on an empty or unknown metric.
+# The 404 is one unserved name's answer, not proof that an HPA holds.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hindsight-metrics-qualification-r1
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  parallelism: 1
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight-metrics-qualification
+    spec:
+      restartPolicy: Never
+      serviceAccountName: hindsight-metrics-qualification
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26
+        runAsGroup: 26
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: qualify
+          # The CNPG image already pinned for the backlog Jobs; its Python 3.9
+          # stdlib is all this needs.
+          image: ghcr.io/cloudnative-pg/postgresql@sha256:368c1a13935ff8850d76cfb427d5c29877a74de0531e198a7a683d4cfb97260b
+          command:
+            - python3
+            - -I
+            - -B
+            - -c
+            - |
+              import json, re, ssl, sys, time, urllib.error, urllib.request
+              from datetime import datetime
+
+              API = 'https://kubernetes.default.svc'
+              APISERVICE = '/apis/apiregistration.k8s.io/v1/apiservices/v1beta1.external.metrics.k8s.io'
+              METRICS = '/apis/external.metrics.k8s.io/v1beta1/namespaces/ai/'
+              METRIC = 'hindsight_worker_runnable'
+              ABSENT = 'hindsight_qualification_absent'
+              CREDENTIALS = '/var/run/qualification/'
+              FRESH_SECONDS = 180
+              SKEW_SECONDS = 30
+              POLL_SECONDS = 80
+              QUANTITY = re.compile(r'[0-9]+(\.[0-9]+)?(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei)?')
+
+              def fetch(path):
+                  """(status, decoded body or None). The token goes only into the header."""
+                  with open(CREDENTIALS + 'token') as handle:
+                      token = handle.read().strip()
+                  context = ssl.create_default_context(cafile=CREDENTIALS + 'ca.crt')
+                  request = urllib.request.Request(API + path, headers={
+                      'Authorization': 'Bearer ' + token, 'Accept': 'application/json'})
+                  try:
+                      with urllib.request.urlopen(request, timeout=10, context=context) as response:
+                          status, raw = response.status, response.read(65536)
+                  except urllib.error.HTTPError as error:
+                      status, raw = error.code, error.read(65536)
+                  try:
+                      return status, json.loads(raw)
+                  except ValueError:
+                      return status, None
+
+              def apiservice_class(status, body):
+                  if status != 200 or not isinstance(body, dict):
+                      return 'apiservice-http-%d' % status
+                  conditions = (body.get('status') or {}).get('conditions') or []
+                  if any(c.get('type') == 'Available' and c.get('status') == 'True' for c in conditions):
+                      return 'available'
+                  return 'apiservice-not-available'
+
+              def metric_class(status, body, now):
+                  if status != 200 or not isinstance(body, dict) or body.get('kind') != 'ExternalMetricValueList':
+                      return 'metric-http-%d' % status
+                  items = body.get('items') or []
+                  if not isinstance(items, list) or len(items) != 1:
+                      return 'metric-items-none' if not items else 'metric-items-many'
+                  item = items[0]
+                  if item.get('metricName') != METRIC or item.get('metricLabels'):
+                      return 'metric-unexpected-series'
+                  value = item.get('value')
+                  if not isinstance(value, str) or not QUANTITY.fullmatch(value):
+                      return 'metric-invalid-value'
+                  try:
+                      stamp = datetime.fromisoformat(item['timestamp'].replace('Z', '+00:00'))
+                  except (KeyError, AttributeError, ValueError):
+                      return 'metric-no-timestamp'
+                  if stamp.tzinfo is None:
+                      return 'metric-no-timestamp'
+                  if not -SKEW_SECONDS <= now - stamp.timestamp() <= FRESH_SECONDS:
+                      return 'metric-stale'
+                  return 'valid'
+
+              def absent_class(status, body):
+                  # The adapter's own NotFound, not a refusal (403) or a broken aggregator (503).
+                  if status == 404 and isinstance(body, dict) and (body.get('kind'), body.get('reason')) == (
+                          'Status', 'NotFound'):
+                      return 'not-found'
+                  return 'absent-http-%d' % status
+
+              def poll(check, deadline, monotonic, sleep):
+                  while True:
+                      try:
+                          result = check()
+                      except (OSError, ValueError) as error:
+                          result = 'transport-' + type(error).__name__
+                      if result in ('available', 'valid') or monotonic() >= deadline:
+                          return result
+                      sleep(5)
+
+              def qualify(get=fetch, now=time.time, monotonic=time.monotonic, sleep=time.sleep):
+                  deadline = monotonic() + POLL_SECONDS
+                  results = [poll(lambda: apiservice_class(*get(APISERVICE)), deadline, monotonic, sleep)]
+                  if results[-1] == 'available':
+                      results.append(poll(lambda: metric_class(*get(METRICS + METRIC), now()), deadline, monotonic, sleep))
+                  if results[-1] == 'valid':
+                      results.append(absent_class(*get(METRICS + ABSENT)))
+                  return results == ['available', 'valid', 'not-found'], results
+
+              def main():
+                  try:
+                      passed, results = qualify()
+                  except Exception as error:
+                      # The class name only; a message could echo a response.
+                      passed, results = False, ['error-' + type(error).__name__]
+                  print(('QUALIFIED: ' if passed else 'FAILED: ') + ' '.join(results))
+                  return 0 if passed else 1
+
+              if __name__ == '__main__':
+                  sys.exit(main())
+          resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {memory: 64Mi}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: api, mountPath: /var/run/qualification, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        # A ten-minute token for this pod and the cluster CA, nothing more.
+        - name: api
+          projected:
+            sources:
+              - serviceAccountToken: {path: token, expirationSeconds: 600}
+              - configMap: {name: kube-root-ca.crt, items: [{key: ca.crt, path: ca.crt}]}
+        - name: tmp
+          emptyDir: {sizeLimit: 8Mi}

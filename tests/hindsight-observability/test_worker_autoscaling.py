@@ -359,16 +359,21 @@ class InactiveWiringTests(unittest.TestCase):
         self.assertEqual(len(patches), 1, 'the HPA target must be the worker StatefulSet the release renders')
         self.assertIn({'op': 'add', 'path': '/spec/replicas', 'value': 0}, yaml.safe_load(patches[0]['patch']))
 
-    def test_hpa_and_adapter_are_unreferenced(self):
+    def test_hpa_unreferenced_while_adapter_is_registered(self):
         listed = yaml.safe_load((HINDSIGHT / 'kustomization.yaml').read_text())['resources']
         self.assertFalse([x for x in listed if x.endswith('worker-autoscaling.yaml')])
         self.assertFalse([x for x in kustomize_build(HINDSIGHT) if x['kind'] == 'HorizontalPodAutoscaler'])
-        self.assertEqual(sorted(p.name for p in ADAPTER.parent.iterdir()), ['app'], 'no ks.yaml')
-        owned = {HPA_FILE, *ADAPTER.iterdir()}
+        # The adapter and its read-only qualification are wired through their own ks.yaml only.
+        self.assertEqual(sorted(p.name for p in ADAPTER.parent.iterdir()), ['app', 'ks.yaml', 'qualification'])
+        root = ADAPTER.parent.parent / 'kustomization.yaml'
+        self.assertIn('./prometheus-adapter/ks.yaml', yaml.safe_load(root.read_text())['resources'])
+        owned = {HPA_FILE, root, *ADAPTER.parent.rglob('*')}
         hits = [str(p.relative_to(ROOT)) for p in (ROOT / 'kubernetes').rglob('*.y*ml')
                 if p.is_file() and p not in owned
                 and re.search(r'prometheus-adapter|worker-autoscaling', p.read_text(errors='ignore'))]
         self.assertEqual(hits, [])
+        wiring = owned - {HPA_FILE, *ADAPTER.iterdir()}
+        self.assertEqual([p.name for p in wiring if p.is_file() and 'worker-autoscaling' in p.read_text()], [])
 
     def test_adapter_build_and_network_policy(self):
         built = kustomize_build(ADAPTER)
