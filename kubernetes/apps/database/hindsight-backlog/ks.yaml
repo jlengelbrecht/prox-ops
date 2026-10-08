@@ -31,8 +31,8 @@ spec:
 ---
 # Writes the reader's temp_file_limit cap, as the CNPG superuser, after the
 # TEMPORARY revoke its guard requires. It depends on the revoke tree only;
-# nothing depends on it, so a failed Job holds back no other tree. Same
-# dependsOn namespace and timeout reasoning as above.
+# only the function tree below waits on it, so a failed Job holds back no
+# shared tree. Same dependsOn namespace and timeout reasoning as above.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -47,6 +47,35 @@ spec:
     - name: hindsight-backlog-db-acl
       namespace: database
   path: ./kubernetes/apps/database/hindsight-backlog/role-limits
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 1h
+  retryInterval: 2m
+  timeout: 6m
+---
+# Creates the backlog function and grants the reader EXECUTE on it, as the
+# owner, once the reader's temp_file_limit cap is in place. It depends on the
+# cap tree only and nothing depends on it, so a failed Job holds back no other
+# tree, and pruning this tree removes only its own ConfigMap, policy and Job.
+# Same dependsOn namespace and timeout reasoning as above.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app hindsight-backlog-function
+  namespace: flux-system
+spec:
+  targetNamespace: database
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: hindsight-backlog-role-limits
+      namespace: database
+  path: ./kubernetes/apps/database/hindsight-backlog/app
   prune: true
   sourceRef:
     kind: GitRepository
