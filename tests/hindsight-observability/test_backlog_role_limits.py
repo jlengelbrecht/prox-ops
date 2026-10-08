@@ -273,8 +273,8 @@ class ActivationManifestTests(unittest.TestCase):
             'egress': [dns, {'toEndpoints': [{'matchLabels': postgres}],
                              'toPorts': [{'ports': [{'port': '5432', 'protocol': 'TCP'}]}]}]})
 
-    def test_flux_entry_waits_on_the_revoke_and_nothing_waits_on_it(self):
-        acl, limits = yaml.safe_load_all((TREE.parent / 'ks.yaml').read_text())
+    def test_flux_entry_waits_on_the_revoke_and_only_the_function_waits_on_it(self):
+        acl, limits, function = yaml.safe_load_all((TREE.parent / 'ks.yaml').read_text())
         self.assertEqual(acl['metadata']['name'], 'hindsight-backlog-db-acl')
         self.assertEqual(acl['spec']['dependsOn'], [{'name': 'postgres-cluster', 'namespace': 'database'}])
         self.assertEqual((limits['kind'], limits['metadata']), ('Kustomization', {'name': APP_NAME,
@@ -285,13 +285,22 @@ class ActivationManifestTests(unittest.TestCase):
             'path': './kubernetes/apps/database/hindsight-backlog/role-limits', 'prune': True,
             'sourceRef': {'kind': 'GitRepository', 'name': 'flux-system', 'namespace': 'flux-system'},
             'wait': True, 'interval': '1h', 'retryInterval': '2m', 'timeout': '6m'})
+        self.assertEqual((function['metadata']['name'], function['spec']['dependsOn']),
+                         ('hindsight-backlog-function', [{'name': APP_NAME, 'namespace': 'database'}]))
+        # The chain is db-acl -> role-limits -> function; no other tree, shared ones included, joins it.
+        waiting = set()
         for path in (ROOT / 'kubernetes').rglob('ks.yaml'):
             for doc in yaml.safe_load_all(path.read_text()):
                 with self.subTest(path=path.relative_to(ROOT)):
+                    name = (doc or {}).get('metadata', {}).get('name')
                     depends = [entry['name'] for entry in (doc or {}).get('spec', {}).get('dependsOn', [])]
-                    self.assertNotIn(APP_NAME, depends)
-                    if (doc or {}).get('metadata', {}).get('name') != APP_NAME:
+                    if APP_NAME in depends:
+                        waiting.add((path.relative_to(ROOT).as_posix(), name))
+                    self.assertNotIn('hindsight-backlog-function', depends)
+                    if name != APP_NAME:
                         self.assertNotIn('hindsight-backlog-db-acl', depends)
+        self.assertEqual(waiting, {('kubernetes/apps/database/hindsight-backlog/ks.yaml',
+                                    'hindsight-backlog-function')})
 
 
 class FixtureSafetyTests(unittest.TestCase):
