@@ -55,10 +55,17 @@ def secret_names(node):
     return found.union(*map(secret_names, node.values()))
 
 
-def run_script(script, home, mounted, read_only):
+def denies_all(spec):
+    """The repository's deny-all contract, not a model of Cilium: default deny set explicitly in both directions, no
+    every ingress/egress rule present is the empty rule, which admits no peer."""
+    return (spec.get('enableDefaultDeny') == {'ingress': True, 'egress': True}
+            and all(rule == {} for direction in ('ingress', 'egress') for rule in spec.get(direction, [])))
+
+
+def run_script(script, home, mounted, read_only, prelude=''):
     """Runs the Job's script against a temporary CODEX_HOME. A temporary directory is neither a mount point nor
     read-only, so the in-cluster answers are stood in before the script's own `import os`."""
-    prelude = 'import os\n'
+    prelude = 'import os\n' + prelude
     if mounted:
         prelude += 'os.path.ismount = lambda path: True\n'
     if read_only:
@@ -119,9 +126,23 @@ class JobTests(unittest.TestCase):
         self.assertEqual(self.job['spec']['template']['metadata'], {'labels': LABELS})
         # The pod must never match the API's selector (Service endpoints, the API's network policy).
         self.assertFalse(API_SELECTOR.items() <= LABELS.items())
-        self.assertEqual(self.docs['CiliumNetworkPolicy'], {
+        policy = self.docs['CiliumNetworkPolicy']
+        self.assertEqual(policy, {
             'apiVersion': 'cilium.io/v2', 'kind': 'CiliumNetworkPolicy', 'metadata': {'name': NAME},
-            'spec': {'endpointSelector': {'matchLabels': LABELS}, 'enableDefaultDeny': {'ingress': True, 'egress': True}}})
+            'spec': {'endpointSelector': {'matchLabels': LABELS}, 'enableDefaultDeny': {'ingress': True, 'egress': True},
+                     'ingress': [{}], 'egress': [{}]}})
+        self.assertTrue(denies_all(policy['spec']))
+        # Negative controls against the contract: default deny off or unset in either direction, or any allow rule.
+        rules = {'ingress': [{}], 'egress': [{}]}
+        for flags in ({'ingress': False, 'egress': True}, {'ingress': True, 'egress': False}, {'egress': True},
+                      {'ingress': True}):
+            self.assertFalse(denies_all({'enableDefaultDeny': flags, **rules}), flags)
+        self.assertFalse(denies_all(rules))
+        on = {'enableDefaultDeny': {'ingress': True, 'egress': True}}
+        for allow in ({'egress': [{}, {'toEntities': ['world']}]},
+                      {'egress': [{'toEndpoints': [{'matchLabels': {'k8s-app': 'kube-dns'}}]}]},
+                      {'ingress': [{'fromEntities': ['cluster']}]}):
+            self.assertFalse(denies_all({**on, **rules, **allow}), allow)
 
     def test_pod_runs_as_the_api_identity_without_token_and_beside_the_api(self):
         pod_security, container_security = VALUES['podSecurityContext'], VALUES['securityContext']
@@ -164,7 +185,7 @@ class JobTests(unittest.TestCase):
         text = yaml.safe_dump(list(self.docs.values()))
         for word in ('kind: Secret', 'serviceAccountName', 'hostPath', 'subPath', 'emptyDir', 'initContainers',
                      'env:', 'envFrom', 'Probe', 'ports:', 'fsGroup', 'ttlSecondsAfterFinished', 'hostNetwork',
-                     'Role', 'kustomize.toolkit.fluxcd.io/force', 'ingress:\n', 'egress:\n'):
+                     'Role', 'kustomize.toolkit.fluxcd.io/force'):
             self.assertNotIn(word, text)
 
     def test_script_is_stdlib_only_and_never_opens_the_file(self):
@@ -201,10 +222,12 @@ class JobTests(unittest.TestCase):
             self.assertEqual(run.stdout.count('\n'), 1)
             self.assertNotIn(canary, run.stdout)
 
-            def refused(result, mounted, read_only):
-                run = run_script(self.script, home, mounted, read_only)
+            def refused(result, mounted, read_only, prelude=''):
+                run = run_script(self.script, home, mounted, read_only, prelude)
                 self.assertEqual((run.returncode, run.stdout, run.stderr), (1, '{"result":"%s"}\n' % result, ''))
 
+            # Any other failure is the fixed `error` class; the exception text is never printed.
+            refused('error', True, True, 'def lstat(path): raise PermissionError(%r)\nos.lstat = lstat\n' % canary)
             refused('not-mounted', False, False)
             refused('mount-writable', True, False)
             if os.geteuid() != 0:  # root passes access(2) whatever the mode
