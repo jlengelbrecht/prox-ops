@@ -36,6 +36,17 @@ def rendered():
         [ACL.KUSTOMIZE, 'build', str(TREE)], check=True, capture_output=True, text=True).stdout) if doc]
 
 
+def operational_files():
+    """Every tracked file the activation Jobs are built from; Markdown is documentation and triggers nothing."""
+    listed = ACL.subprocess.run(['git', 'ls-files', '-z', '--', *(path.relative_to(ROOT).as_posix() for path in (
+        ACL.ACL_TREE, TREE))], cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    return sorted(path for path in listed.split('\0') if path and not path.endswith('.md'))
+
+
+def uncovered(triggers, files):
+    return [path for path in files if path not in triggers]
+
+
 def violations(sql):
     """Every way besides the one top-level ALTER ROLE line that the file could change state."""
     code = ACL.statements(sql)
@@ -151,7 +162,7 @@ class SqlTests(unittest.TestCase):
         for path in (NATIVE.SQL.relative_to(ROOT).as_posix(), 'tests/hindsight-observability/test_backlog_role_limits.py',
                      'tests/hindsight-observability/check_postgres_backlog_role_limits.py'):
             self.assertEqual(workflow.count('      - ' + path + '\n'), 1, path)
-        self.assertEqual(workflow.count('role-limits/'), 1)
+        self.assertEqual(workflow.count('role-limits/'), 4)
         self.assertEqual(workflow.count(
             '      - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_role_limits.py -v\n'
         ), 1)
@@ -164,6 +175,23 @@ class SqlTests(unittest.TestCase):
         self.assertLess(workflow.index('-p 127.0.0.1:5433:5432'), workflow.index(step))
         self.assertLess(workflow.index(step), workflow.index('Remove TLS PostgreSQL fixture'))
         self.assertEqual(workflow.count('pip install PyYAML==6.0.3'), 1)
+
+    def test_workflow_triggers_on_every_operational_file_of_both_activation_trees(self):
+        # PyYAML reads the bare `on` key as boolean true.
+        workflow = yaml.safe_load((ROOT / '.github/workflows/hindsight-baseline.yaml').read_text())
+        triggers = workflow[True]['pull_request']['paths']
+        files = operational_files()
+        for tree in (ACL.ACL_TREE, TREE):
+            with self.subTest(tree=tree.name):
+                prefix = tree.relative_to(ROOT).as_posix() + '/'
+                self.assertIn(prefix + 'kustomization.yaml', files)
+                self.assertTrue(any(path.startswith(prefix) and path.endswith('.sql') for path in files))
+        self.assertNotIn(TREE.relative_to(ROOT).as_posix() + '/README.md', files)
+        self.assertEqual(uncovered(triggers, files), [])
+        # Dropping any one of them from the triggers is caught.
+        for path in files:
+            with self.subTest(dropped=path):
+                self.assertEqual(uncovered([entry for entry in triggers if entry != path], files), [path])
 
 
 class ActivationManifestTests(unittest.TestCase):
