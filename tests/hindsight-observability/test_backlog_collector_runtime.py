@@ -4,6 +4,7 @@ No test reaches a database, a provider or any address other than 127.0.0.1. Real
 function and server-side cancellation are proven natively before activation, not here.
 """
 import ast
+import contextlib
 import datetime
 import hashlib
 import http.client
@@ -119,13 +120,10 @@ def has_data(body):
 
 
 def get(port, path, method='GET'):
-    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=3)
-    try:
+    with contextlib.closing(http.client.HTTPConnection('127.0.0.1', port, timeout=3)) as connection:
         connection.request(method, path)
         response = connection.getresponse()
         return response.status, response.getheader('Content-Type'), response.read()
-    finally:
-        connection.close()
 
 
 class Fixture(unittest.TestCase):

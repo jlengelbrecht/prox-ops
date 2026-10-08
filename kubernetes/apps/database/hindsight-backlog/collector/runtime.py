@@ -88,8 +88,7 @@ def _exchange(child, script, out, err, end, clock):
                         pending = pending[os.write(stream.fileno(), pending[:CHUNK]):]
                     except BlockingIOError:
                         continue
-                    except OSError:
-                        # The child closed its input early; its exit status and stderr carry the outcome.
+                    except OSError:  # input closed early; the exit status and stderr carry the outcome
                         pending = pending[:0]
                     if not pending:
                         selector.unregister(stream)
@@ -218,8 +217,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
         self._reply(code, b'')
 
-    def log_message(self, format, *args):
-        # Request lines are client-controlled and never logged.
+    def log_message(self, format, *args):  # request lines are client-controlled and never logged
         pass
 
     def _reply(self, code, body, kind='text/plain; charset=utf-8'):
