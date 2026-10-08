@@ -189,12 +189,22 @@ class MainTests(unittest.TestCase):
 # The generated SQL's directory, file, function, or schema. The directory name is a whole path segment, so
 # unrelated resources that only share its prefix (hindsight-backlog-metrics-db-credentials) do not match.
 # Exactly three paths below it are exempt: its ks.yaml and the db-acl and role-limits trees, each ending there,
-# so traversal (db-acl/../app) and lookalikes (db-acl-x, role-limits-x, ks.yaml.bak) still match.
+# so traversal (db-acl/../app) and lookalikes (db-acl-x, role-limits-x, ks.yaml.bak) still match. The function's
+# own activation tree is not exempt here; DeploymentTests pins each of its references instead.
 SQL_REFERENCE = re.compile(r'(?<![\w-])hindsight-backlog(?![\w-]|/(?:ks\.ya?ml|db-acl|role-limits)(?![\w./-]))'
                            r'|runnable[-_]backlog|hindsight_metrics')
 BACKLOG = ROOT / 'kubernetes/apps/database/hindsight-backlog'
 ACL_TREE = BACKLOG / 'db-acl'
 LIMITS_TREE = BACKLOG / 'role-limits'
+FUNCTION_TREE = BACKLOG / 'app'
+# The only manifests that may reference the generated SQL, each exactly so: the function's own Flux entry path and
+# its tree's ConfigMap source, Job argument and projected key and path. Any other reference, in these files or
+# anywhere else under kubernetes/, still fails.
+ACTIVATION_REFERENCES = {
+    'kubernetes/apps/database/hindsight-backlog/ks.yaml': ['hindsight-backlog'],
+    'kubernetes/apps/database/hindsight-backlog/app/kustomization.yaml': ['runnable-backlog'],
+    'kubernetes/apps/database/hindsight-backlog/app/job.yaml': ['runnable-backlog'] * 3,
+}
 
 
 def sql_references(text):
@@ -204,11 +214,18 @@ def sql_references(text):
 
 
 class DeploymentTests(unittest.TestCase):
-    def test_no_kustomization_maps_the_generated_sql(self):
+    def test_only_the_function_activation_tree_maps_the_generated_sql(self):
         self.assertEqual(sorted(BACKLOG.glob('**/kustomization.y*ml')),
-                         [ACL_TREE / 'kustomization.yaml', LIMITS_TREE / 'kustomization.yaml'])
+                         [FUNCTION_TREE / 'kustomization.yaml', ACL_TREE / 'kustomization.yaml',
+                          LIMITS_TREE / 'kustomization.yaml'])
+        self.assertEqual(sorted(path.name for path in FUNCTION_TREE.iterdir()),
+                         ['job.yaml', 'kustomization.yaml', 'networkpolicy.yaml', 'runnable-backlog.sql'])
+        found = {}
         for path in (ROOT / 'kubernetes').rglob('*.y*ml'):
-            self.assertEqual(sql_references(path.read_text(errors='replace')), [], path)
+            references = sql_references(path.read_text(errors='replace'))
+            if references:
+                found[path.relative_to(ROOT).as_posix()] = references
+        self.assertEqual(found, ACTIVATION_REFERENCES)
         # The ACL tree, its SQL included, never names the function or its schema.
         for path in ACL_TREE.iterdir():
             self.assertEqual(sql_references(path.read_text()), [], path)
@@ -224,13 +241,15 @@ class DeploymentTests(unittest.TestCase):
                                 if path.is_file() and path.suffix != '.pyc'), ['collector.py', 'runtime.py'])
         self.assertNotEqual(sql_references('  path: ./kubernetes/apps/database/hindsight-backlog/collector\n'), [])
 
-    def test_backlog_flux_entries_apply_only_the_acl_and_role_limit_trees(self):
+    def test_backlog_flux_entries_apply_only_the_acl_role_limit_and_function_trees(self):
         ks = (BACKLOG / 'ks.yaml').read_text()
-        self.assertEqual(re.findall(r'(?m)^kind: (\S+)', ks), ['Kustomization', 'Kustomization'])
+        self.assertEqual(re.findall(r'(?m)^kind: (\S+)', ks), ['Kustomization'] * 3)
         self.assertEqual(re.findall(r'(?m)^  name: (.+)', ks),
-                         ['&app hindsight-backlog-db-acl', '&app hindsight-backlog-role-limits'])
+                         ['&app hindsight-backlog-db-acl', '&app hindsight-backlog-role-limits',
+                          '&app hindsight-backlog-function'])
         self.assertEqual(re.findall(r'(?m)^\s*path: (.+)', ks), ['./kubernetes/apps/database/hindsight-backlog/db-acl',
-                                                                 './kubernetes/apps/database/hindsight-backlog/role-limits'])
+                                                                 './kubernetes/apps/database/hindsight-backlog/role-limits',
+                                                                 './kubernetes/apps/database/hindsight-backlog/app'])
 
     def test_sql_reference_guard_flags_mappings_and_ignores_unrelated_names(self):
         mappings = {
