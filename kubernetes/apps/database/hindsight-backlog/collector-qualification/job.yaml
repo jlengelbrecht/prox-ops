@@ -1,0 +1,109 @@
+---
+# One real poll through the unchanged runtime, as the existing reader, before
+# the daemon exists: exit 0 only for result ok with a validated sample held.
+# Output is the poll's own fixed line (class, duration, counts) plus one
+# boolean; never rows, SQL, stderr or credentials. The name carries the code
+# digest and a revision, so new code is a new Job; nothing retries it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hindsight-backlog-collector-qualification-c09f6be038a0-r1
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 90
+  parallelism: 1
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight-backlog-collector-qualification
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Outlasts the runtime's 20 s child deadline plus its 1 s kill grace.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26
+        runAsGroup: 26
+        # Group-reads the 0440 Secret files; the core needs only regular files.
+        fsGroup: 26
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: qualify
+          # The running primary's image: psql 16 and the qualified Python 3.9.
+          image: ghcr.io/cloudnative-pg/postgresql@sha256:368c1a13935ff8850d76cfb427d5c29877a74de0531e198a7a683d4cfb97260b
+          command:
+            - python3
+            - -I
+            - -S
+            - -c
+            - |
+              import importlib.util, sys
+              ok = False
+              try:
+                  spec = importlib.util.spec_from_file_location('hindsight_backlog_runtime', '/code/runtime.py')
+                  runtime = importlib.util.module_from_spec(spec)
+                  spec.loader.exec_module(runtime)
+                  collector = runtime.Collector(runtime.version())
+                  ok = collector.poll() == 'ok' and collector.status.valid and collector.snapshot.with_data is not None
+              except BaseException:
+                  sys.stderr.write('qualification adapter failed\n')
+              sys.stdout.write('qualification ok=%s\n' % bool(ok))
+              sys.exit(0 if ok else 1)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: code
+              mountPath: /code
+              readOnly: true
+            - name: credentials
+              mountPath: /secrets
+              readOnly: true
+            - name: ca
+              mountPath: /tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: code
+          configMap:
+            name: hindsight-backlog-collector-code-c09f6be038a0
+            items:
+              - key: collector.py
+                path: collector.py
+              - key: runtime.py
+                path: runtime.py
+        # The reader's existing Secret in this namespace.
+        - name: credentials
+          secret:
+            secretName: hindsight-backlog-metrics-db-credentials
+            defaultMode: 288  # 0440
+            items:
+              - key: username
+                path: username
+              - key: password
+                path: password
+        # Only the public CA certificate; the Secret's ca.key is never projected.
+        - name: ca
+          secret:
+            secretName: postgres-ca
+            defaultMode: 288  # 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
