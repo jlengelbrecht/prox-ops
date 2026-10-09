@@ -1,0 +1,106 @@
+---
+# Placement proof for the CODEX_HOME claim, metadata only: one pod on the API
+# pod's node mounts the API's own RWO claim read-only, at the API's path and
+# as the API's UID/GID, and prints the auth.json inode metadata. It never
+# opens the file. The output is compared out of band with the same stat taken
+# inside the API pod; matching device and inode show the same filesystem on
+# the same node, nothing about sharing the OAuth session. The command replaces
+# the image entrypoint, so no API, provider or migration code starts; -S keeps
+# site-packages (and any .pth hooks) out. Nothing retries it: a new proof is a
+# new name.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hindsight-worker-auth-placement-v1
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 60
+  parallelism: 1
+  completions: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight-worker-auth-placement
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 15
+      # The API's UID/GID. No fsGroup: a read-only mount gets no ownership change.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      # RWO: the claim can only attach where the API already runs. Without a
+      # running API pod the Job stays Pending and fails at its deadline.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: hindsight
+                  app.kubernetes.io/instance: hindsight
+                  app.kubernetes.io/component: api
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: stat
+          # The running API image; already on the API's node.
+          image: ghcr.io/vectorize-io/hindsight-api:0.9.2@sha256:7b14a1f4062252992d0176758753615e0a2071d9a269995be007be223ab01812
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -I
+            - -S
+            - -c
+            - |
+              import json, os, stat
+              home = '/home/hindsight/codex-auth'
+              fields, result = {}, 'error'
+              try:
+                  if not os.path.ismount(home):
+                      result = 'not-mounted'
+                  else:
+                      info = os.lstat(home + '/auth.json')
+                      if not stat.S_ISREG(info.st_mode):
+                          result = 'not-regular'
+                      elif not os.access(home + '/auth.json', os.R_OK):
+                          result = 'not-readable'
+                      elif not os.statvfs(home).f_flag & os.ST_RDONLY:
+                          result = 'mount-writable'
+                      else:
+                          result = 'ok'
+                          fields = {'device': info.st_dev, 'inode': info.st_ino, 'uid': info.st_uid,
+                                    'gid': info.st_gid, 'mode': '%04o' % stat.S_IMODE(info.st_mode),
+                                    'readOnly': True}
+              except FileNotFoundError:
+                  result = 'missing'
+              except BaseException:
+                  result = 'error'
+              print(json.dumps(dict(fields, result=result), sort_keys=True, separators=(',', ':')))
+              raise SystemExit(0 if result == 'ok' else 1)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: codex-auth
+              mountPath: /home/hindsight/codex-auth
+              readOnly: true
+      volumes:
+        # The API's own claim, whole directory, read-only.
+        - name: codex-auth
+          persistentVolumeClaim:
+            claimName: hindsight-codex-auth
+            readOnly: true
