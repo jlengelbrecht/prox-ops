@@ -1,0 +1,11 @@
+---
+# Not applied: there is no ks.yaml beside this directory and
+# kubernetes/apps/observability/kustomization.yaml does not list it. The
+# namespace is set here because no ks.yaml supplies a targetNamespace.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: observability
+resources:
+  - ./helmrelease.yaml
+  - ./networkpolicy.yaml
+  - ./ocirepository.yaml

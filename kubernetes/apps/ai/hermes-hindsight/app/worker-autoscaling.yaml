@@ -1,0 +1,47 @@
+---
+# Bounded scale-up candidate for the dedicated worker, deliberately not listed
+# in kustomization.yaml; its adapter (observability/prometheus-adapter) is not
+# wired into Flux either. A partial candidate, not a delivery claim.
+# Applied, it would keep one to two replicas, adding at most one pod a minute
+# while hindsight_worker_runnable (a count of runnable root tasks, not a rate
+# or SLO) exceeds one per worker. An unknown backlog is no sample rather than
+# zero; the controller should then report ScalingActive=False and hold, which
+# still has to be observed on a real adapter and controller. Scale-down stays
+# disabled until qualified.
+# Activation needs all of: a reliable live collector; the API's in-process
+# worker disabled and API/worker database and LLM caps rebalanced; the owner's
+# answer on the aggregate ceiling of 3 (maxReplicas 2 is not that approval);
+# auth-file sharing, database budget, drain recovery and bank fairness
+# qualified on real pods; and, in the same change, the replicas: 0 patch in
+# hindsight.yaml replaced by a `remove` of /spec/replicas. The controller does
+# not scale a target held at zero, and any replicas left in the rendered spec
+# would be reset on every reconcile; only the HPA may own the count.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hindsight-worker
+  namespace: ai
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: hindsight-worker
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: hindsight_worker_runnable
+        target:
+          type: AverageValue
+          averageValue: "1"
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleDown:
+      selectPolicy: Disabled
