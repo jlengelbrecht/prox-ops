@@ -1,0 +1,17 @@
+---
+# The collector's code, and nothing else: ks.yaml, app/ and the activation
+# trees beside it are applied by their own Flux entries. The name carries the
+# first 12 hex of sha256(collector.py + NUL + runtime.py), so changed code is a
+# new ConfigMap, a new qualification Job and a new daemon rollout; nothing
+# edits the published one in place.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: hindsight-backlog-collector-code-c09f6be038a0
+    files:
+      - collector/collector.py
+      - collector/runtime.py
+generatorOptions:
+  disableNameSuffixHash: true
+  immutable: true
+  annotations: {kustomize.toolkit.fluxcd.io/prune: disabled} # a rescheduled daemon still mounts the previous code

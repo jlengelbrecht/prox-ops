@@ -1,0 +1,113 @@
+---
+# The unchanged runtime.py as its own entry point: one replica polling every
+# 60 s and serving pre-rendered bytes on 9810, so a scrape never reaches the
+# database. Recreate keeps an old and a new pod from polling at once against
+# the reader's two-connection limit. Image, identity and mounts match the
+# qualification Job that must complete first.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hindsight-backlog-collector
+  labels:
+    app.kubernetes.io/name: hindsight-backlog-collector
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight-backlog-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hindsight-backlog-collector
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The runtime drains for at most its 20 s child deadline plus 2 s.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26
+        runAsGroup: 26
+        fsGroup: 26
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          image: ghcr.io/cloudnative-pg/postgresql@sha256:368c1a13935ff8850d76cfb427d5c29877a74de0531e198a7a683d4cfb97260b
+          command: [python3, -I, -S, /code/runtime.py]
+          ports:
+            - name: metrics
+              containerPort: 9810
+              protocol: TCP
+          # /healthz reports only that the poll loop still ticks, never
+          # database health, so a failing database does not restart the pod.
+          startupProbe:
+            httpGet: {path: /healthz, port: metrics}
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet: {path: /healthz, port: metrics}
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: metrics}
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: code
+              mountPath: /code
+              readOnly: true
+            - name: credentials
+              mountPath: /secrets
+              readOnly: true
+            - name: ca
+              mountPath: /tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: code
+          configMap:
+            name: hindsight-backlog-collector-code-c09f6be038a0
+            items:
+              - key: collector.py
+                path: collector.py
+              - key: runtime.py
+                path: runtime.py
+        - name: credentials
+          secret:
+            secretName: hindsight-backlog-metrics-db-credentials
+            defaultMode: 288  # 0440
+            items:
+              - key: username
+                path: username
+              - key: password
+                path: password
+        - name: ca
+          secret:
+            secretName: postgres-ca
+            defaultMode: 288  # 0440
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi

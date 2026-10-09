@@ -1,0 +1,21 @@
+---
+# honorLabels false: the scrape's own namespace, service, job and instance
+# labels win over anything the exposition carries. No relabelling adds labels.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: hindsight-backlog-collector
+  labels:
+    prometheus: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: [database]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight-backlog-collector
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 60s
+      scrapeTimeout: 10s
+      honorLabels: false

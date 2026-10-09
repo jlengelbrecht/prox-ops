@@ -1,0 +1,34 @@
+---
+# The qualification Job gets no ingress and two egress paths: cluster DNS and
+# the CNPG instances on 5432, with the selectors the postgres-cluster policy
+# already uses. That policy admits 5432 from namespace database.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-backlog-collector-qualification
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight-backlog-collector-qualification
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
