@@ -1,0 +1,28 @@
+---
+# One-shot CODEX_HOME placement proof (auth-placement/job.yaml), applied only
+# after the Hindsight app tree. The AI root puts this CR in `ai`, beside
+# hermes-hindsight. The timeout outlasts the Job's 60 s deadline, so Flux
+# reports the Job's own outcome.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app hindsight-worker-auth-placement
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: hermes-hindsight
+      namespace: ai
+  path: ./kubernetes/apps/ai/hermes-hindsight/auth-placement
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 1h
+  retryInterval: 2m
+  timeout: 2m

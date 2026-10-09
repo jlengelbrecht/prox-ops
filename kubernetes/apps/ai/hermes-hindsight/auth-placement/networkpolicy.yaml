@@ -1,0 +1,21 @@
+---
+# The placement Job needs no network. enableDefaultDeny puts both directions
+# in default deny, and each direction's single empty rule admits no peer (the
+# same empty-rule form the worker policy uses for ingress). The empty rules
+# also keep the spec explicit for both directions. Net: no peer, DNS,
+# Kubernetes API or provider traffic either way.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: hindsight-worker-auth-placement
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: hindsight-worker-auth-placement
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  ingress:
+    - {}
+  egress:
+    - {}
