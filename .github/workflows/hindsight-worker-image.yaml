@@ -1,0 +1,62 @@
+name: Hindsight worker image
+
+on:
+  pull_request:
+    paths:
+      - services/hindsight-worker/**
+      - tests/hindsight-observability/test_worker_image_patch.py
+      - .github/workflows/hindsight-worker-image.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Test worker patch
+        run: python3 -m unittest discover -s tests/hindsight-observability -p test_worker_image_patch.py -v
+      - name: Build without publication
+        run: docker build -t hindsight-worker:verification services/hindsight-worker
+
+  # Manual only; a separate reviewed GitOps change pins the published digest.
+  publish:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: hindsight-worker-publication
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          version: v0.24.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish commit-tagged image
+        run: |
+          set -euo pipefail
+          image="ghcr.io/jlengelbrecht/hindsight-worker"
+          # Rebuilds are not byte-identical; a commit tag is written once.
+          if docker buildx imagetools inspect "${image}:${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "::error::${image}:${GITHUB_SHA} already exists"
+            exit 1
+          fi
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+            --metadata-file /tmp/hindsight-worker-image.json \
+            --tag "${image}:${GITHUB_SHA}" --push services/hindsight-worker
+          digest="$(jq -r '."containerimage.digest"' /tmp/hindsight-worker-image.json)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "Published \`${image}:${GITHUB_SHA}@${digest}\`; nothing deploys it." >> "$GITHUB_STEP_SUMMARY"
