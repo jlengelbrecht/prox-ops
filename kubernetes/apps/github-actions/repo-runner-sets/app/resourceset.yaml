@@ -19,6 +19,10 @@
 #   minRunners  optional, default 0
 #   maxRunners  optional, default 3
 #   extraFQDNs  optional list of extra hostnames reachable on TCP 443
+#   runnerImage optional runner container image; default is the stock
+#               ghcr.io/actions/actions-runner. When set, the pod also gets
+#               imagePullSecrets ghcr-runner-images (ghcr-pull-secret.yaml) so
+#               private GHCR images pull. Pin by digest.
 #
 # The existing prox-ops scale set (../../gha-runner-scale-set) is managed
 # separately: it carries cluster RBAC and anti-affinity this template does not.
@@ -66,6 +70,9 @@ spec:
       repoUrl: https://github.com/jlengelbrecht/ai-control-plane
       minRunners: 0
       maxRunners: 3
+      # Adds the C toolchain that cgo and `go test -race` need. Built by the
+      # private runner-images repository and pinned by digest.
+      runnerImage: ghcr.io/jlengelbrecht/runner-build@sha256:16eeac07ccd6767d5233d21c09a2cf7daabeccca03041692913c561279df368f
       # Base-image and toolchain registries used by ai-control-plane builds.
       # registry-1.docker.io redirects blob downloads to
       # production.cloudfront.docker.com (seen failing BuildKit pulls of
@@ -174,6 +181,12 @@ spec:
           spec:
             serviceAccountName: gha-<< inputs.name >>-runner
             automountServiceAccountToken: false
+            <<- if get inputs "runnerImage" >>
+            # Private runner image; the pull secret is not a dependsOn so a
+            # missing credential only affects the entries that need it.
+            imagePullSecrets:
+              - name: ghcr-runner-images
+            <<- end >>
             securityContext:
               runAsNonRoot: true
               seccompProfile:
@@ -261,8 +274,12 @@ spec:
                     mountPath: /home/user/.local/share/buildkit
             containers:
               - name: runner
+                <<- if get inputs "runnerImage" >>
+                image: << get inputs "runnerImage" >>
+                <<- else >>
                 # renovate: datasource=docker depName=ghcr.io/actions/actions-runner
                 image: ghcr.io/actions/actions-runner:2.338.0
+                <<- end >>
                 imagePullPolicy: IfNotPresent
                 command: ["/home/runner/run.sh"]
                 env:
