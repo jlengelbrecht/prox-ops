@@ -35,6 +35,27 @@ spec:
           - name: log
             configBlock: |-
               class error
+      # DNS-over-TLS for the GitHub Actions service zone only
+      # The UDM intercepts all port-53 traffic and intermittently answers
+      # launch.actions.githubusercontent.com with CNAME github.com, which breaks
+      # runner TLS (certificate name mismatch). DoT on 853 bypasses the
+      # interception. Remove once the UDM answers correctly again.
+      - zones:
+          - zone: actions.githubusercontent.com
+            scheme: dns://
+        port: 53
+        plugins:
+          - name: errors
+          - name: forward
+            parameters: . tls://1.1.1.1 tls://1.0.0.1
+            configBlock: |-
+              tls_servername cloudflare-dns.com
+              health_check 5s
+          - name: cache
+            parameters: 300
+          - name: log
+            configBlock: |-
+              class error
       # Default zone for all other queries
       - zones:
           - zone: .
