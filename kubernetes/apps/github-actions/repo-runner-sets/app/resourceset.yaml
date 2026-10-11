@@ -85,6 +85,21 @@ spec:
         - go.dev
         - dl.google.com
         - nodejs.org
+    - name: runner-images
+      repoUrl: https://github.com/jlengelbrecht/runner-images
+      minRunners: 0
+      maxRunners: 2
+      extraFQDNs:
+        # Ubuntu apt over HTTPS for image builds (the Dockerfiles rewrite apt
+        # sources to https), plus the git-core PPA the actions-runner base ships.
+        - archive.ubuntu.com
+        - security.ubuntu.com
+        - ppa.launchpadcontent.net
+        # Keyless image signing: certificate issuance, transparency log and
+        # the Sigstore TUF root.
+        - fulcio.sigstore.dev
+        - rekor.sigstore.dev
+        - tuf-repo-cdn.sigstore.dev
     # Adding a repository is one entry. Only name and repoUrl are required:
     # - name: example-repo
     #   repoUrl: https://github.com/jlengelbrecht/example-repo
