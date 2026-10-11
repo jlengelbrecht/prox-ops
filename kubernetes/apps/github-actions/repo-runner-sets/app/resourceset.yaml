@@ -67,13 +67,18 @@ spec:
       minRunners: 0
       maxRunners: 3
       # Base-image and toolchain registries used by ai-control-plane builds.
-      # Docker Hub can also redirect blob downloads to
-      # docker-images-prod.*.r2.cloudflarestorage.com; add that host only if a
-      # pull is seen failing there.
+      # registry-1.docker.io redirects blob downloads to
+      # production.cloudfront.docker.com (seen failing BuildKit pulls of
+      # docker/dockerfile:1) and to Docker Hub's own Cloudflare R2 bucket host.
+      # Both are allowed by exact name: a wildcard on the R2 domain or the
+      # bucket prefix would admit any R2 bucket, since anyone can create one
+      # with the same bucket name in their own account.
       extraFQDNs:
         - registry-1.docker.io
         - auth.docker.io
         - production.cloudflare.docker.com
+        - production.cloudfront.docker.com
+        - docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
         - gcr.io
         - pypi.org
         - files.pythonhosted.org
