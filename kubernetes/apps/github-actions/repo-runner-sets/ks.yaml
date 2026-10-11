@@ -1,0 +1,25 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: repo-runner-sets
+  namespace: flux-system
+spec:
+  dependsOn:
+    # No namespace: the github-actions tree's namespace transform places this
+    # Kustomization and the controller's in the same namespace, so the default
+    # (this CR's own namespace) resolves to the controller CR wherever it lands.
+    # Mirrors gha-runner-scale-set/ks.yaml.
+    - name: gha-runner-scale-set-controller
+    - name: cluster-secret-store
+      namespace: flux-system
+  interval: 1h
+  path: ./kubernetes/apps/github-actions/repo-runner-sets/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: github-actions
+  wait: true
+  timeout: 5m
