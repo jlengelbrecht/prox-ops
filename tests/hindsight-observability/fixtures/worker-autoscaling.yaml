@@ -1,0 +1,94 @@
+# Collector scrapes for the hindsight_worker_runnable rule, run through native
+# promtool by test_worker_autoscaling.py. Each case starts from
+# `healthy`, one up, valid, fresh scrape with the `source` labels, then may
+# `set` values, `drop` or relabel (`labels`) series, add `extra` series, or add
+# a healthy `peer_instance` scrape with `peer` overrides. Values are promtool
+# `a+bxN` at `interval`; time() is eval seconds. `expect`: [] is no sample, not 0.
+interval: 1m
+eval_time: 10m
+peer_instance: "10.42.0.11:9464"
+source:
+  namespace: database
+  service: hindsight-backlog-collector
+  job: hindsight-backlog-collector
+  instance: "10.42.0.10:9464"
+healthy:
+  hindsight_backlog_runnable: 3+0x10
+  hindsight_backlog_sample_valid: 1+0x10
+  hindsight_backlog_capacity_exceeded: 0+0x10
+  hindsight_backlog_observed_timestamp_seconds: 0+60x10
+  up: 1+0x10
+cases:
+  - name: fresh_positive
+    expect: [3]
+  - name: known_zero
+    set: {hindsight_backlog_runnable: 0+0x10}
+    expect: [0]
+  - name: age_inside_bound # observed 179 s before eval
+    set: {hindsight_backlog_observed_timestamp_seconds: -179+60x10}
+    expect: [3]
+  - name: age_at_bound # 180 s is already past the last-good bound
+    set: {hindsight_backlog_observed_timestamp_seconds: -180+60x10}
+    expect: []
+  - name: stale_timestamp # scrapes continue, the observation froze at 0
+    set: {hindsight_backlog_observed_timestamp_seconds: 0+0x10}
+    expect: []
+  - name: clock_future
+    set: {hindsight_backlog_observed_timestamp_seconds: 60+60x10}
+    expect: []
+  - name: missing_timestamp
+    drop: [hindsight_backlog_observed_timestamp_seconds]
+    expect: []
+  - name: no_runnable_sample
+    drop: [hindsight_backlog_runnable]
+    expect: []
+  - name: sample_invalid
+    set: {hindsight_backlog_sample_valid: 0+0x10}
+    expect: []
+  - name: capacity_exceeded
+    set: {hindsight_backlog_capacity_exceeded: 1+0x10}
+    expect: []
+  - name: scrape_down
+    set: {up: 0+0x10}
+    expect: []
+  - name: negative_count
+    set: {hindsight_backlog_runnable: -1+0x10}
+    expect: []
+  - name: collector_stopped # last scrape at 7m: inside the lookback, observed 180 s ago
+    set:
+      hindsight_backlog_runnable: 3+0x7
+      hindsight_backlog_sample_valid: 1+0x7
+      hindsight_backlog_capacity_exceeded: 0+0x7
+      hindsight_backlog_observed_timestamp_seconds: 0+60x7
+      up: 1+0x7
+    expect: []
+  - name: source_absent
+    drop: [hindsight_backlog_runnable, hindsight_backlog_sample_valid, hindsight_backlog_capacity_exceeded,
+           hindsight_backlog_observed_timestamp_seconds, up]
+    expect: []
+  - name: wrong_namespace
+    labels: {namespace: ai}
+    expect: []
+  - name: wrong_service
+    labels: {service: hindsight-api}
+    expect: []
+  - name: guard_from_another_scrape # validity reported by a different target does not vouch for this one
+    drop: [hindsight_backlog_sample_valid]
+    extra:
+      - {metric: hindsight_backlog_sample_valid, labels: {instance: "10.42.0.11:9464"}, values: 1+0x10}
+    expect: []
+  - name: unrelated_series_ignored
+    extra:
+      - {metric: hindsight_backlog_runnable, labels: {namespace: ai}, values: 99+0x10}
+      - {metric: hindsight_backlog_runnable, labels: {service: other}, values: 99+0x10}
+    expect: [3]
+  - name: two_collector_scrapes # the same global count from two targets is not added up
+    peer: {}
+    expect: [3]
+  - name: divergent_collectors # valid targets disagree: max keeps the higher, scale-up biased
+    set: {hindsight_backlog_runnable: 2+0x10}
+    peer: {hindsight_backlog_runnable: 5+0x10}
+    expect: [5]
+  - name: invalid_peer_dropped_before_max # per-target guards remove the invalid 9
+    peer: {hindsight_backlog_runnable: 9+0x10, hindsight_backlog_sample_valid: 0+0x10}
+    expect: [3]
