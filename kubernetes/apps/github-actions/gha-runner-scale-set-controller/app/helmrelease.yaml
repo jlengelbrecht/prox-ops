@@ -9,11 +9,14 @@ spec:
     kind: OCIRepository
     name: gha-runner-scale-set-controller
   interval: 1h
+  # Flux defaults upgrade.crds to Skip; chart bumps must also roll the ARC CRDs forward
   install:
+    crds: CreateReplace
     remediation:
       retries: 3
   upgrade:
     cleanupOnFail: true
+    crds: CreateReplace
     remediation:
       retries: 3
   values:
