@@ -75,6 +75,8 @@ jobs:
             mkdir -p ~/.local/bin
             mv kubectl ~/.local/bin/
             echo "$HOME/.local/bin" >> $GITHUB_PATH
+            # $GITHUB_PATH only applies to later steps
+            export PATH="$HOME/.local/bin:$PATH"
           fi
           kubectl version --client
 
@@ -120,6 +122,8 @@ jobs:
             mkdir -p ~/.local/bin
             mv terraform ~/.local/bin/
             echo "$HOME/.local/bin" >> $GITHUB_PATH
+            # $GITHUB_PATH only applies to later steps
+            export PATH="$HOME/.local/bin:$PATH"
             rm terraform_${TERRAFORM_VERSION}_linux_amd64.zip terraform_${TERRAFORM_VERSION}_SHA256SUMS
           fi
           terraform version
