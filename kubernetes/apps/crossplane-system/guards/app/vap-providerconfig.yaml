@@ -1,0 +1,103 @@
+---
+# V1: no ClusterProviderConfig and no legacy cluster-scoped ProviderConfig, ever.
+# A ClusterProviderConfig is looked up cluster-wide and its secretRef may name
+# any namespace, so one object would let an MR in any namespace act as that
+# identity. Every policy here carries prune: disabled, so removing it from Git
+# does not remove it from the cluster; breaking glass means deleting the live
+# policy and binding by hand, then removing them in a reviewed PR.
+#
+# Objects already being deleted are skipped so a finalizer can always be
+# removed.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: crossplane-azuread-v1-no-cluster-providerconfig
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["clusterproviderconfigs"]
+        operations: ["CREATE", "UPDATE"]
+      - apiGroups: ["azuread.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["providerconfigs"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: not-being-deleted
+      expression: "!has(object.metadata.deletionTimestamp)"
+  validations:
+    - expression: "false"
+      message: >-
+        ClusterProviderConfig and legacy azuread.upbound.io ProviderConfig are
+        not allowed. Use a namespaced ProviderConfig (azuread.m.upbound.io) in
+        the identity namespace.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: crossplane-azuread-v1-no-cluster-providerconfig
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: crossplane-azuread-v1-no-cluster-providerconfig
+  validationActions: ["Deny"]
+---
+# V5: a namespaced ProviderConfig carries no identifier and reads its credential
+# only from a Secret in its own namespace (checked here too, so a provider
+# upgrade that stops forcing the namespace cannot open a cross-identity read). The provider takes tenantId and
+# clientId from that Secret's JSON; spec.tenantID / spec.clientID would override
+# it and put an identifier in Git. Environment and Filesystem sources would let
+# the pod environment steer authentication.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: crossplane-azuread-v5-providerconfig
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["providerconfigs"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: not-being-deleted
+      expression: "!has(object.metadata.deletionTimestamp)"
+  validations:
+    - expression: >-
+        request.namespace in ['identity-people', 'identity-apps', 'identity-ca']
+      message: "A ProviderConfig may exist only in identity-people, identity-apps or identity-ca."
+    - expression: >-
+        has(object.spec.credentials) &&
+        has(object.spec.credentials.source) &&
+        object.spec.credentials.source == 'Secret' &&
+        !has(object.spec.credentials.env) &&
+        !has(object.spec.credentials.fs)
+      message: "credentials.source must be Secret, with no env or fs block."
+    - expression: >-
+        !has(object.spec.tenantID) && !has(object.spec.clientID)
+      message: "tenantID and clientID must not be set; the provider reads them from the credential Secret."
+    - expression: >-
+        !has(object.spec.msiEndpoint) && !has(object.spec.oidcTokenFilePath)
+      message: "msiEndpoint and oidcTokenFilePath must not be set."
+    - expression: >-
+        !has(object.spec.credentials.secretRef) ||
+        !has(object.spec.credentials.secretRef.namespace) ||
+        object.spec.credentials.secretRef.namespace == request.namespace
+      message: "credentials.secretRef.namespace must be omitted or equal the ProviderConfig's own namespace."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: crossplane-azuread-v5-providerconfig
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: crossplane-azuread-v5-providerconfig
+  validationActions: ["Deny"]
