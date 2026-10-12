@@ -1,0 +1,181 @@
+---
+# Per-kind rules. Same conventions as ./vap-managed-resources.yaml: the
+# provider's own requests are skipped, an UPDATE that leaves spec unchanged is
+# skipped, failurePolicy is Fail.
+
+# V4: guest invitations only. No member-type invitation, no extra recipient for
+# the invitation mail, and the invitation fields never change after creation
+# (an Invitation is Create + Observe; a rename is a manual Graph change).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: crossplane-azuread-v4-invitations
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["invitations.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["invitations"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: not-the-provider
+      expression: "request.userInfo.username != 'system:serviceaccount:crossplane-system:provider-azuread'"
+    - name: spec-changed
+      expression: "request.operation == 'CREATE' || object.spec != oldObject.spec"
+  validations:
+    - expression: >-
+        (!has(object.spec.forProvider) || !has(object.spec.forProvider.userType) ||
+        object.spec.forProvider.userType == 'Guest') &&
+        (!has(object.spec.initProvider) || !has(object.spec.initProvider.userType) ||
+        object.spec.initProvider.userType == 'Guest')
+      message: "userType must be absent or Guest."
+    - expression: >-
+        (!has(object.spec.forProvider) || !has(object.spec.forProvider.message) ||
+        !has(object.spec.forProvider.message.additionalRecipients)) &&
+        (!has(object.spec.initProvider) || !has(object.spec.initProvider.message) ||
+        !has(object.spec.initProvider.message.additionalRecipients))
+      message: "message.additionalRecipients is not allowed."
+    - expression: >-
+        request.operation == 'CREATE' ||
+        (has(object.spec.forProvider) == has(oldObject.spec.forProvider) &&
+        (!has(object.spec.forProvider) || object.spec.forProvider == oldObject.spec.forProvider) &&
+        has(object.spec.initProvider) == has(oldObject.spec.initProvider) &&
+        (!has(object.spec.initProvider) || object.spec.initProvider == oldObject.spec.initProvider))
+      message: "An Invitation's forProvider and initProvider cannot change after creation."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: crossplane-azuread-v4-invitations
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: crossplane-azuread-v4-invitations
+  validationActions: ["Deny"]
+---
+# V6: no application passwords. The Application kind publishes password values
+# as connection details.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: crossplane-azuread-v6-applications
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["applications.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["applications"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: not-the-provider
+      expression: "request.userInfo.username != 'system:serviceaccount:crossplane-system:provider-azuread'"
+    - name: spec-changed
+      expression: "request.operation == 'CREATE' || object.spec != oldObject.spec"
+  validations:
+    - expression: >-
+        (!has(object.spec.forProvider) || !has(object.spec.forProvider.password)) &&
+        (!has(object.spec.initProvider) || !has(object.spec.initProvider.password))
+      message: "Application passwords (client secrets) are not allowed."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: crossplane-azuread-v6-applications
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: crossplane-azuread-v6-applications
+  validationActions: ["Deny"]
+---
+# V7: Conditional Access is Observe-only unless the identity-ca namespace
+# carries identity.homelab0.org/ca-write=enabled, a label set only in this
+# repository. While writable, every policy must exclude the break-glass group
+# (breakglass-group-id in identity-system/identity-guard-params), start in
+# report-only mode, and needs a review annotation before it is enforced.
+# Until that ConfigMap exists every request is denied.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: crossplane-azuread-v7-conditional-access
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["conditionalaccess.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["accesspolicies"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: not-the-provider
+      expression: "request.userInfo.username != 'system:serviceaccount:crossplane-system:provider-azuread'"
+    - name: spec-changed
+      expression: "request.operation == 'CREATE' || object.spec != oldObject.spec"
+  variables:
+    - name: policies
+      expression: "has(object.spec.managementPolicies) ? object.spec.managementPolicies : ['*']"
+    - name: observeOnly
+      expression: "variables.policies.size() > 0 && variables.policies.all(p, p == 'Observe')"
+    # namespaceObject is read here, never in matchConditions, where it is null.
+    - name: caWrite
+      expression: >-
+        has(namespaceObject.metadata.labels) &&
+        'identity.homelab0.org/ca-write' in namespaceObject.metadata.labels &&
+        namespaceObject.metadata.labels['identity.homelab0.org/ca-write'] == 'enabled'
+    - name: breakGlassGroup
+      expression: >-
+        has(params.data) && 'breakglass-group-id' in params.data
+        ? params.data['breakglass-group-id'] : ''
+    - name: excludedGroups
+      expression: >-
+        has(object.spec.forProvider) &&
+        has(object.spec.forProvider.conditions) &&
+        has(object.spec.forProvider.conditions.users) &&
+        has(object.spec.forProvider.conditions.users.excludedGroups)
+        ? object.spec.forProvider.conditions.users.excludedGroups : []
+    - name: state
+      expression: >-
+        has(object.spec.forProvider) && has(object.spec.forProvider.state)
+        ? object.spec.forProvider.state : ''
+  validations:
+    - expression: "variables.observeOnly || variables.caWrite"
+      message: >-
+        Conditional Access policies are Observe-only unless the namespace is
+        labelled identity.homelab0.org/ca-write=enabled.
+    - expression: >-
+        variables.observeOnly ||
+        (variables.breakGlassGroup != '' && variables.breakGlassGroup in variables.excludedGroups)
+      message: "A writable policy must list the break-glass group in forProvider.conditions.users.excludedGroups."
+    - expression: >-
+        variables.observeOnly || request.operation != 'CREATE' ||
+        variables.state == 'enabledForReportingButNotEnforced'
+      message: "A writable policy must be created with forProvider.state enabledForReportingButNotEnforced."
+    - expression: >-
+        variables.observeOnly || variables.state != 'enabled' ||
+        (has(object.metadata.annotations) &&
+        'identity.homelab0.org/report-only-reviewed' in object.metadata.annotations)
+      message: "Enforcing a policy (state enabled) requires the identity.homelab0.org/report-only-reviewed annotation."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: crossplane-azuread-v7-conditional-access
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: crossplane-azuread-v7-conditional-access
+  validationActions: ["Deny"]
+  paramRef:
+    name: identity-guard-params
+    namespace: identity-system
+    parameterNotFoundAction: Deny

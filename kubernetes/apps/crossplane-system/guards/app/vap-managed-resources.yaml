@@ -1,0 +1,271 @@
+---
+# Shared shape of the managed resource policies below:
+#
+# - They match the five activated kinds only.
+# - Requests from the provider's own ServiceAccount are skipped. The provider
+#   writes finalizers, the external-name annotation after a create, and
+#   resolved references; it already holds the Graph credential, so these
+#   policies guard what arrives from Git, not the provider.
+# - V2 skips an UPDATE that leaves spec unchanged, so a finalizer or annotation
+#   change can never strand an MR. V8 does not, because it guards an
+#   annotation.
+# - CEL reads managementPolicies with the CRD default (["*"]) when the field is
+#   absent, so a defaulted object is denied like an explicit "*".
+# - failurePolicy Fail on every policy: an evaluation error denies.
+
+# V2: every MR names a namespaced ProviderConfig, never allows Delete, "*" or
+# LateInitialize, writes no connection secret, and an Observe-only MR carries an
+# external name.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: crossplane-azuread-v2-managed-resources
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["invitations.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["invitations"]
+        operations: ["CREATE", "UPDATE"]
+      - apiGroups: ["groups.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["groups"]
+        operations: ["CREATE", "UPDATE"]
+      - apiGroups: ["applications.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["applications"]
+        operations: ["CREATE", "UPDATE"]
+      - apiGroups: ["serviceprincipals.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["principals"]
+        operations: ["CREATE", "UPDATE"]
+      - apiGroups: ["conditionalaccess.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["accesspolicies"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: not-the-provider
+      expression: "request.userInfo.username != 'system:serviceaccount:crossplane-system:provider-azuread'"
+    - name: spec-changed
+      expression: "request.operation == 'CREATE' || object.spec != oldObject.spec"
+  variables:
+    - name: policies
+      expression: "has(object.spec.managementPolicies) ? object.spec.managementPolicies : ['*']"
+    - name: observeOnly
+      expression: "variables.policies.size() > 0 && variables.policies.all(p, p == 'Observe')"
+    - name: externalName
+      expression: >-
+        has(object.metadata.annotations) &&
+        'crossplane.io/external-name' in object.metadata.annotations
+        ? object.metadata.annotations['crossplane.io/external-name'] : ''
+  validations:
+    - expression: >-
+        variables.policies.size() > 0 &&
+        variables.policies.all(p, !(p in ['*', 'Delete', 'LateInitialize']))
+      message: >-
+        spec.managementPolicies must be set and must not contain '*', 'Delete'
+        or 'LateInitialize' (an absent field defaults to '*').
+    - expression: >-
+        has(object.spec.providerConfigRef) &&
+        object.spec.providerConfigRef.kind == 'ProviderConfig'
+      message: >-
+        spec.providerConfigRef must name a namespaced ProviderConfig
+        (the CRD default is ClusterProviderConfig/default).
+    - expression: "!has(object.spec.writeConnectionSecretToRef)"
+      message: "spec.writeConnectionSecretToRef is not allowed."
+    - expression: "!variables.observeOnly || variables.externalName != ''"
+      message: "An Observe-only managed resource must carry the crossplane.io/external-name annotation."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: crossplane-azuread-v2-managed-resources
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: crossplane-azuread-v2-managed-resources
+  validationActions: ["Deny"]
+---
+# V3: each kind lives only in its identity's namespace, so it can only resolve
+# that identity's ProviderConfig. Namespace is immutable, so CREATE is enough.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: crossplane-azuread-v3-namespaces
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["invitations.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["invitations"]
+        operations: ["CREATE"]
+      - apiGroups: ["groups.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["groups"]
+        operations: ["CREATE"]
+      - apiGroups: ["applications.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["applications"]
+        operations: ["CREATE"]
+      - apiGroups: ["serviceprincipals.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["principals"]
+        operations: ["CREATE"]
+      - apiGroups: ["conditionalaccess.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["accesspolicies"]
+        operations: ["CREATE"]
+  variables:
+    - name: home
+      expression: >-
+        {'invitations': 'identity-people', 'groups': 'identity-people',
+        'applications': 'identity-apps', 'principals': 'identity-apps',
+        'accesspolicies': 'identity-ca'}
+  validations:
+    - expression: >-
+        request.resource.resource in variables.home &&
+        variables.home[request.resource.resource] == request.namespace
+      message: >-
+        Wrong namespace for this kind: invitations and groups belong in
+        identity-people, applications and principals in identity-apps,
+        accesspolicies in identity-ca.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: crossplane-azuread-v3-namespaces
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: crossplane-azuread-v3-namespaces
+  validationActions: ["Deny"]
+---
+# V8: an MR may only adopt an Entra object that is on an
+# allowlist, and admin-type objects stay Observe-only.
+#
+# The lists come from the ConfigMap identity-system/identity-guard-params, which
+# the identity plumbing change fills from the secret store. The identity
+# manifests repository cannot
+# write identity-system, so a bad commit there cannot widen the lists. Until that
+# ConfigMap exists every request is denied (parameterNotFoundAction: Deny).
+#
+# ConfigMap keys, each a comma-separated list (<kind> is the plural resource:
+# invitations, groups, applications, principals, accesspolicies):
+#   external-names.<kind>         external names an MR of that kind may carry
+#   create-names.<kind>           metadata.name values that may create a new
+#                                 object (no external name yet)
+#   observe-only-external-names   external names whose MR must be Observe-only
+#                                 (admin-type groups, at least)
+#
+# A created object keeps passing after the provider records its new external
+# name, as long as that annotation never changes afterwards.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: crossplane-azuread-v8-external-names
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["invitations.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["invitations"]
+        operations: ["CREATE", "UPDATE"]
+      - apiGroups: ["groups.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["groups"]
+        operations: ["CREATE", "UPDATE"]
+      - apiGroups: ["applications.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["applications"]
+        operations: ["CREATE", "UPDATE"]
+      - apiGroups: ["serviceprincipals.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["principals"]
+        operations: ["CREATE", "UPDATE"]
+      - apiGroups: ["conditionalaccess.azuread.m.upbound.io"]
+        apiVersions: ["*"]
+        resources: ["accesspolicies"]
+        operations: ["CREATE", "UPDATE"]
+  matchConditions:
+    - name: not-the-provider
+      expression: "request.userInfo.username != 'system:serviceaccount:crossplane-system:provider-azuread'"
+    # A terminating MR can lose its finalizer even when its names are off the
+    # allowlist. Every write policy excludes Delete, so removing the finalizer
+    # orphans the Entra object. If the params ConfigMap is missing, the binding
+    # denies before this condition is evaluated; restore the ConfigMap, or
+    # delete this binding by hand (prune is disabled) and re-apply it after.
+    - name: not-being-deleted
+      expression: "!has(object.metadata.deletionTimestamp)"
+  variables:
+    - name: data
+      expression: "has(params.data) ? params.data : {}"
+    - name: kind
+      expression: "request.resource.resource"
+    - name: externalName
+      expression: >-
+        has(object.metadata.annotations) &&
+        'crossplane.io/external-name' in object.metadata.annotations
+        ? object.metadata.annotations['crossplane.io/external-name'] : ''
+    - name: oldExternalName
+      expression: >-
+        request.operation == 'UPDATE' &&
+        has(oldObject.metadata.annotations) &&
+        'crossplane.io/external-name' in oldObject.metadata.annotations
+        ? oldObject.metadata.annotations['crossplane.io/external-name'] : ''
+    - name: allowedExternalNames
+      expression: >-
+        ('external-names.' + variables.kind) in variables.data
+        ? variables.data['external-names.' + variables.kind].split(',').map(s, s.trim()).filter(s, s != '')
+        : []
+    - name: allowedCreateNames
+      expression: >-
+        ('create-names.' + variables.kind) in variables.data
+        ? variables.data['create-names.' + variables.kind].split(',').map(s, s.trim()).filter(s, s != '')
+        : []
+    - name: observeOnlyNames
+      expression: >-
+        'observe-only-external-names' in variables.data
+        ? variables.data['observe-only-external-names'].split(',').map(s, s.trim()).filter(s, s != '')
+        : []
+    - name: policies
+      expression: "has(object.spec.managementPolicies) ? object.spec.managementPolicies : ['*']"
+    - name: observeOnly
+      expression: "variables.policies.size() > 0 && variables.policies.all(p, p == 'Observe')"
+  validations:
+    - expression: >-
+        (variables.externalName != '' &&
+        variables.externalName in variables.allowedExternalNames) ||
+        (object.metadata.name in variables.allowedCreateNames &&
+        (variables.externalName == '' ||
+        (request.operation == 'UPDATE' && variables.externalName == variables.oldExternalName)))
+      message: >-
+        This managed resource's external name (or, for a new object, its
+        name) is not on the allowlist in identity-system/identity-guard-params.
+    - expression: "!(variables.externalName in variables.observeOnlyNames) || variables.observeOnly"
+      message: "This external name is listed as Observe-only; spec.managementPolicies must be exactly Observe."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: crossplane-azuread-v8-external-names
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: crossplane-azuread-v8-external-names
+  validationActions: ["Deny"]
+  paramRef:
+    name: identity-guard-params
+    namespace: identity-system
+    parameterNotFoundAction: Deny
