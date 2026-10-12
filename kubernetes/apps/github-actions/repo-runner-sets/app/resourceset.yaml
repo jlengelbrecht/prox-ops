@@ -129,6 +129,19 @@ spec:
         - graph.microsoft.com
         # azurerm backend state, Entra-authenticated (no access keys).
         - sthomelab0tfstate.blob.core.windows.net
+    - name: spektacle
+      repoUrl: https://github.com/jlengelbrecht/Spektacle
+      minRunners: 0
+      # CI runs Go build, vet and buf checks plus the web npm checks; the go,
+      # web and artifacts jobs run in parallel, so three runners.
+      maxRunners: 3
+      extraFQDNs:
+        # setup-go fallback when a version is missing from its manifest, and
+        # Go toolchain downloads.
+        - go.dev
+        - dl.google.com
+        # setup-node fallback when a version is missing from its manifest.
+        - nodejs.org
     # Adding a repository is one entry. Only name and repoUrl are required:
     # - name: example-repo
     #   repoUrl: https://github.com/jlengelbrecht/example-repo
