@@ -1,0 +1,19 @@
+---
+# The only managed resource kinds that get a served CRD. Everything else in the
+# package (users, role assignments, PIM schedules, application passwords and
+# certificates, federated credentials, synchronization secrets, and every legacy
+# cluster-scoped kind) stays inactive and cannot be created at all.
+# Chart side: provider.defaultActivations is [] in ../../crossplane.
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: ManagedResourceActivationPolicy
+metadata:
+  name: provider-azuread
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  activate:
+    - invitations.invitations.azuread.m.upbound.io
+    - groups.groups.azuread.m.upbound.io
+    - applications.applications.azuread.m.upbound.io
+    - principals.serviceprincipals.azuread.m.upbound.io
+    - accesspolicies.conditionalaccess.azuread.m.upbound.io

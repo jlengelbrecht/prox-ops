@@ -1,0 +1,75 @@
+---
+# The provider pod will hold Graph credentials for the tenant, so both
+# directions are fenced and this endpoint is default-deny for everything not
+# named below.
+#
+# Ingress: the API server, for the conversion webhook. Metrics are not scraped
+# (no PodMonitor), so port 8080 is closed. Kubelet probes come from the host and
+# are not subject to this policy.
+#
+# Egress: DNS, the API server, and two names on the public internet:
+# login.microsoftonline.com (token endpoint) and graph.microsoft.com, both on
+# 443. No toEntities: world, no toCIDR, no matchPattern. A metadata host or any
+# other name the provider turns out to need shows up as a dropped flow in Hubble
+# and is added only with a reason.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: provider-azuread
+  namespace: crossplane-system
+  labels:
+    app.kubernetes.io/name: provider-azuread
+    app.kubernetes.io/component: networkpolicy
+spec:
+  # Label set by ./deploymentruntimeconfig.yaml on the provider pod template.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: provider-azuread
+
+  ingress:
+    # CRD conversion webhook. Written against the container port: Cilium DNATs
+    # to the endpoint before it evaluates policy.
+    - fromEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "9443"
+              protocol: TCP
+
+  egress:
+    # CoreDNS pods rather than the kube-dns Service, for the same
+    # DNAT-before-policy reason.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          # Cilium learns the toFQDNs addresses from this pod's own DNS answers
+          # and only for queries a rules.dns entry selects. Exact names here
+          # too: with ndots 1 the resolver asks for the absolute name first,
+          # and any other query is refused.
+          rules:
+            dns:
+              - matchName: login.microsoftonline.com
+              - matchName: graph.microsoft.com
+
+    # Controller watches, status writes and leader election. No toPorts: the
+    # pod dials the kubernetes Service and Cilium sees the post-DNAT port of the
+    # control plane's real listener.
+    - toEntities:
+        - kube-apiserver
+
+    # Microsoft identity platform token endpoint and Microsoft Graph. matchName
+    # only, never matchPattern.
+    - toFQDNs:
+        - matchName: login.microsoftonline.com
+        - matchName: graph.microsoft.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

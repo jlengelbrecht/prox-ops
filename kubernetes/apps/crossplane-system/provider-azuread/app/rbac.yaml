@@ -1,0 +1,157 @@
+---
+# Hand-written RBAC for the provider ServiceAccount. The Crossplane RBAC manager
+# is off (../../crossplane/app/helmrelease.yaml); its default role would give
+# this pod "*" on every Secret, ConfigMap, Event and Lease in the cluster.
+#
+# What the provider gets, and where:
+#   cluster-wide  the five activated managed resource kinds (no create, no
+#                 delete), their status and finalizers; the provider-config
+#                 and usage kinds; read on CRDs (SafeStart gates controllers on
+#                 them); create/patch on Events (recorded in the MR namespace).
+#   this namespace leader-election Leases (the provider uses a Lease lock, not ConfigMaps).
+#   identity-*     get on Secrets, through RoleBindings that arrive with those
+#                 namespaces (see the last ClusterRole below). Nothing here
+#                 grants Secret access.
+#
+# A provider upgrade that adds or renames a kind must be checked against this
+# file; nothing regenerates it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: provider-azuread
+  labels:
+    app.kubernetes.io/name: provider-azuread
+rules:
+  - apiGroups: ["invitations.azuread.m.upbound.io"]
+    resources: ["invitations", "invitations/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["groups.azuread.m.upbound.io"]
+    resources: ["groups", "groups/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["applications.azuread.m.upbound.io"]
+    resources: ["applications", "applications/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["serviceprincipals.azuread.m.upbound.io"]
+    resources: ["principals", "principals/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["conditionalaccess.azuread.m.upbound.io"]
+    resources: ["accesspolicies", "accesspolicies/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups:
+      - invitations.azuread.m.upbound.io
+      - groups.azuread.m.upbound.io
+      - applications.azuread.m.upbound.io
+      - serviceprincipals.azuread.m.upbound.io
+      - conditionalaccess.azuread.m.upbound.io
+    resources: ["*/finalizers"]
+    verbs: ["update"]
+  # Namespaced provider configs. The usage tracker records a
+  # ProviderConfigUsage for every reconcile, so usages need create.
+  # ClusterProviderConfigs are watched but may never exist (admission policy
+  # V1), so read is enough. clusterproviderconfigusages has no CRD in v2.5.0;
+  # it is listed so a future CRD works without an RBAC change, and costs nothing.
+  - apiGroups: ["azuread.m.upbound.io"]
+    resources: ["providerconfigs", "providerconfigs/status"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["azuread.m.upbound.io"]
+    resources: ["providerconfigs/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["azuread.m.upbound.io"]
+    resources: ["providerconfigusages", "providerconfigusages/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["azuread.m.upbound.io"]
+    resources: ["clusterproviderconfigs", "clusterproviderconfigusages"]
+    verbs: ["get", "list", "watch"]
+  # Legacy cluster-scoped provider configs. The legacy controllers still start
+  # and watch these even though every legacy managed kind is inactive and a
+  # legacy ProviderConfig is refused at admission (V1). Read only.
+  - apiGroups: ["azuread.upbound.io"]
+    resources: ["providerconfigs", "providerconfigusages"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["", "events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: provider-azuread
+  labels:
+    app.kubernetes.io/name: provider-azuread
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: provider-azuread
+subjects:
+  - kind: ServiceAccount
+    name: provider-azuread
+    namespace: crossplane-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: provider-azuread-leader-election
+  namespace: crossplane-system
+  labels:
+    app.kubernetes.io/name: provider-azuread
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: provider-azuread-leader-election
+  namespace: crossplane-system
+  labels:
+    app.kubernetes.io/name: provider-azuread
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: provider-azuread-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: provider-azuread
+    namespace: crossplane-system
+---
+# Credential Secret read, for the identity namespaces only.
+#
+# This is a ClusterRole with NO ClusterRoleBinding, so on its own it grants
+# nothing. Roles in identity-people, identity-apps and identity-ca would be
+# tighter, but those namespaces arrive with the identity plumbing change
+# that follows this one. A namespaced object for a namespace that does not exist
+# fails the server-side apply, and Flux would hold this whole Kustomization (and
+# the provider with it) not-ready until then. So the grant ships here as a role
+# template, and the follow-up change adds one RoleBinding per identity
+# namespace, next to the namespace itself:
+#
+#   apiVersion: rbac.authorization.k8s.io/v1
+#   kind: RoleBinding
+#   metadata:
+#     name: provider-azuread-credentials
+#     namespace: identity-people          # and identity-apps, identity-ca
+#   roleRef:
+#     apiGroup: rbac.authorization.k8s.io
+#     kind: ClusterRole
+#     name: provider-azuread-credentials
+#   subjects:
+#     - kind: ServiceAccount
+#       name: provider-azuread
+#       namespace: crossplane-system
+#
+# A RoleBinding to a ClusterRole grants it in that one namespace only. Never
+# bind this role with a ClusterRoleBinding.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: provider-azuread-credentials
+  labels:
+    app.kubernetes.io/name: provider-azuread
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]

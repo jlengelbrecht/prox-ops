@@ -1,0 +1,14 @@
+---
+# Crossplane core and provider-azuread. Prune is disabled because deleting this
+# namespace would take the Provider, and with it every managed resource CRD.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crossplane-system
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  labels:
+    toolkit.fluxcd.io/tenant: sre-team
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

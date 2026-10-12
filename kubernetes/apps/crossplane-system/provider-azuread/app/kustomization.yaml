@@ -1,0 +1,13 @@
+---
+# No top-level namespace: the Provider, DeploymentRuntimeConfig, activation
+# policy and ClusterRoles are cluster-scoped, and kustomize would stamp a
+# namespace onto the Crossplane kinds it does not know. Namespaced objects set
+# their own.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deploymentruntimeconfig.yaml
+  - provider.yaml
+  - managedresourceactivationpolicy.yaml
+  - rbac.yaml
+  - networkpolicy.yaml
