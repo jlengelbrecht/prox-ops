@@ -34,10 +34,7 @@ METRIC = 'hindsight_worker_runnable'
 ABSENT = 'hindsight_qualification_absent'
 APISERVICE = 'v1beta1.external.metrics.k8s.io'
 HEX = re.compile(r'[0-9a-f]{64}')
-# The collector daemon registers in its own change. Until that merges, its
-# reviewed registration stands in where present; a clean checkout has neither.
 COLLECTOR = ('hindsight-backlog-collector', 'database')
-COLLECTOR_REFERENCE = ARTIFACTS / 'qualified-collector-registration-reference.yaml'
 
 
 def load(path):
@@ -57,16 +54,12 @@ def kustomize_build(path):
 def flux_kustomizations():
     """Every Flux Kustomization under kubernetes/apps with the namespace its CR actually lands in."""
     found = {}
-    for path in (ROOT / 'kubernetes/apps').rglob('ks.yaml'):
+    for path in (ROOT / 'kubernetes/apps').rglob('*ks.yaml'):
         tree = ROOT / 'kubernetes/apps' / path.relative_to(ROOT / 'kubernetes/apps').parts[0] / 'kustomization.yaml'
         transform = (yaml.safe_load(tree.read_text()) or {}).get('namespace') if tree.is_file() else None
         for doc in load(path):
             if isinstance(doc, dict) and doc.get('apiVersion', '').startswith('kustomize.toolkit.fluxcd.io/'):
                 found[(doc['metadata']['name'], transform or doc['metadata'].get('namespace'))] = doc
-    if COLLECTOR_REFERENCE.is_file():
-        # It lives under kubernetes/apps/database, whose root transform is namespace: database.
-        for doc in load(COLLECTOR_REFERENCE):
-            found.setdefault((doc['metadata']['name'], 'database'), doc)
     return found
 
 
@@ -79,7 +72,6 @@ class WiringTests(unittest.TestCase):
         docs = {x['metadata']['name']: x for x in load(ADAPTER / 'ks.yaml')}
         self.assertEqual(sorted(docs), ['prometheus-adapter', 'prometheus-adapter-qualification'])
         known = flux_kustomizations()
-        pending = set() if COLLECTOR_REFERENCE.is_file() else {COLLECTOR}
         expected = {
             'prometheus-adapter': ('app', 'observability', [('cert-manager-operator', 'cert-manager'),
                                                             ('kube-prometheus-stack', 'flux-system')]),
@@ -96,13 +88,12 @@ class WiringTests(unittest.TestCase):
                 self.assertTrue((ADAPTER / path / 'kustomization.yaml').is_file())
                 self.assertEqual(spec['targetNamespace'], namespace)
                 self.assertEqual([(x['name'], x['namespace']) for x in spec['dependsOn']], depends)
-                self.assertEqual([d for d in depends if d not in known and d not in pending], [],
+                self.assertEqual([d for d in depends if d not in known], [],
                                  'every dependency is an existing Kustomization')
                 self.assertEqual((spec['prune'], spec['wait']), (True, True))
                 self.assertEqual(spec['sourceRef'], {'kind': 'GitRepository', 'name': 'flux-system',
                                                      'namespace': 'flux-system'})
                 self.assertFalse({'force', 'patches', 'postBuild', 'components', 'healthChecks'} & set(spec))
-        # Flux reports the Job's own outcome rather than racing its deadline.
         timeout = docs['prometheus-adapter-qualification']['spec']['timeout']
         self.assertGreater(int(timeout.rstrip('m')) * 60, 120)
 
@@ -231,13 +222,10 @@ NOT_FOUND = (404, {'kind': 'Status', 'reason': 'NotFound', 'code': 404})
 
 
 class QualificationScriptTests(unittest.TestCase):
-    """The Job's script, run in-process against scripted API answers on a fake clock."""
-
     @classmethod
     def setUpClass(cls):
         job, = [x for x in kustomize_build(QUALIFICATION) if x['kind'] == 'Job']
         cls.source = job['spec']['template']['spec']['containers'][0]['command'][-1]
-        # The pinned image runs Python 3.9.
         ast.parse(cls.source, feature_version=(3, 9))
 
     def run_script(self, answers):
