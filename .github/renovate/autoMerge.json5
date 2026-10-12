@@ -545,6 +545,33 @@
       "matchFileNames": ["kubernetes/apps/observability/kube-prometheus-stack/app/helmrelease.yaml"],
       "matchDatasources": ["docker"],
       "automerge": false
+    },
+    // Crossplane and provider-azuread: last so no patch/minor/digest opt-in can
+    // auto-merge them. The provider holds write access to the Entra tenant and its
+    // package is unsigned with no attestations, so every release soaks 7 days and
+    // merges by hand after review. Provider.spec.package stays pinned by tag and
+    // digest; the custom manager in customManagers.json5 moves both together.
+    // No matchDatasources: this covers the helm chart, the custom-manager docker
+    // dependency, and any Crossplane image or ImageConfig pinned later.
+    {
+      "description": "FULLY MANUAL: Crossplane chart and provider-azuread package - 7-day soak, never auto-merged, digest pin kept",
+      "matchPackageNames": ["/crossplane/", "/provider-azuread/"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false,
+      "pinDigests": true,
+      "prBodyNotes": [
+        "**Crossplane / provider-azuread**: manual merge, no auto-merge. The provider package is unsigned: check that the new tag was published by the upstream release workflow and that the digest in this PR matches the run's output. Merge only after flux-local, CI and a security review pass."
+      ]
+    },
+    {
+      "description": "provider-azuread: a digest change under an existing tag is a re-tagged release - manual, and treated as a supply-chain event",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["kubernetes/apps/crossplane-system/provider-azuread/app/provider.yaml"],
+      "matchUpdateTypes": ["digest"],
+      "automerge": false,
+      "prBodyNotes": [
+        "**provider-azuread re-tag**: the tag did not change but its digest did. Do not merge until upstream explains the re-publish."
+      ]
     }
   ]
 }

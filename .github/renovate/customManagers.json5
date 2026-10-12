@@ -254,6 +254,23 @@
       "depNameTemplate": "alloy",
       "packageNameTemplate": "grafana/helm-charts",
       "versioningTemplate": "regex:^alloy-(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      // provider-azuread is pinned by tag AND digest in Provider.spec.package. No
+      // enabled built-in manager reads Crossplane packages (the kubernetes manager
+      // matches image: lines only), so this manager reads the pair and bumps both
+      // in one commit. Kept manual with a 7-day soak in autoMerge.json5.
+      "description": "Track the provider-azuread Crossplane package (tag + digest) in Provider.spec.package",
+      "managerFilePatterns": [
+        "/^kubernetes/apps/crossplane-system/provider-azuread/app/provider\\.yaml$/"
+      ],
+      "matchStrings": [
+        // Matches: package: ghcr.io/crossplane-contrib/provider-azuread:v2.5.0@sha256:<64 hex>
+        "package:\\s*(?<depName>ghcr\\.io/crossplane-contrib/provider-azuread):(?<currentValue>v\\d+\\.\\d+\\.\\d+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [

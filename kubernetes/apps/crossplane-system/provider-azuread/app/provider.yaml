@@ -1,0 +1,25 @@
+---
+# The community provider-azuread, pinned by tag and digest. The package is
+# published to GHCR by a manual GitHub Actions workflow and carries no cosign
+# signature or attestation, so the digest pin plus a reviewed PR is the control:
+# Renovate raises every release after a 7-day soak and never auto-merges it
+# (.github/renovate/autoMerge.json5).
+#
+# Prune is disabled: deleting the Provider removes its CRDs, and with them every
+# managed resource.
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-azuread
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  package: ghcr.io/crossplane-contrib/provider-azuread:v2.5.0@sha256:3cdf3dd04030ca839ca1b3236277dca16aac6f57ac275e4ffdb4f6e667b60c71
+  packagePullPolicy: IfNotPresent
+  revisionActivationPolicy: Automatic
+  # Rollback is a Git revert, not a stale revision left on the cluster.
+  revisionHistoryLimit: 1
+  runtimeConfigRef:
+    apiVersion: pkg.crossplane.io/v1beta1
+    kind: DeploymentRuntimeConfig
+    name: provider-azuread

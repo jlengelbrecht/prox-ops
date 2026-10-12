@@ -1,0 +1,69 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: crossplane
+  namespace: crossplane-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: crossplane
+      # renovate: datasource=helm registryUrl=https://charts.crossplane.io/stable
+      version: 2.4.2
+      sourceRef:
+        kind: HelmRepository
+        name: crossplane-stable
+        namespace: crossplane-system
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  values:
+    # No managed resource kind is active by default. The chart's ["*"] would
+    # serve every CRD in the provider package; the explicit
+    # ManagedResourceActivationPolicy in ../../provider-azuread activates five.
+    provider:
+      defaultActivations: []
+
+    # The RBAC manager would bind every provider to read and write all Secrets
+    # cluster-wide. It is off, and provider-azuread gets hand-written,
+    # namespace-scoped RBAC instead (../../provider-azuread/app/rbac.yaml).
+    # This also stops the provider edit roles aggregating into Crossplane core.
+    rbacManager:
+      deploy: false
+
+    # No extra flags, and never debug logging.
+    args: []
+
+    resourcesCrossplane:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1024Mi
+
+    # Pod Security "restricted" for the namespace. The chart's defaults leave out
+    # runAsNonRoot, the capability drop and the seccomp profile. The same block
+    # applies to the init container.
+    podSecurityContextCrossplane:
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    securityContextCrossplane:
+      runAsUser: 65532
+      runAsGroup: 65532
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
