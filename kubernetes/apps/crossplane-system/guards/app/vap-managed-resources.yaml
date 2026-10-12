@@ -201,6 +201,13 @@ spec:
   matchConditions:
     - name: not-the-provider
       expression: "request.userInfo.username != 'system:serviceaccount:crossplane-system:provider-azuread'"
+    # A terminating MR can lose its finalizer even when its names are off the
+    # allowlist. Every write policy excludes Delete, so removing the finalizer
+    # orphans the Entra object. If the params ConfigMap is missing, the binding
+    # denies before this condition is evaluated; restore the ConfigMap, or
+    # delete this binding by hand (prune is disabled) and re-apply it after.
+    - name: not-being-deleted
+      expression: "!has(object.metadata.deletionTimestamp)"
   variables:
     - name: data
       expression: "has(params.data) ? params.data : {}"
