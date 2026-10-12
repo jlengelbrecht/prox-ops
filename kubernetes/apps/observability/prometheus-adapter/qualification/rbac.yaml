@@ -1,0 +1,57 @@
+---
+# The qualification Job's identity; its token is projected into the Job alone.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hindsight-metrics-qualification
+automountServiceAccountToken: false
+---
+# Reads two external metric names in ai and nothing else: the served one and
+# a name no rule exposes, whose 404 shows the adapter answers per name. An
+# HTTP GET on /namespaces/ai/<metric> has no object name, so the API server
+# authorizes it as list; get is never checked there.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hindsight-metrics-qualification
+rules:
+  - apiGroups: [external.metrics.k8s.io]
+    resources: [hindsight_worker_runnable, hindsight_qualification_absent]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hindsight-metrics-qualification
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hindsight-metrics-qualification
+subjects:
+  - kind: ServiceAccount
+    name: hindsight-metrics-qualification
+    namespace: ai
+---
+# The one APIService, by name, to read its Available condition.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hindsight-metrics-qualification
+rules:
+  - apiGroups: [apiregistration.k8s.io]
+    resources: [apiservices]
+    resourceNames: [v1beta1.external.metrics.k8s.io]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hindsight-metrics-qualification
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hindsight-metrics-qualification
+subjects:
+  - kind: ServiceAccount
+    name: hindsight-metrics-qualification
+    namespace: ai

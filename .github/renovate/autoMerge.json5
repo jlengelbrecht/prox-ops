@@ -545,6 +545,13 @@
       "matchFileNames": ["kubernetes/apps/observability/kube-prometheus-stack/app/helmrelease.yaml"],
       "matchDatasources": ["docker"],
       "automerge": false
+    },
+    // prometheus-adapter: last so no opt-in can auto-merge it.
+    {
+      "description": "FULLY MANUAL: prometheus-adapter chart and image - a bump must be qualified and its digest re-pinned first; the Hindsight baseline checks are path-filtered, not required",
+      "matchDatasources": ["docker", "helm"],
+      "matchPackageNames": ["/prometheus-adapter/"],
+      "automerge": false
     }
   ]
 }

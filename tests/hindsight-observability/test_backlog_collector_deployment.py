@@ -155,8 +155,13 @@ class FluxTests(unittest.TestCase):
             for doc in yaml.safe_load_all(path.read_text()):
                 depends = {item['name'] for item in (doc or {}).get('spec', {}).get('dependsOn', [])}
                 if depends & {'hindsight-backlog-collector-code', QUAL, APP}:
-                    waiting.add((path.name, doc['metadata']['name']))
-        self.assertEqual(waiting, {('collector.ks.yaml', QUAL), ('collector.ks.yaml', APP)})
+                    waiting.add((path.relative_to(ROOT).as_posix(), doc['metadata']['name'],
+                                 frozenset(depends & {'hindsight-backlog-collector-code', QUAL, APP})))
+        # The one outside consumer is the adapter's read-only qualification, and it waits on the daemon alone.
+        collector, code = (BACKLOG / 'collector.ks.yaml').relative_to(ROOT).as_posix(), 'hindsight-backlog-collector-code'
+        self.assertEqual(waiting, {(collector, QUAL, frozenset({code})), (collector, APP, frozenset({code, QUAL})),
+                                   ('kubernetes/apps/observability/prometheus-adapter/ks.yaml',
+                                    'prometheus-adapter-qualification', frozenset({APP}))})
 
 
 class PodTests(unittest.TestCase):

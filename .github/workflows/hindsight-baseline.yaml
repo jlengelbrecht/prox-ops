@@ -61,6 +61,15 @@ on:
       - kubernetes/apps/ai/hermes-hindsight/auth-placement/job.yaml
       - kubernetes/apps/ai/hermes-hindsight/auth-placement/networkpolicy.yaml
       - tests/hindsight-observability/test_auth_placement.py
+      # Worker metrics: the adapter release, its wiring and read-only
+      # qualification, and the inactive HPA it would serve.
+      - kubernetes/apps/observability/kustomization.yaml
+      - kubernetes/apps/observability/prometheus-adapter/**
+      - kubernetes/apps/ai/hermes-hindsight/app/worker-autoscaling.yaml
+      - tests/hindsight-observability/test_worker_autoscaling.py
+      - tests/hindsight-observability/test_worker_metrics_activation.py
+      - tests/hindsight-observability/fixtures/worker-autoscaling.yaml
+      - tests/hindsight-observability/fixtures/worker-metrics-tool-pins.json
 permissions:
   contents: read
 jobs:
@@ -131,6 +140,38 @@ jobs:
             grep -Eq '^Ran [1-9][0-9]* tests? in ' "$log"
             if grep -q 'skipped=' "$log"; then exit 1; fi
           done
+      - run: python -m unittest discover -s tests/hindsight-observability -p test_worker_metrics_activation.py -v
+      # The autoscaling checks (Python 3.12 only) render the pinned chart and run
+      # its query through promtool, copied from the pinned Prometheus image via a
+      # container that never starts and has no network. Both are verified first.
+      - name: Fetch pinned promtool and adapter chart
+        if: matrix.python-version == '3.12'
+        run: |
+          set -euo pipefail
+          pins=tests/hindsight-observability/fixtures/worker-metrics-tool-pins.json
+          artifacts=_bmad-output/implementation-artifacts
+          mkdir -p "$artifacts/tooling" "$RUNNER_TEMP/chart"
+          cid=$(docker create --network none --read-only "$(jq -r .promtool.image "$pins")")
+          trap 'docker rm -f -v "$cid" >/dev/null' EXIT
+          docker cp "$cid:$(jq -r .promtool.path "$pins")" "$artifacts/tooling/promtool"
+          echo "$(jq -r .promtool.sha256 "$pins")  $artifacts/tooling/promtool" | sha256sum -c -
+          chmod 0555 "$artifacts/tooling/promtool"
+          "$artifacts/tooling/promtool" --version 2>&1 | grep -xF "$(jq -r .promtool.version "$pins")" >/dev/null
+          version=$(jq -r .chart.chart_version "$pins")
+          helm pull "$(jq -r .chart.oci_repository "$pins")" --version "$version" \
+            --destination "$RUNNER_TEMP/chart" > "$RUNNER_TEMP/chart/pull.txt" 2>&1
+          grep -qxF "Digest: $(jq -r .chart.oci_manifest_digest "$pins")" "$RUNNER_TEMP/chart/pull.txt"
+          archive="$RUNNER_TEMP/chart/prometheus-adapter-$version.tgz"
+          echo "$(jq -r .chart.archive_sha256 "$pins")  $archive" | sha256sum -c -
+          cp "$archive" "$artifacts/"
+          jq '.chart | {archive_sha256, oci_layer_digests: ["sha256:" + .archive_sha256], chart_version, appVersion,
+              oci_repository, oci_manifest_digest, image, image_digest}' "$pins" > "$artifacts/adapter-artifact-qualification.json"
+          jq '.promtool | {image, binary_sha256: .sha256, version}' "$pins" > "$artifacts/native-promtool-provenance.json"
+      - if: matrix.python-version == '3.12'
+        run: python -m unittest discover -s tests/hindsight-observability -p test_worker_autoscaling.py -v
+        env:
+          HINDSIGHT_REQUIRE_NATIVE_PROMQL: '1'
+          PROMTOOL: ${{ github.workspace }}/_bmad-output/implementation-artifacts/tooling/promtool
       - run: python scripts/hindsight-backlog-function.py --check kubernetes/apps/database/hindsight-backlog/app/runnable-backlog.sql
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: python tests/hindsight-observability/check_postgres_newest.py

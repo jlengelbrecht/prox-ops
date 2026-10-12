@@ -1,0 +1,56 @@
+---
+# Serves the one external metric, hindsight_worker_runnable. Nothing reads it
+# yet: the worker HPA stays out of every kustomization and the workers stay at
+# zero. cert-manager injects the APIService TLS; the stack Prometheus is the
+# only query source.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: prometheus-adapter
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: cert-manager-operator
+      namespace: cert-manager
+    - name: kube-prometheus-stack
+      namespace: flux-system
+  interval: 1h
+  path: ./kubernetes/apps/observability/prometheus-adapter/app
+  prune: true
+  retryInterval: 2m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: observability
+  wait: true
+  timeout: 10m
+---
+# One read-only Job in ai that checks the external metrics API the way an
+# HPA in ai would see it, once the adapter and the backlog collector daemon
+# (its CR lands in database via that root's namespace transform) are Ready.
+# It runs once per Job name; a failure stays failed until a reviewed revision
+# bumps the name. Nothing depends on this tree. The timeout outlasts the
+# Job's 120 s deadline, so Flux reports the Job's own outcome.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: prometheus-adapter-qualification
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: prometheus-adapter
+      namespace: flux-system
+    - name: hindsight-backlog-collector
+      namespace: database
+  interval: 1h
+  path: ./kubernetes/apps/observability/prometheus-adapter/qualification
+  prune: true
+  retryInterval: 2m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: ai
+  wait: true
+  timeout: 5m
