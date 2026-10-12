@@ -1,0 +1,410 @@
+---
+# Per-repository GitHub Actions runner scale sets.
+#
+# One `inputs` entry per repository. Each entry renders:
+#   - ServiceAccount gha-<name>-runner (no token, no RBAC)
+#   - HelmRelease gha-<name>: an ARC scale set whose name is also the
+#     `runs-on:` label. Default container mode (no kubernetes mode, no DinD),
+#     with a rootless BuildKit sidecar on tcp://127.0.0.1:1234.
+#   - CiliumNetworkPolicy gha-<name>-runner: no ingress, egress only to DNS and
+#     an HTTPS FQDN allowlist (GitHub, GHCR, Go proxy, npm + extraFQDNs); DNS
+#     answers only for the same names.
+# Every runner pod also mounts the shared job guard (ConfigMap
+# gha-runner-job-guard, generated in kustomization.yaml) as its job-started
+# hook: an event allowlist that refuses fork and untrusted-event jobs.
+#
+# Input fields:
+#   name        repository name; scale set and runs-on label become gha-<name>
+#   repoUrl     https://github.com/<owner>/<repo>
+#   minRunners  optional, default 0
+#   maxRunners  optional, default 3
+#   extraFQDNs  optional list of extra hostnames reachable on TCP 443
+#   runnerImage optional runner container image; default is the stock
+#               ghcr.io/actions/actions-runner. When set, the pod also gets
+#               imagePullSecrets ghcr-runner-images (ghcr-pull-secret.yaml) so
+#               private GHCR images pull. Pin by digest.
+#
+# The existing prox-ops scale set (../../gha-runner-scale-set) is managed
+# separately: it carries cluster RBAC and anti-affinity this template does not.
+#
+# No spec.serviceAccountName: flux-operator runs without multitenancy
+# (no --default-service-account), like every other Flux object in this repo
+# apart from the Flagger pilot.
+apiVersion: fluxcd.controlplane.io/v1
+kind: ResourceSet
+metadata:
+  name: repo-runner-sets
+  namespace: github-actions
+  annotations:
+    fluxcd.controlplane.io/reconcileEvery: "1h"
+    fluxcd.controlplane.io/reconcileTimeout: "5m"
+spec:
+  wait: true
+  commonMetadata:
+    labels:
+      app.kubernetes.io/part-of: repo-runner-sets
+  dependsOn:
+    - apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      name: autoscalingrunnersets.actions.github.com
+    - apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      name: ciliumnetworkpolicies.cilium.io
+    # Shared with the prox-ops scale set; reused, not duplicated.
+    - apiVersion: source.toolkit.fluxcd.io/v1
+      kind: OCIRepository
+      name: gha-runner-scale-set
+      namespace: github-actions
+      ready: true
+    - apiVersion: v1
+      kind: Secret
+      name: github-runner-registration
+      namespace: github-actions
+    # No runner scale set is registered until the fork guard exists.
+    - apiVersion: v1
+      kind: ConfigMap
+      name: gha-runner-job-guard
+      namespace: github-actions
+  inputs:
+    - name: ai-control-plane
+      repoUrl: https://github.com/jlengelbrecht/ai-control-plane
+      minRunners: 0
+      maxRunners: 3
+      # Adds the C toolchain that cgo and `go test -race` need. Built by the
+      # private runner-images repository and pinned by digest.
+      runnerImage: ghcr.io/jlengelbrecht/runner-build@sha256:16eeac07ccd6767d5233d21c09a2cf7daabeccca03041692913c561279df368f
+      # Base-image and toolchain registries used by ai-control-plane builds.
+      # registry-1.docker.io redirects blob downloads to
+      # production.cloudfront.docker.com (seen failing BuildKit pulls of
+      # docker/dockerfile:1) and to Docker Hub's own Cloudflare R2 bucket host.
+      # Both are allowed by exact name: a wildcard on the R2 domain or the
+      # bucket prefix would admit any R2 bucket, since anyone can create one
+      # with the same bucket name in their own account.
+      extraFQDNs:
+        - registry-1.docker.io
+        - auth.docker.io
+        - production.cloudflare.docker.com
+        - production.cloudfront.docker.com
+        - docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
+        - gcr.io
+        - pypi.org
+        - files.pythonhosted.org
+        - go.dev
+        - dl.google.com
+        - nodejs.org
+    - name: runner-images
+      repoUrl: https://github.com/jlengelbrecht/runner-images
+      minRunners: 0
+      maxRunners: 2
+      extraFQDNs:
+        # Ubuntu apt over HTTPS for image builds (the Dockerfiles rewrite apt
+        # sources to https), plus the git-core PPA the actions-runner base ships.
+        - archive.ubuntu.com
+        - security.ubuntu.com
+        - ppa.launchpadcontent.net
+        # Keyless image signing: certificate issuance, transparency log,
+        # the Sigstore TUF root, and the RFC 3161 timestamp authority that
+        # cosign v3 requires. Rekor v2 uses yearly shard hostnames
+        # (log<year>-<n>); when Sigstore rolls to a new shard, add it here by
+        # exact name. No wildcard: a pattern over the rekor or sigstore.dev
+        # subdomains would admit more write endpoints than signing needs.
+        - fulcio.sigstore.dev
+        - rekor.sigstore.dev
+        - log2025-1.rekor.sigstore.dev
+        - timestamp.sigstore.dev
+        - tuf-repo-cdn.sigstore.dev
+    - name: homelab-identity
+      repoUrl: https://github.com/jlengelbrecht/homelab-identity
+      minRunners: 0
+      maxRunners: 1
+      # Terraform for the Entra tenant. The workflow serialises runs with a
+      # concurrency group, so one runner is enough.
+      extraFQDNs:
+        # Terraform CLI and provider downloads.
+        - releases.hashicorp.com
+        - registry.terraform.io
+        # GitHub OIDC token exchange and the Graph API the azuread provider
+        # manages the tenant through.
+        - login.microsoftonline.com
+        - graph.microsoft.com
+        # azurerm backend state, Entra-authenticated (no access keys).
+        - sthomelab0tfstate.blob.core.windows.net
+    - name: spektacle
+      repoUrl: https://github.com/jlengelbrecht/Spektacle
+      minRunners: 0
+      # CI runs Go build, vet and buf checks plus the web npm checks; the go,
+      # web and artifacts jobs run in parallel, so three runners.
+      maxRunners: 3
+      extraFQDNs:
+        # setup-go fallback when a version is missing from its manifest, and
+        # Go toolchain downloads.
+        - go.dev
+        - dl.google.com
+        # setup-node fallback when a version is missing from its manifest.
+        - nodejs.org
+    # Adding a repository is one entry. Only name and repoUrl are required:
+    # - name: example-repo
+    #   repoUrl: https://github.com/jlengelbrecht/example-repo
+    #   maxRunners: 2
+    #   extraFQDNs:
+    #     - registry-1.docker.io
+  # Egress allowlist, built once and used for both the toFQDNs rule and the
+  # DNS proxy rule, so a runner can only resolve the names it may reach.
+  # Widen only after Hubble shows a drop. GitHub, GHCR, Docker Hub and
+  # storage.googleapis.com remain exfiltration channels for hostile job code:
+  # this policy limits lateral movement, not data theft.
+  #   - GitHub web, API, source archives and release-asset uploads
+  #   - raw/objects/release-assets.githubusercontent.com: raw files, LFS and
+  #     release downloads
+  #   - productionresultssa0-19.blob.core.windows.net: Actions results, logs
+  #     and artifacts (GitHub's published host list, matched by name)
+  #   - GHCR, Go module proxy and checksum DB, npm, then the entry's extraFQDNs
+  # Actions service hosts are the only pattern ($fqdnPatterns).
+  resourcesTemplate: |
+    <<- $fqdnNames := list "github.com" "api.github.com" "codeload.github.com" "uploads.github.com" "raw.githubusercontent.com" "objects.githubusercontent.com" "release-assets.githubusercontent.com" "ghcr.io" "pkg-containers.githubusercontent.com" "proxy.golang.org" "sum.golang.org" "storage.googleapis.com" "registry.npmjs.org" >>
+    <<- range $i := until 20 >>
+    <<- $fqdnNames = append $fqdnNames (printf "productionresultssa%d.blob.core.windows.net" $i) >>
+    <<- end >>
+    <<- range $fqdn := (get inputs "extraFQDNs" | default (list)) >>
+    <<- $fqdnNames = append $fqdnNames $fqdn >>
+    <<- end >>
+    <<- $fqdnPatterns := list "*.actions.githubusercontent.com" >>
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: gha-<< inputs.name >>-runner
+      namespace: github-actions
+    automountServiceAccountToken: false
+    ---
+    apiVersion: helm.toolkit.fluxcd.io/v2
+    kind: HelmRelease
+    metadata:
+      name: gha-<< inputs.name >>
+      namespace: github-actions
+    spec:
+      chartRef:
+        kind: OCIRepository
+        name: gha-runner-scale-set
+      interval: 1h
+      dependsOn:
+        - name: gha-runner-scale-set-controller
+          namespace: github-actions
+      # Set here because cluster-apps' HelmRelease defaults patch only reaches
+      # HelmRelease objects in Git, not ones rendered by this ResourceSet.
+      install:
+        remediation:
+          retries: 3
+      upgrade:
+        cleanupOnFail: true
+        remediation:
+          retries: 3
+      values:
+        # Scale set name defaults to the release name (gha-<name>), which is
+        # also the runs-on label.
+        githubConfigUrl: << inputs.repoUrl | quote >>
+        githubConfigSecret: github-runner-registration
+        minRunners: << get inputs "minRunners" | default 0 | int >>
+        maxRunners: << get inputs "maxRunners" | default 3 | int >>
+        template:
+          spec:
+            serviceAccountName: gha-<< inputs.name >>-runner
+            automountServiceAccountToken: false
+            <<- if get inputs "runnerImage" >>
+            # Private runner image; the pull secret is not a dependsOn so a
+            # missing credential only affects the entries that need it.
+            imagePullSecrets:
+              - name: ghcr-runner-images
+            <<- end >>
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            # Resolve external names directly so Cilium's toFQDNs allowlist
+            # learns their IPs (the default ndots:5 tries search-path names first).
+            dnsConfig:
+              options:
+                - name: ndots
+                  value: "1"
+            terminationGracePeriodSeconds: 30
+            affinity:
+              nodeAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 100
+                    preference:
+                      matchExpressions:
+                        - key: node-role.kubernetes.io/control-plane
+                          operator: DoesNotExist
+            initContainers:
+              # Rootless BuildKit as a native sidecar: the pod still completes
+              # when the runner exits, and the runner starts only after the
+              # startup probe sees a worker. Listens on loopback only; use it
+              # with `docker buildx create --driver remote tcp://127.0.0.1:1234`.
+              - name: buildkitd
+                # renovate: datasource=docker depName=moby/buildkit
+                image: moby/buildkit:v0.34.0-rootless
+                imagePullPolicy: IfNotPresent
+                restartPolicy: Always
+                args:
+                  - --addr
+                  - tcp://127.0.0.1:1234
+                  # Kubernetes has no equivalent of systempaths=unconfined, so
+                  # build steps share buildkitd's PID namespace instead of
+                  # mounting their own /proc (upstream's Kubernetes example).
+                  - --oci-worker-no-process-sandbox
+                startupProbe:
+                  exec:
+                    command: ["buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+                  periodSeconds: 2
+                  timeoutSeconds: 5
+                  failureThreshold: 60
+                # Generous timeout: a CPU-throttled build must not restart buildkitd.
+                livenessProbe:
+                  exec:
+                    command: ["buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+                  periodSeconds: 30
+                  timeoutSeconds: 5
+                  failureThreshold: 5
+                securityContext:
+                  privileged: false
+                  runAsNonRoot: true
+                  # The rootless image's user; the subuid range is built in.
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  # rootlesskit needs unshare(CLONE_NEWUSER) and mount, which the
+                  # runtime default seccomp profile blocks without CAP_SYS_ADMIN.
+                  seccompProfile:
+                    type: Unconfined
+                  # newuidmap/newgidmap rely on file capabilities to map the
+                  # subuid range; no_new_privs would stop that.
+                  allowPrivilegeEscalation: true
+                  # SETUID/SETGID are the only capabilities rootless BuildKit
+                  # needs: they bound what newuidmap/newgidmap and build steps
+                  # (apk add, adduser, chown -R) can do. Verified on Talos
+                  # with exactly this set; everything else is dropped.
+                  capabilities:
+                    drop:
+                      - ALL
+                    add:
+                      - SETUID
+                      - SETGID
+                resources:
+                  requests:
+                    cpu: 500m
+                    memory: 1Gi
+                    ephemeral-storage: 2Gi
+                  limits:
+                    cpu: 4000m
+                    memory: 8Gi
+                    # Matches the buildkitd emptyDir sizeLimit.
+                    ephemeral-storage: 20Gi
+                volumeMounts:
+                  - name: buildkitd
+                    mountPath: /home/user/.local/share/buildkit
+            containers:
+              - name: runner
+                <<- if get inputs "runnerImage" >>
+                image: << get inputs "runnerImage" >>
+                <<- else >>
+                # renovate: datasource=docker depName=ghcr.io/actions/actions-runner
+                image: ghcr.io/actions/actions-runner:2.338.0
+                <<- end >>
+                imagePullPolicy: IfNotPresent
+                command: ["/home/runner/run.sh"]
+                env:
+                  - name: BUILDKIT_HOST
+                    value: tcp://127.0.0.1:1234
+                  # Fork guard; a non-zero exit fails the job before any step runs.
+                  - name: ACTIONS_RUNNER_HOOK_JOB_STARTED
+                    value: /home/runner/hooks/job-started-guard.sh
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1001
+                  runAsGroup: 1001
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                resources:
+                  requests:
+                    cpu: 500m
+                    memory: 1Gi
+                    ephemeral-storage: 1Gi
+                  limits:
+                    cpu: 2000m
+                    memory: 4Gi
+                    # Matches the work emptyDir sizeLimit.
+                    ephemeral-storage: 10Gi
+                volumeMounts:
+                  - name: work
+                    mountPath: /home/runner/_work
+                  - name: job-guard
+                    mountPath: /home/runner/hooks
+                    readOnly: true
+            volumes:
+              - name: work
+                emptyDir:
+                  sizeLimit: 10Gi
+              - name: buildkitd
+                emptyDir:
+                  sizeLimit: 20Gi
+              - name: job-guard
+                configMap:
+                  name: gha-runner-job-guard
+                  # 0555 (r-x for all) in decimal, so YAML 1.1 and 1.2 parsers agree.
+                  defaultMode: 365
+        controllerServiceAccount:
+          name: gha-runner-scale-set-controller
+          namespace: github-actions
+    ---
+    apiVersion: cilium.io/v2
+    kind: CiliumNetworkPolicy
+    metadata:
+      name: gha-<< inputs.name >>-runner
+      namespace: github-actions
+    spec:
+      # Runner pods of this scale set. The listener pod carries the same
+      # scale-set-name label but needs the kube API, so it is excluded.
+      endpointSelector:
+        matchLabels:
+          actions.github.com/scale-set-name: gha-<< inputs.name >>
+        matchExpressions:
+          - key: app.kubernetes.io/component
+            operator: NotIn
+            values:
+              - runner-scale-set-listener
+      # An empty rule enables ingress enforcement and allows nothing.
+      ingress:
+        - {}
+      egress:
+        - toEndpoints:
+            - matchLabels:
+                io.kubernetes.pod.namespace: kube-system
+                k8s-app: kube-dns
+          toPorts:
+            - ports:
+                - port: "53"
+                  protocol: UDP
+                - port: "53"
+                  protocol: TCP
+              # Same list as toFQDNs below; other names are refused at DNS.
+              rules:
+                dns:
+                  <<- range $fqdn := $fqdnNames >>
+                  - matchName: << $fqdn | quote >>
+                  <<- end >>
+                  <<- range $pattern := $fqdnPatterns >>
+                  - matchPattern: << $pattern | quote >>
+                  <<- end >>
+        # HTTPS allowlist; see the comment above resourcesTemplate.
+        - toFQDNs:
+            <<- range $fqdn := $fqdnNames >>
+            - matchName: << $fqdn | quote >>
+            <<- end >>
+            <<- range $pattern := $fqdnPatterns >>
+            - matchPattern: << $pattern | quote >>
+            <<- end >>
+          toPorts:
+            - ports:
+                - port: "443"
+                  protocol: TCP
