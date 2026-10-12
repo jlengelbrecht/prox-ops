@@ -143,6 +143,16 @@ spec:
         - dl.google.com
         # setup-node fallback when a version is missing from its manifest.
         - nodejs.org
+    - name: agent-flow-kit
+      repoUrl: https://github.com/jlengelbrecht/agent-flow-kit
+      # CI is fixture-based, with no live services or credentials. Resources
+      # stay at the template default until a measured run says otherwise.
+      minRunners: 0
+      maxRunners: 2
+      # Built by the private runner-images repository and pinned by digest:
+      # runner-base (gh, Node.js 24, ShellCheck, yq) plus python3, sqlite3,
+      # openssh-client and perl for the kit's test suite.
+      runnerImage: ghcr.io/jlengelbrecht/runner-afk@sha256:162b6736cbb3fff08a480779c95df401d1c2c084163aa8b86ebb01cdb7f26366
     # Adding a repository is one entry. Only name and repoUrl are required:
     # - name: example-repo
     #   repoUrl: https://github.com/jlengelbrecht/example-repo
