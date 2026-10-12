@@ -8,7 +8,7 @@
 #                 delete), their status and finalizers; the provider-config
 #                 and usage kinds; read on CRDs (SafeStart gates controllers on
 #                 them); create/patch on Events (recorded in the MR namespace).
-#   this namespace leader-election Leases and ConfigMaps.
+#   this namespace leader-election Leases (the provider uses a Lease lock, not ConfigMaps).
 #   identity-*     get on Secrets, through RoleBindings that arrive with those
 #                 namespaces (see the last ClusterRole below). Nothing here
 #                 grants Secret access.
@@ -100,9 +100,6 @@ metadata:
 rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-  - apiGroups: [""]
-    resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
