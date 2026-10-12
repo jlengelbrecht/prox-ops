@@ -1,0 +1,98 @@
+# Negative fixtures that need state first (README.md, step 4): admitted.yaml
+# applied for real, and identity-ca labelled identity.homelab0.org/ca-write=enabled.
+# Every object here must be DENIED, naming the policy in its "Expect:" line.
+# Placeholder values only.
+---
+# Expect: crossplane-azuread-v4-invitations (invitation fields changed after
+# creation; updates guest-01 from admitted.yaml)
+apiVersion: invitations.azuread.m.upbound.io/v1beta1
+kind: Invitation
+metadata:
+  name: guest-01
+  namespace: identity-people
+spec:
+  managementPolicies: ["Create", "Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider: {}
+  initProvider:
+    redirectUrl: https://example.com
+    userEmailAddress: guest-01@example.com
+    userDisplayName: Guest 01 renamed
+---
+# Expect: crossplane-azuread-v7-conditional-access (writable policy without the
+# break-glass exclusion)
+apiVersion: conditionalaccess.azuread.m.upbound.io/v1beta1
+kind: AccessPolicy
+metadata:
+  name: v7-missing-breakglass
+  namespace: identity-ca
+  annotations:
+    crossplane.io/external-name: placeholder-policy-02
+spec:
+  managementPolicies: ["Observe", "Update"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: ca
+  forProvider:
+    displayName: Fixture policy 02
+    state: enabledForReportingButNotEnforced
+    conditions:
+      clientAppTypes: ["all"]
+      applications:
+        includedApplications: ["All"]
+      users:
+        includedUsers: ["All"]
+---
+# Expect: crossplane-azuread-v7-conditional-access (writable policy created
+# enforced instead of report-only; carries the review annotation so only the
+# create rule fails)
+apiVersion: conditionalaccess.azuread.m.upbound.io/v1beta1
+kind: AccessPolicy
+metadata:
+  name: v7-created-enforced
+  namespace: identity-ca
+  annotations:
+    crossplane.io/external-name: placeholder-policy-03
+    identity.homelab0.org/report-only-reviewed: "true"
+spec:
+  managementPolicies: ["Observe", "Update"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: ca
+  forProvider:
+    displayName: Fixture policy 03
+    state: enabled
+    conditions:
+      clientAppTypes: ["all"]
+      applications:
+        includedApplications: ["All"]
+      users:
+        includedUsers: ["All"]
+        excludedGroups: ["placeholder-breakglass-group"]
+---
+# Expect: crossplane-azuread-v7-conditional-access (switched to enforced without
+# the review annotation; updates policy-01 from admitted.yaml)
+apiVersion: conditionalaccess.azuread.m.upbound.io/v1beta1
+kind: AccessPolicy
+metadata:
+  name: policy-01
+  namespace: identity-ca
+  annotations:
+    crossplane.io/external-name: placeholder-policy-01
+spec:
+  managementPolicies: ["Observe", "Update"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: ca
+  forProvider:
+    displayName: Fixture policy 01
+    state: enabled
+    conditions:
+      clientAppTypes: ["all"]
+      applications:
+        includedApplications: ["All"]
+      users:
+        includedUsers: ["All"]
+        excludedGroups: ["placeholder-breakglass-group"]

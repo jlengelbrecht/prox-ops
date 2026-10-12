@@ -1,0 +1,364 @@
+# Negative fixtures: every object here must be DENIED, and the denial must name
+# the policy in the "Expect:" line above it. Each fixture breaks exactly one
+# rule and is otherwise valid under the setup in README.md (identity-ca NOT
+# labelled for CA writes). Never applied by Flux. Placeholder values only.
+---
+# Expect: crossplane-azuread-v1-no-cluster-providerconfig
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ClusterProviderConfig
+metadata:
+  name: v1-cluster-providerconfig
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: provider-credentials
+      namespace: identity-people
+      key: credentials
+---
+# Expect: crossplane-azuread-v1-no-cluster-providerconfig
+apiVersion: azuread.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: v1-legacy-providerconfig
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: provider-credentials
+      namespace: identity-people
+      key: credentials
+---
+# Expect: crossplane-azuread-v5-providerconfig (namespace)
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: v5-wrong-namespace
+  namespace: identity-system
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: provider-credentials
+      namespace: identity-system
+      key: credentials
+---
+# Expect: crossplane-azuread-v5-providerconfig (credentials.source)
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: v5-source-environment
+  namespace: identity-people
+spec:
+  credentials:
+    source: Environment
+    env:
+      name: PLACEHOLDER_CREDENTIALS
+---
+# Expect: crossplane-azuread-v5-providerconfig (tenantID / clientID)
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: v5-tenant-id
+  namespace: identity-people
+spec:
+  tenantID: placeholder-tenant
+  credentials:
+    source: Secret
+    secretRef:
+      name: provider-credentials
+      namespace: identity-people
+      key: credentials
+---
+# Expect: crossplane-azuread-v5-providerconfig (secretRef in another namespace)
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: v5-cross-namespace-secret
+  namespace: identity-people
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: provider-credentials
+      namespace: identity-ca
+      key: credentials
+---
+# Expect: crossplane-azuread-v5-providerconfig (msiEndpoint / oidcTokenFilePath)
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: v5-oidc-token-file
+  namespace: identity-people
+spec:
+  oidcTokenFilePath: /var/run/secrets/placeholder/token
+  credentials:
+    source: Secret
+    secretRef:
+      name: provider-credentials
+      namespace: identity-people
+      key: credentials
+---
+# Expect: crossplane-azuread-v2-managed-resources (Delete in managementPolicies)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v2-delete-policy
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-group-01
+spec:
+  managementPolicies: ["Observe", "Delete"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider: {}
+---
+# Expect: crossplane-azuread-v2-managed-resources (LateInitialize)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v2-late-initialize
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-group-01
+spec:
+  managementPolicies: ["Observe", "LateInitialize"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider: {}
+---
+# Expect: crossplane-azuread-v2-managed-resources (field absent, defaults to "*")
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v2-defaulted-policies
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-group-01
+spec:
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider:
+    displayName: Fixture defaulted group
+---
+# Expect: crossplane-azuread-v2-managed-resources (explicit ClusterProviderConfig)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v2-cluster-providerconfig-ref
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-group-01
+spec:
+  managementPolicies: ["Observe"]
+  providerConfigRef:
+    kind: ClusterProviderConfig
+    name: default
+  forProvider: {}
+---
+# Expect: crossplane-azuread-v2-managed-resources (providerConfigRef absent,
+# defaults to ClusterProviderConfig/default)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v2-defaulted-providerconfig-ref
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-group-01
+spec:
+  managementPolicies: ["Observe"]
+  forProvider: {}
+---
+# Expect: crossplane-azuread-v2-managed-resources (connection secret)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v2-connection-secret
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-group-01
+spec:
+  managementPolicies: ["Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  writeConnectionSecretToRef:
+    name: placeholder-connection
+  forProvider: {}
+---
+# Expect: crossplane-azuread-v2-managed-resources (Observe-only without an
+# external name; the name is on the create allowlist so V8 passes)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: grp-access-02
+  namespace: identity-people
+spec:
+  managementPolicies: ["Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider: {}
+---
+# Expect: crossplane-azuread-v3-namespaces (a Group in identity-apps)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v3-wrong-namespace
+  namespace: identity-apps
+  annotations:
+    crossplane.io/external-name: placeholder-group-01
+spec:
+  managementPolicies: ["Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: apps
+  forProvider: {}
+---
+# Expect: crossplane-azuread-v8-external-names (external name not allowlisted)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v8-unlisted-external-name
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-group-99
+spec:
+  managementPolicies: ["Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider: {}
+---
+# Expect: crossplane-azuread-v8-external-names (new object, name not allowlisted)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v8-unlisted-create-name
+  namespace: identity-people
+spec:
+  managementPolicies: ["Create", "Update", "Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider:
+    displayName: Fixture unlisted group
+    securityEnabled: true
+---
+# Expect: crossplane-azuread-v8-external-names (create-allowlisted name used to
+# adopt an object that is not on the external-name list)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: grp-access-03
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-group-99
+spec:
+  managementPolicies: ["Create", "Update", "Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider:
+    displayName: Fixture hijack group
+    securityEnabled: true
+---
+# Expect: crossplane-azuread-v8-external-names (admin-type group not Observe-only)
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: v8-admin-group-writable
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-admin-group-01
+spec:
+  managementPolicies: ["Observe", "Update"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider:
+    displayName: Fixture admin group
+    securityEnabled: true
+---
+# Expect: crossplane-azuread-v4-invitations (member-type invitation)
+apiVersion: invitations.azuread.m.upbound.io/v1beta1
+kind: Invitation
+metadata:
+  name: guest-02
+  namespace: identity-people
+spec:
+  managementPolicies: ["Create", "Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider: {}
+  initProvider:
+    redirectUrl: https://example.com
+    userEmailAddress: guest-02@example.com
+    userDisplayName: Guest 02
+    userType: Member
+---
+# Expect: crossplane-azuread-v4-invitations (extra recipient on the mail)
+apiVersion: invitations.azuread.m.upbound.io/v1beta1
+kind: Invitation
+metadata:
+  name: guest-03
+  namespace: identity-people
+spec:
+  managementPolicies: ["Create", "Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider: {}
+  initProvider:
+    redirectUrl: https://example.com
+    userEmailAddress: guest-03@example.com
+    userDisplayName: Guest 03
+    message:
+      additionalRecipients:
+        - guest-04@example.com
+---
+# Expect: crossplane-azuread-v6-applications (application password)
+apiVersion: applications.azuread.m.upbound.io/v1beta1
+kind: Application
+metadata:
+  name: v6-password
+  namespace: identity-apps
+  annotations:
+    crossplane.io/external-name: placeholder-app-01
+spec:
+  managementPolicies: ["Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: apps
+  forProvider:
+    password:
+      displayName: placeholder-password
+---
+# Expect: crossplane-azuread-v7-conditional-access (writable while identity-ca
+# is not labelled ca-write=enabled)
+apiVersion: conditionalaccess.azuread.m.upbound.io/v1beta1
+kind: AccessPolicy
+metadata:
+  name: v7-write-without-label
+  namespace: identity-ca
+  annotations:
+    crossplane.io/external-name: placeholder-policy-02
+spec:
+  managementPolicies: ["Observe", "Update"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: ca
+  forProvider:
+    displayName: Fixture policy 02
+    state: enabledForReportingButNotEnforced
+    conditions:
+      clientAppTypes: ["all"]
+      applications:
+        includedApplications: ["All"]
+      users:
+        includedUsers: ["All"]
+        excludedGroups: ["placeholder-breakglass-group"]
