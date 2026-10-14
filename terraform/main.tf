@@ -138,6 +138,14 @@ resource "proxmox_virtual_environment_hardware_mapping_usb" "yubihsm" {
   ]
 }
 
+# usb_mapping values in worker_nodes resolve through this map, so an unknown
+# value fails the plan instead of attaching the wrong device.
+locals {
+  usb_mapping_names = {
+    yubihsm = proxmox_virtual_environment_hardware_mapping_usb.yubihsm.name
+  }
+}
+
 # =============================================================================
 # Create Talos Templates on All Nodes
 # =============================================================================
@@ -472,7 +480,7 @@ module "worker_nodes" {
   # See: .claude/.ai-docs/openai-deepresearch/GPU_MAPPINGS_PROXMOX.md
   gpu_passthrough_mapping = each.value.is_gpu ? each.value.gpu_mapping : ""
 
-  # USB passthrough using USB resource mappings (taken from the resource so the
-  # mapping is created before the VM is updated)
-  usb_passthrough_mapping = each.value.usb_mapping != "" ? proxmox_virtual_environment_hardware_mapping_usb.yubihsm.name : ""
+  # USB passthrough using USB resource mappings (resolved through the mapping
+  # resource, so it is created before the VM is updated)
+  usb_passthrough_mapping = each.value.usb_mapping != "" ? local.usb_mapping_names[each.value.usb_mapping] : ""
 }
