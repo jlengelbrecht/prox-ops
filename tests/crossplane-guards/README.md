@@ -10,6 +10,7 @@ is a placeholder.
 | `admitted.yaml` | Every object admitted (positive controls) |
 | `denied.yaml` | Every object denied, by the policy in its `Expect:` comment |
 | `after-setup.yaml` | Every object denied, after step 4 below |
+| `deleting.yaml` | Every object admitted, then held in the deleting state by step 6 below |
 
 ## Policies
 
@@ -58,6 +59,9 @@ it is missing.
 | `v7-missing-breakglass` | after-setup | V7 |
 | `v7-created-enforced` | after-setup | V7 |
 | `policy-01` (update) | after-setup | V7 |
+| `people` (deleting, spec patch) | deleting | V5 |
+| `grp-observe-01` (deleting, annotation patch) | deleting | V8 |
+| `grp-admin-observe-01` (deleting, made writable) | deleting | V8 |
 
 Each fixture breaks one rule. If a denial message names a different policy too,
 the fixture is wrong, not the policy.
@@ -117,7 +121,54 @@ requests are skipped by design.
    complete. The provider removes its own finalizers, and its requests are not
    matched.
 
-6. Fail-closed: `kubectl -n identity-system delete configmap
+6. Deleting state: a finalizer or other metadata-only change must still be
+   allowed while a spec change must not. There is no fixture for V1 here: a
+   `ClusterProviderConfig` is denied on create, so it can never reach the
+   deleting state.
+
+   ```bash
+   kubectl apply -f deleting.yaml
+   kubectl delete --wait=false -f deleting.yaml
+
+   # Each must be denied, by the policy named here.
+   kubectl patch providerconfig.azuread.m.upbound.io people -n identity-people \
+     --type merge --dry-run=server \
+     -p '{"spec":{"credentials":{"source":"Environment"}}}'
+     # denied by V5
+
+   kubectl patch group.groups.azuread.m.upbound.io grp-observe-01 -n identity-people \
+     --type merge --dry-run=server \
+     -p '{"metadata":{"annotations":{"crossplane.io/external-name":"placeholder-unlisted-01"}}}'
+     # denied by V8: the new external name is not on the allowlist
+
+   kubectl patch group.groups.azuread.m.upbound.io grp-admin-observe-01 -n identity-people \
+     --type merge --dry-run=server \
+     -p '{"spec":{"managementPolicies":["Observe","Create","Update"],"forProvider":{"displayName":"placeholder-admin-group"}}}'
+     # denied by V8: a spec change is checked while deleting, and this group
+     # must stay Observe-only
+
+   # Re-checked, not skipped: an allowed spec change is still admitted.
+   kubectl patch group.groups.azuread.m.upbound.io grp-observe-01 -n identity-people \
+     --type merge --dry-run=server \
+     -p '{"spec":{"forProvider":{"description":"changed while deleting"}}}'
+     # admitted
+
+   # A metadata-only change must still succeed, and each object must disappear.
+   # Remove only the test finalizer, by value (Crossplane may add its own).
+   for o in providerconfig.azuread.m.upbound.io/people \
+            group.groups.azuread.m.upbound.io/grp-observe-01 \
+            group.groups.azuread.m.upbound.io/grp-admin-observe-01; do
+     i=$(kubectl -n identity-people get "$o" -o json |
+       jq '.metadata.finalizers | index("test.example.org/hold")')
+     kubectl -n identity-people patch "$o" --type json -p \
+       "[{\"op\":\"test\",\"path\":\"/metadata/finalizers/$i\",\"value\":\"test.example.org/hold\"},
+         {\"op\":\"remove\",\"path\":\"/metadata/finalizers/$i\"}]"
+   done
+   kubectl -n identity-people get providerconfigs.azuread.m.upbound.io,groups.groups.azuread.m.upbound.io
+   # No resources found
+   ```
+
+7. Fail-closed: `kubectl -n identity-system delete configmap
    identity-guard-params`, then `kubectl apply --dry-run=server -f
    admitted.yaml`. Every managed resource must now be denied by V8, and the
    AccessPolicy by V7 as well. The ProviderConfig is still admitted.
