@@ -1,0 +1,67 @@
+---
+# Exposes the YubiHSM 2 (USB vendor 1050, product 0030) passed through to
+# k8s-work-12 as the schedulable resource devic.es/yubihsm2. Runs only on
+# that node: it's the only one with the device. The ValidatingAdmissionPolicy
+# next to this DaemonSet restricts which namespaces may request the resource.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: yubihsm-device-plugin
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: yubihsm-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yubihsm-device-plugin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yubihsm-device-plugin
+    spec:
+      priorityClassName: system-node-critical
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: k8s-work-12
+      tolerations:
+        - operator: "Exists"
+          effect: "NoExecute"
+        - operator: "Exists"
+          effect: "NoSchedule"
+      containers:
+        - image: ghcr.io/squat/generic-device-plugin:0.2.0@sha256:66c8d5c270eb2b721f1064c549b9b7898152a6d2f0163380a5d37dc7636c20ff
+          args:
+            - --device
+            - |
+              name: yubihsm2
+              groups:
+                - count: 1
+                  usb:
+                    - vendor: "1050"
+                      product: "0030"
+          name: yubihsm-device-plugin
+          resources:
+            requests:
+              cpu: 10m
+              memory: 20Mi
+            limits:
+              memory: 50Mi
+          ports:
+            - containerPort: 8080
+              name: http
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: dev
+              mountPath: /dev
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        - name: dev
+          hostPath:
+            path: /dev
+  updateStrategy:
+    type: RollingUpdate
