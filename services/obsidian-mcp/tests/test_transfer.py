@@ -220,7 +220,10 @@ class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
                     again = (await client_export(url))
                     self.assertEqual((await http.get("/transfer", headers=again)).status_code, 200)
                 self.assertEqual((await http.get("/transfer", headers={"X-Obsidian-Transfer": "A" * 43})).status_code, 404)
-                self.assertEqual((await http.get("/transfer/" + token["X-Obsidian-Transfer"])).status_code, 404)
+                # Old-style URLs carrying the token in the path are not served and do not use it up.
+                fresh = await client_export(url)
+                self.assertEqual((await http.get("/transfer/" + fresh["X-Obsidian-Transfer"])).status_code, 404)
+                self.assertEqual((await http.get("/transfer", headers=fresh)).status_code, 200)
 
     async def test_tool_hidden_without_plugin_support_or_grant(self):
         self.bridge.extra_capabilities = []

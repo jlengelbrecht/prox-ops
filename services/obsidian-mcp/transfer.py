@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 import hashlib
+import io
 import json
 import secrets
 import threading
@@ -123,3 +124,38 @@ def export_stream(bridge, vault: str, infos: list[dict[str, Any]]) -> Iterator[b
         archive.writestr(CHECKSUMS, "".join(f"{item['sha256']}  {item['path']}\n" for item in manifest))
         archive.writestr(MANIFEST, json.dumps({"vault": vault, "files": manifest}, indent=2) + "\n")
     yield from sink.drain()
+
+
+IMPORT_BODY_SECONDS = 300.0
+IMPORT_STREAMS = 2
+_PILLOW_FORMATS = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".gif": "GIF", ".webp": "WEBP"}
+_MAGIC = {".png": (b"\x89PNG\r\n\x1a\n",), ".jpg": (b"\xff\xd8\xff",), ".jpeg": (b"\xff\xd8\xff",),
+          ".gif": (b"GIF87a", b"GIF89a"), ".pdf": (b"%PDF-",)}
+
+
+def content_matches(path: str, data: bytes) -> bool:
+    """Whether the bytes really are the type the file name claims, so an upload cannot slip
+    one kind of file into the vault under another's extension."""
+    import os
+    import warnings
+    from PIL import Image
+
+    extension = os.path.splitext(path)[1].lower()
+    if extension == ".webp":
+        if not (data[:4] == b"RIFF" and data[8:12] == b"WEBP"):
+            return False
+    elif not any(data.startswith(magic) for magic in _MAGIC.get(extension, ())):
+        return False
+    if extension not in _PILLOW_FORMATS:
+        return True
+    try:
+        with warnings.catch_warnings():
+            # Large but legitimate images only warn; decompression bombs still raise.
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data)) as image:
+                if image.format != _PILLOW_FORMATS[extension]:
+                    return False
+                image.verify()
+    except Exception:
+        return False
+    return True
