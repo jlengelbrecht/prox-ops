@@ -52,3 +52,32 @@ spec:
         - type: RequestHeaderModifier
           requestHeaderModifier:
             remove: [X-authentik-uid, X-authentik-groups, X-authentik-username, X-authentik-email, X-authentik-name]
+---
+# Byte-exact attachment transfer for MCP clients (export and import). The single-use
+# credential travels in the X-Obsidian-Transfer request header, never in the path,
+# so access logs (which record the path) do not contain it. This route has its own
+# traffic policy: uploads stream up to 50 MB, beyond the MCP route's 1 MiB buffer.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: obsidian-mcp-transfer
+  namespace: notes
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - obsidian-mcp.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /transfer
+      backendRefs:
+        - name: obsidian
+          port: 8000
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: [X-authentik-uid, X-authentik-groups, X-authentik-username, X-authentik-email, X-authentik-name]
