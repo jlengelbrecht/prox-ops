@@ -173,6 +173,16 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
     }
   }
 
+  # USB passthrough configuration using a USB resource mapping
+  # Uses a cluster-wide resource mapping for security (no root privileges needed)
+  dynamic "usb" {
+    for_each = var.usb_passthrough_mapping != "" ? [var.usb_passthrough_mapping] : []
+    content {
+      mapping = usb.value
+      usb3    = false
+    }
+  }
+
   # Tags for organization
   tags = concat(
     [var.is_controlplane ? "controlplane" : "worker"],

@@ -122,6 +122,31 @@ locals {
 }
 
 # =============================================================================
+# USB Resource Mappings
+# =============================================================================
+# YubiHSM 2 on Thor, passed through to k8s-work-12 (VM 915) via usb_mapping.
+# No path is set, so the mapping follows the device rather than a USB port.
+
+resource "proxmox_virtual_environment_hardware_mapping_usb" "yubihsm" {
+  name    = "yubihsm"
+  comment = "YubiHSM 2 for k8s-work-12 (VM 915)"
+  map = [
+    {
+      id   = "1050:0030"
+      node = "Thor"
+    },
+  ]
+}
+
+# usb_mapping values in worker_nodes resolve through this map, so an unknown
+# value fails the plan instead of attaching the wrong device.
+locals {
+  usb_mapping_names = {
+    yubihsm = proxmox_virtual_environment_hardware_mapping_usb.yubihsm.name
+  }
+}
+
+# =============================================================================
 # Create Talos Templates on All Nodes
 # =============================================================================
 # Creates 8 templates total (2 per node × 4 nodes)
@@ -454,4 +479,8 @@ module "worker_nodes" {
   # GPU passthrough configuration using PCI resource mappings
   # See: .claude/.ai-docs/openai-deepresearch/GPU_MAPPINGS_PROXMOX.md
   gpu_passthrough_mapping = each.value.is_gpu ? each.value.gpu_mapping : ""
+
+  # USB passthrough using USB resource mappings (resolved through the mapping
+  # resource, so it is created before the VM is updated)
+  usb_passthrough_mapping = each.value.usb_mapping != "" ? local.usb_mapping_names[each.value.usb_mapping] : ""
 }

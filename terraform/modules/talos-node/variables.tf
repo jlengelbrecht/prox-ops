@@ -125,6 +125,13 @@ variable "gpu_passthrough_devices" {
   default = []
 }
 
+# USB Configuration
+variable "usb_passthrough_mapping" {
+  description = "USB resource mapping ID for USB passthrough (e.g., 'yubihsm')"
+  type        = string
+  default     = ""
+}
+
 # VM Behavior
 variable "auto_start" {
   description = "Start VM after creation"

@@ -287,6 +287,7 @@ variable "worker_nodes" {
     is_gpu       = optional(bool, false)
     gpu_model    = optional(string, "")
     gpu_mapping  = optional(string, "")  # PCI resource mapping ID (e.g., "thor-gpu")
+    usb_mapping  = optional(string, "")  # USB resource mapping ID (e.g., "yubihsm")
     additional_network_devices = optional(list(object({
       bridge  = string
       vlan_id = number
