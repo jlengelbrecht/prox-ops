@@ -648,7 +648,15 @@ class BridgeClient:
             except BridgeError:
                 pass
             raise
-        return self.commit_attachment(vault, stage, client_id=client_id)
+        try:
+            return self.commit_attachment(vault, stage, client_id=client_id)
+        except BridgeError:
+            # A commit refused before it started leaves the stage open; free its path and memory.
+            try:
+                self._call(vault, "stage_abort", {"client": client_id, "stage": stage})
+            except BridgeError:
+                pass
+            raise
 
     def commit_attachment(self, vault: str, stage: str, *, client_id: str = "bridge") -> dict[str, Any]:
         """Commit a fully staged attachment, or report the outcome of an earlier commit.

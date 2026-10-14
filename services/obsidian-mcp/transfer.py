@@ -137,7 +137,6 @@ def content_matches(path: str, data: bytes) -> bool:
     """Whether the bytes really are the type the file name claims, so an upload cannot slip
     one kind of file into the vault under another's extension."""
     import os
-    import warnings
     from PIL import Image
 
     extension = os.path.splitext(path)[1].lower()
@@ -148,14 +147,13 @@ def content_matches(path: str, data: bytes) -> bool:
         return False
     if extension not in _PILLOW_FORMATS:
         return True
+    # verify() checks structure without decoding pixels. Images past Pillow's bomb limit
+    # (about 179 megapixels) raise at open and are refused.
     try:
-        with warnings.catch_warnings():
-            # Large but legitimate images only warn; decompression bombs still raise.
-            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(data)) as image:
-                if image.format != _PILLOW_FORMATS[extension]:
-                    return False
-                image.verify()
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format != _PILLOW_FORMATS[extension]:
+                return False
+            image.verify()
     except Exception:
         return False
     return True

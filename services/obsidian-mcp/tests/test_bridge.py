@@ -336,6 +336,11 @@ class BridgeTests(unittest.TestCase):
             lie["commit"] = "unavailable"
             with self.assertRaisesRegex(bridge.BridgeError, "unavailable"):
                 client.commit_attachment("iam", pending["stage"])
+            # A commit refused before it starts must not leave the stage holding its path.
+            before = sum(1 for entry in stages.values() if entry.get("aborted"))
+            with self.assertRaisesRegex(bridge.BridgeError, "unavailable"):
+                client.write_attachment("iam", "Pics/refused.png", [b"abcd"], 4, "0" * 64)
+            self.assertEqual(sum(1 for entry in stages.values() if entry.get("aborted")), before + 1)
             lie.pop("commit")
             for bad in ((0, "0" * 64), (51 * 1024 * 1024, "0" * 64), (4, "XYZ")):
                 with self.assertRaisesRegex(bridge.BridgeError, "invalid_request"):

@@ -1192,7 +1192,7 @@ def create_gateway(
             raise ToolError("Too many transfers outstanding; try again in a few minutes") from None
         link = _transfer_link(transfer_origin, token, ttl)
         return {**link, "method": "PUT", "path": path, "size": size,
-                "command": f"curl -fsS -T FILE -H '{link['header']}' '{link['url']}'"}
+                "command": f"curl -sS --fail-with-body -T FILE -H '{link['header']}' '{link['url']}'"}
 
     @mcp.tool
     async def import_receipt(vault: str, stage: str) -> dict:
@@ -1301,9 +1301,11 @@ def create_gateway(
                     bridge.write_attachment, entry.vault, expected["path"], [data], expected["size"],
                     expected["sha256"], client_id=entry.client))
             except BridgeError as error:
-                status = {"conflict": 409, "unsupported_media": 415, "invalid_path": 400,
-                          "invalid_request": 400, "limit_exceeded": 429}.get(error.code, 503)
-                return answer(status, {"error": error.code, "written": False})
+                # Every refusal here means nothing was written; a new link is needed to retry.
+                status, code = {"conflict": (409, "conflict"), "unsupported_media": (415, "unsupported_media"),
+                                "invalid_path": (400, "invalid_path"), "invalid_request": (400, "invalid_request"),
+                                "limit_exceeded": (503, "app_busy")}.get(error.code, (503, "unavailable"))
+                return answer(status, {"error": code, "written": False})
         if result["status"] == "committed":
             return answer(201, {"status": "committed", "path": result["path"], "size": result["size"],
                                 "sha256": result["sha256"]})

@@ -1,8 +1,10 @@
 """Byte-exact attachment import: content checks, the upload route and the receipt tool."""
 
+import asyncio
 import hashlib
 import io
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -44,8 +46,8 @@ class ImportBridge(AttachmentBridge):
     def write_attachment(self, vault, path, chunks, size, sha256, *, client_id="bridge"):
         data = b"".join(chunks)
         assert len(data) == size and hashlib.sha256(data).hexdigest() == sha256
-        if self.outcome == "conflict":
-            raise BridgeError("conflict")
+        if self.outcome in {"conflict", "unavailable", "limit_exceeded", "unsupported_media"}:
+            raise BridgeError(self.outcome)
         self.writes.append((vault, path, client_id))
         if self.outcome == "pending":
             stage = "00000000-0000-4000-8000-000000000001"
@@ -139,6 +141,11 @@ class ImportRouteTests(unittest.IsolatedAsyncioTestCase):
                 yield b"x"
             response = await http.put("/transfer", headers=await self.link(client, "g.png", image), content=chunked())
             self.assertEqual((response.status_code, response.json()["error"]), (413, "size_mismatch"))
+
+            async def short():
+                yield image[:-1]
+            response = await http.put("/transfer", headers=await self.link(client, "h.png", image), content=short())
+            self.assertEqual((response.status_code, response.json()["error"]), (400, "size_mismatch"))
             self.assertEqual(self.bridge.writes, [])
             wrong_host = await self.link(client, "e.png", image)
             self.assertEqual((await http.put("/transfer", content=image, headers={**wrong_host, "host": "evil.example"})).status_code, 421)
@@ -157,6 +164,11 @@ class ImportRouteTests(unittest.IsolatedAsyncioTestCase):
             self.bridge.outcome = "conflict"
             response = await http.put("/transfer", headers=await self.link(client, "race.png", image), content=image)
             self.assertEqual((response.status_code, response.json()), (409, {"error": "conflict", "written": False}))
+            for outcome, status, error in (("unavailable", 503, "unavailable"), ("limit_exceeded", 503, "app_busy"),
+                                           ("unsupported_media", 415, "unsupported_media")):
+                self.bridge.outcome = outcome
+                response = await http.put("/transfer", headers=await self.link(client, f"{outcome}.png", image), content=image)
+                self.assertEqual((response.status_code, response.json()), (status, {"error": error, "written": False}))
             self.bridge.outcome = "pending"
             response = await http.put("/transfer", headers=await self.link(client, "slow.png", image), content=image)
             self.assertEqual(response.status_code, 202)
@@ -166,6 +178,32 @@ class ImportRouteTests(unittest.IsolatedAsyncioTestCase):
         async with running(self.app) as url, Client(url + "/mcp", auth=TOKENS["codex"]) as other:
             denied = await other.call_tool("import_receipt", {"vault": "iam", "stage": stage}, raise_on_error=False)
             self.assertTrue(denied.is_error)
+
+    async def test_busy_answer_keeps_the_link(self):
+        image = png()
+        started = threading.Semaphore(0)
+        release = threading.Event()
+        original = self.bridge.write_attachment
+
+        def blocked(*args, **kwargs):
+            started.release()
+            release.wait(10)
+            return original(*args, **kwargs)
+
+        async with running(self.app) as url, Client(url + "/mcp", auth=TOKENS["claude"]) as client, \
+                httpx.AsyncClient(base_url=url) as http:
+            link = await self.link(client, "later.png", image)
+            self.bridge.write_attachment = blocked
+            uploads = [asyncio.create_task(http.put("/transfer", headers=await self.link(client, f"{n}.png", image),
+                                                    content=image)) for n in ("one", "two")]
+            for _ in range(2):
+                self.assertTrue(await asyncio.to_thread(started.acquire, True, 10))
+            busy = await http.put("/transfer", headers=link, content=image)
+            self.assertEqual((busy.status_code, busy.json()["error"]), (429, "busy"))
+            release.set()
+            self.assertEqual([(await task).status_code for task in uploads], [201, 201])
+            self.bridge.write_attachment = original
+            self.assertEqual((await http.put("/transfer", headers=link, content=image)).status_code, 201)
 
     async def test_tools_hidden_without_plugin_support(self):
         self.bridge.extra_capabilities = ["file_info"]
