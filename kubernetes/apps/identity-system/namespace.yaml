@@ -1,0 +1,17 @@
+---
+# Identity credentials (Entra tenant automation) get their own namespace, 1Password
+# vault, Connect server and ClusterSecretStore, never sharing with the general
+# onepassword-connect in external-secrets. Prune is disabled for the same reason as
+# crossplane-system: deleting this namespace would take the Connect deployment and
+# secret store with it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: identity-system
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  labels:
+    toolkit.fluxcd.io/tenant: sre-team
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

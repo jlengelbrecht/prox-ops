@@ -1,0 +1,49 @@
+---
+# This Connect server holds identity-tenant credentials, so it is fenced tighter
+# than the general onepassword-connect: only the ESO controller may reach it, and
+# its egress is DNS plus the 1Password SaaS API only.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: onepassword-connect-identity
+  namespace: identity-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app: onepassword-connect
+
+  ingress:
+    # external-secrets-operator reading secrets through this store.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: external-secrets
+            app.kubernetes.io/name: external-secrets
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchName: 1password.com
+              - matchPattern: "*.1password.com"
+
+    # 1Password SaaS API. Verify with Hubble after deploy.
+    - toFQDNs:
+        - matchName: 1password.com
+        - matchPattern: "*.1password.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

@@ -1,0 +1,119 @@
+---
+# Second 1Password Connect deployment, dedicated to the Entra identity tenant.
+# Identity credentials stay in their own vault (Identity-Automation), their own
+# Connect server, and their own ClusterSecretStore, never sharing the
+# onepassword-connect deployment in external-secrets or its vault.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: onepassword-connect
+  namespace: identity-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: connect
+      # renovate: datasource=helm registryUrl=https://1password.github.io/connect-helm-charts
+      version: 2.1.1
+      sourceRef:
+        kind: HelmRepository
+        name: 1password
+        namespace: identity-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    cleanupOnFail: true
+    remediation:
+      retries: 3
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: onepassword-connect
+            patch: |
+              - op: add
+                path: /spec/template/spec/securityContext
+                value:
+                  runAsNonRoot: true
+                  runAsUser: 999
+                  runAsGroup: 999
+                  fsGroup: 999
+                  seccompProfile:
+                    type: RuntimeDefault
+              - op: add
+                path: /spec/template/spec/containers/0/securityContext
+                value:
+                  runAsNonRoot: true
+                  runAsUser: 999
+                  runAsGroup: 999
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+                  readOnlyRootFilesystem: false
+              - op: add
+                path: /spec/template/spec/containers/1/securityContext
+                value:
+                  runAsNonRoot: true
+                  runAsUser: 999
+                  runAsGroup: 999
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+                  readOnlyRootFilesystem: false
+              # Cilium FQDN egress rules drop names resolved through the search
+              # path (ndots default 5); force the absolute name lookup first.
+              - op: add
+                path: /spec/template/spec/dnsConfig
+                value:
+                  options:
+                    - name: ndots
+                      value: "1"
+  values:
+    connect:
+      credentials_base64: ""
+      credentialsName: onepassword-connect
+      credentialsKey: 1password-credentials.json
+
+    operator:
+      create: false
+
+    replicaCount: 2
+
+    persistence:
+      enabled: false
+
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
+    service:
+      type: ClusterIP
+      port: 8080
+
+    podAnnotations:
+      secret.reloader.stakater.com/reload: "onepassword-connect"
+
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values:
+                      - connect
+              topologyKey: kubernetes.io/hostname
