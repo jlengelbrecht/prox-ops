@@ -53,6 +53,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
           version: v0.24.0
@@ -67,13 +70,23 @@ jobs:
           docker buildx build --platform linux/amd64 --build-arg VCS_REF="${GITHUB_SHA}" \
             --provenance=false --sbom=false --metadata-file /tmp/yubihsm-tools-image.json \
             --tag "ghcr.io/jlengelbrecht/yubihsm-tools:sha-${GITHUB_SHA}" \
-            --tag ghcr.io/jlengelbrecht/yubihsm-tools:main \
             --push services/yubihsm-tools
-      - name: Smoke test the published digest and record it
+      - name: Smoke test the pushed digest, then move main
         run: |
           set -euo pipefail
           digest=$(jq -r '."containerimage.digest"' /tmp/yubihsm-tools-image.json)
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           # This build is separate from the verify job, so test what was pushed.
           docker run --rm "ghcr.io/jlengelbrecht/yubihsm-tools@${digest}" sh -ec "$SMOKE_TEST"
-          echo "Published ghcr.io/jlengelbrecht/yubihsm-tools@${digest}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published ghcr.io/jlengelbrecht/yubihsm-tools:sha-${GITHUB_SHA}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+          # Move :main only to the tested digest, and only while the image's
+          # files on main still match this commit, so an older run finishing
+          # late can't win. Unrelated commits on main don't block it.
+          git fetch --quiet origin main
+          if ! git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- services/yubihsm-tools .github/workflows/yubihsm-tools.yaml; then
+            echo "A newer change to the image is on main; leaving :main to its run" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker buildx imagetools create --tag ghcr.io/jlengelbrecht/yubihsm-tools:main \
+            "ghcr.io/jlengelbrecht/yubihsm-tools@${digest}"
+          echo "Moved :main to ${digest}" >> "$GITHUB_STEP_SUMMARY"
