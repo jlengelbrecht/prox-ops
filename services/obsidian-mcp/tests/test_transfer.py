@@ -112,8 +112,12 @@ class StreamTests(unittest.TestCase):
         bridge = AttachmentBridge()
         infos = [bridge.attachment_info("iam", "Shots/a.png")]
         bridge.changed.add("Shots/a.png")
-        with self.assertRaises(Exception):
-            b"".join(export_stream(bridge, "iam", infos))
+        sent = []
+        with self.assertRaisesRegex(ValueError, "changed during export"):
+            for chunk in export_stream(bridge, "iam", infos):
+                sent.append(chunk)
+        with self.assertRaises(zipfile.BadZipFile):
+            zipfile.ZipFile(io.BytesIO(b"".join(sent)))
 
 
 class PlanTests(unittest.TestCase):
@@ -166,7 +170,7 @@ class SlotTests(unittest.IsolatedAsyncioTestCase):
 async def client_export(url):
     async with Client(url + "/mcp", auth=TOKENS["claude"]) as client:
         result = (await client.call_tool("export_attachments", {"vault": "iam", "paths": ["Shots/a.png"]})).data
-    return "/transfer/" + result["url"].rsplit("/", 1)[1]
+    return {"X-Obsidian-Transfer": result["header"].split(": ", 1)[1]}
 
 
 class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
@@ -195,22 +199,28 @@ class ExportRouteTests(unittest.IsolatedAsyncioTestCase):
                 bad = await client.call_tool("export_attachments", {"vault": "iam", "folder": "Shots", "note": "pack.md"},
                                              raise_on_error=False)
                 self.assertTrue(bad.is_error)
-            self.assertTrue(result["url"].startswith("https://obsidian-mcp.homelab0.org/transfer/"))
-            path = "/transfer/" + result["url"].rsplit("/", 1)[1]
+            self.assertEqual(result["url"], "https://obsidian-mcp.homelab0.org/transfer")
+            self.assertTrue(result["header"].startswith("X-Obsidian-Transfer: "))
+            token = {"X-Obsidian-Transfer": result["header"].split(": ", 1)[1]}
+            self.assertIn(token["X-Obsidian-Transfer"], result["command"])
             async with httpx.AsyncClient(base_url=url) as http:
-                self.assertEqual((await http.get(path, headers={"host": "evil.example"})).status_code, 421)
-                response = await http.get(path)
+                self.assertEqual((await http.get("/transfer", headers={**token, "host": "evil.example"})).status_code, 421)
+                # A HEAD probe neither serves nor uses up the link.
+                self.assertEqual((await http.head("/transfer", headers=token)).status_code, 405)
+                self.assertEqual((await http.get("/transfer")).status_code, 404)
+                response = await http.get("/transfer", headers=token)
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.headers["content-type"], "application/zip")
                 self.assertEqual(response.headers["cache-control"], "no-store")
                 files = unzip(response.content)
                 self.assertEqual(files["Shots/deep/b.jpg"], self.bridge.files["iam"]["Shots/deep/b.jpg"])
-                self.assertEqual((await http.get(path)).status_code, 404)
+                self.assertEqual((await http.get("/transfer", headers=token)).status_code, 404)
                 # Both download slots are free again after the finished stream.
                 for _ in range(3):
                     again = (await client_export(url))
-                    self.assertEqual((await http.get(again)).status_code, 200)
-                self.assertEqual((await http.get("/transfer/" + "A" * 43)).status_code, 404)
+                    self.assertEqual((await http.get("/transfer", headers=again)).status_code, 200)
+                self.assertEqual((await http.get("/transfer", headers={"X-Obsidian-Transfer": "A" * 43})).status_code, 404)
+                self.assertEqual((await http.get("/transfer/" + token["X-Obsidian-Transfer"])).status_code, 404)
 
     async def test_tool_hidden_without_plugin_support_or_grant(self):
         self.bridge.extra_capabilities = []

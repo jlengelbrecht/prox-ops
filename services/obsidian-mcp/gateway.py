@@ -652,7 +652,7 @@ def _image_content(bridge: BridgeClient, vault: str, source: str, target: str) -
                                             mimeType="image/png")])
 
 
-def _embed_targets(text: str, pattern: re.Pattern = None) -> list[str]:
+def _embed_targets(text: str, pattern: re.Pattern | None = None) -> list[str]:
     """Local image embeds in reading order: ![[target|...]] and ![alt](target "title").
 
     A bounded str.find scan instead of a regex, so hostile notes cannot cause backtracking.
@@ -761,6 +761,15 @@ class _SlotResponse(StreamingResponse):
             await super().__call__(scope, receive, send)
         finally:
             self._release()
+
+
+# The link credential travels in this header, not the URL, so proxy access logs never record it.
+TRANSFER_HEADER = "X-Obsidian-Transfer"
+
+
+def _transfer_link(origin: str, token: str, ttl: float) -> dict:
+    url = f"{origin}/transfer"
+    return {"url": url, "header": f"{TRANSFER_HEADER}: {token}", "expires_in_seconds": int(ttl)}
 
 
 def _transfer_host(request: Request) -> bool:
@@ -1123,9 +1132,9 @@ def create_gateway(
         """Get the original, byte-exact files (PNG, JPEG, WebP, GIF, PDF) out of a vault, e.g. to
         save screenshots to disk at full resolution. Give exactly one of: `paths` (attachment
         paths), `folder` (everything under it, recursively; "" is the whole vault) or `note`
-        (the attachments that note embeds). Returns a one-time `url`, valid for 10 minutes, that
-        serves a zip of the files plus .SHA256SUMS; download it with a shell, for example:
-        curl -fsSo export.zip '<url>' && unzip -o export.zip -d <dir> && (cd <dir> && sha256sum -c .SHA256SUMS).
+        (the attachments that note embeds). Returns a one-time link, valid for 10 minutes, that
+        serves a zip of the files plus .SHA256SUMS: run the returned `command` in a shell, then
+        unzip -o export.zip -d <dir> && (cd <dir> && sha256sum -c .SHA256SUMS).
         The bytes never pass through the conversation. Limits: 1000 files, 500 MB."""
         chosen = [paths is not None, folder is not None, bool(note)]
         if sum(chosen) != 1 or (paths is not None and not 1 <= len(paths) <= MAX_EXPORT_FILES):
@@ -1144,7 +1153,8 @@ def create_gateway(
             token, ttl = transfers.issue("export", context.client_id, vault, infos)
         except OverflowError:
             raise ToolError("Too many transfers outstanding; try again in a few minutes") from None
-        return {"url": f"{transfer_origin}/transfer/{token}", "expires_in_seconds": int(ttl),
+        link = _transfer_link(transfer_origin, token, ttl)
+        return {**link, "command": f"curl -fsS -H '{link['header']}' -o export.zip '{link['url']}'",
                 "files": len(infos), "bytes": total, "skipped": skipped[:_SKIPPED_SHOWN],
                 "skipped_total": len(skipped)}
 
@@ -1205,16 +1215,20 @@ def create_gateway(
     async def health(request: Request):
         return JSONResponse({"status": "ok"}, headers={"Cache-Control": "no-store"})
 
-    @mcp.custom_route("/transfer/{token}", methods=["GET"])
+    @mcp.custom_route("/transfer", methods=["GET"])
     async def transfer_route(request: Request):
         headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
                    "Referrer-Policy": "no-referrer"}
         if not _transfer_host(request):
             return PlainTextResponse("Misdirected Request", status_code=421, headers=headers)
+        # Starlette also routes HEAD here; a probe must not use up the single-use link.
+        if request.method != "GET":
+            return PlainTextResponse("Method Not Allowed", status_code=405, headers={**headers, "Allow": "GET"})
+        tokens = request.headers.getlist(TRANSFER_HEADER)
         if export_streams.locked():
             return PlainTextResponse("Busy; retry shortly", status_code=429,
                                      headers={**headers, "Retry-After": "10"})
-        entry = transfers.claim(request.path_params["token"], "export")
+        entry = transfers.claim(tokens[0] if len(tokens) == 1 else None, "export")
         if entry is None:
             return PlainTextResponse("Unavailable", status_code=404, headers=headers)
         await export_streams.acquire()
