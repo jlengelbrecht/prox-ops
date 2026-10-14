@@ -1,0 +1,11 @@
+# Grants non-root pods in the two allowed namespaces write access to the
+# YubiHSM 2 (USB 1050:0030) via supplementalGroups: [10050]. GID 10050 is
+# used for nothing else in the cluster. The device plugin and its admission
+# policy in kubernetes/apps/kube-system/yubihsm-device-plugin/ decide which
+# pods actually get the device; this rule only sets file permissions. This
+# is a udev rule rather than a machine.files entry because only /var is
+# writable on Talos.
+machine:
+  udev:
+    rules:
+      - SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1050", ATTR{idProduct}=="0030", MODE="0660", GROUP="10050"
