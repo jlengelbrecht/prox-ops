@@ -110,10 +110,9 @@ spec:
         preferredDuringSchedulingIgnoredDuringExecution:
           - weight: 100
             podAffinityTerm:
+              # The chart labels its pods app: onepassword-connect; it sets no
+              # app.kubernetes.io/name, so selecting on that would match nothing.
               labelSelector:
-                matchExpressions:
-                  - key: app.kubernetes.io/name
-                    operator: In
-                    values:
-                      - connect
+                matchLabels:
+                  app: onepassword-connect
               topologyKey: kubernetes.io/hostname
