@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import base64
+import hashlib
 import html
 import io
 import json
@@ -32,7 +33,7 @@ from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.tools.base import ToolResult
 from mcp.types import ImageContent, TextContent
 from PIL import Image, UnidentifiedImageError
-from starlette.concurrency import iterate_in_threadpool
+from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from starlette.middleware import Middleware as ASGIMiddleware
 from starlette.requests import ClientDisconnect, Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
@@ -40,9 +41,10 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, S
 from approval import (AdapterConflict, AgentContext, ApprovalCoordinator, ApprovalError,
                       Operation, PackageAttestation, PackagePreview, Preview, Snapshot, StateEntry,
                       VaultEnrollment)
-from bridge import ATTACHMENT_MIME, MAX_MEDIA, BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
+from bridge import ATTACHMENT_MIME, MAX_ATTACHMENT, MAX_MEDIA, BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
 from owner_auth import CsrfLedger, OwnerAuthConfig, OwnerAuthenticator, OwnerAuthError
-from transfer import MAX_EXPORT_BYTES, MAX_EXPORT_FILES, TransferLedger, export_stream
+from transfer import (IMPORT_BODY_SECONDS, IMPORT_STREAMS, MAX_EXPORT_BYTES, MAX_EXPORT_FILES,
+                      TransferLedger, content_matches, export_stream)
 from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
 
 
@@ -50,7 +52,7 @@ _SAFE_CAPABILITIES = {
     "list_notes": "list", "read_note": "read", "search": "search",
     "create_note": "create", "append_note": "append", "read_media": "embed",
     "manage_vaults": "vaults", "create_folder": "mkdir", "move": "move", "diagnostics": "logs",
-    "export_media": "file_info",
+    "export_media": "file_info", "import_media": "stage_begin",
 }
 # Destructive verbs: each needs the owner's approval through /owner/ before it runs.
 _GUARDED_CAPABILITIES = {"replace_note": "replace", "trash_note": "trash", "trash_folder": "trash",
@@ -66,7 +68,7 @@ _TOOL_VERBS = {
     "create_vault": "manage_vaults", "create_folder": "create_folder", "move": "move",
     "read_logs": "diagnostics", "list_plugins": "diagnostics", "read_settings": "diagnostics",
     "search_plugins": "diagnostics", "plugin_package": "diagnostics",
-    "export_attachments": "export_media",
+    "export_attachments": "export_media", "import_attachment": "import_media", "import_receipt": "import_media",
 }
 
 
@@ -891,6 +893,7 @@ def create_gateway(
     execution = _ExecutionPool(enrollments)
     transfers = TransferLedger()
     export_streams = asyncio.Semaphore(_EXPORT_STREAMS)
+    import_streams = asyncio.Semaphore(IMPORT_STREAMS)
     @asynccontextmanager
     async def lifespan(_server):
         try:
@@ -1158,6 +1161,52 @@ def create_gateway(
                 "files": len(infos), "bytes": total, "skipped": skipped[:_SKIPPED_SHOWN],
                 "skipped_total": len(skipped)}
 
+    @mcp.tool
+    async def import_attachment(vault: str, path: str, size: int, sha256: str) -> dict:
+        """Put a file from your disk into a vault byte for byte (PNG, JPEG, WebP, GIF or PDF, at
+        most 50 MB), e.g. an image to embed in a note. Give the new vault path, the file's size
+        in bytes and its lowercase SHA-256 (`stat -c %s file`, `sha256sum file`). Returns a
+        one-time link, valid for 10 minutes, and a `command` to run in a shell from the
+        file's directory (replace FILE with its name).
+        The upload is checked for size, hash and real file type, then created through Obsidian;
+        it never overwrites. Then embed it with create_note or append_note using ![[path]]."""
+        extension = os.path.splitext(path)[1].lower() if isinstance(path, str) else ""
+        if (not _safe_relative(path) or extension not in ATTACHMENT_MIME
+                or not isinstance(size, int) or isinstance(size, bool) or not 1 <= size <= MAX_ATTACHMENT
+                or not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256)):
+            raise ToolError("Give a vault path ending in .png, .jpg, .jpeg, .webp, .gif or .pdf, "
+                            "a size from 1 byte to 50 MB and a lowercase hex SHA-256")
+        deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+        context = agent()
+        await permitted(context, vault, "import_media", deadline)
+        try:
+            state = await execution.run(bridge.path_state, vault, path, deadline=deadline)
+        except BridgeError as error:
+            raise ToolError(f"Import failed: {error.code}") from None
+        if state.get("kind") != "absent":
+            raise ToolError("Something already exists at that path; choose a new one")
+        try:
+            token, ttl = transfers.issue("import", context.client_id, vault,
+                                         {"path": path, "size": size, "sha256": sha256})
+        except OverflowError:
+            raise ToolError("Too many transfers outstanding; try again in a few minutes") from None
+        link = _transfer_link(transfer_origin, token, ttl)
+        return {**link, "method": "PUT", "path": path, "size": size,
+                "command": f"curl -sS --fail-with-body -T FILE -H '{link['header']}' '{link['url']}'"}
+
+    @mcp.tool
+    async def import_receipt(vault: str, stage: str) -> dict:
+        """Outcome of an import whose upload answered 202 with a `stage`: committed, pending,
+        indeterminate or an error."""
+        deadline = time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT
+        context = agent()
+        await permitted(context, vault, "import_media", deadline)
+        try:
+            return await execution.run(partial(bridge.commit_attachment, client_id=context.client_id),
+                                       vault, stage, deadline=deadline)
+        except BridgeError as error:
+            raise ToolError(f"Import failed: {error.code}") from None
+
     if destructive_verbs:
         @mcp.tool
         async def prepare_action(vault: str, verb: str, arguments: dict[str, object]) -> dict:
@@ -1215,16 +1264,66 @@ def create_gateway(
     async def health(request: Request):
         return JSONResponse({"status": "ok"}, headers={"Cache-Control": "no-store"})
 
-    @mcp.custom_route("/transfer", methods=["GET"])
+    async def import_upload(request: Request, headers: dict, token: str | None) -> JSONResponse:
+        def answer(status: int, body: dict) -> JSONResponse:
+            return JSONResponse(body, status_code=status, headers=headers)
+
+        if import_streams.locked():
+            return answer(429, {"error": "busy", "written": False})
+        entry = transfers.claim(token, "import")
+        if entry is None:
+            return answer(404, {"error": "unavailable", "written": False})
+        expected = entry.payload
+        async with import_streams:
+            declared = request.headers.get("content-length")
+            if declared is not None and declared != str(expected["size"]):
+                return answer(400, {"error": "size_mismatch", "written": False})
+            data = bytearray()
+            try:
+                async with asyncio.timeout(IMPORT_BODY_SECONDS):
+                    async for chunk in request.stream():
+                        if len(data) + len(chunk) > expected["size"]:
+                            return answer(413, {"error": "size_mismatch", "written": False})
+                        data.extend(chunk)
+            except TimeoutError:
+                return answer(408, {"error": "timeout", "written": False})
+            except ClientDisconnect:
+                return answer(400, {"error": "incomplete", "written": False})
+            # The buffer is used as is (no second copy), and hashed off the event loop.
+            if len(data) != expected["size"]:
+                return answer(400, {"error": "size_mismatch", "written": False})
+            if await run_in_threadpool(lambda: hashlib.sha256(data).hexdigest()) != expected["sha256"]:
+                return answer(400, {"error": "sha256_mismatch", "written": False})
+            if not await run_in_threadpool(content_matches, expected["path"], data):
+                return answer(415, {"error": "content_type_mismatch", "written": False})
+            try:
+                result = await run_in_threadpool(partial(
+                    bridge.write_attachment, entry.vault, expected["path"], [data], expected["size"],
+                    expected["sha256"], client_id=entry.client))
+            except BridgeError as error:
+                # Every refusal here means nothing was written; a new link is needed to retry.
+                status, code = {"conflict": (409, "conflict"), "unsupported_media": (415, "unsupported_media"),
+                                "invalid_path": (400, "invalid_path"), "invalid_request": (400, "invalid_request"),
+                                "limit_exceeded": (503, "app_busy")}.get(error.code, (503, "unavailable"))
+                return answer(status, {"error": code, "written": False})
+        if result["status"] == "committed":
+            return answer(201, {"status": "committed", "path": result["path"], "size": result["size"],
+                                "sha256": result["sha256"]})
+        return answer(202, {"status": result["status"], "stage": result["stage"], "path": expected["path"],
+                            "next": "call import_receipt with this vault and stage"})
+
+    @mcp.custom_route("/transfer", methods=["GET", "PUT"])
     async def transfer_route(request: Request):
         headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
                    "Referrer-Policy": "no-referrer"}
         if not _transfer_host(request):
             return PlainTextResponse("Misdirected Request", status_code=421, headers=headers)
         # Starlette also routes HEAD here; a probe must not use up the single-use link.
-        if request.method != "GET":
-            return PlainTextResponse("Method Not Allowed", status_code=405, headers={**headers, "Allow": "GET"})
+        if request.method not in {"GET", "PUT"}:
+            return PlainTextResponse("Method Not Allowed", status_code=405, headers={**headers, "Allow": "GET, PUT"})
         tokens = request.headers.getlist(TRANSFER_HEADER)
+        if request.method == "PUT":
+            return await import_upload(request, headers, tokens[0] if len(tokens) == 1 else None)
         if export_streams.locked():
             return PlainTextResponse("Busy; retry shortly", status_code=429,
                                      headers={**headers, "Retry-After": "10"})
