@@ -1,0 +1,495 @@
+#!/bin/sh
+set -euf
+umask 077
+
+prog=xp-assertion-signer
+NL='
+'
+
+die2() {
+    echo "$prog: $1" >&2
+    exit 2
+}
+
+is_decimal() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+is_hex0x() {
+    case "$1" in
+        0x*) v=${1#0x} ;;
+        0X*) v=${1#0X} ;;
+        *) return 1 ;;
+    esac
+    case "$v" in
+        ''|*[!0-9a-fA-F]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+validate_id_chars() {
+    case "$1" in
+        ''|*[!A-Za-z0-9-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+validate_identity_name() {
+    n=$1
+    len=${#n}
+    if [ "$len" -lt 1 ] || [ "$len" -gt 32 ]; then
+        return 1
+    fi
+    case "$n" in
+        *[!a-z0-9-]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+validate_key_id() {
+    case "$1" in
+        0x[0-9a-fA-F]|0x[0-9a-fA-F][0-9a-fA-F]|0x[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]|0x[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+            return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# A command substitution strips every trailing newline, not just one: append a
+# sentinel byte first so the real trailing newlines survive into RAW_VALUE,
+# then remove exactly one of them.
+read_raw() {
+    RAW_VALUE=$(cat "$1"; printf x)
+    RAW_VALUE=${RAW_VALUE%x}
+    case "$RAW_VALUE" in
+        *"$NL") RAW_VALUE=${RAW_VALUE%"$NL"} ;;
+    esac
+}
+
+set_var() {
+    eval "$1=\$2"
+}
+
+get_var() {
+    eval "printf '%s' \"\$$1\""
+}
+
+b64url() {
+    printf '%s' "$1" | base64 -w0 | tr -- '+/' '-_' | tr -d '='
+}
+
+b64url_decode() {
+    s=$1
+    case $(( ${#s} % 4 )) in
+        2) s="${s}==" ;;
+        3) s="${s}=" ;;
+    esac
+    printf '%s' "$s" | tr -- '-_' '+/' | base64 -d
+}
+
+b64url_decode_bin() {
+    bd_in=$1
+    bd_out=$2
+    case $(( ${#bd_in} % 4 )) in
+        2) bd_in="${bd_in}==" ;;
+        3) bd_in="${bd_in}=" ;;
+    esac
+    printf '%s' "$bd_in" | tr -- '-_' '+/' | base64 -d > "$bd_out"
+}
+
+# dash has no pipefail, so a plain "openssl x509 | openssl dgst | base64 | tr"
+# pipeline's exit status is tr's, not x509's: a bad certificate would not be
+# caught by a caller checking "|| die2". Convert the cert to DER as its own
+# checked step first.
+cert_to_der() {
+    certfile=$1
+    derfile=$2
+    openssl x509 -in "$certfile" -outform DER -out "$derfile" 2>/dev/null
+}
+
+compute_x5t() {
+    certfile=$1
+    derfile=$(mktemp "${TMPDIR:-/tmp}/xp-der.XXXXXX") || return 1
+    if ! cert_to_der "$certfile" "$derfile"; then
+        rm -f "$derfile"
+        return 1
+    fi
+    result=$(openssl dgst -sha1 -binary "$derfile" | base64 -w0 | tr -- '+/' '-_' | tr -d '=')
+    rc=$?
+    rm -f "$derfile"
+    [ "$rc" -eq 0 ] || return 1
+    printf '%s' "$result"
+}
+
+compute_x5t256() {
+    certfile=$1
+    derfile=$(mktemp "${TMPDIR:-/tmp}/xp-der.XXXXXX") || return 1
+    if ! cert_to_der "$certfile" "$derfile"; then
+        rm -f "$derfile"
+        return 1
+    fi
+    result=$(openssl dgst -sha256 -binary "$derfile" | base64 -w0 | tr -- '+/' '-_' | tr -d '=')
+    rc=$?
+    rm -f "$derfile"
+    [ "$rc" -eq 0 ] || return 1
+    printf '%s' "$result"
+}
+
+# Only ever reached from run (HSM) or selftest (throwaway software key); no
+# flag or env var picks the branch, so a misuse of selftest can't touch the HSM.
+# dash has no 'local': every variable here is global, so each function uses
+# names no caller uses (sign_assertion once clobbered build_jwt's outfile).
+sign_assertion() {
+    sa_key=$1
+    sa_in=$2
+    sa_out=$3
+    if [ "$SIGN_MODE" = hsm ]; then
+        yubihsm-shell -C yhusb:// --authkey "$AUTH_KEY_ID" -p "$PASSWORD" \
+            -a sign-pkcs1v15 -i "$sa_key" -A rsa-pkcs1-sha256 \
+            --in "$sa_in" --informat binary --outformat binary --out "$sa_out" \
+            >/dev/null 2>&1
+    else
+        openssl dgst -sha256 -sign "$sa_key" -out "$sa_out" "$sa_in" >/dev/null 2>&1
+    fi
+}
+
+# Builds the assertion and signs it with whatever sign_assertion resolves to.
+# Called only as the condition of an if/while, so a failing yubihsm-shell (an
+# expected, transient condition) does not trip set -e for the caller.
+build_jwt() {
+    kid=$1
+    cid=$2
+    x5t=$3
+    x5t256=$4
+    lifetime=$5
+    outfile=$6
+
+    now=$(date +%s) || return 1
+    iat=$((now - 60))
+    nbf=$iat
+    exp=$((now + lifetime))
+    jti=$(cat /proc/sys/kernel/random/uuid) || return 1
+
+    header="{\"alg\":\"RS256\",\"typ\":\"JWT\",\"x5t\":\"$x5t\",\"x5t#S256\":\"$x5t256\"}"
+    payload="{\"aud\":\"https://login.microsoftonline.com/$TENANT_ID/oauth2/v2.0/token\",\"iss\":\"$cid\",\"sub\":\"$cid\",\"jti\":\"$jti\",\"nbf\":$nbf,\"iat\":$iat,\"exp\":$exp}"
+
+    b64h=$(b64url "$header") || return 1
+    b64p=$(b64url "$payload") || return 1
+    si="$b64h.$b64p"
+
+    tmpdir=${TMPDIR:-/tmp}
+    sigin=$(mktemp "$tmpdir/xp-sigin.XXXXXX") || return 1
+    sigout=$(mktemp "$tmpdir/xp-sigout.XXXXXX") || { rm -f "$sigin"; return 1; }
+
+    printf '%s' "$si" > "$sigin" || { rm -f "$sigin" "$sigout"; return 1; }
+
+    sign_assertion "$kid" "$sigin" "$sigout"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        rm -f "$sigin" "$sigout"
+        return "$rc"
+    fi
+
+    sigb64=$(base64 -w0 < "$sigout" | tr -- '+/' '-_' | tr -d '=') || { rm -f "$sigin" "$sigout"; return 1; }
+    rm -f "$sigin" "$sigout"
+
+    printf '%s.%s' "$si" "$sigb64" > "$outfile" || return 1
+    LAST_EXP=$exp
+    return 0
+}
+
+read_config() {
+    cfgdir=$1
+
+    f="$cfgdir/auth-key-id"
+    [ -s "$f" ] || die2 "missing or empty config file: $f"
+    read_raw "$f"
+    AUTH_KEY_ID=$RAW_VALUE
+    is_decimal "$AUTH_KEY_ID" || is_hex0x "$AUTH_KEY_ID" || die2 "bad value in config file: $f"
+
+    f="$cfgdir/password"
+    [ -s "$f" ] || die2 "missing or empty config file: $f"
+    read_raw "$f"
+    PASSWORD=$RAW_VALUE
+
+    f="$cfgdir/tenant-id"
+    [ -s "$f" ] || die2 "missing or empty config file: $f"
+    read_raw "$f"
+    TENANT_ID=$RAW_VALUE
+    validate_id_chars "$TENANT_ID" || die2 "bad value in config file: $f"
+
+    f="$cfgdir/identities"
+    [ -s "$f" ] || die2 "missing or empty config file: $f"
+    read_raw "$f"
+    IDENTITIES=$RAW_VALUE
+    [ -n "$IDENTITIES" ] || die2 "bad value in config file: $f"
+    # shellcheck disable=SC2086
+    for name in $IDENTITIES; do
+        validate_identity_name "$name" || die2 "bad identity name in config file: $f"
+    done
+
+    # shellcheck disable=SC2086
+    for name in $IDENTITIES; do
+        var=$(printf '%s' "$name" | tr -- '-' '_')
+
+        f="$cfgdir/$name.client-id"
+        [ -s "$f" ] || die2 "missing or empty config file: $f"
+        read_raw "$f"
+        cid=$RAW_VALUE
+        validate_id_chars "$cid" || die2 "bad value in config file: $f"
+        set_var "CID_$var" "$cid"
+
+        f="$cfgdir/$name.key-id"
+        [ -s "$f" ] || die2 "missing or empty config file: $f"
+        read_raw "$f"
+        kid=$RAW_VALUE
+        validate_key_id "$kid" || die2 "bad value in config file: $f"
+        set_var "KID_$var" "$kid"
+
+        f="$cfgdir/$name.crt"
+        [ -s "$f" ] || die2 "missing or empty config file: $f"
+    done
+}
+
+sign_one() {
+    name=$1
+    var=$(printf '%s' "$name" | tr -- '-' '_')
+    cid=$(get_var "CID_$var")
+    kid=$(get_var "KID_$var")
+    x5t=$(get_var "X5T_$var")
+    x5t256=$(get_var "X5T256_$var")
+
+    tmp="$out_dir/.$name.jwt.tmp"
+    if build_jwt "$kid" "$cid" "$x5t" "$x5t256" "$lifetime" "$tmp"; then
+        if chmod 0444 "$tmp" && mv -f "$tmp" "$out_dir/$name.jwt"; then
+            SIGN_ONE_EXP=$LAST_EXP
+            return 0
+        fi
+        rc=1
+    else
+        rc=$?
+    fi
+    echo "$prog: $name: sign failed (exit $rc)" >&2
+    rm -f "$tmp"
+    return 1
+}
+
+cleanup_on_signal() {
+    # Globbing is off (set -f), so name the temp files instead of matching them.
+    # shellcheck disable=SC2086
+    for name in $IDENTITIES; do
+        rm -f "$out_dir/.$name.jwt.tmp"
+    done
+    exit 0
+}
+
+cmd_run() {
+    config_dir=/etc/xp-signer
+    out_dir=/var/run/xp-assertion
+    lifetime=600
+    interval=240
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --config) [ $# -ge 2 ] || die2 "missing value for --config"; config_dir=$2; shift 2 ;;
+            --config=*) config_dir=${1#--config=}; shift ;;
+            --out) [ $# -ge 2 ] || die2 "missing value for --out"; out_dir=$2; shift 2 ;;
+            --out=*) out_dir=${1#--out=}; shift ;;
+            --lifetime) [ $# -ge 2 ] || die2 "missing value for --lifetime"; lifetime=$2; shift 2 ;;
+            --lifetime=*) lifetime=${1#--lifetime=}; shift ;;
+            --interval) [ $# -ge 2 ] || die2 "missing value for --interval"; interval=$2; shift 2 ;;
+            --interval=*) interval=${1#--interval=}; shift ;;
+            *) die2 "unknown option: $1" ;;
+        esac
+    done
+
+    is_decimal "$lifetime" || die2 "not a number: --lifetime"
+    is_decimal "$interval" || die2 "not a number: --interval"
+    [ "$interval" -lt "$lifetime" ] || die2 "--interval must be less than --lifetime"
+
+    SIGN_MODE=hsm
+    read_config "$config_dir"
+
+    # shellcheck disable=SC2086
+    for name in $IDENTITIES; do
+        var=$(printf '%s' "$name" | tr -- '-' '_')
+        crt="$config_dir/$name.crt"
+        x5t=$(compute_x5t "$crt") || die2 "bad certificate: $crt"
+        x5t256=$(compute_x5t256 "$crt") || die2 "bad certificate: $crt"
+        set_var "X5T_$var" "$x5t"
+        set_var "X5T256_$var" "$x5t256"
+    done
+
+    trap cleanup_on_signal INT TERM
+
+    while :; do
+        any_failed=0
+        signed_names=""
+        # shellcheck disable=SC2086
+        for name in $IDENTITIES; do
+            if sign_one "$name"; then
+                signed_names="$signed_names $name(exp=$SIGN_ONE_EXP)"
+            else
+                any_failed=1
+            fi
+        done
+        [ -z "$signed_names" ] || echo "$prog: signed:$signed_names" >&2
+
+        if [ "$any_failed" -eq 1 ]; then
+            sleep 10 & wait $!
+        else
+            sleep "$interval" & wait $!
+        fi
+    done
+}
+
+cmd_check() {
+    config_dir=/etc/xp-signer
+    out_dir=/var/run/xp-assertion
+    maxage=300
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --config) [ $# -ge 2 ] || die2 "missing value for --config"; config_dir=$2; shift 2 ;;
+            --config=*) config_dir=${1#--config=}; shift ;;
+            --out) [ $# -ge 2 ] || die2 "missing value for --out"; out_dir=$2; shift 2 ;;
+            --out=*) out_dir=${1#--out=}; shift ;;
+            --max-age) [ $# -ge 2 ] || die2 "missing value for --max-age"; maxage=$2; shift 2 ;;
+            --max-age=*) maxage=${1#--max-age=}; shift ;;
+            *) die2 "unknown option: $1" ;;
+        esac
+    done
+
+    is_decimal "$maxage" || die2 "not a number: --max-age"
+
+    f="$config_dir/identities"
+    [ -s "$f" ] || die2 "missing or empty config file: $f"
+    read_raw "$f"
+    identities=$RAW_VALUE
+
+    now=$(date +%s)
+    status=0
+    # shellcheck disable=SC2086
+    for name in $identities; do
+        validate_identity_name "$name" || die2 "bad identity name in config file: $f"
+        jwtfile="$out_dir/$name.jwt"
+        if [ ! -f "$jwtfile" ]; then
+            echo "$jwtfile: missing"
+            status=1
+            continue
+        fi
+        mtime=$(stat -c %Y "$jwtfile") || { echo "$jwtfile: cannot stat"; status=1; continue; }
+        age=$((now - mtime))
+        if [ "$age" -ge "$maxage" ]; then
+            echo "$jwtfile: age ${age}s"
+            status=1
+        fi
+    done
+    exit "$status"
+}
+
+json_num_field() {
+    v=${1##*\"$2\":}
+    v=${v%%,*}
+    v=${v%%\}*}
+    case "$v" in
+        ''|*[!0-9]*) return 1 ;;
+        *) printf '%s' "$v" ;;
+    esac
+}
+
+cmd_selftest() {
+    [ $# -eq 0 ] || die2 "selftest takes no arguments"
+    SIGN_MODE=soft
+
+    # Named differently from build_jwt's own tmpdir var: dash has no 'local',
+    # so build_jwt's "tmpdir=${TMPDIR:-/tmp}" would otherwise clobber this one
+    # and the EXIT trap below would rm -rf the wrong directory.
+    selftest_dir=$(mktemp -d "${TMPDIR:-/tmp}/xp-selftest.XXXXXX") || { echo "selftest: mktemp failed"; exit 1; }
+    trap 'rm -rf "$selftest_dir"' EXIT INT TERM
+
+    key="$selftest_dir/key.pem"
+    crt="$selftest_dir/cert.pem"
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$key" -out "$crt" \
+        -days 1 -subj "/CN=xp-assertion-signer-selftest" >/dev/null 2>&1 \
+        || { echo "selftest: failed to generate throwaway key"; exit 1; }
+
+    x5t=$(compute_x5t "$crt") || { echo "selftest: x5t failed"; exit 1; }
+    x5t256=$(compute_x5t256 "$crt") || { echo "selftest: x5t256 failed"; exit 1; }
+
+    cid="selftest-client"
+    TENANT_ID="selftest-tenant"
+    lifetime=600
+    out="$selftest_dir/out.jwt"
+
+    if ! build_jwt "$key" "$cid" "$x5t" "$x5t256" "$lifetime" "$out"; then
+        echo "selftest: build_jwt failed"
+        exit 1
+    fi
+
+    token=$(cat "$out")
+    hdr_b64=${token%%.*}
+    rest=${token#*.}
+    payload_b64=${rest%%.*}
+    sig_b64=${rest#*.}
+
+    if [ "$hdr_b64" = "$token" ] || [ "$payload_b64" = "$rest" ] || [ "$sig_b64" = "$rest" ]; then
+        echo "selftest: token does not have three parts"
+        exit 1
+    fi
+
+    hdr_json=$(b64url_decode "$hdr_b64") || { echo "selftest: header decode failed"; exit 1; }
+    expect_hdr="{\"alg\":\"RS256\",\"typ\":\"JWT\",\"x5t\":\"$x5t\",\"x5t#S256\":\"$x5t256\"}"
+    if [ "$hdr_json" != "$expect_hdr" ]; then
+        echo "selftest: header mismatch"
+        exit 1
+    fi
+
+    payload_json=$(b64url_decode "$payload_b64") || { echo "selftest: payload decode failed"; exit 1; }
+
+    case "$payload_json" in
+        "{\"aud\":\"https://login.microsoftonline.com/$TENANT_ID/oauth2/v2.0/token\",\"iss\":\"$cid\",\"sub\":\"$cid\",\"jti\":\""*) ;;
+        *) echo "selftest: payload aud/iss/sub mismatch"; exit 1 ;;
+    esac
+
+    iat=$(json_num_field "$payload_json" iat) || { echo "selftest: iat extract failed"; exit 1; }
+    exp=$(json_num_field "$payload_json" exp) || { echo "selftest: exp extract failed"; exit 1; }
+    diff=$((exp - iat))
+    if [ "$diff" -ne $((lifetime + 60)) ]; then
+        echo "selftest: exp-iat mismatch ($diff != $((lifetime + 60)))"
+        exit 1
+    fi
+
+    si="$hdr_b64.$payload_b64"
+    sigfile="$selftest_dir/sig.bin"
+    b64url_decode_bin "$sig_b64" "$sigfile" || { echo "selftest: sig decode failed"; exit 1; }
+    sifile="$selftest_dir/si.bin"
+    printf '%s' "$si" > "$sifile"
+
+    pub="$selftest_dir/pub.pem"
+    openssl x509 -in "$crt" -pubkey -noout > "$pub" 2>/dev/null || { echo "selftest: pubkey extract failed"; exit 1; }
+
+    if ! openssl dgst -sha256 -verify "$pub" -signature "$sigfile" "$sifile" >/dev/null 2>&1; then
+        echo "selftest: signature verification failed"
+        exit 1
+    fi
+
+    echo "selftest ok"
+    exit 0
+}
+
+main() {
+    [ $# -ge 1 ] || die2 "missing subcommand"
+    cmd=$1
+    shift
+    case "$cmd" in
+        run) cmd_run "$@" ;;
+        check) cmd_check "$@" ;;
+        selftest) cmd_selftest "$@" ;;
+        *) die2 "unknown subcommand: $cmd" ;;
+    esac
+}
+
+main "$@"
