@@ -201,13 +201,25 @@ spec:
   matchConditions:
     - name: not-the-provider
       expression: "request.userInfo.username != 'system:serviceaccount:crossplane-system:provider-azuread'"
-    # A terminating MR can lose its finalizer even when its names are off the
-    # allowlist. Every write policy excludes Delete, so removing the finalizer
-    # orphans the Entra object. If the params ConfigMap is missing, the binding
-    # denies before this condition is evaluated; restore the ConfigMap, or
-    # delete this binding by hand (prune is disabled) and re-apply it after.
-    - name: not-being-deleted
-      expression: "!has(object.metadata.deletionTimestamp)"
+    # While an MR is being deleted, a finalizer or other metadata-only change
+    # is still allowed so it can always be removed, even when its names are
+    # off the allowlist: every write policy excludes Delete, so removing the
+    # finalizer orphans the Entra object rather than deleting it. A spec
+    # change, or a change to the external-name annotation, is denied like any
+    # other update. If the params ConfigMap is missing, the binding denies
+    # before this condition is evaluated; restore the ConfigMap, or delete
+    # this binding by hand (prune is disabled) and re-apply it after.
+    - name: not-a-metadata-only-update-while-deleting
+      expression: >-
+        request.operation == 'CREATE' ||
+        !has(object.metadata.deletionTimestamp) ||
+        object.spec != oldObject.spec ||
+        (has(object.metadata.annotations) &&
+        'crossplane.io/external-name' in object.metadata.annotations
+        ? object.metadata.annotations['crossplane.io/external-name'] : '') !=
+        (has(oldObject.metadata.annotations) &&
+        'crossplane.io/external-name' in oldObject.metadata.annotations
+        ? oldObject.metadata.annotations['crossplane.io/external-name'] : '')
   variables:
     - name: data
       expression: "has(params.data) ? params.data : {}"

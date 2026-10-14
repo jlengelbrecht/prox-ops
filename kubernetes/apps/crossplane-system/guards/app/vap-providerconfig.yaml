@@ -6,8 +6,9 @@
 # does not remove it from the cluster; breaking glass means deleting the live
 # policy and binding by hand, then removing them in a reviewed PR.
 #
-# Objects already being deleted are skipped so a finalizer can always be
-# removed.
+# While an object is being deleted, a finalizer or other metadata-only change
+# is still allowed so it can always be removed. A spec change is not: it is
+# denied like any other update, even while deleting.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -27,8 +28,11 @@ spec:
         resources: ["providerconfigs"]
         operations: ["CREATE", "UPDATE"]
   matchConditions:
-    - name: not-being-deleted
-      expression: "!has(object.metadata.deletionTimestamp)"
+    - name: not-a-metadata-only-update-while-deleting
+      expression: >-
+        request.operation == 'CREATE' ||
+        !has(object.metadata.deletionTimestamp) ||
+        object.spec != oldObject.spec
   validations:
     - expression: "false"
       message: >-
@@ -67,8 +71,11 @@ spec:
         resources: ["providerconfigs"]
         operations: ["CREATE", "UPDATE"]
   matchConditions:
-    - name: not-being-deleted
-      expression: "!has(object.metadata.deletionTimestamp)"
+    - name: not-a-metadata-only-update-while-deleting
+      expression: >-
+        request.operation == 'CREATE' ||
+        !has(object.metadata.deletionTimestamp) ||
+        object.spec != oldObject.spec
   validations:
     - expression: >-
         request.namespace in ['identity-people', 'identity-apps', 'identity-ca']

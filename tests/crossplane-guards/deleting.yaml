@@ -1,0 +1,55 @@
+# Fixtures for the deleting state: each carries an extra finalizer,
+# test.example.org/hold, so deleting it does not complete and the object
+# stays around with metadata.deletionTimestamp set. Placeholder values only.
+#
+# There is no ClusterProviderConfig fixture here: V1 denies it on CREATE, so
+# it can never reach the deleting state through this suite. See README.md.
+---
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: people
+  namespace: identity-people
+  finalizers:
+    - test.example.org/hold
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: provider-credentials
+      namespace: identity-people
+      key: credentials
+---
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: grp-observe-01
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-group-01
+  finalizers:
+    - test.example.org/hold
+spec:
+  managementPolicies: ["Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider: {}
+---
+# The admin-type group, which must stay Observe-only. Used for the spec-change
+# case: making it writable while it is being deleted must still be denied by V8.
+apiVersion: groups.azuread.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  name: grp-admin-observe-01
+  namespace: identity-people
+  annotations:
+    crossplane.io/external-name: placeholder-admin-group-01
+  finalizers:
+    - test.example.org/hold
+spec:
+  managementPolicies: ["Observe"]
+  providerConfigRef:
+    kind: ProviderConfig
+    name: people
+  forProvider: {}
