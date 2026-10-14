@@ -56,7 +56,7 @@ RESULT_KEYS = {
     "plugin_package": {"plugin_id", "name", "version", "source", "digest", "sizes", "pin"},
     "plugin_release": {"released"},
     "plugin_install": {"plugin_id", "version", "installed", "enabled"},
-    "file_info": {"path", "mime", "size", "mtime"}, "read_chunk": {"path", "offset", "data"},
+    "resolve": {"path"}, "file_info": {"path", "mime", "size", "mtime"}, "read_chunk": {"path", "offset", "data"},
     "stage_begin": {"stage", "path"}, "stage_put": {"stage", "received"},
     "stage_commit": {"stage", "status", "result", "error"}, "stage_abort": {"stage", "aborted"},
 }
@@ -162,6 +162,7 @@ def _commit_result(value: dict[str, Any], args: dict[str, Any]) -> bool:
 
 
 _ATTACHMENT_RESULTS = {
+    "resolve": lambda value, args: _safe_relative(value["path"]),
     "file_info": lambda value, args: (value["path"] == args["path"] and _attachment_mime(args["path"]) == value["mime"]
                                       and _int(value["size"], 0, MAX_ATTACHMENT) and _int(value["mtime"], 0, 2**53)),
     "read_chunk": _chunk_result,
@@ -596,6 +597,10 @@ class BridgeClient:
 
     def resolve_embed(self, vault: str, source: str, target: str) -> dict[str, Any]:
         return self._call(vault, "embed", {"source": source, "target": target})
+
+    def resolve_link(self, vault: str, source: str, target: str) -> str:
+        """The vault path an embed or link in note `source` points to, as Obsidian resolves it."""
+        return self._call(vault, "resolve", {"source": source, "target": target})["path"]
 
     def attachment_info(self, vault: str, path: str) -> dict[str, Any]:
         """Type, size and modification time of one attachment, which pin the chunks read after it."""

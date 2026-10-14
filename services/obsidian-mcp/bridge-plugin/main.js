@@ -503,6 +503,26 @@ async function itemState(app, config, key) {
   return { path: key, kind: 'folder', revision: revision(entries.join('\n')), count: entries.length };
 }
 
+function resolveEmbed(app, root, sourcePath, rawTarget) {
+  const source = note(app, root, sourcePath);
+  let target = string(rawTarget, 1024);
+  const markdown = /^!\[[^\]]*\]\(([^()]+)\)$/.exec(target);
+  if (markdown) target = markdown[1];
+  if (target.startsWith('![[') && target.endsWith(']]')) target = target.slice(3, -2);
+  if (target.startsWith('[[') && target.endsWith(']]')) target = target.slice(2, -2);
+  target = target.split('|', 1)[0].split('#', 1)[0];
+  if (!target || target.includes('%') || target.startsWith('/') || target.includes('\\') ||
+      /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) fail('invalid_path');
+  if (target.startsWith('./') || target.startsWith('../')) {
+    const relative = path.posix.normalize(path.posix.join(path.posix.dirname(source.path), target));
+    safePath(relative, root);
+  } else if (target.split('/').includes('..')) fail('invalid_path');
+  const resolved = app.metadataCache.getFirstLinkpathDest(target, source.path);
+  if (!(resolved instanceof TFile)) fail('not_found');
+  safePath(resolved.path, root);
+  return resolved;
+}
+
 async function execute(app, config, op, args, markStarted = () => {}) {
   verifyRoot(app, config);
   const vault = app.vault;
@@ -514,7 +534,7 @@ async function execute(app, config, op, args, markStarted = () => {}) {
         'vaults', 'open_vault', 'create_vault', 'state', 'mkdir', 'move', 'replace', 'trash',
         'logs', 'plugins', 'settings', 'plugin_state', 'plugin_set', 'plugin_remove',
         'setting_state', 'setting_write', 'plugin_catalog', 'plugin_package', 'plugin_release', 'plugin_install',
-        'file_info', 'read_chunk', 'stage_begin', 'stage_put', 'stage_commit', 'stage_abort'] };
+        'resolve', 'file_info', 'read_chunk', 'stage_begin', 'stage_put', 'stage_commit', 'stage_abort'] };
   }
   if (op === 'list') {
     argument(args, ['prefix', 'limit']);
@@ -847,24 +867,13 @@ async function execute(app, config, op, args, markStarted = () => {}) {
     if (vault.getAbstractFileByPath(target.path)) fail('conflict');
     return { path: target.path, trashed: true };
   }
+  if (op === 'resolve') {
+    argument(args, ['source', 'target']);
+    return { path: resolveEmbed(app, root, args.source, args.target).path };
+  }
   if (op === 'embed') {
     argument(args, ['source', 'target']);
-    const source = note(app, root, args.source);
-    let target = string(args.target, 1024);
-    const markdown = /^!\[[^\]]*\]\(([^()]+)\)$/.exec(target);
-    if (markdown) target = markdown[1];
-    if (target.startsWith('![[') && target.endsWith(']]')) target = target.slice(3, -2);
-    if (target.startsWith('[[') && target.endsWith(']]')) target = target.slice(2, -2);
-    target = target.split('|', 1)[0].split('#', 1)[0];
-    if (!target || target.includes('%') || target.startsWith('/') || target.includes('\\') ||
-        /^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) fail('invalid_path');
-    if (target.startsWith('./') || target.startsWith('../')) {
-      const relative = path.posix.normalize(path.posix.join(path.posix.dirname(source.path), target));
-      safePath(relative, root);
-    } else if (target.split('/').includes('..')) fail('invalid_path');
-    const resolved = app.metadataCache.getFirstLinkpathDest(target, source.path);
-    if (!(resolved instanceof TFile)) fail('not_found');
-    safePath(resolved.path, root);
+    const resolved = resolveEmbed(app, root, args.source, args.target);
     const mime = MIME[path.extname(resolved.path).toLowerCase()];
     if (!mime) fail('unsupported_media');
     await freshSize(app, config, resolved, MAX_MEDIA);

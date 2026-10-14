@@ -14,7 +14,7 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv
-COPY --chown=0:0 --chmod=0444 gateway.py approval.py bridge.py owner_auth.py server.py /app/
+COPY --chown=0:0 --chmod=0444 gateway.py approval.py bridge.py owner_auth.py server.py transfer.py /app/
 COPY --chown=0:0 bridge-plugin/ /opt/obsidian-mcp/bridge-plugin/
 RUN chmod 0555 /opt/obsidian-mcp /opt/obsidian-mcp/bridge-plugin && \
     chmod 0444 /opt/obsidian-mcp/bridge-plugin/*

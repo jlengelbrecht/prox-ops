@@ -32,15 +32,17 @@ from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.tools.base import ToolResult
 from mcp.types import ImageContent, TextContent
 from PIL import Image, UnidentifiedImageError
+from starlette.concurrency import iterate_in_threadpool
 from starlette.middleware import Middleware as ASGIMiddleware
 from starlette.requests import ClientDisconnect, Request
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from approval import (AdapterConflict, AgentContext, ApprovalCoordinator, ApprovalError,
                       Operation, PackageAttestation, PackagePreview, Preview, Snapshot, StateEntry,
                       VaultEnrollment)
-from bridge import MAX_MEDIA, BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
+from bridge import ATTACHMENT_MIME, MAX_MEDIA, BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
 from owner_auth import CsrfLedger, OwnerAuthConfig, OwnerAuthenticator, OwnerAuthError
+from transfer import MAX_EXPORT_BYTES, MAX_EXPORT_FILES, TransferLedger, export_stream
 from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
 
 
@@ -48,6 +50,7 @@ _SAFE_CAPABILITIES = {
     "list_notes": "list", "read_note": "read", "search": "search",
     "create_note": "create", "append_note": "append", "read_media": "embed",
     "manage_vaults": "vaults", "create_folder": "mkdir", "move": "move", "diagnostics": "logs",
+    "export_media": "file_info",
 }
 # Destructive verbs: each needs the owner's approval through /owner/ before it runs.
 _GUARDED_CAPABILITIES = {"replace_note": "replace", "trash_note": "trash", "trash_folder": "trash",
@@ -63,6 +66,7 @@ _TOOL_VERBS = {
     "create_vault": "manage_vaults", "create_folder": "create_folder", "move": "move",
     "read_logs": "diagnostics", "list_plugins": "diagnostics", "read_settings": "diagnostics",
     "search_plugins": "diagnostics", "plugin_package": "diagnostics",
+    "export_attachments": "export_media",
 }
 
 
@@ -648,7 +652,7 @@ def _image_content(bridge: BridgeClient, vault: str, source: str, target: str) -
                                             mimeType="image/png")])
 
 
-def _embed_targets(text: str) -> list[str]:
+def _embed_targets(text: str, pattern: re.Pattern = None) -> list[str]:
     """Local image embeds in reading order: ![[target|...]] and ![alt](target "title").
 
     A bounded str.find scan instead of a regex, so hostile notes cannot cause backtracking.
@@ -678,7 +682,7 @@ def _embed_targets(text: str) -> list[str]:
         if target is not None:
             target = target.strip()
             if ("\n" not in target and "://" not in target and 0 < len(target) <= 512
-                    and _EMBED_IMAGE.search(target)):
+                    and (pattern or _EMBED_IMAGE).search(target)):
                 targets.append(target)
         index = text.find("![", index + 2)
     return targets
@@ -686,6 +690,85 @@ def _embed_targets(text: str) -> list[str]:
 
 _MAX_EMBEDS = 1000
 _EMBED_IMAGE = re.compile(r"\.(?:png|jpe?g|webp|gif)$", re.IGNORECASE)
+_EMBED_ATTACHMENT = re.compile(r"\.(?:png|jpe?g|webp|gif|pdf)$", re.IGNORECASE)
+_EXPORT_PLAN_SECONDS = 30.0
+_EXPORT_WALK = 5000
+_EXPORT_STREAMS = 2
+_SKIPPED_SHOWN = 50
+
+
+def _plan_export(bridge: BridgeClient, vault: str, paths: list[str], folder: str | None,
+                 note: str, deadline: float = float("inf")) -> tuple[list[dict], int, list[dict]]:
+    """Resolve an export request to exact attachment versions, within the export caps.
+
+    The worker thread cannot be cancelled, so the loops stop themselves at the deadline."""
+    def on_time():
+        if time.monotonic() >= deadline:
+            raise BridgeError("limit_exceeded")
+
+    skipped = []
+    candidates = []
+    if note:
+        for target in dict.fromkeys(_embed_targets(bridge.read_note(vault, note)["content"], _EMBED_ATTACHMENT)):
+            on_time()
+            try:
+                candidates.append(bridge.resolve_link(vault, note, target))
+            except BridgeError as error:
+                skipped.append({"path": target[:256], "reason": error.code})
+    elif folder is not None:
+        pending, seen = [folder], 0
+        while pending:
+            on_time()
+            for entry in bridge.list_entries(vault, pending.pop(), 1000)["entries"]:
+                seen += 1
+                if seen > _EXPORT_WALK:
+                    raise BridgeError("limit_exceeded")
+                if entry["kind"] == "folder":
+                    pending.append(entry["path"])
+                elif os.path.splitext(entry["path"])[1].lower() in ATTACHMENT_MIME:
+                    candidates.append(entry["path"])
+        candidates.sort()
+    else:
+        candidates = list(paths)
+    infos, total = [], 0
+    for path in dict.fromkeys(candidates):
+        on_time()
+        try:
+            info = bridge.attachment_info(vault, path)
+        except BridgeError as error:
+            skipped.append({"path": path[:256], "reason": error.code})
+            continue
+        if len(infos) >= MAX_EXPORT_FILES or total + info["size"] > MAX_EXPORT_BYTES:
+            skipped.append({"path": path[:256], "reason": "limit_exceeded"})
+            continue
+        infos.append(info)
+        total += info["size"]
+    return infos, total, skipped
+
+
+class _SlotResponse(StreamingResponse):
+    """A streaming response that frees its download slot however it ends.
+
+    The body generator's own cleanup never runs if the client goes away before the first
+    chunk, so the slot is tied to the response call instead."""
+
+    def __init__(self, content, release, **kwargs):
+        super().__init__(content, **kwargs)
+        self._release = release
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._release()
+
+
+def _transfer_host(request: Request) -> bool:
+    hosts = request.headers.getlist("host")
+    if len(hosts) != 1:
+        return False
+    host = hosts[0].lower()
+    return host in {_MCP_HOST, _MCP_HOST + ":443"} or _loopback_authority(host)
 _PAGE_IMAGES = 10
 _PAGE_SECONDS = 20.0
 _PAGE_IMAGE_BUDGET = 6 * 1024 * 1024
@@ -771,6 +854,7 @@ def create_gateway(
     *,
     destructive_adapter=None,
     destructive_verbs: frozenset[str] = frozenset(),
+    transfer_origin: str = f"https://{_MCP_HOST}",
 ):
     if not isinstance(enrollments, Mapping) or len(enrollments) > _MAX_VAULTS:
         raise ValueError(f"gateway supports 1 to {_MAX_VAULTS} enrolled vaults")
@@ -796,6 +880,8 @@ def create_gateway(
     coordinator = ApprovalCoordinator(destructive_adapter or BridgeAdapter(bridge), enrollments,
                                       ttl=_APPROVAL_SECONDS)
     execution = _ExecutionPool(enrollments)
+    transfers = TransferLedger()
+    export_streams = asyncio.Semaphore(_EXPORT_STREAMS)
     @asynccontextmanager
     async def lifespan(_server):
         try:
@@ -1031,6 +1117,37 @@ def create_gateway(
                 Image.DecompressionBombWarning):
             raise ToolError("Image unavailable") from None
 
+    @mcp.tool
+    async def export_attachments(vault: str, paths: list[str] | None = None, folder: str | None = None,
+                                 note: str = "") -> dict:
+        """Get the original, byte-exact files (PNG, JPEG, WebP, GIF, PDF) out of a vault, e.g. to
+        save screenshots to disk at full resolution. Give exactly one of: `paths` (attachment
+        paths), `folder` (everything under it, recursively; "" is the whole vault) or `note`
+        (the attachments that note embeds). Returns a one-time `url`, valid for 10 minutes, that
+        serves a zip of the files plus .SHA256SUMS; download it with a shell, for example:
+        curl -fsSo export.zip '<url>' && unzip -o export.zip -d <dir> && (cd <dir> && sha256sum -c .SHA256SUMS).
+        The bytes never pass through the conversation. Limits: 1000 files, 500 MB."""
+        chosen = [paths is not None, folder is not None, bool(note)]
+        if sum(chosen) != 1 or (paths is not None and not 1 <= len(paths) <= MAX_EXPORT_FILES):
+            raise ToolError("Give exactly one of paths, folder or note")
+        deadline = time.monotonic() + _EXPORT_PLAN_SECONDS
+        context = agent()
+        await permitted(context, vault, "export_media", time.monotonic() + _EXECUTION_ADMISSION_TIMEOUT)
+        try:
+            infos, total, skipped = await execution.run(_plan_export, bridge, vault, paths or [], folder,
+                                                        note, deadline, deadline=deadline)
+        except BridgeError as error:
+            raise ToolError(f"Export failed: {error.code}") from None
+        if not infos:
+            return {"files": 0, "bytes": 0, "skipped": skipped[:_SKIPPED_SHOWN], "skipped_total": len(skipped)}
+        try:
+            token, ttl = transfers.issue("export", context.client_id, vault, infos)
+        except OverflowError:
+            raise ToolError("Too many transfers outstanding; try again in a few minutes") from None
+        return {"url": f"{transfer_origin}/transfer/{token}", "expires_in_seconds": int(ttl),
+                "files": len(infos), "bytes": total, "skipped": skipped[:_SKIPPED_SHOWN],
+                "skipped_total": len(skipped)}
+
     if destructive_verbs:
         @mcp.tool
         async def prepare_action(vault: str, verb: str, arguments: dict[str, object]) -> dict:
@@ -1087,6 +1204,35 @@ def create_gateway(
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request: Request):
         return JSONResponse({"status": "ok"}, headers={"Cache-Control": "no-store"})
+
+    @mcp.custom_route("/transfer/{token}", methods=["GET"])
+    async def transfer_route(request: Request):
+        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                   "Referrer-Policy": "no-referrer"}
+        if not _transfer_host(request):
+            return PlainTextResponse("Misdirected Request", status_code=421, headers=headers)
+        if export_streams.locked():
+            return PlainTextResponse("Busy; retry shortly", status_code=429,
+                                     headers={**headers, "Retry-After": "10"})
+        entry = transfers.claim(request.path_params["token"], "export")
+        if entry is None:
+            return PlainTextResponse("Unavailable", status_code=404, headers=headers)
+        await export_streams.acquire()
+        stream = export_stream(bridge, entry.vault, entry.payload)
+        released = False
+
+        def release():
+            nonlocal released
+            if not released:
+                released = True
+                export_streams.release()
+                try:
+                    stream.close()
+                except ValueError:  # still running in its worker thread; it ends on its own
+                    pass
+
+        return _SlotResponse(iterate_in_threadpool(stream), release, media_type="application/zip", headers={
+            **headers, "Content-Disposition": f'attachment; filename="obsidian-{entry.vault}-export.zip"'})
 
     @mcp.custom_route("/owner/{pending_id}", methods=["GET", "POST"])
     async def owner_route(request: Request):
