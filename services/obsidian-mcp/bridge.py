@@ -29,6 +29,12 @@ VERSION = 1
 MAX_REQUEST = 384 * 1024
 MAX_RESPONSE = 6 * 1024 * 1024
 MAX_MEDIA = 4 * 1024 * 1024
+# Byte-exact attachment transfer: reads come back in chunks, writes go up in staged chunks.
+MAX_ATTACHMENT = 50 * 1024 * 1024
+MAX_CHUNK = 4 * 1024 * 1024
+MAX_PUT = 256 * 1024
+ATTACHMENT_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+                   ".gif": "image/gif", ".pdf": "application/pdf"}
 ERRORS = frozenset({"invalid_request", "invalid_path", "not_found", "conflict",
                     "limit_exceeded", "unsupported_media", "unknown_operation",
                     "unauthorized", "internal_error", "unknown_receipt"})
@@ -50,6 +56,9 @@ RESULT_KEYS = {
     "plugin_package": {"plugin_id", "name", "version", "source", "digest", "sizes", "pin"},
     "plugin_release": {"released"},
     "plugin_install": {"plugin_id", "version", "installed", "enabled"},
+    "file_info": {"path", "mime", "size", "mtime"}, "read_chunk": {"path", "offset", "data"},
+    "stage_begin": {"stage", "path"}, "stage_put": {"stage", "received"},
+    "stage_commit": {"stage", "status", "result", "error"}, "stage_abort": {"stage", "aborted"},
 }
 _SLOW_OPERATIONS = {"plugin_catalog": 20.0, "plugin_package": 30.0, "plugin_install": 30.0}
 REVISION_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -120,11 +129,57 @@ def _safe_relative(value: Any) -> bool:
             all(part and not part.startswith(".") for part in value.split("/")))
 
 
+def _attachment_mime(path: Any) -> str | None:
+    return ATTACHMENT_MIME.get(os.path.splitext(path)[1].lower()) if isinstance(path, str) else None
+
+
+def _int(value: Any, low: int, high: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def _chunk_result(value: dict[str, Any], args: dict[str, Any]) -> bool:
+    if value["path"] != args["path"] or value["offset"] != args["offset"] or not isinstance(value["data"], str):
+        return False
+    try:
+        data = base64.b64decode(value["data"], validate=True)
+    except ValueError:
+        return False
+    return len(data) == min(args["length"], args["size"] - args["offset"])
+
+
+def _commit_result(value: dict[str, Any], args: dict[str, Any]) -> bool:
+    if value["stage"] != args["stage"] or value["status"] not in ("pending", "committed", "indeterminate", "failed"):
+        return False
+    if value["status"] == "committed":
+        result = value["result"]
+        return (value["error"] is None and isinstance(result, dict) and set(result) == {"path", "size", "sha256"}
+                and _safe_relative(result["path"]) and _int(result["size"], 1, MAX_ATTACHMENT)
+                and isinstance(result["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", result["sha256"]) is not None)
+    if value["status"] == "failed":
+        # A commit refused before it started because the app was unavailable is final too.
+        return value["result"] is None and value["error"] in ERRORS | {"unavailable"}
+    return value["result"] is None and value["error"] is None
+
+
+_ATTACHMENT_RESULTS = {
+    "file_info": lambda value, args: (value["path"] == args["path"] and _attachment_mime(args["path"]) == value["mime"]
+                                      and _int(value["size"], 0, MAX_ATTACHMENT) and _int(value["mtime"], 0, 2**53)),
+    "read_chunk": _chunk_result,
+    "stage_begin": lambda value, args: (isinstance(value["stage"], str) and RECEIPT_RE.fullmatch(value["stage"]) is not None
+                                        and value["path"] == args["path"]),
+    "stage_put": lambda value, args: value["stage"] == args["stage"] and _int(value["received"], 1, MAX_ATTACHMENT),
+    "stage_commit": _commit_result,
+    "stage_abort": lambda value, args: value["stage"] == args["stage"] and value["aborted"] is True,
+}
+
+
 def _result(operation: str, value: Any, args: dict[str, Any]) -> bool:
     if not isinstance(value, dict) or set(value) != RESULT_KEYS[operation]:
         return False
     if operation == "reserve":
         return isinstance(value["receipt"], str) and RECEIPT_RE.fullmatch(value["receipt"]) is not None
+    if operation in _ATTACHMENT_RESULTS:
+        return _ATTACHMENT_RESULTS[operation](value, args)
     if operation in ("receipt", "create", "append"):
         if not isinstance(value["receipt"], str) or RECEIPT_RE.fullmatch(value["receipt"]) is None:
             return False
@@ -541,3 +596,72 @@ class BridgeClient:
 
     def resolve_embed(self, vault: str, source: str, target: str) -> dict[str, Any]:
         return self._call(vault, "embed", {"source": source, "target": target})
+
+    def attachment_info(self, vault: str, path: str) -> dict[str, Any]:
+        """Type, size and modification time of one attachment, which pin the chunks read after it."""
+        if _attachment_mime(path) is None or not _safe_relative(path):
+            raise BridgeError("unsupported_media")
+        return self._call(vault, "file_info", {"path": path})
+
+    def iter_attachment(self, vault: str, info: Mapping[str, Any], chunk: int = MAX_CHUNK):
+        """The exact bytes of the attachment `info` describes. A change mid-read raises conflict."""
+        if not _int(chunk, 1, MAX_CHUNK):
+            raise BridgeError("invalid_request")
+        offset = 0
+        while offset < info["size"]:
+            args = {"path": info["path"], "offset": offset, "length": chunk,
+                    "size": info["size"], "mtime": info["mtime"]}
+            data = base64.b64decode(self._call(vault, "read_chunk", args)["data"])
+            offset += len(data)
+            yield data
+
+    def write_attachment(self, vault: str, path: str, chunks, size: int, sha256: str,
+                         *, client_id: str = "bridge") -> dict[str, Any]:
+        """Create a new attachment from `chunks` (an iterable of bytes). Never overwrites.
+
+        Returns the committed result, or {"stage", "status"} when the outcome is not yet known;
+        calling `commit_attachment` with that stage reports it later."""
+        if _attachment_mime(path) is None or not _safe_relative(path):
+            raise BridgeError("unsupported_media")
+        if not _int(size, 1, MAX_ATTACHMENT) or not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise BridgeError("invalid_request")
+        stage = self._call(vault, "stage_begin", {"client": client_id, "path": path, "size": size,
+                                                  "sha256": sha256})["stage"]
+        try:
+            received = 0
+            for data in chunks:
+                for start in range(0, len(data), MAX_PUT):
+                    piece = data[start:start + MAX_PUT]
+                    received = self._call(vault, "stage_put", {
+                        "client": client_id, "stage": stage, "offset": received,
+                        "data": base64.b64encode(piece).decode()})["received"]
+            if received != size:
+                raise BridgeError("invalid_request")
+        except BaseException:
+            try:
+                self._call(vault, "stage_abort", {"client": client_id, "stage": stage})
+            except BridgeError:
+                pass
+            raise
+        return self.commit_attachment(vault, stage, client_id=client_id)
+
+    def commit_attachment(self, vault: str, stage: str, *, client_id: str = "bridge") -> dict[str, Any]:
+        """Commit a fully staged attachment, or report the outcome of an earlier commit.
+
+        This is the commit itself: on a stage that is still receiving chunks it fails the stage.
+        A stage the app no longer knows (restart or expiry) is reported as indeterminate."""
+        if not isinstance(stage, str) or RECEIPT_RE.fullmatch(stage) is None:
+            raise BridgeError("invalid_request")
+        try:
+            result = self._call(vault, "stage_commit", {"client": client_id, "stage": stage})
+        except BridgeError as error:
+            if error.code == "unknown_receipt":
+                return {"stage": stage, "status": "indeterminate"}
+            if error.code not in {"unavailable", "internal_error"}:
+                raise
+            return {"stage": stage, "status": "pending"}
+        if result["status"] == "failed":
+            raise BridgeError(result["error"])
+        if result["status"] == "committed":
+            return {**result["result"], "stage": stage, "status": "committed"}
+        return {"stage": stage, "status": result["status"]}

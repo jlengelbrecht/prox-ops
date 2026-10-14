@@ -114,7 +114,8 @@ if (REAL_IPC) test('real private AF_UNIX plugin to Python adapter, two vaults an
     assert.match(output, /real IPC passed/);
     assert.ok(a.calls.reads >= 4);
     assert.equal(b.calls.reads, 1);
-    assert.equal(a.calls.writes, 2);
+    // Two note writes, then one attachment: two new folders and the file.
+    assert.equal(a.calls.writes, 5);
     assert.equal(b.calls.writes, 0);
     const foreign = net.createServer(socket => socket.end('foreign'));
     await new Promise((resolve, reject) => { foreign.once('error', reject); foreign.listen(a.config.socket, resolve); });
@@ -1096,3 +1097,147 @@ test('externally created destination retains its bytes and receipt is indetermin
   }
 });
 }
+if (!REAL_IPC) test('attachments: pinned chunked reads and staged create-only writes keep exact bytes', async () => {
+  const f = fixture('Transfer');
+  let bridge;
+  try {
+    const original = crypto.randomBytes(10_000);
+    f.add('Private/shot.png', original);
+    f.add('Private/doc.pdf', Buffer.from('%PDF-1.7'));
+    f.add('Private/vector.svg', Buffer.from('<svg/>'));
+    bridge = await start(f);
+    const capabilities = (await request(f.config, 'health')).result.capabilities;
+    for (const op of ['file_info', 'read_chunk', 'stage_begin', 'stage_put', 'stage_commit', 'stage_abort']) {
+      assert.ok(capabilities.includes(op), op);
+    }
+
+    const info = (await request(f.config, 'file_info', { path: 'Private/shot.png' })).result;
+    assert.deepEqual([info.path, info.mime, info.size], ['Private/shot.png', 'image/png', 10_000]);
+    assert.equal((await request(f.config, 'file_info', { path: 'Private/doc.pdf' })).result.mime, 'application/pdf');
+    assert.equal((await request(f.config, 'file_info', { path: 'Private/vector.svg' })).error, 'unsupported_media');
+    assert.equal((await request(f.config, 'file_info', { path: 'Private/note.md' })).error, 'unsupported_media');
+    assert.equal((await request(f.config, 'file_info', { path: 'Private/missing.png' })).error, 'not_found');
+    assert.equal((await request(f.config, 'file_info', { path: '../escape.png' })).error, 'invalid_path');
+
+    const pinned = { path: info.path, size: info.size, mtime: info.mtime };
+    const parts = [];
+    for (let offset = 0; offset < info.size; offset += 4096) {
+      const chunk = await request(f.config, 'read_chunk', { ...pinned, offset, length: 4096 });
+      assert.equal(chunk.result.offset, offset);
+      parts.push(Buffer.from(chunk.result.data, 'base64'));
+    }
+    assert.ok(Buffer.concat(parts).equals(original));
+    assert.equal((await request(f.config, 'read_chunk', { ...pinned, offset: 10_000, length: 1 })).error, 'invalid_request');
+    assert.equal((await request(f.config, 'read_chunk', { ...pinned, offset: 0, length: 4 * 1024 * 1024 + 1 })).error, 'invalid_request');
+    assert.equal((await request(f.config, 'read_chunk', { ...pinned, mtime: info.mtime - 1000, offset: 0, length: 10 })).error, 'conflict');
+    assert.equal((await request(f.config, 'read_chunk', { ...pinned, size: 9_999, offset: 0, length: 10 })).error, 'conflict');
+
+    const upload = crypto.randomBytes(300 * 1024);
+    const sha256 = crypto.createHash('sha256').update(upload).digest('hex');
+    const begin = { client: 'claude', path: 'Design/Pack/upload.png', size: upload.length, sha256 };
+    const { stage } = (await request(f.config, 'stage_begin', begin)).result;
+    assert.equal((await request(f.config, 'stage_begin', begin)).error, 'conflict');
+    const put = (offset, data, client = 'claude') =>
+      request(f.config, 'stage_put', { client, stage, offset, data: data.toString('base64') });
+    assert.equal((await put(0, upload.subarray(0, 10), 'codex')).error, 'unauthorized');
+    assert.equal((await put(5, upload.subarray(0, 10))).error, 'conflict');
+    assert.equal((await put(0, upload.subarray(0, 256 * 1024 + 1))).error, 'invalid_request');
+    assert.equal((await request(f.config, 'stage_put', { client: 'claude', stage, offset: 0, data: 'AAB=' })).error, 'invalid_request');
+    assert.equal((await put(0, upload.subarray(0, 256 * 1024))).result.received, 256 * 1024);
+    assert.equal((await put(256 * 1024, upload.subarray(256 * 1024))).result.received, upload.length);
+    assert.equal((await put(upload.length, Buffer.from('x'))).error, 'limit_exceeded');
+    assert.equal(fs.existsSync(path.join(f.root, 'Design/Pack/upload.png')), false);
+    const committed = (await request(f.config, 'stage_commit', { client: 'claude', stage })).result;
+    assert.deepEqual(committed, { stage, status: 'committed', error: null,
+      result: { path: 'Design/Pack/upload.png', size: upload.length, sha256 } });
+    assert.ok(fs.readFileSync(path.join(f.root, 'Design/Pack/upload.png')).equals(upload));
+    const writes = f.calls.writes;
+    assert.deepEqual((await request(f.config, 'stage_commit', { client: 'claude', stage })).result, committed);
+    assert.equal(f.calls.writes, writes);
+    assert.equal((await request(f.config, 'stage_begin', begin)).error, 'conflict');
+
+    const wrong = (await request(f.config, 'stage_begin', { ...begin, path: 'Design/wrong.png', size: 4, sha256: '0'.repeat(64) })).result;
+    await request(f.config, 'stage_put', { client: 'claude', stage: wrong.stage, offset: 0, data: Buffer.from('abcd').toString('base64') });
+    const refused = (await request(f.config, 'stage_commit', { client: 'claude', stage: wrong.stage })).result;
+    assert.deepEqual([refused.status, refused.error], ['failed', 'invalid_request']);
+    assert.equal(fs.existsSync(path.join(f.root, 'Design/wrong.png')), false);
+
+    const short = (await request(f.config, 'stage_begin', { ...begin, path: 'Design/short.png' })).result;
+    assert.equal((await request(f.config, 'stage_commit', { client: 'claude', stage: short.stage })).result.status, 'failed');
+    const dropped = (await request(f.config, 'stage_begin', { ...begin, path: 'Design/dropped.png' })).result;
+    assert.equal((await request(f.config, 'stage_abort', { client: 'claude', stage: dropped.stage })).result.aborted, true);
+    assert.equal((await request(f.config, 'stage_commit', { client: 'claude', stage: dropped.stage })).error, 'unknown_receipt');
+
+    assert.equal((await request(f.config, 'stage_begin', { ...begin, path: 'Design/note.md' })).error, 'unsupported_media');
+    assert.equal((await request(f.config, 'stage_begin', { ...begin, path: 'Design/vector.svg' })).error, 'unsupported_media');
+    assert.equal((await request(f.config, 'stage_begin', { ...begin, path: 'Private/shot.png' })).error, 'conflict');
+    assert.equal((await request(f.config, 'stage_begin', { ...begin, path: 'Design/huge.png', size: 50 * 1024 * 1024 + 1 })).error, 'limit_exceeded');
+    const held = [];
+    for (let index = 0; index < 4; index++) {
+      held.push((await request(f.config, 'stage_begin', { ...begin, path: `Design/held-${index}.png`, size: 10 })).result.stage);
+    }
+    assert.equal((await request(f.config, 'stage_begin', { ...begin, path: 'Design/fifth.png', size: 10 })).error, 'limit_exceeded');
+    for (const id of held) await request(f.config, 'stage_abort', { client: 'claude', stage: id });
+    assert.equal((await request(f.config, 'stage_begin', { ...begin, path: 'Design/fifth.png', size: 10 })).ok, true);
+  } finally { if (bridge) await bridge.onunload(); fs.rmSync(f.home, { recursive: true, force: true }); }
+});
+if (!REAL_IPC) test('attachment stages: in-flight, indeterminate, read-back, expiry and byte budget', async () => {
+  const f = fixture('Stages');
+  let bridge;
+  const realNow = Date.now;
+  try {
+    bridge = await start(f);
+    const bytes = Buffer.from('exact attachment bytes');
+    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    const staged = async (target, size = bytes.length) => {
+      const { stage } = (await request(f.config, 'stage_begin', { client: 'claude', path: target, size, sha256 })).result;
+      if (size === bytes.length) await request(f.config, 'stage_put', { client: 'claude', stage, offset: 0, data: bytes.toString('base64') });
+      return stage;
+    };
+    const commit = stage => request(f.config, 'stage_commit', { client: 'claude', stage });
+    const createBinary = f.vault.createBinary.bind(f.vault);
+
+    // A poll while the commit is writing reports pending, never an internal state.
+    let release;
+    f.vault.createBinary = async (...args) => { await new Promise(resolve => { release = resolve; }); return createBinary(...args); };
+    const slow = await staged('Out/slow.png');
+    const first = commit(slow);
+    while (!release) await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await commit(slow)).result.status, 'pending');
+    assert.equal((await request(f.config, 'stage_put', { client: 'claude', stage: slow, offset: bytes.length, data: 'AA==' })).error, 'conflict');
+    assert.equal((await request(f.config, 'stage_abort', { client: 'claude', stage: slow })).error, 'conflict');
+    release();
+    assert.equal((await first).result.status, 'committed');
+    assert.equal((await request(f.config, 'stage_put', { client: 'claude', stage: slow, offset: bytes.length, data: 'AA==' })).error, 'conflict');
+
+    // The app failing after folders were created leaves an indeterminate outcome.
+    f.vault.createBinary = async () => { throw new Error('disk gone'); };
+    const broken = await staged('New/Folder/broken.png');
+    assert.equal((await commit(broken)).result.status, 'indeterminate');
+    assert.ok(f.vault.getAbstractFileByPath('New/Folder'));
+
+    // Bytes on disk that differ from the staged bytes are caught by the read-back.
+    f.vault.createBinary = async (target, data) => createBinary(target, Buffer.from('tampered bytes!!!!!!!!'));
+    const tampered = await staged('Out/tampered.png');
+    assert.equal((await commit(tampered)).result.status, 'indeterminate');
+    f.vault.createBinary = createBinary;
+
+    // Ten minutes later finished stages are gone; indeterminate ones are kept.
+    Date.now = () => realNow() + 11 * 60 * 1000;
+    assert.equal((await commit(slow)).error, 'unknown_receipt');
+    assert.equal((await commit(broken)).result.status, 'indeterminate');
+    assert.equal((await commit(tampered)).result.status, 'indeterminate');
+    Date.now = realNow;
+
+    // The in-memory budget is bytes as well as stage count.
+    const big = 50 * 1024 * 1024;
+    await staged('Big/one.png', big);
+    await staged('Big/two.png', big);
+    assert.equal((await request(f.config, 'stage_begin', { client: 'claude', path: 'Big/three.png', size: big, sha256 })).error, 'limit_exceeded');
+    assert.equal((await request(f.config, 'stage_begin', { client: 'claude', path: 'Big/small.png', size: 1, sha256 })).ok, true);
+  } finally {
+    Date.now = realNow;
+    if (bridge) await bridge.onunload();
+    fs.rmSync(f.home, { recursive: true, force: true });
+  }
+});
