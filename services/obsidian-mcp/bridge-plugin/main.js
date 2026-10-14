@@ -919,7 +919,10 @@ async function commitStage(app, config, entry, markStarted) {
   }
   verifyRoot(app, config);
   safePath(key, root, true);
-  const data = entry.buffer.buffer.slice(entry.buffer.byteOffset, entry.buffer.byteOffset + entry.buffer.byteLength);
+  // Buffer.alloc of this size owns its ArrayBuffer, so it is handed over without a copy.
+  const whole = entry.buffer.byteOffset === 0 && entry.buffer.byteLength === entry.buffer.buffer.byteLength;
+  const data = whole ? entry.buffer.buffer
+    : entry.buffer.buffer.slice(entry.buffer.byteOffset, entry.buffer.byteOffset + entry.buffer.byteLength);
   markStarted();
   for (const folder of missing) {
     verifyRoot(app, config);
@@ -1079,7 +1082,8 @@ class PrivateBridge extends Plugin {
     this.bridgeConfig = config;
     const receipts = new Map();
     const stages = new Map();
-    const stageView = (id, entry) => ({ stage: id, status: entry.state === 'open' ? 'pending' : entry.state,
+    const stageView = (id, entry) => ({ stage: id,
+      status: entry.state === 'open' || entry.state === 'running' ? 'pending' : entry.state,
       result: entry.result || null, error: entry.error || null });
     const ownedStage = args => {
       if (typeof args.client !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(args.client) ||
@@ -1096,7 +1100,9 @@ class PrivateBridge extends Plugin {
             Date.now() - entry.created > RECEIPT_TTL_MS) receipts.delete(id);
       }
       for (const [id, entry] of stages) {
-        if (entry.state !== 'running' && Date.now() - entry.created > STAGE_TTL_MS) stages.delete(id);
+        // As with receipts, an indeterminate outcome stays until the app restarts.
+        if (entry.state !== 'running' && entry.state !== 'indeterminate' &&
+            Date.now() - entry.created > STAGE_TTL_MS) stages.delete(id);
       }
     };
     const lookup = (args, needsOperation) => {

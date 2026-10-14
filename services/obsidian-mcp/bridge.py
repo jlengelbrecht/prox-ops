@@ -156,7 +156,8 @@ def _commit_result(value: dict[str, Any], args: dict[str, Any]) -> bool:
                 and _safe_relative(result["path"]) and _int(result["size"], 1, MAX_ATTACHMENT)
                 and isinstance(result["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", result["sha256"]) is not None)
     if value["status"] == "failed":
-        return value["result"] is None and value["error"] in ERRORS
+        # A commit refused before it started because the app was unavailable is final too.
+        return value["result"] is None and value["error"] in ERRORS | {"unavailable"}
     return value["result"] is None and value["error"] is None
 
 
@@ -619,7 +620,7 @@ class BridgeClient:
         """Create a new attachment from `chunks` (an iterable of bytes). Never overwrites.
 
         Returns the committed result, or {"stage", "status"} when the outcome is not yet known;
-        `attachment_status` reports it later."""
+        calling `commit_attachment` with that stage reports it later."""
         if _attachment_mime(path) is None or not _safe_relative(path):
             raise BridgeError("unsupported_media")
         if not _int(size, 1, MAX_ATTACHMENT) or not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
@@ -642,15 +643,20 @@ class BridgeClient:
             except BridgeError:
                 pass
             raise
-        return self.attachment_status(vault, stage, client_id=client_id)
+        return self.commit_attachment(vault, stage, client_id=client_id)
 
-    def attachment_status(self, vault: str, stage: str, *, client_id: str = "bridge") -> dict[str, Any]:
-        """Commit a fully staged attachment, or report the outcome of an earlier commit."""
+    def commit_attachment(self, vault: str, stage: str, *, client_id: str = "bridge") -> dict[str, Any]:
+        """Commit a fully staged attachment, or report the outcome of an earlier commit.
+
+        This is the commit itself: on a stage that is still receiving chunks it fails the stage.
+        A stage the app no longer knows (restart or expiry) is reported as indeterminate."""
         if not isinstance(stage, str) or RECEIPT_RE.fullmatch(stage) is None:
             raise BridgeError("invalid_request")
         try:
             result = self._call(vault, "stage_commit", {"client": client_id, "stage": stage})
         except BridgeError as error:
+            if error.code == "unknown_receipt":
+                return {"stage": stage, "status": "indeterminate"}
             if error.code not in {"unavailable", "internal_error"}:
                 raise
             return {"stage": stage, "status": "pending"}

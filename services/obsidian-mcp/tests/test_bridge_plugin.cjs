@@ -1181,3 +1181,63 @@ if (!REAL_IPC) test('attachments: pinned chunked reads and staged create-only wr
     assert.equal((await request(f.config, 'stage_begin', { ...begin, path: 'Design/fifth.png', size: 10 })).ok, true);
   } finally { if (bridge) await bridge.onunload(); fs.rmSync(f.home, { recursive: true, force: true }); }
 });
+if (!REAL_IPC) test('attachment stages: in-flight, indeterminate, read-back, expiry and byte budget', async () => {
+  const f = fixture('Stages');
+  let bridge;
+  const realNow = Date.now;
+  try {
+    bridge = await start(f);
+    const bytes = Buffer.from('exact attachment bytes');
+    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    const staged = async (target, size = bytes.length) => {
+      const { stage } = (await request(f.config, 'stage_begin', { client: 'claude', path: target, size, sha256 })).result;
+      if (size === bytes.length) await request(f.config, 'stage_put', { client: 'claude', stage, offset: 0, data: bytes.toString('base64') });
+      return stage;
+    };
+    const commit = stage => request(f.config, 'stage_commit', { client: 'claude', stage });
+    const createBinary = f.vault.createBinary.bind(f.vault);
+
+    // A poll while the commit is writing reports pending, never an internal state.
+    let release;
+    f.vault.createBinary = async (...args) => { await new Promise(resolve => { release = resolve; }); return createBinary(...args); };
+    const slow = await staged('Out/slow.png');
+    const first = commit(slow);
+    while (!release) await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await commit(slow)).result.status, 'pending');
+    assert.equal((await request(f.config, 'stage_put', { client: 'claude', stage: slow, offset: bytes.length, data: 'AA==' })).error, 'conflict');
+    assert.equal((await request(f.config, 'stage_abort', { client: 'claude', stage: slow })).error, 'conflict');
+    release();
+    assert.equal((await first).result.status, 'committed');
+    assert.equal((await request(f.config, 'stage_put', { client: 'claude', stage: slow, offset: bytes.length, data: 'AA==' })).error, 'conflict');
+
+    // The app failing after folders were created leaves an indeterminate outcome.
+    f.vault.createBinary = async () => { throw new Error('disk gone'); };
+    const broken = await staged('New/Folder/broken.png');
+    assert.equal((await commit(broken)).result.status, 'indeterminate');
+    assert.ok(f.vault.getAbstractFileByPath('New/Folder'));
+
+    // Bytes on disk that differ from the staged bytes are caught by the read-back.
+    f.vault.createBinary = async (target, data) => createBinary(target, Buffer.from('tampered bytes!!!!!!!!'));
+    const tampered = await staged('Out/tampered.png');
+    assert.equal((await commit(tampered)).result.status, 'indeterminate');
+    f.vault.createBinary = createBinary;
+
+    // Ten minutes later finished stages are gone; indeterminate ones are kept.
+    Date.now = () => realNow() + 11 * 60 * 1000;
+    assert.equal((await commit(slow)).error, 'unknown_receipt');
+    assert.equal((await commit(broken)).result.status, 'indeterminate');
+    assert.equal((await commit(tampered)).result.status, 'indeterminate');
+    Date.now = realNow;
+
+    // The in-memory budget is bytes as well as stage count.
+    const big = 50 * 1024 * 1024;
+    await staged('Big/one.png', big);
+    await staged('Big/two.png', big);
+    assert.equal((await request(f.config, 'stage_begin', { client: 'claude', path: 'Big/three.png', size: big, sha256 })).error, 'limit_exceeded');
+    assert.equal((await request(f.config, 'stage_begin', { client: 'claude', path: 'Big/small.png', size: 1, sha256 })).ok, true);
+  } finally {
+    Date.now = realNow;
+    if (bridge) await bridge.onunload();
+    fs.rmSync(f.home, { recursive: true, force: true });
+  }
+});

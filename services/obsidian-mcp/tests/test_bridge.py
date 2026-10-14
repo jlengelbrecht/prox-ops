@@ -289,6 +289,10 @@ class BridgeTests(unittest.TestCase):
                 return ok({"stage": args["stage"], "aborted": True})
             if lie.get("commit") == "pending":
                 return ok({"stage": args["stage"], "status": "pending", "result": None, "error": None})
+            if lie.get("commit") == "forgotten":
+                return {"v": 1, "vault": "iam", "ok": False, "error": "unknown_receipt"}
+            if lie.get("commit") == "unavailable":
+                return ok({"stage": args["stage"], "status": "failed", "result": None, "error": "unavailable"})
             files[entry["path"]] = entry["data"]
             return ok({"stage": args["stage"], "status": "committed", "error": None,
                        "result": {"path": entry["path"], "size": len(entry["data"]), "sha256": entry["sha"]}})
@@ -327,6 +331,12 @@ class BridgeTests(unittest.TestCase):
             lie["commit"] = "pending"
             pending = client.write_attachment("iam", "Pics/later.png", [b"abcd"], 4, "0" * 64)
             self.assertEqual(pending["status"], "pending")
+            lie["commit"] = "forgotten"
+            self.assertEqual(client.commit_attachment("iam", pending["stage"])["status"], "indeterminate")
+            lie["commit"] = "unavailable"
+            with self.assertRaisesRegex(bridge.BridgeError, "unavailable"):
+                client.commit_attachment("iam", pending["stage"])
+            lie.pop("commit")
             for bad in ((0, "0" * 64), (51 * 1024 * 1024, "0" * 64), (4, "XYZ")):
                 with self.assertRaisesRegex(bridge.BridgeError, "invalid_request"):
                     client.write_attachment("iam", "Pics/bad.png", [], *bad)
