@@ -27,7 +27,7 @@ from typing import Any, Mapping
 
 VERSION = 1
 MAX_REQUEST = 384 * 1024
-MAX_RESPONSE = 1024 * 1024
+MAX_RESPONSE = 6 * 1024 * 1024
 ERRORS = frozenset({"invalid_request", "invalid_path", "not_found", "conflict",
                     "limit_exceeded", "unsupported_media", "unknown_operation",
                     "unauthorized", "internal_error", "unknown_receipt"})

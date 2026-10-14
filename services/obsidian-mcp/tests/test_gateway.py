@@ -268,6 +268,62 @@ class ImageDecodeTests(unittest.TestCase):
             _image_content(bridge, "iam", "note.md", "../outside.png")
 
 
+    def _png(self, image):
+        stream = io.BytesIO()
+        image.save(stream, "PNG")
+        return stream.getvalue()
+
+    def test_large_screenshot_is_downscaled_instead_of_rejected(self):
+        bridge = BridgeFixture()
+        source = Image.new("RGB", (3340, 1822), (240, 240, 240))
+        source.paste((30, 90, 200), (0, 0, 1670, 911))
+        bridge.image = self._png(source)
+        result = _image_content(bridge, "iam", "note.md", "picture.png")
+        self.assertIn("downscaled from 3340x1822 to", result.content[0].text)
+        with Image.open(io.BytesIO(base64.b64decode(result.content[1].data))) as decoded:
+            self.assertLessEqual(decoded.width * decoded.height, 4_000_000)
+            self.assertAlmostEqual(decoded.width / decoded.height, 3340 / 1822, places=2)
+            self.assertEqual(decoded.getpixel((10, 10)), (30, 90, 200))
+
+    def test_incompressible_image_is_shrunk_to_the_byte_budget(self):
+        bridge = BridgeFixture()
+        bridge.image = self._png(Image.frombytes("RGB", (1200, 800), os.urandom(1200 * 800 * 3)))
+        self.assertGreater(len(bridge.image), 2 * 1024 * 1024)
+        result = _image_content(bridge, "iam", "note.md", "picture.png")
+        self.assertLessEqual(len(base64.b64decode(result.content[1].data)), 512 * 1024)
+        self.assertIn("downscaled from 1200x800", result.content[0].text)
+
+    def test_small_image_is_not_resized_or_annotated(self):
+        bridge = BridgeFixture()
+        bridge.image = self._png(Image.new("RGB", (1500, 919), (1, 2, 3)))
+        result = _image_content(bridge, "iam", "note.md", "picture.png")
+        self.assertNotIn("downscaled", result.content[0].text)
+        with Image.open(io.BytesIO(base64.b64decode(result.content[1].data))) as decoded:
+            self.assertEqual(decoded.size, (1500, 919))
+
+    def test_busy_decode_slots_fail_closed_after_the_wait(self):
+        import gateway
+        bridge = BridgeFixture()
+        held = [gateway._IMAGE_DECODES.acquire(), gateway._IMAGE_DECODES.acquire()]
+        try:
+            with patch("gateway._IMAGE_DECODE_WAIT", 0.01), self.assertRaises(ToolError):
+                _image_content(bridge, "iam", "note.md", "picture.png")
+        finally:
+            for _ in held:
+                gateway._IMAGE_DECODES.release()
+        self.assertEqual(_image_content(bridge, "iam", "note.md", "picture.png").content[1].mimeType,
+                         "image/png")
+
+    def test_source_bounds_still_reject_huge_inputs(self):
+        bridge = BridgeFixture()
+        bridge.image = self._png(Image.new("1", (6000, 4001)))
+        with self.assertRaises(ToolError):
+            _image_content(bridge, "iam", "note.md", "picture.png")
+        bridge.image = b"\x89PNG" + b"\0" * (4 * 1024 * 1024)
+        with self.assertRaises(ToolError):
+            _image_content(bridge, "iam", "note.md", "picture.png")
+
+
 class NoteWithImagesTests(unittest.TestCase):
     def test_pages_images_in_reading_order_and_marks_failures(self):
         bridge = BridgeFixture()
