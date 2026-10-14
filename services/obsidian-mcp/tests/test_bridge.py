@@ -3,6 +3,8 @@
 import base64
 import importlib.util
 import json
+import os
+import hashlib
 from pathlib import Path
 import socket
 import tempfile
@@ -254,6 +256,83 @@ class BridgeTests(unittest.TestCase):
         finally:
             a.close()
 
+    def test_attachment_round_trip_and_result_checks(self):
+        files = {"Pics/a.png": os.urandom(9000)}
+        stages = {}
+        lie = {}
+
+        def plugin(request):
+            op, args = request["op"], request["args"]
+            ok = lambda result: {"v": 1, "vault": "iam", "ok": True, "result": result}
+            if op == "health":
+                return ok({"protocol": 1, "vault": "iam", "app_name": "IAM", "app_root": str(a.root),
+                           "capabilities": list(bridge.RESULT_KEYS)})
+            if op == "file_info":
+                return ok({"path": args["path"], "mime": "image/png", "size": len(files[args["path"]]), "mtime": 7})
+            if op == "read_chunk":
+                data = files[args["path"]][args["offset"]:args["offset"] + args["length"]]
+                if lie.get("short"):
+                    data = data[:-1]
+                return ok({"path": args["path"], "offset": args["offset"], "data": base64.b64encode(data).decode()})
+            if op == "stage_begin":
+                stage = "00000000-0000-4000-8000-00000000000%d" % (len(stages) + 1)
+                stages[stage] = {"path": args["path"], "data": b"", "sha": args["sha256"]}
+                return ok({"stage": stage, "path": args["path"]})
+            entry = stages[args["stage"]]
+            if op == "stage_put":
+                if lie.get("put"):
+                    return {"v": 1, "vault": "iam", "ok": False, "error": "conflict"}
+                entry["data"] += base64.b64decode(args["data"])
+                return ok({"stage": args["stage"], "received": len(entry["data"])})
+            if op == "stage_abort":
+                entry["aborted"] = True
+                return ok({"stage": args["stage"], "aborted": True})
+            if lie.get("commit") == "pending":
+                return ok({"stage": args["stage"], "status": "pending", "result": None, "error": None})
+            files[entry["path"]] = entry["data"]
+            return ok({"stage": args["stage"], "status": "committed", "error": None,
+                       "result": {"path": entry["path"], "size": len(entry["data"]), "sha256": entry["sha"]}})
+
+        a = Fixture("iam", plugin)
+        try:
+            client = bridge.BridgeClient({"iam": a.endpoint})
+            info = client.attachment_info("iam", "Pics/a.png")
+            self.assertEqual(b"".join(client.iter_attachment("iam", info, chunk=4000)), files["Pics/a.png"])
+            reads = [r["args"] for r in a.requests if r["op"] == "read_chunk"]
+            self.assertEqual([(r["offset"], r["size"], r["mtime"]) for r in reads], [(0, 9000, 7), (4000, 9000, 7), (8000, 9000, 7)])
+            lie["short"] = True
+            with self.assertRaisesRegex(bridge.BridgeError, "unavailable"):
+                list(client.iter_attachment("iam", info, chunk=4000))
+            lie.clear()
+            for path in ("Pics/a.svg", "Pics/a.md", "../a.png"):
+                with self.assertRaises(bridge.BridgeError):
+                    client.attachment_info("iam", path)
+
+            payload = os.urandom(600 * 1024)
+            digest = hashlib.sha256(payload).hexdigest()
+            done = client.write_attachment("iam", "Pics/new.png", [payload[:1000], payload[1000:]], len(payload),
+                                           digest, client_id="claude")
+            self.assertEqual((done["status"], done["sha256"], files["Pics/new.png"]), ("committed", digest, payload))
+            puts = [r["args"] for r in a.requests if r["op"] == "stage_put"]
+            self.assertTrue(all(len(base64.b64decode(p["data"])) <= bridge.MAX_PUT and p["client"] == "claude" for p in puts))
+            self.assertEqual(sum(len(base64.b64decode(p["data"])) for p in puts), len(payload))
+
+            with self.assertRaisesRegex(bridge.BridgeError, "invalid_request"):
+                client.write_attachment("iam", "Pics/short.png", [b"abc"], 4, "0" * 64)
+            lie["put"] = True
+            with self.assertRaisesRegex(bridge.BridgeError, "conflict"):
+                client.write_attachment("iam", "Pics/failed.png", [b"abcd"], 4, "0" * 64)
+            self.assertTrue(all(entry.get("aborted") for entry in list(stages.values())[1:]))
+            lie["put"] = False
+            lie["commit"] = "pending"
+            pending = client.write_attachment("iam", "Pics/later.png", [b"abcd"], 4, "0" * 64)
+            self.assertEqual(pending["status"], "pending")
+            for bad in ((0, "0" * 64), (51 * 1024 * 1024, "0" * 64), (4, "XYZ")):
+                with self.assertRaisesRegex(bridge.BridgeError, "invalid_request"):
+                    client.write_attachment("iam", "Pics/bad.png", [], *bad)
+        finally:
+            a.close()
+
     def test_unexpected_results_and_response_bound(self):
         a = Fixture("iam", {"v": 1, "vault": "iam", "ok": True, "result": {"content": "secret"}})
         try:
@@ -302,6 +381,13 @@ def real_ipc_client(manifest: Path) -> None:
     assert client._transport("iam", "append", {"client": "bridge", "receipt": appended["receipt"],
            "mutation": append_args})["result"]["revision"] == final["revision"]
     assert client.read_note("iam", "Private/note.md")["content"] == "from iam+"
+    payload = os.urandom(5 * 1024 * 1024 + 123)
+    digest = hashlib.sha256(payload).hexdigest()
+    written = client.write_attachment("iam", "Design/Pack/shot.png", [payload], len(payload), digest, client_id="claude")
+    assert written["status"] == "committed" and written["sha256"] == digest
+    info = client.attachment_info("iam", "Design/Pack/shot.png")
+    assert info["size"] == len(payload) and info["mime"] == "image/png"
+    assert b"".join(client.iter_attachment("iam", info)) == payload
     for vault in ("iam", "homelab"):
         entry = endpoints[vault]
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:

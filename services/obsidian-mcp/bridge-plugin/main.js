@@ -20,6 +20,14 @@ const MAX_RECEIPTS = 64;
 const RECEIPT_TTL_MS = 10 * 60 * 1000;
 const activeMutations = globalThis[Symbol.for('obsidian.bridge.activeMutations')] ||= { count: 0 };
 const MIME = Object.freeze({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' });
+// Byte-exact attachment transfer. Reads go out in chunks; writes are staged in chunks, then created once.
+const ATTACHMENT = Object.freeze({ ...MIME, '.pdf': 'application/pdf' });
+const MAX_ATTACHMENT = 50 * 1024 * 1024;
+const MAX_CHUNK = 4 * 1024 * 1024;
+const MAX_PUT = 256 * 1024;
+const MAX_STAGES = 4;
+const MAX_STAGED_BYTES = 128 * 1024 * 1024;
+const STAGE_TTL_MS = 10 * 60 * 1000;
 
 class BridgeError extends Error {
   constructor(code) { super(code); this.code = code; }
@@ -427,6 +435,41 @@ async function makeFolders(app, config, missing) {
     if (!(app.vault.getAbstractFileByPath(folder) instanceof TFolder)) fail('conflict');
   }
 }
+async function openAttachment(app, config, requested) {
+  verifyRoot(app, config);
+  // Allow an absent path through validation so a missing file reports not_found.
+  const key = safePath(requested, config.root, true);
+  const file = app.vault.getAbstractFileByPath(key);
+  if (!(file instanceof TFile) || file.path !== key) fail('not_found');
+  const mime = ATTACHMENT[path.extname(key).toLowerCase()];
+  if (!mime) fail('unsupported_media');
+  let handle;
+  try {
+    handle = await fs.promises.open(path.join(config.root, key), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch { fail('not_found'); }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || !Number.isSafeInteger(stat.size)) fail('not_found');
+    if (stat.size > MAX_ATTACHMENT) fail('limit_exceeded');
+    return { key, mime, handle, size: stat.size, mtime: Math.trunc(stat.mtimeMs) };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+function attachmentKey(requested, root) {
+  const key = safePath(requested, root, true);
+  if (!ATTACHMENT[path.extname(key).toLowerCase()]) fail('unsupported_media');
+  return key;
+}
+function strictBase64(value, max) {
+  if (typeof value !== 'string' || !value || value.length > Math.ceil(max / 3) * 4 ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) fail('invalid_request');
+  const bytes = Buffer.from(value, 'base64');
+  if (!bytes.length || bytes.length > max || bytes.toString('base64') !== value) fail('invalid_request');
+  return bytes;
+}
+
 function item(app, root, requested) {
   // Validate the shape, allowing an absent path, so a missing source reports not_found.
   const key = safePath(requested, root, true);
@@ -470,7 +513,8 @@ async function execute(app, config, op, args, markStarted = () => {}) {
       capabilities: ['health', 'list', 'read', 'search', 'create', 'append', 'embed', 'reserve', 'receipt',
         'vaults', 'open_vault', 'create_vault', 'state', 'mkdir', 'move', 'replace', 'trash',
         'logs', 'plugins', 'settings', 'plugin_state', 'plugin_set', 'plugin_remove',
-        'setting_state', 'setting_write', 'plugin_catalog', 'plugin_package', 'plugin_release', 'plugin_install'] };
+        'setting_state', 'setting_write', 'plugin_catalog', 'plugin_package', 'plugin_release', 'plugin_install',
+        'file_info', 'read_chunk', 'stage_begin', 'stage_put', 'stage_commit', 'stage_abort'] };
   }
   if (op === 'list') {
     argument(args, ['prefix', 'limit']);
@@ -828,7 +872,79 @@ async function execute(app, config, op, args, markStarted = () => {}) {
     if (data.length > MAX_MEDIA) fail('limit_exceeded');
     return { path: resolved.path, mime, data: data.toString('base64') };
   }
+  if (op === 'file_info') {
+    argument(args, ['path']);
+    const found = await openAttachment(app, config, args.path);
+    await found.handle.close();
+    return { path: found.key, mime: found.mime, size: found.size, mtime: found.mtime };
+  }
+  if (op === 'read_chunk') {
+    // size and mtime pin the version file_info reported; any change since then is a conflict.
+    argument(args, ['path', 'offset', 'length', 'size', 'mtime']);
+    const { offset, length } = args;
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 ||
+        length > MAX_CHUNK) fail('invalid_request');
+    const found = await openAttachment(app, config, args.path);
+    try {
+      if (found.size !== args.size || found.mtime !== args.mtime) fail('conflict');
+      if (offset >= found.size) fail('invalid_request');
+      const want = Math.min(length, found.size - offset);
+      const buffer = Buffer.alloc(want);
+      for (let done = 0; done < want;) {
+        const { bytesRead } = await found.handle.read(buffer, done, want - done, offset + done);
+        if (!bytesRead) fail('conflict');
+        done += bytesRead;
+      }
+      return { path: found.key, offset, data: buffer.toString('base64') };
+    } finally {
+      await found.handle.close();
+    }
+  }
   fail('unknown_operation');
+}
+
+async function commitStage(app, config, entry, markStarted) {
+  const vault = app.vault;
+  const root = config.root;
+  const key = attachmentKey(entry.key, root);
+  if (entry.received !== entry.size ||
+      crypto.createHash('sha256').update(entry.buffer).digest('hex') !== entry.sha256) fail('invalid_request');
+  if (vault.getAbstractFileByPath(key) || fs.existsSync(path.join(root, key))) fail('conflict');
+  const missing = [];
+  for (let folder = path.posix.dirname(key); folder !== '.'; folder = path.posix.dirname(folder)) {
+    const existing = vault.getAbstractFileByPath(folder);
+    if (existing instanceof TFolder) break;
+    if (existing) fail('conflict');
+    missing.unshift(folder);
+  }
+  verifyRoot(app, config);
+  safePath(key, root, true);
+  const data = entry.buffer.buffer.slice(entry.buffer.byteOffset, entry.buffer.byteOffset + entry.buffer.byteLength);
+  markStarted();
+  for (const folder of missing) {
+    verifyRoot(app, config);
+    safePath(folder, root, true);
+    try { await vault.createFolder(folder); } catch { fail('conflict'); }
+    if (!(vault.getAbstractFileByPath(folder) instanceof TFolder)) fail('conflict');
+  }
+  try { await vault.createBinary(key, data); } catch { fail('conflict'); }
+  // Read the file back from disk and prove it holds exactly the staged bytes.
+  const written = await openAttachment(app, config, key);
+  try {
+    if (written.size !== entry.size) fail('conflict');
+    const hash = crypto.createHash('sha256');
+    const buffer = Buffer.alloc(Math.min(MAX_CHUNK, written.size || 1));
+    for (let offset = 0; offset < written.size;) {
+      const { bytesRead } = await written.handle.read(buffer, 0, Math.min(buffer.length, written.size - offset), offset);
+      if (!bytesRead) fail('conflict');
+      hash.update(buffer.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    if (hash.digest('hex') !== entry.sha256) fail('conflict');
+  } finally {
+    await written.handle.close();
+  }
+  return { path: key, size: entry.size, sha256: entry.sha256 };
 }
 
 function knownVaults(config) {
@@ -962,10 +1078,25 @@ class PrivateBridge extends Plugin {
     if (!config) return;
     this.bridgeConfig = config;
     const receipts = new Map();
+    const stages = new Map();
+    const stageView = (id, entry) => ({ stage: id, status: entry.state === 'open' ? 'pending' : entry.state,
+      result: entry.result || null, error: entry.error || null });
+    const ownedStage = args => {
+      if (typeof args.client !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(args.client) ||
+          typeof args.stage !== 'string' ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(args.stage)) fail('invalid_request');
+      const entry = stages.get(args.stage);
+      if (!entry) fail('unknown_receipt');
+      if (entry.client !== args.client) fail('unauthorized');
+      return entry;
+    };
     const prune = () => {
       for (const [id, entry] of receipts) {
         if (entry.state !== 'running' && entry.state !== 'indeterminate' &&
             Date.now() - entry.created > RECEIPT_TTL_MS) receipts.delete(id);
+      }
+      for (const [id, entry] of stages) {
+        if (entry.state !== 'running' && Date.now() - entry.created > STAGE_TTL_MS) stages.delete(id);
       }
     };
     const lookup = (args, needsOperation) => {
@@ -996,6 +1127,64 @@ class PrivateBridge extends Plugin {
       if (op === 'receipt') {
         const entry = lookup(args, true);
         return receiptView(args.receipt, entry);
+      }
+      if (op === 'stage_begin') {
+        if (!shape(args, ['client', 'path', 'size', 'sha256']) || typeof args.client !== 'string' ||
+            !/^[a-z][a-z0-9_-]{0,63}$/.test(args.client) || !Number.isSafeInteger(args.size) || args.size < 1 ||
+            typeof args.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(args.sha256)) fail('invalid_request');
+        if (args.size > MAX_ATTACHMENT) fail('limit_exceeded');
+        const key = attachmentKey(args.path, config.root);
+        if (this.app.vault.getAbstractFileByPath(key) || fs.existsSync(path.join(config.root, key))) fail('conflict');
+        const open = [...stages.values()].filter(entry => entry.state === 'open' || entry.state === 'running');
+        if (open.some(entry => entry.key === key)) fail('conflict');
+        if (stages.size >= MAX_RECEIPTS || open.length >= MAX_STAGES ||
+            open.reduce((total, entry) => total + entry.size, 0) + args.size > MAX_STAGED_BYTES) fail('limit_exceeded');
+        const stage = crypto.randomUUID();
+        stages.set(stage, { client: args.client, key, size: args.size, sha256: args.sha256,
+          buffer: Buffer.alloc(args.size), received: 0, state: 'open', created: Date.now() });
+        return { stage, path: key };
+      }
+      if (op === 'stage_put') {
+        if (!shape(args, ['client', 'stage', 'offset', 'data'])) fail('invalid_request');
+        const entry = ownedStage(args);
+        if (entry.state !== 'open') fail('conflict');
+        if (args.offset !== entry.received) fail('conflict');
+        const bytes = strictBase64(args.data, MAX_PUT);
+        if (entry.received + bytes.length > entry.size) fail('limit_exceeded');
+        bytes.copy(entry.buffer, entry.received);
+        entry.received += bytes.length;
+        entry.created = Date.now();
+        return { stage: args.stage, received: entry.received };
+      }
+      if (op === 'stage_abort') {
+        if (!shape(args, ['client', 'stage'])) fail('invalid_request');
+        const entry = ownedStage(args);
+        if (entry.state === 'running') fail('conflict');
+        stages.delete(args.stage);
+        return { stage: args.stage, aborted: true };
+      }
+      if (op === 'stage_commit') {
+        // Repeating a commit reports the first attempt's outcome instead of writing again.
+        if (!shape(args, ['client', 'stage'])) fail('invalid_request');
+        const entry = ownedStage(args);
+        if (entry.state !== 'open') return stageView(args.stage, entry);
+        if (activeMutations.count >= MAX_RECEIPTS) fail('limit_exceeded');
+        entry.state = 'running';
+        activeMutations.count++;
+        let started = false;
+        try {
+          entry.result = await commitStage(this.app, config, entry, () => { started = true; });
+          entry.state = 'committed';
+        } catch (error) {
+          if (!started && error instanceof BridgeError) {
+            entry.state = 'failed'; entry.error = error.code;
+          } else entry.state = 'indeterminate';
+        } finally {
+          activeMutations.count--;
+          entry.buffer = null;
+          entry.created = Date.now();
+        }
+        return stageView(args.stage, entry);
       }
       if (op === 'create' || op === 'append') {
         const entry = lookup(args, false);
