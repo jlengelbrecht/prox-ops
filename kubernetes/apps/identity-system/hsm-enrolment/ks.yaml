@@ -1,0 +1,20 @@
+---
+# Temporary: used once by hand to set up the YubiHSM (replace the factory
+# credential, create keys, print certificates). Remove this directory and
+# its line in the parent kustomization after setup, and Flux prunes the pod.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: identity-hsm-enrolment
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./kubernetes/apps/identity-system/hsm-enrolment/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  targetNamespace: identity-system
+  # The pod ends Failed when its activeDeadlineSeconds passes; that must not
+  # mark this Kustomization unhealthy.
+  wait: false
