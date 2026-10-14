@@ -9,10 +9,10 @@ const crypto = require('node:crypto');
 
 const VERSION = 1;
 const MAX_REQUEST = 384 * 1024;
-const MAX_RESPONSE = 1024 * 1024;
+const MAX_RESPONSE = 6 * 1024 * 1024;
 const MAX_NOTE = 256 * 1024;
 const MAX_APPEND = 64 * 1024;
-const MAX_MEDIA = 512 * 1024;
+const MAX_MEDIA = 4 * 1024 * 1024;
 const MAX_LIST = 1000;
 const MAX_SEARCH_FILES = 1000;
 const MAX_SEARCH_BYTES = 4 * 1024 * 1024;

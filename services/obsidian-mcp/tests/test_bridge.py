@@ -1,5 +1,6 @@
 """Isolated Unix socket tests for the typed bridge adapter."""
 
+import base64
 import importlib.util
 import json
 from pathlib import Path
@@ -235,6 +236,21 @@ class BridgeTests(unittest.TestCase):
                 "expected_revision": original}, result["receipt"], "bridge")
             self.assertEqual(reconciled["status"], "committed")
             self.assertEqual([r["op"] for r in a.requests].count("append"), 1)
+        finally:
+            a.close()
+
+    def test_embed_results_are_bounded_by_the_media_limit(self):
+        def embed(size):
+            return {"v": 1, "vault": "iam", "ok": True,
+                    "result": {"path": "image.png", "mime": "image/png",
+                               "data": base64.b64encode(b"x" * size).decode()}}
+        a = Fixture("iam", embed(bridge.MAX_MEDIA))
+        try:
+            client = bridge.BridgeClient({"iam": a.endpoint})
+            self.assertEqual(client.resolve_embed("iam", "note.md", "image.png")["path"], "image.png")
+            a.reply = embed(bridge.MAX_MEDIA + 1)
+            with self.assertRaises(bridge.BridgeError):
+                client.resolve_embed("iam", "note.md", "image.png")
         finally:
             a.close()
 

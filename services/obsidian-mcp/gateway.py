@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import stat
+import threading
 import time
 import unicodedata
 import warnings
@@ -38,7 +39,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from approval import (AdapterConflict, AgentContext, ApprovalCoordinator, ApprovalError,
                       Operation, PackageAttestation, PackagePreview, Preview, Snapshot, StateEntry,
                       VaultEnrollment)
-from bridge import BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
+from bridge import MAX_MEDIA, BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
 from owner_auth import CsrfLedger, OwnerAuthConfig, OwnerAuthenticator, OwnerAuthError
 from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
 
@@ -83,8 +84,16 @@ class _LiveVaults(_AbcMapping):
     def __len__(self):
         return len(self._bridge.vault_ids())
 _MEDIA_MIME = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
+# Source images up to these bounds are accepted and downscaled to fit the output bounds below.
+_MAX_SOURCE_IMAGE_BYTES = MAX_MEDIA
+_MAX_SOURCE_IMAGE_PIXELS = 24_000_000
+# Decoded sources take ~4 bytes per pixel more than once; cap concurrent decodes to stay in the pod limit.
+_IMAGE_DECODES = threading.BoundedSemaphore(2)
+_IMAGE_DECODE_WAIT = 10.0
+_IMAGE_FIT_SECONDS = 5.0
 _MAX_IMAGE_BYTES = 512 * 1024
 _MAX_IMAGE_PIXELS = 4_000_000
+_MIN_IMAGE_EDGE = 256
 _MAX_IMAGE_RESPONSE = 768 * 1024
 _MAX_PREVIEW_HTML = 512 * 1024
 _DISCOVERY_TIMEOUT = 1.0
@@ -564,6 +573,48 @@ class _ExecutionPool:
         self._executor.shutdown(wait=False, cancel_futures=False)
 
 
+def _fit_png(pixels: Image.Image) -> tuple[bytes, tuple[int, int]]:
+    """Encode as PNG, shrinking until the output fits the pixel and byte bounds."""
+    width, height = pixels.size
+    scale = min(1.0, (_MAX_IMAGE_PIXELS / (width * height)) ** 0.5)
+    stop_at = time.monotonic() + _IMAGE_FIT_SECONDS
+    for _ in range(8):
+        if time.monotonic() > stop_at:
+            break
+        size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        if scale < 1.0 and min(size) < min(_MIN_IMAGE_EDGE, width, height):
+            break
+        frame = pixels if size == pixels.size else pixels.resize(size, Image.Resampling.LANCZOS)
+        encoded = io.BytesIO()
+        frame.save(encoded, format="PNG")
+        clean = encoded.getvalue()
+        if len(clean) <= _MAX_IMAGE_BYTES:
+            return clean, size
+        scale *= max(0.5, 0.95 * (_MAX_IMAGE_BYTES / len(clean)) ** 0.5)
+    raise ToolError("Image unavailable")
+
+
+def _decode_and_fit(raw: bytes, mime: str) -> tuple[bytes, tuple[int, int], Image.Image]:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        with Image.open(io.BytesIO(raw)) as image:
+            if image.format not in _MEDIA_MIME or _MEDIA_MIME[image.format] != mime:
+                raise ToolError("Image unavailable")
+            if (image.width <= 0 or image.height <= 0
+                    or image.width * image.height > _MAX_SOURCE_IMAGE_PIXELS):
+                raise ToolError("Image unavailable")
+            if getattr(image, "n_frames", 1) != 1:
+                raise ToolError("Image unavailable")
+            image.verify()
+        with Image.open(io.BytesIO(raw)) as image:
+            image.load()
+            pixels = image.convert("RGBA" if image.mode in {"RGBA", "LA"} or "transparency" in image.info else "RGB")
+        # convert() carries source metadata such as the ICC profile; return pixels only.
+        pixels.info = {}
+        clean, size = _fit_png(pixels)
+    return clean, size, pixels
+
+
 def _image_content(bridge: BridgeClient, vault: str, source: str, target: str) -> ToolResult:
     if (not _safe_relative(source) or not source.lower().endswith(".md")
             or not isinstance(target, str) or len(target) > 512
@@ -577,27 +628,19 @@ def _image_content(bridge: BridgeClient, vault: str, source: str, target: str) -
     if not _safe_relative(result["path"]):
         raise ToolError("Image unavailable")
     raw = base64.b64decode(result["data"], validate=True)
-    if not raw or len(raw) > _MAX_IMAGE_BYTES or result["mime"] not in _MEDIA_MIME.values():
+    if not raw or len(raw) > _MAX_SOURCE_IMAGE_BYTES or result["mime"] not in _MEDIA_MIME.values():
         raise ToolError("Image unavailable")
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", Image.DecompressionBombWarning)
-        with Image.open(io.BytesIO(raw)) as image:
-            if image.format not in _MEDIA_MIME or _MEDIA_MIME[image.format] != result["mime"]:
-                raise ToolError("Image unavailable")
-            if image.width <= 0 or image.height <= 0 or image.width * image.height > _MAX_IMAGE_PIXELS:
-                raise ToolError("Image unavailable")
-            if getattr(image, "n_frames", 1) != 1:
-                raise ToolError("Image unavailable")
-            image.verify()
-        with Image.open(io.BytesIO(raw)) as image:
-            image.load()
-            pixels = image.convert("RGBA" if image.mode in {"RGBA", "LA"} or "transparency" in image.info else "RGB")
-            encoded = io.BytesIO()
-            pixels.save(encoded, format="PNG")
-    clean = encoded.getvalue()
+    if not _IMAGE_DECODES.acquire(timeout=_IMAGE_DECODE_WAIT):
+        raise ToolError("Image unavailable")
+    try:
+        clean, size, pixels = _decode_and_fit(raw, result["mime"])
+    finally:
+        _IMAGE_DECODES.release()
     if len(clean) > _MAX_IMAGE_BYTES or len(clean) * 4 // 3 + 512 > _MAX_IMAGE_RESPONSE:
         raise ToolError("Image unavailable")
     context = f"Vault: {vault}; note: {source}; image: {result['path']}"
+    if size != pixels.size:
+        context += f"; downscaled from {pixels.width}x{pixels.height} to {size[0]}x{size[1]}"
     if len(context) > 1300:
         raise ToolError("Image unavailable")
     return ToolResult(content=[TextContent(type="text", text=context),

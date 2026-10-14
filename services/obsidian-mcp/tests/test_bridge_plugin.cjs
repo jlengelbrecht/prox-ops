@@ -1035,7 +1035,7 @@ test('fresh adapter stat rejects oversized underreported note and media before f
   let bridge;
   try {
     f.add('Private/huge.md', 'x'.repeat(256 * 1024 + 1));
-    f.add('Private/image.png', Buffer.alloc(512 * 1024 + 1));
+    f.add('Private/image.png', Buffer.alloc(4 * 1024 * 1024 + 1));
     f.vault.getAbstractFileByPath('Private/huge.md').stat.size = 1;
     f.vault.getAbstractFileByPath('Private/image.png').stat.size = 1;
     bridge = await start(f);
