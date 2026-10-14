@@ -1,0 +1,24 @@
+# No requestBuffer: transfer bodies stream to the gateway, which enforces the declared
+# size (at most 50 MB), a 300 s upload window and two concurrent transfers per direction.
+# A route-level policy replaces the gateway-wide one, so the timeout is set here: long
+# enough for a 500 MB export, still bounded.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: obsidian-mcp-transfer
+  namespace: notes
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: obsidian-mcp-transfer
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit:
+            requests: 60
+            unit: Minute
+  timeout:
+    http:
+      requestTimeout: 600s
