@@ -455,6 +455,7 @@ worker_nodes = [
     is_gpu       = false
     gpu_model    = ""
     gpu_mapping  = ""
+    usb_mapping  = "yubihsm"
     # WI-014-1: Testing 3-NIC configuration (eth0: VLAN 66, eth1: VLAN 62, eth2: VLAN 81)
     additional_network_devices = [
       {
