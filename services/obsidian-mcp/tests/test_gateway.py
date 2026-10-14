@@ -260,6 +260,12 @@ class ImageDecodeTests(unittest.TestCase):
         self.assertNotIn(b"private fixture marker", content)
         with Image.open(io.BytesIO(content)) as decoded:
             self.assertEqual(decoded.getpixel((0, 0)), (20, 40, 60))
+        stream = io.BytesIO()
+        Image.new("RGB", (2, 2), (20, 40, 60)).save(stream, "PNG", icc_profile=b"private icc fixture")
+        bridge.image = stream.getvalue()
+        result = _image_content(bridge, "iam", "note.md", "picture.png")
+        with Image.open(io.BytesIO(base64.b64decode(result.content[1].data))) as decoded:
+            self.assertNotIn("icc_profile", decoded.info)
         with self.assertRaises(Exception):
             _image_content(bridge, "iam", "note.md", "bad.png")
         with self.assertRaises(Exception):

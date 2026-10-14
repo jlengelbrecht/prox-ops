@@ -28,6 +28,7 @@ from typing import Any, Mapping
 VERSION = 1
 MAX_REQUEST = 384 * 1024
 MAX_RESPONSE = 6 * 1024 * 1024
+MAX_MEDIA = 4 * 1024 * 1024
 ERRORS = frozenset({"invalid_request", "invalid_path", "not_found", "conflict",
                     "limit_exceeded", "unsupported_media", "unknown_operation",
                     "unauthorized", "internal_error", "unknown_receipt"})
@@ -247,7 +248,7 @@ def _result(operation: str, value: Any, args: dict[str, Any]) -> bool:
         if value["mime"] not in ("image/png", "image/jpeg", "image/webp", "image/gif") or not isinstance(value["data"], str):
             return False
         try:
-            return len(base64.b64decode(value["data"], validate=True)) <= 512 * 1024
+            return len(base64.b64decode(value["data"], validate=True)) <= MAX_MEDIA
         except ValueError:
             return False
     if value["path"] != args["path"] or not isinstance(value["revision"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["revision"]):

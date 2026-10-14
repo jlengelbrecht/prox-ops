@@ -39,7 +39,7 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from approval import (AdapterConflict, AgentContext, ApprovalCoordinator, ApprovalError,
                       Operation, PackageAttestation, PackagePreview, Preview, Snapshot, StateEntry,
                       VaultEnrollment)
-from bridge import BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
+from bridge import MAX_MEDIA, BridgeClient, BridgeError, VaultDirectory, VaultEndpoint, _safe_relative
 from owner_auth import CsrfLedger, OwnerAuthConfig, OwnerAuthenticator, OwnerAuthError
 from server import MAX_HTTP_BODY, MCP_PATH, _valid_token
 
@@ -85,7 +85,7 @@ class _LiveVaults(_AbcMapping):
         return len(self._bridge.vault_ids())
 _MEDIA_MIME = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
 # Source images up to these bounds are accepted and downscaled to fit the output bounds below.
-_MAX_SOURCE_IMAGE_BYTES = 4 * 1024 * 1024
+_MAX_SOURCE_IMAGE_BYTES = MAX_MEDIA
 _MAX_SOURCE_IMAGE_PIXELS = 24_000_000
 # Decoded sources take ~4 bytes per pixel more than once; cap concurrent decodes to stay in the pod limit.
 _IMAGE_DECODES = threading.BoundedSemaphore(2)
@@ -609,6 +609,8 @@ def _decode_and_fit(raw: bytes, mime: str) -> tuple[bytes, tuple[int, int], Imag
         with Image.open(io.BytesIO(raw)) as image:
             image.load()
             pixels = image.convert("RGBA" if image.mode in {"RGBA", "LA"} or "transparency" in image.info else "RGB")
+        # convert() carries source metadata such as the ICC profile; return pixels only.
+        pixels.info = {}
         clean, size = _fit_png(pixels)
     return clean, size, pixels
 
