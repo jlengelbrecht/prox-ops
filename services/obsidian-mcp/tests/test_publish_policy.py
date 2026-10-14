@@ -269,7 +269,7 @@ def test_publisher_runs_pull_and_smoke_on_same_immutable_reference(monkeypatch):
 def test_runtime_compatibility_module_is_packaged_directly():
     import server
     dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
-    assert 'COPY --chown=0:0 --chmod=0444 gateway.py approval.py bridge.py owner_auth.py server.py /app/' in dockerfile
+    assert 'COPY --chown=0:0 --chmod=0444 gateway.py approval.py bridge.py owner_auth.py server.py transfer.py /app/' in dockerfile
     assert 'CMD ["python", "/app/gateway.py"]' in dockerfile
     assert 'RUN printf' not in dockerfile
     assert server.MCP_PATH == '/mcp' and server.MAX_HTTP_BODY == 1024 * 1024

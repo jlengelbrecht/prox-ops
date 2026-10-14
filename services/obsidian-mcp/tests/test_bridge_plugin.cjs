@@ -1107,10 +1107,14 @@ if (!REAL_IPC) test('attachments: pinned chunked reads and staged create-only wr
     f.add('Private/vector.svg', Buffer.from('<svg/>'));
     bridge = await start(f);
     const capabilities = (await request(f.config, 'health')).result.capabilities;
-    for (const op of ['file_info', 'read_chunk', 'stage_begin', 'stage_put', 'stage_commit', 'stage_abort']) {
+    for (const op of ['resolve', 'file_info', 'read_chunk', 'stage_begin', 'stage_put', 'stage_commit', 'stage_abort']) {
       assert.ok(capabilities.includes(op), op);
     }
 
+    assert.equal((await request(f.config, 'resolve', { source: 'Private/note.md', target: '![[image.png|200]]' })).result.path, 'Private/image.png');
+    assert.equal((await request(f.config, 'resolve', { source: 'Private/note.md', target: 'missing.png' })).error, 'not_found');
+    assert.equal((await request(f.config, 'resolve', { source: 'Private/note.md', target: 'https://x.invalid/a.png' })).error, 'invalid_path');
+    assert.equal(f.calls.binaries, 0);
     const info = (await request(f.config, 'file_info', { path: 'Private/shot.png' })).result;
     assert.deepEqual([info.path, info.mime, info.size], ['Private/shot.png', 'image/png', 10_000]);
     assert.equal((await request(f.config, 'file_info', { path: 'Private/doc.pdf' })).result.mime, 'application/pdf');
