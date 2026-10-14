@@ -1,0 +1,79 @@
+name: YubiHSM tools image
+
+on:
+  pull_request:
+    paths:
+      - services/yubihsm-tools/**
+      - .github/workflows/yubihsm-tools.yaml
+  push:
+    branches: [main]
+    paths:
+      - services/yubihsm-tools/**
+      - .github/workflows/yubihsm-tools.yaml
+  workflow_dispatch:
+  # Weekly verify-only run: the exact Debian pins fail the build once trixie
+  # replaces them, and that failure is the alert. Scheduled runs never publish.
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  SMOKE_TEST: |
+    yubihsm-shell --version
+    openssl version
+    test -f /usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so
+    test -f /usr/lib/x86_64-linux-gnu/ossl-modules/pkcs11.so
+    [ "$(id -u)" = "65532" ]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build
+        run: docker build --build-arg VCS_REF="${GITHUB_SHA}" -t yubihsm-tools:verification services/yubihsm-tools
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          docker run --rm yubihsm-tools:verification sh -ec "$SMOKE_TEST"
+
+  publish:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: yubihsm-tools-publication
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          version: v0.24.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --build-arg VCS_REF="${GITHUB_SHA}" \
+            --provenance=false --sbom=false --metadata-file /tmp/yubihsm-tools-image.json \
+            --tag "ghcr.io/jlengelbrecht/yubihsm-tools:sha-${GITHUB_SHA}" \
+            --tag ghcr.io/jlengelbrecht/yubihsm-tools:main \
+            --push services/yubihsm-tools
+      - name: Smoke test the published digest and record it
+        run: |
+          set -euo pipefail
+          digest=$(jq -r '."containerimage.digest"' /tmp/yubihsm-tools-image.json)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          # This build is separate from the verify job, so test what was pushed.
+          docker run --rm "ghcr.io/jlengelbrecht/yubihsm-tools@${digest}" sh -ec "$SMOKE_TEST"
+          echo "Published ghcr.io/jlengelbrecht/yubihsm-tools@${digest}" >> "$GITHUB_STEP_SUMMARY"
