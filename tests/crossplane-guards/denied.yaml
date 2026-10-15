@@ -29,75 +29,116 @@ spec:
       namespace: identity-people
       key: credentials
 ---
-# Expect: crossplane-azuread-v5-providerconfig (namespace)
+# Expect: crossplane-azuread-v5-providerconfig (namespace; the client-id rule
+# also fails, since there is no client-id key for identity-system)
 apiVersion: azuread.m.upbound.io/v1beta1
 kind: ProviderConfig
 metadata:
   name: v5-wrong-namespace
   namespace: identity-system
 spec:
+  oidcTokenFilePath: /var/run/xp-assertion/people.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-people
   credentials:
-    source: Secret
-    secretRef:
-      name: provider-credentials
-      namespace: identity-system
-      key: credentials
+    source: OIDCTokenFile
 ---
 # Expect: crossplane-azuread-v5-providerconfig (credentials.source)
 apiVersion: azuread.m.upbound.io/v1beta1
 kind: ProviderConfig
 metadata:
-  name: v5-source-environment
+  name: v5-source-secret
   namespace: identity-people
 spec:
+  oidcTokenFilePath: /var/run/xp-assertion/people.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-people
   credentials:
-    source: Environment
-    env:
-      name: PLACEHOLDER_CREDENTIALS
+    source: Secret
+    secretRef:
+      name: provider-credentials
+      namespace: identity-people
+      key: credentials
 ---
-# Expect: crossplane-azuread-v5-providerconfig (tenantID / clientID)
+# Expect: crossplane-azuread-v5-providerconfig (oidcTokenFilePath)
 apiVersion: azuread.m.upbound.io/v1beta1
 kind: ProviderConfig
 metadata:
-  name: v5-tenant-id
+  name: v5-missing-path
   namespace: identity-people
 spec:
   tenantID: placeholder-tenant
+  clientID: placeholder-client-people
   credentials:
-    source: Secret
-    secretRef:
-      name: provider-credentials
-      namespace: identity-people
-      key: credentials
+    source: OIDCTokenFile
 ---
-# Expect: crossplane-azuread-v5-providerconfig (secretRef in another namespace)
+# Expect: crossplane-azuread-v5-providerconfig (oidcTokenFilePath)
 apiVersion: azuread.m.upbound.io/v1beta1
 kind: ProviderConfig
 metadata:
-  name: v5-cross-namespace-secret
+  name: v5-other-identity-path
   namespace: identity-people
 spec:
+  oidcTokenFilePath: /var/run/xp-assertion/ca.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-people
   credentials:
-    source: Secret
-    secretRef:
-      name: provider-credentials
-      namespace: identity-ca
-      key: credentials
+    source: OIDCTokenFile
 ---
-# Expect: crossplane-azuread-v5-providerconfig (msiEndpoint / oidcTokenFilePath)
+# Expect: crossplane-azuread-v5-providerconfig (clientID)
 apiVersion: azuread.m.upbound.io/v1beta1
 kind: ProviderConfig
 metadata:
-  name: v5-oidc-token-file
+  name: v5-other-identity-client
   namespace: identity-people
 spec:
-  oidcTokenFilePath: /var/run/secrets/placeholder/token
+  oidcTokenFilePath: /var/run/xp-assertion/people.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-apps
   credentials:
-    source: Secret
-    secretRef:
-      name: provider-credentials
-      namespace: identity-people
-      key: credentials
+    source: OIDCTokenFile
+---
+# Expect: crossplane-azuread-v5-providerconfig (tenantID)
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: v5-wrong-tenant
+  namespace: identity-people
+spec:
+  oidcTokenFilePath: /var/run/xp-assertion/people.jwt
+  tenantID: placeholder-tenant-wrong
+  clientID: placeholder-client-people
+  credentials:
+    source: OIDCTokenFile
+---
+# Expect: crossplane-azuread-v5-providerconfig (credentials.env)
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: v5-env-block
+  namespace: identity-people
+spec:
+  oidcTokenFilePath: /var/run/xp-assertion/people.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-people
+  credentials:
+    source: OIDCTokenFile
+    env:
+      name: PLACEHOLDER_CREDENTIALS
+---
+# Expect: crossplane-azuread-v5-providerconfig (environment)
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: v5-environment
+  namespace: identity-people
+spec:
+  oidcTokenFilePath: /var/run/xp-assertion/people.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-people
+  environment: usgovernment
+  credentials:
+    source: OIDCTokenFile
 ---
 # Expect: crossplane-azuread-v2-managed-resources (Delete in managementPolicies)
 apiVersion: groups.azuread.m.upbound.io/v1beta1

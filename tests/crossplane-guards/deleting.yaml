@@ -13,12 +13,11 @@ metadata:
   finalizers:
     - test.example.org/hold
 spec:
+  oidcTokenFilePath: /var/run/xp-assertion/people.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-people
   credentials:
-    source: Secret
-    secretRef:
-      name: provider-credentials
-      namespace: identity-people
-      key: credentials
+    source: OIDCTokenFile
 ---
 apiVersion: groups.azuread.m.upbound.io/v1beta1
 kind: Group
