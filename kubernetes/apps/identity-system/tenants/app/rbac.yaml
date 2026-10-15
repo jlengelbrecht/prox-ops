@@ -1,0 +1,107 @@
+---
+# A later change adds the Kustomizations that impersonate these accounts via
+# spec.serviceAccountName. The accounts live in identity-system, not in the
+# identity namespaces they act on, so content reconciled into identity-people,
+# identity-apps or identity-ca can never run a pod as the identity that
+# manages it.
+#
+# `delete` is in every verb list because Flux needs it to prune a removed
+# managed resource. That is safe: V2 forces every managed resource's
+# managementPolicies to exclude Delete, so a Kubernetes delete only orphans
+# the object from Crossplane's management - it never deletes the Entra
+# object.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flux-identity-people
+  namespace: identity-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flux-identity-apps
+  namespace: identity-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flux-identity-ca
+  namespace: identity-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-identity-people
+  namespace: identity-people
+rules:
+  - apiGroups: ["invitations.azuread.m.upbound.io"]
+    resources: ["invitations"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["groups.azuread.m.upbound.io"]
+    resources: ["groups"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flux-identity-people
+  namespace: identity-people
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flux-identity-people
+subjects:
+  - kind: ServiceAccount
+    name: flux-identity-people
+    namespace: identity-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-identity-apps
+  namespace: identity-apps
+rules:
+  - apiGroups: ["applications.azuread.m.upbound.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["serviceprincipals.azuread.m.upbound.io"]
+    resources: ["principals"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flux-identity-apps
+  namespace: identity-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flux-identity-apps
+subjects:
+  - kind: ServiceAccount
+    name: flux-identity-apps
+    namespace: identity-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: flux-identity-ca
+  namespace: identity-ca
+rules:
+  - apiGroups: ["conditionalaccess.azuread.m.upbound.io"]
+    resources: ["accesspolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: flux-identity-ca
+  namespace: identity-ca
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: flux-identity-ca
+subjects:
+  - kind: ServiceAccount
+    name: flux-identity-ca
+    namespace: identity-system

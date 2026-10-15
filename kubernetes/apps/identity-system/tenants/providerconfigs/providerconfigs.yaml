@@ -1,0 +1,46 @@
+---
+# tenantID and clientID are placeholders substituted by Flux from the
+# identity-provider-ids Secret - never literal values in Git. V5 pins
+# oidcTokenFilePath and clientID per namespace, so a ProviderConfig here can
+# only ever assert the one identity it is named for.
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: people
+  namespace: identity-people
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  credentials:
+    source: OIDCTokenFile
+  oidcTokenFilePath: /var/run/xp-assertion/people.jwt
+  tenantID: "${IDENTITY_TENANT_ID}"
+  clientID: "${IDENTITY_CLIENT_ID_PEOPLE}"
+---
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: apps
+  namespace: identity-apps
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  credentials:
+    source: OIDCTokenFile
+  oidcTokenFilePath: /var/run/xp-assertion/apps.jwt
+  tenantID: "${IDENTITY_TENANT_ID}"
+  clientID: "${IDENTITY_CLIENT_ID_APPS}"
+---
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: ca
+  namespace: identity-ca
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  credentials:
+    source: OIDCTokenFile
+  oidcTokenFilePath: /var/run/xp-assertion/ca.jwt
+  tenantID: "${IDENTITY_TENANT_ID}"
+  clientID: "${IDENTITY_CLIENT_ID_CA}"
