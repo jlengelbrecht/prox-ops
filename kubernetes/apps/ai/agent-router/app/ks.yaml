@@ -8,13 +8,15 @@
 # Kustomization it renders with a spec.patches list of its own, and kustomize
 # replaces a list that has no merge key instead of merging it, so a
 # spec.patches written on a direct child of cluster-apps is dropped before it
-# is applied. The five patches below are the whole reason this object exists -
+# is applied. The seven patches below are the whole reason this object exists -
 # without them the release's placeholder hostname and Gateway would ship, so
 # would its portable NetworkPolicy, the pod would carry no credential for a
-# private image, it would carry no name for its own plane, and the journal's
-# claim would land on whatever the cluster's default storage class is - so it
-# is rendered one level down, where nothing rewrites it. ../ks.yaml is
-# untouched by the cutover.
+# private image, it would carry no name for its own plane, every catalog
+# export would restart it, its rollout strategy and catalog source would be
+# whatever a later base defaults to, and the journal's claim would land on
+# whatever the cluster's default storage class is - so it is rendered one
+# level down, where nothing rewrites it. ../ks.yaml is untouched by the
+# cutover.
 #
 # The object lives in `ai` because ../ks.yaml sets targetNamespace: ai on
 # everything in this directory; the namespace is written out here as well, as
@@ -41,27 +43,34 @@ spec:
   interval: 1h
   # The artifact holds the release's deploy/base at its root.
   path: ./
-  # The kernel audit journal, the release's opt-in component, relative to
-  # `path`. It adds the 1Gi claim agent-router-journal, mounts it at
-  # /var/lib/agent-router, sets AGENT_ROUTER_JOURNAL and switches the
-  # Deployment to `strategy: Recreate`. Every /v1/hosts* route and the
-  # console's host controls need it; without it they answer 503.
+  # No `components:`. Up to v0.2.4 the kernel audit journal was the release's
+  # opt-in component, ./components/journal. From v0.7.0 the base carries it
+  # itself - the claim agent-router-journal, its mount and the journal setting
+  # - together with the router's store, which lives on the same claim and
+  # holds the catalog the console activates. Listing the component as well
+  # would only add the same objects a second time.
   #
-  # The journal is one SQLite file with exactly one writer: the router holds an
-  # exclusive lock on it for as long as it runs, and a second router refuses
-  # to start. A RollingUpdate would start the new pod while the old one still
-  # holds that lock, so the rollout could never finish. Recreate stops the old
-  # pod first, which costs a short outage on every rollout from here on - an
-  # image bump, a catalog change, a credential rotation the reloader rolls.
+  # The journal and the store have exactly one writer: the router holds an
+  # exclusive lock for as long as it runs, and a second router refuses to
+  # start. A RollingUpdate would start the new pod while the old one still
+  # holds that lock, so the rollout could never finish. The Deployment has to
+  # stay `strategy: Recreate`, which stops the old pod first and costs a short
+  # outage on every rollout - an image bump, or a credential rotation the
+  # reloader rolls. The base renders Recreate today; the strategy patch below
+  # restates it, so a later base cannot change it quietly.
   #
-  # The claim is annotated prune: disabled by the component, so removing the
-  # component (and the claim patch below with it) turns the journal off and
-  # leaves the claim, and the history on it, in place. Deleting that history
-  # is a separate, deliberate act. The journal is backed up cold - router
-  # stopped, files copied, router started - per the release's
-  # docs/operations/journal.md, until scheduled volume snapshots exist.
-  components:
-    - ./components/journal
+  # A catalog commit does not roll the router. In store mode the mounted
+  # catalog is only a first-boot seed, and the reload patch below removes the
+  # release's ConfigMap reload annotation, so committing an exported
+  # distribution copy changes the ConfigMap and leaves the pod running.
+  #
+  # Going back to v0.2.4 puts `- ./components/journal` back here, in the same
+  # change that re-pins the old release in ocirepository.yaml, after the cold
+  # pre-upgrade snapshot of the claim has been restored. The same change
+  # removes the reload patch and the strategy and catalog-source patch: v0.2.4
+  # reads the mounted catalog as its only catalog, so a catalog commit has to
+  # roll it again, and it has no catalog-source setting at all.
+  # ocirepository.yaml has the rest of that procedure.
   prune: true
   sourceRef:
     kind: OCIRepository
@@ -71,7 +80,7 @@ spec:
   wait: true
   retryInterval: 1m
   timeout: 5m
-  # All five patches name their object outright instead of through a `target:`
+  # All seven patches name their object outright instead of through a `target:`
   # selector, on purpose: kustomize treats a selector that matches nothing as
   # nothing to do, and treats a named object that is not there as an error. A
   # release that renames or drops the HTTPRoute, the NetworkPolicy, the
@@ -79,8 +88,9 @@ spec:
   # building, and the objects already in the cluster stay as they are, instead
   # of a Renovate bump quietly shipping the placeholder hostname, an
   # unexpected policy, a pod with no pull credential or a claim on the wrong
-  # storage. Nothing in prox-ops's CI renders this object
-  # against the artifact, so the patches have to fail closed on their own.
+  # storage. .github/scripts/spektr-upgrade-check.sh renders these patches
+  # against a release before it is merged (step 5); failing closed is what
+  # turns a renamed object into a red check there instead of a quiet pass.
   patches:
     # The HTTPRoute's deployment values: the hostname external-dns publishes
     # and the Gateway listener it attaches to. The release ships conspicuous
@@ -157,8 +167,57 @@ spec:
                   env:
                     - name: AGENT_ROUTER_PLANE_NAME
                       value: homelab
-    # The journal's claim. The component ships it with no storage class, so it
-    # would take the cluster default; this pins it to ceph-block, which is
+    # No restart for a catalog commit. The release's pod template asks the
+    # reloader to roll the router whenever the agent-router-catalog ConfigMap
+    # changes, which is right for file mode, where the mounted catalog is the
+    # catalog. This deployment runs store mode: the router imports the mounted
+    # file only on the first boot of an empty store and afterwards only
+    # compares it (release docs/operations/catalog.md, sections 2 and 3). A
+    # distribution-copy commit would otherwise cost a Recreate outage and
+    # reset the in-memory usage signals for nothing. The release asks overlays
+    # to keep its reload annotations; this one is dropped on purpose, and only
+    # this one - the null removes the ConfigMap key, and the secret annotation
+    # stays, so credential rotations still roll the pod.
+    #
+    # Switching to AGENT_ROUTER_CATALOG_SOURCE=file (break-glass) must remove
+    # this patch in the same change. Without it a catalog edit in file mode
+    # would not take effect until the pod next happened to restart.
+    - patch: |-
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: agent-router
+        spec:
+          template:
+            metadata:
+              annotations:
+                configmap.reloader.stakater.com/reload: null
+    # The two settings the rest of this file depends on: one writer means
+    # Recreate, and the console's authority means the store is the catalog
+    # source. Both equal what v0.7.0's base already renders through its
+    # journal component. They are restated so that this repository, not a
+    # later base default, decides them. A base that switched the strategy with
+    # a rollingUpdate block would make the apply fail visibly rather than
+    # stall a rollout on the journal's lock. The journal path and its volume
+    # stay the base's; nothing here restates them.
+    - patch: |-
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: agent-router
+        spec:
+          strategy:
+            type: Recreate
+          template:
+            spec:
+              containers:
+                - name: agent-router
+                  env:
+                    - name: AGENT_ROUTER_CATALOG_SOURCE
+                      value: store
+    # The journal's claim, which also holds the store from v0.7.0. It comes
+    # from the release, which cannot know this cluster's storage; this pins it
+    # to ceph-block, which is
     # block storage attached to one node at a time - what the journal's lock
     # needs. Never a shared filesystem class such as ceph-filesystem: a lock
     # that is not seen by every client would let two routers each believe they
@@ -170,13 +229,21 @@ spec:
     # a change to either once it exists, so changing storage means a new claim
     # and a restore. The size is the one thing that can change, and only by
     # adding spec.resources.requests.storage to this patch - never kubectl,
-    # because Flux would reapply the component's 1Gi and the API server refuses
+    # because Flux would reapply the release's size and the API server refuses
     # a shrink.
+    #
+    # The release's claim already carries the prune annotation. It is repeated
+    # here so it does not depend on what a later base carries: whatever takes
+    # the claim out of this Kustomization's inventory, Flux leaves the claim
+    # and the store on it in place. Deleting them is a separate, deliberate
+    # act.
     - patch: |-
         apiVersion: v1
         kind: PersistentVolumeClaim
         metadata:
           name: agent-router-journal
+          annotations:
+            kustomize.toolkit.fluxcd.io/prune: disabled
         spec:
           storageClassName: ceph-block
           accessModes:

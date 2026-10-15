@@ -8,10 +8,34 @@ of them, not a judgement call for the reader.
 
 ## Consumers
 
-The deployed agent-router mounts this ConfigMap (`kubernetes/apps/ai/agent-router/app/ks.yaml` depends on it) and
-reports `sha256(catalog.yaml)` as `catalog_version` in `GET /v1/status`. Launch hosts running
-`agent-stamp-validate` load the same file from Git as their trusted catalog, so any change to it changes the digest
-they must pin.
+The deployed agent-router mounts this ConfigMap (`kubernetes/apps/ai/agent-router/app/ks.yaml` depends on it).
+Launch hosts running `agent-stamp-validate` load the same file from Git, through
+`clients/agent-router/manifest.json`, as their trusted catalog, so any change to it changes the digest they must pin.
+
+### Seed, authority and distribution copy
+
+Up to router v0.2.4 the router read this file as its catalog on every start, and a merged change here was a catalog
+change. From v0.7.0 that is no longer true:
+
+- **Seed.** The router keeps its catalog in its own store, on the journal claim. On the first boot of an empty store
+  it imports this file once as the seed, and `GET /v1/status` reports `sha256(catalog.yaml)` as `catalog_version`.
+  That first boot is the only time the router takes its catalog from here.
+- **Authority.** After that, the active catalog is whatever the operator last activated through the console's operator
+  API. A merged edit here changes the ConfigMap and nothing the router routes on.
+- **Distribution copy.** This file stays the copy launch hosts trust. After each activation, the operator exports the
+  exact activated bytes with the operator credential: `GET /v1/config/catalog` returns `active.catalog_version`, and
+  `GET /v1/config/catalog/versions/{catalog_version}/content` returns the bytes for that digest. The file's
+  `sha256sum` must match `active.catalog_version` before it is committed here with the matching
+  `clients/agent-router/manifest.json` (release `docs/operations/catalog.md`, section 5). The file is then a derived
+  copy of the active catalog, and its digest equals `catalog_version` in `GET /v1/status`. The console's preview and
+  acknowledged impacts gate the activation itself; the export pull request's CI only validates the copy afterwards.
+- **Client refresh.** Hosts see an activation only after that commit lands and their catalog sync has run, so new
+  dispatch stays paused from activation until the active catalog, `GET /v1/status`, a newly issued stamp and every
+  launch host's trusted catalog name the same digest. `clients/agent-router/README.md` has the host side.
+
+Edit this file by hand only to prepare the seed for an empty store, or to put the distribution copy back to the active
+catalog's exact bytes. A hand edit that was never activated is a digest the router does not run, and hosts that trust
+it reject the router's stamps.
 
 The document's own `consumers: []` field and its opening "inert" comments predate the router and are stale. They
 live inside the hashed document, so they are corrected at the next catalog version bump rather than in a change
@@ -28,10 +52,9 @@ Three axes, kept apart on purpose (invariant 1):
 | placement | which physical GPU serves it | `placements` |
 
 BMAD stamps a **profile name**. The profile name is stable; the model behind it is data.
-Swapping `local-code-standard` from one model to another is a pull request against
-`catalog.yaml` and touches nothing else - no routing policy, no story rewrite,
-no BMAD edit. Any change that makes a profile name mean "one specific model" defeats the
-whole structure.
+Swapping `local-code-standard` from one model to another is a catalog change and touches
+nothing else - no routing policy, no story rewrite, no BMAD edit. Any change that makes a
+profile name mean "one specific model" defeats the whole structure.
 
 ## Tables
 
@@ -266,7 +289,7 @@ approved for a harness that is `supported: false` (the `opencode` rows). The har
 entry still decides whether the router may emit it, and today it refuses.
 
 The 1.9.1 entries are v0.2.4's compiled table, copied unchanged. Changing which pairs
-route is a catalog PR like any other: bump `version`, and say in the PR body which
+route is a catalog change like any other: bump `version`, and say in the PR body which
 decisions change.
 
 ### `profiles`
@@ -526,9 +549,12 @@ written by hand.
 
 ## Change protocol
 
-Changing which physical model backs a profile is a pull request against
-`catalog.yaml`. Never a BMAD policy edit, never a story rewrite, never a change
-to a routing rule.
+Changing which physical model backs a profile is a catalog change. Never a BMAD policy edit, never a story rewrite,
+never a change to a routing rule.
+
+From router v0.7.0 the change is made and activated through the console, and the pull request that follows commits
+the exported bytes and the matching client manifest, as described under Consumers. Up to v0.2.4 the pull request
+against `catalog.yaml` was the change itself.
 
 Every change must bump `version`, update `updated`, keep all validation rules above true,
 and say in the PR body what a consumer would do differently afterwards.
