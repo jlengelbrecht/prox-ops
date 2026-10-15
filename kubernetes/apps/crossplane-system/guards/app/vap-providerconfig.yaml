@@ -50,12 +50,19 @@ spec:
   policyName: crossplane-azuread-v1-no-cluster-providerconfig
   validationActions: ["Deny"]
 ---
-# V5: a namespaced ProviderConfig carries no identifier and reads its credential
-# only from a Secret in its own namespace (checked here too, so a provider
-# upgrade that stops forcing the namespace cannot open a cross-identity read). The provider takes tenantId and
-# clientId from that Secret's JSON; spec.tenantID / spec.clientID would override
-# it and put an identifier in Git. Environment and Filesystem sources would let
-# the pod environment steer authentication.
+# V5: a namespaced ProviderConfig may only point at the assertion file the
+# provider's own sidecar writes for its namespace's identity, with the client
+# ID and tenant that go with that identity. All three identities' assertion
+# files sit in one pod (/var/run/xp-assertion/{people,apps,ca}.jwt), so the
+# path and client ID are the only things left tying a namespace to an
+# identity; a Secret, Environment or Filesystem credential, or a mismatched
+# path or client ID, would let one namespace's ProviderConfig authenticate as
+# another's identity. The tenant ID and the per-namespace client IDs come
+# from the identity-guard-params ConfigMap (1Password-sourced), never from
+# Git, and this policy denies everything while that ConfigMap is missing.
+# With all three assertions reachable from one pod, V1 (no
+# ClusterProviderConfig, ever) matters more than before: a cluster-scoped
+# config could still name any namespace's path from anywhere.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -64,6 +71,9 @@ metadata:
     kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
   matchConstraints:
     resourceRules:
       - apiGroups: ["azuread.m.upbound.io"]
@@ -76,28 +86,48 @@ spec:
         request.operation == 'CREATE' ||
         !has(object.metadata.deletionTimestamp) ||
         object.spec != oldObject.spec
+  variables:
+    - name: tokenPaths
+      expression: >-
+        {'identity-people': '/var/run/xp-assertion/people.jwt',
+        'identity-apps': '/var/run/xp-assertion/apps.jwt',
+        'identity-ca': '/var/run/xp-assertion/ca.jwt'}
+    - name: clientKey
+      expression: "'client-id.' + request.namespace"
   validations:
     - expression: >-
-        request.namespace in ['identity-people', 'identity-apps', 'identity-ca']
+        request.namespace in variables.tokenPaths
       message: "A ProviderConfig may exist only in identity-people, identity-apps or identity-ca."
     - expression: >-
         has(object.spec.credentials) &&
         has(object.spec.credentials.source) &&
-        object.spec.credentials.source == 'Secret' &&
+        object.spec.credentials.source == 'OIDCTokenFile' &&
+        !has(object.spec.credentials.secretRef) &&
         !has(object.spec.credentials.env) &&
         !has(object.spec.credentials.fs)
-      message: "credentials.source must be Secret, with no env or fs block."
+      message: "credentials.source must be OIDCTokenFile, with no secretRef, env or fs block."
     - expression: >-
-        !has(object.spec.tenantID) && !has(object.spec.clientID)
-      message: "tenantID and clientID must not be set; the provider reads them from the credential Secret."
+        request.namespace in variables.tokenPaths &&
+        has(object.spec.oidcTokenFilePath) &&
+        object.spec.oidcTokenFilePath == variables.tokenPaths[request.namespace]
+      message: "oidcTokenFilePath must be this namespace's own assertion file."
     - expression: >-
-        !has(object.spec.msiEndpoint) && !has(object.spec.oidcTokenFilePath)
-      message: "msiEndpoint and oidcTokenFilePath must not be set."
+        has(params.data) &&
+        'tenant-id' in params.data &&
+        params.data['tenant-id'].size() > 0 &&
+        has(object.spec.tenantID) &&
+        object.spec.tenantID == params.data['tenant-id']
+      message: "tenantID must equal identity-guard-params' tenant-id."
     - expression: >-
-        !has(object.spec.credentials.secretRef) ||
-        !has(object.spec.credentials.secretRef.namespace) ||
-        object.spec.credentials.secretRef.namespace == request.namespace
-      message: "credentials.secretRef.namespace must be omitted or equal the ProviderConfig's own namespace."
+        has(params.data) &&
+        variables.clientKey in params.data &&
+        params.data[variables.clientKey].size() > 0 &&
+        has(object.spec.clientID) &&
+        object.spec.clientID == params.data[variables.clientKey]
+      message: "clientID must equal identity-guard-params' client-id for this namespace."
+    - expression: >-
+        !has(object.spec.msiEndpoint) && !has(object.spec.environment)
+      message: "msiEndpoint and environment must not be set."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -108,3 +138,7 @@ metadata:
 spec:
   policyName: crossplane-azuread-v5-providerconfig
   validationActions: ["Deny"]
+  paramRef:
+    name: identity-guard-params
+    namespace: identity-system
+    parameterNotFoundAction: Deny

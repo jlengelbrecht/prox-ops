@@ -10,12 +10,35 @@ metadata:
   name: people
   namespace: identity-people
 spec:
+  oidcTokenFilePath: /var/run/xp-assertion/people.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-people
   credentials:
-    source: Secret
-    secretRef:
-      name: provider-credentials
-      namespace: identity-people
-      key: credentials
+    source: OIDCTokenFile
+---
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: apps
+  namespace: identity-apps
+spec:
+  oidcTokenFilePath: /var/run/xp-assertion/apps.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-apps
+  credentials:
+    source: OIDCTokenFile
+---
+apiVersion: azuread.m.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: ca
+  namespace: identity-ca
+spec:
+  oidcTokenFilePath: /var/run/xp-assertion/ca.jwt
+  tenantID: placeholder-tenant
+  clientID: placeholder-client-ca
+  credentials:
+    source: OIDCTokenFile
 ---
 apiVersion: groups.azuread.m.upbound.io/v1beta1
 kind: Group
