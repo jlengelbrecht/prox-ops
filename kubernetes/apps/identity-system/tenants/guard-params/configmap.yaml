@@ -1,0 +1,21 @@
+---
+# V8's external-names.*, create-names.* and observe-only-external-names keys
+# arrive here with the first import, one key per managed resource. Until then
+# V8 denies every managed resource, which is intended: nothing is imported
+# yet.
+#
+# Prune is disabled: removing this ConfigMap closes V5, V7 and V8 - safe, but
+# it stops every identity write cluster-wide until it comes back.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: identity-guard-params
+  namespace: identity-system
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+data:
+  tenant-id: "${IDENTITY_TENANT_ID}"
+  client-id.identity-people: "${IDENTITY_CLIENT_ID_PEOPLE}"
+  client-id.identity-apps: "${IDENTITY_CLIENT_ID_APPS}"
+  client-id.identity-ca: "${IDENTITY_CLIENT_ID_CA}"
+  breakglass-group-id: "${IDENTITY_BREAKGLASS_GROUP_ID}"

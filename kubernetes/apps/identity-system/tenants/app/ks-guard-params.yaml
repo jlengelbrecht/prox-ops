@@ -1,0 +1,24 @@
+---
+# The substitution Secret, identity-provider-ids, must sit in this object's
+# own namespace for postBuild.substituteFrom to read it - that is why this
+# Kustomization lives in identity-system rather than alongside identity-
+# tenants in flux-system. substituteFrom is set here only, never on the
+# identity-tenants wrapper.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: identity-guard-params
+  namespace: identity-system
+spec:
+  interval: 10m
+  path: ./kubernetes/apps/identity-system/tenants/guard-params
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: Secret
+        name: identity-provider-ids
