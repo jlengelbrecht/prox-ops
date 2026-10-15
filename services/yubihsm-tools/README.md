@@ -42,5 +42,6 @@ not do. The argument is still visible to anything else running in the signer con
 itself; that is a known limitation of passing the password on the command line.
 
 The signer talks to the HSM over direct USB (`yhusb://`) with `yubihsm-shell` and does
-not use the PKCS#11 module or the OpenSSL provider above: they do not work with this
-HSM for this operation.
+not use the PKCS#11 module or the OpenSSL provider above. In our setup, logging in
+through the OpenSSL provider failed with a password that `yubihsm-shell` accepted, and
+that wasn't debugged further; signing through `yubihsm-shell` avoids the extra layers.
