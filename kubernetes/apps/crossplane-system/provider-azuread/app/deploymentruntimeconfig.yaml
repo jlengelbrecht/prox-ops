@@ -10,6 +10,24 @@
 #   so anyone who could add env here could steer authentication.
 # - ndots 1: Cilium FQDN policy drops a name resolved through the search path.
 # - Restricted security context; /tmp is the only writable path.
+# - assertion-signer runs as a native sidecar (initContainers entry with
+#   restartPolicy: Always) and signs the three OIDCTokenFile client assertions
+#   the provider's ProviderConfigs read from /var/run/xp-assertion. The
+#   signing key never leaves the attached YubiHSM 2, and the signer's HSM
+#   credential (the xp-signer Secret) is mounted only into the signer, never
+#   into package-runtime.
+# - devic.es/yubihsm2: the HSM is a single USB device on node k8s-work-12, so
+#   the signer (and therefore the pod) is pinned to that node by the device
+#   plugin's scheduling.
+# - strategy: one HSM device, so a surge pod would sit Pending forever while
+#   the old pod still holds it. maxSurge 0 / maxUnavailable 1 stops the old pod
+#   before the new one is created. Not type Recreate: Crossplane applies the
+#   Deployment as a merge patch, which cannot drop the defaulted rollingUpdate
+#   block, so the API server would reject the switch.
+# - assertion and signer-tmp are memory-backed emptyDirs: the signed
+#   assertions and the signer's temp files never touch disk.
+# - package-runtime mounts only the assertion directory, read-only: it never
+#   sees the signer Secret (xp-signer) or the HSM device.
 apiVersion: pkg.crossplane.io/v1beta1
 kind: DeploymentRuntimeConfig
 metadata:
@@ -22,12 +40,20 @@ spec:
       name: provider-azuread
   deploymentTemplate:
     spec:
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxSurge: 0
+          maxUnavailable: 1
       selector: {}
       template:
         metadata:
           labels:
             app.kubernetes.io/name: provider-azuread
         spec:
+          # Not shareProcessNamespace: true. The signer passes the HSM auth
+          # key password to yubihsm-shell on its own command line; separate
+          # PID namespaces keep package-runtime from ever seeing it.
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
@@ -39,6 +65,50 @@ spec:
             options:
               - name: ndots
                 value: "1"
+          initContainers:
+            - name: assertion-signer
+              restartPolicy: Always  # native sidecar: starts before package-runtime, keeps running
+              image: ghcr.io/jlengelbrecht/yubihsm-tools:sha-fd0f51b9dabaeb17917059757b27ea7988fc5305@sha256:b8e3e977d4cb19a8585b9a4713cb62c9c7264b607746c0fccaa2a0270c7dce59
+              command: ["xp-assertion-signer", "run"]
+              startupProbe:
+                exec:
+                  command: ["xp-assertion-signer", "check", "--max-age", "300"]
+                periodSeconds: 2
+                failureThreshold: 60
+              livenessProbe:
+                exec:
+                  command: ["xp-assertion-signer", "check", "--max-age", "360"]
+                periodSeconds: 30
+                failureThreshold: 3
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                  devic.es/yubihsm2: 1
+                limits:
+                  cpu: 200m
+                  memory: 64Mi
+                  devic.es/yubihsm2: 1
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                allowPrivilegeEscalation: false
+                privileged: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+              volumeMounts:
+                - name: assertion
+                  mountPath: /var/run/xp-assertion
+                - name: xp-signer
+                  mountPath: /etc/xp-signer
+                  readOnly: true
+                - name: signer-tmp
+                  mountPath: /tmp
           containers:
             - name: package-runtime
               args:
@@ -65,7 +135,22 @@ spec:
               volumeMounts:
                 - name: tmp
                   mountPath: /tmp
+                - name: assertion
+                  mountPath: /var/run/xp-assertion
+                  readOnly: true
           volumes:
             - name: tmp
               emptyDir:
                 sizeLimit: 256Mi
+            - name: assertion
+              emptyDir:
+                medium: Memory
+                sizeLimit: 1Mi
+            - name: signer-tmp
+              emptyDir:
+                medium: Memory
+                sizeLimit: 16Mi
+            - name: xp-signer
+              secret:
+                secretName: xp-assertion-signer
+                defaultMode: 0440  # group-readable; pod's fsGroup: 65532 lets the signer read it
