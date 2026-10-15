@@ -30,15 +30,22 @@ spec:
   # the tag and digest together through the regex manager in
   # .github/renovate/customManagers.json5; the flux manager alone sees only
   # the digest. That manager expects the `# renovate:` line directly above
-  # `ref`, with `tag` then `digest` under it. Rollback is re-pinning the
-  # previous release's tag and digest here; the router's journal is covered
-  # by the 4-hourly snapshots in kubernetes/apps/ai/agent-router-snapshots.
+  # `ref`, with `tag` then `digest` under it.
+  #
+  # Rollback past v0.7.0 is more than re-pinning the previous tag and digest.
+  # From v0.7.0 the router keeps its store on the journal claim, so going back
+  # to v0.2.4 means restoring the cold snapshot taken before the upgrade, with
+  # the router stopped, and putting the journal component back in ks.yaml in
+  # the same change as the re-pin. The newer router must never start on the
+  # restored journal. The 4-hourly snapshots in
+  # kubernetes/apps/ai/agent-router-snapshots are taken while the router is
+  # running; they are not that cold copy.
   # renovate: datasource=docker depName=ghcr.io/jlengelbrecht/agent-router-base
   ref:
-    tag: v0.2.4
+    tag: v0.7.0
     # The immutable reference: the digest the release published for this base
     # artifact, printed in the Release body and checked against the tag there
     # (VERSIONING.md §2, AD-11: consume by digest, never a mutable tag). Flux
     # pulls the digest when both are set; the tag stays for people and for
     # Renovate, which bumps the pair together. The cutover bumps both.
-    digest: sha256:967d4db7a4edad12b2065e43f71b74d019626dc0cbcf802fee47ddece64d4155
+    digest: sha256:ab910316228e212857ef5e27344bb2726f65ac1ebd99070b6e974d7f215957ae
