@@ -20,7 +20,7 @@ is a placeholder.
 | V2 | `crossplane-azuread-v2-managed-resources` | Namespaced `ProviderConfig` ref; no `*`, `Delete` or `LateInitialize` (absent field counts as `*`); no connection secret; Observe-only needs an external name |
 | V3 | `crossplane-azuread-v3-namespaces` | Invitations and groups in `identity-people`, applications and principals in `identity-apps`, access policies in `identity-ca` |
 | V4 | `crossplane-azuread-v4-invitations` | Guest only; no `message.additionalRecipients`; `forProvider`/`initProvider` immutable |
-| V5 | `crossplane-azuread-v5-providerconfig` | Identity namespaces only; `source: OIDCTokenFile` naming this namespace's own assertion file; `tenantID`/`clientID` matching `identity-guard-params`; no `msiEndpoint`, `environment` |
+| V5 | `crossplane-azuread-v5-providerconfig` | Identity namespaces only; `source: OIDCTokenFile` naming this namespace's own assertion file; `tenantID`/`clientID` matching `identity-guard-params`; no spec field outside an allowlist (so no `msiEndpoint`, `environment`, `secretRef`, `env`, `fs`); metadata-only updates are not re-checked |
 | V6 | `crossplane-azuread-v6-applications` | No application `password` |
 | V7 | `crossplane-azuread-v7-conditional-access` | Observe-only unless `identity-ca` is labelled `identity.homelab0.org/ca-write=enabled`; then break-glass exclusion, report-only on create, review annotation to enforce |
 | V8 | `crossplane-azuread-v8-external-names` | External-name allowlist per kind; new objects only under allowlisted names; Observe-only list |

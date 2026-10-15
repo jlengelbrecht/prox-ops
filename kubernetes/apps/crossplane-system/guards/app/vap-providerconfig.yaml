@@ -80,11 +80,13 @@ spec:
         apiVersions: ["*"]
         resources: ["providerconfigs"]
         operations: ["CREATE", "UPDATE"]
+  # A metadata-only update (a finalizer, a label) is not re-checked, deleting or
+  # not, so a finalizer can always be removed. Any spec change is checked, also
+  # while the object is being deleted.
   matchConditions:
-    - name: not-a-metadata-only-update-while-deleting
+    - name: spec-changed
       expression: >-
         request.operation == 'CREATE' ||
-        !has(object.metadata.deletionTimestamp) ||
         object.spec != oldObject.spec
   variables:
     - name: tokenPaths
@@ -98,6 +100,12 @@ spec:
     - expression: >-
         request.namespace in variables.tokenPaths
       message: "A ProviderConfig may exist only in identity-people, identity-apps or identity-ca."
+    # Allowlist, so a field a later provider version adds is denied until it is
+    # reviewed here. reconciliationPolicy does not affect authentication.
+    - expression: >-
+        object.spec.all(k, k in ['credentials', 'oidcTokenFilePath', 'tenantID', 'clientID', 'reconciliationPolicy']) &&
+        (!has(object.spec.credentials) || object.spec.credentials.all(k, k == 'source'))
+      message: "Only credentials.source, oidcTokenFilePath, tenantID, clientID and reconciliationPolicy may be set."
     - expression: >-
         has(object.spec.credentials) &&
         has(object.spec.credentials.source) &&
