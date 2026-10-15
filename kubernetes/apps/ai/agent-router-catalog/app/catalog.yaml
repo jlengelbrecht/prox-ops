@@ -48,6 +48,41 @@
 
 # Catalog document version. Bump on EVERY change (see CHANGE PROTOCOL).
 #
+# 1.9.2 (SPEKTR-070-CONFIG, v0.7.0 usage-aware routing) - REQUIRES v0.5.0+
+# FOR THE NEW KEYS; v0.7.0 IS DEPLOYED:
+#   - entitlement_pools.anthropic-max and .openai-plus gain `usage`
+#     (funding_type: subscription_window, account_scope: user) with one
+#     accepted reporter each: {kind: harness, harness: claude} and
+#     {kind: harness, harness: codex}. No declared_windows, thresholds,
+#     weights or unknown_policy are set, so the released defaults apply
+#     (unknown_policy defaults to fundable, ordered last, for
+#     subscription_window). Descriptions record the reported plans:
+#     Claude Max 20x and ChatGPT Pro 20x. Pool IDs do not change; the
+#     openai-plus ID keeps its historical name.
+#   - defaults.routing.ordering: signals. Same-band candidates are
+#     ordered by reported headroom; routing_pairs priority stays the
+#     fallback and every remaining priority value is unchanged.
+#   - MiniMax RETIRED (subscription no longer active): minimax/strong
+#     flips to selectable: false with a blocked_by entry, and both
+#     routing_pairs that named it (claude priority 7, opencode priority
+#     9) are removed. The minimax-max pool and minimax/m3 model stay
+#     defined, marked retired, so historical stamps and references
+#     still resolve.
+#   - FORMAT ONLY, NO SEMANTIC CHANGE: profile keys that were written as
+#     double-quoted YAML scalars ("claude/strong" and so on) are now
+#     plain scalars (claude/strong). In YAML both spell the same string,
+#     so the router, validator and console see identical keys. The
+#     reason is the released spektr-hook v0.7.0 line scanner
+#     (services/spektr-hook/catalog.go): it strips quotes from VALUES
+#     but not from KEYS, so a quoted profile key never matched the
+#     unquoted routing_pairs model_profile and the hook found no funded
+#     pair for claude or codex. Model keys are left quoted because the
+#     hook does not read the models table.
+#   - Unchanged: every harness, placement, model ID, pool ID, profile
+#     tier, entitlement cost_class, forbidden_for, supported/selectable
+#     flag other than minimax/strong, and devin-free economics.
+#   Nothing was removed or re-typed, so schema_version stays 1.
+#
 # 1.9.1 (STORY-037-1, EPIC-037) - ADDITIVE; INERT ON v0.2.x, REQUIRED
 # FROM v0.3.0:
 #   - adds the top-level `routing_pairs` table: the harness/profile pairs
@@ -237,11 +272,11 @@
 #     the edge as a second candidate, physical ordered edge-before-KServe
 #     to match prefer_order.
 #   Nothing was removed or re-typed, so schema_version stays 1.
-version: "1.9.1"
+version: "1.9.2"
 # Structural schema version. Consumers MUST refuse a major they do not
 # implement rather than best-effort parsing an unknown shape.
 schema_version: 1
-updated: "2026-09-25"
+updated: "2026-10-14"
 epic: EPIC-035
 story: STORY-035-1
 # Consumers: none. This is asserted, not implied - see README "Inert".
@@ -252,6 +287,11 @@ defaults:
   # is the only seeded policy that both resolves today and honours the
   # warm-GPU economics that invariant 7 protects.
   placement_policy: prefer-warm-local
+  # 1.9.2: usage-aware ordering (released schema: defaults.routing.ordering
+  # enum priority | signals, default priority). within_band is left unset
+  # so the released default [headroom, quality] applies.
+  routing:
+    ordering: signals
 
 # =====================================================================
 # TABLE 1 - harnesses
@@ -261,11 +301,12 @@ defaults:
 # placement (invariant 1).
 #
 # MINIMAX IS NOT HERE, AND THAT IS THE POINT. The MiniMax M3 execution
-# path is `harness: claude` + `model_profile: minimax/strong`, because
+# path was `harness: claude` + `model_profile: minimax/strong`, because
 # Claude Code reaches MiniMax through its Anthropic-compatible endpoint.
 # Harness and model are independent axes; a new provider does not earn a
 # harness entry. MiniMax Code is a DIFFERENT harness, is not approved,
-# and gets evaluated in its own story if it ever is.
+# and gets evaluated in its own story if it ever is. (1.9.2: the MiniMax
+# subscription is retired; see profiles.minimax/strong.)
 # =====================================================================
 harnesses:
   claude:
@@ -743,11 +784,13 @@ models:
 
   "minimax/m3":
     description: >-
-      MiniMax M3 on the MiniMax Max Token Plan, reached by the `claude`
-      harness through MiniMax's Anthropic-compatible endpoint
-      (api.minimax.io, Global). Physically validated by STORY-035-23
-      (2026-08-27): real completion, tool round trip, Token Plan
-      funding proven against a zero PAYG balance.
+      RETIRED 1.9.2: the MiniMax subscription is no longer active and no
+      selectable profile or routing pair uses this model. Kept defined
+      so historical references resolve. Was: MiniMax M3 on the MiniMax
+      Max Token Plan, reached by the `claude` harness through MiniMax's
+      Anthropic-compatible endpoint (api.minimax.io, Global). Physically
+      validated by STORY-035-23 (2026-08-27): real completion, tool
+      round trip, Token Plan funding proven against a zero PAYG balance.
     hosting: vendor
     upstream_model_id: null
     resolved_by: harness
@@ -809,6 +852,10 @@ models:
 #                        NEVER an input to a cost decision.
 #     spillover        - what happens when the entitlement runs out.
 #
+#   `usage` (1.9.2, released schema pool_usage) declares how usage
+#   signals for the pool are funded, scoped and accepted. It never
+#   changes cost_class and never authorises metered spend.
+#
 # INVARIANT 4, WRITTEN AS DATA. `spillover: none` on every seeded pool
 # is not a default that happened to be chosen - it IS the invariant.
 # Exhaustion never promotes to billable spend; the pool simply becomes
@@ -822,8 +869,9 @@ models:
 entitlement_pools:
   anthropic-max:
     description: >-
-      The operator's own Anthropic Max subscription, consumed by Claude
-      Code sessions.
+      The operator's own Anthropic Claude Max 20x subscription, consumed
+      by Claude Code sessions. Usage is reported by spektr-hook from the
+      Claude Code status line.
     provider: anthropic
     cost_class: subscription
     credential_class: subscription-session
@@ -832,18 +880,32 @@ entitlement_pools:
       subscription is NOT an API key. Nothing here authorises
       introducing ANTHROPIC_API_KEY or centralising an OAuth token as a
       provider credential.
+    usage:
+      funding_type: subscription_window
+      account_scope: user
+      accepted_reporters:
+        - kind: harness
+          harness: claude
     spillover: none
 
   openai-plus:
     description: >-
-      The operator's own ChatGPT subscription, consumed by Codex CLI
-      sessions.
+      The operator's own ChatGPT Pro 20x subscription, consumed by Codex
+      CLI sessions. The pool ID keeps its historical "plus" name so
+      existing stamps and references stay valid. Usage is reported by
+      spektr-hook from Codex session logs.
     provider: openai
     cost_class: subscription
     credential_class: subscription-session
     credential_notes: >-
       Signed-in session held by the harness. Not an API key, and not
       proxied through the cluster.
+    usage:
+      funding_type: subscription_window
+      account_scope: user
+      accepted_reporters:
+        - kind: harness
+          harness: codex
     spillover: none
 
   devin-free:
@@ -861,8 +923,11 @@ entitlement_pools:
 
   minimax-max:
     description: >-
-      MiniMax Max Token Plan - a fixed monthly subscription against
-      MiniMax's Anthropic-compatible endpoint (owner ruling R16).
+      RETIRED 1.9.2: the MiniMax subscription is no longer active, and no
+      routing pair or selectable profile draws on this pool. Kept defined
+      so historical stamps and references resolve. Was: MiniMax Max Token
+      Plan - a fixed monthly subscription against MiniMax's
+      Anthropic-compatible endpoint (owner ruling R16).
     provider: minimax
     cost_class: subscription
     # READ THIS ONE TWICE. The credential is API-KEY-SHAPED and the
@@ -904,6 +969,10 @@ entitlement_pools:
 # table this deployment routed with before v0.3.0, copied unchanged.
 # opencode rows stay although the harness is supported: false; the
 # router already refuses to emit an unsupported harness.
+#
+# 1.9.2: the two minimax/strong pairs (claude priority 7, opencode
+# priority 9) are removed with the MiniMax retirement. Every other entry
+# and priority is unchanged; the gaps at 7 and 9 are intentional.
 # =====================================================================
 routing_pairs:
   - harness: claude
@@ -934,18 +1003,10 @@ routing_pairs:
     model_profile: local-general
     bands: [docs]
     priority: 6
-  - harness: claude
-    model_profile: minimax/strong
-    bands: [strong]
-    priority: 7
   - harness: opencode
     model_profile: openai/strong
     bands: [standard, strong]
     priority: 8
-  - harness: opencode
-    model_profile: minimax/strong
-    bands: [strong]
-    priority: 9
   - harness: claude
     model_profile: claude/frontier
     bands: [frontier]
@@ -977,6 +1038,11 @@ routing_pairs:
 #   physical      - ORDERED preference list of {model_id, placement}.
 #                   First is preferred. Order is the only preference
 #                   expression; there are no weights here.
+#
+# Profile keys are written as plain YAML scalars (1.9.2). Do not quote
+# them: the released spektr-hook v0.7.0 catalog scanner does not strip
+# quotes from mapping keys, and a quoted key stops the hook from
+# matching the profile to its routing pair.
 # =====================================================================
 profiles:
   local-code-fast:
@@ -1279,7 +1345,7 @@ profiles:
       model decision, not broken - do not route to it and do not
       auto-substitute another model in its place.
 
-  "claude/standard":
+  claude/standard:
     description: >-
       Standard-tier vendor model via the claude harness's own
       subscription. Not proxied, not placed, not metered.
@@ -1304,7 +1370,7 @@ profiles:
       subscription, same isolation rules and the same `placement: null`
       as claude/strong.
 
-  "claude/strong":
+  claude/strong:
     description: >-
       Strong vendor model via the claude harness's own subscription.
       Not proxied, not placed, not metered.
@@ -1332,7 +1398,7 @@ profiles:
       subscription traffic through cluster ingress, which this profile
       does not do.
 
-  "claude/frontier":
+  claude/frontier:
     description: >-
       Frontier-tier vendor model via the claude harness's own
       subscription. Not proxied, not placed, not metered.
@@ -1366,7 +1432,7 @@ profiles:
       in forbidden_for keeps coordinator work off it, and like every
       forbidden_for entry no override can bypass it.
 
-  "openai/standard":
+  openai/standard:
     description: >-
       Standard-tier vendor OpenAI model through an approved harness's own
       subscription. Not proxied, not placed, not metered.
@@ -1390,7 +1456,7 @@ profiles:
       well-specified work that does not need the strong model, funded
       from the same ChatGPT subscription.
 
-  "openai/strong":
+  openai/strong:
     description: >-
       Strong vendor OpenAI model through the codex harness's own
       subscription. Stamped as the standing fallback tier in EPIC-035
@@ -1416,7 +1482,7 @@ profiles:
       - model_id: "openai/gpt-6-sol"
         placement: null
 
-  "openai/frontier":
+  openai/frontier:
     description: >-
       Frontier-tier vendor OpenAI model through an approved harness's own
       subscription. Not proxied, not placed, not metered.
@@ -1452,7 +1518,7 @@ profiles:
       forbidden_for keeps coordinator work off it, and like every
       forbidden_for entry no override can bypass it.
 
-  "devin/free":
+  devin/free:
     description: >-
       Free Devin tier on the existing Teams account. Free, not
       subscription: it consumes no pot and no metered spend.
@@ -1476,13 +1542,15 @@ profiles:
       metered use is explicit, per-attempt and recorded, so it does not
       get a free-looking profile name to hide behind.
 
-  "minimax/strong":
+  minimax/strong:
     description: >-
-      Strong vendor model on the MiniMax Max Token Plan. The `claude`
-      harness path against MiniMax's Anthropic-compatible endpoint was
-      physically validated by STORY-035-23 and promoted by owner decision,
-      2026-08-27. The OpenCode pairing remains catalog-disabled with its
-      harness pending a separate live MiniMax subscription canary.
+      RETIRED 1.9.2: the MiniMax subscription is no longer active. This
+      profile is non-selectable and no routing pair names it; it stays
+      defined so historical stamps and references resolve. Was: strong
+      vendor model on the MiniMax Max Token Plan via the `claude`
+      harness path against MiniMax's Anthropic-compatible endpoint,
+      physically validated by STORY-035-23 and promoted by owner
+      decision, 2026-08-27.
     # SUBSCRIPTION, not metered - and note how that is established: from
     # the entitlement pool below, which says the Token Plan is a fixed
     # monthly subscription. It is NOT established from the credential,
@@ -1490,24 +1558,19 @@ profiles:
     # entitlement is the error TABLE 4 exists to prevent.
     cost_class: subscription
     hosting: vendor
-    # Promoted from selectable: false by the 1.5.0 owner decision after
-    # STORY-035-23 physical validation. The former blocked_by list is
-    # fully dispositioned below - a selectable profile carries no
-    # dangling blocked_by entries.
-    selectable: true
+    # 1.9.2: retired. Promoted to selectable: true by the 1.5.0 owner
+    # decision after STORY-035-23; returned to selectable: false because
+    # the subscription ended, with the reason recorded in blocked_by as
+    # for every other non-selectable profile.
+    selectable: false
     # `tools` demonstrated by STORY-035-23 - see
     # models["minimax/m3"].capabilities.
     capabilities: [chat, tools]
     # min_context is a GUARANTEE, not an eligibility floor (README
     # "profiles"): it promises every candidate here provides at least
-    # this much context. It does not require a task to NEED 1M - a
-    # task needing any amount up to 1M is satisfied by this profile,
-    # so a bigger number widens eligibility rather than narrowing it.
-    # Rule 6 pins the value: it must equal the minimum max_context
-    # across physical[] (sole candidate, 1000000 - Max Token Plan
-    # tier fact, owner-recorded 2026-08-27). null would withhold the
-    # guarantee and bar this profile from explicit long-context
-    # requirements - exactly where a 1M window is its edge.
+    # this much context. Rule 6 pins the value: it must equal the
+    # minimum max_context across physical[] (sole candidate, 1000000 -
+    # Max Token Plan tier fact, owner-recorded 2026-08-27).
     min_context: 1000000
     alignment: standard
     forbidden_for: []
@@ -1531,6 +1594,8 @@ profiles:
     physical:
       - model_id: "minimax/m3"
         placement: null
+    blocked_by:
+      - MiniMax subscription retired (1.9.2); re-activation needs an active plan and a catalog PR restoring selectable and its routing pairs
     # DISPOSITION OF THE FORMER blocked_by LIST (nine items, owner
     # decision 2026-08-27). Evidence for every "retired" line:
     # .claude/.ai-docs/stories/STORY-035-23-minimax-validation-evidence.md
@@ -1562,7 +1627,7 @@ profiles:
     #      catalog row.
     notes: >-
       MiniMax is NOT a harness entry, deliberately. The execution path
-      is `harness: claude` + `model_profile: minimax/strong`, which is
+      was `harness: claude` + `model_profile: minimax/strong`, which is
       the harness/model separation this catalog exists to preserve:
       Claude Code is the harness, MiniMax M3 is the model it is pointed
       at. MiniMax Code is a different harness, is not approved, and
