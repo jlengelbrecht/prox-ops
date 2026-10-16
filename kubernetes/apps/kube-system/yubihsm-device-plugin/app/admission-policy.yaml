@@ -1,9 +1,10 @@
 ---
-# Restricts which namespaces may request devic.es/yubihsm2. The HSM still
-# carries its public factory credential until the identity-system setup pod
-# runs, so this must be in place from the device's first moment of being
-# schedulable. A later change narrows crossplane-system further, to only the
-# provider's service account.
+# Restricts which pod may request devic.es/yubihsm2: only a pod in
+# crossplane-system running as the provider-azuread service account. The
+# identity-system enrolment pod that originally needed the device is gone
+# (the HSM's factory credential was replaced during enrolment), so this
+# policy now exists purely to limit who can reach the device at all. A
+# future re-enrolment adds identity-system back in its own change.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -30,8 +31,10 @@ spec:
           (has(c.resources.requests) && 'devic.es/yubihsm2' in c.resources.requests)
         ))
   validations:
-    - expression: "!variables.wantsHsm || request.namespace in ['identity-system', 'crossplane-system']"
-      message: "Only pods in identity-system or crossplane-system may request devic.es/yubihsm2."
+    - expression: >-
+        !variables.wantsHsm ||
+        (request.namespace == 'crossplane-system' && object.spec.serviceAccountName == 'provider-azuread')
+      message: "Only pods in crossplane-system running as the provider-azuread service account may request devic.es/yubihsm2."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
