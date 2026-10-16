@@ -93,6 +93,16 @@ spec:
         - go.dev
         - dl.google.com
         - nodejs.org
+        # Release-qualification scans and browser tests. Each tool fetches its
+        # database or browser build at run time: the Go vulnerability database,
+        # OSV advisories (API plus its bucket, by exact name), Trivy's database
+        # mirror (GHCR is already allowed), and Playwright's Chromium builds.
+        - vuln.go.dev
+        - api.osv.dev
+        - osv-vulnerabilities.storage.googleapis.com
+        - mirror.gcr.io
+        - playwright.download.prss.microsoft.com
+        - cdn.playwright.dev
     - name: runner-images
       repoUrl: https://github.com/jlengelbrecht/runner-images
       minRunners: 0
