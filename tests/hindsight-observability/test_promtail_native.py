@@ -149,7 +149,8 @@ class NativeCollectorTests(unittest.TestCase):
             self.assertEqual(self.runtime[key], ORIGINAL_RUNTIME[key])
         original = ORIGINAL_RUNTIME['broad']
         chart = len(original['relabel_configs'])
-        hindsight, runner = self.broad['relabel_configs'][chart:chart + 2], self.broad['relabel_configs'][chart + 2:]
+        added = self.broad['relabel_configs'][chart:]
+        hindsight, runner, provider = added[:2], added[2:5], added[5:]
         self.assertEqual(self.broad['job_name'], 'kubernetes-pods')
         self.assertEqual(self.broad['pipeline_stages'], original['pipeline_stages'])
         self.assertEqual(self.broad['relabel_configs'][:chart], original['relabel_configs'])
@@ -157,6 +158,10 @@ class NativeCollectorTests(unittest.TestCase):
         self.assertEqual(hindsight[1]['source_labels'],
                          ['__meta_kubernetes_namespace', '__meta_kubernetes_pod_name'])
         self.assertEqual([x.get('action') for x in runner], ['replace', 'drop', 'drop'])
+        # provider-azuread logs can name guests, so they never reach Loki.
+        self.assertEqual(provider, [{
+            'source_labels': ['__meta_kubernetes_namespace', '__meta_kubernetes_pod_label_pkg_crossplane_io_provider'],
+            'separator': ';', 'action': 'drop', 'regex': 'crossplane-system;provider-azuread'}])
         self.assertEqual(self.safe['job_name'], 'hindsight-api-safe')
         verified = 'ai;hindsight-api-.+;ReplicaSet;hindsight-api-.+;hindsight;hindsight;api'
         self.assertEqual(hindsight[0]['action'], 'drop')
