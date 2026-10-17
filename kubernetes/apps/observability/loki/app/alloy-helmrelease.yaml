@@ -169,6 +169,14 @@ spec:
               action        = "drop"
               regex         = "EphemeralRunner|AutoscalingListener"
             }
+            // provider-azuread's debug output can name guests; keep it out
+            // of Loki entirely rather than trying to redact it downstream.
+            rule {
+              source_labels = ["__meta_kubernetes_namespace", "__meta_kubernetes_pod_label_pkg_crossplane_io_provider"]
+              separator     = ";"
+              action        = "drop"
+              regex         = "crossplane-system;provider-azuread"
+            }
           }
           // Promtail's offsets are imported once, then Alloy keeps its own.
           // Globs are expanded in-component every second: the 10s default

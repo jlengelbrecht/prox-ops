@@ -94,6 +94,12 @@ spec:
           - source_labels: [__meta_kubernetes_pod_controller_kind]
             action: drop
             regex: EphemeralRunner|AutoscalingListener
+          # provider-azuread's debug output can name guests; keep it out of
+          # Loki entirely rather than trying to redact it downstream.
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_pod_label_pkg_crossplane_io_provider]
+            separator: ;
+            action: drop
+            regex: crossplane-system;provider-azuread
         extraScrapeConfigs: |-
           # Only a fixed, low-content operation event is centralized. Every
           # unknown, malformed, oversized, or free-form API line is dropped.

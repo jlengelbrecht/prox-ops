@@ -1,0 +1,19 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: identity-source
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./kubernetes/apps/identity-system/source/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  wait: false
+  dependsOn:
+    - name: identity-tenants
+      namespace: flux-system
+    - name: identity-secret-store
+      namespace: flux-system
