@@ -1,0 +1,22 @@
+---
+# Read-only deploy key: this repo can only fetch jlengelbrecht/homelab-identity,
+# never push to it. Sparse checkout keeps the Terraform files out of the
+# stored artifact, so the per-identity Kustomizations below physically cannot
+# apply anything from outside people/, apps/, ca/.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: homelab-identity
+  namespace: identity-system
+spec:
+  interval: 5m
+  timeout: 60s
+  url: ssh://git@github.com/jlengelbrecht/homelab-identity
+  ref:
+    branch: main
+  secretRef:
+    name: homelab-identity-deploy-key
+  sparseCheckout:
+    - people
+    - apps
+    - ca

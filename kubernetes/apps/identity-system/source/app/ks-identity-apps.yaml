@@ -1,0 +1,22 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: identity-apps
+  namespace: identity-system
+spec:
+  interval: 10m
+  timeout: 5m
+  path: ./apps
+  prune: true
+  deletionPolicy: Orphan
+  sourceRef:
+    kind: GitRepository
+    name: homelab-identity
+    namespace: identity-system
+  serviceAccountName: flux-identity-apps
+  targetNamespace: identity-apps
+  wait: false
+  dependsOn:
+    - name: identity-providerconfigs
+      namespace: identity-system

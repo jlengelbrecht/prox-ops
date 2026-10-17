@@ -1,0 +1,28 @@
+---
+# Impersonation plus the Role in rbac.yaml is the boundary: this Kustomization
+# can only create the managed-resource kinds that flux-identity-people's Role
+# allows, only in identity-people. Orphan, combined with V2's management
+# policy excluding Delete on every managed resource, means removing a file
+# from the private repo or deleting this Kustomization never deletes the
+# Entra object - it only stops Crossplane from managing it.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: identity-people
+  namespace: identity-system
+spec:
+  interval: 10m
+  timeout: 5m
+  path: ./people
+  prune: true
+  deletionPolicy: Orphan
+  sourceRef:
+    kind: GitRepository
+    name: homelab-identity
+    namespace: identity-system
+  serviceAccountName: flux-identity-people
+  targetNamespace: identity-people
+  wait: false
+  dependsOn:
+    - name: identity-providerconfigs
+      namespace: identity-system
