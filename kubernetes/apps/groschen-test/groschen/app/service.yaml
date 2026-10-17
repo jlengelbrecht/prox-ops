@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Service
+metadata: {name: groschen-api}
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: groschen-api}
+  ports:
+    - {name: http, port: 8080, targetPort: http, protocol: TCP}

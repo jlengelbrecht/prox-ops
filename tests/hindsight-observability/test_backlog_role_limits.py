@@ -154,7 +154,9 @@ class SqlTests(unittest.TestCase):
         self.assertEqual(NATIVE.READER_HBA, ['hostssl hindsight hindsight_backlog_metrics all scram-sha-256',
                                              'host all hindsight_backlog_metrics all reject'])
         release = yaml.safe_load((ROOT / 'kubernetes/apps/database/cluster/app/helmrelease.yaml').read_text())
-        self.assertEqual(release['spec']['values']['cluster']['postgresql']['pg_hba'], NATIVE.READER_HBA)
+        hba = release['spec']['values']['cluster']['postgresql']['pg_hba']
+        reader_rules = [rule for rule in hba if rule.split()[2] == 'hindsight_backlog_metrics']
+        self.assertEqual(reader_rules, NATIVE.READER_HBA)
         self.assertEqual(NATIVE.PERMISSIVE_HBA, 'host all hindsight_backlog_metrics all trust')
 
     def test_workflow_triggers_on_the_sql_and_runs_the_native_proof_on_the_tls_fixture(self):

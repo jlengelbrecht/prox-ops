@@ -12,6 +12,22 @@ spec:
       cnpg.io/cluster: postgres
 
   ingress:
+    # Only the Groschen workloads in the test namespace get this new lane.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: groschen-test
+            app.kubernetes.io/name: groschen-api
+        - matchLabels:
+            io.kubernetes.pod.namespace: groschen-test
+            app.kubernetes.io/name: groschen-worker
+        - matchLabels:
+            io.kubernetes.pod.namespace: groschen-test
+            app.kubernetes.io/name: groschen-admin
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
     # From AI namespace (LiteLLM, Firecrawl, etc.)
     - fromEndpoints:
         - matchLabels:
