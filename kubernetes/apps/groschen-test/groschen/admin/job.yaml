@@ -1,0 +1,109 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: groschen-admin-bootstrap
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: groschen-admin}
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      imagePullSecrets: [{name: groschen-ghcr}]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: prepare-secrets
+          # Official musl variant builds a static BusyBox binary for the
+          # shell-free Groschen image; only this Job mounts the helper.
+          image: busybox@sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              cp /source/groschen_db_pgpass /ready/groschen_db_pgpass
+              cp /source/groschen_secret_key /ready/groschen_secret_key
+              cp /source/owner_password /ready/owner_password
+              cp /source/member_password /ready/member_password
+              chmod 0600 /ready/*
+              cp /bin/busybox /helper/busybox
+              chmod 0555 /helper/busybox
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: projected, mountPath: /source, readOnly: true}
+            - {name: ready, mountPath: /ready}
+            - {name: helper, mountPath: /helper}
+      containers:
+        - name: admin
+          image: ghcr.io/jlengelbrecht/groschen@sha256:9030f3a665a710147bb907ce314df69a2879a73f9d68fae5af89a89e3bcaf0db
+          imagePullPolicy: IfNotPresent
+          command: [/helper/busybox, sh, -ec]
+          args:
+            - |
+              # The CLI reads each password from stdin. On a partial retry,
+              # converge only the exact existing-person case to the immutable
+              # generated credential; let every other error fail the Job.
+              if output=$(/app/admin create-user --email owner@example.test --role owner --first-name Owner --name 'Test household' --password-stdin </run/secrets/owner_password 2>&1); then
+                :
+              else
+                case "$output" in
+                  *'"level":"INFO","msg":"refused: a person with this email already exists (one household per person)"}') /app/admin reset-password --email owner@example.test --password-stdin </run/secrets/owner_password ;;
+                  *) printf '%s\n' "$output" >&2; exit 1 ;;
+                esac
+              fi
+              if output=$(/app/admin create-user --email member@example.test --role member --first-name Member --password-stdin </run/secrets/member_password 2>&1); then
+                :
+              else
+                case "$output" in
+                  *'"level":"INFO","msg":"refused: a person with this email already exists (one household per person)"}') /app/admin reset-password --email member@example.test --password-stdin </run/secrets/member_password ;;
+                  *) printf '%s\n' "$output" >&2; exit 1 ;;
+                esac
+              fi
+              echo 'Synthetic accounts provisioned or already present.'
+          env:
+            - {name: DATABASE_URL, value: "host=postgres-rw.database.svc.cluster.local port=5432 user=groschen dbname=groschen sslmode=disable pool_max_conns=4"}
+            - {name: PGPASSFILE, value: /run/secrets/groschen_db_pgpass}
+            - {name: GROSCHEN_SECRET_KEY_FILE, value: /run/secrets/groschen_secret_key}
+            - {name: APP_ORIGIN, value: "https://grischen.homelab0.org"}
+            - {name: COOKIE_SECURE, value: "true"}
+            - {name: GROSCHEN_TIMEZONE, value: America/New_York}
+            - {name: HTTP_ADDR, value: ":8080"}
+            - {name: STATIC_DIR, value: /app/public}
+            - {name: SMTP_HOST, value: ""}
+            - {name: SMTP_USERNAME, value: ""}
+            - {name: SMTP_PASSWORD, value: ""}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: ready, mountPath: /run/secrets, readOnly: true}
+            - {name: helper, mountPath: /helper, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: projected
+          projected:
+            defaultMode: 0444
+            sources:
+              - secret: {name: groschen-db-credentials, items: [{key: groschen_db_pgpass, path: groschen_db_pgpass}]}
+              - secret: {name: groschen-key, items: [{key: groschen_secret_key, path: groschen_secret_key}]}
+              - secret: {name: groschen-owner-credentials, items: [{key: password, path: owner_password}]}
+              - secret: {name: groschen-member-credentials, items: [{key: password, path: member_password}]}
+        - name: ready
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        - name: helper
+          emptyDir: {medium: Memory, sizeLimit: 4Mi}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 64Mi}

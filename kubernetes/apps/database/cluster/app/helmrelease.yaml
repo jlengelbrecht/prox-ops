@@ -89,7 +89,7 @@ spec:
       # Superuser credentials from ExternalSecret
       superuserSecret: postgres-superuser
 
-      # Host-based access for the backlog metrics role only. CNPG places user
+      # Host-based access for the backlog metrics and Groschen roles. CNPG places user
       # rules after its fixed rules and before the default rule, and reloads
       # them without a restart. Line 1 admits the role over TLS to `hindsight`
       # only; line 2 rejects everything else it tries, including plain TCP to
@@ -100,6 +100,10 @@ spec:
         pg_hba:
           - hostssl hindsight hindsight_backlog_metrics all scram-sha-256
           - host all hindsight_backlog_metrics all reject
+          # Groschen can authenticate only to its own synthetic database.
+          # PUBLIC CONNECT on the other databases remains untouched.
+          - host groschen groschen all scram-sha-256
+          - host all groschen all reject
 
       # Declarative role management - each app gets a dedicated user
       # Passwords managed via ExternalSecrets from 1Password
@@ -167,6 +171,19 @@ spec:
           connectionLimit: 20
           passwordSecret:
             name: paperclip-db-credentials
+        - name: groschen
+          ensure: present
+          login: true
+          superuser: false
+          createdb: false
+          createrole: false
+          replication: false
+          bypassrls: false
+          # Four connections per pod: two API and two worker pods during
+          # simultaneous rolling updates, plus one admin Job (20 total).
+          connectionLimit: 24
+          passwordSecret:
+            name: groschen-db-credentials
 
     # Backups - disabled until S3 storage is available
     # When MinIO/S3 is ready, enable and configure:

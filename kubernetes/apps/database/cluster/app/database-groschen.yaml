@@ -1,0 +1,14 @@
+---
+# Groschen's isolated synthetic test database on the existing PG16 cluster.
+# The managed login role owns this database; reclaim defaults to retain.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: groschen
+  namespace: database
+spec:
+  name: groschen
+  owner: groschen
+  cluster:
+    name: postgres
+  ensure: present

@@ -27,9 +27,9 @@ def _load(name, relative):
 NATIVE = _load('backlog_function_native', 'tests/hindsight-observability/check_postgres_backlog_function.py')
 Refused, Failed, ok, refused = NATIVE.Refused, NATIVE.Failed, NATIVE.ok, NATIVE.refused
 DB, OWNER, READER = 'hindsight', 'hindsight', 'hindsight_backlog_metrics'
-# A declared non-owner role (CNPG's app) and one outside the declared roster.
-APP, UNDECLARED = 'app', 'hindsight_backlog_undeclared'
-FIXTURE_ROLES = (OWNER, READER, APP, UNDECLARED)
+# Declared non-owner roles (CNPG's app and Groschen) and one outside the roster.
+APP, GROSCHEN, UNDECLARED = 'app', 'groschen', 'hindsight_backlog_undeclared'
+FIXTURE_ROLES = (OWNER, READER, APP, GROSCHEN, UNDECLARED)
 COMPLETED_ACL = ['=c/hindsight', 'hindsight=CTc/hindsight']
 EMPTY_SERVER = {'db': 'postgres', 'major': 16, 'superuser': True, 'databases': ['postgres', 'template0', 'template1'],
                 'roles': 0, 'relations': 0, 'schemas': 0, 'clients': 0, 'reserved_user': False}
@@ -53,6 +53,7 @@ BOOTSTRAP_ROLES = f"""BEGIN;
 CREATE ROLE {OWNER} LOGIN;
 CREATE ROLE {READER} LOGIN NOINHERIT CONNECTION LIMIT 2;
 CREATE ROLE {APP} LOGIN;
+CREATE ROLE {GROSCHEN} LOGIN;
 COMMIT;
 """
 # Run as the owner once database hindsight exists: owner data and non-default ACLs
@@ -67,7 +68,7 @@ COMMIT;
 """
 # DROP DATABASE cannot run in a transaction; FORCE ends any session a failed case left behind.
 TEARDOWN = f"""DROP DATABASE IF EXISTS {DB} WITH (FORCE);
-DROP ROLE IF EXISTS {UNDECLARED}, {APP}, {READER}, {OWNER};
+DROP ROLE IF EXISTS {UNDECLARED}, {GROSCHEN}, {APP}, {READER}, {OWNER};
 """
 # Read as the fixture superuser inside database hindsight. Database hindsight's
 # own ACL is reported sorted and apart, so the apply may change exactly that.
@@ -105,8 +106,8 @@ CREATE TABLE owned.scratch (i int); DROP TABLE owned.scratch;
 DROP TABLE owner_temp;
 """
 TEMP_TABLE = 'CREATE TEMP TABLE denied_temp (i int);'
-# Proves CNPG's ensure: absent would still work: no database ACL dependency pins either role.
-DROP_ROLES = f'BEGIN; DROP ROLE {APP}; DROP ROLE {READER}; ROLLBACK;'
+# Proves CNPG's ensure: absent would still work; no database ACL dependency pins these roles.
+DROP_ROLES = f'BEGIN; DROP ROLE {APP}; DROP ROLE {GROSCHEN}; DROP ROLE {READER}; ROLLBACK;'
 # A generic owner routine granted to the reader alone, standing in for the later
 # metrics function: object grants are not database ACL, so a rerun leaves them be.
 STAND_IN = f"""BEGIN;
@@ -277,7 +278,7 @@ def held_session(env, user):
 
 def prove(env):
     ok(connection(env), OWNER_WORK, 'owner work before the revoke', user=OWNER)
-    for user in (READER, APP):
+    for user in (READER, APP, GROSCHEN):
         if privileges(env, user) != [True, True, False]:
             raise Failed(f'{user}: the default PUBLIC TEMPORARY baseline is missing, so the revoke would prove nothing')
     before = snapshot(env)
@@ -286,7 +287,7 @@ def prove(env):
 
     for label, case in PRE_APPLY_REFUSALS.items():
         refusal(env, label, *case)
-    for user in (APP, READER):
+    for user in (APP, READER, GROSCHEN):
         with held_session(env, user):
             refusal(env, f'held {user} session', None, None, APPLY, SESSION_REFUSAL, held=user)
     if snapshot(env) != before:
@@ -297,7 +298,7 @@ def prove(env):
     if after != {**before, 'datacl': COMPLETED_ACL}:
         raise Failed('the apply changed more than the ACL of database hindsight')
     ok(connection(env), OWNER_WORK, 'owner work after the revoke', user=OWNER)
-    for user in (READER, APP):
+    for user in (READER, APP, GROSCHEN):
         refused(connection(env), TEMP_TABLE, '42501', f'{user} temporary table after the revoke', user=user)
         if privileges(env, user) != [True, False, False]:
             raise Failed(f'{user}: expected CONNECT only on database hindsight')
