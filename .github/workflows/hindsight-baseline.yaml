@@ -61,6 +61,9 @@ on:
       - kubernetes/apps/ai/hermes-hindsight/auth-placement/job.yaml
       - kubernetes/apps/ai/hermes-hindsight/auth-placement/networkpolicy.yaml
       - tests/hindsight-observability/test_auth_placement.py
+      # Checksum-bound overlay of the API image's retain orchestrator.
+      - kubernetes/apps/ai/hermes-hindsight/app/retain-recovery-patch.py
+      - kubernetes/apps/ai/hermes-hindsight/app/test_retain_recovery_patch.py
 permissions:
   contents: read
 jobs:
@@ -104,6 +107,7 @@ jobs:
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_collector_runtime.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_backlog_collector_deployment.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_auth_placement.py -v
+      - run: python -m unittest discover -s kubernetes/apps/ai/hermes-hindsight/app -p test_retain_recovery_patch.py -v
       # The collector's own interpreter: Python 3.9 in the pinned CloudNativePG image, offline, read-only and as
       # UID 26, with only the two sources and their two test files mounted. Zero tests or any skip fails the step.
       - name: Native Python 3.9 collector tests
