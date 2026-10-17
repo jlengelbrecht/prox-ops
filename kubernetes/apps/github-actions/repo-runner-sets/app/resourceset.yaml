@@ -23,6 +23,9 @@
 #               ghcr.io/actions/actions-runner. When set, the pod also gets
 #               imagePullSecrets ghcr-runner-images (ghcr-pull-secret.yaml) so
 #               private GHCR images pull. Pin by digest.
+#   runnerCPU, runnerMemory, runnerDisk
+#               optional runner container limits, default 2000m, 4Gi, 10Gi.
+#               runnerDisk also sizes the work emptyDir. Requests stay small.
 #
 # The existing prox-ops scale set (../../gha-runner-scale-set) is managed
 # separately: it carries cluster RBAC and anti-affinity this template does not.
@@ -135,6 +138,26 @@ spec:
         # PostgreSQL's apt repository (PGDG): PostgreSQL 18 server and client
         # for runner-build. Ubuntu 24.04 ships only PostgreSQL 16.
         - apt.postgresql.org
+    - name: groschen
+      repoUrl: https://github.com/jlengelbrecht/Groschen
+      minRunners: 0
+      maxRunners: 3
+      # Go race tests against a throwaway PostgreSQL 18, a Vite frontend and
+      # Playwright tests in headless Chromium. runner-build carries the C
+      # toolchain, PostgreSQL 18 server and client, and Chromium's libraries.
+      runnerImage: ghcr.io/jlengelbrecht/runner-build@sha256:80d6a042eb62e7b912cdc9a7c31139db0f3beb31eaff3f1db070befb940971eb
+      runnerCPU: 4000m
+      runnerMemory: 8Gi
+      runnerDisk: 20Gi
+      # Go and Node toolchains (actions/setup-go and setup-node fall back to
+      # these), the Go vulnerability database, and Playwright's Chromium builds.
+      extraFQDNs:
+        - go.dev
+        - dl.google.com
+        - nodejs.org
+        - vuln.go.dev
+        - cdn.playwright.dev
+        - playwright.download.prss.microsoft.com
     - name: homelab-identity
       repoUrl: https://github.com/jlengelbrecht/homelab-identity
       minRunners: 0
@@ -363,10 +386,10 @@ spec:
                     memory: 1Gi
                     ephemeral-storage: 1Gi
                   limits:
-                    cpu: 2000m
-                    memory: 4Gi
+                    cpu: << get inputs "runnerCPU" | default "2000m" >>
+                    memory: << get inputs "runnerMemory" | default "4Gi" >>
                     # Matches the work emptyDir sizeLimit.
-                    ephemeral-storage: 10Gi
+                    ephemeral-storage: << get inputs "runnerDisk" | default "10Gi" >>
                 volumeMounts:
                   - name: work
                     mountPath: /home/runner/_work
@@ -376,7 +399,7 @@ spec:
             volumes:
               - name: work
                 emptyDir:
-                  sizeLimit: 10Gi
+                  sizeLimit: << get inputs "runnerDisk" | default "10Gi" >>
               - name: buildkitd
                 emptyDir:
                   sizeLimit: 20Gi
