@@ -75,8 +75,10 @@ spec:
       maxRunners: 3
       # Adds the C toolchain that cgo and `go test -race` need. Built by the
       # private runner-images repository and pinned by digest.
-      # Also carries gh, Node.js and ShellCheck for the release workflow.
-      runnerImage: ghcr.io/jlengelbrecht/runner-build@sha256:a6a1f2fc7fcbb58b8e9c4af6f39153a54ae08ed24c2a89ef899cfe44eb886bb4
+      # Also carries gh, Node.js and ShellCheck for the release workflow, and
+      # Chromium's system libraries and fonts for Playwright (the job downloads
+      # the browser itself with `playwright install chromium`).
+      runnerImage: ghcr.io/jlengelbrecht/runner-build@sha256:80d6a042eb62e7b912cdc9a7c31139db0f3beb31eaff3f1db070befb940971eb
       # Base-image and toolchain registries used by ai-control-plane builds.
       # registry-1.docker.io redirects blob downloads to
       # production.cloudfront.docker.com (seen failing BuildKit pulls of
