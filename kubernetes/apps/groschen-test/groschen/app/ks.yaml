@@ -1,0 +1,20 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: groschen-app
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: groschen-infra
+      namespace: flux-system
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  path: ./kubernetes/apps/groschen-test/groschen/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: groschen-test
+  wait: true

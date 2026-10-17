@@ -1,0 +1,96 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: groschen-db
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ceph-block
+  resources:
+    requests: {storage: 2Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: groschen-db}
+  ports:
+    - {name: postgres, port: 5432, targetPort: 5432, protocol: TCP}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: groschen-db
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: groschen-db}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: groschen-db}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: postgres
+          image: postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: POSTGRES_USER, value: postgres}
+            - {name: POSTGRES_DB, value: groschen}
+            - {name: POSTGRES_PASSWORD_FILE, value: /run/secrets/postgres_superuser_password}
+            - {name: GROSCHEN_DB_USER, value: groschen}
+            - {name: GROSCHEN_DB_PGPASS_FILE, value: /run/secrets/groschen_db_pgpass}
+            - {name: PGDATA, value: /var/lib/postgresql/18/docker}
+          ports:
+            - {name: postgres, containerPort: 5432}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: '1', memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            exec:
+              command: [pg_isready, -h, 127.0.0.1, -U, groschen, -d, groschen]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: [pg_isready, -h, 127.0.0.1, -U, groschen, -d, groschen]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql}
+            - {name: run, mountPath: /var/run/postgresql}
+            - {name: tmp, mountPath: /tmp}
+            - {name: initdb, mountPath: /docker-entrypoint-initdb.d, readOnly: true}
+            - {name: bootstrap, mountPath: /run/secrets/postgres_superuser_password, subPath: postgres_superuser_password, readOnly: true}
+            - {name: app-pass, mountPath: /run/secrets/groschen_db_pgpass, subPath: groschen_db_pgpass, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: groschen-db}
+        - name: run
+          emptyDir: {medium: Memory, sizeLimit: 16Mi}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 64Mi}
+        - name: initdb
+          configMap:
+            name: groschen-initdb
+            defaultMode: 0555
+        - name: bootstrap
+          secret:
+            secretName: groschen-bootstrap-credentials
+            defaultMode: 0440
+        - name: app-pass
+          secret:
+            secretName: groschen-db-credentials
+            defaultMode: 0440
