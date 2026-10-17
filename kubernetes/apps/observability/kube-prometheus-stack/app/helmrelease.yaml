@@ -261,6 +261,154 @@ spec:
         datasources:
           enabled: false
 
+      # Moves the one file in the unpoller provider root that no gnetId key declares
+      # (a stale copy of the sidecar-provisioned PDU dashboard) out of the root, after
+      # a cold copy of the database. The chart runs this after download-dashboards and
+      # before Grafana; any unexpected state refuses before anything is written.
+      extraInitContainers:
+        - name: provisioning-archive
+          image: docker.io/library/busybox:1.38.0@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euf
+              data=/var/lib/grafana
+              root="$data/dashboards/unpoller"
+              name=unpoller-pdu.json
+              src="$root/$name"
+              want=5742d585f8bffbd31ab064365eef8a4bf445bc3db418cd8bee1b86bd319e53f3
+              providers=/etc/grafana/provisioning/dashboards/dashboardproviders.yaml
+              backup="$data/pre-provisioning-archive-backup"
+              archive="$data/provisioning-archive"
+              dbfiles="grafana.db grafana.db-wal grafana.db-shm grafana.db-journal"
+              fail() { echo "provisioning-archive: $1" >&2; exit 1; }
+              digest() { sha256sum "$1" | cut -d' ' -f1; }
+              plain_dir() { [ -d "$1" ] && [ ! -L "$1" ]; }
+              plain_file() { [ -f "$1" ] && [ ! -L "$1" ]; }
+              absent() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
+              sums="$(printf '%s  %s.copy\n%s  %s\n' "$want" "$name" "$want" "$name")"
+              sums_digest="$(printf '%s\n' "$sums" | sha256sum | cut -d' ' -f1)"
+
+              # Every check runs before anything is written.
+              plain_dir "$data/dashboards" && plain_dir "$root" || fail "provider root is not a plain directory"
+              [ ! -L "$backup" ] && [ ! -L "$archive" ] || fail "backup or archive path is a symlink"
+              n=0
+              for key in ${DECLARED_DASHBOARDS:-}; do
+                case "$key" in *[!a-z0-9-]*) fail "declared dashboard list is not rendered" ;; esac
+                [ "$key.json" != "$name" ] || fail "the file to archive is declared again"
+                n=$((n + 1))
+              done
+              [ "$n" -gt 0 ] || fail "declared dashboard list is empty"
+              # The provider Grafana will start with, as mounted, not as intended.
+              plain_file "$providers" || fail "dashboard provider file is not mounted"
+              [ "$(grep -c 'name:' "$providers")" = 1 ] || fail "provider file does not hold exactly one provider"
+              [ "$(grep -c 'disableDeletion:' "$providers")" = 1 ] && grep -qx '[ -]*disableDeletion: true' "$providers" \
+                || fail "deletion is not disabled for the provider"
+              [ "$(grep -c 'path:' "$providers")" = 1 ] && grep -qx " *path: $root" "$providers" \
+                || fail "provider root is not the expected one"
+
+              if [ -e "$archive/COMPLETE" ] || [ -L "$archive/COMPLETE" ]; then
+                archived=1
+                plain_dir "$archive" && plain_file "$archive/COMPLETE" && plain_file "$archive/SHA256SUMS" \
+                  || fail "archive marker or checksum list is not a plain file"
+                [ "$(sed -n 1p "$archive/COMPLETE")" = "$ARCHIVE_TAG" ] || fail "archive marker is for another archive"
+                [ "$(sed -n 2p "$archive/COMPLETE")" = "$sums_digest" ] && [ "$(digest "$archive/SHA256SUMS")" = "$sums_digest" ] \
+                  || fail "archive checksum list changed"
+                plain_file "$archive/$name" && plain_file "$archive/$name.copy" || fail "archived file is not a plain file"
+                (cd "$archive" && sha256sum -c SHA256SUMS >/dev/null) || fail "archive does not match its checksums"
+                absent "$src" || fail "the archived file is back in the provider root"
+              elif [ -e "$archive" ]; then
+                fail "incomplete archive found; refusing to touch it"
+              else
+                archived=0
+                ! absent "$src" || fail "file to archive is missing and no completed archive exists"
+                plain_file "$src" || fail "file to archive is not a regular file"
+                [ "$(stat -c %h "$src")" = 1 ] || fail "file to archive has other hard links"
+                [ "$(digest "$src")" = "$want" ] || fail "file to archive does not have the expected checksum"
+              fi
+
+              if [ -e "$backup/COMPLETE" ] || [ -L "$backup/COMPLETE" ]; then
+                backed=1
+                plain_dir "$backup" && plain_file "$backup/COMPLETE" && plain_file "$backup/SHA256SUMS" \
+                  || fail "backup marker or checksum list is not a plain file"
+                [ "$(sed -n 1p "$backup/COMPLETE")" = "$ARCHIVE_TAG" ] || fail "backup marker is for another backup"
+                [ "$(sed -n 2p "$backup/COMPLETE")" = "$(digest "$backup/SHA256SUMS")" ] || fail "backup checksum list changed"
+                grep -q '  grafana\.db$' "$backup/SHA256SUMS" || fail "backup checksum list has no grafana.db"
+                ! grep -qvE '^[0-9a-f]{64}  grafana\.db(-wal|-shm|-journal)?$' "$backup/SHA256SUMS" \
+                  || fail "backup checksum list names other files"
+                (cd "$backup" && sha256sum -c SHA256SUMS >/dev/null) || fail "backup does not match its checksums"
+              elif [ -e "$backup" ]; then
+                fail "incomplete backup found; refusing to overwrite it"
+              else
+                backed=0
+                [ "$archived" = 0 ] || fail "archive exists without a completed backup"
+                plain_file "$data/grafana.db" || fail "no grafana.db to copy"
+                for f in $dbfiles; do
+                  absent "$data/$f" || plain_file "$data/$f" || fail "$f is not a regular file"
+                done
+              fi
+
+              # Grafana is stopped (Recreate), so the database and its side files are at rest.
+              if [ "$backed" = 0 ]; then
+                mkdir "$backup"
+                for f in $dbfiles; do
+                  if [ -e "$data/$f" ]; then cp -p "$data/$f" "$backup/$f"; fi
+                done
+                sync
+                for f in $dbfiles; do
+                  if [ -e "$backup/$f" ]; then
+                    sum="$(digest "$backup/$f")"
+                    [ "$sum" = "$(digest "$data/$f")" ] || fail "copy of $f differs from the source"
+                    echo "$sum  $f" >> "$backup/SHA256SUMS"
+                  fi
+                done
+                printf '%s\n%s\n' "$ARCHIVE_TAG" "$(digest "$backup/SHA256SUMS")" > "$backup/.COMPLETE.tmp"
+                sync
+                mv "$backup/.COMPLETE.tmp" "$backup/COMPLETE"
+                sync
+                echo "provisioning-archive: backup complete ($(grep -c '' "$backup/SHA256SUMS") files)"
+              fi
+
+              # Copy first, then rename the original out of the root; both stay on the volume.
+              if [ "$archived" = 0 ]; then
+                mkdir "$archive"
+                cp -p "$src" "$archive/$name.copy"
+                sync
+                [ "$(digest "$archive/$name.copy")" = "$want" ] || fail "archive copy differs from the original"
+                mv "$src" "$archive/$name"
+                sync
+                absent "$src" && [ "$(digest "$archive/$name")" = "$want" ] || fail "moved file does not match the original"
+                printf '%s\n' "$sums" > "$archive/SHA256SUMS"
+                printf '%s\n%s\n' "$ARCHIVE_TAG" "$sums_digest" > "$archive/.COMPLETE.tmp"
+                sync
+                mv "$archive/.COMPLETE.tmp" "$archive/COMPLETE"
+                sync
+                echo "provisioning-archive: archive complete"
+              fi
+              [ "$backed$archived" != 11 ] || echo "provisioning-archive: verified existing backup and archive"
+          env:
+            - {name: ARCHIVE_TAG, value: grafana-provisioning-archive-20261005}
+            # Rendered by the chart's tpl; an unrendered value fails the name check above.
+            - name: DECLARED_DASHBOARDS
+              value: '{{ keys .Values.dashboards.unpoller | sortAlpha | join " " }}'
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+            runAsGroup: 472
+            runAsNonRoot: true
+            runAsUser: 472
+            seccompProfile: {type: RuntimeDefault}
+          resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {memory: 64Mi}}
+          volumeMounts:
+            - {name: storage, mountPath: /var/lib/grafana}
+            - name: config
+              mountPath: /etc/grafana/provisioning/dashboards/dashboardproviders.yaml
+              subPath: dashboardproviders.yaml
+              readOnly: true
+
     # AlertManager configuration
     alertmanager:
       enabled: true
