@@ -30,12 +30,14 @@ def load_json5(path):
 
 
 def pattern_matches(pattern, value):
+    """Match a Renovate regex or literal glob against a candidate value."""
     if pattern.startswith("/") and pattern.endswith("/"):
         return re.search(pattern[1:-1], value) is not None
     return fnmatch.fnmatchcase(value, pattern)
 
 
 def rule_matches(rule, package, file_name, update_type):
+    """Apply the supported Renovate matchers to one candidate update."""
     values = {
         "matchDatasources": "docker",
         "matchPackageNames": package,
@@ -58,6 +60,7 @@ def rule_matches(rule, package, file_name, update_type):
 
 
 def effective_policy(rules, package, file_name, update_type):
+    """Combine matching rules in order, as Renovate does for this policy."""
     result = {}
     for rule in rules:
         if rule_matches(rule, package, file_name, update_type):
@@ -69,15 +72,18 @@ def effective_policy(rules, package, file_name, update_type):
 class GroschenRenovateTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        """Load inherited and repository rules once for the test class."""
         cls.root_config = load_json5(".github/renovate.json5")
         inherited = load_json5(".github/renovate/autoMerge.json5")
         cls.inherited_rules = inherited["packageRules"]
         cls.rules = cls.inherited_rules + cls.root_config["packageRules"]
 
     def policy(self, package=PACKAGE, file_name=APP_FILE, update_type="digest"):
+        """Return the effective policy for a package update in a file."""
         return effective_policy(self.rules, package, file_name, update_type)
 
     def test_sandbox_only_tracks_main_digest_and_waits_for_ci(self):
+        """Allow only CI-gated digest PR auto-merge for Sandbox."""
         for update_type in ("digest", "pinDigest"):
             with self.subTest(update_type=update_type):
                 policy = self.policy(update_type=update_type)
@@ -93,6 +99,7 @@ class GroschenRenovateTest(unittest.TestCase):
                 self.assertEqual(policy["groupSlug"], "groschen-sandbox-image")
 
     def test_sandbox_tag_and_replacement_updates_are_disabled(self):
+        """Keep tag and replacement updates disabled in Sandbox."""
         for update_type in ("major", "minor", "patch", "pin", "rollback", "bump", "replacement"):
             with self.subTest(update_type=update_type):
                 policy = self.policy(update_type=update_type)
@@ -101,6 +108,7 @@ class GroschenRenovateTest(unittest.TestCase):
                 self.assertEqual(policy["allowedVersions"], "/^main$/")
 
     def test_admin_is_disabled_and_other_groschen_files_stay_manual(self):
+        """Exclude the admin Job and keep other Groschen files manual."""
         for update_type in ("digest", "pinDigest", "patch", "minor"):
             with self.subTest(update_type=update_type):
                 self.assertFalse(self.policy(file_name=ADMIN_FILE, update_type=update_type)["enabled"])
@@ -108,15 +116,19 @@ class GroschenRenovateTest(unittest.TestCase):
                                              update_type=update_type)["automerge"])
 
     def test_busybox_policy_is_unaffected(self):
+        """Check another image against the rules without Groschen overrides."""
         for file_name in (APP_FILE, ADMIN_FILE):
             for update_type in ("digest", "patch"):
                 with self.subTest(file_name=file_name, update_type=update_type):
                     original = effective_policy(
-                        self.inherited_rules + self.root_config["packageRules"][:-4],
+                        self.inherited_rules + [
+                            rule for rule in self.root_config["packageRules"]
+                            if PACKAGE not in rule.get("matchPackageNames", [])],
                         "busybox", file_name, update_type)
                     self.assertEqual(self.policy("busybox", file_name, update_type), original)
 
     def test_deployments_share_the_requested_main_digest(self):
+        """Keep the API and worker on the same pinned main image."""
         documents = list(yaml.safe_load_all((ROOT / APP_FILE).read_text()))
         images = {}
         for deployment in documents:
