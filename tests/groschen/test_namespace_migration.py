@@ -1,29 +1,18 @@
-"""Guard the namespace preparation's transfer and isolation boundaries."""
+"""Guard the two-commit Groschen cutover and retained identity."""
 
-import base64
-import copy
-import json
-import os
 import pathlib
 import subprocess
-import tempfile
 import unittest
 
 import yaml
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 KUSTOMIZE = "/home/devbox/.local/share/mise/installs/aqua-kubernetes-sigs-kustomize/5.7.1/kustomize"
 SOURCE = ROOT / "kubernetes/apps/groschen-test"
-SOURCE_GRANT = SOURCE / "groschen/transfer-grant"
 TARGET = ROOT / "kubernetes/apps/groschen"
-TARGET_INFRA = TARGET / "infra"
-TRANSFER = TARGET / "transfer"
-NAMES = {
-    "groschen-key": "groschen_secret_key",
-    "groschen-owner-credentials": "password",
-    "groschen-member-credentials": "password",
-}
+ACTIVE = (TARGET / "app/ks.yaml").exists()
+EXPECTED_PHASE = "stop"
+COPIED = {"groschen-key", "groschen-owner-credentials", "groschen-member-credentials"}
 
 
 def render(path):
@@ -38,231 +27,79 @@ def named(docs, kind, name):
     return matches[0]
 
 
-class NamespaceMigrationTest(unittest.TestCase):
+class NamespaceCutoverTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = render(SOURCE)
         cls.source_infra = render(SOURCE / "groschen/infra")
-        cls.source_grant = render(SOURCE_GRANT)
+        cls.old_app = render(SOURCE / "groschen/app")
+        cls.old_admin = render(SOURCE / "groschen/admin")
+        cls.source_grant = render(SOURCE / "groschen/transfer-grant")
         cls.target = render(TARGET)
-        cls.target_infra = render(TARGET_INFRA)
-        cls.transfer = render(TRANSFER)
+        cls.target_infra = render(TARGET / "infra")
+        cls.transfer = render(TARGET / "transfer")
 
-    def test_source_read_grant_is_three_named_secrets_only(self):
-        role = named(self.source_grant, "Role", "groschen-secret-transfer-source")
-        self.assertEqual(role["metadata"]["namespace"], "groschen-test")
-        self.assertEqual(role["rules"], [{
-            "apiGroups": [""], "resources": ["secrets"],
-            "resourceNames": list(NAMES), "verbs": ["get"],
-        }])
-        binding = named(self.source_grant, "RoleBinding", "groschen-secret-transfer-source")
-        self.assertEqual(binding["metadata"]["namespace"], "groschen-test")
-        self.assertEqual(binding["roleRef"], {
-            "apiGroup": "rbac.authorization.k8s.io", "kind": "Role",
-            "name": "groschen-secret-transfer-source",
-        })
-        self.assertEqual(binding["subjects"], [{
-            "kind": "ServiceAccount", "name": "groschen-secret-transfer",
-            "namespace": "groschen",
-        }])
-        self.assertEqual({d["kind"] for d in self.source_grant},
-                         {"Role", "RoleBinding"})
-        self.assertFalse({"Role", "RoleBinding"}.intersection(d["kind"] for d in self.source_infra))
+    def test_stop_resources_are_retired_without_pruning_old_identity(self):
+        self.assertEqual(ACTIVE, EXPECTED_PHASE == "start")
+        for docs in (self.old_app, self.source_grant, self.transfer):
+            self.assertEqual([d["kind"] for d in docs], ["ConfigMap"])
+        self.assertFalse({"Deployment", "HTTPRoute", "Service", "Job", "Role", "RoleBinding", "ServiceAccount"} &
+                         {d["kind"] for d in self.old_app + self.source_grant + self.transfer})
+        for name in ("groschen-app", "groschen-source-transfer-grant"):
+            self.assertTrue(named(self.source, "Kustomization", name)["spec"]["prune"])
+        self.assertTrue(named(self.target, "Kustomization", "groschen-secret-transfer")["spec"]["prune"])
+        self.assertTrue(named(self.target, "Kustomization", "groschen-namespace")["spec"]["prune"])
+        self.assertEqual([d["kind"] for d in self.old_admin], ["Job"])
+        source_secrets = [d for d in self.source_infra if d["kind"] == "ExternalSecret"]
+        self.assertEqual(COPIED, {d["metadata"]["name"] for d in source_secrets
+                                  if d["spec"].get("refreshPolicy") == "CreatedOnce"})
+        for secret in source_secrets:
+            if secret["metadata"]["name"] in COPIED:
+                self.assertEqual(secret["spec"]["target"]["creationPolicy"], "Orphan")
+                self.assertTrue(secret["spec"]["target"]["immutable"])
+        self.assertEqual(named(self.source, "Namespace", "groschen-test")["metadata"]["name"], "groschen-test")
+        self.assertEqual(named(self.target_infra, "Namespace", "groschen")["metadata"]["annotations"]
+                         ["kustomize.toolkit.fluxcd.io/prune"], "disabled")
+        self.assertFalse({"Job", "Role", "RoleBinding", "ServiceAccount"} &
+                         {d["kind"] for d in self.target_infra + self.transfer})
 
-    def test_target_write_grant_and_token_are_transfer_only(self):
-        role = named(self.transfer, "Role", "groschen-secret-transfer-target")
-        self.assertEqual(role["metadata"]["namespace"], "groschen")
-        self.assertEqual(role["rules"], [
-            {"apiGroups": [""], "resources": ["secrets"],
-             "resourceNames": list(NAMES), "verbs": ["get"]},
-            {"apiGroups": [""], "resources": ["secrets"], "verbs": ["create"]},
-        ])
-        binding = named(self.transfer, "RoleBinding", "groschen-secret-transfer-target")
-        self.assertEqual(binding["subjects"], [{
-            "kind": "ServiceAccount", "name": "groschen-secret-transfer", "namespace": "groschen",
-        }])
-        self.assertEqual(binding["roleRef"]["name"], role["metadata"]["name"])
-        account = named(self.transfer, "ServiceAccount", "groschen-secret-transfer")
-        self.assertFalse(account["automountServiceAccountToken"])
-        job = named(self.transfer, "Job", "groschen-secret-transfer")
-        pod = job["spec"]["template"]["spec"]
-        self.assertEqual(pod["serviceAccountName"], account["metadata"]["name"])
-        self.assertTrue(pod["automountServiceAccountToken"])
-        self.assertTrue(pod["securityContext"]["runAsNonRoot"])
-        self.assertEqual(pod["securityContext"]["seccompProfile"]["type"], "RuntimeDefault")
-        container = pod["containers"][0]
-        self.assertIn("@sha256:", container["image"])
-        self.assertTrue(container["securityContext"]["readOnlyRootFilesystem"])
-        self.assertFalse(container["securityContext"]["allowPrivilegeEscalation"])
-        self.assertEqual(container["securityContext"]["capabilities"]["drop"], ["ALL"])
-
-    def test_create_only_copy_fails_on_mismatch_and_never_generates(self):
-        job = named(self.transfer, "Job", "groschen-secret-transfer")
-        script = job["spec"]["template"]["spec"]["containers"][0]["args"][0]
-        subprocess.run(["/bin/sh", "-n", "-c", script], check=True)
-        for name, key in NAMES.items():
-            self.assertIn(f"{name}:{key}", script)
-        self.assertIn("kubectl create -f -", script)
-        self.assertIn('source" != "$target', script)
-        self.assertIn('.type == "Opaque" and .immutable == true', script)
-        self.assertIn('keys == [$key]', script)
-        self.assertIn("immutable:true", script)
-        for forbidden in ("kubectl apply", "kubectl replace", "kubectl patch", "kubectl delete",
-                          "randBytes", "--from-literal", "set -x"):
-            self.assertNotIn(forbidden, script)
-        self.assertEqual({d["kind"] for d in self.transfer},
-                         {"Job", "ServiceAccount", "Role", "RoleBinding"})
-
-    def test_target_is_default_denied_and_transfer_has_only_api_egress(self):
-        deny = named(self.target_infra, "NetworkPolicy", "groschen-default-deny")
-        self.assertEqual(deny["metadata"]["namespace"], "groschen")
-        self.assertEqual(deny["spec"], {
-            "podSelector": {}, "policyTypes": ["Ingress", "Egress"],
-        })
-        policy = named(self.target_infra, "CiliumNetworkPolicy", "groschen-secret-transfer")
-        self.assertEqual(policy["metadata"]["namespace"], "groschen")
-        pod_labels = named(self.transfer, "Job", "groschen-secret-transfer")["spec"]["template"]["metadata"]["labels"]
-        self.assertEqual(policy["spec"], {
-            "endpointSelector": {"matchLabels": pod_labels},
-            "enableDefaultDeny": {"ingress": True, "egress": True},
-            "egress": [{"toEntities": ["kube-apiserver"]}],
-        })
-        self.assertEqual(len([d for d in self.target_infra if d["kind"] == "NetworkPolicy"]), 1)
-        self.assertEqual(len([d for d in self.target_infra if d["kind"] == "CiliumNetworkPolicy"]), 1)
-        self.assertFalse(any(d["kind"] == "CiliumNetworkPolicy" for d in self.transfer))
-
-    def test_transfer_is_idempotent_and_rejects_existing_mismatch(self):
-        script = named(self.transfer, "Job", "groschen-secret-transfer")["spec"]["template"]["spec"]["containers"][0]["args"][0]
-        mock = '''#!/usr/bin/env python3
-import json, os, sys
-path = os.environ["TEST_STATE"]
-with open(path) as stream:
-    state = json.load(stream)
-args = sys.argv[1:]
-if args[0] == "get":
-    name = args[2]
-    namespace = args[args.index("-n") + 1]
-    secret = state[namespace].get(name)
-    if secret is None:
-        sys.exit(1)
-    if "-o" not in args:
-        print(name)
-    else:
-        output = args[args.index("-o") + 1]
-        if output == "json":
-            print(json.dumps({"metadata": {"name": name}, **secret}))
-        elif output == "jsonpath={.immutable}":
-            print(str(secret.get("immutable", False)).lower())
-        else:
-            key = output.removeprefix("jsonpath={.data.").removesuffix("}")
-            print(secret["data"].get(key, ""))
-elif args[:3] == ["create", "-f", "-"]:
-    secret = json.load(sys.stdin)
-    namespace = secret["metadata"]["namespace"]
-    name = secret["metadata"]["name"]
-    if name in state[namespace]:
-        sys.exit(1)
-    state[namespace][name] = {key: secret[key] for key in ("type", "immutable", "data")}
-    state["creates"] += 1
-    with open(path, "w") as stream:
-        json.dump(state, stream)
-else:
-    sys.exit(2)
-'''
-        with tempfile.TemporaryDirectory() as directory:
-            stub = pathlib.Path(directory) / "kubectl"
-            stub.write_text(mock)
-            stub.chmod(0o755)
-            state_file = pathlib.Path(directory) / "state.json"
-            state = {
-                "groschen-test": {
-                    name: {"type": "Opaque", "immutable": True, "data": {
-                        key: base64.b64encode(name.encode()).decode()}}
-                    for name, key in NAMES.items()},
-                "groschen": {}, "creates": 0,
-            }
-            state_file.write_text(json.dumps(state))
-            env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
-                   "TEST_STATE": str(state_file)}
-
-            def run():
-                return subprocess.run(["/bin/sh", "-ec", script], env=env,
-                                      text=True, capture_output=True)
-
-            self.assertEqual(run().returncode, 0)
-            self.assertEqual(run().returncode, 0)
-            state = json.loads(state_file.read_text())
-            self.assertEqual(state["creates"], 3)
-            self.assertEqual(set(state["groschen"]), set(NAMES))
-            self.assertTrue(all(secret["immutable"] for secret in state["groschen"].values()))
-            self.assertTrue(all(secret["type"] == "Opaque" for secret in state["groschen"].values()))
-            self.assertTrue(all(set(secret["data"]) == {NAMES[name]}
-                                for name, secret in state["groschen"].items()))
-
-            for change in ("different-value", "mutable", "extra-key", "wrong-type"):
-                with self.subTest(change=change):
-                    bad = copy.deepcopy(state)
-                    key_secret = bad["groschen"]["groschen-key"]
-                    if change == "different-value":
-                        key_secret["data"]["groschen_secret_key"] = "different"
-                    elif change == "mutable":
-                        key_secret["immutable"] = False
-                    elif change == "extra-key":
-                        key_secret["data"]["unexpected"] = "extra"
-                    else:
-                        key_secret["type"] = "kubernetes.io/basic-auth"
-                    state_file.write_text(json.dumps(bad))
-                    result = run()
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(json.loads(state_file.read_text()), bad)
-                    self.assertNotIn(key_secret["data"]["groschen_secret_key"],
-                                     result.stdout + result.stderr)
-
-    def test_namespace_is_restricted_and_not_pruned(self):
-        ns = named(self.target_infra, "Namespace", "groschen")
-        self.assertEqual(ns["metadata"]["annotations"]["kustomize.toolkit.fluxcd.io/prune"],
-                         "disabled")
-        for mode in ("enforce", "audit", "warn"):
-            self.assertEqual(ns["metadata"]["labels"][f"pod-security.kubernetes.io/{mode}"],
-                             "restricted")
-        ks = named(self.target, "Kustomization", "groschen-secret-transfer")
-        infra_ks = named(self.target, "Kustomization", "groschen-namespace")
-        source_ks = named(self.source, "Kustomization", "groschen-infra")
-        grant_ks = named(self.source, "Kustomization", "groschen-source-transfer-grant")
-        self.assertEqual(ks["apiVersion"], "kustomize.toolkit.fluxcd.io/v1")
-        self.assertEqual(set(ks["spec"]), set(source_ks["spec"]))
-        self.assertEqual({d["name"] for d in ks["spec"]["dependsOn"]},
-                         {"groschen-namespace", "external-secrets-operator", "groschen-source-transfer-grant"})
-        self.assertEqual(grant_ks["spec"]["path"],
-                         "./kubernetes/apps/groschen-test/groschen/transfer-grant")
-        self.assertEqual(grant_ks["spec"]["dependsOn"],
-                         [{"name": "groschen-infra", "namespace": "flux-system"}])
-        self.assertTrue(grant_ks["spec"]["prune"])
-        self.assertTrue(grant_ks["spec"]["wait"])
-        self.assertEqual(infra_ks["spec"]["path"], "./kubernetes/apps/groschen/infra")
-        self.assertFalse(infra_ks["spec"]["prune"])
-        self.assertTrue(infra_ks["spec"]["wait"])
-        self.assertEqual(ks["spec"]["targetNamespace"], "groschen")
-        self.assertFalse(ks["spec"]["prune"])
-        self.assertTrue(ks["spec"]["wait"])
-
-    def test_stale_source_infra_ready_cannot_start_transfer(self):
-        transfer = named(self.target, "Kustomization", "groschen-secret-transfer")
-        dependencies = {item["name"] for item in transfer["spec"]["dependsOn"]}
-        old_ready = {"groschen-infra", "external-secrets-operator", "groschen-namespace"}
-        self.assertEqual(dependencies - old_ready, {"groschen-source-transfer-grant"})
-        self.assertFalse(dependencies <= old_ready)
-        self.assertTrue(dependencies <= old_ready | {"groschen-source-transfer-grant"})
-
-    def test_no_new_app_and_old_app_remains_active(self):
-        forbidden = {"Deployment", "StatefulSet", "DaemonSet", "CronJob", "HTTPRoute", "Service"}
-        self.assertFalse(forbidden.intersection(d["kind"] for d in self.target + self.target_infra + self.transfer))
-        self.assertEqual({d["kind"] for d in self.source if d["kind"] == "Namespace"},
-                         {"Namespace"})
-        self.assertIn("groschen-app", {d["metadata"]["name"] for d in self.source})
-        self.assertIn("groschen-admin", {d["metadata"]["name"] for d in self.source})
-        self.assertEqual(named(self.source, "Namespace", "groschen-test")["metadata"]["name"],
-                         "groschen-test")
+    def test_start_reuses_existing_credentials_and_runtime(self):
+        if not ACTIVE:
+            self.assertFalse(any(d["kind"] in {"Deployment", "HTTPRoute", "Service"} for d in self.target))
+            return
+        app_ks = named(self.target, "Kustomization", "groschen-app")
+        self.assertEqual(app_ks["spec"]["path"], "./kubernetes/apps/groschen/app")
+        self.assertEqual(app_ks["spec"]["targetNamespace"], "groschen")
+        self.assertTrue(app_ks["spec"]["prune"])
+        app = render(TARGET / "app")
+        deployments = {d["metadata"]["name"]: d for d in app if d["kind"] == "Deployment"}
+        self.assertEqual(set(deployments), {"groschen-api", "groschen-worker"})
+        self.assertEqual({d["metadata"]["namespace"] for d in app}, {"groschen"})
+        images = {d["spec"]["template"]["spec"]["containers"][0]["image"] for d in deployments.values()}
+        self.assertEqual(len(images), 1)
+        old = list(yaml.safe_load_all((SOURCE / "groschen/app/deployment.yaml").read_text()))
+        self.assertEqual(images, {old[0]["spec"]["template"]["spec"]["containers"][0]["image"]})
+        for name, deployment in deployments.items():
+            pod = deployment["spec"]["template"]["spec"]
+            old_pod = next(d for d in old if d["metadata"]["name"] == name)["spec"]["template"]["spec"]
+            self.assertEqual(pod, old_pod)
+        route = named(app, "HTTPRoute", "groschen")
+        self.assertEqual(route["spec"]["hostnames"], ["groshen.homelab0.org"])
+        self.assertEqual(route["spec"]["parentRefs"][0]["name"], "envoy-internal")
+        self.assertEqual(route["spec"]["rules"][0]["backendRefs"][0]["name"], "groschen-api")
+        self.assertEqual(named(app, "Service", "groschen-api")["spec"]["selector"],
+                         {"app.kubernetes.io/name": "groschen-api"})
+        es = named(self.target_infra, "ExternalSecret", "groschen-db-credentials")
+        self.assertEqual({item["remoteRef"]["property"] for item in es["spec"]["data"]},
+                         {"GROSCHEN_USER", "GROSCHEN_PASSWORD"})
+        self.assertEqual(es["spec"]["target"]["template"]["data"],
+                         named(self.source_infra, "ExternalSecret", "groschen-db-credentials")
+                         ["spec"]["target"]["template"]["data"])
+        self.assertEqual(named(self.target_infra, "ExternalSecret", "groschen-ghcr")["spec"],
+                         named(self.source_infra, "ExternalSecret", "groschen-ghcr")["spec"])
+        self.assertFalse(COPIED & {d["metadata"]["name"] for d in self.target_infra
+                                   if d["kind"] == "ExternalSecret"})
+        self.assertFalse(any(d["kind"] == "Job" for d in app))
 
 
 if __name__ == "__main__":

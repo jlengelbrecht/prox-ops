@@ -12,7 +12,10 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE = "ghcr.io/jlengelbrecht/groschen"
-APP_FILE = "kubernetes/apps/groschen-test/groschen/app/deployment.yaml"
+OLD_APP_FILE = "kubernetes/apps/groschen-test/groschen/app/deployment.yaml"
+TARGET_APP_FILE = "kubernetes/apps/groschen/app/deployment.yaml"
+ACTIVE = (ROOT / TARGET_APP_FILE).exists()
+APP_FILE = TARGET_APP_FILE if ACTIVE else OLD_APP_FILE
 ADMIN_FILE = "kubernetes/apps/groschen-test/groschen/admin/job.yaml"
 DIGEST = "ef71d858c9a1c3b2ab1b412d352bbfd5b1a74eea7dc2be87a9c885e2d5e07fee"
 
@@ -83,7 +86,10 @@ class GroschenRenovateTest(unittest.TestCase):
         return effective_policy(self.rules, package, file_name, update_type)
 
     def test_sandbox_only_tracks_main_digest_and_waits_for_ci(self):
-        """Allow only CI-gated digest PR auto-merge for Sandbox."""
+        """Allow only CI-gated digest PR auto-merge after START."""
+        if not ACTIVE:
+            self.assertFalse(self.policy(file_name=OLD_APP_FILE)["enabled"])
+            return
         for update_type in ("digest", "pinDigest"):
             with self.subTest(update_type=update_type):
                 policy = self.policy(update_type=update_type)
@@ -95,25 +101,25 @@ class GroschenRenovateTest(unittest.TestCase):
                 self.assertEqual(policy["minimumReleaseAge"], "0")
                 self.assertTrue(policy["pinDigests"])
                 self.assertEqual(policy["allowedVersions"], "/^main$/")
-                self.assertEqual(policy["groupName"], "Groschen Sandbox image")
-                self.assertEqual(policy["groupSlug"], "groschen-sandbox-image")
+                self.assertEqual(policy["groupName"], "Groschen image")
+                self.assertEqual(policy["groupSlug"], "groschen-image")
 
     def test_sandbox_tag_and_replacement_updates_are_disabled(self):
-        """Keep tag and replacement updates disabled in Sandbox."""
+        """Keep tag and replacement updates disabled for the active app."""
         for update_type in ("major", "minor", "patch", "pin", "rollback", "bump", "replacement"):
             with self.subTest(update_type=update_type):
                 policy = self.policy(update_type=update_type)
                 self.assertFalse(policy["enabled"])
                 self.assertFalse(policy["automerge"])
-                self.assertEqual(policy["allowedVersions"], "/^main$/")
+                if ACTIVE:
+                    self.assertEqual(policy["allowedVersions"], "/^main$/")
 
     def test_admin_is_disabled_and_other_groschen_files_stay_manual(self):
-        """Exclude the admin Job and keep other Groschen files manual."""
+        """Exclude all retired deployment and Job images."""
         for update_type in ("digest", "pinDigest", "patch", "minor"):
             with self.subTest(update_type=update_type):
                 self.assertFalse(self.policy(file_name=ADMIN_FILE, update_type=update_type)["enabled"])
-                self.assertFalse(self.policy(file_name="kubernetes/apps/groschen/app/deployment.yaml",
-                                             update_type=update_type)["automerge"])
+                self.assertFalse(self.policy(file_name=OLD_APP_FILE, update_type=update_type)["enabled"])
 
     def test_busybox_policy_is_unaffected(self):
         """Check another image against the rules without Groschen overrides."""
