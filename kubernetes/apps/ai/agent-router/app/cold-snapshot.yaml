@@ -1,0 +1,18 @@
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: agent-router-journal-pre-rc080
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: agent-router
+    app.kubernetes.io/component: journal
+    prox-ops.io/recovery-point: pre-rc080
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+    prox-ops.io/router-base: v0.7.2
+    prox-ops.io/router-base-digest: sha256:7535dab1e33acbecf2f930d45540339112a521c406aabe5402fe58c94d18e037
+    prox-ops.io/router-image: sha256:56f2dd1ead2f7bb440fdd95bd2d424643123cf58f77e6726f2c4be7d9edbd873
+spec:
+  source:
+    persistentVolumeClaimName: agent-router-journal
+  volumeSnapshotClassName: ceph-block-snapshot-retain
