@@ -1,0 +1,24 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: groschen-secret-transfer
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: groschen-namespace
+      namespace: flux-system
+    - name: external-secrets-operator
+      namespace: flux-system
+    - name: groschen-source-transfer-grant
+      namespace: flux-system
+  interval: 1h
+  retryInterval: 1m
+  timeout: 10m
+  path: ./kubernetes/apps/groschen/transfer
+  prune: false
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: groschen
+  wait: true

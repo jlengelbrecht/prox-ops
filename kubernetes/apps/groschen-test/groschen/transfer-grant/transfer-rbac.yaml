@@ -1,0 +1,27 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: groschen-secret-transfer-source
+  namespace: groschen-test
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames:
+      - groschen-key
+      - groschen-owner-credentials
+      - groschen-member-credentials
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: groschen-secret-transfer-source
+  namespace: groschen-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: groschen-secret-transfer-source
+subjects:
+  - kind: ServiceAccount
+    name: groschen-secret-transfer
+    namespace: groschen

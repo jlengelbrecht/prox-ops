@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: groschen-secret-transfer
+spec:
+  backoffLimit: 5
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: groschen-secret-transfer
+    spec:
+      serviceAccountName: groschen-secret-transfer
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: transfer
+          image: alpine/k8s:1.34.11@sha256:0382123ab8ae17d8da5d43cc299242933eb012cfbe56787b43731c942c3eed80
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              set +x
+              for entry in groschen-key:groschen_secret_key groschen-owner-credentials:password groschen-member-credentials:password; do
+                name=${entry%%:*}
+                key=${entry#*:}
+                source=$(kubectl get secret "$name" -n groschen-test -o "jsonpath={.data.$key}")
+                if [ -z "$source" ]; then
+                  echo "Missing source key in $name" >&2
+                  exit 1
+                fi
+
+                if ! kubectl get secret "$name" -n groschen >/dev/null 2>&1; then
+                  # Kubernetes create is atomic. If another actor created the target,
+                  # this fails; it never becomes an update or replacement.
+                  kubectl get secret "$name" -n groschen-test -o json |
+                    jq -e --arg key "$key" '
+                      if .type == "Opaque" and (.data[$key] | type) == "string" then
+                        {apiVersion:"v1", kind:"Secret",
+                         metadata:{name:.metadata.name, namespace:"groschen"},
+                         type:"Opaque", immutable:true, data:{($key):.data[$key]}}
+                      else error("source Secret type or key is invalid") end' |
+                    kubectl create -f - >/dev/null
+                fi
+
+                target=$(kubectl get secret "$name" -n groschen -o "jsonpath={.data.$key}")
+                if [ -z "$target" ] || [ "$source" != "$target" ] ||
+                   ! kubectl get secret "$name" -n groschen -o json |
+                     jq -e --arg key "$key" '
+                       .type == "Opaque" and .immutable == true and
+                       (.data | if type == "object" then keys == [$key] else false end)
+                     ' >/dev/null; then
+                  echo "Transfer mismatch or invalid target shape for $name" >&2
+                  exit 1
+                fi
+              done
+              echo 'Three named Secrets transferred and verified'
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 128Mi}
