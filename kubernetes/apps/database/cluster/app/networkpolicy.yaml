@@ -12,7 +12,7 @@ spec:
       cnpg.io/cluster: postgres
 
   ingress:
-    # Only the Groschen workloads in the test namespace get this new lane.
+    # The existing Groschen identity is authorized in both namespaces during cutover.
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: groschen-test
@@ -23,6 +23,12 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: groschen-test
             app.kubernetes.io/name: groschen-admin
+        - matchLabels:
+            io.kubernetes.pod.namespace: groschen
+            app.kubernetes.io/name: groschen-api
+        - matchLabels:
+            io.kubernetes.pod.namespace: groschen
+            app.kubernetes.io/name: groschen-worker
       toPorts:
         - ports:
             - port: "5432"
