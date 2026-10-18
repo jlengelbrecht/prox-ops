@@ -254,4 +254,10 @@ spec:
         metadata:
           name: agent-router
         spec:
-          replicas: 0
+          template:
+            spec:
+              containers:
+                - name: agent-router
+                  env:
+                    - name: HOOK_PLANE_URL
+                      value: https://agent-router.homelab0.org
