@@ -4,6 +4,9 @@ metadata:
   name: groschen-namespace
   namespace: flux-system
 spec:
+  dependsOn:
+    - name: groschen-postgres-ca-reader
+      namespace: database
   interval: 1h
   retryInterval: 1m
   timeout: 5m
@@ -14,3 +17,10 @@ spec:
     name: flux-system
     namespace: flux-system
   wait: true
+  healthCheckExprs:
+    - apiVersion: external-secrets.io/v1
+      kind: SecretStore
+      current: "has(status) && has(status.conditions) && status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')"
+    - apiVersion: external-secrets.io/v1
+      kind: ExternalSecret
+      current: "has(status) && has(status.conditions) && status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')"

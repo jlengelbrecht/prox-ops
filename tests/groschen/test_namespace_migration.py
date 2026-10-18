@@ -29,6 +29,33 @@ def named(docs, kind, name):
     return matches[0]
 
 
+def assert_tls_only_pod_delta(test, old_pod, new_pod):
+    """The target may add only certificate verification and its public CA mount."""
+    old_pod = copy.deepcopy(old_pod)
+    new_pod = copy.deepcopy(new_pod)
+    test.assertEqual(len(old_pod["containers"]), len(new_pod["containers"]))
+    for old_container, new_container in zip(old_pod["containers"], new_pod["containers"]):
+        test.assertEqual(new_container["image"], old_container["image"])
+        old_dsn = next(item["value"] for item in old_container["env"]
+                       if item["name"] == "DATABASE_URL")
+        new_dsn = next(item for item in new_container["env"]
+                       if item["name"] == "DATABASE_URL")
+        test.assertEqual(old_dsn.count("sslmode=disable"), 1)
+        test.assertEqual(new_dsn["value"], old_dsn.replace(
+            "sslmode=disable", "sslmode=verify-full sslrootcert=/tls/ca.crt"))
+        new_dsn["value"] = old_dsn
+        ca_mount = {"name": "postgres-ca", "mountPath": "/tls", "readOnly": True}
+        test.assertEqual(new_container["volumeMounts"].count(ca_mount), 1)
+        new_container["volumeMounts"].remove(ca_mount)
+    ca_volume = {"name": "postgres-ca", "secret": {
+        "secretName": "groschen-postgres-ca-public", "defaultMode": 0o444,
+        "items": [{"key": "ca.crt", "path": "ca.crt"}],
+    }}
+    test.assertEqual(new_pod["volumes"].count(ca_volume), 1)
+    new_pod["volumes"].remove(ca_volume)
+    test.assertEqual(new_pod, old_pod)
+
+
 class NamespaceCutoverTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -66,7 +93,7 @@ class NamespaceCutoverTest(unittest.TestCase):
 
     def test_stop_resources_are_retired_without_pruning_old_identity(self):
         self.assertEqual(ACTIVE, EXPECTED_PHASE == "start")
-        for docs in (self.old_app, self.source_grant, self.transfer):
+        for docs in (self.old_app, self.source_grant):
             self.assertEqual([d["kind"] for d in docs], ["ConfigMap"])
         self.assertFalse({"Deployment", "HTTPRoute", "Service", "Job", "Role", "RoleBinding", "ServiceAccount"} &
                          {d["kind"] for d in self.old_app + self.source_grant + self.transfer})
@@ -86,8 +113,12 @@ class NamespaceCutoverTest(unittest.TestCase):
         self.assertEqual(named(self.source, "Namespace", "groschen-test")["metadata"]["name"], "groschen-test")
         self.assertEqual(named(self.target_infra, "Namespace", "groschen")["metadata"]["annotations"]
                          ["kustomize.toolkit.fluxcd.io/prune"], "disabled")
-        self.assertFalse({"Job", "Role", "RoleBinding", "ServiceAccount"} &
+        self.assertFalse({"Job", "Role", "RoleBinding"} &
                          {d["kind"] for d in self.target_infra + self.transfer})
+        self.assertEqual({d["metadata"]["name"] for d in self.target_infra
+                          if d["kind"] == "ServiceAccount"},
+                         {"groschen-postgres-ca-reader"})
+        self.assertFalse(any(d["kind"] == "ServiceAccount" for d in self.transfer))
 
     def test_start_reuses_existing_credentials_and_runtime(self):
         if not ACTIVE:
@@ -107,12 +138,14 @@ class NamespaceCutoverTest(unittest.TestCase):
         self.assertRegex(next(iter(images)),
                          r"\Aghcr\.io/jlengelbrecht/groschen:main@sha256:[0-9a-f]{64}\Z")
         for name, deployment in deployments.items():
-            pod = copy.deepcopy(deployment["spec"]["template"]["spec"])
-            old_pod = copy.deepcopy(next(d for d in old if d["metadata"]["name"] == name)
-                                    ["spec"]["template"]["spec"])
-            for container in pod["containers"] + old_pod["containers"]:
-                container.pop("image")
-            self.assertEqual(pod, old_pod)
+            old_deployment = next(d for d in old if d["metadata"]["name"] == name)
+            self.assertEqual(deployment["metadata"]["annotations"], {
+                "secret.reloader.stakater.com/reload":
+                    "groschen-db-credentials,groschen-postgres-ca-public"})
+            self.assertEqual(old_deployment["metadata"]["annotations"], {
+                "secret.reloader.stakater.com/reload": "groschen-db-credentials"})
+            assert_tls_only_pod_delta(self, old_deployment["spec"]["template"]["spec"],
+                                      deployment["spec"]["template"]["spec"])
         route = named(app, "HTTPRoute", "groschen")
         self.assertEqual(route["spec"]["hostnames"], ["groshen.homelab0.org"])
         self.assertEqual(route["spec"]["parentRefs"][0]["name"], "envoy-internal")
@@ -137,6 +170,18 @@ class NamespaceCutoverTest(unittest.TestCase):
                    for match in ingress["fromEndpoints"]}
         self.assertTrue({("groschen", "groschen-api"), ("groschen", "groschen-worker")} <= allowed)
         self.assertEqual(ingress["toPorts"], [{"ports": [{"port": "5432", "protocol": "TCP"}]}])
+
+    def test_paired_renovate_digest_fixture_keeps_tls_delta_valid(self):
+        old = named(list(yaml.safe_load_all(
+            (SOURCE / "groschen/app/deployment.yaml").read_text())),
+            "Deployment", "groschen-api")
+        new = named(render(TARGET / "app"), "Deployment", "groschen-api")
+        old_pod = copy.deepcopy(old["spec"]["template"]["spec"])
+        new_pod = copy.deepcopy(new["spec"]["template"]["spec"])
+        changed_digest = "ghcr.io/jlengelbrecht/groschen:main@sha256:" + "a" * 64
+        old_pod["containers"][0]["image"] = changed_digest
+        new_pod["containers"][0]["image"] = changed_digest
+        assert_tls_only_pod_delta(self, old_pod, new_pod)
 
 
 if __name__ == "__main__":
