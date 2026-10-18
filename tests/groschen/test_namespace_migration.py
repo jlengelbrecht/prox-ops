@@ -93,7 +93,7 @@ class NamespaceCutoverTest(unittest.TestCase):
 
     def test_stop_resources_are_retired_without_pruning_old_identity(self):
         self.assertEqual(ACTIVE, EXPECTED_PHASE == "start")
-        for docs in (self.old_app, self.source_grant):
+        for docs in (self.old_app, self.source_grant, self.transfer):
             self.assertEqual([d["kind"] for d in docs], ["ConfigMap"])
         self.assertFalse({"Deployment", "HTTPRoute", "Service", "Job", "Role", "RoleBinding", "ServiceAccount"} &
                          {d["kind"] for d in self.old_app + self.source_grant + self.transfer})

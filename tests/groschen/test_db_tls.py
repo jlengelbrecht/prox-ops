@@ -25,35 +25,7 @@ class GroschenDBTLSTest(unittest.TestCase):
         cls.infra = render(GROSCHEN / "infra")
         cls.groschen = render(GROSCHEN)
         cls.app = render(GROSCHEN / "app")
-        cls.transfer = render(GROSCHEN / "transfer")
         cls.root = render_cluster_apps_root()
-
-    def test_transfer_owner_adopts_only_exact_orphan_policy(self):
-        owner = one(self.groschen, "Kustomization", "groschen-secret-transfer")
-        self.assertEqual(owner["spec"]["path"], "./kubernetes/apps/groschen/transfer")
-        self.assertIs(owner["spec"]["prune"], True)
-        self.assertEqual(collections.Counter(d["kind"] for d in self.transfer),
-                         {"ConfigMap": 1, "CiliumNetworkPolicy": 1})
-        retired = one(self.transfer, "ConfigMap", "groschen-transfer-retired")
-        self.assertEqual(retired["data"], {"state": "retired"})
-        policy = one(self.transfer, "CiliumNetworkPolicy", "groschen-secret-transfer")
-        expected = {
-            "apiVersion": "cilium.io/v2",
-            "kind": "CiliumNetworkPolicy",
-            "metadata": {"name": "groschen-secret-transfer", "namespace": "groschen"},
-            "spec": {
-                "endpointSelector": {"matchLabels": {
-                    "app.kubernetes.io/name": "groschen-secret-transfer"}},
-                "enableDefaultDeny": {"ingress": True, "egress": True},
-                "egress": [{"toEntities": ["kube-apiserver"]}],
-            },
-        }
-        self.assertEqual({k: policy[k] for k in expected}, expected)
-        self.assertEqual(policy["apiVersion"], "cilium.io/v2")
-        selector = policy["spec"]["endpointSelector"]["matchLabels"]
-        for deployment in (d for d in self.app if d["kind"] == "Deployment"):
-            labels = deployment["spec"]["template"]["metadata"]["labels"]
-            self.assertFalse(all(labels.get(key) == value for key, value in selector.items()))
 
     def test_database_permission_only_names_public_mirror(self):
         self.assertEqual(collections.Counter(d["kind"] for d in self.reader),
@@ -187,7 +159,6 @@ class GroschenDBTLSTest(unittest.TestCase):
             "SecretStore": "secretstores.external-secrets.io.json",
             "ExternalSecret": "externalsecrets.external-secrets.io.json",
             "Kustomization": "kustomizations.kustomize.toolkit.fluxcd.io.schema.json",
-            "CiliumNetworkPolicy": "ciliumnetworkpolicies.cilium.io.schema.json",
         }
         missing = [name for name in schemas.values() if not (SCHEMAS / name).is_file()]
         if missing:
@@ -199,17 +170,14 @@ class GroschenDBTLSTest(unittest.TestCase):
             for kind, filename in schemas.items():
                 with self.subTest(kind=kind):
                     schema = json.loads((SCHEMAS / filename).read_text())
-                    if kind in {"SecretStore", "ExternalSecret"}:
+                    if kind != "Kustomization":
                         schema = next(v["schema"]["openAPIV3Schema"] for v in
                                       schema["spec"]["versions"] if v["name"] == "v1")
                     path = pathlib.Path(directory) / (kind + ".json")
                     path.write_text(json.dumps(schema))
-                    if kind == "Kustomization":
-                        doc = one(self.database, kind, "groschen-postgres-ca-reader")
-                    elif kind == "CiliumNetworkPolicy":
-                        doc = one(self.transfer, kind, "groschen-secret-transfer")
-                    else:
-                        doc = one(self.infra, kind, "groschen-postgres-ca-public")
+                    doc = one(self.database, kind, "groschen-postgres-ca-reader") if (
+                        kind == "Kustomization") else one(
+                            self.infra, kind, "groschen-postgres-ca-public")
                     result = subprocess.run([tool("kubeconform"), "-strict",
                                              "-schema-location", path.as_uri(), "-"],
                                             input=yaml.safe_dump(doc), text=True,
