@@ -9,8 +9,12 @@ import yaml
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-INFRA = ROOT / "kubernetes/apps/groschen-test/groschen/infra"
-APP = ROOT / "kubernetes/apps/groschen-test/groschen/app"
+SOURCE_INFRA = ROOT / "kubernetes/apps/groschen-test/groschen/infra"
+TARGET_INFRA = ROOT / "kubernetes/apps/groschen/infra"
+TARGET_APP = ROOT / "kubernetes/apps/groschen/app"
+ACTIVE = (TARGET_APP / "ks.yaml").exists()
+INFRA = TARGET_INFRA if ACTIVE else SOURCE_INFRA
+APP = TARGET_APP if ACTIVE else ROOT / "kubernetes/apps/groschen-test/groschen/app"
 KUBECTL = "/home/devbox/.local/share/mise/installs/aqua-kubernetes-kubectl/1.34.0/kubectl"
 CLIENTS = {"groschen-api", "groschen-worker", "groschen-admin"}
 
@@ -73,6 +77,9 @@ class PlaidEgressTest(unittest.TestCase):
                            if doc and doc["kind"] == "Deployment"]
 
     def test_api_and_worker_query_exact_plaid_name_first(self):
+        if not ACTIVE:
+            self.assertEqual(self.deployments, [])
+            return
         by_name = {doc["metadata"]["name"]: doc for doc in self.deployments}
         self.assertEqual(len(by_name), len(self.deployments))
         self.assertEqual(set(by_name), {"groschen-api", "groschen-worker"})
@@ -87,7 +94,7 @@ class PlaidEgressTest(unittest.TestCase):
     def test_policies_render_in_groschen_namespace(self):
         for policy in self.cnps + self.nps:
             with self.subTest(name=policy["metadata"]["name"]):
-                self.assertEqual(policy["metadata"]["namespace"], "groschen-test")
+                self.assertEqual(policy["metadata"]["namespace"], "groschen" if ACTIVE else "groschen-test")
                 if policy["kind"] == "CiliumNetworkPolicy":
                     self.assertNotIn("ingress", policy["spec"])
 
