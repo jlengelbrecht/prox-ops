@@ -1,0 +1,22 @@
+---
+# Keep CA mirroring independent of reconciliation of the shared cluster tree.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: groschen-postgres-ca-public
+  namespace: flux-system
+spec:
+  targetNamespace: database
+  path: ./kubernetes/apps/database/groschen-ca/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 15m
+  retryInterval: 1m
+  timeout: 5m
+  dependsOn:
+    - name: external-secrets-operator
+      namespace: flux-system

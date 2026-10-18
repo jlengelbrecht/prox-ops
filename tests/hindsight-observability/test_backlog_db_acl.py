@@ -246,9 +246,10 @@ class ActivationManifestTests(unittest.TestCase):
             'prune': True, 'wait': True, 'dependsOn': [{'name': 'postgres-cluster', 'namespace': 'database'}]})
         self.assertNotIn('force', spec)
         root = yaml.safe_load((DATABASE / 'kustomization.yaml').read_text())
-        self.assertEqual((root['namespace'], root['resources'].count('hindsight-backlog/ks.yaml')), ('database', 1))
-        self.assertEqual(root['resources'].index('hindsight-backlog/ks.yaml'),
-                         root['resources'].index('cluster/ks.yaml') + 1)
+        self.assertEqual(root['namespace'], 'database')
+        for entry in ('cluster/ks.yaml', 'hindsight-backlog/ks.yaml'):
+            self.assertEqual(root['resources'].count(entry), 1, entry)
+        # Flux uses the dependsOn above, not adjacency in the root resource list.
         # The role-limits cap needs this revoke first; no other tree, shared ones included, may wait on it.
         waiting = set()
         for path in (ROOT / 'kubernetes').rglob('ks.yaml'):
