@@ -13,6 +13,11 @@ spec:
       labels: {app.kubernetes.io/name: groschen-api}
     spec:
       automountServiceAccountToken: false
+      dnsPolicy: ClusterFirst
+      # CoreDNS autopath can resolve the search-suffixed Plaid name first; query its exact FQDN first.
+      dnsConfig:
+        options:
+          - {name: ndots, value: "1"}
       imagePullSecrets: [{name: groschen-ghcr}]
       securityContext:
         runAsNonRoot: true
@@ -102,6 +107,11 @@ spec:
       labels: {app.kubernetes.io/name: groschen-worker}
     spec:
       automountServiceAccountToken: false
+      dnsPolicy: ClusterFirst
+      # CoreDNS autopath can resolve the search-suffixed Plaid name first; query its exact FQDN first.
+      dnsConfig:
+        options:
+          - {name: ndots, value: "1"}
       imagePullSecrets: [{name: groschen-ghcr}]
       securityContext:
         runAsNonRoot: true

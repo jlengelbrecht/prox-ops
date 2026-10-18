@@ -10,6 +10,7 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INFRA = ROOT / "kubernetes/apps/groschen-test/groschen/infra"
+APP = ROOT / "kubernetes/apps/groschen-test/groschen/app"
 KUBECTL = "/home/devbox/.local/share/mise/installs/aqua-kubernetes-kubectl/1.34.0/kubectl"
 CLIENTS = {"groschen-api", "groschen-worker", "groschen-admin"}
 
@@ -67,6 +68,21 @@ class PlaidEgressTest(unittest.TestCase):
         cls.docs = [doc for doc in yaml.safe_load_all(output) if doc]
         cls.cnps = [doc for doc in cls.docs if doc["kind"] == "CiliumNetworkPolicy"]
         cls.nps = [doc for doc in cls.docs if doc["kind"] == "NetworkPolicy"]
+        app_output = subprocess.check_output([KUBECTL, "kustomize", str(APP)], text=True)
+        cls.deployments = [doc for doc in yaml.safe_load_all(app_output)
+                           if doc and doc["kind"] == "Deployment"]
+
+    def test_api_and_worker_query_exact_plaid_name_first(self):
+        by_name = {doc["metadata"]["name"]: doc for doc in self.deployments}
+        self.assertEqual(len(by_name), len(self.deployments))
+        self.assertEqual(set(by_name), {"groschen-api", "groschen-worker"})
+        for name, deployment in by_name.items():
+            with self.subTest(deployment=name):
+                pod = deployment["spec"]["template"]["spec"]
+                self.assertEqual(pod.get("dnsPolicy"), "ClusterFirst")
+                self.assertEqual(pod.get("dnsConfig"), {
+                    "options": [{"name": "ndots", "value": "1"}],
+                })
 
     def test_policies_render_in_groschen_namespace(self):
         for policy in self.cnps + self.nps:
