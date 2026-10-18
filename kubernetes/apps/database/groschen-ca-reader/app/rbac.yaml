@@ -1,0 +1,26 @@
+---
+# The Groschen reader can GET only the public-only first-hop Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: groschen-postgres-ca-reader
+  namespace: database
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["groschen-postgres-ca-public"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: groschen-postgres-ca-reader
+  namespace: database
+subjects:
+  - kind: ServiceAccount
+    name: groschen-postgres-ca-reader
+    namespace: groschen
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: groschen-postgres-ca-reader

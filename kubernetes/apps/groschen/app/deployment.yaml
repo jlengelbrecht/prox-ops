@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: groschen-api
   annotations:
-    secret.reloader.stakater.com/reload: groschen-db-credentials
+    secret.reloader.stakater.com/reload: "groschen-db-credentials,groschen-postgres-ca-public"
 spec:
   replicas: 1
   selector:
@@ -49,7 +49,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command: [/app/api]
           env:
-            - {name: DATABASE_URL, value: "host=postgres-rw.database.svc.cluster.local port=5432 user=groschen dbname=groschen sslmode=disable pool_max_conns=4"}
+            - {name: DATABASE_URL, value: "host=postgres-rw.database.svc.cluster.local port=5432 user=groschen dbname=groschen sslmode=verify-full sslrootcert=/tls/ca.crt pool_max_conns=4"}
             - {name: PGPASSFILE, value: /run/secrets/groschen_db_pgpass}
             - {name: GROSCHEN_SECRET_KEY_FILE, value: /run/secrets/groschen_secret_key}
             - {name: APP_ORIGIN, value: "https://groshen.homelab0.org"}
@@ -80,6 +80,7 @@ spec:
           volumeMounts:
             - {name: ready, mountPath: /run/secrets, readOnly: true}
             - {name: tmp, mountPath: /tmp}
+            - {name: postgres-ca, mountPath: /tls, readOnly: true}
       volumes:
         - name: projected
           projected:
@@ -91,13 +92,18 @@ spec:
           emptyDir: {medium: Memory, sizeLimit: 1Mi}
         - name: tmp
           emptyDir: {medium: Memory, sizeLimit: 64Mi}
+        - name: postgres-ca
+          secret:
+            secretName: groschen-postgres-ca-public
+            defaultMode: 0444
+            items: [{key: ca.crt, path: ca.crt}]
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: groschen-worker
   annotations:
-    secret.reloader.stakater.com/reload: groschen-db-credentials
+    secret.reloader.stakater.com/reload: "groschen-db-credentials,groschen-postgres-ca-public"
 spec:
   replicas: 1
   selector:
@@ -143,7 +149,7 @@ spec:
           imagePullPolicy: IfNotPresent
           command: [/app/worker]
           env:
-            - {name: DATABASE_URL, value: "host=postgres-rw.database.svc.cluster.local port=5432 user=groschen dbname=groschen sslmode=disable pool_max_conns=4"}
+            - {name: DATABASE_URL, value: "host=postgres-rw.database.svc.cluster.local port=5432 user=groschen dbname=groschen sslmode=verify-full sslrootcert=/tls/ca.crt pool_max_conns=4"}
             - {name: PGPASSFILE, value: /run/secrets/groschen_db_pgpass}
             - {name: GROSCHEN_SECRET_KEY_FILE, value: /run/secrets/groschen_secret_key}
             - {name: APP_ORIGIN, value: "https://groshen.homelab0.org"}
@@ -166,6 +172,7 @@ spec:
           volumeMounts:
             - {name: ready, mountPath: /run/secrets, readOnly: true}
             - {name: tmp, mountPath: /tmp}
+            - {name: postgres-ca, mountPath: /tls, readOnly: true}
       volumes:
         - name: projected
           projected:
@@ -177,3 +184,8 @@ spec:
           emptyDir: {medium: Memory, sizeLimit: 1Mi}
         - name: tmp
           emptyDir: {medium: Memory, sizeLimit: 64Mi}
+        - name: postgres-ca
+          secret:
+            secretName: groschen-postgres-ca-public
+            defaultMode: 0444
+            items: [{key: ca.crt, path: ca.crt}]
