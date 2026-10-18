@@ -24,7 +24,10 @@ def tool(name):
     override = f"GROSCHEN_{name.upper()}"
     found = shutil.which(os.environ.get(override) or name)
     if found is None:
-        raise RuntimeError(f"{name} unavailable: set {override} or add {name} to PATH")
+        reason = f"{name} unavailable: set {override} or add {name} to PATH"
+        if os.environ.get("GROSCHEN_CA_REQUIRE_SCHEMAS") != "1":
+            raise unittest.SkipTest(reason)
+        raise RuntimeError(reason)
     return found
 
 
