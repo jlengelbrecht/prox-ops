@@ -1,0 +1,42 @@
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: groschen-client-dns
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [groschen-api, groschen-worker, groschen-admin]
+  egress:
+    # All three clients retain DNS access. Proxy the queries so Cilium can
+    # learn sandbox.plaid.com's current addresses for the HTTPS rule below.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+          rules:
+            dns:
+              - matchPattern: "*"
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: groschen-plaid-sandbox
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [groschen-api, groschen-worker]
+  egress:
+    - toFQDNs:
+        - matchName: sandbox.plaid.com
+      toPorts:
+        - ports:
+            - {port: "443", protocol: TCP}
