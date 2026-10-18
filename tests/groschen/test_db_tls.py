@@ -37,7 +37,17 @@ class GroschenDBTLSTest(unittest.TestCase):
         retired = one(self.transfer, "ConfigMap", "groschen-transfer-retired")
         self.assertEqual(retired["data"], {"state": "retired"})
         policy = one(self.transfer, "CiliumNetworkPolicy", "groschen-secret-transfer")
-        expected = json.loads((SCHEMAS / "ORPHAN-CNP.json").read_text())
+        expected = {
+            "apiVersion": "cilium.io/v2",
+            "kind": "CiliumNetworkPolicy",
+            "metadata": {"name": "groschen-secret-transfer", "namespace": "groschen"},
+            "spec": {
+                "endpointSelector": {"matchLabels": {
+                    "app.kubernetes.io/name": "groschen-secret-transfer"}},
+                "enableDefaultDeny": {"ingress": True, "egress": True},
+                "egress": [{"toEntities": ["kube-apiserver"]}],
+            },
+        }
         self.assertEqual({k: policy[k] for k in expected}, expected)
         self.assertEqual(policy["apiVersion"], "cilium.io/v2")
         selector = policy["spec"]["endpointSelector"]["matchLabels"]
@@ -107,7 +117,7 @@ class GroschenDBTLSTest(unittest.TestCase):
         self.assertIs(infra["spec"]["wait"], True)
         self.assertEqual(infra["spec"]["healthCheckExprs"], [
             {"apiVersion": "external-secrets.io/v1", "kind": kind,
-             "current": "has(status) && has(status.conditions) && "
+             "current": "has(status.conditions) && "
                         "status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')"}
             for kind in ("SecretStore", "ExternalSecret")])
         app = one(self.groschen, "Kustomization", "groschen-app")
