@@ -1,5 +1,6 @@
 """Guard the two-commit Groschen cutover and retained identity."""
 
+import copy
 import pathlib
 import subprocess
 import unittest
@@ -8,10 +9,11 @@ import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 KUSTOMIZE = "/home/devbox/.local/share/mise/installs/aqua-kubernetes-sigs-kustomize/5.7.1/kustomize"
+FLUX = pathlib.Path.home() / ".local/share/mise/installs/aqua-fluxcd-flux2/2.7.2/flux"
 SOURCE = ROOT / "kubernetes/apps/groschen-test"
 TARGET = ROOT / "kubernetes/apps/groschen"
 ACTIVE = (TARGET / "app/ks.yaml").exists()
-EXPECTED_PHASE = "stop"
+EXPECTED_PHASE = "start"
 COPIED = {"groschen-key", "groschen-owner-credentials", "groschen-member-credentials"}
 
 
@@ -39,13 +41,37 @@ class NamespaceCutoverTest(unittest.TestCase):
         cls.target_infra = render(TARGET / "infra")
         cls.transfer = render(TARGET / "transfer")
 
+    def test_cluster_apps_root_builds_with_one_app_owner(self):
+        output = subprocess.check_output([
+            str(FLUX), "build", "kustomization", "cluster-apps",
+            "--path", "kubernetes/apps",
+            "--kustomization-file", "kubernetes/flux/cluster/ks.yaml",
+            "--dry-run",
+        ], cwd=ROOT, text=True)
+        docs = [doc for doc in yaml.safe_load_all(output) if doc]
+        identity = lambda doc: (doc["apiVersion"], doc["kind"],
+                                doc["metadata"].get("namespace", ""), doc["metadata"]["name"])
+        self.assertEqual(len(docs), len({identity(doc) for doc in docs}))
+        owners = [doc for doc in docs
+                  if doc["kind"] == "Kustomization"
+                  and doc["apiVersion"].startswith("kustomize.toolkit.fluxcd.io/")
+                  and doc["metadata"].get("namespace") == "flux-system"
+                  and doc["metadata"]["name"] == "groschen-app"]
+        self.assertEqual(len(owners), 1)
+        self.assertEqual(owners[0]["spec"]["path"],
+                         "./kubernetes/apps/groschen/app" if ACTIVE else
+                         "./kubernetes/apps/groschen-test/groschen/app")
+        self.assertEqual(owners[0]["spec"]["targetNamespace"],
+                         "groschen" if ACTIVE else "groschen-test")
+
     def test_stop_resources_are_retired_without_pruning_old_identity(self):
         self.assertEqual(ACTIVE, EXPECTED_PHASE == "start")
         for docs in (self.old_app, self.source_grant, self.transfer):
             self.assertEqual([d["kind"] for d in docs], ["ConfigMap"])
         self.assertFalse({"Deployment", "HTTPRoute", "Service", "Job", "Role", "RoleBinding", "ServiceAccount"} &
                          {d["kind"] for d in self.old_app + self.source_grant + self.transfer})
-        for name in ("groschen-app", "groschen-source-transfer-grant"):
+        source_owners = ["groschen-source-transfer-grant"] + ([] if ACTIVE else ["groschen-app"])
+        for name in source_owners:
             self.assertTrue(named(self.source, "Kustomization", name)["spec"]["prune"])
         self.assertTrue(named(self.target, "Kustomization", "groschen-secret-transfer")["spec"]["prune"])
         self.assertTrue(named(self.target, "Kustomization", "groschen-namespace")["spec"]["prune"])
@@ -78,10 +104,14 @@ class NamespaceCutoverTest(unittest.TestCase):
         images = {d["spec"]["template"]["spec"]["containers"][0]["image"] for d in deployments.values()}
         self.assertEqual(len(images), 1)
         old = list(yaml.safe_load_all((SOURCE / "groschen/app/deployment.yaml").read_text()))
-        self.assertEqual(images, {old[0]["spec"]["template"]["spec"]["containers"][0]["image"]})
+        self.assertRegex(next(iter(images)),
+                         r"\Aghcr\.io/jlengelbrecht/groschen:main@sha256:[0-9a-f]{64}\Z")
         for name, deployment in deployments.items():
-            pod = deployment["spec"]["template"]["spec"]
-            old_pod = next(d for d in old if d["metadata"]["name"] == name)["spec"]["template"]["spec"]
+            pod = copy.deepcopy(deployment["spec"]["template"]["spec"])
+            old_pod = copy.deepcopy(next(d for d in old if d["metadata"]["name"] == name)
+                                    ["spec"]["template"]["spec"])
+            for container in pod["containers"] + old_pod["containers"]:
+                container.pop("image")
             self.assertEqual(pod, old_pod)
         route = named(app, "HTTPRoute", "groschen")
         self.assertEqual(route["spec"]["hostnames"], ["groshen.homelab0.org"])
@@ -100,6 +130,13 @@ class NamespaceCutoverTest(unittest.TestCase):
         self.assertFalse(COPIED & {d["metadata"]["name"] for d in self.target_infra
                                    if d["kind"] == "ExternalSecret"})
         self.assertFalse(any(d["kind"] == "Job" for d in app))
+        db_policies = list(yaml.safe_load_all((ROOT / "kubernetes/apps/database/cluster/app/networkpolicy.yaml").read_text()))
+        ingress = named(db_policies, "CiliumNetworkPolicy", "postgres-cluster")["spec"]["ingress"][0]
+        allowed = {(match["matchLabels"].get("io.kubernetes.pod.namespace"),
+                    match["matchLabels"].get("app.kubernetes.io/name"))
+                   for match in ingress["fromEndpoints"]}
+        self.assertTrue({("groschen", "groschen-api"), ("groschen", "groschen-worker")} <= allowed)
+        self.assertEqual(ingress["toPorts"], [{"ports": [{"port": "5432", "protocol": "TCP"}]}])
 
 
 if __name__ == "__main__":

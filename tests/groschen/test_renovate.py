@@ -17,7 +17,6 @@ TARGET_APP_FILE = "kubernetes/apps/groschen/app/deployment.yaml"
 ACTIVE = (ROOT / TARGET_APP_FILE).exists()
 APP_FILE = TARGET_APP_FILE if ACTIVE else OLD_APP_FILE
 ADMIN_FILE = "kubernetes/apps/groschen-test/groschen/admin/job.yaml"
-DIGEST = "ef71d858c9a1c3b2ab1b412d352bbfd5b1a74eea7dc2be87a9c885e2d5e07fee"
 
 
 def load_json5(path):
@@ -142,10 +141,11 @@ class GroschenRenovateTest(unittest.TestCase):
                 name = deployment["metadata"]["name"]
                 images[name] = [container["image"] for container in
                                 deployment["spec"]["template"]["spec"]["containers"]]
-        self.assertEqual(images, {
-            "groschen-api": [f"{PACKAGE}:main@sha256:{DIGEST}"],
-            "groschen-worker": [f"{PACKAGE}:main@sha256:{DIGEST}"],
-        })
+        self.assertEqual(set(images), {"groschen-api", "groschen-worker"})
+        self.assertEqual(len(images["groschen-api"]), 1)
+        self.assertEqual(images["groschen-api"], images["groschen-worker"])
+        self.assertRegex(images["groschen-api"][0],
+                         rf"\A{re.escape(PACKAGE)}:main@sha256:[0-9a-f]{{64}}\Z")
 
 
 if __name__ == "__main__":

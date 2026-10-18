@@ -16,7 +16,8 @@ ACTIVE = (TARGET_APP / "ks.yaml").exists()
 INFRA = TARGET_INFRA if ACTIVE else SOURCE_INFRA
 APP = TARGET_APP if ACTIVE else ROOT / "kubernetes/apps/groschen-test/groschen/app"
 KUBECTL = "/home/devbox/.local/share/mise/installs/aqua-kubernetes-kubectl/1.34.0/kubectl"
-CLIENTS = {"groschen-api", "groschen-worker", "groschen-admin"}
+CLIENTS = {"groschen-api", "groschen-worker"} if ACTIVE else {"groschen-api", "groschen-worker", "groschen-admin"}
+CLIENT_NAMES = ["groschen-api", "groschen-worker"] + ([] if ACTIVE else ["groschen-admin"])
 
 
 def selected(selector, app):
@@ -39,8 +40,7 @@ def assert_network_policy_boundaries(test, policies):
         "podSelector": {}, "policyTypes": ["Ingress", "Egress"]})
     test.assertEqual(by_name["groschen-clients"], {
         "podSelector": {"matchExpressions": [{
-            "key": "app.kubernetes.io/name", "operator": "In", "values": [
-                "groschen-api", "groschen-worker", "groschen-admin"]}]},
+            "key": "app.kubernetes.io/name", "operator": "In", "values": CLIENT_NAMES}]},
         "policyTypes": ["Egress"],
         "egress": [{
             "to": [{
