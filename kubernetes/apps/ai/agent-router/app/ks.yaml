@@ -92,6 +92,14 @@ spec:
   # against a release before it is merged (step 5); failing closed is what
   # turns a renamed object into a red check there instead of a quiet pass.
   patches:
+    # Temporary release pause: take the cold snapshot only after observed zero writers.
+    - patch: |-
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: agent-router
+        spec:
+          replicas: 0
     # The HTTPRoute's deployment values: the hostname external-dns publishes
     # and the Gateway listener it attaches to. The release ships conspicuous
     # placeholders; these are this cluster's. The lists are replaced whole,
