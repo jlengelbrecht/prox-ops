@@ -17,6 +17,7 @@ FAST_WORKFLOW = '.github/workflows/renovate-groschen.yaml'
 
 
 def json5(path):
+    """Parse a repository JSON5 config with Node's expression parser."""
     source = (ROOT / path).read_text()
     expression = 'process.stdout.write(JSON.stringify(require("vm").runInNewContext("("+process.argv[1]+")",{}, {timeout:1000})))'
     return json.loads(subprocess.check_output(['node', '-e', expression, source], text=True))
@@ -45,11 +46,29 @@ const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const load = (path) => import(pathToFileURL(`${base}/dist/${path}`).href);
 const { extractPackageFile } = await load('modules/manager/kubernetes/extract.js');
 const { applyPackageRules } = await load('util/package-rules/index.js');
+const { getManagerConfig } = await load('config/index.js');
+const { getMatchingFiles } = await load('workers/repository/extract/file-match.js');
+const fetchSource = fs.readFileSync(`${base}/dist/workers/repository/process/fetch.js`, 'utf8');
+const disabledStopsLookup = /if \(depConfig\.enabled === false\) \{[\s\S]*?dep\.skipReason = "disabled";[\s\S]*?return Result\.ok\(dep\);/.test(fetchSource);
+const managerConfig = getManagerConfig(input.config, 'kubernetes');
+const matchedFiles = getMatchingFiles(managerConfig, [
+  input.file, 'kubernetes/apps/groschen-test/groschen/app/deployment.yaml',
+  'kubernetes/apps/other/app/deployment.yaml',
+]);
 const extracted = extractPackageFile(input.content, input.file, {});
 const types = ['digest', 'pinDigest', 'major', 'minor', 'patch', 'pin',
   'rollback', 'bump', 'replacement'];
 const results = [];
+const preLookup = [];
 for (const [index, dep] of extracted.deps.entries()) {
+  const effective = await applyPackageRules({
+    ...input.config, ...dep, packageFile: input.file, manager: 'kubernetes',
+    packageName: dep.packageName ?? dep.depName,
+  }, 'pre-lookup');
+  preLookup.push({index, datasource: dep.datasource, depName: dep.depName,
+    currentValue: dep.currentValue, hasUpdateType: 'updateType' in dep,
+    enabled: effective.enabled !== false && !effective.skipReason,
+    skipReason: effective.skipReason ?? null});
   for (const updateType of types) {
     const effective = await applyPackageRules({
       ...input.config, ...dep, packageFile: input.file, manager: 'kubernetes',
@@ -74,7 +93,8 @@ const alternate = await applyPackageRules({
   packageName: input.image, packageFile: input.file, manager: 'kubernetes',
   currentValue: 'v1.0.0', updateType: 'digest',
 });
-process.stdout.write(JSON.stringify({deps: extracted.deps, results,
+process.stdout.write(JSON.stringify({matchedFiles, deps: extracted.deps, preLookup,
+  disabledStopsLookup, results,
   alternateEnabled: alternate.enabled !== false && !alternate.skipReason}));
 '''
     payload = {'config': config, 'content': (ROOT / TARGET).read_text(),
@@ -88,6 +108,7 @@ process.stdout.write(JSON.stringify({deps: extracted.deps, results,
 class GroschenPassTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        """Load both passes and inspect the pinned Renovate implementation."""
         cls.fast = json5(FAST_CONFIG)
         cls.general = json5('.github/renovate.json5')
         cls.workflow_text = (ROOT / FAST_WORKFLOW).read_text()
@@ -95,11 +116,17 @@ class GroschenPassTest(unittest.TestCase):
         cls.actual = extracted_policy(cls.fast)
 
     def test_general_pass_cannot_write_groschen_branch(self):
+        """Keep the general pass away from the dedicated deployment."""
         self.assertIn(TARGET, self.general['ignorePaths'])
         self.assertNotIn(TARGET, self.fast.get('ignorePaths', []))
         self.assertEqual(self.fast['requireConfig'], 'ignored')
 
+    def test_kubernetes_manager_discovers_only_production_deployment(self):
+        """Discover the production file with Renovate's manager matcher."""
+        self.assertEqual(self.actual['matchedFiles'], [TARGET])
+
     def test_fast_pass_uses_its_own_unlimited_repo_queue(self):
+        """Verify isolated queue limits and dashboard behavior."""
         self.assertEqual(self.fast['includePaths'], [TARGET])
         self.assertEqual(self.fast['enabledManagers'], ['kubernetes'])
         self.assertFalse(self.fast['dependencyDashboard'])
@@ -113,12 +140,22 @@ class GroschenPassTest(unittest.TestCase):
             self.assertNotIn('vulnerabilityAlerts', rule)
 
     def test_only_main_digest_of_production_image_is_enabled(self):
+        """Check pre-lookup eligibility and post-lookup update decisions."""
         deps = self.actual['deps']
         self.assertEqual(len(deps), 6)
         self.assertEqual([dep['datasource'] for dep in deps].count('kubernetes-api'), 2)
         self.assertEqual([dep['depName'] for dep in deps].count(IMAGE), 2)
         self.assertEqual([dep['depName'] for dep in deps].count('busybox'), 2)
         self.assertFalse(self.actual['alternateEnabled'])
+        self.assertTrue(self.actual['disabledStopsLookup'])
+        for result in self.actual['preLookup']:
+            target = (result['datasource'] == 'docker' and
+                      result['depName'] == IMAGE and result['currentValue'] == 'main')
+            with self.subTest(index=result['index'], stage='pre-lookup'):
+                self.assertFalse(result['hasUpdateType'])
+                self.assertEqual(result['enabled'], target)
+                if not target:
+                    self.assertEqual(result['skipReason'], 'package-rules')
         for result in self.actual['results']:
             allowed = (result['datasource'] == 'docker' and
                        result['depName'] == IMAGE and result['currentValue'] == 'main' and
@@ -137,6 +174,7 @@ class GroschenPassTest(unittest.TestCase):
                     self.assertEqual(result['minimumReleaseAge'], '0')
 
     def test_unrelated_and_retired_workloads_are_excluded(self):
+        """Keep test and unrelated deployments outside the dedicated pass."""
         self.assertEqual(self.fast['includePaths'], [TARGET])
         for path in ('kubernetes/apps/groschen-test/groschen/app/deployment.yaml',
                      'kubernetes/apps/groschen-test/groschen/admin/job.yaml',
@@ -144,6 +182,7 @@ class GroschenPassTest(unittest.TestCase):
             self.assertNotIn(path, self.fast['includePaths'])
 
     def test_paired_production_images_remain_pinned(self):
+        """Require matching pinned main images in API and worker deployments."""
         documents = list(yaml.safe_load_all((ROOT / TARGET).read_text()))
         deployments = [doc for doc in documents if doc and doc.get('kind') == 'Deployment']
         self.assertEqual({doc['metadata']['name'] for doc in deployments},
@@ -157,6 +196,7 @@ class GroschenPassTest(unittest.TestCase):
                          deployments[1]['spec']['template']['spec']['containers'][0]['image'])
 
     def test_schedule_auth_and_writer_serialization(self):
+        """Verify the five-minute trigger, token source, and single writer."""
         events = self.workflow.get('on', self.workflow.get(True))
         self.assertIn('workflow_dispatch', events)
         self.assertEqual(events['schedule'], [{'cron': '*/5 * * * *'}])
