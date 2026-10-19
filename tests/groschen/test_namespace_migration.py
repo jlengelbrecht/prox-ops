@@ -29,8 +29,8 @@ def named(docs, kind, name):
     return matches[0]
 
 
-def assert_tls_only_pod_delta(test, old_pod, new_pod):
-    """The target may add only certificate verification and its public CA mount."""
+def assert_expected_pod_delta(test, old_pod, new_pod):
+    """The target adds database TLS and corrects the production origin."""
     old_pod = copy.deepcopy(old_pod)
     new_pod = copy.deepcopy(new_pod)
     test.assertEqual(len(old_pod["containers"]), len(new_pod["containers"]))
@@ -44,6 +44,13 @@ def assert_tls_only_pod_delta(test, old_pod, new_pod):
         test.assertEqual(new_dsn["value"], old_dsn.replace(
             "sslmode=disable", "sslmode=verify-full sslrootcert=/tls/ca.crt"))
         new_dsn["value"] = old_dsn
+        old_origin = next(item["value"] for item in old_container["env"]
+                          if item["name"] == "APP_ORIGIN")
+        new_origin = next(item for item in new_container["env"]
+                          if item["name"] == "APP_ORIGIN")
+        test.assertEqual(old_origin, "https://groshen.homelab0.org")
+        test.assertEqual(new_origin["value"], "https://groschen.homelab0.org")
+        new_origin["value"] = old_origin
         ca_mount = {"name": "postgres-ca", "mountPath": "/tls", "readOnly": True}
         test.assertEqual(new_container["volumeMounts"].count(ca_mount), 1)
         new_container["volumeMounts"].remove(ca_mount)
@@ -144,10 +151,13 @@ class NamespaceCutoverTest(unittest.TestCase):
                     "groschen-db-credentials,groschen-postgres-ca-public"})
             self.assertEqual(old_deployment["metadata"]["annotations"], {
                 "secret.reloader.stakater.com/reload": "groschen-db-credentials"})
-            assert_tls_only_pod_delta(self, old_deployment["spec"]["template"]["spec"],
+            assert_expected_pod_delta(self, old_deployment["spec"]["template"]["spec"],
                                       deployment["spec"]["template"]["spec"])
         route = named(app, "HTTPRoute", "groschen")
-        self.assertEqual(route["spec"]["hostnames"], ["groshen.homelab0.org"])
+        self.assertEqual(route["spec"]["hostnames"], ["groschen.homelab0.org"])
+        self.assertEqual(route["metadata"]["annotations"]
+                         ["external-dns.alpha.kubernetes.io/hostname"],
+                         "groschen.homelab0.org")
         self.assertEqual(route["spec"]["parentRefs"][0]["name"], "envoy-internal")
         self.assertEqual(route["spec"]["rules"][0]["backendRefs"][0]["name"], "groschen-api")
         self.assertEqual(named(app, "Service", "groschen-api")["spec"]["selector"],
@@ -181,7 +191,7 @@ class NamespaceCutoverTest(unittest.TestCase):
         changed_digest = "ghcr.io/jlengelbrecht/groschen:main@sha256:" + "a" * 64
         old_pod["containers"][0]["image"] = changed_digest
         new_pod["containers"][0]["image"] = changed_digest
-        assert_tls_only_pod_delta(self, old_pod, new_pod)
+        assert_expected_pod_delta(self, old_pod, new_pod)
 
 
 if __name__ == "__main__":
