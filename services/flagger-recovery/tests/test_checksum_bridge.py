@@ -239,15 +239,19 @@ class LiveReconcileTests(unittest.TestCase):
         self.assertIn(HEALTHY_CHECKSUM, logs.output[0])
         self.assertEqual(self.store.list_documents(KIND_PROPOSAL), [])
         # The document reconcile walked really is the hook Flagger sent: its
-        # replayed key is the name of the ConfigMap sitting in the cluster.
+        # generated ConfigMap name must match the one recorded in the cluster.
         event = WebhookEvent(metadata={}, **{name: self.pending[name]
                                              for name in ("hook", "name", "namespace", "phase", "checksum")})
         recorded_name = only_configmap(
             "live-post-rollout.json", "flagger-recovery/phase", "Succeeded"
         )["metadata"]["name"]
-        self.assertTrue(recorded_name.startswith("flagger-recovery-event-"))
+        generated_name = event.to_document(
+            status=STATUS_ATTRIBUTION_PENDING, received_at="2026-09-07T00:00:00Z"
+        ).to_configmap()["metadata"]["name"]
+        self.assertEqual(generated_name, recorded_name)
+        self.assertTrue(generated_name.startswith("flagger-recovery-event-"))
         self.assertRegex(event.key, r"^[0-9a-f]{32}$")
-        self.assertEqual(event.key, recorded_name.removeprefix("flagger-recovery-event-"))
+        self.assertEqual(event.key, generated_name.removeprefix("flagger-recovery-event-"))
         # Explicitly synthetic checksums retain the live payload's hex shape;
         # distinct payloads must not collapse onto the same event identity.
         first = dataclasses.replace(event, checksum="0000000000")
