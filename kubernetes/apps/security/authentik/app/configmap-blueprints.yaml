@@ -552,6 +552,8 @@ data:
       labels:
         blueprints.goauthentik.io/description: "Homelab applications with SSO"
     entries:
+      # Every application except Paperclip requires the exclusion policy below;
+      # !KeyOf resolves the account's actual PK after the user entry.
       # Direct OIDC Applications
       - model: authentik_core.application
         id: app-openwebui
@@ -561,7 +563,7 @@ data:
           name: Open WebUI
           slug: open-webui
           group: AI
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "Open WebUI"]]
       - model: authentik_core.application
         id: app-bookstack
@@ -571,7 +573,7 @@ data:
           name: BookStack
           slug: book-stack
           group: Tools
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "BookStack"]]
       - model: authentik_core.application
         id: app-litellm
@@ -581,7 +583,7 @@ data:
           name: LiteLLM
           slug: lite-llm
           group: AI
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "LiteLLM"]]
       - model: authentik_core.application
         id: app-toolhive
@@ -591,7 +593,7 @@ data:
           name: ToolHive
           slug: toolhive
           group: AI
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "ToolHive"]]
       - model: authentik_core.application
         id: app-toolhive-mcp-gateway
@@ -601,7 +603,7 @@ data:
           name: ToolHive MCP Gateway
           slug: toolhive-mcp-gateway
           group: AI
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "ToolHive MCP Gateway"]]
       # Forward Auth Applications
       - model: authentik_core.application
@@ -612,7 +614,7 @@ data:
           name: n8n
           slug: n8n
           group: Tools
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "n8n"]]
       - model: authentik_core.application
         id: app-wizarr
@@ -622,7 +624,7 @@ data:
           name: Wizarr
           slug: wizarr
           group: Media
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Wizarr"]]
       - model: authentik_core.application
         id: app-glycemicgpt
@@ -632,11 +634,19 @@ data:
           name: GlycemicGPT
           slug: glycemicgpt
           group: Health
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "GlycemicGPT"]]
+      # LightRAG exists only on the live instance. Update its mode in place;
+      # skip both entries on a restore until that application exists.
+      - model: authentik_core.application
+        id: app-light-rag
+        conditions: [!Find [authentik_core.application, [slug, light-rag]]]
+        identifiers: {slug: light-rag}
+        attrs:
+          policy_engine_mode: all
       # Hermes dashboard: the application is bound to the built-in
       # "authentik Admins" group, so only owner/admin accounts can reach the
-      # agent. policy_engine_mode any + a single group binding = members only.
+      # agent. Both the admin binding and mandatory exclusion must pass.
       - model: authentik_core.application
         id: app-hermes
         identifiers:
@@ -645,7 +655,7 @@ data:
           name: Hermes
           slug: hermes
           group: AI
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "Hermes"]]
       - model: authentik_policies.policybinding
         id: binding-hermes-admins
@@ -665,7 +675,7 @@ data:
           name: Hindsight
           slug: hindsight
           group: AI
-          policy_engine_mode: any
+          policy_engine_mode: all
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Hindsight"]]
       - model: authentik_policies.policybinding
         id: binding-hindsight-admins
@@ -675,8 +685,226 @@ data:
         attrs:
           group: !Find [authentik_core.group, [name, "authentik Admins"]]
           enabled: true
-      # Paperclip UI: same owner/admin-only binding as Hindsight, enforced by
-      # the forward-auth SecurityPolicy on its route.
+      # Browser-test identity. Keep this in applications.yaml so the user,
+      # identity classification and Paperclip grant apply in file order.
+      # state: created preserves admin rotation, deactivation and MFA changes.
+      - model: authentik_core.user
+        id: user-ai-browser-test
+        state: created
+        identifiers:
+          path: agents/browser-test/ai-browser-test
+        attrs:
+          username: ai-browser-test
+          name: AI Browser Test
+          type: internal
+          is_active: true
+          groups: []
+          attributes:
+            goauthentik.io/user/can-change-username: false
+            goauthentik.io/user/can-change-email: false
+            prox-ops/agent-browser-identity: ABS-1
+          password: !Env AUTHENTIK_AI_BROWSER_TEST_INITIAL_PASSWORD
+      # This classification is intentionally separate from application grants.
+      # A create-only group keeps its original member if the username changes;
+      # a later blueprint run must not replace that member via username lookup.
+      - model: authentik_core.group
+        id: group-ai-browser-test-identity
+        state: created
+        identifiers:
+          name: ai-browser-test-identity
+        attrs:
+          name: ai-browser-test-identity
+          is_superuser: false
+          parents: []
+          roles: []
+          users:
+            - !KeyOf user-ai-browser-test
+      - model: authentik_core.group
+        id: group-ai-browser-test-paperclip
+        identifiers:
+          name: ai-browser-test-paperclip
+        attrs:
+          name: ai-browser-test-paperclip
+          is_superuser: false
+          parents: []
+          roles: []
+          users:
+            - !KeyOf user-ai-browser-test
+
+      # Match the database account, even if an administrator renames it or
+      # removes its identity-group membership. The path locates that same
+      # create-only account on later blueprint applications. Altering that
+      # path is a privileged identity migration requiring a reviewed change.
+      # An account attribute also keeps the old account restricted if its path
+      # alone is altered before reconciliation. Username and identity group
+      # cover a newly created but unqualified account until inventory audit.
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-deny-ungranted-ai-browser-test
+        identifiers:
+          name: deny-ungranted-ai-browser-test
+        attrs:
+          expression: !Format
+            - |
+              user = request.user
+              return not (
+                  user.pk == %s
+                  or user.username == "ai-browser-test"
+                  or user.attributes.get("prox-ops/agent-browser-identity") == "ABS-1"
+                  or user.groups.filter(name="ai-browser-test-identity").exists()
+              )
+            - !KeyOf user-ai-browser-test
+
+      # Direct local flow: deny after identification and before password;
+      # policy errors fail closed. No source or enrollment is offered.
+      - model: authentik_flows.flow
+        id: flow-ai-browser-test
+        identifiers:
+          slug: ai-browser-test-authentication
+        attrs:
+          name: AI Browser Test Authentication
+          title: AI Browser Test
+          designation: authentication
+          authentication: require_unauthenticated
+          policy_engine_mode: all
+      - model: authentik_stages_identification.identificationstage
+        id: stage-ai-browser-test-identification
+        identifiers:
+          name: ai-browser-test-identification
+        attrs:
+          user_fields: [username]
+          sources: []
+          pretend_user_exists: true
+      - model: authentik_stages_deny.denystage
+        id: stage-ai-browser-test-deny
+        identifiers:
+          name: ai-browser-test-deny
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-ai-browser-test-deny-unapproved
+        identifiers:
+          name: ai-browser-test-deny-unapproved
+        attrs:
+          expression: |
+            plan = request.context.get("flow_plan")
+            user = plan.context.get("pending_user") if plan else None
+            return not (
+                user and user.pk and user.username == "ai-browser-test"
+                and user.is_active and not user.is_superuser
+                and user.groups.filter(name="ai-browser-test-identity").exists()
+            )
+      - model: authentik_stages_password.passwordstage
+        id: stage-ai-browser-test-password
+        identifiers:
+          name: ai-browser-test-password
+        attrs:
+          backends:
+            - authentik.core.auth.InbuiltBackend
+          failed_attempts_before_cancel: 5
+      - model: authentik_stages_authenticator_validate.authenticatorvalidatestage
+        id: stage-ai-browser-test-totp
+        identifiers:
+          name: ai-browser-test-totp
+        attrs:
+          not_configured_action: deny
+          device_classes: [totp]
+          configuration_stages: []
+          last_auth_threshold: seconds=0
+      - model: authentik_stages_user_login.userloginstage
+        id: stage-ai-browser-test-login
+        identifiers:
+          name: ai-browser-test-login
+        attrs:
+          session_duration: seconds=0
+          remember_me_offset: seconds=0
+          remember_device: seconds=0
+          terminate_other_sessions: true
+      - model: authentik_flows.flowstagebinding
+        identifiers: {target: !KeyOf flow-ai-browser-test, stage: !KeyOf stage-ai-browser-test-identification, order: 10}
+      - model: authentik_flows.flowstagebinding
+        id: binding-ai-browser-test-deny
+        identifiers:
+          target: !KeyOf flow-ai-browser-test
+          stage: !KeyOf stage-ai-browser-test-deny
+          order: 15
+        attrs: {evaluate_on_plan: false, re_evaluate_policies: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !KeyOf binding-ai-browser-test-deny, order: 0}
+        attrs: {policy: !KeyOf policy-ai-browser-test-deny-unapproved, failure_result: true}
+      - model: authentik_flows.flowstagebinding
+        identifiers: {target: !KeyOf flow-ai-browser-test, stage: !KeyOf stage-ai-browser-test-password, order: 20}
+      - model: authentik_flows.flowstagebinding
+        identifiers: {target: !KeyOf flow-ai-browser-test, stage: !KeyOf stage-ai-browser-test-totp, order: 30}
+      - model: authentik_flows.flowstagebinding
+        identifiers: {target: !KeyOf flow-ai-browser-test, stage: !KeyOf stage-ai-browser-test-login, order: 100}
+
+      # Default/Brand login is for humans. Even if its password stage is
+      # skipped, deny the anchored identity at the live User Login binding.
+      # The agent must first sign in through its dedicated local flow.
+      - model: authentik_flows.flowstagebinding
+        id: binding-ai-browser-test-default-login
+        identifiers: {target: !Find [authentik_flows.flow, [slug, default-authentication-flow]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-authentication-login]], order: 100}
+        attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: all}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !KeyOf binding-ai-browser-test-default-login, order: 0}
+        attrs: {policy: !KeyOf policy-ai-browser-test-source-login, failure_result: false}
+
+      # The same fail-closed User Login policy guards the default flow, both
+      # built-in source flows, custom flows and initial setup. UID email_link
+      # or another source link cannot mint a session for this identity.
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-ai-browser-test-source-login
+        identifiers:
+          name: ai-browser-test-source-login
+        attrs:
+          expression: !Format
+            - |
+              plan = request.context.get("flow_plan")
+              user = plan.context.get("pending_user") if plan else None
+              return bool(
+                  user and user.pk and user.pk != %s
+                  and user.username != "ai-browser-test"
+                  and user.attributes.get("prox-ops/agent-browser-identity") != "ABS-1"
+                  and not user.groups.filter(name="ai-browser-test-identity").exists()
+              )
+            - !KeyOf user-ai-browser-test
+      - model: authentik_flows.flowstagebinding
+        id: binding-ai-browser-test-source-auth-login
+        identifiers: {target: !Find [authentik_flows.flow, [slug, default-source-authentication]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-source-authentication-login]], order: 0}
+        attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: all}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !KeyOf binding-ai-browser-test-source-auth-login, order: 0}
+        attrs: {policy: !KeyOf policy-ai-browser-test-source-login, failure_result: false}
+      - model: authentik_flows.flowstagebinding
+        id: binding-ai-browser-test-source-enroll-login
+        identifiers: {target: !Find [authentik_flows.flow, [slug, default-source-enrollment]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-source-enrollment-login]], order: 2}
+        attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: all}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !KeyOf binding-ai-browser-test-source-enroll-login, order: 0}
+        attrs: {policy: !KeyOf policy-ai-browser-test-source-login, failure_result: false}
+
+      # Deny the agent at both live custom flows' User Login stages.
+      - model: authentik_flows.flowstagebinding
+        id: binding-ai-browser-test-bookstack-login
+        identifiers: {target: !Find [authentik_flows.flow, [slug, bookstack-authentication]], stage: !Find [authentik_stages_user_login.userloginstage, [name, bookstack-user-login]], order: 10}
+        attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: all}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !KeyOf binding-ai-browser-test-bookstack-login, order: 0}
+        attrs: {policy: !KeyOf policy-ai-browser-test-source-login, failure_result: false}
+      - model: authentik_flows.flowstagebinding
+        id: binding-ai-browser-test-glycemicgpt-login
+        identifiers: {target: !Find [authentik_flows.flow, [slug, glycemicgpt-authentication-flow]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-authentication-login]], order: 30}
+        attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: all}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !KeyOf binding-ai-browser-test-glycemicgpt-login, order: 0}
+        attrs: {policy: !KeyOf policy-ai-browser-test-source-login, failure_result: false}
+      # Initial setup is currently unreachable; guard User Login if it reopens.
+      - model: authentik_flows.flowstagebinding
+        id: binding-ai-browser-test-initial-setup-login
+        identifiers: {target: !Find [authentik_flows.flow, [slug, initial-setup]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-authentication-login]], order: 100}
+        attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: all}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !KeyOf binding-ai-browser-test-initial-setup-login, order: 0}
+        attrs: {policy: !KeyOf policy-ai-browser-test-source-login, failure_result: false}
+      # Owner and agent grants are separate; Paperclip still has its own login.
       - model: authentik_core.application
         id: app-paperclip
         identifiers:
@@ -696,8 +924,16 @@ data:
         attrs:
           group: !Find [authentik_core.group, [name, "authentik Admins"]]
           enabled: true
-      # Obsidian desktop: same owner/admin-only binding as Paperclip, enforced
-      # by the forward-auth SecurityPolicy on its route.
+      - model: authentik_policies.policybinding
+        id: binding-paperclip-ai-browser-test
+        identifiers:
+          target: !Find [authentik_core.application, [slug, paperclip]]
+          order: 10
+        attrs:
+          group: !KeyOf group-ai-browser-test-paperclip
+          enabled: true
+      # Obsidian desktop remains owner/admin-only, enforced by the
+      # forward-auth SecurityPolicy on its route.
       - model: authentik_core.application
         id: app-obsidian
         identifiers:
@@ -706,7 +942,7 @@ data:
           name: Obsidian
           slug: obsidian
           group: Tools
-          policy_engine_mode: any
+          policy_engine_mode: all
           meta_launch_url: https://obsidian.homelab0.org
           provider: !Find [authentik_providers_proxy.proxyprovider, [name, "Obsidian"]]
       - model: authentik_policies.policybinding
@@ -717,6 +953,44 @@ data:
         attrs:
           group: !Find [authentik_core.group, [name, "authentik Admins"]]
           enabled: true
+      # Exclude the agent from every ungranted app; future grants need review.
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, open-webui]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, book-stack]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, lite-llm]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, toolhive]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, toolhive-mcp-gateway]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, n8n]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, wizarr]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, glycemicgpt]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        conditions: [!Find [authentik_core.application, [slug, light-rag]]]
+        identifiers: {target: !Find [authentik_core.application, [slug, light-rag]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, hermes]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, hindsight]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, obsidian]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
       # OpenClaw retirement tombstones, co-located so authentik applies them in file
       # order inside one transaction: the application goes before the provider it
       # pointed at. Keep them - authentik never prunes an object whose entry vanishes.
