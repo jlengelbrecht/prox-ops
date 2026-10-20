@@ -843,9 +843,6 @@ data:
         id: binding-ai-browser-test-default-login
         identifiers: {target: !Find [authentik_flows.flow, [slug, default-authentication-flow]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-authentication-login]], order: 100}
         attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: all}
-      - model: authentik_policies.policybinding
-        identifiers: {target: !KeyOf binding-ai-browser-test-default-login, order: 0}
-        attrs: {policy: !KeyOf policy-ai-browser-test-source-login, failure_result: false}
 
       # The same fail-closed User Login policy guards the default flow, both
       # built-in source flows, custom flows and initial setup. UID email_link
@@ -866,6 +863,9 @@ data:
                   and not user.groups.filter(name="ai-browser-test-identity").exists()
               )
             - !KeyOf user-ai-browser-test
+      - model: authentik_policies.policybinding
+        identifiers: {target: !KeyOf binding-ai-browser-test-default-login, order: 0}
+        attrs: {policy: !KeyOf policy-ai-browser-test-source-login, failure_result: false}
       - model: authentik_flows.flowstagebinding
         id: binding-ai-browser-test-source-auth-login
         identifiers: {target: !Find [authentik_flows.flow, [slug, default-source-authentication]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-source-authentication-login]], order: 0}

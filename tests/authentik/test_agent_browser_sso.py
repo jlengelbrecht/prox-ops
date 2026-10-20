@@ -97,6 +97,25 @@ def check_security(config, external_secret, helm, route, policy):
     apps = yaml.load(config["data"]["applications.yaml"], Loader=BlueprintLoader)["entries"]
     source = yaml.load(config["data"]["source-entra.yaml"], Loader=BlueprintLoader)["entries"]
     sources = yaml.load(config["data"]["sources.yaml"], Loader=BlueprintLoader)["entries"]
+
+    def keyof_targets(node):
+        if isinstance(node, dict):
+            if node.get("tag") == "KeyOf":
+                yield node["value"]
+            else:
+                for value in node.values():
+                    yield from keyof_targets(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from keyof_targets(value)
+
+    seen_ids = set()
+    for app_entry in apps:
+        for target in keyof_targets(app_entry):
+            require(target in seen_ids, f"!KeyOf {target} must reference an earlier applications.yaml entry")
+        if app_entry.get("id"):
+            seen_ids.add(app_entry["id"])
+
     user = entry(apps, "authentik_core.user", "user-ai-browser-test")
     identity = entry(apps, "authentik_core.group", "group-ai-browser-test-identity")
     group = entry(apps, "authentik_core.group", "group-ai-browser-test-paperclip")
@@ -284,6 +303,19 @@ class AgentBrowserSSOTests(unittest.TestCase):
 
     def test_security_contract(self):
         self.assertEqual([], self.check())
+
+    def test_forward_keyof_reference_is_rejected(self):
+        mutated = copy.deepcopy(self.config)
+        blueprint = yaml.load(mutated["data"]["applications.yaml"], Loader=BlueprintLoader)
+        entries = blueprint["entries"]
+        source_guard = entry(entries, "authentik_policies_expression.expressionpolicy", "policy-ai-browser-test-source-login")
+        default_binding = next(e for e in entries if e.get("model") == "authentik_policies.policybinding"
+                               and e.get("identifiers", {}).get("target") == reference("KeyOf", "binding-ai-browser-test-default-login"))
+        entries.remove(source_guard)
+        entries.insert(entries.index(default_binding) + 1, source_guard)
+        mutated["data"]["applications.yaml"] = yaml.safe_dump(blueprint)
+        self.assertIn("!KeyOf policy-ai-browser-test-source-login must reference an earlier applications.yaml entry",
+                      self.check(config=mutated))
 
     def test_missing_factor_or_restriction_is_rejected(self):
         self.assert_mutations_detected([
