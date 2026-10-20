@@ -261,3 +261,11 @@ spec:
                   env:
                     - name: HOOK_PLANE_URL
                       value: https://agent-router.homelab0.org
+    # Explicit pause: keep the rc.3 base pinned while draining the only writer.
+    - patch: |-
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: agent-router
+        spec:
+          replicas: 0
