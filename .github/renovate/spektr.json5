@@ -1,0 +1,55 @@
+{
+  // Self-hosted config for the dedicated Spektr workflow. Do not inherit the
+  // general pass's queue, soak windows, or package rules.
+  requireConfig: 'ignored',
+  onboarding: false,
+  dependencyDashboard: false,
+  enabledManagers: ['custom.regex'],
+  includePaths: ['kubernetes/apps/ai/agent-router/app/ocirepository.yaml'],
+  customManagers: [
+    {
+      customType: 'regex',
+      description: 'Update the Spektr OCI artifact tag and digest together',
+      managerFilePatterns: ['/^kubernetes/apps/ai/agent-router/app/ocirepository\\.yaml$/'],
+      matchStrings: [
+        '# renovate: datasource=docker depName=ghcr\\.io/jlengelbrecht/agent-router-base\\n\\s*ref:\\n\\s*tag:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+\\S*)\\n(?:\\s*#.*\\n)*\\s*digest:\\s*(?<currentDigest>sha256:[a-f0-9]{64})',
+      ],
+      datasourceTemplate: 'docker',
+      depNameTemplate: 'ghcr.io/jlengelbrecht/agent-router-base',
+      versioningTemplate: 'semver',
+    },
+  ],
+  prConcurrentLimit: 0,
+  branchConcurrentLimit: 0,
+  prHourlyLimit: 0,
+  commitHourlyLimit: 0,
+  // Renovate checks reported GitHub check runs before merging. A check that
+  // has not registered yet is not visible to Renovate.
+  platformAutomerge: false,
+  packageRules: [
+    {
+      description: 'Exclude every dependency unless explicitly allowed below',
+      matchManagers: ['custom.regex'],
+      enabled: false,
+      automerge: false,
+    },
+    {
+      description: 'Allow only the versioned Spektr OCI artifact',
+      matchManagers: ['custom.regex'],
+      matchDatasources: ['docker'],
+      matchPackageNames: ['ghcr.io/jlengelbrecht/agent-router-base'],
+      matchFileNames: ['kubernetes/apps/ai/agent-router/app/ocirepository.yaml'],
+      enabled: true,
+      allowedVersions: '/^v\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/',
+      ignoreUnstable: false,
+      respectLatest: false,
+      pinDigests: true,
+      automerge: true,
+      automergeType: 'pr',
+      ignoreTests: false,
+      platformAutomerge: false,
+      minimumReleaseAge: '0',
+      labels: ['renovate', 'spektr'],
+    },
+  ],
+}

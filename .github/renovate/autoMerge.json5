@@ -466,63 +466,6 @@
         "**Talos CATTLE**: Major/minor version requires manual approval. Full VM rebuild via Terraform."
       ]
     },
-    // Spektr deployment base (the ai-control-plane release artifact). A bump of
-    // the OCIRepository tag and digest moves the agent-router Deployment,
-    // Service and HTTPRoute in one step. Spektr is an upstream product we
-    // consume, and it no longer tells us before a release needs changes on
-    // our side. Every Spektr PR therefore runs the Spektr Upgrade Check
-    // (.github/workflows/spektr-upgrade-check.yaml): that release's validators
-    // against our catalog, plus a render of its base with our ks.yaml patches.
-    //
-    // Policy (owner, 2026-09-25): PATCH releases auto-merge with no soak once
-    // every check, the upgrade check included, is green (ignoreTests stays at
-    // its default, false). MINOR and MAJOR releases never auto-merge: the rule
-    // after this one sends them to a manual merge after the check is green and
-    // the release notes are read. A digest change under an existing tag (a
-    // re-tagged release) stays manual too.
-    //
-    // This entry must sit after the default patch/minor rules: packageRules
-    // merge key by key, and the "0" below is what overrides their 3- and
-    // 5-day soaks. It matches every update type (Renovate refuses a rule that
-    // sets both ignoreUnstable and matchUpdateTypes), so the two rules after
-    // it narrow it.
-    //
-    // Only the base is tracked, never the router image: the base pins the
-    // image by digest. The tag and digest are read together by the custom
-    // manager in customManagers.json5 (the flux manager reads only the digest).
-    //
-    // Rollback: set the OCIRepository tag and digest back to the previous
-    // release. The router's journal is snapshotted every 4 hours by the
-    // CronJob in kubernetes/apps/ai/agent-router-snapshots (restore runbook:
-    // .claude/.ai-docs/troubleshooting/AGENT_ROUTER_JOURNAL_SNAPSHOTS.md,
-    // kept locally).
-    {
-      "description": "Spektr (agent-router-base) final releases: no soak; patch auto-merges once the Spektr Upgrade Check is green",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/jlengelbrecht/agent-router-base"],
-      "ignoreUnstable": true,
-      "automerge": true,
-      "automergeType": "pr",
-      "minimumReleaseAge": "0",
-      "labels": ["renovate", "spektr"]
-    },
-    {
-      "description": "Spektr: a digest change under an existing tag (a re-tagged release) stays manual",
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["kubernetes/apps/ai/agent-router/app/ocirepository.yaml"],
-      "matchUpdateTypes": ["digest"],
-      "automerge": false
-    },
-    {
-      "description": "Spektr: minor and major releases stay manual - merge after the Spektr Upgrade Check is green and the release notes are read",
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["kubernetes/apps/ai/agent-router/app/ocirepository.yaml"],
-      "matchUpdateTypes": ["minor", "major"],
-      "automerge": false,
-      "prBodyNotes": [
-        "**Spektr minor/major release**: manual merge. Merge only when the `Spektr Upgrade Check` is green, and read the release notes for anything our deployment has to change (env, credentials, catalog, wiring). Rollback is re-pinning the previous tag and digest."
-      ]
-    },
     // Paperclip: last in the list so no earlier patch/minor rule can auto-merge it.
     // No minimumReleaseAge: GHCR tags carry no release timestamp, so an age gate
     // would block every PR under timestamp-required; the manual merge is the gate.
