@@ -79,6 +79,8 @@ const {filterVersions} = await load('workers/repository/process/lookup/filter.js
 const {resolveUpdateDigests} = await load('workers/repository/process/lookup/digest.js');
 const {stripNoopUpdates} = await load('workers/repository/process/lookup/utils.js');
 const {getMatchingFiles} = await load('workers/repository/extract/file-match.js');
+const {setCount, isLimitReached} = await load('workers/global/limits.js');
+const {sortBranches} = await load('workers/repository/process/sort.js');
 const {api: semver} = await load('modules/versioning/semver/index.js');
 const mgr = input.config.customManagers.find(m => m.description?.includes('Spektr deployment base'));
 const files = getMatchingFiles(mgr, [input.file, 'kubernetes/apps/other/app/ocirepository.yaml']);
@@ -123,10 +125,33 @@ const digestExtract = extractPackageFile(digestOnly, input.file, mgr)?.deps ?? [
 const foreign = await applyPackageRules({...input.config, manager:'custom.regex',
   packageFile:input.file, datasource:'docker', depName:'ghcr.io/other/image',
   packageName:'ghcr.io/other/image', currentValue:'v1.0.0', updateType:'patch'});
+// Match the normal run's full shared queue. These are the engine's counters and
+// limiter, not a reimplementation of the configured limits in the test.
+const spektrBranch = {upgrades:[rules.patch]};
+const foreignBranch = {upgrades:[foreign]};
+const limits = {};
+for (const [scenario, counts, key] of [
+  ['branches', [10, 0, 0], 'Branches'],
+  ['concurrentPRs', [0, 5, 0], 'ConcurrentPRs'],
+  ['hourlyPRs', [0, 0, 2], 'Branches'],
+  ['fullQueue', [10, 5, 2], 'Branches'],
+]) {
+  for (const [name, count] of ['Branches', 'ConcurrentPRs', 'HourlyPRs'].map(
+    (name, i) => [name, counts[i]])) setCount(name, count);
+  limits[scenario] = {
+    spektr:isLimitReached(key, spektrBranch),
+    foreign:isLimitReached(key, foreignBranch),
+  };
+}
+const order = [
+  {prTitle:'Other patch', updateType:'patch', prPriority:foreign.prPriority},
+  {prTitle:'Spektr patch', updateType:'patch', prPriority:rules.patch.prPriority},
+];
+sortBranches(order);
 process.stdout.write(JSON.stringify({files,deps,effective,rules,eligible,paired,digestOnly,
   oldDigest, nextDigest, foreign, pairedExtract, digestExtract,
   digestUpdates:digestResult.updates, unchangedDigestUpdates:unchangedDigestResult.updates,
-  digestRule}));
+  digestRule, limits, order:order.map(branch => branch.prTitle)}));
 '''
     payload = {'config': config, 'content': content, 'file': TARGET}
     result = subprocess.check_output(
@@ -237,6 +262,13 @@ class SpektrPassTest(unittest.TestCase):
         check = (ROOT / '.github/workflows/spektr-upgrade-check.yaml').read_text()
         self.assertIn('name: Spektr Upgrade Check', check)
         self.assertIn('- kubernetes/apps/ai/agent-router/app/ocirepository.yaml', check)
+
+    def test_full_queue_spektr_capacity(self):
+        self.assertEqual(self.actual['limits'], {
+            scenario: {'spektr': False, 'foreign': True}
+            for scenario in ('branches', 'concurrentPRs', 'hourlyPRs', 'fullQueue')
+        })
+        self.assertEqual(self.actual['order'], ['Spektr patch', 'Other patch'])
 
 
 if __name__ == '__main__':
