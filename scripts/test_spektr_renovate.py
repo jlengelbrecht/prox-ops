@@ -116,10 +116,16 @@ await resolveUpdateDigests(digestConfig, unchangedDigestResult,
   {releases:[{version:dep.currentValue, newDigest:oldDigest}]});
 unchangedDigestResult.updates = stripNoopUpdates(digestConfig, unchangedDigestResult.updates);
 const digestRule = await applyPackageRules({...digestConfig, updateType:'digest'});
-const replacePair = (value, digest) => input.content.replace(dep.replaceString,
-  dep.replaceString.replace(dep.currentValue, value).replace(dep.currentDigest, digest));
+// Pin only the transition fixture to an old tag. Extraction above still checks
+// the real deployment manifest, which can advance independently of this test.
+const fixtureContent = input.content.replace(dep.replaceString,
+  dep.replaceString.replace(dep.currentValue, 'v0.8.1-rc.1'));
+const fixtureDep = extractPackageFile(fixtureContent, input.file, mgr)?.deps[0];
+const replacePair = (value, digest) => fixtureContent.replace(fixtureDep.replaceString,
+  fixtureDep.replaceString.replace(fixtureDep.currentValue, value)
+    .replace(fixtureDep.currentDigest, digest));
 const paired = replacePair('v0.8.1-rc.2', nextDigest);
-const digestOnly = replacePair(dep.currentValue, nextDigest);
+const digestOnly = replacePair(fixtureDep.currentValue, nextDigest);
 const pairedExtract = extractPackageFile(paired, input.file, mgr)?.deps ?? [];
 const digestExtract = extractPackageFile(digestOnly, input.file, mgr)?.deps ?? [];
 const foreign = await applyPackageRules({...input.config, manager:'custom.regex',
@@ -149,6 +155,7 @@ const order = [
 ];
 sortBranches(order);
 process.stdout.write(JSON.stringify({files,deps,effective,rules,eligible,paired,digestOnly,
+  fixtureValue:fixtureDep.currentValue,
   oldDigest, nextDigest, foreign, pairedExtract, digestExtract,
   digestUpdates:digestResult.updates, unchangedDigestUpdates:unchangedDigestResult.updates,
   digestRule, limits, order:order.map(branch => branch.prTitle)}));
@@ -179,7 +186,8 @@ class SpektrPassTest(unittest.TestCase):
         self.assertEqual(len(self.actual['deps']), 1)
         dep = self.actual['deps'][0]
         self.assertEqual(dep['depName'], IMAGE)
-        self.assertEqual(dep['currentValue'], 'v0.8.1-rc.1')
+        self.assertEqual(dep['currentValue'],
+                         yaml.safe_load(self.content)['spec']['ref']['tag'])
         self.assertRegex(dep['currentDigest'], r'^sha256:[a-f0-9]{64}$')
         self.assertIsNot(self.actual['foreign'].get('enabled'), False)
         self.assertTrue(self.actual['foreign']['automerge'])
@@ -214,6 +222,7 @@ class SpektrPassTest(unittest.TestCase):
 
     def test_paired_replacement(self):
         actual = self.actual
+        self.assertEqual(actual['fixtureValue'], 'v0.8.1-rc.1')
         self.assertIn('tag: v0.8.1-rc.2', actual['paired'])
         self.assertIn('digest: ' + actual['nextDigest'], actual['paired'])
         self.assertNotIn(actual['oldDigest'], actual['paired'])
