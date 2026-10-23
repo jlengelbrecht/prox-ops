@@ -1,9 +1,10 @@
-"""Bounded regression for the isolated Spektr Renovate pass (44.154.0)."""
+"""Bounded shared-hourly Spektr Renovate regression (44.154.0)."""
 
 import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -11,8 +12,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = 'kubernetes/apps/ai/agent-router/app/ocirepository.yaml'
 IMAGE = 'ghcr.io/jlengelbrecht/agent-router-base'
-CONFIG = '.github/renovate/spektr.json5'
-WORKFLOW = '.github/workflows/renovate-spektr.yaml'
+CONFIG = '.github/renovate.json5'
+WORKFLOW = '.github/workflows/renovate.yaml'
+REMOVED = ('.github/workflows/renovate-spektr.yaml',
+           '.github/workflows/renovate-groschen.yaml',
+           '.github/renovate/spektr.json5',
+           '.github/renovate/groschen.json5')
 
 
 def json5(path):
@@ -33,6 +38,34 @@ def renovate_module():
     raise AssertionError('Renovate 44.154.0 must be installed (set RENOVATE_MODULE_DIR)')
 
 
+def shared_config():
+    """Resolve the four checked-out presets in extends order with Renovate's merger."""
+    script = r'''
+import fs from 'node:fs';
+import vm from 'node:vm';
+import {pathToFileURL} from 'node:url';
+const base = process.argv[1];
+const root = process.argv[2];
+const {mergeChildConfig} = await import(pathToFileURL(`${base}/dist/config/utils.js`).href);
+const {migrateConfig} = await import(pathToFileURL(`${base}/dist/config/migration.js`).href);
+const parse = path => vm.runInNewContext(`(${fs.readFileSync(path, 'utf8')})`, {}, {timeout:1000});
+const config = parse(`${root}/.github/renovate.json5`);
+let merged = {};
+for (const ref of config.extends) {
+  if (!ref.startsWith('github>jlengelbrecht/prox-ops//')) continue;
+  const path = ref.split('//')[1];
+  merged = mergeChildConfig(merged, parse(`${root}/${path}`));
+}
+const localRefs = config.extends.filter(ref => ref.startsWith('github>jlengelbrecht/prox-ops//'));
+merged = mergeChildConfig(merged, {...config, extends:config.extends.filter(ref => !localRefs.includes(ref))});
+process.stdout.write(JSON.stringify({config:merged, validationConfig:migrateConfig(merged).migratedConfig, localRefs}));
+'''
+    result = subprocess.check_output(
+        ['node', '--input-type=module', '-e', script, str(renovate_module()), str(ROOT)],
+        text=True, timeout=15)
+    return json.loads(result)
+
+
 def renovate_decisions(config, content):
     script = r'''
 import fs from 'node:fs';
@@ -47,7 +80,7 @@ const {resolveUpdateDigests} = await load('workers/repository/process/lookup/dig
 const {stripNoopUpdates} = await load('workers/repository/process/lookup/utils.js');
 const {getMatchingFiles} = await load('workers/repository/extract/file-match.js');
 const {api: semver} = await load('modules/versioning/semver/index.js');
-const mgr = input.config.customManagers[0];
+const mgr = input.config.customManagers.find(m => m.description?.includes('Spektr deployment base'));
 const files = getMatchingFiles(mgr, [input.file, 'kubernetes/apps/other/app/ocirepository.yaml']);
 const deps = extractPackageFile(input.content, input.file, mgr)?.deps ?? [];
 const dep = deps[0];
@@ -105,31 +138,28 @@ process.stdout.write(JSON.stringify({files,deps,effective,rules,eligible,paired,
 class SpektrPassTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.fast = json5(CONFIG)
-        cls.general = json5('.github/renovate.json5')
+        cls.general = json5(CONFIG)
+        cls.resolved = shared_config()
         cls.content = (ROOT / TARGET).read_text()
-        cls.actual = renovate_decisions(cls.fast, cls.content)
+        cls.actual = renovate_decisions(cls.resolved['config'], cls.content)
         cls.workflow = yaml.safe_load((ROOT / WORKFLOW).read_text())
 
-    def test_isolated_extraction_and_general_separation(self):
-        self.assertEqual(self.fast['requireConfig'], 'ignored')
-        self.assertEqual(self.fast['enabledManagers'], ['custom.regex'])
-        self.assertEqual(self.fast['includePaths'], [TARGET])
-        self.assertIn(TARGET, self.general['ignorePaths'])
-        self.assertIn('kubernetes/apps/groschen/app/deployment.yaml', self.general['ignorePaths'])
-        shared_rules = json5('.github/renovate/autoMerge.json5')['packageRules']
-        self.assertTrue(any('Paperclip' in rule.get('description', '')
-                            for rule in shared_rules))
-        self.assertFalse(any('Spektr' in rule.get('description', '')
-                             for rule in shared_rules))
+    def test_shared_extraction_and_policy_order(self):
+        self.assertNotIn(TARGET, self.general['ignorePaths'])
+        self.assertEqual(len(self.resolved['localRefs']), 4)
+        rules = self.resolved['config']['packageRules']
+        self.assertLess(next(i for i, r in enumerate(rules) if 'Global safety net' in r.get('description', '')),
+                        next(i for i, r in enumerate(rules) if 'Auto-merge Spektr' in r.get('description', '')))
         self.assertEqual(self.actual['files'], [TARGET])
         self.assertEqual(len(self.actual['deps']), 1)
         dep = self.actual['deps'][0]
         self.assertEqual(dep['depName'], IMAGE)
         self.assertEqual(dep['currentValue'], 'v0.8.1-rc.1')
         self.assertRegex(dep['currentDigest'], r'^sha256:[a-f0-9]{64}$')
-        self.assertFalse(self.actual['foreign'].get('automerge', False))
-        self.assertFalse(self.actual['foreign']['enabled'])
+        self.assertIsNot(self.actual['foreign'].get('enabled'), False)
+        self.assertTrue(self.actual['foreign']['automerge'])
+        self.assertEqual(self.actual['foreign']['minimumReleaseAge'], '3 days')
+        self.assertNotIn('spektr', self.actual['foreign'].get('addLabels', []))
 
     def test_version_policy_and_ci(self):
         effective = self.actual['effective']
@@ -138,13 +168,13 @@ class SpektrPassTest(unittest.TestCase):
         self.assertEqual(effective['minimumReleaseAge'], '0')
         self.assertTrue(effective['pinDigests'])
         self.assertTrue(effective['enabled'])
-        self.assertFalse(self.fast['platformAutomerge'])
+        self.assertTrue(self.resolved['config']['platformAutomerge'])
         for kind, rule in self.actual['rules'].items():
             with self.subTest(kind=kind):
                 self.assertTrue(rule['automerge'])
                 self.assertEqual(rule['automergeType'], 'pr')
                 self.assertFalse(rule['ignoreTests'])
-                self.assertFalse(rule['platformAutomerge'])
+                self.assertTrue(rule['platformAutomerge'])
         eligible = self.actual['eligible']
         self.assertIn('v0.9.0-alpha.1', eligible['v0.8.0'])
         self.assertIn('v0.9.0-beta.1', eligible['v0.8.0'])
@@ -181,30 +211,29 @@ class SpektrPassTest(unittest.TestCase):
 
     def test_pinned_config_validator(self):
         validator = renovate_module() / 'dist' / 'config-validator.js'
-        completed = subprocess.run(
-            ['node', str(validator), '--strict', CONFIG],
-            cwd=ROOT, text=True, capture_output=True, timeout=20)
+        with tempfile.TemporaryDirectory() as directory:
+            flattened = Path(directory) / 'renovate.json'
+            flattened.write_text(json.dumps(self.resolved['validationConfig']))
+            completed = subprocess.run(
+                ['node', str(validator), '--strict', '--no-global', str(flattened)],
+                cwd=ROOT, text=True, capture_output=True, timeout=20)
         self.assertEqual(completed.returncode, 0,
                          completed.stdout + completed.stderr)
 
-    def test_five_minute_workflow_and_queue(self):
+    def test_shared_hourly_workflow_and_queue(self):
         events = self.workflow.get('on', self.workflow.get(True))
-        self.assertEqual(events['schedule'], [{'cron': '*/5 * * * *'}])
+        self.assertEqual(events['schedule'], [{'cron': '0 * * * *'}])
         self.assertIn('workflow_dispatch', events)
-        self.assertEqual(self.workflow['concurrency'],
-                         {'group': 'renovate-spektr', 'cancel-in-progress': False})
-        self.assertEqual(self.workflow['permissions'], {'contents': 'read'})
-        for key in ('prConcurrentLimit', 'branchConcurrentLimit', 'prHourlyLimit',
-                    'commitHourlyLimit'):
-            self.assertEqual(self.fast[key], 0)
+        self.assertEqual(self.general['prConcurrentLimit'], 5)
+        self.assertEqual(self.general['branchConcurrentLimit'], 10)
+        self.assertEqual(self.general['prHourlyLimit'], 2)
+        self.assertEqual(self.general['schedule'], ['at any time'])
+        for path in REMOVED:
+            self.assertFalse((ROOT / path).exists(), path)
         steps = self.workflow['jobs']['renovate']['steps']
         self.assertEqual(steps[-1]['with']['configurationFile'], CONFIG)
-        self.assertEqual(steps[-1]['with']['renovate-version'], '44.154.0')
         self.assertIn('steps.app-token.outputs.token', steps[-1]['with']['token'])
         self.assertIn('secrets.GHCR_READ_PAT', steps[-1]['env']['RENOVATE_HOST_RULES'])
-        self.assertIn('secrets.BOT_APP_ID', str(steps[0]['with']))
-        self.assertIn('secrets.BOT_APP_PRIVATE_KEY', str(steps[0]['with']))
-        self.assertIs(steps[1]['with']['persist-credentials'], False)
         check = (ROOT / '.github/workflows/spektr-upgrade-check.yaml').read_text()
         self.assertIn('name: Spektr Upgrade Check', check)
         self.assertIn('- kubernetes/apps/ai/agent-router/app/ocirepository.yaml', check)
