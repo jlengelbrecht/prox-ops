@@ -29,6 +29,8 @@ const { getManagerConfig } = await load('config/index.js');
 const { getMatchingFiles } = await load('workers/repository/extract/file-match.js');
 const { resolveUpdateDigests } = await load('workers/repository/process/lookup/digest.js');
 const { stripNoopUpdates } = await load('workers/repository/process/lookup/utils.js');
+const { setCount, isLimitReached } = await load('workers/global/limits.js');
+const { sortBranches } = await load('workers/repository/process/sort.js');
 const fetchSource = fs.readFileSync(`${base}/dist/workers/repository/process/fetch.js`, 'utf8');
 const disabledStopsLookup = /if \(depConfig\.enabled === false\) \{[\s\S]*?dep\.skipReason = "disabled";[\s\S]*?return Result\.ok\(dep\);/.test(fetchSource);
 const managerConfig = getManagerConfig(input.config, 'kubernetes');
@@ -66,7 +68,11 @@ for (const [index, dep] of extracted.deps.entries()) {
       pinDigests: effective.pinDigests ?? null,
       groupName: effective.groupName ?? null,
       groupSlug: effective.groupSlug ?? null,
-      minimumReleaseAge: effective.minimumReleaseAge ?? null});
+      minimumReleaseAge: effective.minimumReleaseAge ?? null,
+      branchConcurrentLimit: effective.branchConcurrentLimit ?? null,
+      prConcurrentLimit: effective.prConcurrentLimit ?? null,
+      prHourlyLimit: effective.prHourlyLimit ?? null,
+      prPriority: effective.prPriority ?? null});
   }
 }
 const alternate = await applyPackageRules({
@@ -99,10 +105,40 @@ for (const [packageFile, depName, currentValue] of [
   isolation.push({packageFile, depName, currentValue,
     enabled:policy.enabled !== false, automerge:policy.automerge ?? false});
 }
+const groschen = results.filter(result => result.datasource === 'docker' &&
+  result.depName === input.image && result.currentValue === 'main' &&
+  result.updateType === 'digest');
+const foreign = await applyPackageRules({...input.config, manager:'kubernetes',
+  packageFile:'kubernetes/apps/other/app/deployment.yaml', datasource:'docker',
+  depName:'ghcr.io/other/image', packageName:'ghcr.io/other/image',
+  currentValue:'v1.0.0', updateType:'patch'});
+// A single grouped API + worker branch is checked against the engine's counters.
+const groupedBranch = {upgrades:groschen};
+const foreignBranch = {upgrades:[foreign]};
+const limits = {};
+for (const [scenario, counts, key] of [
+  ['branches', [10, 0, 0], 'Branches'],
+  ['concurrentPRs', [0, 5, 0], 'ConcurrentPRs'],
+  ['hourlyPRs', [0, 0, 2], 'Branches'],
+  ['fullQueue', [10, 5, 2], 'Branches'],
+]) {
+  for (const [name, count] of ['Branches', 'ConcurrentPRs', 'HourlyPRs'].map(
+    (name, i) => [name, counts[i]])) setCount(name, count);
+  limits[scenario] = {
+    groschen:isLimitReached(key, groupedBranch),
+    foreign:isLimitReached(key, foreignBranch),
+  };
+}
+const order = [
+  {prTitle:'Other patch', updateType:'patch', prPriority:foreign.prPriority},
+  {prTitle:'Groschen digest', updateType:'digest', prPriority:groschen[0].prPriority},
+];
+sortBranches(order);
 process.stdout.write(JSON.stringify({matchedFiles, deps: extracted.deps, preLookup,
   disabledStopsLookup, results,
   alternateEnabled: alternate.enabled !== false && !alternate.skipReason,
-  alternateAutomerge: alternate.automerge ?? false, isolation, digestUpdates}));
+  alternateAutomerge: alternate.automerge ?? false, isolation, digestUpdates,
+  groupedCount:groschen.length, foreign, limits, order:order.map(branch => branch.prTitle)}));
 '''
     payload = {'config': config, 'content': (ROOT / TARGET).read_text(),
                'file': TARGET, 'image': IMAGE}
@@ -177,6 +213,18 @@ class GroschenPassTest(unittest.TestCase):
                     self.assertEqual(result['groupName'], 'Groschen image')
                     self.assertEqual(result['groupSlug'], 'groschen-image')
                     self.assertEqual(result['minimumReleaseAge'], '0')
+                    self.assertEqual(result['branchConcurrentLimit'], 0)
+                    self.assertEqual(result['prConcurrentLimit'], 0)
+                    self.assertEqual(result['prHourlyLimit'], 0)
+                    self.assertEqual(result['prPriority'], 10)
+
+    def test_full_queue_grouped_groschen_capacity(self):
+        self.assertEqual(self.actual['groupedCount'], 2)
+        self.assertEqual(self.actual['limits'], {
+            scenario: {'groschen': False, 'foreign': True}
+            for scenario in ('branches', 'concurrentPRs', 'hourlyPRs', 'fullQueue')
+        })
+        self.assertEqual(self.actual['order'], ['Groschen digest', 'Other patch'])
 
     def test_unrelated_and_retired_workloads_are_isolated(self):
         for result in self.actual['isolation']:
