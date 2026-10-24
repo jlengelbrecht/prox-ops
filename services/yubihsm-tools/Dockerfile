@@ -6,7 +6,7 @@
 # PKCS#11 module is at /usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so and
 # the OpenSSL provider is at /usr/lib/x86_64-linux-gnu/ossl-modules/pkcs11.so;
 # the signer uses neither (it calls yubihsm-shell directly).
-FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM docker.io/library/debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/jlengelbrecht/prox-ops" \
       org.opencontainers.image.revision="${VCS_REF}" \
