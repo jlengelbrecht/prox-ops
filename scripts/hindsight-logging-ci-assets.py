@@ -20,8 +20,8 @@ ALLOY_URL = f'https://github.com/grafana/alloy/releases/download/{ALLOY_VERSION}
 # The chart the workflow pulls, pinned by its grafana/helm-charts release tag and
 # alloy-<version>.tgz digest; grouped with the HelmRelease chart version.
 # renovate: datasource=github-release-attachments depName=alloy packageName=grafana/helm-charts
-ALLOY_CHART_TAG = 'alloy-1.13.0'
-ALLOY_CHART_ARCHIVE = 'bfdda6cb770c3526444897b9cb5a4fb33711c608d364d9e7857ec699a2fff4fb'
+ALLOY_CHART_TAG = 'alloy-1.13.1'
+ALLOY_CHART_ARCHIVE = '6c2b7df23e39438bb11f1e1fcf19eb9eb7c8bfeab7d49b7c975b6212abd0f99a'
 ALLOY_CHART_VERSION = ALLOY_CHART_TAG.removeprefix('alloy-')
 MAX_MEMBER = 200_000_000
 # Alloy bundles every component into one binary, several times Promtail's size.
