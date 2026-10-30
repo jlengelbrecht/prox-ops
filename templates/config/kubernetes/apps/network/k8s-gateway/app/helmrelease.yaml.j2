@@ -15,6 +15,9 @@ spec:
     service:
       type: LoadBalancer
       port: 53
+      # Serve DNS over TCP too. Cilium 1.19+ LB-IPAM drops traffic to
+      # ports the Service does not publish, and large or truncated answers need TCP.
+      useTcp: true
       annotations:
         lbipam.cilium.io/ips: "#{ cluster_dns_gateway_addr }#"
       externalTrafficPolicy: Cluster
