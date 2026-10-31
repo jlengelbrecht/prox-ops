@@ -1,7 +1,7 @@
 ---
 # Comprehensive Media Stack Dashboard
-# Monitors Plex, Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd, Cleanuparr, Newtarr, Maintainerr, Wizarr
-# Note: Cleanuparr, Newtarr, Maintainerr, and Wizarr show pod status only (no Prometheus metrics available)
+# Monitors Plex, Sonarr, Radarr, Prowlarr, qBittorrent, SABnzbd, Cleanuparr, Maintainerr, Wizarr
+# Note: Cleanuparr, Maintainerr, and Wizarr show pod status only (no Prometheus metrics available)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -27,7 +27,7 @@ data:
           }
         ]
       },
-      "description": "Comprehensive media stack monitoring - Plex, *arr apps, downloaders, automation tools, VPN status. Note: Cleanuparr, Newtarr, Maintainerr, Wizarr show pod status only (no metrics exporters available).",
+      "description": "Comprehensive media stack monitoring - Plex, *arr apps, downloaders, automation tools, VPN status. Note: Cleanuparr, Maintainerr, Wizarr show pod status only (no metrics exporters available).",
       "editable": true,
       "fiscalYearStartMonth": 0,
       "graphTooltip": 1,
@@ -185,26 +185,6 @@ data:
           "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
           "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"cleanuparr.*\",phase=\"Running\"})", "legendFormat": "Cleanuparr", "refId": "A"}],
           "title": "Cleanuparr",
-          "type": "stat"
-        },
-        {
-          "datasource": "Prometheus",
-          "description": "Newtarr pod status",
-          "fieldConfig": {
-            "defaults": {
-              "color": {"mode": "thresholds"},
-              "mappings": [
-                {"options": {"0": {"color": "red", "index": 1, "text": "Down"}}, "type": "value"},
-                {"options": {"1": {"color": "green", "index": 0, "text": "Running"}}, "type": "value"}
-              ],
-              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
-            }
-          },
-          "gridPos": {"h": 3, "w": 4, "x": 4, "y": 4},
-          "id": 8,
-          "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value"},
-          "targets": [{"expr": "max(kube_pod_status_phase{namespace=\"media\",pod=~\"newtarr.*\",phase=\"Running\"})", "legendFormat": "Newtarr", "refId": "A"}],
-          "title": "Newtarr",
           "type": "stat"
         },
         {
@@ -794,7 +774,7 @@ data:
       ],
       "refresh": "1m",
       "schemaVersion": 38,
-      "tags": ["media", "plex", "sonarr", "radarr", "prowlarr", "qbittorrent", "sabnzbd", "cleanuparr", "newtarr", "maintainerr", "wizarr", "vpn"],
+      "tags": ["media", "plex", "sonarr", "radarr", "prowlarr", "qbittorrent", "sabnzbd", "cleanuparr", "maintainerr", "wizarr", "vpn"],
       "templating": {"list": []},
       "time": {"from": "now-6h", "to": "now"},
       "timepicker": {},
