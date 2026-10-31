@@ -1,0 +1,70 @@
+---
+# VoiceStudio on the internal gateway only (no envoy-external route, no
+# Cloudflare record).
+#   /                       -> UI + API, gated by Authentik forward auth
+#                              (securitypolicy.yaml), then VoiceStudio's own
+#                              API-key login
+#   /outpost.goauthentik.io -> Authentik login/callback flow
+# In-cluster automation (FileFlows) calls the voicestudio Service directly
+# with a Bearer key and never passes through this gateway.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: voicestudio
+  namespace: ai
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: voicestudio.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - voicestudio.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            add:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              # SAMEORIGIN, not DENY: the UI previews media in same-origin frames.
+              - name: X-Frame-Options
+                value: "SAMEORIGIN"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+      backendRefs:
+        - name: voicestudio
+          port: 3900
+---
+# Authentik outpost route for the VoiceStudio host (forward-auth login/callback
+# flow). No SecurityPolicy here (it would loop); the cross-namespace
+# backendRef is allowed by ReferenceGrant allow-ai-namespace-extauth
+# (kubernetes/apps/security/authentik/app/referencegrant-ai.yaml).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: voicestudio-outpost
+  namespace: ai
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - voicestudio.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /outpost.goauthentik.io/
+      backendRefs:
+        - name: authentik-server
+          namespace: security
+          port: 80

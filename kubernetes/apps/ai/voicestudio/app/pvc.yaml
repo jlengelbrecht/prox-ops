@@ -1,0 +1,20 @@
+---
+# Models (Hugging Face cache), projects and dub working files.
+# Sized for the engine downloads plus a few feature-length projects.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: voicestudio-data
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: voicestudio
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 100Gi
