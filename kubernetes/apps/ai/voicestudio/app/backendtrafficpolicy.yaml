@@ -1,0 +1,23 @@
+---
+# Video uploads, long dub jobs and the UI's WebSockets (job progress,
+# dictation) outlive the gateway's default timeouts. Same shape as
+# paperclip/app/backendtrafficpolicy.yaml.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: voicestudio
+  namespace: ai
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: voicestudio
+  timeout:
+    http:
+      # No request timeout: uploads and WebSocket sessions can run long
+      requestTimeout: 0s
+      connectionIdleTimeout: 3600s
+  tcpKeepalive:
+    probes: 3
+    idleTime: 60s
+    interval: 30s

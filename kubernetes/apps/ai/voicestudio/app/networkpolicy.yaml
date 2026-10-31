@@ -1,0 +1,60 @@
+---
+# VoiceStudio network policy.
+# - Ingress: envoy-internal gateway (UI/API) and FileFlows (dub automation).
+# - Egress: DNS, LiteLLM (OpenAI-compatible translation), HTTPS to the
+#   internet for Hugging Face model downloads and web translation engines.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: voicestudio
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: voicestudio
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: media
+            app.kubernetes.io/name: fileflows
+      toPorts:
+        - ports:
+            - port: "3900"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
+    # Hugging Face (models, incl. its CDN) and web translation engines.
+    # toEntities:world rather than toFQDNs, same workaround as
+    # voice-bridge/app/networkpolicy.yaml (DNS proxy redirect not applied to
+    # endpoints with external-envoy-proxy + transparent DNS mode).
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

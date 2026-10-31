@@ -1,0 +1,15 @@
+---
+# EPIC-047: VoiceStudio (https://github.com/debpalash/VoiceStudio), CPU first.
+# UI on voicestudio.homelab0.org (envoy-internal, Authentik forward auth);
+# in-cluster callers use the voicestudio Service with a Bearer key.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ./secret.sops.yaml
+  - ./pvc.yaml
+  - ./helmrelease.yaml
+  - ./httproute.yaml
+  - ./securitypolicy.yaml
+  - ./backendtrafficpolicy.yaml
+  - ./networkpolicy.yaml
