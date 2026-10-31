@@ -1,0 +1,23 @@
+---
+# The job only talks to the Talos API (apid, :50000) on the control-plane
+# nodes. The NFS mount is made by the kubelet on the host, outside the pod's
+# network, and the endpoints are IPs, so there is no DNS rule.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: etcd-snapshots
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: etcd-snapshots
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    - toEntities:
+        - kube-apiserver
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "50000"
+              protocol: TCP
