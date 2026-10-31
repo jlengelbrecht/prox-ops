@@ -69,6 +69,20 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
+    # Authentik OIDC via the issuer hostname. In-cluster DNS answers
+    # authentik.homelab0.org with the envoy-internal VIP, and Cilium translates
+    # that VIP to the gateway pods (LB port 443, pod port 10443), so the
+    # traffic never matches a world rule. envoy-external stays closed.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP
     # Authentik OIDC (in security namespace)
     - toEndpoints:
         - matchLabels:
