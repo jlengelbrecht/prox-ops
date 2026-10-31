@@ -8,7 +8,7 @@ spec:
     spec:
       chart: rook-ceph
       # renovate: datasource=helm registryUrl=https://charts.rook.io/release
-      version: v1.15.9
+      version: v1.16.9
       sourceRef:
         kind: HelmRepository
         name: rook-ceph
@@ -45,10 +45,10 @@ spec:
       enableCephfsDriver: true
       enableGrpcMetrics: true
 
-      # Group snapshots stay off: csi-snapshotter v8.0.1 (Rook v1.15.9) only speaks
-      # v1alpha1 VolumeGroupSnapshot APIs, which the snapshot-controller v8.6 CRDs no
-      # longer serve. With the feature on, the sidecar's informer never syncs and it
-      # stops creating any VolumeSnapshots. Nothing here uses group snapshots.
+      # Group snapshots stay off: nothing here uses them. Rook v1.15's csi-snapshotter
+      # v8.0.1 used the v1alpha1 VolumeGroupSnapshot API, which the snapshot-controller
+      # v8.6 CRDs no longer serve, and the sidecar stopped creating any VolumeSnapshots
+      # with the feature on. Re-test before enabling it.
       enableVolumeGroupSnapshot: false
 
       # CSI provisioner replicas (reduced for homelab)
