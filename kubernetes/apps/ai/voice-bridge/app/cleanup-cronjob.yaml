@@ -17,10 +17,23 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      # Give up within the hour instead of waiting on a volume for weeks.
+      activeDeadlineSeconds: 3600
+      backoffLimit: 2
       template:
         spec:
           restartPolicy: OnFailure
           automountServiceAccountToken: false
+          # voice-bridge-recordings is ReadWriteOnce (ceph-block) and the
+          # voice-bridge pod keeps it attached, so the job has to run on
+          # the same node or the volume never attaches.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/controller: voice-bridge
+                  topologyKey: kubernetes.io/hostname
           containers:
             - name: cleanup
               image: busybox:1.38
