@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/name: network-attachment
     app.kubernetes.io/component: dmz-vlan
 spec:
+  # Pod addresses start above .150. Cilium LB-IPAM hands out .100-.150 on this
+  # VLAN, and host-local IPAM does not know about those VIPs.
   config: |
     {
       "cniVersion": "0.3.1",
@@ -17,7 +19,7 @@ spec:
       "ipam": {
         "type": "host-local",
         "subnet": "10.20.81.0/24",
-        "rangeStart": "10.20.81.100",
+        "rangeStart": "10.20.81.151",
         "rangeEnd": "10.20.81.200",
         "gateway": "10.20.81.1"
       }
