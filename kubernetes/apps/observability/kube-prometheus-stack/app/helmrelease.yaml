@@ -296,21 +296,10 @@ spec:
           labels:
             app: alertmanager
 
-      # AlertManager routing configuration
-      # Minimal config - configure receivers via AlertManager UI
-      config:
-        global:
-          resolve_timeout: 5m
-
-        route:
-          receiver: 'null'
-          group_by: ['alertname']
-          group_wait: 10s
-          group_interval: 10s
-          repeat_interval: 1h
-
-        receivers:
-          - name: 'null'
+        # Routing and receivers live in the alertmanager-config Secret,
+        # rendered from 1Password by alertmanager-externalsecret.yaml.
+        useExistingSecret: true
+        configSecret: alertmanager-config
 
     # Prometheus Operator configuration
     prometheusOperator:
