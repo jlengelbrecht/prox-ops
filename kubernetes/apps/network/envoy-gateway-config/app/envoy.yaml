@@ -24,6 +24,10 @@ spec:
                           - network
                   topologyKey: kubernetes.io/hostname
         container:
+          # Envoy Gateway 1.9.3 defaults to distroless-v1.39.5, whose CA bundle still
+          # trusts the compromised eMudhra intermediates. Drop this pin once the
+          # Envoy Gateway default is v1.39.6 or later.
+          image: docker.io/envoyproxy/envoy:distroless-v1.39.6@sha256:1cac8b3a2f72d5a0918f54d7b49e68aae0b0ba325c2d50c8a9a3fff7a4d1f994
           resources:
             requests:
               cpu: 100m
