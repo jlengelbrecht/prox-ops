@@ -14,6 +14,8 @@ spec:
         name: bjw-s
         namespace: ai
   interval: 1h
+  # The image is ~5.8 GB; a cold node pull outlasts Helm's 5m default.
+  timeout: 30m
   install:
     remediation:
       retries: 3
@@ -48,6 +50,14 @@ spec:
                   secretKeyRef:
                     name: voicestudio-api
                     key: OMNIVOICE_API_KEY
+              # Gated pyannote diarization models (speaker detection for
+              # multi-voice dubs). Shared read token from the model-cache
+              # ExternalSecret (1Password item HUGGINGFACE_TOKEN).
+              HF_TOKEN:
+                valueFrom:
+                  secretKeyRef:
+                    name: huggingface-token
+                    key: HF_TOKEN
               OMNIVOICE_DATA_DIR: /app/omnivoice_data
               HF_HOME: /app/omnivoice_data/huggingface
               PYTHONPATH: /app/backend
