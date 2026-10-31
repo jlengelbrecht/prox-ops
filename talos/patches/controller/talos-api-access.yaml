@@ -1,0 +1,10 @@
+# Lets pods in the etcd-backup namespace authenticate to the Talos API with the
+# os:etcd:backup role, for the scheduled etcd snapshot CronJob.
+machine:
+  features:
+    kubernetesTalosAPIAccess:
+      enabled: true
+      allowedRoles:
+        - os:etcd:backup
+      allowedKubernetesNamespaces:
+        - etcd-backup
