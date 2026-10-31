@@ -10,6 +10,9 @@ spec:
   commonMetadata:
     labels:
       app.kubernetes.io/name: *app
+  dependsOn:
+    - name: external-secrets-operator
+      namespace: flux-system
   interval: 1h
   path: ./kubernetes/apps/ai/voicestudio/app
   prune: true
