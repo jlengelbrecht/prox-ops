@@ -346,7 +346,7 @@ spec:
       create: true
       rules:
         alertmanager: true
-        etcd: false  # Disabled - Talos runs etcd on host, metrics not exposed
+        etcd: true
         configReloaders: true
         general: true
         k8s: true
@@ -377,6 +377,12 @@ spec:
         create: true
         createAggregateClusterRoles: true
 
-    # Disable etcd monitoring - Talos runs etcd on host, metrics not exposed to Kubernetes
+    # etcd runs on the Talos controllers with plain-HTTP metrics on :2381
+    # (listen-metrics-urls in talos/patches/controller/cluster.yaml). The
+    # chart creates a selector-less Service with these endpoints.
     kubeEtcd:
-      enabled: false
+      enabled: true
+      endpoints:
+        - 10.20.67.1
+        - 10.20.67.2
+        - 10.20.67.3
