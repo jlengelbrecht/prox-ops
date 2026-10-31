@@ -38,15 +38,6 @@ spec:
         - ports:
             - port: "7878"
               protocol: TCP
-    # Allow from Newtarr (automated media hunting - ElfHosted fork)
-    - fromEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: media
-            app.kubernetes.io/name: newtarr
-      toPorts:
-        - ports:
-            - port: "7878"
-              protocol: TCP
     # Allow from Maintainerr (library maintenance)
     - fromEndpoints:
         - matchLabels:
