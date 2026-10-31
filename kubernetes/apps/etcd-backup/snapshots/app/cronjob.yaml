@@ -59,6 +59,10 @@ spec:
               args:
                 - --endpoints
                 - 10.20.67.1,10.20.67.2,10.20.67.3
+                # talosctl needs exactly one target node for a snapshot.
+                # Any etcd member has the full data set.
+                - --nodes
+                - 10.20.67.1
                 - etcd
                 - snapshot
                 - /work/etcd.snapshot
