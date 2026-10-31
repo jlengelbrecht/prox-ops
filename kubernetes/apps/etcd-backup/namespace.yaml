@@ -1,0 +1,13 @@
+---
+# Single-purpose namespace for the etcd snapshot job. Talos only hands out
+# the os:etcd:backup role to ServiceAccounts in this namespace
+# (talos/patches/controller/talos-api-access.yaml), so nothing else runs here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: etcd-backup
+  labels:
+    kubernetes.io/metadata.name: etcd-backup
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
