@@ -8,6 +8,8 @@ metadata:
   name: fileflows-privilege-monitor
   namespace: media
 spec:
+  # A namespaced policy only applies to pods in its own namespace, so no
+  # namespace selector is needed (matchNamespaces selects Linux namespaces).
   # Monitor sudo executions (should only happen during DockerMods)
   kprobes:
     - call: "sys_execve"
@@ -21,8 +23,5 @@ spec:
               values:
                 - "/usr/bin/sudo"
                 - "/bin/su"
-          matchNamespaces:
-            - namespace: media
-              operator: In
           matchActions:
             - action: Post  # LOGGING ONLY - alerts to Tetragon logs
