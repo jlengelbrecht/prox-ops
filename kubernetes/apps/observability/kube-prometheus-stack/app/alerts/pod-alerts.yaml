@@ -33,25 +33,16 @@ spec:
             summary: "Agent router restarted in ai"
             description: "The single-writer agent-router container restarted. Check journal write errors and the readiness history before routing resumes."
 
+        # Warning, not critical: any failed Job pod matches this too.
         - alert: PodNotReady
           expr: sum by (namespace, pod) (kube_pod_status_phase{phase=~"Pending|Unknown|Failed"}) > 0
           for: 15m
           labels:
-            severity: critical
+            severity: warning
             component: pod
           annotations:
             summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} not ready for 15+ minutes"
             description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is in {{ $labels.phase }} phase."
-
-        - alert: ContainerWaiting
-          expr: sum by (namespace, pod, container) (kube_pod_container_status_waiting_reason) > 0
-          for: 10m
-          labels:
-            severity: warning
-            component: pod
-          annotations:
-            summary: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} is waiting"
-            description: "Container has been waiting for more than 10 minutes. Reason: {{ $labels.reason }}"
 
         - alert: StatefulSetReplicasMismatch
           expr: kube_statefulset_status_replicas_ready != kube_statefulset_status_replicas
@@ -63,12 +54,3 @@ spec:
             summary: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} has replica mismatch"
             description: "StatefulSet has {{ $labels.replicas }} desired replicas but only {{ $value }} are ready."
 
-        - alert: JobFailed
-          expr: kube_job_status_failed > 0
-          for: 5m
-          labels:
-            severity: warning
-            component: job
-          annotations:
-            summary: "Job {{ $labels.namespace }}/{{ $labels.job_name }} has failed"
-            description: "Job {{ $labels.job_name }} in namespace {{ $labels.namespace }} has failed."

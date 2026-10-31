@@ -1,0 +1,36 @@
+---
+# The etcd-backup/etcd-snapshots CronJob runs daily. These page when no run
+# has succeeded for over a day, because then nothing would tell us the
+# cluster has lost its only off-cluster copy of etcd.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: etcd-backup-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: etcd-backup-alerts
+      rules:
+        - alert: EtcdBackupStale
+          expr: time() - kube_cronjob_status_last_successful_time{namespace="etcd-backup",cronjob="etcd-snapshots"} > 26 * 3600
+          for: 15m
+          labels:
+            severity: critical
+            component: etcd
+            pager: "true"
+          annotations:
+            summary: "No successful etcd snapshot in over 26 hours"
+            description: "The last successful etcd-backup/etcd-snapshots run finished {{ $value | humanizeDuration }} ago. Check the job logs in the etcd-backup namespace."
+
+        - alert: EtcdBackupMissing
+          expr: absent(kube_cronjob_status_last_successful_time{namespace="etcd-backup",cronjob="etcd-snapshots"})
+          for: 2h
+          labels:
+            severity: warning
+            component: etcd
+          annotations:
+            summary: "etcd snapshot CronJob has no successful run on record"
+            description: "kube-state-metrics reports no last successful time for etcd-backup/etcd-snapshots. The CronJob may be missing or has never succeeded."
