@@ -25,6 +25,9 @@ spec:
     controllers:
       voicestudio:
         strategy: Recreate
+        annotations:
+          # Roll the pod when the voicestudio-api key rotates in 1Password.
+          reloader.stakater.com/auto: "true"
         pod:
           # No Kubernetes API access needed.
           automountServiceAccountToken: false
@@ -43,7 +46,7 @@ spec:
               OMNIVOICE_API_KEY:
                 valueFrom:
                   secretKeyRef:
-                    name: voicestudio-secret
+                    name: voicestudio-api
                     key: OMNIVOICE_API_KEY
               OMNIVOICE_DATA_DIR: /app/omnivoice_data
               HF_HOME: /app/omnivoice_data/huggingface
