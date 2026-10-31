@@ -189,7 +189,7 @@ GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Fa
 | Maintainerr / Cleanuparr | Library hygiene |
 | FileFlows | Transcoding orchestration |
 | Notifiarr | Notification fan-out |
-| Newtarr / Wizarr | Arr companions |
+| Wizarr | Arr companion |
 | Bookstack | Self-hosted wiki |
 | Uptime Kuma | Service monitoring + public status page |
 | qBittorrent / SABnzbd | Torrent + Usenet clients (VPN-isolated) |
