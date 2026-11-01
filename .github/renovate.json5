@@ -875,10 +875,14 @@
     },
     {
       // Major updates are always manual and never merge, so every open one holds a slot
-      // for good. Cap them at a lower open-PR/branch count than the global limits so a
-      // backlog of majors cannot starve patch/minor updates.
+      // for good. Renovate compares these limits with the repository-wide counts of ALL
+      // open PRs and branches, so this does not set a separate major quota: it stops
+      // creating new majors once 10 PRs / 15 branches of any type are open, which keeps
+      // the remaining headroom (up to the global 20 / 30) for patch and minor updates.
       description: 'Cap open major-update PRs so they cannot fill the shared queue',
       matchUpdateTypes: ['major'],
+      // FileFlows' YY roll-over reads as a major but auto-merges; it uses the global limits.
+      matchPackageNames: ['!revenz/fileflows'],
       prConcurrentLimit: 10,
       branchConcurrentLimit: 15,
     },
@@ -893,6 +897,7 @@
         'kubernetes/apps/database/hindsight-backlog/**/job.yaml',
         'kubernetes/apps/ai/hermes-hindsight/auth-placement/job.yaml',
         'kubernetes/apps/groschen/transfer/copy-job.yaml',
+        'kubernetes/apps/groschen-test/groschen/admin/job.yaml',
         'kubernetes/apps/observability/grafana-upgrade-rehearsal/app/job.yaml',
         'kubernetes/apps/observability/kube-prometheus-stack/app/metrics-restore-rehearsal.yaml',
         'kubernetes/apps/observability/loki/app/restore-rehearsal.yaml',
