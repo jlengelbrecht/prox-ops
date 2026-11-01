@@ -1,0 +1,10 @@
+# Install disk for every node. topf injects machine.install.image itself from
+# talosVersion, platform and schematicId in topf.yaml.
+#
+# Talos 1.14 moves the install disk into an UnattendedInstallConfig document
+# and rejects configs that also set machine.install. Switch this patch to that
+# form (or a semverCompare template on .TalosVersion) as part of the 1.14 move.
+machine:
+  install:
+    disk: /dev/sda
+    wipe: false

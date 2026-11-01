@@ -1,0 +1,20 @@
+# Lets non-root pods in the two allowed namespaces open the YubiHSM 2
+# (USB 1050:0030). libusb needs write access to the usbfs node, which is
+# root:root 0664 by default.
+#
+# The rule sets MODE only. Talos runs udevd with --resolve-names=never and
+# has no group database, so a GROUP= or OWNER= rule, numeric or not, is
+# rejected and the whole line is ignored.
+#
+# 0666 grants nothing on its own: a container sees the node only when the
+# device plugin allocates it, or when the pod is privileged. The device
+# plugin and its admission policy in
+# kubernetes/apps/kube-system/yubihsm-device-plugin/ decide which pods get
+# the device.
+#
+# This is a udev rule rather than a machine.files entry because only /var
+# is writable on Talos.
+machine:
+  udev:
+    rules:
+      - SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1050", ATTR{idProduct}=="0030", MODE="0666"
