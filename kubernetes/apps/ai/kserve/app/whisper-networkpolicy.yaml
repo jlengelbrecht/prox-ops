@@ -63,6 +63,9 @@ spec:
         - ports:
             - port: "8000"
               protocol: TCP
+            # queue-proxy autoscaling metrics; without it the pod never scales to zero
+            - port: "9090"
+              protocol: TCP
 
     # Allow Prometheus scraping (observability)
     - fromEndpoints:
