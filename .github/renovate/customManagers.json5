@@ -8,7 +8,6 @@
       // This custom manager only targets files that built-in managers don't process
       "description": "Process annotated dependencies in Talos and template files",
       "managerFilePatterns": [
-        "/^talos/talenv\\.yaml$/",
         "/^templates/.+\\.ya?ml(\\.j2)?$/"
       ],
       "matchStrings": [
@@ -16,6 +15,36 @@
       ],
       "datasourceTemplate": "{{#if datasource}}{{{datasource}}}{{else}}github-releases{{/if}}",
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
+    },
+    {
+      "customType": "regex",
+      // Desired Talos version in the topf config, the legacy talhelper env and the
+      // tuppr TalosUpgrade. The v prefix stays outside currentValue so these copies
+      // carry the same version string as terraform/ and group into one PR with it.
+      // scripts/check-talos-versions.sh enforces that all copies match.
+      "description": "Monitor Talos version in topf.yaml, talenv.yaml and the tuppr TalosUpgrade",
+      "managerFilePatterns": [
+        "/^talos/topf\\.yaml$/",
+        "/^talos/talenv\\.yaml$/",
+        "/^kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=github-releases depName=siderolabs/talos\\n\\s*\\w+:\\s*v(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "siderolabs/talos",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      // Kubernetes version (Talos kubelet image tag) in topf.yaml and talenv.yaml.
+      "description": "Monitor Kubernetes version in topf.yaml and talenv.yaml",
+      "managerFilePatterns": ["/^talos/topf\\.yaml$/", "/^talos/talenv\\.yaml$/"],
+      "matchStrings": [
+        "# renovate: datasource=docker depName=ghcr.io/siderolabs/kubelet\\n\\s*\\w+:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/siderolabs/kubelet"
     },
     {
       "customType": "regex",

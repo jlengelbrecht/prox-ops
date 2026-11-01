@@ -128,22 +128,8 @@
       "matchDatasources": ["helm", "docker"],
       "matchPackagePatterns": ["app-template", "bjw-s"]
     },
-    {
-      "description": "Core - Talos Linux Infrastructure (cluster version in Terraform)",
-      "groupName": "🔧 Core: Talos Infrastructure",
-      "matchDatasources": ["github-releases"],
-      "matchPackageNames": ["siderolabs/talos"],
-      "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
-      "separateMinorPatch": true
-    },
-    {
-      "description": "Core - Talos Linux Infrastructure (cluster version in talenv)",
-      "groupName": "🔧 Core: Talos Infrastructure",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["ghcr.io/siderolabs/installer"],
-      "matchFileNames": ["talos/talenv.yaml"],
-      "separateMinorPatch": true
-    },
+    // Talos and Kubernetes cluster versions are grouped at the end of this file,
+    // after the CLI tools group that also matches siderolabs/talos.
 
     // ═══════════════════════════════════════════════════════════════════════════
     // 📊 OBSERVABILITY - Monitoring, logging, and alerting
@@ -379,6 +365,36 @@
       "groupName": "📦 Runtime: Python",
       "matchDatasources": ["github-releases"],
       "matchPackagePatterns": ["python"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔧 CLUSTER VERSIONS - must stay last: the CLI tools group above also matches
+    // siderolabs/talos, and the last matching groupName wins. Every copy of a
+    // version lands in one PR (checked by scripts/check-talos-versions.sh).
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Core - Talos cluster version (every copy in one PR)",
+      "groupName": "🔧 Core: Talos Infrastructure",
+      "groupSlug": "talos-cluster-version",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["siderolabs/talos"],
+      "matchFileNames": [
+        "talos/topf.yaml",
+        "talos/talenv.yaml",
+        "kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml",
+        "terraform/variables.tf",
+        "terraform/terraform.tfvars"
+      ],
+      "separateMinorPatch": true
+    },
+    {
+      "description": "Core - Kubernetes cluster version (every copy in one PR)",
+      "groupName": "🔧 Core: Kubernetes Version",
+      "groupSlug": "kubernetes-cluster-version",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/siderolabs/kubelet"],
+      "matchFileNames": ["talos/topf.yaml", "talos/talenv.yaml"],
+      "separateMinorPatch": true
     }
   ]
 }

@@ -7,10 +7,28 @@ only until the workflows and Taskfiles that still read them are moved over.
 The topf layout below is the source of truth.
 
 While both exist, keep them in step: a patch change goes into the topf layout
-and the matching file under `patches/`, and a Talos or Kubernetes version
-change updates `topf.yaml` and `talenv.yaml` together. `talenv.yaml` still
-says v1.13.4 while the nodes run v1.13.10; a follow-up makes `topf.yaml` the
-single version source and moves the Renovate rules and workflows onto it.
+and the matching file under `patches/`.
+
+## Versions and upgrades
+
+`topf.yaml` holds the desired Talos (`talosVersion`) and Kubernetes
+(`kubernetesVersion`) versions. Copies of the Talos version also live in
+`talenv.yaml`, the tuppr `TalosUpgrade`
+(`kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml`),
+`terraform/variables.tf` and `terraform/terraform.tfvars`; `talenv.yaml` also
+copies the Kubernetes version.
+
+- Renovate bumps every copy in one PR: one for Talos, one for Kubernetes.
+  Neither auto-merges.
+- `scripts/check-talos-versions.sh` runs on PRs that touch any of these files
+  and fails if a copy differs from `topf.yaml`. It is not a required check yet,
+  so look for it before merging a version PR, and run it locally before editing
+  a version by hand.
+- tuppr is the only upgrader. It moves nodes labelled
+  `tuppr.home-operations.com/enabled=true` to the `TalosUpgrade` version, in
+  either direction. The old Terraform-driven workflows (`talos-version-router`,
+  `upgrade-pets`, `upgrade-cattle`) no longer start on their own and run only
+  by manual dispatch.
 
 ## Layout
 
