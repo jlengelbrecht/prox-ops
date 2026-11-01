@@ -363,21 +363,32 @@
     // TIER 3: REQUIRE MANUAL REVIEW — Critical infrastructure + stateful apps
     //
     // MUST come AFTER all automerge opt-in rules so they take final precedence.
-    // These enforce automerge: false for ALL update types (digest/patch/minor/major)
-    // for the named packages, overriding any earlier tier that may have matched.
     //
-    // MUST-PRESERVE safety decisions (owner-specified, no automerge any type):
+    // Policy: patch updates auto-merge for core infrastructure after a long soak
+    // (soak lengths are set by the last packageRules in renovate.json5); minor and
+    // major open a PR for the PM and never auto-merge. Only the packages below stay
+    // FULLY manual, each for a specific reason:
     //
-    //   rook / ceph         — OSD corruption / PG rebalancing risk; maintenance
-    //                         window required for any update
-    //   authentik           — SSO gatekeeper; broken update locks out all web UIs
-    //   nvidia              — kernel/schematic coupling; must align with Talos
-    //   nvidia-device-plugin — same coupling as nvidia driver images
+    //   rook / ceph         — OSD corruption / PG rebalancing risk and CSI drivers
+    //                         that failed during a past network disruption; a patch
+    //                         can restart storage daemons, so a human picks the window
+    //   generic-device-plugin, yubihsm-tools — privileged path to the YubiHSM
+    //   agentgateway        — v1alpha1 CRDs with breaking changes on a monthly cadence
+    //   hermes, hindsight   — image and chart move in lockstep with forward-only
+    //                         migrations on the shared database
+    //   paperclip, loki/promtail/alloy, crossplane — see their rules below
     //
-    // Additional manual-only for minor + major (patch allowed via Tier-2b):
-    //   kube-prometheus-stack — CRD migrations; bundled multi-component (no patch
-    //                           automerge either per owner decision)
-    //   envoy-gateway         — ingress plane; fully manual per owner decision
+    // Core packages that auto-merge PATCH only (minor/major are manual):
+    //   authentik, nvidia (device plugin / DCGM), envoy-gateway,
+    //   kube-prometheus-stack, cert-manager, cilium, external-secrets,
+    //   cloudnative-pg, flux, coredns, multus, postgres/valkey/mariadb
+    //
+    // Reasons patch is acceptable: these are bug and CVE fixes, the required
+    // checks run a full Flux render, and an outdated core component is itself a
+    // vulnerability. Reasons minor is not: CRD or schema changes, restarts, and
+    // behaviour changes that need a human to read the release notes.
+    //
+    // Older notes kept for reference:
     //   cert-manager          — patch OK (Tier-2b); minor/major manual
     //   cilium                — patch OK (Tier-2b); minor/major manual
     //   external-secrets      — patch OK (Tier-2b); minor/major manual
@@ -393,18 +404,20 @@
       ]
     },
     {
-      "description": "FULLY MANUAL: authentik and goauthentik — no automerge for any update type (SSO lockout risk)",
+      "description": "authentik and goauthentik: minor and major are manual (SSO lockout risk); patch auto-merges after a 7 day soak",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
+      "matchUpdateTypes": ["minor", "major"],
       "matchPackageNames": [
         "/authentik/",
         "/goauthentik/"
       ]
     },
     {
-      "description": "FULLY MANUAL: NVIDIA — no automerge for any update type (Talos kernel/schematic coupling)",
+      "description": "NVIDIA device plugin / DCGM: minor and major are manual (Talos kernel and schematic coupling); patch auto-merges after a 7 day soak. Drivers live in the Talos schematic, not here.",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
+      "matchUpdateTypes": ["minor", "major"],
       "matchPackageNames": [
         "/nvidia/",
         "/nvidia-device-plugin/"
@@ -424,17 +437,19 @@
       "matchFileNames": ["services/yubihsm-tools/**"]
     },
     {
-      "description": "FULLY MANUAL: kube-prometheus-stack — no automerge for any update type (CRD migrations, multi-component bundle)",
+      "description": "kube-prometheus-stack: minor and major are manual (CRD migrations, multi-component bundle); patch auto-merges after a 5 day soak",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
+      "matchUpdateTypes": ["minor", "major"],
       "matchPackageNames": [
         "kube-prometheus-stack"
       ]
     },
     {
-      "description": "FULLY MANUAL: envoy-gateway — no automerge for any update type (ingress plane, owner decision overrides Tier-2b)",
+      "description": "envoy-gateway: minor and major are manual (ingress plane); patch auto-merges after a 7 day soak because patch releases carry CVE fixes",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
+      "matchUpdateTypes": ["minor", "major"],
       "matchPackageNames": [
         "/envoy-gateway/",
         "/envoyproxy/"
@@ -490,19 +505,17 @@
     // TIER 4: SPECIAL HANDLING — AI apps, Talos
     // ═══════════════════════════════════════════════════════════════════════════
     {
-      "description": "Require manual review for AI apps (rapidly evolving, stateful DBs)",
-      "matchDatasources": ["docker"],
+      "description": "AI apps that run database or storage migrations (open-webui, qdrant): minor and major are manual, patch auto-merges after a 5 day soak. ollama and lightrag use the normal app tier.",
+      "matchDatasources": ["docker", "helm"],
       "automerge": false,
+      "matchUpdateTypes": ["minor", "major"],
       "matchPackageNames": [
-        "/lightrag/",
-        "/litellm/",
         "/open-webui/",
-        "/ollama/",
         "/qdrant/"
       ]
     },
     {
-      "description": "FULLY MANUAL: Hermes agent - the dashboard/config schema (_config_version) moves with the image and the chart is pinned to it; read the release notes and bump both together. Hindsight (api, control plane, chart) - migrations are forward-only on the shared CloudNativePG cluster, take a pg_dump -d hindsight first",
+      "description": "FULLY MANUAL: LiteLLM (migrations can be recorded as applied without creating the schema; verify with prisma migrate diff). Hermes agent - the dashboard/config schema (_config_version) moves with the image and the chart is pinned to it; read the release notes and bump both together. Hindsight (api, control plane, chart) - migrations are forward-only on the shared CloudNativePG cluster, take a pg_dump -d hindsight first",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
       "matchPackageNames": [
@@ -510,7 +523,10 @@
         "hermes-agent",
         "ghcr.io/vectorize-io/hindsight-api",
         "ghcr.io/vectorize-io/hindsight-control-plane",
-        "hindsight"
+        "hindsight",
+        // LiteLLM: the v1.81 to v1.106 upgrade recorded 149 migrations as applied while 55 tables
+        // and many columns were missing, fixed by hand with `prisma migrate diff`; every bump needs that check.
+        "/litellm/"
       ]
     },
     // NOTE: Talos talenv.yaml (ghcr.io/siderolabs/installer) updates are disabled in
@@ -518,16 +534,16 @@
     // rules would be dead. Talos auto-updates flow via terraform/variables.tf (below);
     // keeping talenv.yaml in sync is the upgrade workflow's job (EPIC-033 STORY-033-3).
     {
-      "description": "Auto-merge Talos PETS upgrades (patch versions in Terraform, 1 day wait)",
+      "description": "Auto-merge Talos PETS upgrades (patch versions in Terraform, 5 day wait: a merge starts an in-place node upgrade)",
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["siderolabs/talos"],
       "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
       "matchUpdateTypes": ["patch"],
       "automerge": true,
       "automergeType": "pr",
-      "minimumReleaseAge": "1 day",
+      "minimumReleaseAge": "5 days",
       "prBodyNotes": [
-        "**Talos PETS**: Patch version will be auto-merged after 1-day stabilization. In-place upgrade via talosctl."
+        "**Talos PETS**: Patch version will be auto-merged after 5-day stabilization. In-place upgrade via talosctl."
       ]
     },
     {

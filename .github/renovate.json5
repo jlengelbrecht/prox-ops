@@ -905,12 +905,13 @@
       enabled: false,
     },
     {
-      // MUST be the last packageRule. Renovate uses the last matching
-      // minimumReleaseAge value; the root "Wait N days" rules above otherwise
-      // shorten the critical-infra PATCH auto-merge soak (cert-manager &
-      // external-secrets to 1d, cilium & cloudnative-pg to 3d). This re-asserts
-      // the intended 5-day soak for the Tier-2b patch automerge in autoMerge.json5.
-      description: 'Enforce 5-day soak for auto-merged critical-infra patch updates',
+      // The two soak rules below must come after every generic 'Wait N days' rule above
+      // (only the Groschen and Spektr exemptions follow them). Renovate uses the
+      // last matching minimumReleaseAge value; the root "Wait N days" rules above
+      // otherwise shorten the core PATCH auto-merge soak (cert-manager &
+      // external-secrets to 1d, cilium & cloudnative-pg to 3d, authentik 1d, ...).
+      // These re-assert the intended soaks for the patch automerge in autoMerge.json5.
+      description: 'Enforce 5-day soak for auto-merged core patch updates',
       matchDatasources: [
         'docker',
         'helm',
@@ -923,8 +924,31 @@
         '/cilium/',
         '/external-secrets/',
         '/cloudnative-pg/',
+        '/flux-operator/',
+        '/flux-instance/',
+        'kube-prometheus-stack',
+        '/open-webui/',
+        '/qdrant/',
       ],
       minimumReleaseAge: '5 days',
+    },
+    {
+      description: 'Enforce 7-day soak for auto-merged authentik, envoy-gateway and NVIDIA patch updates',
+      matchDatasources: [
+        'docker',
+        'helm',
+      ],
+      matchUpdateTypes: [
+        'patch',
+      ],
+      matchPackageNames: [
+        '/authentik/',
+        '/goauthentik/',
+        '/envoy-gateway/',
+        '/envoyproxy/',
+        '/nvidia/',
+      ],
+      minimumReleaseAge: '7 days',
     },
     {
       description: 'Groschen is manual by default; only production main digest updates below opt in',
