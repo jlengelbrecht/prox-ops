@@ -1,0 +1,26 @@
+---
+# talos/topf.yaml holds the desired Talos and Kubernetes versions; every other
+# copy must match it. This runs on every PR, without a paths filter, so it can
+# be a required check: a path-filtered required check never reports on PRs
+# outside its paths and blocks them.
+name: Talos Version Drift
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  version-drift:
+    name: Talos and Kubernetes versions agree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check version copies
+        run: bash scripts/check-talos-versions.sh
