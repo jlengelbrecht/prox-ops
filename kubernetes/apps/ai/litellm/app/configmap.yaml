@@ -205,6 +205,9 @@ data:
           api_key: os.environ/OPENAI_API_KEY
 
     general_settings:
+      # Stop the 5-minute upstream /v1/models discovery (router.arefresh_model_info).
+      # It counts as traffic for the scale-to-zero KServe models, so qwen36-27b never unloads.
+      disable_model_info_refresh: true
       # STORY-063: Forward client headers to LLM API for OAuth token
       # Enables Claude Max subscription OAuth to pass through to Anthropic
       # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
