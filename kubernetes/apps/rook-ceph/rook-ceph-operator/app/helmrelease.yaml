@@ -8,7 +8,7 @@ spec:
     spec:
       chart: rook-ceph
       # renovate: datasource=helm registryUrl=https://charts.rook.io/release
-      version: v1.19.12
+      version: v1.20.9
       sourceRef:
         kind: HelmRepository
         name: rook-ceph
@@ -22,17 +22,26 @@ spec:
     crds: CreateReplace
     remediation:
       retries: 3
+  # The chart took over rook-csi-operator-image-set-configmap in v1.20. A Helm
+  # rollback to a revision without it would delete it, and the CSI operator
+  # can't reconcile the drivers without it. Keep it.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: ConfigMap
+              name: rook-csi-operator-image-set-configmap
+            patch: |
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: rook-csi-operator-image-set-configmap
+                annotations:
+                  helm.sh/resource-policy: keep
   values:
     # Rook operator configuration for external cluster mode
     crds:
       enabled: true
-
-    # Temporary, until the v1.20 upgrade: the v1.19 operator rewrites the CSI
-    # Driver resources on every reconcile, which would undo the ceph-csi-drivers
-    # release. With the operator stopped, the ceph-csi-operator keeps running the
-    # drivers and moves them to the drivers release's service accounts before
-    # v1.20 deletes the old ones. Ceph itself runs outside the cluster.
-    scaleDownOperator: true
 
     # Monitoring
     monitoring:
@@ -46,129 +55,8 @@ spec:
         cpu: 200m
         memory: 128Mi
 
-    # CSI driver configuration
-    csi:
-      enableRbdDriver: true
-      enableCephfsDriver: true
-      enableGrpcMetrics: true
-
-      # Group snapshots stay off: nothing here uses them. Rook v1.15's csi-snapshotter
-      # v8.0.1 used the v1alpha1 VolumeGroupSnapshot API, which the snapshot-controller
-      # v8.6 CRDs no longer serve, and the sidecar stopped creating any VolumeSnapshots
-      # with the feature on. Re-test before enabling it.
-      # From v1.18 the CSI operator ignores this for CephFS: Rook sets the CephFS
-      # driver's snapshotPolicy to volumeGroupSnapshot whenever the group snapshot
-      # CRDs exist, so its snapshotter runs with the gate on. That snapshotter
-      # (v8.5.0) uses v1beta2, which the v8.6 CRDs serve. RBD stays off.
-      enableVolumeGroupSnapshot: false
-
-      # CSI provisioner replicas (reduced for homelab)
-      provisionerReplicas: 2
-
-      # Resource limits for CSI containers
-      csiRBDProvisionerResource: |
-        - name: csi-provisioner
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 100m
-            limits:
-              memory: 256Mi
-        - name: csi-resizer
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 100m
-            limits:
-              memory: 256Mi
-        - name: csi-attacher
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 100m
-            limits:
-              memory: 256Mi
-        - name: csi-snapshotter
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 100m
-            limits:
-              memory: 256Mi
-
-      csiCephFSProvisionerResource: |
-        - name: csi-provisioner
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 100m
-            limits:
-              memory: 256Mi
-        - name: csi-resizer
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 100m
-            limits:
-              memory: 256Mi
-        - name: csi-attacher
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 100m
-            limits:
-              memory: 256Mi
-        - name: csi-snapshotter
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 100m
-            limits:
-              memory: 256Mi
-
-      # Plugin resources
-      csiRBDPluginResource: |
-        - name: driver-registrar
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 50m
-            limits:
-              memory: 256Mi
-        - name: csi-rbdplugin
-          resource:
-            requests:
-              memory: 512Mi
-              cpu: 100m
-            limits:
-              memory: 1Gi
-        - name: liveness-prometheus
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 50m
-            limits:
-              memory: 256Mi
-
-      csiCephFSPluginResource: |
-        - name: driver-registrar
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 50m
-            limits:
-              memory: 256Mi
-        - name: csi-cephfsplugin
-          resource:
-            requests:
-              memory: 512Mi
-              cpu: 100m
-            limits:
-              memory: 1Gi
-        - name: liveness-prometheus
-          resource:
-            requests:
-              memory: 128Mi
-              cpu: 50m
-            limits:
-              memory: 256Mi
+    # From v1.20 Rook no longer configures the CSI drivers. The Driver and
+    # OperatorConfig resources, the plugin service accounts and RBAC come from
+    # the ceph-csi-drivers release (kubernetes/apps/rook-ceph/ceph-csi-drivers).
+    # This chart still installs the ceph-csi-operator and sets the CSI images
+    # through rook-csi-operator-image-set-configmap.
