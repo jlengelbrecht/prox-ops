@@ -4,19 +4,19 @@
 # without touching a node. To enrol a node:
 #   kubectl label node <node> tuppr.home-operations.com/enabled=true
 # tuppr upgrades any enrolled node whose version differs from spec.talos.version,
-# in either direction. Before enrolling a node, make sure Renovate bumps this
-# version together with terraform/variables.tf and talos/talenv.yaml, or the
-# old upgrade workflows have been retired; otherwise one of them upgrades the
-# node and tuppr rolls it back.
+# in either direction, and is the only upgrader: the old Terraform-driven upgrade
+# workflows no longer start on their own. Renovate bumps this version in the same
+# PR as talos/topf.yaml, talos/talenv.yaml and terraform/, and
+# scripts/check-talos-versions.sh fails CI if any copy drifts.
 apiVersion: tuppr.home-operations.com/v1alpha1
 kind: TalosUpgrade
 metadata:
   name: talos
 spec:
   talos:
-    # Current cluster version. Same depName as talos/talenv.yaml.
-    # renovate: datasource=docker depName=ghcr.io/siderolabs/installer
-    version: v1.13.10
+    # Desired cluster version; must equal talosVersion in talos/topf.yaml.
+    # renovate: datasource=github-releases depName=siderolabs/talos
+    version: v1.13.12
     # Pull every in-scope node's installer image before the first cordon, so a
     # bad tag or schematic stops the run before any disruption.
     prePull: true

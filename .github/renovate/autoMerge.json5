@@ -529,32 +529,34 @@
         "/litellm/"
       ]
     },
-    // NOTE: Talos talenv.yaml (ghcr.io/siderolabs/installer) updates are disabled in
-    // renovate.json5 ("Disable Talos updates (managed via Terraform)"), so talenv-based
-    // rules would be dead. Talos auto-updates flow via terraform/variables.tf (below);
-    // keeping talenv.yaml in sync is the upgrade workflow's job (EPIC-033 STORY-033-3).
+    // Talos and Kubernetes cluster versions never auto-merge, any update type. They are
+    // node lifecycle: once nodes are enrolled, a merged Talos bump is what tuppr rolls
+    // out. Placed after the default patch/minor rules so it overrides them.
     {
-      "description": "Auto-merge Talos PETS upgrades (patch versions in Terraform, 5 day wait: a merge starts an in-place node upgrade)",
+      "description": "MANUAL: Talos cluster version (topf, talenv, tuppr TalosUpgrade, Terraform)",
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["siderolabs/talos"],
-      "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
-      "matchUpdateTypes": ["patch"],
-      "automerge": true,
-      "automergeType": "pr",
+      "matchFileNames": [
+        "talos/topf.yaml",
+        "talos/talenv.yaml",
+        "kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml",
+        "terraform/variables.tf",
+        "terraform/terraform.tfvars"
+      ],
+      "automerge": false,
       "minimumReleaseAge": "5 days",
       "prBodyNotes": [
-        "**Talos PETS**: Patch version will be auto-merged after 5-day stabilization. In-place upgrade via talosctl."
+        "**Talos cluster version**: manual merge. tuppr upgrades enrolled nodes to the merged version, one node at a time."
       ]
     },
     {
-      "description": "Require manual review for Talos CATTLE upgrades (major/minor in Terraform)",
-      "matchDatasources": ["github-releases"],
-      "matchPackageNames": ["siderolabs/talos"],
-      "matchFileNames": ["terraform/variables.tf", "terraform/terraform.tfvars"],
-      "matchUpdateTypes": ["major", "minor"],
+      "description": "MANUAL: Kubernetes cluster version (topf, talenv)",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/siderolabs/kubelet"],
+      "matchFileNames": ["talos/topf.yaml", "talos/talenv.yaml"],
       "automerge": false,
       "prBodyNotes": [
-        "**Talos CATTLE**: Major/minor version requires manual approval. Full VM rebuild via Terraform."
+        "**Kubernetes version**: manual merge. Confirm the current Talos release supports this Kubernetes version before merging."
       ]
     },
     // Paperclip: last in the list so no earlier patch/minor rule can auto-merge it.

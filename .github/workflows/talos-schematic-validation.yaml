@@ -19,6 +19,9 @@ on:
       - terraform/variables.tf
       - talos/talconfig.yaml
       - talos/talenv.yaml
+      - talos/topf.yaml
+      - kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml
+      - scripts/check-talos-versions.sh
       - .github/workflows/upgrade-pets.yaml
       - .github/workflows/upgrade-cattle.yaml
       - .github/workflows/talos-schematic-validation.yaml
@@ -27,6 +30,20 @@ permissions:
   contents: read
 
 jobs:
+  # topf.yaml holds the desired versions; every other copy must match it.
+  version-drift:
+    name: Talos and Kubernetes versions agree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check version copies
+        run: bash scripts/check-talos-versions.sh
+
   validate-schematics:
     name: Schematics bake net.ifnames=0
     runs-on: ubuntu-latest

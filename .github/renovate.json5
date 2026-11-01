@@ -94,7 +94,8 @@
       extractVersion: '^v(?<version>.*)$',
     },
     {
-      description: 'Label Talos major/minor updates as cattle - Terraform',
+      // talos-release-bug-check.yaml keys its full check off these labels.
+      description: 'Label Talos major/minor updates as cattle',
       matchDatasources: [
         'github-releases',
       ],
@@ -102,97 +103,57 @@
         'siderolabs/talos',
       ],
       matchFileNames: [
-        'terraform/variables.tf',
-      ],
-      matchUpdateTypes: [
-        'major',
-        'minor',
-      ],
-      addLabels: [
-        'talos-update/cattle',
-      ],
-    },
-    {
-      description: 'Label Talos patch updates as pets - Terraform',
-      matchDatasources: [
-        'github-releases',
-      ],
-      matchPackageNames: [
-        'siderolabs/talos',
-      ],
-      matchFileNames: [
-        'terraform/variables.tf',
-      ],
-      matchUpdateTypes: [
-        'patch',
-      ],
-      addLabels: [
-        'talos-update/pets',
-      ],
-    },
-    {
-      description: 'Label Talos major/minor updates as cattle - talenv',
-      matchDatasources: [
-        'docker',
-      ],
-      matchPackageNames: [
-        'ghcr.io/siderolabs/installer',
-      ],
-      matchFileNames: [
+        'talos/topf.yaml',
         'talos/talenv.yaml',
-      ],
-      matchUpdateTypes: [
-        'major',
-        'minor',
-      ],
-      addLabels: [
-        'talos-update/cattle',
-      ],
-    },
-    {
-      description: 'Label Talos patch updates as pets - talenv',
-      matchDatasources: [
-        'docker',
-      ],
-      matchPackageNames: [
-        'ghcr.io/siderolabs/installer',
-      ],
-      matchFileNames: [
-        'talos/talenv.yaml',
-      ],
-      matchUpdateTypes: [
-        'patch',
-      ],
-      addLabels: [
-        'talos-update/pets',
-      ],
-    },
-    {
-      description: 'Customize commit messages for Talos Terraform updates',
-      matchDatasources: [
-        'github-releases',
-      ],
-      matchPackageNames: [
-        'siderolabs/talos',
-      ],
-      matchFileNames: [
+        'kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml',
         'terraform/variables.tf',
         'terraform/terraform.tfvars',
       ],
-      semanticCommitType: 'chore',
-      semanticCommitScope: 'talos',
-      commitMessageAction: 'upgrade to',
+      matchUpdateTypes: [
+        'major',
+        'minor',
+      ],
+      addLabels: [
+        'talos-update/cattle',
+      ],
     },
     {
-      description: 'Customize commit messages for Talos talenv updates',
+      // talos-release-bug-check.yaml keys its full check off these labels.
+      description: 'Label Talos patch updates as pets',
       matchDatasources: [
-        'docker',
+        'github-releases',
       ],
       matchPackageNames: [
-        'ghcr.io/siderolabs/installer',
+        'siderolabs/talos',
       ],
       matchFileNames: [
+        'talos/topf.yaml',
         'talos/talenv.yaml',
+        'kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml',
+        'terraform/variables.tf',
+        'terraform/terraform.tfvars',
+      ],
+      matchUpdateTypes: [
+        'patch',
+      ],
+      addLabels: [
+        'talos-update/pets',
+      ],
+    },
+    {
+      description: 'Customize commit messages for Talos cluster version updates',
+      matchDatasources: [
+        'github-releases',
+      ],
+      matchPackageNames: [
+        'siderolabs/talos',
+      ],
+      matchFileNames: [
+        'talos/topf.yaml',
+        'talos/talenv.yaml',
+        'kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml',
+        'terraform/variables.tf',
+        'terraform/terraform.tfvars',
       ],
       semanticCommitType: 'chore',
       semanticCommitScope: 'talos',
@@ -518,11 +479,17 @@
     {
       description: 'Add context for Talos updates',
       prBodyNotes: [
-        '⚠️ **Talos Linux**: Major/minor versions trigger cattle rebuild workflow. Patch versions use in-place upgrade.',
+        '⚠️ **Talos Linux**: one PR updates every copy of the cluster version. tuppr upgrades enrolled nodes after merge; the old upgrade workflows are manual-only.',
       ],
       matchPackageNames: [
-        '/siderolabs/talos/',
-        '/siderolabs/installer/',
+        'siderolabs/talos',
+      ],
+      matchFileNames: [
+        'talos/topf.yaml',
+        'talos/talenv.yaml',
+        'kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml',
+        'terraform/variables.tf',
+        'terraform/terraform.tfvars',
       ],
     },
     {
@@ -658,7 +625,9 @@
       enabled: false,
     },
     {
-      description: 'Disable Talos updates (managed via Terraform)',
+      // The installer image stopped publishing at Talos 1.14; the cluster version is
+      // tracked as github-releases siderolabs/talos instead.
+      description: 'Disable Talos installer/talos image tracking',
       matchDatasources: [
         'docker',
       ],
@@ -677,6 +646,25 @@
       matchPackageNames: [
         '/ghcr.io/siderolabs/kubelet/',
       ],
+    },
+    {
+      // Overrides the rule above for the cluster Kubernetes version only. Grouping is in
+      // groups.json5 and automerge is off in autoMerge.json5.
+      description: 'Track the cluster Kubernetes version in topf.yaml and talenv.yaml',
+      matchDatasources: [
+        'docker',
+      ],
+      matchPackageNames: [
+        'ghcr.io/siderolabs/kubelet',
+      ],
+      matchFileNames: [
+        'talos/topf.yaml',
+        'talos/talenv.yaml',
+      ],
+      enabled: true,
+      semanticCommitType: 'chore',
+      semanticCommitScope: 'kubernetes',
+      commitMessageAction: 'upgrade to',
     },
     {
       description: 'Regex versioning for BookStack image (version-v prefix)',
