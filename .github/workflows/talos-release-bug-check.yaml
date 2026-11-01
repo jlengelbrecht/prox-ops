@@ -161,6 +161,12 @@ jobs:
             exit 1
           fi
 
+          # Later steps interpolate this output into shell; accept only X.Y.Z.
+          if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Extracted Talos version is not X.Y.Z"
+            exit 1
+          fi
+
           echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
           echo "source_file=${SOURCE_FILE}" >> $GITHUB_OUTPUT
 
@@ -199,11 +205,43 @@ jobs:
             }
           }' --jq '.data.securityVulnerabilities.nodes' 2>/dev/null || echo "[]")
 
-          # Filter advisories affecting our version range (v1.x.y)
-          MATCHING_ADVISORIES=$(echo "$ADVISORIES" | jq --arg ver "$MAJOR_MINOR" '
-            map(select(
-              .vulnerableVersionRange | contains($ver)
-            ))
+          # Keep only advisories whose vulnerableVersionRange (e.g. "< 1.13.3" or
+          # ">= 1.6.0, < 1.6.4") contains the proposed version. A substring match
+          # on the minor version flags fixed releases: "< 1.14.0-alpha.0..."
+          # contains "1.14" but does not include 1.14.5.
+          MATCHING_ADVISORIES=$(echo "$ADVISORIES" | VERSION="$VERSION" python3 -c '
+          import json, os, re, sys
+
+          def key(v):
+              core, _, pre = v.strip().lstrip("v").partition("-")
+              nums = tuple(int(x) for x in core.split("."))
+              nums += (0,) * (3 - len(nums))
+              if not pre:
+                  return (nums, 1, ())
+              ids = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split("."))
+              return (nums, 0, ids)
+
+          ops = {
+              "<": lambda a, b: a < b, "<=": lambda a, b: a <= b,
+              ">": lambda a, b: a > b, ">=": lambda a, b: a >= b,
+              "=": lambda a, b: a == b,
+          }
+
+          def affected(ver, rng):
+              # Parse every clause first: any unparseable clause or bound keeps
+              # the advisory for manual review.
+              bounds = []
+              for clause in rng.split(","):
+                  m = re.match(r"\s*(<=|>=|<|>|=)\s*(\S+)\s*$", clause)
+                  try:
+                      bounds.append((m.group(1), key(m.group(2))))
+                  except (AttributeError, ValueError):
+                      return True
+              return all(ops[op](key(ver), bound) for op, bound in bounds)
+
+          ver = os.environ["VERSION"]
+          nodes = json.load(sys.stdin)
+          print(json.dumps([n for n in nodes if affected(ver, n.get("vulnerableVersionRange") or "")]))
           ')
 
           ADVISORY_COUNT=$(echo "$MATCHING_ADVISORIES" | jq 'length')

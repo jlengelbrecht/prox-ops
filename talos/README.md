@@ -23,10 +23,9 @@ copies the Kubernetes version.
 
 - Renovate bumps every copy in one PR: one for Talos, one for Kubernetes.
   Neither auto-merges.
-- `scripts/check-talos-versions.sh` runs on PRs that touch any of these files
-  and fails if a copy differs from `topf.yaml`. It is not a required check yet,
-  so look for it before merging a version PR, and run it locally before editing
-  a version by hand.
+- `scripts/check-talos-versions.sh` runs on every PR (the required "Talos and
+  Kubernetes versions agree" check) and fails if a copy differs from
+  `topf.yaml`. Run it locally before editing a version by hand.
 - tuppr is the only upgrader. It moves nodes labelled
   `tuppr.home-operations.com/enabled=true` to the `TalosUpgrade` version, in
   either direction. The old Terraform-driven workflows (`talos-version-router`,
