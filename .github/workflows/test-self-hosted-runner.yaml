@@ -82,22 +82,14 @@ jobs:
 
       - name: Test cluster access
         run: |
-          echo "=== Cluster Information ==="
-          kubectl cluster-info
-          echo ""
-          echo "=== Node List ==="
-          kubectl get nodes -o wide
-          echo ""
-          echo "=== Namespace List ==="
-          kubectl get namespaces
-          echo ""
+          # The runner service account is limited to the github-actions namespace.
           echo "=== GitHub Actions Pods ==="
           kubectl get pods -n github-actions
-
-      - name: Test node operations
-        run: |
-          echo "=== Node Details ==="
-          kubectl get nodes -o json | jq '.items[0] | {name: .metadata.name, status: .status.conditions}'
+          echo ""
+          echo "=== Cluster-wide access (expect no) ==="
+          can_list_nodes=$(kubectl auth can-i list nodes 2>/dev/null || true)
+          echo "list nodes: ${can_list_nodes}"
+          [ "$can_list_nodes" = "no" ] || { echo "::error::runner can list nodes"; exit 1; }
 
   test-runner-terraform:
     name: Test Terraform Access
