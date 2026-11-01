@@ -250,6 +250,9 @@ data:
       # STORY-059: Allow setting api_base for search tools via admin API
       # Required to configure self-hosted SearXNG endpoint
       allow_client_side_credentials: true
+      # SSO (Authentik) is configured via GENERIC_* env vars. Turn off the
+      # username/password login form so empty or env credentials cannot log in.
+      disable_password_login_when_sso_enabled: true
 
     litellm_settings:
       # Drop unsupported params instead of erroring
