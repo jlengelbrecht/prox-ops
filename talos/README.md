@@ -81,4 +81,7 @@ topf apply --dry-run        # diff against live nodes (needs Talos API access)
 topf apply --nodes-filter '^k8s-work-1$'
 ```
 
-Kubernetes upgrades are not handled by topf; use `talosctl upgrade-k8s`.
+Kubernetes upgrades are not handled by topf. tuppr's `KubernetesUpgrade`
+(`kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml`) runs
+them when its version changes; it carries a third copy of the Kubernetes
+version, and Renovate proposes one minor version per PR.

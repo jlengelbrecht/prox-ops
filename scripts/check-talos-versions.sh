@@ -23,6 +23,7 @@ yaml_value() { echo "[[:space:]]*\"?v${SEMVER}\"?[[:space:]]*(#.*)?$"; }
 tf_value() { echo "[[:space:]]*=[[:space:]]*\"${SEMVER}\"[[:space:]]*$"; }
 
 talosupgrade=kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml
+kubeupgrade=kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml
 declare -A talos=(
   [talos/topf.yaml]="$(extract talos/topf.yaml "^talosVersion:$(yaml_value)")"
   [talos/talenv.yaml]="$(extract talos/talenv.yaml "^talosVersion:$(yaml_value)")"
@@ -34,6 +35,8 @@ declare -A talos=(
 declare -A kube=(
   [talos/topf.yaml]="$(extract talos/topf.yaml "^kubernetesVersion:$(yaml_value)")"
   [talos/talenv.yaml]="$(extract talos/talenv.yaml "^kubernetesVersion:$(yaml_value)")"
+  # spec.kubernetes.version: the line right after its Renovate annotation.
+  [$kubeupgrade]="$(sed -n '/depName=ghcr.io\/siderolabs\/kubelet/{n;p;q}' "$kubeupgrade" | sed -nE "s/^[[:space:]]+version:$(yaml_value)/\1/p")"
 )
 
 fail=0

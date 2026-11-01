@@ -1,0 +1,30 @@
+---
+# Kubernetes upgrade plan. A KubernetesUpgrade has no node selector: it acts on
+# the whole cluster as soon as any node's kubelet differs from spec version, and
+# tuppr waits for a running TalosUpgrade to finish first. At the running version
+# it records Completed and starts no job. Renovate bumps this version in the same
+# PR as talos/topf.yaml and talos/talenv.yaml, one minor at a time (Kubernetes
+# does not support skipping a minor), and scripts/check-talos-versions.sh fails
+# CI if any copy drifts.
+apiVersion: tuppr.home-operations.com/v1alpha1
+kind: KubernetesUpgrade
+metadata:
+  name: kubernetes
+spec:
+  kubernetes:
+    # Desired cluster version; must equal kubernetesVersion in talos/topf.yaml.
+    # renovate: datasource=docker depName=ghcr.io/siderolabs/kubelet
+    version: v1.34.1
+  healthChecks:
+    - apiVersion: ceph.rook.io/v1
+      kind: CephCluster
+      name: rook-ceph-external
+      namespace: rook-ceph
+      expr: status.ceph.health in ['HEALTH_OK']
+      timeout: 10m
+      description: External Ceph cluster is HEALTH_OK
+    - apiVersion: v1
+      kind: Node
+      expr: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+      timeout: 10m
+      description: Every node is Ready
