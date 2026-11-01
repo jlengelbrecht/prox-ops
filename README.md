@@ -251,10 +251,12 @@ prox-ops/
 │   ├── components/          # Shared Kustomize components
 │   └── flux/                # Flux bootstrap + cluster Kustomization
 ├── talos/
-│   ├── patches/             # Per-role and per-node Talos config patches
-│   ├── talconfig.yaml       # talhelper input
-│   ├── talenv.yaml          # Talos + Kubernetes versions (Renovate-managed)
-│   └── talsecret.sops.yaml  # Encrypted Talos secrets
+│   ├── topf.yaml            # topf: cluster, versions, schematics, nodes
+│   ├── all/, control-plane/, worker/, node/  # topf patches (global, role, per node)
+│   ├── patches/             # Legacy talhelper patches (pending workflow migration)
+│   ├── talconfig.yaml       # Legacy talhelper input (pending workflow migration)
+│   ├── talenv.yaml          # Legacy versions file, still read by workflows/Renovate
+│   └── talsecret.sops.yaml  # Encrypted Talos secrets (used by topf)
 ├── terraform/               # Proxmox VM templates + node provisioning
 ├── bootstrap/               # Pre-Flux bootstrap manifests
 ├── scripts/                 # Operational helpers

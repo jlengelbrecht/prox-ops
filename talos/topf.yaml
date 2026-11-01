@@ -1,0 +1,138 @@
+---
+# Talos machine configuration for the prox-ops cluster, rendered and applied
+# with topf (https://github.com/postfinance/topf).
+#
+# Patches are merged in this order (lexicographic within each directory):
+#   all/  ->  control-plane/ | worker/  ->  node/<host>/
+#
+# Render locally (offline, no node access):  topf render -o ./rendered
+# Preview changes against live nodes:        topf apply --dry-run
+clusterName: kubernetes
+clusterEndpoint: https://10.20.67.20:6443
+
+# renovate: datasource=docker depName=ghcr.io/siderolabs/installer
+talosVersion: v1.13.10
+# renovate: datasource=docker depName=ghcr.io/siderolabs/kubelet
+kubernetesVersion: v1.34.1
+
+# Nodes are Proxmox VMs built from the Image Factory nocloud image
+# (terraform/modules/talos-template), so the installer image topf derives is
+# factory.talos.dev/nocloud-installer/<schematicId>:<talosVersion>.
+platform: nocloud
+secureboot: false
+
+# Base schematic: QEMU guest agent + net.ifnames=0.
+# GPU nodes override it below with the NVIDIA schematic.
+schematicId: f683308f6e49ec36d715bd41c90d800910552d8cbc015c8363ec350594535fa1
+
+# Talos secrets bundle (SOPS/age encrypted; topf decrypts it automatically).
+secretsPath: talsecret.sops.yaml
+
+nodes:
+  # --- Control plane --------------------------------------------------------
+  - host: k8s-ctrl-1 # Baldar
+    ip: 10.20.67.1
+    role: control-plane
+    data:
+      macAddr: "bc:24:11:af:26:d4"
+  - host: k8s-ctrl-2 # Heimdall
+    ip: 10.20.67.2
+    role: control-plane
+    data:
+      macAddr: "aa:54:cd:f6:a1:d0"
+  - host: k8s-ctrl-3 # Odin
+    ip: 10.20.67.3
+    role: control-plane
+    data:
+      macAddr: "be:9c:fd:2c:54:85"
+
+  # --- Workers ----------------------------------------------------------------
+  # iotAddr: IoT VLAN 62 interface (eth1), dmzAddr: DMZ VLAN 81 interface (eth2)
+  - host: k8s-work-1 # Baldar
+    ip: 10.20.67.4
+    role: worker
+    data:
+      macAddr: "b2:dc:2e:72:8c:ec"
+      iotAddr: 10.20.62.4/23
+      dmzAddr: 10.20.81.4/24
+  - host: k8s-work-2 # Baldar
+    ip: 10.20.67.5
+    role: worker
+    data:
+      macAddr: "06:64:c3:76:9a:98"
+      iotAddr: 10.20.62.5/23
+      dmzAddr: 10.20.81.5/24
+  - host: k8s-work-3 # Baldar
+    ip: 10.20.67.6
+    role: worker
+    data:
+      macAddr: "36:30:ad:44:40:cd"
+      iotAddr: 10.20.62.6/23
+      dmzAddr: 10.20.81.6/24
+  - host: k8s-work-4 # Heimdall, RTX A2000
+    ip: 10.20.67.7
+    role: worker
+    # GPU schematic: QEMU guest agent + NVIDIA drivers + container toolkit + net.ifnames=0
+    schematicId: 26a847a67a3a6575fdcb3a9a45d6f1add29827e0f549955806b532d590004982
+    data:
+      macAddr: "22:d1:14:e2:ee:49"
+      iotAddr: 10.20.62.7/23
+      dmzAddr: 10.20.81.7/24
+  - host: k8s-work-5 # Heimdall
+    ip: 10.20.67.8
+    role: worker
+    data:
+      macAddr: "bc:24:11:e7:ef:7f"
+      iotAddr: 10.20.62.8/23
+      dmzAddr: 10.20.81.8/24
+  - host: k8s-work-6 # Heimdall
+    ip: 10.20.67.9
+    role: worker
+    data:
+      macAddr: "0e:eb:7c:a2:2e:cc"
+      iotAddr: 10.20.62.9/23
+      dmzAddr: 10.20.81.9/24
+  - host: k8s-work-7 # Odin
+    ip: 10.20.67.10
+    role: worker
+    data:
+      macAddr: "bc:24:11:6b:75:fe"
+      iotAddr: 10.20.62.10/23
+      dmzAddr: 10.20.81.10/24
+  - host: k8s-work-8 # Odin
+    ip: 10.20.67.11
+    role: worker
+    data:
+      macAddr: "bc:24:11:16:f6:dd"
+      iotAddr: 10.20.62.11/23
+      dmzAddr: 10.20.81.11/24
+  - host: k8s-work-9 # Odin
+    ip: 10.20.67.12
+    role: worker
+    data:
+      macAddr: "bc:24:11:27:e7:a3"
+      iotAddr: 10.20.62.12/23
+      dmzAddr: 10.20.81.12/24
+  - host: k8s-work-10 # Thor, RTX A5000
+    ip: 10.20.67.13
+    role: worker
+    # GPU schematic: QEMU guest agent + NVIDIA drivers + container toolkit + net.ifnames=0
+    schematicId: 26a847a67a3a6575fdcb3a9a45d6f1add29827e0f549955806b532d590004982
+    data:
+      macAddr: "bc:24:11:57:87:b2"
+      iotAddr: 10.20.62.13/23
+      dmzAddr: 10.20.81.13/24
+  - host: k8s-work-11 # Thor
+    ip: 10.20.67.14
+    role: worker
+    data:
+      macAddr: "bc:24:11:7c:38:8e"
+      iotAddr: 10.20.62.14/23
+      dmzAddr: 10.20.81.14/24
+  - host: k8s-work-12 # Thor, YubiHSM 2
+    ip: 10.20.67.15
+    role: worker
+    data:
+      macAddr: "bc:24:11:a9:aa:be"
+      iotAddr: 10.20.62.15/23
+      dmzAddr: 10.20.81.15/24
