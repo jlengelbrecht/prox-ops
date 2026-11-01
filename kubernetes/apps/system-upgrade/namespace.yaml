@@ -1,0 +1,19 @@
+---
+# Namespace for tuppr, the Talos/Kubernetes upgrade controller. Talos only
+# hands out the os:admin role to ServiceAccounts in namespaces listed under
+# machine.features.kubernetesTalosAPIAccess on the control-plane nodes, so
+# nothing else should run here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: system-upgrade
+  labels:
+    kubernetes.io/metadata.name: system-upgrade
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
