@@ -15,12 +15,14 @@ spec:
         name: litellm
         namespace: ai
   interval: 1h
+  # Allow time for the migration job and slow pod start before Helm remediates
+  timeout: 15m
   # Depend on PostgreSQL to be ready before LiteLLM
   dependsOn:
     - name: litellm-postgres
       namespace: ai
   values:
-    # Image configuration - uses litellm-database (debian-based) for Prisma compatibility
+    # Image configuration - uses the litellm-database image (bundles Prisma)
     image:
       repository: ghcr.io/berriai/litellm-database
       pullPolicy: Always
@@ -71,7 +73,7 @@ spec:
         type: RuntimeDefault
 
     # Container security context
-    # Note: readOnlyRootFilesystem=false required for Prisma + supervisord
+    # Note: readOnlyRootFilesystem=false required for Prisma
     securityContext:
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: false
@@ -86,15 +88,15 @@ spec:
         memory: 256Mi
       limits:
         cpu: 1
-        memory: 1Gi
+        memory: 1536Mi
 
     # Service configuration
     service:
       type: ClusterIP
       port: 4000
 
-    # The separate health app (port 8081) was run by supervisord in the old
-    # image. Current images start the proxy directly and no longer ship
+    # The old image ran a separate health server (port 8081) under supervisord.
+    # Current images start the proxy directly and no longer ship
     # it, so probes must use the main port.
     separateHealthApp: false
 
@@ -126,6 +128,10 @@ spec:
       LITELLM_LOG: "INFO"
       # Enable database storage for UI settings (logo, themes, etc.)
       STORE_MODEL_IN_DB: "True"
+      # Never let a proxy pod diff/alter the schema at start. A pod running an
+      # older image after a Helm rollback would otherwise drop newer tables.
+      # The migration job overrides this to "false" so it still migrates.
+      DISABLE_SCHEMA_UPDATE: "true"
 
     # Extra environment variables from secrets
     # LiteLLM UI requires LITELLM_MASTER_KEY (chart only sets PROXY_MASTER_KEY)
@@ -163,11 +169,10 @@ spec:
           secretKeyRef:
             name: litellm-oidc
             key: PROXY_ADMIN_ID
-      # Disable basic auth login (SSO only)
-      - name: UI_USERNAME
-        value: ""
-      - name: UI_PASSWORD
-        value: ""
+      # Password login is disabled via general_settings in config.yaml
+      # (disable_password_login_when_sso_enabled). Do not set UI_USERNAME /
+      # UI_PASSWORD to empty strings: LiteLLM treats that as empty credentials
+      # that log in as admin.
       # OpenAI API key for external LLM fallback
       # Used when local Ollama is overloaded or for faster inference
       - name: OPENAI_API_KEY
