@@ -385,7 +385,9 @@
         "terraform/variables.tf",
         "terraform/terraform.tfvars"
       ],
-      "separateMinorPatch": true
+      "separateMinorPatch": true,
+      // tuppr does not enforce the supported upgrade path: one PR per minor.
+      "separateMultipleMinor": true
     },
     {
       "description": "Core - Kubernetes cluster version (every copy in one PR)",
@@ -393,8 +395,14 @@
       "groupSlug": "kubernetes-cluster-version",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["ghcr.io/siderolabs/kubelet"],
-      "matchFileNames": ["talos/topf.yaml", "talos/talenv.yaml"],
-      "separateMinorPatch": true
+      "matchFileNames": [
+        "talos/topf.yaml",
+        "talos/talenv.yaml",
+        "kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml"
+      ],
+      "separateMinorPatch": true,
+      // Kubernetes cannot skip a minor version: one PR per minor.
+      "separateMultipleMinor": true
     }
   ]
 }

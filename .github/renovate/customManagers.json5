@@ -37,9 +37,14 @@
     },
     {
       "customType": "regex",
-      // Kubernetes version (Talos kubelet image tag) in topf.yaml and talenv.yaml.
-      "description": "Monitor Kubernetes version in topf.yaml and talenv.yaml",
-      "managerFilePatterns": ["/^talos/topf\\.yaml$/", "/^talos/talenv\\.yaml$/"],
+      // Kubernetes version (Talos kubelet image tag) in topf.yaml, talenv.yaml and
+      // the tuppr KubernetesUpgrade.
+      "description": "Monitor Kubernetes version in topf.yaml, talenv.yaml and the tuppr KubernetesUpgrade",
+      "managerFilePatterns": [
+        "/^talos/topf\\.yaml$/",
+        "/^talos/talenv\\.yaml$/",
+        "/^kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade\\.yaml$/"
+      ],
       "matchStrings": [
         "# renovate: datasource=docker depName=ghcr.io/siderolabs/kubelet\\n\\s*\\w+:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+)"
       ],

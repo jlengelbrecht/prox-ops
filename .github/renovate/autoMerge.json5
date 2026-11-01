@@ -550,13 +550,17 @@
       ]
     },
     {
-      "description": "MANUAL: Kubernetes cluster version (topf, talenv)",
+      "description": "MANUAL: Kubernetes cluster version (topf, talenv, tuppr KubernetesUpgrade)",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["ghcr.io/siderolabs/kubelet"],
-      "matchFileNames": ["talos/topf.yaml", "talos/talenv.yaml"],
+      "matchFileNames": [
+        "talos/topf.yaml",
+        "talos/talenv.yaml",
+        "kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml"
+      ],
       "automerge": false,
       "prBodyNotes": [
-        "**Kubernetes version**: manual merge. Confirm the current Talos release supports this Kubernetes version before merging."
+        "**Kubernetes version**: manual merge. tuppr upgrades the whole cluster to the merged version. Confirm the current Talos release supports it before merging."
       ]
     },
     // Paperclip: last in the list so no earlier patch/minor rule can auto-merge it.
