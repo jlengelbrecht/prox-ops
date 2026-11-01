@@ -1,0 +1,163 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  # The release must be named ceph-csi-drivers in rook-ceph: Rook v1.19 labelled
+  # the existing Driver and OperatorConfig resources for that release, so Helm
+  # adopts them instead of failing on resources it doesn't own.
+  name: ceph-csi-drivers
+spec:
+  chart:
+    spec:
+      chart: ceph-csi-drivers
+      # renovate: datasource=helm registryUrl=https://ceph.github.io/ceph-csi-operator
+      version: 1.0.4
+      sourceRef:
+        kind: HelmRepository
+        name: ceph-csi-operator
+  # The operator chart installs the CSI operator and the Driver CRDs this chart uses.
+  dependsOn:
+    - name: rook-ceph-operator
+  interval: 1h
+  timeout: 15m
+  # Correct out-of-band edits to the Drivers, such as an operator writing its
+  # own spec back over them.
+  driftDetection:
+    mode: enabled
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  # Deleting a Driver removes its plugin pods, so no volume can be mounted,
+  # unmounted or provisioned until they come back. Keep the Drivers and the
+  # OperatorConfig if this release is ever uninstalled or rolled back.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: csi.ceph.io
+              kind: Driver|OperatorConfig
+            patch: |
+              apiVersion: csi.ceph.io/v1
+              kind: placeholder
+              metadata:
+                name: placeholder
+                annotations:
+                  helm.sh/resource-policy: keep
+  # Every per-driver value below is rendered into the Driver spec, and the chart's
+  # per-driver defaults override operatorConfig. That's why each driver repeats the
+  # settings instead of relying on driverSpecDefaults. The values match what
+  # Rook v1.19 generated, apart from the snapshot policies.
+  values:
+    operatorConfig:
+      namespace: rook-ceph
+      driverSpecDefaults:
+        log:
+          rotation:
+            enabled: false
+        imageSet:
+          name: rook-csi-operator-image-set-configmap
+        clusterName: rook-ceph-external
+        # The chart default is 30s; Rook ran the sidecars with 150s.
+        grpcTimeout: 150
+        nodePlugin:
+          priorityClassName: system-node-critical
+          kubeletDirPath: /var/lib/kubelet
+        controllerPlugin:
+          priorityClassName: system-cluster-critical
+          replicas: 2
+
+    drivers:
+      rbd:
+        name: rook-ceph.rbd.csi.ceph.com
+        log:
+          rotation:
+            enabled: false
+        imageSet:
+          name: rook-csi-operator-image-set-configmap
+        clusterName: rook-ceph-external
+        grpcTimeout: 150
+        # The chart default is "none", which drops the csi-snapshotter sidecar.
+        # VolumeSnapshots of ceph-block volumes need it.
+        snapshotPolicy: volumeSnapshot
+        nodePlugin:
+          priorityClassName: system-node-critical
+          kubeletDirPath: /var/lib/kubelet
+          updateStrategy:
+            type: RollingUpdate
+          resources:
+            registrar:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 256Mi
+            plugin:
+              requests:
+                cpu: 100m
+                memory: 512Mi
+              limits:
+                memory: 1Gi
+        controllerPlugin:
+          priorityClassName: system-cluster-critical
+          replicas: 2
+          deploymentStrategy:
+            type: Recreate
+          resources:
+            attacher: &sidecar
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                memory: 256Mi
+            provisioner: *sidecar
+            resizer: *sidecar
+            snapshotter: *sidecar
+
+      cephfs:
+        name: rook-ceph.cephfs.csi.ceph.com
+        log:
+          rotation:
+            enabled: false
+        imageSet:
+          name: rook-csi-operator-image-set-configmap
+        clusterName: rook-ceph-external
+        grpcTimeout: 150
+        # Rook v1.18-v1.19 set volumeGroupSnapshot here on its own. Nothing uses
+        # CephFS group snapshots, so this keeps plain snapshots with the gate off.
+        snapshotPolicy: volumeSnapshot
+        nodePlugin:
+          priorityClassName: system-node-critical
+          kubeletDirPath: /var/lib/kubelet
+          updateStrategy:
+            type: RollingUpdate
+          resources:
+            registrar:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                memory: 256Mi
+            plugin:
+              requests:
+                cpu: 100m
+                memory: 512Mi
+              limits:
+                memory: 1Gi
+        controllerPlugin:
+          priorityClassName: system-cluster-critical
+          replicas: 2
+          deploymentStrategy:
+            type: Recreate
+          resources:
+            attacher: *sidecar
+            provisioner: *sidecar
+            resizer: *sidecar
+            snapshotter: *sidecar
+
+      nfs:
+        enabled: false
+      nvmeof:
+        enabled: false
