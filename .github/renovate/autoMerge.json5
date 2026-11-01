@@ -283,6 +283,89 @@
     },
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 2e: MEDIA / REQUEST / DOWNLOAD APPS - patch + minor automerge, short soak
+    // Root cause this fixes: lscr.io and ghcr.io tags carry no release timestamp, and
+    // Renovate's default (minimumReleaseAgeBehaviour: timestamp-required) treats a
+    // missing timestamp as "still soaking" forever, so these updates sat under
+    // "Pending Status Checks" and no branch was ever created. timestamp-optional lets
+    // them through; where a registry does give a timestamp (Docker Hub: FileFlows,
+    // Notifiarr) the soak below is enforced, otherwise the update merges once CI is
+    // green. Majors stay manual. Placed after the older Tier 2 soaks so these win.
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Media apps: auto-merge patch updates after a 1 day soak; tolerate registries with no release timestamp",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "1 day",
+      "minimumReleaseAgeBehaviour": "timestamp-optional",
+      "prPriority": 5,
+      "matchPackageNames": [
+        "lscr.io/linuxserver/plex",
+        "lscr.io/linuxserver/tautulli",
+        "lscr.io/linuxserver/sonarr",
+        "lscr.io/linuxserver/radarr",
+        "lscr.io/linuxserver/prowlarr",
+        "lscr.io/linuxserver/sabnzbd",
+        "lscr.io/linuxserver/qbittorrent",
+        "ghcr.io/linuxserver/bookstack",
+        "ghcr.io/martabal/qbittorrent-exporter",
+        "ghcr.io/onedr0p/exportarr",
+        "ghcr.io/seerr-team/seerr",
+        "ghcr.io/wizarrrr/wizarr",
+        "ghcr.io/maintainerr/maintainerr",
+        "ghcr.io/cleanuparr/cleanuparr",
+        "golift/notifiarr",
+        "ghcr.io/gethomepage/homepage",
+        "revenz/fileflows"
+      ]
+    },
+    {
+      "description": "Media apps: auto-merge minor updates after a 3 day soak; tolerate registries with no release timestamp",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["minor"],
+      "minimumReleaseAge": "3 days",
+      "minimumReleaseAgeBehaviour": "timestamp-optional",
+      "prPriority": 5,
+      "matchPackageNames": [
+        "lscr.io/linuxserver/plex",
+        "lscr.io/linuxserver/tautulli",
+        "lscr.io/linuxserver/sonarr",
+        "lscr.io/linuxserver/radarr",
+        "lscr.io/linuxserver/prowlarr",
+        "lscr.io/linuxserver/sabnzbd",
+        "lscr.io/linuxserver/qbittorrent",
+        "ghcr.io/linuxserver/bookstack",
+        "ghcr.io/martabal/qbittorrent-exporter",
+        "ghcr.io/onedr0p/exportarr",
+        "ghcr.io/seerr-team/seerr",
+        "ghcr.io/wizarrrr/wizarr",
+        "ghcr.io/maintainerr/maintainerr",
+        "ghcr.io/cleanuparr/cleanuparr",
+        "golift/notifiarr",
+        "ghcr.io/gethomepage/homepage",
+        "revenz/fileflows"
+      ]
+    },
+    {
+      // FileFlows tags are modded-YY.MM and the versioning regex reads YY as "major", so
+      // the January roll-over (modded-26.12 -> modded-27.01) would otherwise be a manual
+      // major. It is an ordinary monthly release, so treat it like a minor.
+      "description": "FileFlows: auto-merge the YY roll-over (reads as a major) after a 3 day soak",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "3 days",
+      "minimumReleaseAgeBehaviour": "timestamp-optional",
+      "prPriority": 5,
+      "matchPackageNames": ["revenz/fileflows"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // TIER 3: REQUIRE MANUAL REVIEW — Critical infrastructure + stateful apps
     //
     // MUST come AFTER all automerge opt-in rules so they take final precedence.
