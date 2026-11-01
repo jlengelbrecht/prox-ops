@@ -49,7 +49,9 @@ templates and can use `.Node.Host`, `.Node.IP` and `.Node.Data.*` from
 
 topf builds `machine.install.image` from `talosVersion`, `platform` and the
 node's `schematicId`, so for these nodes it is
-`factory.talos.dev/nocloud-installer/<schematic>:<talosVersion>`.
+`factory.talos.dev/metal-installer/<schematic>:<talosVersion>`. The nodes run
+the `metal` platform (see `/proc/cmdline`), even though the VM templates start
+from the nocloud image; keep `platform: metal` so upgrades don't switch them.
 
 Only `/var` is writable on Talos. Never add `machine.files` entries outside
 `/var`. A recursive grep of `talos/` for file paths under `/etc` must come

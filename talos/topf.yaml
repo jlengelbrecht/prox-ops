@@ -15,10 +15,14 @@ talosVersion: v1.13.12
 # renovate: datasource=docker depName=ghcr.io/siderolabs/kubelet
 kubernetesVersion: v1.34.1
 
-# Nodes are Proxmox VMs built from the Image Factory nocloud image
-# (terraform/modules/talos-template), so the installer image topf derives is
-# factory.talos.dev/nocloud-installer/<schematicId>:<talosVersion>.
-platform: nocloud
+# The VM templates boot the Image Factory nocloud image
+# (terraform/modules/talos-template), but every node runs with
+# talos.platform=metal after its first upgrade through the generic installer,
+# and the machine config carries all networking. Keep metal: tuppr reuses the
+# installer path from each node's config, so a nocloud-installer path here would
+# move nodes to the nocloud platform on their next upgrade. topf derives
+# factory.talos.dev/metal-installer/<schematicId>:<talosVersion>.
+platform: metal
 secureboot: false
 
 # Base schematic: QEMU guest agent + net.ifnames=0.
