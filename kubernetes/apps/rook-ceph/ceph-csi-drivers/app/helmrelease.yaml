@@ -31,16 +31,17 @@ spec:
     remediation:
       retries: 3
   # Deleting a Driver removes its plugin pods, so no volume can be mounted,
-  # unmounted or provisioned until they come back. Keep the Drivers and the
-  # OperatorConfig if this release is ever uninstalled or rolled back.
+  # unmounted or provisioned until they come back. Keep everything this release
+  # creates if it is ever uninstalled or rolled back: the Drivers would still
+  # reference the service accounts and RBAC, and replacement plugin pods could
+  # not start without them. Delete leftovers by hand once nothing uses them.
   postRenderers:
     - kustomize:
         patches:
           - target:
-              group: csi.ceph.io
-              kind: Driver|OperatorConfig
+              kind: Driver|OperatorConfig|ServiceAccount|ClusterRole|ClusterRoleBinding|Role|RoleBinding
             patch: |
-              apiVersion: csi.ceph.io/v1
+              apiVersion: v1
               kind: placeholder
               metadata:
                 name: placeholder
