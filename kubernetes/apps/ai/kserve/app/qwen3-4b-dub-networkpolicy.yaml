@@ -1,67 +1,78 @@
 ---
-# CiliumNetworkPolicy for Whisper Medium InferenceService
-# Implements zero-trust network segmentation
-# STORY-030-4: Security hardening for voice calling STT
+# CiliumNetworkPolicy for Qwen3-4B dub InferenceService
+# Implements zero-trust network segmentation (same posture as the other KServe models in this namespace)
 #
 # Security Posture:
-# - Ingress: ONLY from Kourier/activator (KServe traffic) and Prometheus
-# - Egress: DNS + HuggingFace (for model download/conversion on cold starts)
+# - Ingress: ONLY envoy-internal gateway, Kourier, Knative activator/autoscaler, Prometheus
+# - Egress: DNS resolution only (GGUF pre-cached on model-cache PVC, no internet needed)
 # - Default: DENY all other traffic
-#
-# Rationale:
-# - Prevents lateral movement if faster-whisper container compromised
-# - faster-whisper downloads + converts model to CTranslate2 format
-# - Converted model cached in model-cache PVC for faster subsequent starts
-# - Note: HuggingFace egress required until model is cached
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: whisper-medium
+  name: qwen3-4b-dub
   namespace: ai
   labels:
-    app.kubernetes.io/name: whisper-medium
+    app.kubernetes.io/name: qwen3-4b-dub
     app.kubernetes.io/component: networkpolicy
 spec:
   # Target KServe InferenceService pods
+  # Note: KServe creates pods with serving.kserve.io/inferenceservice label
   endpointSelector:
     matchLabels:
-      serving.kserve.io/inferenceservice: whisper-medium
+      serving.kserve.io/inferenceservice: qwen3-4b-dub
 
   # Ingress Rules
   ingress:
+    # Allow traffic from envoy-internal gateway (HTTPRoute ingress)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            app.kubernetes.io/name: envoy-gateway
+            app.kubernetes.io/component: envoy-gateway
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+
     # Allow traffic from Kourier gateway (KServe internal ingress)
     # Traffic path: LiteLLM → Kourier → queue-proxy → kserve-container
+    # Port 8080: kserve-container (llama-server API)
+    # Port 8012: queue-proxy sidecar (traffic forwarding)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kourier-system
             app: 3scale-kourier-gateway
       toPorts:
         - ports:
-            - port: "8000"
+            - port: "8080"
               protocol: TCP
             - port: "8012"
               protocol: TCP
 
     # Allow Knative Serving activator (cold start requests)
+    # During scale-from-zero, activator forwards requests to predictor
+    # Port 8080: kserve-container (llama-server API)
+    # Port 8012: queue-proxy sidecar (activator probes and traffic forwarding)
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: knative-serving
             app: activator
       toPorts:
         - ports:
-            - port: "8000"
+            - port: "8080"
               protocol: TCP
             - port: "8012"
               protocol: TCP
 
     # Allow Knative Serving autoscaler (metrics scraping)
+    # Autoscaler needs to scrape metrics for scaling decisions
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: knative-serving
             app: autoscaler
       toPorts:
         - ports:
-            - port: "8000"
+            - port: "8080"
               protocol: TCP
             # queue-proxy autoscaling metrics; without it the pod never scales to zero
             - port: "9090"
@@ -74,12 +85,13 @@ spec:
             app.kubernetes.io/name: prometheus
       toPorts:
         - ports:
-            - port: "8000"
+            - port: "8080"
               protocol: TCP
 
   # Egress Rules
   egress:
-    # Allow DNS resolution
+    # Allow DNS resolution ONLY (required for internal cluster communication)
+    # No internet egress needed - GGUF is pre-cached, llama.cpp never phones home
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: kube-system
@@ -88,31 +100,8 @@ spec:
         - ports:
             - port: "53"
               protocol: UDP
+            - port: "53"
+              protocol: TCP
           rules:
             dns:
               - matchPattern: "*"
-
-    # Allow HuggingFace Hub access for model download and conversion
-    # faster-whisper downloads and converts model to CTranslate2 format
-    # Converted model is cached in PVC for faster subsequent cold starts
-    - toFQDNs:
-        - matchName: "huggingface.co"
-        - matchPattern: "*.huggingface.co"
-        - matchName: "cdn-lfs.huggingface.co"
-        - matchPattern: "*.hf.co"
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP
-
-    # Allow PyPI access for runtime dependency installation
-    # faster-whisper-server image builds/installs packages on startup
-    - toFQDNs:
-        - matchName: "pypi.org"
-        - matchPattern: "*.pypi.org"
-        - matchName: "files.pythonhosted.org"
-        - matchPattern: "*.pythonhosted.org"
-      toPorts:
-        - ports:
-            - port: "443"
-              protocol: TCP

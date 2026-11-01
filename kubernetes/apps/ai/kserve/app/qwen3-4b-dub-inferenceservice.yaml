@@ -1,0 +1,129 @@
+---
+# KServe InferenceService: Qwen3-4B-Instruct-2507 (llama.cpp) on the RTX A2000
+# Model: unsloth/Qwen3-4B-Instruct-2507-GGUF, Q4_K_M quant (2.50GB file)
+# Purpose: short English rewriting (dub line fitting) and JA->EN subtitle translation
+#
+# GPU: RTX A2000 (k8s-work-4) is the 6GB variant and is shared by time-slice with
+# Plex (hardware transcoding) and FileFlows (NVENC). This model must stay <= ~3.5GB
+# so those keep headroom.
+#
+# VRAM budget: 2.50GB weights + ~0.3GB KV (4096 ctx, q8_0 K/V: 36 layers x 8 KV heads
+#   x 128 dim x 2 x 1 byte ~= 74KiB/token) + ~0.3GB CUDA context + ~0.2GB compute
+#   buffers => ~3.3GB. q8_0 KV needs flash attention, enabled below.
+#
+# Scale-to-zero: minReplicas=0 and the cluster Knative defaults (scale-to-zero-grace-period
+# and pod-retention both 5m, see kubernetes/apps/kube-system/knative-serving). The grace
+# period is cluster-wide and cannot be shortened per revision, so 5m is the floor; no
+# per-revision retention override is set. Cold start ~30-60s (2.5GB GGUF from CephFS).
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen3-4b-dub
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen3-4b-dub
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: kserve
+    model.framework: llama-cpp
+    model.type: text-only
+    model.size: 4b
+  annotations:
+    serving.kserve.io/enable-prometheus-scraping: "true"
+    security.homelab/gpu-required: "NVIDIA RTX A2000 (6GB, shared) for small LLM inference"
+    security.homelab/network: "Internal only - ClusterIP service"
+spec:
+  predictor:
+    minReplicas: 0
+    maxReplicas: 1  # One slice of the shared A2000
+
+    # Target ONLY k8s-work-4 (RTX A2000 6GB)
+    nodeSelector:
+      kubernetes.io/hostname: k8s-work-4
+      gpu.nvidia.com/model: rtx-a2000
+
+    containers:
+      - name: llama-server
+        # renovate: datasource=docker depName=ghcr.io/ggml-org/llama.cpp
+        image: ghcr.io/ggml-org/llama.cpp:server-cuda-b9917
+        args:
+          - --model
+          - /models/unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+          # Model name exposed via /v1/models (referenced by LiteLLM config)
+          - --alias
+          - qwen3-4b-instruct
+          - --n-gpu-layers
+          - "999"
+          # 4k context, single slot: dub lines and subtitle batches are short
+          - --ctx-size
+          - "4096"
+          - --parallel
+          - "1"
+          # q8_0 KV halves cache VRAM; requires flash attention
+          - --flash-attn
+          - "on"
+          - --cache-type-k
+          - q8_0
+          - --cache-type-v
+          - q8_0
+          - --jinja
+          - --metrics
+          - --host
+          - 0.0.0.0
+          - --port
+          - "8080"
+        env:
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: "all"
+          - name: HOME
+            value: "/tmp"
+        resources:
+          requests:
+            cpu: 1
+            memory: 2Gi
+            nvidia.com/gpu: 1
+          limits:
+            cpu: 4
+            memory: 4Gi
+            nvidia.com/gpu: 1
+        ports:
+          - containerPort: 8080
+            name: http1  # Knative requires port name to be 'http1' or 'h2c'
+            protocol: TCP
+        # /health returns 503 while loading, 200 when ready. Cold start ~30-60s.
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 8
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 36
+        volumeMounts:
+          - name: model-cache
+            mountPath: /models
+            readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false  # llama-server needs writable /tmp
+          capabilities:
+            drop:
+              - ALL
+
+    runtimeClassName: nvidia
+    securityContext:
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    serviceAccountName: default
+    volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache
