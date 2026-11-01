@@ -1,0 +1,47 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tuppr
+spec:
+  dependsOn:
+    # ServiceMonitor and PrometheusRule CRDs
+    - name: prometheus-operator-crds
+      namespace: kube-system
+  interval: 1h
+  retryInterval: 1m
+  timeout: 10m
+  path: ./kubernetes/apps/system-upgrade/tuppr/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: system-upgrade
+  wait: true
+  healthChecks:
+    - apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      name: tuppr
+      namespace: system-upgrade
+---
+# TalosUpgrade and KubernetesUpgrade are cluster-scoped, so there is no
+# targetNamespace. Waits for the controller so its CRDs and validating webhook
+# exist before these are applied.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: tuppr-upgrades
+spec:
+  dependsOn:
+    - name: tuppr
+  interval: 1h
+  retryInterval: 1m
+  timeout: 5m
+  path: ./kubernetes/apps/system-upgrade/tuppr/upgrades
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

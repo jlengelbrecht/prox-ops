@@ -1,0 +1,58 @@
+---
+# Rolling Talos upgrade plan. Only nodes carrying the opt-in label below are in
+# scope; no node has it today, so this plan selects nothing and finishes
+# without touching a node. To enrol a node:
+#   kubectl label node <node> tuppr.home-operations.com/enabled=true
+# tuppr upgrades any enrolled node whose version differs from spec.talos.version,
+# in either direction. Before enrolling a node, make sure Renovate bumps this
+# version together with terraform/variables.tf and talos/talenv.yaml, or the
+# old upgrade workflows have been retired; otherwise one of them upgrades the
+# node and tuppr rolls it back.
+apiVersion: tuppr.home-operations.com/v1alpha1
+kind: TalosUpgrade
+metadata:
+  name: talos
+spec:
+  talos:
+    # Current cluster version. Same depName as talos/talenv.yaml.
+    # renovate: datasource=docker depName=ghcr.io/siderolabs/installer
+    version: v1.13.10
+    # Pull every in-scope node's installer image before the first cordon, so a
+    # bad tag or schematic stops the run before any disruption.
+    prePull: true
+  nodeSelector:
+    matchLabels:
+      tuppr.home-operations.com/enabled: "true"
+  parallelism: 1
+  policy:
+    # Full reboot instead of kexec. The GPU workers (work-4, work-10) use PCIe
+    # passthrough, and a kexec'd kernel inherits the device state rather than
+    # going through a firmware reset. powercycle is still an in-guest reboot;
+    # Proxmox does not stop the VM.
+    rebootMode: powercycle
+    # Keep talosctl's etcd health and membership checks.
+    force: false
+    # tuppr cordons and drains the node itself with PDB-respecting evictions
+    # and uncordons it again if the drain fails. talosctl then runs with
+    # --drain=false, so a blocked drain cannot leave the node cordoned. The
+    # volume-detach wait is best effort: tuppr waits up to two minutes and then
+    # reboots anyway, so it is not a guarantee against Multi-Attach delays.
+    waitForVolumeDetach: true
+    # Bound the drain; the upgrade fails without rebooting if it overruns.
+    # Kept below the 30m per-node timeout.
+    drainTimeout: 10m
+    # The CRD defaults to talosctl --debug.
+    debug: false
+  healthChecks:
+    - apiVersion: ceph.rook.io/v1
+      kind: CephCluster
+      name: rook-ceph-external
+      namespace: rook-ceph
+      expr: status.ceph.health in ['HEALTH_OK']
+      timeout: 10m
+      description: External Ceph cluster is HEALTH_OK
+    - apiVersion: v1
+      kind: Node
+      expr: status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')
+      timeout: 10m
+      description: Every node is Ready
