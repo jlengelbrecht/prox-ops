@@ -49,9 +49,8 @@ spec:
             - port: "4000"
               protocol: TCP
     # Hugging Face (models, incl. its CDN) and web translation engines.
-    # toEntities:world rather than toFQDNs, same workaround as
-    # voice-bridge/app/networkpolicy.yaml (DNS proxy redirect not applied to
-    # endpoints with external-envoy-proxy + transparent DNS mode).
+    # toEntities:world rather than toFQDNs: the Cilium DNS proxy redirect is
+    # not applied to endpoints with external-envoy-proxy + transparent DNS mode.
     - toEntities:
         - world
       toPorts:

@@ -141,13 +141,6 @@ spec:
                   http2Origin: true
                   originServerName: guides.${SECRET_DOMAIN}
 
-              # EPIC-031: Voice Bridge (Twilio WebSocket for outbound calls)
-              - hostname: "voice-bridge.${SECRET_DOMAIN}"
-                service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
-                originRequest:
-                  http2Origin: true
-                  originServerName: voice-bridge.${SECRET_DOMAIN}
-
               # GlycemicGPT (health/diabetes management platform)
               - hostname: "glycemicgpt.${SECRET_DOMAIN}"
                 service: https://envoy-external.{{ .Release.Namespace }}.svc.cluster.local:443
