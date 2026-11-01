@@ -9,6 +9,8 @@ resources:
   # renovate: datasource=github-releases depName=knative/net-kourier
   # Kourier networking layer (lightweight alternative to Istio)
   - https://github.com/knative/net-kourier/releases/download/knative-v1.15.1/kourier.yaml
+  # Lets the ai/voicestudio HTTPRoute send traffic to kourier-internal
+  - ./referencegrant-voicestudio.yaml
 
 # Disable hash suffix for ConfigMaps so Knative can find them
 generatorOptions:
@@ -32,6 +34,15 @@ configMapGenerator:
       - initial-scale=0
       - min-scale=0
       - max-scale=10
+  - name: config-defaults
+    namespace: knative-serving
+    behavior: merge
+    literals:
+      # Upstream caps a revision's timeoutSeconds at 600. VoiceStudio streams
+      # dub transcription over SSE for up to an hour and takes ~500 MB
+      # uploads, so allow up to 1h. This only raises the ceiling; existing
+      # services keep their own timeoutSeconds (the default stays 300).
+      - max-revision-timeout-seconds=3600
   - name: config-network
     namespace: knative-serving
     behavior: merge

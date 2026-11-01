@@ -5,8 +5,13 @@
 #                              (securitypolicy.yaml), then VoiceStudio's own
 #                              API-key login
 #   /outpost.goauthentik.io -> Authentik login/callback flow
-# In-cluster automation (FileFlows) calls the voicestudio Service directly
-# with a Bearer key and never passes through this gateway.
+# VoiceStudio is a scale-to-zero Knative Service (ksvc.yaml). The route
+# targets kourier-internal and rewrites the Host to the ksvc hostname, which
+# is how Kourier picks the service. The Knative activator stays on the path
+# at zero replicas, so a request here wakes the GPU pod. The rewrite happens
+# after the Authentik check, which still sees the public host. In-cluster
+# callers use http://voicestudio.ai.svc.cluster.local (port 80) with a Bearer
+# key; that name also goes through Kourier.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -27,6 +32,9 @@ spec:
             type: PathPrefix
             value: /
       filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: voicestudio.ai.svc.cluster.local
         - type: ResponseHeaderModifier
           responseHeaderModifier:
             add:
@@ -40,8 +48,11 @@ spec:
               - name: Referrer-Policy
                 value: "strict-origin-when-cross-origin"
       backendRefs:
-        - name: voicestudio
-          port: 3900
+        # ReferenceGrant: kubernetes/apps/kube-system/knative-serving/app/
+        # referencegrant-voicestudio.yaml
+        - name: kourier-internal
+          namespace: kourier-system
+          port: 80
 ---
 # Authentik outpost route for the VoiceStudio host (forward-auth login/callback
 # flow). No SecurityPolicy here (it would loop); the cross-namespace
