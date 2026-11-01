@@ -20,15 +20,18 @@ on:
           - trace
   schedule:
     - cron: "0 * * * *"
+  # Run on every merge to main, not only on config changes. The ruleset requires PR
+  # branches to be up to date, so each merge makes every other open Renovate PR stale;
+  # without this run they wait for the next hourly cron to be rebased, which caps
+  # automerge at roughly one PR per hour.
   push:
     branches: ["main"]
-    paths:
-      - .github/renovate.json5
-      - .github/renovate/**.json5
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
-  cancel-in-progress: true
+  # Queue instead of cancelling: merges can land faster than a run finishes, and
+  # cancelling would leave the run perpetually unfinished.
+  cancel-in-progress: false
 
 jobs:
   renovate:

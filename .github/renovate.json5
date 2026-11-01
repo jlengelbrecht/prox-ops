@@ -11,7 +11,7 @@
   ],
   dependencyDashboard: true,
   dependencyDashboardTitle: '🤖 Renovate Dashboard 🤖',
-  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates flow continuously, rate-limited (max 5 open PRs, 2 new/hour) with per-package soak windows. Check a box to run immediately.\n\n---\n',
+  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates flow continuously, rate-limited (max 20 open PRs, 6 new/hour; majors capped at 10 open) with per-package soak windows. Check a box to run immediately.\n\n---\n',
   dependencyDashboardFooter: '\n---\n\n📚 **Documentation:** [Renovate Docs](https://docs.renovatebot.com/) | ⚙️ **Config:** `.github/renovate.json5`',
   suppressNotifications: [
     'prEditedNotification',
@@ -29,9 +29,25 @@
   automergeSchedule: [
     'at any time',
   ],
-  prConcurrentLimit: 5,
-  prHourlyLimit: 2,
-  branchConcurrentLimit: 10,
+  // Throughput. The old 5 PR / 2 per hour / 10 branch caps were saturated by seven
+  // long-lived manual-review PRs and orphan branches, so Renovate skipped ~110 other
+  // updates with "Reached branch limit". Limits are global counts of open PRs/branches,
+  // so they must sit well above the number of manual PRs that can pile up. Majors get a
+  // lower cap in the packageRules below so they cannot crowd out auto-merge updates.
+  prConcurrentLimit: 20,
+  prHourlyLimit: 6,
+  branchConcurrentLimit: 30,
+  // lscr.io, ghcr.io, quay.io and OCI chart tags carry no release timestamp (Renovate only
+  // reads one from Docker Hub and classic Helm repos). The default, timestamp-required,
+  // treats a missing timestamp as "still soaking" forever, which is why ~60 updates sat
+  // under "Pending Status Checks" and never got a branch. With timestamp-optional the
+  // soak applies where a timestamp exists and is skipped where none can be known; those
+  // updates then merge on green required checks.
+  minimumReleaseAgeBehaviour: 'timestamp-optional',
+  // Create a PR from the newest version that has passed its minimumReleaseAge soak
+  // instead of holding the whole branch back while a newer release is still soaking
+  // ("strict", the default). Keeps fast-releasing images moving.
+  internalChecksFilter: 'flexible',
   platformAutomerge: true,
   'pre-commit': {
     enabled: true,
@@ -855,6 +871,37 @@
         'docker',
       ],
       matchCurrentVersion: 'latest',
+      enabled: false,
+    },
+    {
+      // Major updates are always manual and never merge, so every open one holds a slot
+      // for good. Renovate compares these limits with the repository-wide counts of ALL
+      // open PRs and branches, so this does not set a separate major quota: it stops
+      // creating new majors once 10 PRs / 15 branches of any type are open, which keeps
+      // the remaining headroom (up to the global 20 / 30) for patch and minor updates.
+      description: 'Cap open major-update PRs so they cannot fill the shared queue',
+      matchUpdateTypes: ['major'],
+      // FileFlows' YY roll-over reads as a major but auto-merges; it uses the global limits.
+      matchPackageNames: ['!revenz/fileflows'],
+      prConcurrentLimit: 10,
+      branchConcurrentLimit: 15,
+    },
+    {
+      // These manifests are completed Jobs or one-shot rehearsal Pods. Their pod template
+      // is immutable, so a Renovate image bump makes Flux fail to apply them (the same
+      // failure as the busybox bump in #1578). Their images move by hand with the Job.
+      description: 'Do not update images in immutable Job and rehearsal Pod manifests',
+      matchDatasources: ['docker'],
+      matchFileNames: [
+        'kubernetes/apps/ai/model-cache/app/*-job.yaml',
+        'kubernetes/apps/database/hindsight-backlog/**/job.yaml',
+        'kubernetes/apps/ai/hermes-hindsight/auth-placement/job.yaml',
+        'kubernetes/apps/groschen/transfer/copy-job.yaml',
+        'kubernetes/apps/groschen-test/groschen/admin/job.yaml',
+        'kubernetes/apps/observability/grafana-upgrade-rehearsal/app/job.yaml',
+        'kubernetes/apps/observability/kube-prometheus-stack/app/metrics-restore-rehearsal.yaml',
+        'kubernetes/apps/observability/loki/app/restore-rehearsal.yaml',
+      ],
       enabled: false,
     },
     {

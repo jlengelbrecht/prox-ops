@@ -283,6 +283,83 @@
     },
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // TIER 2e: MEDIA / REQUEST / DOWNLOAD APPS - patch + minor automerge, short soak
+    // Stateless apps get the shortest soak (1 day patch, 3 days minor) and a higher
+    // prPriority so they are created and rebased ahead of manual-review PRs. The soak
+    // only bites where the registry reports a release timestamp (Docker Hub); see
+    // minimumReleaseAgeBehaviour in renovate.json5. Majors stay manual.
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      "description": "Media apps: auto-merge patch updates after a 1 day soak; tolerate registries with no release timestamp",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "1 day",
+      "prPriority": 5,
+      "matchPackageNames": [
+        "lscr.io/linuxserver/plex",
+        "lscr.io/linuxserver/tautulli",
+        "lscr.io/linuxserver/sonarr",
+        "lscr.io/linuxserver/radarr",
+        "lscr.io/linuxserver/prowlarr",
+        "lscr.io/linuxserver/sabnzbd",
+        "lscr.io/linuxserver/qbittorrent",
+        "ghcr.io/linuxserver/bookstack",
+        "ghcr.io/martabal/qbittorrent-exporter",
+        "ghcr.io/onedr0p/exportarr",
+        "ghcr.io/seerr-team/seerr",
+        "ghcr.io/wizarrrr/wizarr",
+        "ghcr.io/maintainerr/maintainerr",
+        "ghcr.io/cleanuparr/cleanuparr",
+        "golift/notifiarr",
+        "ghcr.io/gethomepage/homepage",
+        "revenz/fileflows"
+      ]
+    },
+    {
+      "description": "Media apps: auto-merge minor updates after a 3 day soak; tolerate registries with no release timestamp",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["minor"],
+      "minimumReleaseAge": "3 days",
+      "prPriority": 5,
+      "matchPackageNames": [
+        "lscr.io/linuxserver/plex",
+        "lscr.io/linuxserver/tautulli",
+        "lscr.io/linuxserver/sonarr",
+        "lscr.io/linuxserver/radarr",
+        "lscr.io/linuxserver/prowlarr",
+        "lscr.io/linuxserver/sabnzbd",
+        "lscr.io/linuxserver/qbittorrent",
+        "ghcr.io/linuxserver/bookstack",
+        "ghcr.io/martabal/qbittorrent-exporter",
+        "ghcr.io/onedr0p/exportarr",
+        "ghcr.io/seerr-team/seerr",
+        "ghcr.io/wizarrrr/wizarr",
+        "ghcr.io/maintainerr/maintainerr",
+        "ghcr.io/cleanuparr/cleanuparr",
+        "golift/notifiarr",
+        "ghcr.io/gethomepage/homepage",
+        "revenz/fileflows"
+      ]
+    },
+    {
+      // FileFlows tags are modded-YY.MM and the versioning regex reads YY as "major", so
+      // the January roll-over (modded-26.12 -> modded-27.01) would otherwise be a manual
+      // major. It is an ordinary monthly release, so treat it like a minor.
+      "description": "FileFlows: auto-merge the YY roll-over (reads as a major) after a 3 day soak",
+      "matchDatasources": ["docker"],
+      "automerge": true,
+      "automergeType": "pr",
+      "matchUpdateTypes": ["major"],
+      "minimumReleaseAge": "3 days",
+      "prPriority": 5,
+      "matchPackageNames": ["revenz/fileflows"]
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // TIER 3: REQUIRE MANUAL REVIEW — Critical infrastructure + stateful apps
     //
     // MUST come AFTER all automerge opt-in rules so they take final precedence.
