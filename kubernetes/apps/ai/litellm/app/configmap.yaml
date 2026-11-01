@@ -93,19 +93,17 @@ data:
           description: "KServe Qwen3.6-27B llama.cpp + MTP (~150s cold start, tool calling)"
 
       # =====================================================
-      # STORY-030-4: Whisper STT for Voice Calling
-      # Speech-to-text model on RTX A2000 (k8s-work-4)
-      # OpenAI-compatible /v1/audio/transcriptions endpoint
+      # Qwen3-4B-Instruct on the RTX A2000 (k8s-work-4, 6GB, shared with Plex)
+      # Short English rewriting for dub line fitting; JA->EN subtitle translation
       # =====================================================
-      - model_name: "whisper-medium"
+      - model_name: "dub-text"
         litellm_params:
-          model: "whisper-1"  # OpenAI-compatible model name
-          api_base: "http://whisper-medium-predictor.ai.svc.cluster.local/v1"
+          model: "openai/qwen3-4b-instruct"
+          api_base: "http://qwen3-4b-dub-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
-          timeout: 120        # Cold start ~30-60s + transcription time
-          mode: audio_transcription  # EPIC-030: Route to /v1/audio/transcriptions endpoint
+          timeout: 180        # Cold start (~30-60s) plus generation
         model_info:
-          description: "KServe Whisper Medium STT (~30-60s cold start, voice calling)"
+          description: "KServe Qwen3-4B-Instruct on A2000 (~3GB VRAM, scale-to-zero, ~30-60s cold start)"
 
     router_settings:
       # STORY-150: Disable retries to prevent retry storms during KServe cold starts

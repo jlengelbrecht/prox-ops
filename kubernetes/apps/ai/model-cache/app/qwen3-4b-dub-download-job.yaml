@@ -1,0 +1,124 @@
+---
+# Qwen3-4B-Instruct-2507 GGUF Pre-download Job
+# Downloads the Q4_K_M quant (~2.5GB) to the shared cache PVC for the A2000 InferenceService (qwen3-4b-dub)
+#
+# Model: unsloth/Qwen3-4B-Instruct-2507-GGUF / Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qwen3-4b-dub-download
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: qwen3-4b-dub-download
+    app.kubernetes.io/component: cache-loader
+    app.kubernetes.io/part-of: kserve
+spec:
+  # Allow 3 retries in case of network failures
+  backoffLimit: 3
+  # NOTE: ttlSecondsAfterFinished intentionally omitted (see model-predownload-job.yaml)
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: qwen3-4b-dub-download
+        app.kubernetes.io/component: cache-loader
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+
+      # Fix PVC permissions for non-root user
+      # Note: initContainer MUST run as root (UID 0) to chown files - this is intentional
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.38
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /models/unsloth /models/.cache
+              chown -R 1000:1000 /models/unsloth /models/.cache
+              echo "Permissions fixed: /models/unsloth and /models/.cache owned by user 1000"
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+          securityContext:
+            runAsUser: 0  # Required for chown operation
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+
+      containers:
+        - name: huggingface-downloader
+          image: python:3.11-slim
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              echo "Installing huggingface-hub CLI..."
+              pip install --no-cache-dir 'huggingface-hub[cli]>=0.27,<0.28'
+              export PATH="/tmp/.local/bin:$PATH"
+
+              echo ""
+              echo "=== Downloading unsloth/Qwen3-4B-Instruct-2507-GGUF (Q4_K_M, ~2.5GB) ==="
+              huggingface-cli download \
+                unsloth/Qwen3-4B-Instruct-2507-GGUF \
+                Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+                --local-dir /models/unsloth/Qwen3-4B-Instruct-2507-GGUF \
+                --local-dir-use-symlinks False
+
+              echo "=== Verifying download ==="
+              ls -la /models/unsloth/Qwen3-4B-Instruct-2507-GGUF/
+              test "$(stat -c %s /models/unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf)" -eq 2497281120
+
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 2Gi
+
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: HF_TOKEN
+                  optional: true  # Model is not gated
+            - name: HOME
+              value: /tmp
+            - name: HF_HOME
+              value: /models/.cache
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: model-cache
