@@ -228,13 +228,16 @@ jobs:
           }
 
           def affected(ver, rng):
+              # Parse every clause first: any unparseable clause or bound keeps
+              # the advisory for manual review.
+              bounds = []
               for clause in rng.split(","):
                   m = re.match(r"\s*(<=|>=|<|>|=)\s*(\S+)\s*$", clause)
-                  if not m:
-                      return True  # unparseable range: keep the advisory for manual review
-                  if not ops[m.group(1)](key(ver), key(m.group(2))):
-                      return False
-              return True
+                  try:
+                      bounds.append((m.group(1), key(m.group(2))))
+                  except (AttributeError, ValueError):
+                      return True
+              return all(ops[op](key(ver), bound) for op, bound in bounds)
 
           ver = os.environ["VERSION"]
           nodes = json.load(sys.stdin)
