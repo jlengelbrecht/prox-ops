@@ -7,10 +7,17 @@
 # voicestudio.ai.svc.cluster.local, so Kourier and the Knative activator are
 # on the path and a request to a scaled-to-zero service wakes it.
 #
-# Exactly one instance, ever: max-scale 1. CPU mode is gone (OMNIVOICE_DEVICE
-# is cuda). nvidia.com/gpu: 1 is one time-sliced share of the A5000 (the
-# device plugin advertises 3 per GPU), not the whole card; other models on
-# the same card compete for its 24 GB of VRAM.
+# One instance at a time: max-scale 1 is per revision, so while a revision
+# rolls over an old warm pod and the new pod can briefly coexist on the same
+# volume and GPU. Roll revisions while the service is idle. CPU mode is gone
+# (OMNIVOICE_DEVICE is cuda).
+#
+# GPU/VRAM: nvidia.com/gpu: 1 is one time-sliced share of the A5000 (the
+# device plugin advertises 3 per GPU), not the whole card, and shares give no
+# VRAM isolation. qwen36-27b uses about 21.7 of the 24 GB while warm (it stays
+# warm ~30 min after its last request). A VoiceStudio wake while qwen36 is warm
+# can fail with CUDA OOM, and the reverse is also true. Run dubs while qwen36
+# is idle. Proper GPU scheduling is a later follow-up.
 #
 # Autoscaling
 # - min-scale 0, max-scale 1, initial-scale 0: a new revision starts no pod
@@ -18,10 +25,11 @@
 # - Any request in flight counts as concurrency and keeps the pod up. That
 #   includes the SSE streams of a dub and the UI's ~10 s /jobs polling, so a
 #   running dub that is being watched is never scaled away.
-# - window 10m + scale-to-zero-pod-retention-period 20m (on top of the
-#   cluster-wide 5m grace): the pod stays up roughly half an hour after the
-#   last request. A job that keeps running with nobody polling it for longer
-#   than that is stopped with the pod.
+# - window 10m, then scale-to-zero-pod-retention-period 20m: the pod stays up
+#   roughly 30 minutes after the last request. (The cluster-wide 5m
+#   scale-to-zero-grace-period only caps how long the activator waits for the
+#   scale-to-zero transition; it does not add to idle time.) A job that keeps
+#   running with nobody polling it for longer than that is stopped with the pod.
 #
 # Timeouts: timeoutSeconds 3600 is the longest a single request (SSE stream
 # or upload) may last. It needs max-revision-timeout-seconds >= 3600 in the
@@ -45,6 +53,7 @@ metadata:
   namespace: ai
   labels:
     app.kubernetes.io/name: voicestudio
+    networking.knative.dev/visibility: cluster-local
 spec:
   template:
     metadata:
@@ -113,6 +122,14 @@ spec:
               value: "1"
             - name: OMNIVOICE_DEVICE
               value: cuda
+            # The HTTPRoute rewrites Host to the ksvc hostname, but VoiceStudio
+            # builds its expected browser origin from Host (core/csrf.py), so
+            # without this every cookie-authenticated POST/PUT/DELETE gets 403
+            # and WebSockets close 1008. The list is comma-separated full
+            # origins and feeds both the CSRF check and CORS. It replaces the
+            # localhost defaults, which a server deployment does not need.
+            - name: OMNIVOICE_ALLOWED_ORIGINS
+              value: https://voicestudio.homelab0.org
           # Knative folds these into queue-proxy probing; the startup window
           # is covered by the revision progress deadline.
           readinessProbe:
