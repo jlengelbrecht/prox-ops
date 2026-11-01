@@ -1,6 +1,12 @@
 ---
 # VoiceStudio network policy.
-# - Ingress: envoy-internal gateway (UI/API) and FileFlows (dub automation).
+# - Ingress: VoiceStudio is a Knative Service, so every request reaches the
+#   pod through the Knative data path: the Kourier internal gateway (envoy
+#   gateway and in-cluster callers both arrive via kourier-internal) and the
+#   activator (requests while scaled to zero, and while it is on the path),
+#   both to the queue-proxy on 8012; plus the autoscaler scraping queue-proxy
+#   metrics on 9090. The app port 3900 is only reached from queue-proxy in
+#   the same pod, so it is not opened.
 # - Egress: DNS, LiteLLM (OpenAI-compatible translation), HTTPS to the
 #   internet for Hugging Face model downloads and web translation engines.
 apiVersion: cilium.io/v2
@@ -15,19 +21,22 @@ spec:
   ingress:
     - fromEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: network
-            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+            io.kubernetes.pod.namespace: kourier-system
+            app: 3scale-kourier-gateway
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: activator
       toPorts:
         - ports:
-            - port: "3900"
+            - port: "8012"
               protocol: TCP
     - fromEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: media
-            app.kubernetes.io/name: fileflows
+            io.kubernetes.pod.namespace: knative-serving
+            app: autoscaler
       toPorts:
         - ports:
-            - port: "3900"
+            - port: "9090"
               protocol: TCP
   egress:
     - toEndpoints:

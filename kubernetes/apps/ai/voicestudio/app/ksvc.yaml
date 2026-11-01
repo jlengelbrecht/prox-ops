@@ -1,0 +1,177 @@
+---
+# VoiceStudio as a scale-to-zero Knative Service on the RTX A5000
+# (k8s-work-10). The GPU is held only while the service is in use.
+#
+# Exposure: Knative keeps this service cluster-local. The voicestudio
+# HTTPRoute sends traffic to kourier-internal with the Host rewritten to
+# voicestudio.ai.svc.cluster.local, so Kourier and the Knative activator are
+# on the path and a request to a scaled-to-zero service wakes it.
+#
+# One instance at a time: max-scale 1 is per revision, so while a revision
+# rolls over an old warm pod and the new pod can briefly coexist on the same
+# volume and GPU. Roll revisions while the service is idle. CPU mode is gone
+# (OMNIVOICE_DEVICE is cuda).
+#
+# GPU/VRAM: nvidia.com/gpu: 1 is one time-sliced share of the A5000 (the
+# device plugin advertises 3 per GPU), not the whole card, and shares give no
+# VRAM isolation. qwen36-27b uses about 21.7 of the 24 GB while warm (it stays
+# warm ~30 min after its last request). A VoiceStudio wake while qwen36 is warm
+# can fail with CUDA OOM, and the reverse is also true. Run dubs while qwen36
+# is idle. Proper GPU scheduling is a later follow-up.
+#
+# Autoscaling
+# - min-scale 0, max-scale 1, initial-scale 0: a new revision starts no pod
+#   until a request arrives, so a config change never grabs the GPU by itself.
+# - Any request in flight counts as concurrency and keeps the pod up. That
+#   includes the SSE streams of a dub and the UI's ~10 s /jobs polling, so a
+#   running dub that is being watched is never scaled away.
+# - window 10m, then scale-to-zero-pod-retention-period 20m: the pod stays up
+#   roughly 30 minutes after the last request. (The cluster-wide 5m
+#   scale-to-zero-grace-period only caps how long the activator waits for the
+#   scale-to-zero transition; it does not add to idle time.) A job that keeps
+#   running with nobody polling it for longer than that is stopped with the pod.
+#
+# Timeouts: timeoutSeconds 3600 is the longest a single request (SSE stream
+# or upload) may last. It needs max-revision-timeout-seconds >= 3600 in the
+# knative-serving config-defaults (set in knative-serving/app).
+#
+# Secret rotation: Reloader does not act on Knative Services. After the
+# voicestudio-api key or the Hugging Face token rotates, bump
+# spec.template.metadata.annotations["homelab.io/secret-rotation"] to roll a
+# new revision.
+#
+# Rollout from the old Deployment: the HelmRelease and its Deployment are
+# pruned while this Service is created. The voicestudio-data volume is RWO and
+# moves from k8s-work-4 to k8s-work-10 on first start, which is when the old
+# pod must already be gone (it is, once the Deployment is pruned). Knative
+# also cannot create its voicestudio Service until the old Helm-owned Service
+# of the same name is deleted; it retries until then.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: voicestudio
+  namespace: ai
+  labels:
+    app.kubernetes.io/name: voicestudio
+    networking.knative.dev/visibility: cluster-local
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: voicestudio
+      annotations:
+        autoscaling.knative.dev/class: kpa.autoscaling.knative.dev
+        autoscaling.knative.dev/min-scale: "0"
+        autoscaling.knative.dev/max-scale: "1"
+        autoscaling.knative.dev/initial-scale: "0"
+        autoscaling.knative.dev/window: "10m"
+        autoscaling.knative.dev/scale-to-zero-pod-retention-period: "20m"
+        # The ~5.8 GB image pull plus first-start model downloads can take
+        # a long time; do not mark the revision failed.
+        serving.knative.dev/progress-deadline: "30m"
+        homelab.io/secret-rotation: "1"
+    spec:
+      containerConcurrency: 0
+      timeoutSeconds: 3600
+      responseStartTimeoutSeconds: 3600
+      idleTimeoutSeconds: 3600
+      enableServiceLinks: false
+      # No Kubernetes API access needed.
+      automountServiceAccountToken: false
+      runtimeClassName: nvidia
+      nodeSelector:
+        kubernetes.io/hostname: k8s-work-10
+        gpu.nvidia.com/model: rtx-a5000
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: ghcr.io/debpalash/voicestudio:0.5.7
+          ports:
+            - name: http1
+              containerPort: 3900
+              protocol: TCP
+          env:
+            # Headless server mode: the admin API key gates every
+            # non-loopback request (UI login + Bearer for scripts).
+            - name: OMNIVOICE_SERVER_MODE
+              value: "1"
+            - name: OMNIVOICE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: voicestudio-api
+                  key: OMNIVOICE_API_KEY
+            # Gated pyannote diarization models (speaker detection for
+            # multi-voice dubs). Shared read token from the model-cache
+            # ExternalSecret (1Password item HUGGINGFACE_TOKEN).
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: huggingface-token
+                  key: HF_TOKEN
+            - name: OMNIVOICE_DATA_DIR
+              value: /app/omnivoice_data
+            - name: HF_HOME
+              value: /app/omnivoice_data/huggingface
+            - name: PYTHONPATH
+              value: /app/backend
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: OMNIVOICE_ANALYTICS_DISABLED
+              value: "1"
+            - name: OMNIVOICE_DEVICE
+              value: cuda
+            # The HTTPRoute rewrites Host to the ksvc hostname, but VoiceStudio
+            # builds its expected browser origin from Host (core/csrf.py), so
+            # without this every cookie-authenticated POST/PUT/DELETE gets 403
+            # and WebSockets close 1008. The list is comma-separated full
+            # origins and feeds both the CSRF check and CORS. It replaces the
+            # localhost defaults, which a server deployment does not need.
+            - name: OMNIVOICE_ALLOWED_ORIGINS
+              value: https://voicestudio.homelab0.org
+          # Knative folds these into queue-proxy probing; the startup window
+          # is covered by the revision progress deadline.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3900
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3900
+            initialDelaySeconds: 300
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          # The image has no USER and writes under /app as root. Keep root
+          # with no privilege escalation; a non-root run (and dropping ALL
+          # capabilities, which may need CHOWN/DAC_OVERRIDE) is a follow-up.
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: "2"
+              memory: 6Gi
+              ephemeral-storage: 20Gi
+              nvidia.com/gpu: "1"
+            limits:
+              memory: 24Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: data
+              mountPath: /app/omnivoice_data
+            # PyTorch workers and diarization use shared memory.
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: voicestudio-data
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
