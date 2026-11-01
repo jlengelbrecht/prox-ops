@@ -27,6 +27,13 @@ spec:
     crds:
       enabled: true
 
+    # Temporary, until the v1.20 upgrade: the v1.19 operator rewrites the CSI
+    # Driver resources on every reconcile, which would undo the ceph-csi-drivers
+    # release. With the operator stopped, the ceph-csi-operator keeps running the
+    # drivers and moves them to the drivers release's service accounts before
+    # v1.20 deletes the old ones. Ceph itself runs outside the cluster.
+    scaleDownOperator: true
+
     # Monitoring
     monitoring:
       enabled: true
