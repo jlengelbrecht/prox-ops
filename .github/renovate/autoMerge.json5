@@ -284,13 +284,10 @@
 
     // ═══════════════════════════════════════════════════════════════════════════
     // TIER 2e: MEDIA / REQUEST / DOWNLOAD APPS - patch + minor automerge, short soak
-    // Root cause this fixes: lscr.io and ghcr.io tags carry no release timestamp, and
-    // Renovate's default (minimumReleaseAgeBehaviour: timestamp-required) treats a
-    // missing timestamp as "still soaking" forever, so these updates sat under
-    // "Pending Status Checks" and no branch was ever created. timestamp-optional lets
-    // them through; where a registry does give a timestamp (Docker Hub: FileFlows,
-    // Notifiarr) the soak below is enforced, otherwise the update merges once CI is
-    // green. Majors stay manual. Placed after the older Tier 2 soaks so these win.
+    // Stateless apps get the shortest soak (1 day patch, 3 days minor) and a higher
+    // prPriority so they are created and rebased ahead of manual-review PRs. The soak
+    // only bites where the registry reports a release timestamp (Docker Hub); see
+    // minimumReleaseAgeBehaviour in renovate.json5. Majors stay manual.
     // ═══════════════════════════════════════════════════════════════════════════
     {
       "description": "Media apps: auto-merge patch updates after a 1 day soak; tolerate registries with no release timestamp",
@@ -299,7 +296,6 @@
       "automergeType": "pr",
       "matchUpdateTypes": ["patch"],
       "minimumReleaseAge": "1 day",
-      "minimumReleaseAgeBehaviour": "timestamp-optional",
       "prPriority": 5,
       "matchPackageNames": [
         "lscr.io/linuxserver/plex",
@@ -328,7 +324,6 @@
       "automergeType": "pr",
       "matchUpdateTypes": ["minor"],
       "minimumReleaseAge": "3 days",
-      "minimumReleaseAgeBehaviour": "timestamp-optional",
       "prPriority": 5,
       "matchPackageNames": [
         "lscr.io/linuxserver/plex",
@@ -360,7 +355,6 @@
       "automergeType": "pr",
       "matchUpdateTypes": ["major"],
       "minimumReleaseAge": "3 days",
-      "minimumReleaseAgeBehaviour": "timestamp-optional",
       "prPriority": 5,
       "matchPackageNames": ["revenz/fileflows"]
     },

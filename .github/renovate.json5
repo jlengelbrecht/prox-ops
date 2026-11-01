@@ -37,6 +37,13 @@
   prConcurrentLimit: 20,
   prHourlyLimit: 6,
   branchConcurrentLimit: 30,
+  // lscr.io, ghcr.io, quay.io and OCI chart tags carry no release timestamp (Renovate only
+  // reads one from Docker Hub and classic Helm repos). The default, timestamp-required,
+  // treats a missing timestamp as "still soaking" forever, which is why ~60 updates sat
+  // under "Pending Status Checks" and never got a branch. With timestamp-optional the
+  // soak applies where a timestamp exists and is skipped where none can be known; those
+  // updates then merge on green required checks.
+  minimumReleaseAgeBehaviour: 'timestamp-optional',
   // Create a PR from the newest version that has passed its minimumReleaseAge soak
   // instead of holding the whole branch back while a newer release is still soaking
   // ("strict", the default). Keeps fast-releasing images moving.
