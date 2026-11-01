@@ -3,7 +3,9 @@
 Node machine configs are rendered and applied with
 [topf](https://github.com/postfinance/topf). talhelper was archived upstream
 in August 2026; `talconfig.yaml`, `talenv.yaml` and `patches/` stay in place
-only until the Taskfiles that still read them are moved over.
+only until their remaining readers move over: the Taskfiles,
+`scripts/check-talos-versions.sh` (`talenv.yaml`) and the schematic check in
+`talos-schematic-validation.yaml` (`talconfig.yaml`).
 The topf layout below is the source of truth.
 
 topf applies the config to every node. The talhelper files under `patches/`

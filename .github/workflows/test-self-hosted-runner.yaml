@@ -87,7 +87,9 @@ jobs:
           kubectl get pods -n github-actions
           echo ""
           echo "=== Cluster-wide access (expect no) ==="
-          kubectl auth can-i list nodes || true
+          can_list_nodes=$(kubectl auth can-i list nodes 2>/dev/null || true)
+          echo "list nodes: ${can_list_nodes}"
+          [ "$can_list_nodes" = "no" ] || { echo "::error::runner can list nodes"; exit 1; }
 
   test-runner-terraform:
     name: Test Terraform Access
