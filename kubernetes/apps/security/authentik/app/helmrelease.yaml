@@ -188,13 +188,19 @@ spec:
       podAnnotations:
         secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra"
         configmap.reloader.stakater.com/reload: "authentik-blueprints"
+      # No CPU limit: startup blueprint and outpost work was throttled hard enough
+      # under a 500m limit that `ak healthcheck` missed its 3s timeout and the
+      # liveness probe kept killing the worker.
       resources:
         requests:
-          cpu: 100m
+          cpu: 500m
           memory: 256Mi
         limits:
-          cpu: 500m
           memory: 512Mi
+      livenessProbe:
+        timeoutSeconds: 10
+      readinessProbe:
+        timeoutSeconds: 10
 
     postgresql:
       enabled: true
