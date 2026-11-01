@@ -25,7 +25,7 @@ spec:
       repository: ghcr.io/berriai/litellm-database
       pullPolicy: Always
       # renovate: datasource=docker depName=ghcr.io/berriai/litellm-database
-      tag: main-v1.81.0-stable
+      tag: v1.106.6@sha256:7ef0e78fe00ad5ea7ea45666cc1d1f02cb7076aee69091543bf397de52db33ce
 
     # Replica count
     replicaCount: 1
@@ -64,8 +64,7 @@ spec:
 
     # Pod security context
     # Note: litellm-database image specifies USER as text "root" in Dockerfile,
-    # which prevents Kubernetes from verifying runAsNonRoot. The image uses
-    # supervisord to manage processes and runs as an internal non-root user.
+    # which prevents Kubernetes from verifying runAsNonRoot.
     # See: https://github.com/BerriAI/litellm/blob/main/docker/litellm-database/Dockerfile
     podSecurityContext:
       seccompProfile:
@@ -94,9 +93,10 @@ spec:
       type: ClusterIP
       port: 4000
 
-    # Separate health app for more reliable probes
-    separateHealthApp: true
-    separateHealthPort: 8081
+    # The separate health app (port 8081) was run by supervisord in the old
+    # image. Current images start the proxy directly and no longer ship
+    # it, so probes must use the main port.
+    separateHealthApp: false
 
     # Migration job settings
     migrationJob:
