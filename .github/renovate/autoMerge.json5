@@ -505,18 +505,17 @@
     // TIER 4: SPECIAL HANDLING — AI apps, Talos
     // ═══════════════════════════════════════════════════════════════════════════
     {
-      "description": "AI apps that run database or storage migrations (litellm, open-webui, qdrant): minor and major are manual, patch auto-merges after a 5 day soak. ollama and lightrag use the normal app tier.",
+      "description": "AI apps that run database or storage migrations (open-webui, qdrant): minor and major are manual, patch auto-merges after a 5 day soak. ollama and lightrag use the normal app tier.",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
       "matchUpdateTypes": ["minor", "major"],
       "matchPackageNames": [
-        "/litellm/",
         "/open-webui/",
         "/qdrant/"
       ]
     },
     {
-      "description": "FULLY MANUAL: Hermes agent - the dashboard/config schema (_config_version) moves with the image and the chart is pinned to it; read the release notes and bump both together. Hindsight (api, control plane, chart) - migrations are forward-only on the shared CloudNativePG cluster, take a pg_dump -d hindsight first",
+      "description": "FULLY MANUAL: LiteLLM (migrations can be recorded as applied without creating the schema; verify with prisma migrate diff). Hermes agent - the dashboard/config schema (_config_version) moves with the image and the chart is pinned to it; read the release notes and bump both together. Hindsight (api, control plane, chart) - migrations are forward-only on the shared CloudNativePG cluster, take a pg_dump -d hindsight first",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
       "matchPackageNames": [
@@ -524,7 +523,10 @@
         "hermes-agent",
         "ghcr.io/vectorize-io/hindsight-api",
         "ghcr.io/vectorize-io/hindsight-control-plane",
-        "hindsight"
+        "hindsight",
+        // LiteLLM: the v1.81 to v1.106 upgrade recorded 149 migrations as applied while 55 tables
+        // and many columns were missing, fixed by hand with `prisma migrate diff`; every bump needs that check.
+        "/litellm/"
       ]
     },
     // NOTE: Talos talenv.yaml (ghcr.io/siderolabs/installer) updates are disabled in
