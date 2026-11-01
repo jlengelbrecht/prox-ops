@@ -92,39 +92,6 @@ data:
         model_info:
           description: "KServe Qwen3.6-27B llama.cpp + MTP (~150s cold start, tool calling)"
 
-      # Note: Audio/Image/Video models may require custom API handling
-      # LiteLLM primarily routes to /v1/chat/completions - these models
-      # may expose different endpoints. Verify vLLM/KServe interface compatibility.
-      - model_name: "stable-audio"
-        litellm_params:
-          # Note: vLLM exposes model as "/models/..." path, must match exactly
-          model: "openai//models/stabilityai/stable-audio-open-1.0"
-          api_base: "http://stable-audio-predictor.ai.svc.cluster.local/v1"
-          api_key: "dummy"
-          timeout: 300        # STORY-150: Keep at 300 for diffusion model
-        model_info:
-          description: "KServe Stable Audio - music generation (~120s cold start)"
-
-      - model_name: "flux-klein"
-        litellm_params:
-          # Note: vLLM exposes model as "/models/..." path, must match exactly
-          model: "openai//models/black-forest-labs/FLUX.2-klein-9b-fp8"
-          api_base: "http://flux-klein-predictor.ai.svc.cluster.local/v1"
-          api_key: "dummy"
-          timeout: 360        # STORY-150: Increased from 300 for large model
-        model_info:
-          description: "KServe FLUX.2-klein image generation (~180s cold start)"
-
-      - model_name: "wan-video"
-        litellm_params:
-          # Note: vLLM exposes model as "/models/..." path, must match exactly
-          model: "openai//models/Wan-AI/Wan2.2-TI2V-5B-Diffusers"
-          api_base: "http://wan-video-predictor.ai.svc.cluster.local/v1"
-          api_key: "dummy"
-          timeout: 420        # STORY-150: Increased from 300 for video model
-        model_info:
-          description: "KServe Wan2.2 video generation (~240s cold start)"
-
       # =====================================================
       # STORY-030-4: Whisper STT for Voice Calling
       # Speech-to-text model on RTX A2000 (k8s-work-4)
@@ -244,7 +211,7 @@ data:
       forward_client_headers_to_llm_api: true
       # Rate limiting
       max_parallel_requests: 50
-      # STORY-150: Request timeout must accommodate longest cold start (wan-video: 420s)
+      # STORY-150: Request timeout must accommodate the longest model cold start
       # Per-model timeouts take precedence, but this is the fallback default
       request_timeout: 420
       # STORY-059: Allow setting api_base for search tools via admin API
