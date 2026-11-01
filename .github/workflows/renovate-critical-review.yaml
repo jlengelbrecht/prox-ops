@@ -31,7 +31,7 @@ jobs:
     # Only the critical-infra tier, and skip if the auth secret is absent
     if: >-
       contains(github.event.pull_request.labels.*.name, 'renovate/critical-review')
-    runs-on: cattle-runner
+    runs-on: gha-runner-scale-set
     timeout-minutes: 15
     steps:
       - name: Checkout PR (new manifests visible to Claude)

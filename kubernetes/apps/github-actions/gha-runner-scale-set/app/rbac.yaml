@@ -32,40 +32,6 @@ rules:
     resources: ["services"]
     verbs: ["get", "list"]
 ---
-# Cluster-scoped operations (only what's absolutely needed)
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: github-actions-runner-cluster
-rules:
-  # Node management (for cattle upgrades)
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list", "watch", "patch", "update"]
-  # Pod eviction (for node drain during cattle upgrades)
-  - apiGroups: [""]
-    resources: ["pods/eviction"]
-    verbs: ["create"]
-  # Pod read access (for drain to list pods on nodes)
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
-  # Deployment read access (for health checks)
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list"]
-  # HelmReleases and Kustomizations (read-only cluster-wide)
-  - apiGroups: ["helm.toolkit.fluxcd.io"]
-    resources: ["helmreleases"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
-    resources: ["kustomizations"]
-    verbs: ["get", "list", "watch"]
-  # Namespace read access
-  - apiGroups: [""]
-    resources: ["namespaces"]
-    verbs: ["get", "list"]
----
 # Bind namespace-scoped Role
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -76,20 +42,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: github-actions-runner
-subjects:
-  - kind: ServiceAccount
-    name: github-actions-runner
-    namespace: github-actions
----
-# Bind cluster-scoped ClusterRole
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: github-actions-runner-cluster
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: github-actions-runner-cluster
 subjects:
   - kind: ServiceAccount
     name: github-actions-runner

@@ -3,12 +3,12 @@
 Node machine configs are rendered and applied with
 [topf](https://github.com/postfinance/topf). talhelper was archived upstream
 in August 2026; `talconfig.yaml`, `talenv.yaml` and `patches/` stay in place
-only until the workflows and Taskfiles that still read them are moved over.
+only until the Taskfiles that still read them are moved over.
 The topf layout below is the source of truth.
 
 topf applies the config to every node. The talhelper files under `patches/`
 are frozen at the Talos 1.13 layout and are no longer applied; they stay only
-for the manual-dispatch workflows and Taskfiles until those are removed. Do not
+for the Taskfiles until those are removed. Do not
 use them to configure a node, and do not port the 1.14 typed documents into
 them.
 
@@ -28,9 +28,7 @@ copies the Kubernetes version.
   `topf.yaml`. Run it locally before editing a version by hand.
 - tuppr is the only upgrader. It moves nodes labelled
   `tuppr.home-operations.com/enabled=true` to the `TalosUpgrade` version, in
-  either direction. The old Terraform-driven workflows (`talos-version-router`,
-  `upgrade-pets`, `upgrade-cattle`) no longer start on their own and run only
-  by manual dispatch.
+  either direction.
 
 ## Layout
 
