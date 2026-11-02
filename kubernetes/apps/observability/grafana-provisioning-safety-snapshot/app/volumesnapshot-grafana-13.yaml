@@ -1,0 +1,14 @@
+---
+# Crash-consistent copy of the live Grafana 12 volume, taken before Grafana 13
+# migrates the database in place. kube-prometheus-stack waits for it to be
+# ready. Retained by its class and never pruned; clean up by hand once Grafana
+# 13 has been accepted and newer backups are proven.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: grafana-pre-13-upgrade-20261102
+  namespace: observability
+  annotations: {kustomize.toolkit.fluxcd.io/prune: disabled}
+spec:
+  volumeSnapshotClassName: ceph-block-snapshot-retain
+  source: {persistentVolumeClaimName: kube-prometheus-stack-grafana}

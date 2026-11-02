@@ -3,8 +3,10 @@
 # deletionPolicy: WaitForTermination, so deleting this Kustomization still deletes
 # its objects. The VolumeSnapshot's own kustomize.toolkit.fluxcd.io/prune: disabled
 # annotation keeps the object, and the Retain class keeps the stored snapshot data.
-# kube-prometheus-stack depends on this, so the provisioning archive init cannot
-# run before the snapshot is ready.
+# kube-prometheus-stack depends on this, so neither the provisioning archive
+# init nor the Grafana 13 upgrade can run before its snapshot is ready. Flux
+# also holds the dependent until this Kustomization is healthy at the same Git
+# revision, so a snapshot added together with an upgrade is taken first.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
