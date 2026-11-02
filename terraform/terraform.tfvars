@@ -115,9 +115,9 @@ enable_firewall    = true  # VM-level firewall enabled
 # -----------------------------------------------------------------------------
 # Control Plane Resources
 # -----------------------------------------------------------------------------
-controlplane_cpu_cores    = 2 # CHANGED: 4 → 2 (total 4 vCPUs)
+controlplane_cpu_cores    = 4 # 8 vCPUs: etcd and kube-apiserver headroom (2026-11-02)
 controlplane_cpu_sockets  = 2
-controlplane_memory_mb    = 8192 # CHANGED: 16384 → 8192 (8GB)
+controlplane_memory_mb    = 16384 # 16GB: control plane used ~70% of 8GB (2026-11-02)
 controlplane_disk_size_gb = 100
 
 # -----------------------------------------------------------------------------
@@ -193,6 +193,9 @@ worker_nodes = [
     mac_addr     = "b2:dc:2e:72:8c:ec"
     vm_id        = 904
     proxmox_node = "Baldar"
+    # Baldar has 125.8G for four VMs plus two Ceph OSDs; its workers are cut
+    # from 32G to 24G to leave headroom for ctrl-1 at 16G.
+    memory_mb    = 24576
     is_gpu       = false
     gpu_model    = ""
     gpu_mapping  = ""
@@ -216,6 +219,9 @@ worker_nodes = [
     mac_addr     = "06:64:c3:76:9a:98"
     vm_id        = 905
     proxmox_node = "Baldar"
+    # Baldar has 125.8G for four VMs plus two Ceph OSDs; its workers are cut
+    # from 32G to 24G to leave headroom for ctrl-1 at 16G.
+    memory_mb    = 24576
     is_gpu       = false
     gpu_model    = ""
     gpu_mapping  = ""
@@ -239,6 +245,9 @@ worker_nodes = [
     mac_addr     = "36:30:ad:44:40:cd"
     vm_id        = 906
     proxmox_node = "Baldar"
+    # Baldar has 125.8G for four VMs plus two Ceph OSDs; its workers are cut
+    # from 32G to 24G to leave headroom for ctrl-1 at 16G.
+    memory_mb    = 24576
     is_gpu       = false
     gpu_model    = ""
     gpu_mapping  = ""

@@ -288,6 +288,7 @@ variable "worker_nodes" {
     gpu_model    = optional(string, "")
     gpu_mapping  = optional(string, "")  # PCI resource mapping ID (e.g., "thor-gpu")
     usb_mapping  = optional(string, "")  # USB resource mapping ID (e.g., "yubihsm")
+    memory_mb    = optional(number)  # Per-node override of worker_memory_mb / gpu_worker_memory_mb
     additional_network_devices = optional(list(object({
       bridge  = string
       vlan_id = number
