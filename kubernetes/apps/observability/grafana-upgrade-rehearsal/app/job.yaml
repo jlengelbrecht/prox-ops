@@ -4,7 +4,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: grafana-upgrade-rehearsal
+  name: grafana-upgrade-rehearsal-20261102
   namespace: observability
 spec:
   backoffLimit: 0
@@ -81,7 +81,7 @@ spec:
               echo "pre-13-backup: copy complete"
           env:
             - {name: GRAFANA_DATA, value: /var/lib/grafana}
-            - {name: BACKUP_TAG, value: grafana-12-before-13.2.3}
+            - {name: BACKUP_TAG, value: grafana-12-before-13.3.0}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
@@ -98,7 +98,7 @@ spec:
           name: verify-pre-13-backup
         # Native sidecar: the checker starts only once Grafana's startup probe passes.
         - name: grafana
-          image: docker.io/grafana/grafana:13.2.3-distroless@sha256:202e5d5b3f8499e70ccac7991eea6d7da72d2790eb2e0597e7987acf724e7180
+          image: docker.io/grafana/grafana:13.3.0-distroless@sha256:540b8afb775bf34aefce417e4329039daa5d44b6f2fbda6881397b1b247ca7df
           restartPolicy: Always
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
           env:
@@ -143,7 +143,7 @@ spec:
             - {name: checker, mountPath: /opt/rehearsal, readOnly: true}
       volumes:
         - name: storage
-          persistentVolumeClaim: {claimName: grafana-upgrade-rehearsal}
+          persistentVolumeClaim: {claimName: grafana-upgrade-rehearsal-20261102}
         - {name: tmp, emptyDir: {}}
         - {name: search, emptyDir: {}}
         - {name: provisioning, emptyDir: {}}
