@@ -529,11 +529,18 @@
         "/litellm/"
       ]
     },
-    // Talos and Kubernetes cluster versions never auto-merge, any update type. They are
-    // node lifecycle: once nodes are enrolled, a merged Talos bump is what tuppr rolls
-    // out. Placed after the default patch/minor rules so it overrides them.
+    // Talos and Kubernetes cluster versions: patches auto-merge, minor and major are
+    // manual. A merged version is what tuppr rolls out, so these rules sit after the
+    // default patch/minor rules and override them. Patch PRs merge only on Saturday
+    // (UTC hours below are 09:00-17:00 Eastern) and only when the required checks pass,
+    // including "Talos upgrade path is supported" (scripts/check-upgrade-path.sh) and
+    // the Talos release bug check. Renovate merges them itself (platformAutomerge off)
+    // so the schedule holds; tuppr's own weekend window then starts the roll.
+    // Minor releases stay manual: a Talos minor can change the machine config schema
+    // (1.14 moved to typed documents), and a Kubernetes minor removes APIs, and
+    // neither is something the CI checks can see.
     {
-      "description": "MANUAL: Talos cluster version (topf, talenv, tuppr TalosUpgrade, Terraform)",
+      "description": "MANUAL: Talos cluster version minor/major (topf, talenv, tuppr TalosUpgrade, Terraform)",
       "matchDatasources": ["github-releases"],
       "matchPackageNames": ["siderolabs/talos"],
       "matchFileNames": [
@@ -543,14 +550,36 @@
         "terraform/variables.tf",
         "terraform/terraform.tfvars"
       ],
+      "matchUpdateTypes": ["minor", "major"],
       "automerge": false,
       "minimumReleaseAge": "5 days",
       "prBodyNotes": [
-        "**Talos cluster version**: manual merge. tuppr upgrades enrolled nodes to the merged version, one node at a time."
+        "**Talos minor release**: manual merge. Read the upgrade notes for machine config changes and run `topf apply --dry-run` against one node first. tuppr starts the roll in its weekend window, one node at a time."
       ]
     },
     {
-      "description": "MANUAL: Kubernetes cluster version (topf, talenv, tuppr KubernetesUpgrade)",
+      "description": "AUTOMERGE: Talos cluster version patch, Saturdays only, after a 7 day soak",
+      "matchDatasources": ["github-releases"],
+      "matchPackageNames": ["siderolabs/talos"],
+      "matchFileNames": [
+        "talos/topf.yaml",
+        "talos/talenv.yaml",
+        "kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml",
+        "terraform/variables.tf",
+        "terraform/terraform.tfvars"
+      ],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false,
+      "automergeSchedule": ["* 13-21 * * 6"],
+      "minimumReleaseAge": "7 days",
+      "prBodyNotes": [
+        "**Talos patch release**: auto-merges on Saturday once every check passes. tuppr then upgrades one node at a time inside its weekend window."
+      ]
+    },
+    {
+      "description": "MANUAL: Kubernetes cluster version minor/major (topf, talenv, tuppr KubernetesUpgrade)",
       "matchDatasources": ["docker"],
       "matchPackageNames": ["ghcr.io/siderolabs/kubelet"],
       "matchFileNames": [
@@ -558,10 +587,36 @@
         "talos/talenv.yaml",
         "kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml"
       ],
+      "matchUpdateTypes": ["minor", "major"],
       "automerge": false,
       "prBodyNotes": [
-        "**Kubernetes version**: manual merge. tuppr upgrades the whole cluster to the merged version. Confirm the current Talos release supports it before merging."
+        "**Kubernetes minor release**: manual merge. Check the release for removed APIs and run `talosctl upgrade-k8s --dry-run` first. The upgrade path check confirms the running Talos supports this version."
       ]
+    },
+    {
+      "description": "AUTOMERGE: Kubernetes cluster version patch, Saturdays only. ghcr.io carries no release date, so the 3 day soak is enforced by scripts/check-upgrade-path.sh",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/siderolabs/kubelet"],
+      "matchFileNames": [
+        "talos/topf.yaml",
+        "talos/talenv.yaml",
+        "kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml"
+      ],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false,
+      "automergeSchedule": ["* 13-21 * * 6"],
+      "prBodyNotes": [
+        "**Kubernetes patch release**: auto-merges on Saturday once every check passes. tuppr then upgrades the cluster inside its weekend window."
+      ]
+    },
+    // The upgrade path checker resolves the target Talos machinery module at run time,
+    // so the version pinned in its go.mod does not matter and is not worth a PR.
+    {
+      "description": "Ignore the talos-compat checker's Go module",
+      "matchFileNames": ["scripts/talos-compat/**"],
+      "enabled": false
     },
     // Paperclip: last in the list so no earlier patch/minor rule can auto-merge it.
     // No minimumReleaseAge: GHCR tags carry no release timestamp, so an age gate

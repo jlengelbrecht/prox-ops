@@ -24,13 +24,20 @@ them.
 copies the Kubernetes version.
 
 - Renovate bumps every copy in one PR: one for Talos, one for Kubernetes.
-  Neither auto-merges.
+  Patch releases auto-merge on Saturdays once every required check passes
+  (Talos after a 7 day soak). Minor and major releases are merged by hand.
 - `scripts/check-talos-versions.sh` runs on every PR (the required "Talos and
   Kubernetes versions agree" check) and fails if a copy differs from
   `topf.yaml`. Run it locally before editing a version by hand.
+- `scripts/check-upgrade-path.sh` runs on every PR ("Talos upgrade path is
+  supported"). When a version changes it fails on a downgrade, a skipped
+  Kubernetes minor, a Talos/Kubernetes pair outside the target Talos release's
+  own compatibility tables (`scripts/talos-compat`), a Kubernetes release under
+  3 days old, or a missing kubelet image.
 - tuppr is the only upgrader. It moves nodes labelled
   `tuppr.home-operations.com/enabled=true` to the `TalosUpgrade` version, in
-  either direction.
+  either direction. Both upgrade resources have a weekend maintenance window
+  (Saturday 09:00 to Sunday 21:00 Eastern); a version merged outside it waits.
 
 ## Layout
 
