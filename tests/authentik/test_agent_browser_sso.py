@@ -202,13 +202,13 @@ def check_security(config, external_secret, helm, route, policy):
         guards = [e for e in apps if e.get("model") == "authentik_policies.policybinding" and e.get("identifiers", {}).get("target") == reference("KeyOf", binding_id)]
         require(len(guards) == 1 and guards[0].get("attrs") == {"policy": reference("KeyOf", "policy-ai-browser-test-source-login"), "failure_result": False}, f"{flow_slug} login must fail closed")
     for source_entry in [*sources, *source]:
-        if source_entry.get("model") in {"authentik_sources_oauth.oauthsource", "authentik_sources_plex.plexsource"}:
+        if source_entry.get("model") in {"authentik_sources_oauth.oauthsource", "authentik_sources_plex.plexsource"} and source_entry.get("state") != "absent":
             require(source_entry.get("attrs", {}).get("authentication_flow") == reference("Context", "authentication_flow") and source_entry.get("attrs", {}).get("enrollment_flow") == reference("Context", "enrollment_flow"), "checked-in source bypasses guarded flows")
     for key in ("sources.yaml", "source-entra.yaml"):
         context = yaml.load(config["data"][key], Loader=BlueprintLoader)["context"]
         for kind in ("authentication", "enrollment"):
             require(context.get(f"{kind}_flow") == reference("Find", ["authentik_flows.flow", ["slug", f"default-source-{kind}"]]), "source flow context bypasses guarded login")
-    require(entry(sources, "authentik_sources_oauth.oauthsource", "source-uid")["attrs"]["user_matching_mode"] == "email_link", "UID linking path must stay covered")
+    require(entry(sources, "authentik_sources_oauth.oauthsource", "source-uid").get("state") == "absent", "retired UID source must stay tombstoned")
     try:
         namespace = {}
         exec("def evaluate(request):\n" + textwrap.indent(anchored_expression(source_guard["attrs"]["expression"]), "    "), namespace)
@@ -269,7 +269,7 @@ def check_security(config, external_secret, helm, route, policy):
     require({e.get("identifiers", {}).get("name") for e in human_stages} == {"default-authentication-identification", "external-authentication-identification"}, "human identification stages must remain")
     for stage in human_stages:
         sources = stage.get("attrs", {}).get("sources", [])
-        require(reference("Find", ["authentik_core.source", ["slug", "unifi-identity-enterprise"]]) in sources and reference("KeyOf", "source-entra") in sources, "Entra and UID choices must remain")
+        require(sources == [reference("KeyOf", "source-entra")], "Entra must be the only upstream login choice")
 
     data = {e.get("secretKey"): e.get("remoteRef") for e in external_secret["spec"]["data"]}
     require(data.get("AUTHENTIK_AI_BROWSER_TEST_INITIAL_PASSWORD") == {"key": "authentik", "property": "ai-browser-test-initial-password"}, "initial password must come from existing Automation vault item")
@@ -381,11 +381,11 @@ class AgentBrowserSSOTests(unittest.TestCase):
             ("id: binding-ai-browser-test-default-login\n    identifiers: {target: !Find [authentik_flows.flow, [slug, default-authentication-flow]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-authentication-login]], order: 100}\n    attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: all}", "id: binding-ai-browser-test-default-login\n    identifiers: {target: !Find [authentik_flows.flow, [slug, default-authentication-flow]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-authentication-login]], order: 100}\n    attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: any}"),
             ("id: binding-ai-browser-test-source-auth-login\n    identifiers: {target: !Find [authentik_flows.flow, [slug, default-source-authentication]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-source-authentication-login]], order: 0}\n    attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: all}", "id: binding-ai-browser-test-source-auth-login\n    identifiers: {target: !Find [authentik_flows.flow, [slug, default-source-authentication]], stage: !Find [authentik_stages_user_login.userloginstage, [name, default-source-authentication-login]], order: 0}\n    attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: any}"),
             ("target: !KeyOf binding-ai-browser-test-source-enroll-login", "target: !KeyOf binding-ai-browser-test-source-auth-login"),
-            ("user_matching_mode: email_link", "user_matching_mode: identifier"),
+            ("    state: absent\n    identifiers:\n      slug: unifi-identity-enterprise", "    identifiers:\n      slug: unifi-identity-enterprise"),
         ]:
             with self.subTest(change=old):
                 mutated = copy.deepcopy(self.config)
-                key = "sources.yaml" if old == "user_matching_mode: email_link" else "applications.yaml"
+                key = "sources.yaml" if "unifi-identity-enterprise" in old else "applications.yaml"
                 self.assertIn(old, mutated["data"][key])
                 mutated["data"][key] = mutated["data"][key].replace(old, new, 1)
                 self.assertTrue(self.check(config=mutated))

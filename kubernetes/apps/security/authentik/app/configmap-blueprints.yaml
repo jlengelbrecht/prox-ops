@@ -100,9 +100,6 @@ data:
             # Plex users get media-only access (slug: media-server-access)
             elif "media-server-access" in source_slugs:
                 groups.append("bookstack-plex-media-users")
-            # UID users get full access
-            elif "unifi-identity-enterprise" in source_slugs:
-                groups.append("bookstack-uid-full-access")
             # Direct Authentik login users get extended access
             else:
                 groups.append("bookstack-extended-users")
@@ -1020,23 +1017,13 @@ data:
           allow_friends: true
           allowed_servers:
             - !Env AUTHENTIK_PLEX_SERVER_ID
-      # UniFi Identity Enterprise Source
+      # UniFi Identity Enterprise source, retired: Entra is the upstream IdP.
+      # Tombstone, because authentik never prunes an object whose entry vanishes.
       - model: authentik_sources_oauth.oauthsource
         id: source-uid
+        state: absent
         identifiers:
           slug: unifi-identity-enterprise
-        attrs:
-          name: Sign in with UID
-          slug: unifi-identity-enterprise
-          enabled: true
-          authentication_flow: !Context authentication_flow
-          enrollment_flow: !Context enrollment_flow
-          policy_engine_mode: any
-          user_matching_mode: email_link
-          group_matching_mode: identifier
-          provider_type: openidconnect
-          consumer_key: !Env AUTHENTIK_UID_CONSUMER_KEY
-          consumer_secret: !Env AUTHENTIK_UID_CONSUMER_SECRET
 
   # =============================================================
   # ENTRA ID SOURCE BLUEPRINT
@@ -1078,19 +1065,16 @@ data:
           access_token_url: !Format ["https://login.microsoftonline.com/%s/oauth2/v2.0/token", !Env AUTHENTIK_ENTRA_TENANT_ID]
           oidc_jwks_url: !Format ["https://login.microsoftonline.com/%s/discovery/v2.0/keys", !Env AUTHENTIK_ENTRA_TENANT_ID]
           profile_url: https://graph.microsoft.com/v1.0/me
-      # Show the Entra button next to UID on the login pages that offer UID
-      # today. The full source list is set here, so UID stays listed.
+      # Entra is the only upstream login on both identification stages.
       - model: authentik_stages_identification.identificationstage
         identifiers:
           name: default-authentication-identification
         attrs:
           sources:
-            - !Find [authentik_core.source, [slug, unifi-identity-enterprise]]
             - !KeyOf source-entra
       - model: authentik_stages_identification.identificationstage
         identifiers:
           name: external-authentication-identification
         attrs:
           sources:
-            - !Find [authentik_core.source, [slug, unifi-identity-enterprise]]
             - !KeyOf source-entra
