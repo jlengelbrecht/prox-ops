@@ -193,8 +193,8 @@ worker_nodes = [
     mac_addr     = "b2:dc:2e:72:8c:ec"
     vm_id        = 904
     proxmox_node = "Baldar"
-    # Baldar has 125.8G for four VMs plus two Ceph OSDs; its workers run at
-    # 24G so ctrl-1 can grow without crowding the host.
+    # Baldar has 125.8G for four VMs plus two Ceph OSDs; its workers are cut
+    # from 32G to 24G to leave headroom for ctrl-1 at 16G.
     memory_mb    = 24576
     is_gpu       = false
     gpu_model    = ""
@@ -219,8 +219,8 @@ worker_nodes = [
     mac_addr     = "06:64:c3:76:9a:98"
     vm_id        = 905
     proxmox_node = "Baldar"
-    # Baldar has 125.8G for four VMs plus two Ceph OSDs; its workers run at
-    # 24G so ctrl-1 can grow without crowding the host.
+    # Baldar has 125.8G for four VMs plus two Ceph OSDs; its workers are cut
+    # from 32G to 24G to leave headroom for ctrl-1 at 16G.
     memory_mb    = 24576
     is_gpu       = false
     gpu_model    = ""
@@ -245,8 +245,8 @@ worker_nodes = [
     mac_addr     = "36:30:ad:44:40:cd"
     vm_id        = 906
     proxmox_node = "Baldar"
-    # Baldar has 125.8G for four VMs plus two Ceph OSDs; its workers run at
-    # 24G so ctrl-1 can grow without crowding the host.
+    # Baldar has 125.8G for four VMs plus two Ceph OSDs; its workers are cut
+    # from 32G to 24G to leave headroom for ctrl-1 at 16G.
     memory_mb    = 24576
     is_gpu       = false
     gpu_model    = ""
