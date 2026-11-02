@@ -32,7 +32,9 @@ spec:
       prometheusSpec:
         # Data retention
         retention: 30d
-        retentionSize: "90GB"
+        # Below the 85% PVCNearlyFull threshold of the 100Gi claim (about 98G
+        # usable), with room for the WAL and compaction headroom.
+        retentionSize: "75GB"
 
         # Resource limits
         resources:

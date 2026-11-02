@@ -51,6 +51,16 @@ spec:
     drainTimeout: 10m
     # The CRD defaults to talosctl --debug.
     debug: false
+  # Each reboot fires node, target, pod and DaemonSet alerts that are expected
+  # while a node is down. tuppr holds this silence only while a run is active
+  # (a short lease it keeps renewing, capped at maxDuration) and drops it when
+  # the run finishes, parks or fails, so real problems alert again after.
+  silences:
+    - matchers:
+        - name: alertname
+          matchType: "=~"
+          value: KubeNodeUnreachable|KubeNodeNotReady|NodeDown|TargetDown|KubeletDown|KubePodNotReady|PodNotReady|PodCrashLooping|KubeContainerWaiting|KubeDaemonSetRolloutStuck|KubeDaemonSetMisScheduled|KubeDeploymentReplicasMismatch|KubeStatefulSetReplicasMismatch
+      maxDuration: 4h
   healthChecks:
     - apiVersion: ceph.rook.io/v1
       kind: CephCluster
