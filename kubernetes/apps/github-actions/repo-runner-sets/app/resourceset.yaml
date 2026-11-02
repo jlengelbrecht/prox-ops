@@ -23,9 +23,10 @@
 #               ghcr.io/actions/actions-runner. When set, the pod also gets
 #               imagePullSecrets ghcr-runner-images (ghcr-pull-secret.yaml) so
 #               private GHCR images pull. Pin by digest.
-#   runnerCPU, runnerMemory, runnerDisk
-#               optional runner container limits, default 2000m, 4Gi, 10Gi.
+#   runnerMemory, runnerDisk
+#               optional runner container limits, default 4Gi, 10Gi.
 #               runnerDisk also sizes the work emptyDir. Requests stay small.
+#               There is no CPU limit: it only throttled builds on idle nodes.
 #
 # The existing prox-ops scale set (../../gha-runner-scale-set) is managed
 # separately: it carries cluster RBAC and anti-affinity this template does not.
@@ -148,7 +149,6 @@ spec:
       # Playwright tests in headless Chromium. runner-build carries the C
       # toolchain, PostgreSQL 18 server and client, and Chromium's libraries.
       runnerImage: ghcr.io/jlengelbrecht/runner-build@sha256:80d6a042eb62e7b912cdc9a7c31139db0f3beb31eaff3f1db070befb940971eb
-      runnerCPU: 4000m
       runnerMemory: 8Gi
       runnerDisk: 20Gi
       # Go and Node toolchains (actions/setup-go and setup-node fall back to
@@ -351,7 +351,6 @@ spec:
                     memory: 1Gi
                     ephemeral-storage: 2Gi
                   limits:
-                    cpu: 4000m
                     memory: 8Gi
                     # Matches the buildkitd emptyDir sizeLimit.
                     ephemeral-storage: 20Gi
@@ -388,7 +387,6 @@ spec:
                     memory: 1Gi
                     ephemeral-storage: 1Gi
                   limits:
-                    cpu: << get inputs "runnerCPU" | default "2000m" >>
                     memory: << get inputs "runnerMemory" | default "4Gi" >>
                     # Matches the work emptyDir sizeLimit.
                     ephemeral-storage: << get inputs "runnerDisk" | default "10Gi" >>
