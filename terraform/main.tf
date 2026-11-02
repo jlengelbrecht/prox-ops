@@ -458,7 +458,7 @@ module "worker_nodes" {
   cpu_cores    = each.value.is_gpu ? var.gpu_worker_cpu_cores : var.worker_cpu_cores
   cpu_sockets  = each.value.is_gpu ? var.gpu_worker_cpu_sockets : var.worker_cpu_sockets
   cpu_type     = var.cpu_type
-  memory_mb    = each.value.is_gpu ? var.gpu_worker_memory_mb : var.worker_memory_mb
+  memory_mb    = coalesce(each.value.memory_mb, each.value.is_gpu ? var.gpu_worker_memory_mb : var.worker_memory_mb)
   disk_size_gb = each.value.is_gpu ? var.gpu_worker_disk_size_gb : var.worker_disk_size_gb
 
   vm_storage_pool = var.vm_storage_pool
