@@ -90,16 +90,6 @@ spec:
         - ports:
             - port: "4483"
               protocol: TCP
-    # Allow egress to graphiti-mcp server (standalone, not ToolHive-managed yet)
-    # Knowledge graph MCP for RAG operations (BookStack docs, runbooks)
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: graphiti-mcp
-      toPorts:
-        - ports:
-            - port: "8000"
-              protocol: TCP
     # STORY-059: Allow egress to SearXNG for web search
     - toEndpoints:
         - matchLabels:

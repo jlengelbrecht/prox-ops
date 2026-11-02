@@ -22,16 +22,6 @@ spec:
             - port: "6333"
               protocol: TCP
 
-    # Allow from Graphiti MCP (GraphRAG vector storage) - mcp namespace
-    - fromEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: graphiti-mcp
-      toPorts:
-        - ports:
-            - port: "6333"
-              protocol: TCP
-
   egress:
     # Allow DNS resolution
     - toEndpoints:

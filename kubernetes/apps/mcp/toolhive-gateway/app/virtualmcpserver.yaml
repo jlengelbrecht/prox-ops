@@ -94,7 +94,7 @@ spec:
 ---
 # VirtualMCPServer for internal/anonymous access (LiteLLM, internal services)
 # This provides an unauthenticated endpoint for trusted internal cluster traffic
-# EXCLUDES sensitive tools (unifi) - only graphiti and n8n available
+# EXCLUDES sensitive tools (unifi) - only n8n available
 apiVersion: toolhive.stacklok.dev/v1alpha1
 kind: VirtualMCPServer
 metadata:
@@ -116,8 +116,6 @@ spec:
       # Note: VirtualMCPServer uses allow-list pattern - empty filter = no tools exposed
       # By not listing unifi workload at all, its tools are excluded from aggregation
       tools:
-        - workload: graphiti
-          # Include all graphiti tools (no filter = all tools)
         - workload: n8n
           # Include all n8n tools (no filter = all tools)
         # unifi workload intentionally omitted - not exposed to internal gateway
