@@ -12,13 +12,13 @@ _Production-grade Kubernetes homelab — Proxmox VE • Talos Linux • Flux Git
 
 </div>
 
+<!-- The pinned bpg/proxmox badge version is bumped by Renovate together with terraform/versions.tf -->
 <div align="center">
 
 [![Talos](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml&query=$.spec.talos.version&label=Talos&logo=talos&logoColor=white&color=blue&style=for-the-badge)](./kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml)
 [![Talos Latest](https://img.shields.io/github/v/release/siderolabs/talos?label=Talos%20Latest&logo=talos&logoColor=white&color=lightgrey&style=for-the-badge)](https://github.com/siderolabs/talos/releases)
 [![Kubernetes](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml&query=$.spec.kubernetes.version&label=Kubernetes&logo=kubernetes&logoColor=white&color=blue&style=for-the-badge)](./kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml)
 [![Kubernetes Latest](https://img.shields.io/github/v/release/kubernetes/kubernetes?label=K8s%20Latest&logo=kubernetes&logoColor=white&color=lightgrey&style=for-the-badge)](https://github.com/kubernetes/kubernetes/releases)
-<!-- The version in this badge is bumped by Renovate together with terraform/versions.tf -->
 [![Proxmox Provider](https://img.shields.io/badge/bpg%2Fproxmox-v0.91.0-blue?logo=terraform&logoColor=white&style=for-the-badge)](./terraform/versions.tf)
 [![Proxmox Provider Latest](https://img.shields.io/github/v/release/bpg/terraform-provider-proxmox?label=Provider%20Latest&logo=terraform&logoColor=white&color=lightgrey&style=for-the-badge)](https://github.com/bpg/terraform-provider-proxmox/releases)
 
