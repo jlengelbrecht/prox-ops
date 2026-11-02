@@ -3,6 +3,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - namespace.yaml
+  # MCP servers as plain HTTP Deployments (replacing the ToolHive runtime)
+  - ./mcp-servers/ks.yaml
   - ./toolhive/ks.yaml
   - ./toolhive-gateway/ks.yaml
   # n8n-mcp is managed by ToolHive via an MCPServer CRD

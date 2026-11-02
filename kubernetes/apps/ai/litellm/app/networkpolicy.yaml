@@ -79,16 +79,14 @@ spec:
               protocol: TCP
             - port: "10443"
               protocol: TCP
-    # Allow egress to ToolHive VirtualMCPServer gateway (homelab-gateway)
-    # Routes to all ToolHive-managed MCP servers (n8n-mcp, etc.)
-    # Note: VirtualMCPServer pods use 'virtualmcpserver' as app.kubernetes.io/name
+    # Allow egress to the n8n MCP server (mcp/mcp-servers)
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: virtualmcpserver
+            app.kubernetes.io/name: n8n-mcp
       toPorts:
         - ports:
-            - port: "4483"
+            - port: "3000"
               protocol: TCP
     # STORY-059: Allow egress to SearXNG for web search
     - toEndpoints:
