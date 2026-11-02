@@ -119,18 +119,13 @@ data:
           expression: |
             # Return user's Authentik group names for Open WebUI
             return {"groups": [group.name for group in user.groups.all()]}
-      # MCP Gateway Audience - adds aud claim for ToolHive gateway token validation
+      # ToolHive MCP Gateway audience mapping, retired with ToolHive. Tombstone:
+      # authentik never prunes an object whose entry vanishes.
       - model: authentik_providers_oauth2.scopemapping
         id: scope-mcp-audience
+        state: absent
         identifiers:
           name: MCP Gateway Audience
-        attrs:
-          name: MCP Gateway Audience
-          scope_name: mcp
-          description: "Adds audience claim for ToolHive MCP Gateway token validation"
-          expression: |
-            # Return the expected audience for MCP Gateway
-            return {"aud": "toolhive-mcp-gateway"}
 
   # =============================================================
   # OAUTH2 PROVIDERS BLUEPRINT
@@ -152,7 +147,6 @@ data:
       scope_offline: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-offline_access]]
       scope_openwebui_groups: !Find [authentik_providers_oauth2.scopemapping, [name, "Open WebUI Groups"]]
       scope_bookstack_groups: !Find [authentik_providers_oauth2.scopemapping, [name, "BookStack Groups"]]
-      scope_mcp_audience: !Find [authentik_providers_oauth2.scopemapping, [name, "MCP Gateway Audience"]]
     entries:
       # Open WebUI - Direct OIDC
       - model: authentik_providers_oauth2.oauth2provider
@@ -230,63 +224,6 @@ data:
               url: https://ai-api.homelab0.org/sso/callback
           access_code_validity: minutes=1
           access_token_validity: minutes=5
-          refresh_token_validity: days=30
-          include_claims_in_id_token: true
-          sub_mode: hashed_user_id
-          issuer_mode: per_provider
-      # ToolHive - Direct OIDC (MCP Platform UI)
-      - model: authentik_providers_oauth2.oauth2provider
-        id: provider-toolhive
-        identifiers:
-          name: ToolHive
-        attrs:
-          name: ToolHive
-          client_id: !Env AUTHENTIK_TOOLHIVE_CLIENT_ID
-          client_secret: !Env AUTHENTIK_TOOLHIVE_CLIENT_SECRET
-          client_type: confidential
-          authorization_flow: !Context authorization_flow
-          invalidation_flow: !Context invalidation_flow
-          signing_key: !Context signing_key
-          property_mappings:
-            - !Context scope_email
-            - !Context scope_profile
-            - !Context scope_openid
-          redirect_uris:
-            - matching_mode: strict
-              url: https://mcp.homelab0.org/api/auth/oauth2/callback/authentik
-          access_code_validity: minutes=1
-          access_token_validity: minutes=5
-          refresh_token_validity: days=30
-          include_claims_in_id_token: true
-          sub_mode: hashed_user_id
-          issuer_mode: per_provider
-      # ToolHive MCP Gateway - Public OIDC for CLI/Desktop clients
-      # Uses PKCE flow (no client secret required) for thv CLI, Claude Code, etc.
-      - model: authentik_providers_oauth2.oauth2provider
-        id: provider-toolhive-mcp-gateway
-        identifiers:
-          name: ToolHive MCP Gateway
-        attrs:
-          name: ToolHive MCP Gateway
-          client_id: !Env AUTHENTIK_TOOLHIVE_MCP_GATEWAY_CLIENT_ID
-          client_type: public
-          authorization_flow: !Context authorization_flow
-          invalidation_flow: !Context invalidation_flow
-          signing_key: !Context signing_key
-          property_mappings:
-            - !Context scope_mcp_audience
-            - !Context scope_email
-            - !Context scope_profile
-            - !Context scope_openid
-            - !Context scope_offline
-          redirect_uris:
-            # Local callbacks for CLI tools (thv, Claude Code, etc.)
-            - matching_mode: regex
-              url: http://localhost:[0-9]+/.*
-            - matching_mode: regex
-              url: http://127\.0\.0\.1:[0-9]+/.*
-          access_code_validity: minutes=5
-          access_token_validity: hours=1
           refresh_token_validity: days=30
           include_claims_in_id_token: true
           sub_mode: hashed_user_id
@@ -610,26 +547,6 @@ data:
           group: AI
           policy_engine_mode: all
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "LiteLLM"]]
-      - model: authentik_core.application
-        id: app-toolhive
-        identifiers:
-          slug: toolhive
-        attrs:
-          name: ToolHive
-          slug: toolhive
-          group: AI
-          policy_engine_mode: all
-          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "ToolHive"]]
-      - model: authentik_core.application
-        id: app-toolhive-mcp-gateway
-        identifiers:
-          slug: toolhive-mcp-gateway
-        attrs:
-          name: ToolHive MCP Gateway
-          slug: toolhive-mcp-gateway
-          group: AI
-          policy_engine_mode: all
-          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "ToolHive MCP Gateway"]]
       # Forward Auth Applications
       - model: authentik_core.application
         id: app-n8n
@@ -1010,12 +927,6 @@ data:
         identifiers: {target: !Find [authentik_core.application, [slug, lite-llm]], order: 90}
         attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
       - model: authentik_policies.policybinding
-        identifiers: {target: !Find [authentik_core.application, [slug, toolhive]], order: 90}
-        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
-      - model: authentik_policies.policybinding
-        identifiers: {target: !Find [authentik_core.application, [slug, toolhive-mcp-gateway]], order: 90}
-        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
-      - model: authentik_policies.policybinding
         identifiers: {target: !Find [authentik_core.application, [slug, n8n]], order: 90}
         attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
       - model: authentik_policies.policybinding
@@ -1053,6 +964,27 @@ data:
         state: absent
         identifiers:
           name: Moltbot
+      # ToolHive retirement tombstones, same ordering rule: applications first.
+      - model: authentik_core.application
+        id: app-toolhive
+        state: absent
+        identifiers:
+          slug: toolhive
+      - model: authentik_core.application
+        id: app-toolhive-mcp-gateway
+        state: absent
+        identifiers:
+          slug: toolhive-mcp-gateway
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-toolhive
+        state: absent
+        identifiers:
+          name: ToolHive
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-toolhive-mcp-gateway
+        state: absent
+        identifiers:
+          name: ToolHive MCP Gateway
 
   # =============================================================
   # SOURCES BLUEPRINT

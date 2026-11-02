@@ -184,7 +184,7 @@ GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Fa
 | Qdrant | Vector database |
 | CloudNative-PG | PostgreSQL operator + cluster |
 | Valkey | Redis-compatible cache |
-| ToolHive (+ UI, gateway, registry) | MCP server runtime |
+| n8n and UniFi MCP servers | MCP tools over Streamable HTTP, called through LiteLLM |
 
 ### Media (`media`, `downloads`)
 
@@ -249,7 +249,7 @@ prox-ops/
 │   │   ├── infra-proxies/   # Internal proxies for Proxmox, TrueNAS, etc.
 │   │   ├── iot/             # Home Assistant
 │   │   ├── kube-system/     # Cilium, Multus, GPU plugins, Tetragon, ...
-│   │   ├── mcp/             # ToolHive MCP platform
+│   │   ├── mcp/             # MCP servers (n8n, UniFi)
 │   │   ├── media/           # Plex + arr stack + Uptime Kuma
 │   │   ├── network/         # Envoy, Cloudflare Tunnel, k8s-gateway
 │   │   ├── observability/   # Prometheus, Loki, Grafana, UnPoller, Zabbix

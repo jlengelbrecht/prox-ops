@@ -110,12 +110,9 @@ spec:
       # See: https://cloudnative-pg.io/documentation/current/declarative_role_management/
       # Note: firecrawl role removed (STORY-062) - using Firecrawl.dev cloud API
       roles:
+        # Retired with ToolHive: dropped once its database is gone.
         - name: toolhive
-          ensure: present
-          login: true
-          createdb: false
-          passwordSecret:
-            name: toolhive-db-credentials
+          ensure: absent
         - name: zabbix
           ensure: present
           login: true
