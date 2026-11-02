@@ -126,8 +126,10 @@ data:
           expression: |
             # Return user's Authentik group names for Open WebUI
             return {"groups": [group.name for group in user.groups.all()]}
-      # Grafana maps its role from this claim. Only the two groups Grafana
-      # understands are released, so other group names do not leak to it.
+      # Grafana maps its role from this claim using the two groups it
+      # understands. The managed profile mapping also emits the user's direct
+      # groups and authentik merges the lists, so this adds the role groups
+      # (including inherited membership) rather than filtering the claim.
       # all_groups() matches the access policy's ak_is_group_member().
       - model: authentik_providers_oauth2.scopemapping
         id: scope-grafana-groups

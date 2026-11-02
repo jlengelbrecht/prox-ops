@@ -201,6 +201,9 @@ spec:
           secretKeyRef:
             name: grafana-oidc
             key: GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
+      # Restart Grafana when the client secret rotates, as Authentik does.
+      podAnnotations:
+        secret.reloader.stakater.com/reload: grafana-oidc
 
       # Persistence
       persistence:
@@ -214,13 +217,13 @@ spec:
         annotations:
           helm.sh/resource-policy: keep
 
-      # Service configuration for LoadBalancer
+      # Reached only through the HTTPRoute on the Envoy gateway. A LAN
+      # LoadBalancer would serve the login and basic auth over plain HTTP,
+      # past the gateway's TLS and filters.
       service:
-        type: LoadBalancer
+        type: ClusterIP
         port: 80
         targetPort: 3000
-        annotations:
-          io.cilium/lb-ipam-ips: "10.20.67.24"
 
       # Ingress disabled (using LoadBalancer)
       ingress:
