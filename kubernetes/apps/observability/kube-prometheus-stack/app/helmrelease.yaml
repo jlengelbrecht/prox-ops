@@ -26,12 +26,16 @@ spec:
       retries: 3
     crds: CreateReplace
     # Grafana 13 migrates its database in place and cannot be downgraded. The
-    # cluster-wide HelmRelease defaults roll a failed upgrade back, and with
-    # Helm waiting on readiness a slow or failing Grafana 13 pod would start
-    # Grafana 12 on the migrated database. Without the wait the upgrade fails
-    # only on an apply error, so a broken Grafana 13 stays put for a reviewed
-    # fix or a restore. Remove once Grafana 13 has been accepted.
+    # cluster-wide HelmRelease defaults roll a failed upgrade back, so a slow
+    # Grafana 13 pod (readiness wait) or a failed post-upgrade hook (the
+    # admission webhook patch Job) would start Grafana 12 on the migrated
+    # database. With neither the wait nor the hooks, the upgrade fails only on
+    # an apply error, so a broken Grafana 13 stays put for a reviewed fix or a
+    # restore. The chart version is unchanged, so skipping the webhook patch
+    # hook leaves the existing webhook certificate in place. Remove both once
+    # Grafana 13 has been accepted.
     disableWait: true
+    disableHooks: true
   values:
     # Prometheus configuration
     prometheus:
@@ -242,6 +246,11 @@ spec:
           provisioning: /etc/grafana/provisioning
         unified_storage:
           index_path: /var/lib/grafana-search/bleve
+        # Keep the plugins on the volume at the versions Grafana 12 used until
+        # 13 is accepted, so a rollback from the database cold copy does not
+        # meet plugins already updated for 13.
+        plugins:
+          preinstall_auto_update: false
 
       # Default dashboards
       defaultDashboardsEnabled: true
