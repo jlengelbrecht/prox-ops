@@ -23,14 +23,12 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-
-      - name: Fetch base branch
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: git fetch --no-tags --depth=1 origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          # The PR merge commit and its first parent, the base it was merged
+          # against. Comparing with that parent rather than the moving base
+          # branch keeps a re-run of this job consistent with its head.
+          fetch-depth: 2
 
       - name: Check upgrade path
         env:
-          BASE_REF: ${{ github.base_ref }}
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/check-upgrade-path.sh "origin/${BASE_REF}"
+        run: bash scripts/check-upgrade-path.sh HEAD^1

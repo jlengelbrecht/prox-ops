@@ -14,6 +14,7 @@
 #   - the kubelet image tuppr will pull exists
 #
 # Usage: scripts/check-upgrade-path.sh <base-ref> [repo-root]
+# In CI the base is HEAD^1, the first parent of the PR merge commit.
 set -euo pipefail
 
 BASE="${1:?usage: check-upgrade-path.sh <base-ref> [repo-root]}"
@@ -63,13 +64,20 @@ fi
 # Build the checker against the target release's machinery module, so the
 # compatibility tables are the ones that ship with the Talos being installed.
 # The downloaded module code never sees the GitHub token.
-(
+compat="$(mktemp -d)"
+trap 'rm -rf "$compat"' EXIT
+if (
   unset GH_TOKEN
-  cd scripts/talos-compat
-  go get "github.com/siderolabs/talos/pkg/machinery@v${to_talos}" >/dev/null
-  go build -o "${RUNNER_TEMP:-/tmp}/talos-compat" .
-)
-env -u GH_TOKEN "${RUNNER_TEMP:-/tmp}/talos-compat" "v${from_talos}" "v${to_talos}" "$to_k8s" || error "Talos compatibility check failed (see above)"
+  # set -e does not apply inside an if condition; chain so any step fails it.
+  cp -r scripts/talos-compat/. "$compat/src" &&
+    cd "$compat/src" &&
+    go get "github.com/siderolabs/talos/pkg/machinery@v${to_talos}" >/dev/null &&
+    go build -o "$compat/talos-compat" .
+); then
+  env -u GH_TOKEN "$compat/talos-compat" "v${from_talos}" "v${to_talos}" "$to_k8s" || error "Talos compatibility check failed (see above)"
+else
+  error "Could not build scripts/talos-compat against github.com/siderolabs/talos/pkg/machinery v${to_talos}"
+fi
 
 if [[ "$from_k8s" != "$to_k8s" ]]; then
   auth=()

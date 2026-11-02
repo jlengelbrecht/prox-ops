@@ -532,10 +532,12 @@
     // Talos and Kubernetes cluster versions: patches auto-merge, minor and major are
     // manual. A merged version is what tuppr rolls out, so these rules sit after the
     // default patch/minor rules and override them. Patch PRs merge only on Saturday
-    // (UTC hours below are 09:00-17:00 Eastern) and only when the required checks pass,
+    // between 13:00 and 21:59 UTC, and only when the required checks pass,
     // including "Talos upgrade path is supported" (scripts/check-upgrade-path.sh) and
     // the Talos release bug check. Renovate merges them itself (platformAutomerge off)
-    // so the schedule holds; tuppr's own weekend window then starts the roll.
+    // so the schedule holds; tuppr's own weekend window then starts the roll. Renovate
+    // merges on its own runs and rebases a branch that fell behind main first, so on a
+    // busy Saturday a patch can slip to the following weekend. That is a delay, not a risk.
     // Minor releases stay manual: a Talos minor can change the machine config schema
     // (1.14 moved to typed documents), and a Kubernetes minor removes APIs, and
     // neither is something the CI checks can see.

@@ -19,7 +19,8 @@ spec:
     # bad tag or schematic stops the run before any disruption.
     prePull: true
   # Start upgrades only at the weekend: Saturday 09:00 to Sunday 21:00 Eastern.
-  # A version merged midweek stays Pending until the window opens; to roll one
+  # A version merged midweek waits in phase MaintenanceWindow (see
+  # status.nextMaintenanceWindow) until the window opens; to roll one
   # out sooner, merge a PR that removes this block. tuppr re-checks the window
   # between nodes, so a roll that outlasts it resumes the next weekend.
   maintenance:
