@@ -29,6 +29,12 @@ spec:
     # until then the pods cannot start.
     talosServiceAccount:
       create: true
+    # Lets a TalosUpgrade hold an Alertmanager silence while it runs; which
+    # alerts are silenced is set per resource in upgrades/talosupgrade.yaml.
+    silences:
+      enabled: true
+      alertmanager:
+        address: http://kube-prometheus-stack-alertmanager.observability.svc.cluster.local:9093
     resources:
       requests:
         cpu: 10m
