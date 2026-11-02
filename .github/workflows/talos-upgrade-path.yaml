@@ -1,0 +1,34 @@
+---
+# Talos and Kubernetes patch updates auto-merge, and tuppr rolls out whatever is
+# merged. This check fails a PR whose version change is unsafe: a downgrade, a
+# skipped Kubernetes minor, a combination Talos does not support, a Kubernetes
+# release younger than three days, or a missing kubelet image. See
+# scripts/check-upgrade-path.sh. It runs on every PR, without a paths filter, so
+# it can be a required check; PRs that change no version pass in seconds.
+name: Talos Upgrade Path
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade-path:
+    name: Talos upgrade path is supported
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # The PR merge commit and its first parent, the base it was merged
+          # against. Comparing with that parent rather than the moving base
+          # branch keeps a re-run of this job consistent with its head.
+          fetch-depth: 2
+
+      - name: Check upgrade path
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-upgrade-path.sh HEAD^1
