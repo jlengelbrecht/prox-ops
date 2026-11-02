@@ -14,16 +14,18 @@ _Production-grade Kubernetes homelab — Proxmox VE • Talos Linux • Flux Git
 
 <div align="center">
 
-[![Talos Latest](https://img.shields.io/github/v/release/siderolabs/talos?label=Talos%20Latest&logo=talos&logoColor=white&color=blue&style=for-the-badge)](https://github.com/siderolabs/talos/releases)
-[![Talos Pinned](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/talos/talenv.yaml&query=$.talosVersion&label=Talos%20Pinned&logo=talos&logoColor=white&color=blue&style=for-the-badge)](./talos/talenv.yaml)
-[![Kubernetes Latest](https://img.shields.io/github/v/release/siderolabs/kubelet?label=K8s%20Latest&logo=kubernetes&logoColor=white&color=blue&style=for-the-badge)](https://github.com/siderolabs/kubelet/releases)
-[![Kubernetes Pinned](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/talos/talenv.yaml&query=$.kubernetesVersion&label=K8s%20Pinned&logo=kubernetes&logoColor=white&color=blue&style=for-the-badge)](./talos/talenv.yaml)
+[![Talos](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml&query=$.spec.talos.version&label=Talos&logo=talos&logoColor=white&color=blue&style=for-the-badge)](./kubernetes/apps/system-upgrade/tuppr/upgrades/talosupgrade.yaml)
+[![Talos Latest](https://img.shields.io/github/v/release/siderolabs/talos?label=Talos%20Latest&logo=talos&logoColor=white&color=lightgrey&style=for-the-badge)](https://github.com/siderolabs/talos/releases)
+[![Kubernetes](https://img.shields.io/badge/dynamic/yaml?url=https://raw.githubusercontent.com/jlengelbrecht/prox-ops/main/kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml&query=$.spec.kubernetes.version&label=Kubernetes&logo=kubernetes&logoColor=white&color=blue&style=for-the-badge)](./kubernetes/apps/system-upgrade/tuppr/upgrades/kubernetesupgrade.yaml)
+[![Kubernetes Latest](https://img.shields.io/github/v/release/kubernetes/kubernetes?label=K8s%20Latest&logo=kubernetes&logoColor=white&color=lightgrey&style=for-the-badge)](https://github.com/kubernetes/kubernetes/releases)
+<!-- The version in this badge is bumped by Renovate together with terraform/versions.tf -->
+[![Proxmox Provider](https://img.shields.io/badge/bpg%2Fproxmox-v0.91.0-blue?logo=terraform&logoColor=white&style=for-the-badge)](./terraform/versions.tf)
+[![Proxmox Provider Latest](https://img.shields.io/github/v/release/bpg/terraform-provider-proxmox?label=Provider%20Latest&logo=terraform&logoColor=white&color=lightgrey&style=for-the-badge)](https://github.com/bpg/terraform-provider-proxmox/releases)
 
 </div>
 
 <div align="center">
 
-[![Flux Local](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/flux-local.yaml?branch=main&label=flux-local&logo=flux&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/flux-local.yaml)
 [![Security Gate](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/security-gate.yaml?branch=main&label=security&logo=github&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/security-gate.yaml)
 [![Release](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/release.yaml?branch=main&label=release&logo=github&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/release.yaml)
 [![Renovate](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/renovate.yaml?branch=main&label=renovate&logo=renovatebot&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/renovate.yaml)
@@ -47,7 +49,7 @@ Prox-Ops is the complete infrastructure-as-code definition for a 15-node Kuberne
 The design goals are:
 
 - **Reproducibility** — every node, network, and workload is declared in Git. The cluster can be rebuilt from a clean Proxmox install.
-- **Cattle, not pets** — Talos nodes are immutable and replaced rather than patched. Image Factory schematics are the single source of truth for kernel args and drivers.
+- **Immutable nodes, upgraded in place** — Talos nodes are immutable and API-driven. [tuppr](https://github.com/home-operations/tuppr) upgrades Talos and Kubernetes one node at a time from versions committed here; Image Factory schematics are the single source of truth for kernel args and drivers.
 - **GitOps end-to-end** — Flux v2 reconciles every workload from `main`. Direct cluster mutation is reserved for emergency rollback.
 - **Encrypted by default** — secrets live in Git as SOPS+age ciphertext, fed into the cluster via External Secrets Operator + 1Password Connect.
 
@@ -58,7 +60,9 @@ The design goals are:
 - **Multus** for VLAN-attached pods — DMZ workloads and home-automation pods get their own L2 segments via macvlan
 - **Rook-Ceph** consuming an external Proxmox-managed Ceph cluster for both block (RBD) and shared (CephFS) storage
 - **Envoy Gateway** as the in-cluster ingress, fronted by **Cloudflare Tunnel** for WAN access (zero open inbound ports)
-- **Renovate** keeps Helm charts, container images, and Talos versions current — versions ship to the cluster via PRs, not direct `talosctl upgrade`
+- **Renovate** keeps Helm charts, container images, and Talos and Kubernetes versions current through PRs
+- **tuppr** rolls Talos and Kubernetes upgrades through the cluster with health checks, inside a weekend maintenance window
+- **topf** renders and applies Talos machine configuration from `talos/`
 - **NVIDIA RTX A5000 + A2000** for AI inference; GPU drivers are baked into a dedicated Image Factory schematic so non-GPU nodes stay lean
 - **CodeRabbit + Gitleaks + GitGuardian + Flux local validation** on every PR
 - **Self-hosted GitHub Actions runners** (`gha-runner-scale-set`) for CI
@@ -115,6 +119,13 @@ GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Fa
 | NVIDIA device plugin + DCGM exporter | GPU scheduling and metrics |
 | Knative Serving | Serverless runtime (used by KServe) |
 | Tetragon (+ cluster policies) | eBPF runtime security |
+
+### Cluster lifecycle (`system-upgrade`, `etcd-backup`)
+
+| App | Purpose |
+| --- | --- |
+| tuppr | Talos and Kubernetes upgrade controller (`TalosUpgrade`, `KubernetesUpgrade`) |
+| etcd backup | Daily etcd snapshot to the NAS |
 
 ### GitOps & Secrets
 
@@ -245,17 +256,17 @@ prox-ops/
 │   │   ├── observability/   # Prometheus, Loki, Grafana, UnPoller, Zabbix
 │   │   ├── rook-ceph/       # External Ceph CSI
 │   │   ├── security/        # Authentik
+│   │   ├── system-upgrade/  # tuppr and the Talos/Kubernetes upgrade resources
 │   │   └── tools/           # Homepage, n8n
 │   ├── components/          # Shared Kustomize components
 │   └── flux/                # Flux bootstrap + cluster Kustomization
 ├── talos/
 │   ├── topf.yaml            # topf: cluster, versions, schematics, nodes
 │   ├── all/, control-plane/, worker/, node/  # topf patches (global, role, per node)
-│   ├── patches/             # Legacy talhelper patches (pending workflow migration)
-│   ├── talconfig.yaml       # Legacy talhelper input (pending workflow migration)
-│   ├── talenv.yaml          # Legacy versions file, still read by workflows/Renovate
+│   ├── patches/, talconfig.yaml  # Legacy talhelper input, still read by the Taskfiles
+│   ├── talenv.yaml          # Legacy copy of the versions, kept in sync by CI
 │   └── talsecret.sops.yaml  # Encrypted Talos secrets (used by topf)
-├── terraform/               # Proxmox VM templates + node provisioning
+├── terraform/               # Proxmox VM templates + node provisioning (not upgrades)
 ├── bootstrap/               # Pre-Flux bootstrap manifests
 ├── scripts/                 # Operational helpers
 ├── .taskfiles/, Taskfile.yaml  # Task automation
@@ -309,6 +320,17 @@ The bootstrap flow follows the [`onedr0p/cluster-template`](https://github.com/o
 
 Per-node specifics (MACs, install disks, schematic IDs, addresses) are kept in `nodes.yaml`, which is intentionally **not** committed — see `.gitignore` for the local-only files you'll need to populate.
 
+## ⬆️ Talos and Kubernetes Upgrades
+
+Versions live in Git. `talos/topf.yaml` holds the desired Talos and Kubernetes versions, and the tuppr resources in `kubernetes/apps/system-upgrade/tuppr/upgrades/` carry the same versions for the controller.
+
+1. Renovate opens one PR per Talos or Kubernetes release, bumping every copy of the version.
+2. CI checks the PR: every copy agrees, the target Talos release has no open advisory against it, and the upgrade path is supported (no downgrade, no skipped Kubernetes minor, a Talos/Kubernetes pair Talos itself supports, a kubelet image that exists).
+3. Patch releases auto-merge on Saturdays once those checks pass. Minor and major releases are reviewed and merged by hand.
+4. tuppr starts the upgrade inside its weekend window (Saturday 09:00 to Sunday 21:00 Eastern): Talos one node at a time with drain, reboot and health checks (Ceph `HEALTH_OK`, every node `Ready`), then Kubernetes.
+
+Machine configuration changes are applied with `topf apply` (see [`talos/README.md`](./talos/README.md)). The badges at the top compare the versions committed here with the latest upstream releases.
+
 ## 🔄 GitOps Workflow
 
 Every change to a workload is a pull request:
@@ -316,7 +338,7 @@ Every change to a workload is a pull request:
 1. Edit YAML under `kubernetes/`.
 2. Open a PR — CI runs Flux local validation, secret scanning, and CodeRabbit review.
 3. Merge to `main` → Flux reconciles within ~30 seconds.
-4. Renovate keeps Helm charts, container images, and Talos versions current via automated PRs.
+4. Renovate keeps Helm charts, container images, and Talos and Kubernetes versions current via automated PRs.
 
 Direct `kubectl` against the cluster is limited to read-only inspection (`get`, `describe`, `logs`); the only state-mutating operation that bypasses Git is an emergency rollback, and only with explicit approval.
 
