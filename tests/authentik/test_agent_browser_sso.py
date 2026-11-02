@@ -12,10 +12,11 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 AUTHENTIK = ROOT / "kubernetes/apps/security/authentik/app"
 PAPERCLIP = ROOT / "kubernetes/apps/ai/paperclip/app"
-# Frozen from the thirteen-application live inventory in LIVE-FLOW-APP-AUDIT.
+# Frozen from the thirteen-application live inventory in LIVE-FLOW-APP-AUDIT,
+# plus applications added since then.
 LIVE_APP_SLUGS = frozenset({
-    "book-stack", "glycemicgpt", "hermes", "hindsight", "light-rag",
-    "lite-llm", "n8n", "obsidian", "open-webui", "paperclip",
+    "book-stack", "glycemicgpt", "grafana", "hermes", "hindsight",
+    "light-rag", "lite-llm", "n8n", "obsidian", "open-webui", "paperclip",
     "wizarr",
 })
 
