@@ -62,6 +62,16 @@ data:
         attrs:
           name: openwebui-users
           attributes: {}
+      # Grafana read-only access. Admins come from "authentik Admins"; only
+      # members of this group get the Viewer role. Membership is managed in
+      # authentik, not here.
+      - model: authentik_core.group
+        id: group-grafana-viewers
+        identifiers:
+          name: grafana-viewers
+        attrs:
+          name: grafana-viewers
+          attributes: {}
 
   # =============================================================
   # CUSTOM SCOPE MAPPINGS BLUEPRINT
@@ -116,6 +126,22 @@ data:
           expression: |
             # Return user's Authentik group names for Open WebUI
             return {"groups": [group.name for group in user.groups.all()]}
+      # Grafana maps its role from this claim using the two groups it
+      # understands. The managed profile mapping also emits the user's direct
+      # groups and authentik merges the lists, so this adds the role groups
+      # (including inherited membership) rather than filtering the claim.
+      # all_groups() matches the access policy's ak_is_group_member().
+      - model: authentik_providers_oauth2.scopemapping
+        id: scope-grafana-groups
+        identifiers:
+          name: Grafana Groups
+        attrs:
+          name: Grafana Groups
+          scope_name: groups
+          description: "Returns the Grafana role groups the user belongs to"
+          expression: |
+            wanted = {"authentik Admins", "grafana-viewers"}
+            return {"groups": sorted({g.name for g in user.all_groups() if g.name in wanted})}
       # ToolHive MCP Gateway audience mapping, retired with ToolHive. Tombstone:
       # authentik never prunes an object whose entry vanishes.
       - model: authentik_providers_oauth2.scopemapping
@@ -126,7 +152,7 @@ data:
 
   # =============================================================
   # OAUTH2 PROVIDERS BLUEPRINT
-  # Direct OIDC providers for Open WebUI, BookStack, LiteLLM
+  # Direct OIDC providers for Open WebUI, BookStack, LiteLLM, Grafana, Hermes
   # =============================================================
   providers-oauth2.yaml: |
     version: 1
@@ -144,6 +170,7 @@ data:
       scope_offline: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-offline_access]]
       scope_openwebui_groups: !Find [authentik_providers_oauth2.scopemapping, [name, "Open WebUI Groups"]]
       scope_bookstack_groups: !Find [authentik_providers_oauth2.scopemapping, [name, "BookStack Groups"]]
+      scope_grafana_groups: !Find [authentik_providers_oauth2.scopemapping, [name, "Grafana Groups"]]
     entries:
       # Open WebUI - Direct OIDC
       - model: authentik_providers_oauth2.oauth2provider
@@ -219,6 +246,43 @@ data:
           redirect_uris:
             - matching_mode: strict
               url: https://ai-api.homelab0.org/sso/callback
+          access_code_validity: minutes=1
+          access_token_validity: minutes=5
+          refresh_token_validity: days=30
+          include_claims_in_id_token: true
+          sub_mode: hashed_user_id
+          issuer_mode: per_provider
+      # Grafana - Direct OIDC, confidential client with PKCE. The client id is
+      # a public identifier, declared literally here and in the Grafana
+      # HelmRelease; the secret comes from the authentik-grafana SOPS Secret.
+      # Grafana refreshes its session with the refresh token (offline_access),
+      # so a short access token does not log users out.
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-grafana
+        identifiers:
+          name: Grafana
+        attrs:
+          name: Grafana
+          client_id: grafana
+          client_secret: !Env AUTHENTIK_GRAFANA_CLIENT_SECRET
+          client_type: confidential
+          # New providers get an empty grant list from the blueprint API
+          # (authentik >= 2026.2); see the Hermes provider below.
+          grant_types:
+            - authorization_code
+            - refresh_token
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          signing_key: !Context signing_key
+          property_mappings:
+            - !Context scope_grafana_groups
+            - !Context scope_email
+            - !Context scope_profile
+            - !Context scope_openid
+            - !Context scope_offline
+          redirect_uris:
+            - matching_mode: strict
+              url: https://grafana.homelab0.org/login/generic_oauth
           access_code_validity: minutes=1
           access_token_validity: minutes=5
           refresh_token_validity: days=30
@@ -913,6 +977,36 @@ data:
         attrs:
           group: !Find [authentik_core.group, [name, "authentik Admins"]]
           enabled: true
+      # Grafana: admins and grafana-viewers only. One expression policy covers
+      # both groups, because with policy_engine_mode all two group bindings
+      # would require membership in both. Grafana itself then maps admins to
+      # Admin and viewers to Viewer and rejects anyone else.
+      - model: authentik_core.application
+        id: app-grafana
+        identifiers:
+          slug: grafana
+        attrs:
+          name: Grafana
+          slug: grafana
+          group: Tools
+          policy_engine_mode: all
+          meta_launch_url: https://grafana.homelab0.org
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "Grafana"]]
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-grafana-access
+        identifiers:
+          name: grafana-access
+        attrs:
+          expression: |
+            return ak_is_group_member(request.user, name="authentik Admins") or ak_is_group_member(request.user, name="grafana-viewers")
+      - model: authentik_policies.policybinding
+        id: binding-grafana-access
+        identifiers:
+          target: !Find [authentik_core.application, [slug, grafana]]
+          order: 0
+        attrs:
+          policy: !KeyOf policy-grafana-access
+          enabled: true
       # Exclude the agent from every ungranted app; future grants need review.
       - model: authentik_policies.policybinding
         identifiers: {target: !Find [authentik_core.application, [slug, open-webui]], order: 90}
@@ -947,6 +1041,9 @@ data:
         attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
       - model: authentik_policies.policybinding
         identifiers: {target: !Find [authentik_core.application, [slug, obsidian]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, grafana]], order: 90}
         attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
       # OpenClaw retirement tombstones, co-located so authentik applies them in file
       # order inside one transaction: the application goes before the provider it
