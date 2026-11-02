@@ -1,0 +1,27 @@
+# Bearer token for unifi-mcp's HTTP transport. The 1Password service account
+# is read-only, so this token lives in SOPS. unifi-mcp has admin rights on the
+# UniFi controller; nothing calls it yet, and callers must present this token.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: unifi-mcp-token
+  namespace: mcp
+type: Opaque
+stringData:
+  UNIFI_MCP_HTTP_AUTH_TOKEN: ENC[AES256_GCM,data:MWqKnr+4AAvl0tE7nURG4TrX8tiaxKdEcTe/GSoSHGY8UBdMD9+NI6OeivfJeL8cZR400eGxB96e/Cux8wgHBw==,iv:+Okyqonk/WWAHoqWNCRYkKkQknxiR+5lJTc3azw4epY=,tag:NyJZml3aLu33G4pwT0+YIg==,type:str]
+sops:
+  age:
+    - recipient: age1metxlry78wefrmm5ny2zjavtucsmdvw2r3ctexu6h05ak4x2vc7qa02drd
+      enc: |
+        -----BEGIN AGE ENCRYPTED FILE-----
+        YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSByUlZmL3MrUy92Ymc4K3d4
+        dUFFOFR3SCt3Qkx0Z2pOd2tSakpvTEhFNFM0Ck5odFJ0bnNXZWUvTDJRd2s3a3hG
+        VTVNTjIzZVBsL1VYeDNaMVFYaVVYYzgKLS0tIFNSZ21GeXFzcExsVUI1eFZqZDd3
+        UEZzdG03cXZOY0FlM3dmdkk4OFRBQ1UKdGNi5plto+ktrPBTE98uWhQICECGci/d
+        K2aG5wyozXQGwDailgH5Jmr2VMJ9diyPrBrHXaP+aDtIU0saYAxVJw==
+        -----END AGE ENCRYPTED FILE-----
+  lastmodified: "2026-11-02T03:47:31Z"
+  mac: ENC[AES256_GCM,data:1/JmcUAxqYlyX95xzun9geYub/vLSMb4AAxXC3rmqitCTrYmd1R36cLX0p2Z4BUeY77Hjqm/BcZMrkC0KxerMXb1cakV6VpKikmUHevuZ1j4z136n/3nR9BlkpjCFXKkhhBwZT6B2wjpkYGzNC+rKy9CzmUDihC4TvRz2OjQpGo=,iv:xwg/A0rPogzlEmwhN2yslG40QAzg4j4pIAZuLEd3A0s=,tag:NoyuV/dF1TgUUXPPlvujbA==,type:str]
+  encrypted_regex: ^(data|stringData)$
+  mac_only_encrypted: true
+  version: 3.11.0

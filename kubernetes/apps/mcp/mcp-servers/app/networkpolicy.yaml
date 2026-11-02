@@ -1,0 +1,57 @@
+---
+# n8n-mcp: only LiteLLM may call it; it may reach DNS and the n8n API.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: n8n-mcp
+  namespace: mcp
+spec:
+  endpointSelector:
+    matchLabels: {app.kubernetes.io/name: n8n-mcp}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports: [{port: "3000", protocol: TCP}]
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+    # Cilium matches pod ports, so n8n's container port 5678, not the Service port.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: tools
+            app.kubernetes.io/name: n8n
+      toPorts:
+        - ports: [{port: "5678", protocol: TCP}]
+---
+# unifi-mcp: no caller is allowed in yet (admin tools; add one deliberately).
+# It may reach DNS and UniFi controllers on private addresses.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: unifi-mcp
+  namespace: mcp
+spec:
+  endpointSelector:
+    matchLabels: {app.kubernetes.io/name: unifi-mcp}
+  # Default-deny both ways with no ingress rule: nothing may call it.
+  enableDefaultDeny: {ingress: true, egress: true}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+    - toCIDRSet:
+        - cidr: 10.0.0.0/8
+        - cidr: 172.16.0.0/12
+        - cidr: 192.168.0.0/16
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}, {port: "8443", protocol: TCP}]

@@ -1,0 +1,72 @@
+---
+# n8n MCP server on its own Streamable HTTP transport (POST/GET/DELETE /mcp),
+# guarded by AUTH_TOKEN. Calls the n8n API in the tools namespace.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n8n-mcp
+  namespace: mcp
+  labels: {app.kubernetes.io/name: n8n-mcp, app.kubernetes.io/component: mcp-server}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: n8n-mcp}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: n8n-mcp, app.kubernetes.io/component: mcp-server}
+      annotations:
+        secret.reloader.stakater.com/reload: n8n-mcp-http
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: n8n-mcp
+          image: ghcr.io/czlonkowski/n8n-mcp:2.99.2
+          env:
+            - {name: MCP_MODE, value: http}
+            - {name: PORT, value: "3000"}
+            - {name: N8N_API_URL, value: "http://n8n.tools.svc.cluster.local:80"}
+            - {name: LOG_LEVEL, value: error}
+            - {name: N8N_MCP_TELEMETRY_DISABLED, value: "true"}
+          envFrom:
+            - secretRef: {name: n8n-mcp-http}
+          ports:
+            - {name: http, containerPort: 3000}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 30
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          volumeMounts:
+            # The entrypoint copies the bundled node database here at start.
+            - {name: data, mountPath: /app/data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: data, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: n8n-mcp
+  namespace: mcp
+  labels: {app.kubernetes.io/name: n8n-mcp}
+spec:
+  selector: {app.kubernetes.io/name: n8n-mcp}
+  ports:
+    - {name: http, port: 3000, targetPort: http}
