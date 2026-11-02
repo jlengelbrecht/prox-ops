@@ -12,6 +12,24 @@ spec:
   hostnames:
     - "grafana.homelab0.org"
   rules:
+    # Grafana signs people in through Authentik. The local admin's HTTP basic
+    # auth stays enabled for the dashboard sidecar, which calls Grafana on
+    # localhost, so refuse basic-auth credentials from outside the cluster.
+    # Header matches take precedence over the plain path rule below.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+          headers:
+            - name: Authorization
+              type: RegularExpression
+              value: "(?i)^basic[[:space:]].*"
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: grafana-deny-basic-auth
     - matches:
         - path:
             type: PathPrefix
@@ -20,3 +38,16 @@ spec:
         - name: kube-prometheus-stack-grafana
           port: 80
           weight: 1
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: grafana-deny-basic-auth
+  namespace: observability
+spec:
+  directResponse:
+    statusCode: 403
+    contentType: text/plain
+    body:
+      type: Inline
+      inline: "Basic authentication is not accepted here. Sign in through Authentik.\n"
