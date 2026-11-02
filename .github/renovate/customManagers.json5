@@ -305,6 +305,20 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      // The README's "Proxmox Provider" badge shows the pinned bpg/proxmox version as
+      // static text (shields.io cannot read HCL). Same datasource as terraform/versions.tf,
+      // so the "Terraform: Providers" group bumps the badge in the same PR.
+      "description": "Keep the README Proxmox provider badge in step with terraform/versions.tf",
+      "managerFilePatterns": ["/^README\\.md$/"],
+      "matchStrings": [
+        "img\\.shields\\.io/badge/bpg%2Fproxmox-v(?<currentValue>\\d+\\.\\d+\\.\\d+)-"
+      ],
+      "datasourceTemplate": "terraform-provider",
+      "depNameTemplate": "bpg/proxmox",
+      "packageNameTemplate": "bpg/proxmox"
     }
   ],
   "packageRules": [
