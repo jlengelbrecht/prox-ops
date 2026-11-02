@@ -9,6 +9,10 @@ kind: KubeNodeConfig
 nodeIP:
   validSubnets:
     - 10.20.66.0/23
+# The Proxmox host is the real failure domain: one host reboot takes down every
+# VM on it. The scheduler's default spreading then keeps replicas on different hosts.
+labels:
+  topology.kubernetes.io/zone: {{ .Node.Data.zone }}
 {{- else }}
 machine:
   kubelet:
@@ -17,4 +21,6 @@ machine:
     nodeIP:
       validSubnets:
         - 10.20.66.0/23
+  nodeLabels:
+    topology.kubernetes.io/zone: {{ .Node.Data.zone }}
 {{- end }}
