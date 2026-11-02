@@ -16,7 +16,7 @@ PAPERCLIP = ROOT / "kubernetes/apps/ai/paperclip/app"
 LIVE_APP_SLUGS = frozenset({
     "book-stack", "glycemicgpt", "hermes", "hindsight", "light-rag",
     "lite-llm", "n8n", "obsidian", "open-webui", "paperclip",
-    "toolhive", "toolhive-mcp-gateway", "wizarr",
+    "wizarr",
 })
 
 
