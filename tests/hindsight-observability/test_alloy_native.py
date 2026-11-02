@@ -2,6 +2,7 @@
 import concurrent.futures
 import datetime
 import http.server
+import importlib.util
 import json
 import os
 import pathlib
@@ -14,19 +15,22 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
+from unittest import mock
 
 import yaml
-
-import test_promtail_native as legacy
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 RELEASE = ROOT / 'kubernetes/apps/observability/loki/app/alloy-helmrelease.yaml'
 RBAC = RELEASE.parent / 'alloy-rbac.yaml'
+HINDSIGHT = ROOT / 'kubernetes/apps/ai/hermes-hindsight/app/hindsight.yaml'
+WORKFLOW = ROOT / '.github/workflows/hindsight-logging.yaml'
+ASSETS = ROOT / 'scripts/hindsight-logging-ci-assets.py'
 TOOLING = ROOT / '_bmad-output/implementation-artifacts/tooling'
 CHART = pathlib.Path(os.environ.get('ALLOY_CHART', TOOLING / 'alloy-1.13.0.tgz'))
 ALLOY = os.environ.get('ALLOY_BIN') or str(TOOLING / 'alloy')
-PROMTAIL = os.environ.get('PROMTAIL_BIN') or str(TOOLING / 'promtail-linux-amd64')
-UUID = legacy.UUID
+HELM = os.environ.get('HINDSIGHT_HELM', 'helm')
+UUID = '12345678-1234-1234-1234-123456789abc'
 CRI_TS = '2026-10-03T09:00:00Z'
 EVENTS = ('deferred until', 'scheduled for retry at', 'timed out:', 'failed:')
 PRIVATE_MARKERS = ('synthetic-secret', 'nonworker-secret', 'near-secret', 'missing-secret', 'poller-secret',
@@ -34,8 +38,6 @@ PRIVATE_MARKERS = ('synthetic-secret', 'nonworker-secret', 'near-secret', 'missi
 SAFE_LABELS = {'namespace': 'ai', 'app': 'hindsight', 'container': 'api', 'stream': 'stdout'}
 SENTINEL = 'ordinary-sentinel'
 LABEL = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
-# Dry-run pads cells with tabs and emits none after a cell whose width is a multiple of eight.
-DRY_RUN = re.compile(r'(?P<ts>\d{4}-\d\d-\d\dT[\d:.]+[+-]\d{4})\t*(?P<labels>\{(?:' + LABEL.pattern + r'(?:, )?)*\})\t*(?P<line>.*)')
 
 def uid(n):
     return f'00000000-0000-4000-8000-{n:012d}'
@@ -59,7 +61,7 @@ ORDINARY = pod('media', 'web-6d4c8f7b9-xyz12', 'web-6d4c8f7b9', 'web', 'web-prod
 ORDINARY_LABELS = {'app': 'web', 'instance': 'web-prod', 'component': 'frontend', 'node_name': 'work-1',
                    'namespace': 'media', 'job': 'media/web', 'pod': 'web-6d4c8f7b9-xyz12', 'container': 'web', 'stream': 'stdout'}
 ORDINARY_LINES = [('2026-10-03T09:00:01.123456789Z', 'ordinary line one'), ('2026-10-03T09:00:02Z', SENTINEL)]
-# Same matrix as the Promtail suite: (broad path forwards, safe path forwards).
+# Hindsight API pod drift matrix: (broad path forwards, safe path forwards).
 ROUTES = [({}, (False, True)),
           ({'__meta_kubernetes_pod_phase': 'Failed'}, (False, True)),
           ({'__meta_kubernetes_pod_phase': 'Succeeded'}, (False, True)),
@@ -148,7 +150,7 @@ def sanitizer_payload():
         {'severity': 'INFO', 'logger': poller, 'message': f'Task {UUID} started: poller-secret'},
     ]
     raw = [json.dumps(x) for x in messages] + ['{bad json', 'X' * 5000]
-    # One format per file, as a runtime writes: in a mixed file Promtail's cri stage fudges docker lines +1ns.
+    # One format per file, as a runtime writes: in a mixed file the cri stage fudges docker lines +1ns.
     docker = [json.dumps({'log': line + '\n', 'stream': 'stdout', 'time': CRI_TS}) for line in raw[::2]]
     padded = event(OVERSIZED_UUID, 'deferred until', 'padded')
     docker.append(json.dumps({'log': padded + '\n', 'stream': 'stdout', 'time': CRI_TS, 'padding': 'P' * 4200}))
@@ -174,12 +176,44 @@ def build_tree(root):
         write_pod(root, meta, [cri(line)])
     return targets + [CONTROLLER] + [meta for meta, _ in RUNNER_OUTPUT]
 
+def expected_entries(root):
+    """Every (labels, timestamp, line) the deployed pipelines must push for build_tree(root), and nothing else."""
+    def at(meta, name='0.log'):
+        m = {k.removeprefix('__meta_kubernetes_'): v for k, v in meta.items()}
+        return str(pathlib.Path(root) / f"{m['namespace']}_{m['pod_name']}_{m['pod_uid']}" / m['pod_container_name'] / name)
+
+    def safe(meta, name, kind):
+        labels = {**SAFE_LABELS, 'pod_uid': meta['__meta_kubernetes_pod_uid'], 'filename': at(meta, name)}
+        return labels, ns(CRI_TS), safe_line(kind)
+
+    api = hindsight(uid(0))
+    out = [({**ORDINARY_LABELS, 'filename': at(ORDINARY)}, ns(ts), line) for ts, line in ORDINARY_LINES]
+    out += [({**CONTROLLER_LABELS, 'filename': at(CONTROLLER)}, ns(ts), line) for ts, line in CONTROLLER_LINES]
+    # Only the four poller events survive the sanitizer, split across the docker and CRI files.
+    out += [safe(api, '0.log', kind) for kind in ('deferred until', 'timed out:')]
+    out += [safe(api, '1.log', kind) for kind in ('scheduled for retry at', 'failed:')]
+    # Drifted pods leave the safe path; only a different name or namespace reaches the broad one, raw.
+    broad = {7: {'namespace': 'ai', 'job': 'ai/hindsight', 'pod': 'unrelated-abcde'},
+             8: {'namespace': 'other', 'job': 'other/hindsight', 'pod': f'{HINDSIGHT_REPLICASET}-abcde'}}
+    for n, (changes, (to_broad, to_safe)) in enumerate(ROUTES[1:], 1):
+        meta = hindsight(uid(n), **changes)
+        if to_safe:
+            out.append(safe(meta, '0.log', 'failed:'))
+        if to_broad:
+            labels = {'app': 'hindsight', 'instance': 'hindsight', 'component': 'api', 'node_name': 'work-1',
+                      'container': 'api', 'stream': 'stdout', **broad[n], 'filename': at(meta)}
+            out.append((labels, ns(CRI_TS), event(UUID, 'failed:', f'route-{n}')))
+    return out
+
+def canonical(entries):
+    return sorted((sorted(labels.items()), ts, line) for labels, ts, line in entries)
+
 def file_of(meta):
     m = {k.removeprefix('__meta_kubernetes_'): v for k, v in meta.items()}
     return f"{m['pod_uid']}/{m['pod_container_name']}/"
 
 def runner_problems(entries):
-    """Runner job output must be absent, controller and ordinary output intact, from either collector."""
+    """Runner job output must be absent, controller and ordinary output intact."""
     found = set()
     if any(marker in line for _, _, line in entries for marker in RUNNER_MARKERS) or any(
             file_of(meta) in labels.get('filename', '') for labels, _, _ in entries for meta, _ in RUNNER_OUTPUT):
@@ -194,7 +228,7 @@ def runner_problems(entries):
 
 def rendered(**overrides):
     values = {**yaml.safe_load(RELEASE.read_text())['spec']['values'], **overrides}
-    result = subprocess.run([legacy.HELM, 'template', 'alloy', str(CHART), '--namespace', 'observability',
+    result = subprocess.run([HELM, 'template', 'alloy', str(CHART), '--namespace', 'observability',
                              '--values', '-'], input=yaml.safe_dump(values), text=True, capture_output=True,
                             check=True, timeout=120)
     return [d for d in yaml.safe_load_all(result.stdout) if d]
@@ -217,8 +251,8 @@ def swap(text, old, new, count):
         raise AssertionError(f'expected {count} x {old!r} in rendered config')
     return text.replace(old, new)
 
-def harness(config, root, targets, push_url, legacy_positions):
-    """Swap only the cluster endpoints: discovery input, file root, legacy file and Loki URL."""
+def harness(config, root, targets, push_url):
+    """Swap only the cluster endpoints: discovery input, file root and Loki URL."""
     lines = config.split('\n')
     start = lines.index('discovery.kubernetes "pods" {')
     config = '\n'.join(lines[:start] + lines[lines.index('}', start) + 1:])
@@ -226,7 +260,6 @@ def harness(config, root, targets, push_url, legacy_positions):
                               for t in targets) + ']'
     config = swap(config, 'discovery.kubernetes.pods.targets', literal, 2)
     config = swap(config, '"/var/log/pods/', f'"{root}/', 3)
-    config = swap(config, '"/run/promtail/positions.yaml"', json.dumps(str(legacy_positions)), 2)
     return swap(config, '"http://loki:3100/loki/api/v1/push"', json.dumps(push_url), 1)
 
 def without(config, component, header, *markers):
@@ -353,11 +386,11 @@ def run_until(command, output, progress, done, settle=2.0, timeout=40):
         log.seek(0)
         return log.read()
 
-def run_alloy(config, work, done, root, targets, legacy_positions):
+def run_alloy(config, work, done, root, targets):
     work.mkdir(parents=True, exist_ok=True)
     receiver = Receiver()
     try:
-        (path := work / 'config.alloy').write_text(harness(config, root, targets, receiver.url, legacy_positions))
+        (path := work / 'config.alloy').write_text(harness(config, root, targets, receiver.url))
         for _ in range(3):  # a probed port can be taken by a parallel run before Alloy binds it
             with socket.socket() as probe:  # memberlist needs a concrete port even with clustering off
                 probe.bind(('127.0.0.1', 0))
@@ -382,29 +415,6 @@ def ready(entries):
 
 def leaked(entries):
     return ready(entries) and 'runner' in runner_problems(entries)
-
-def run_promtail(runtime, work, root, targets, done):
-    """Run the pinned Promtail binary in dry-run on the rendered scrape jobs over static targets."""
-    if not pathlib.Path(PROMTAIL).is_file():
-        raise AssertionError(f'native Promtail binary required: {PROMTAIL}')
-    jobs = [json.loads(json.dumps(job).replace('/var/log/pods/', f'{root}/')) for job in runtime['scrape_configs']]
-    for job in jobs:
-        del job['kubernetes_sd_configs']
-        job['static_configs'] = [{'targets': ['localhost'], 'labels': t} for t in targets]
-    work.mkdir(parents=True)
-    (work / 'promtail.yaml').write_text(yaml.safe_dump({
-        'server': {'disable': True}, 'scrape_configs': jobs, 'positions': {'filename': str(work / 'positions.yaml')},
-        'clients': [{'url': 'http://127.0.0.1:1/loki/api/v1/push'}]}))
-    out = work / 'promtail.out'
-
-    def entries():
-        text = re.sub(r'\x1b\[[0-9;]*m', '', out.read_text()) if out.exists() else ''
-        return [(labels_of(m['labels']), ns(m['ts']), m['line']) for m in map(DRY_RUN.fullmatch, text.splitlines()) if m]
-
-    log = run_until([PROMTAIL, '--dry-run', '--log.level=warn', f'--config.file={work / "promtail.yaml"}'], out, entries, done)
-    if not done(entries()):
-        raise AssertionError('Promtail run incomplete: ' + log[-3000:])
-    return entries()
 
 def problems(receiver):
     """Classify every semantic failure of one run; an empty set means the pipeline behaved."""
@@ -451,8 +461,7 @@ class NativeAlloyTests(unittest.TestCase):
 
     @classmethod
     def collect(cls, config, name, done=ready):
-        # The legacy file is absent here, as it is on a node after reboot or once Promtail is gone.
-        return run_alloy(config, cls.dir / name, done, cls.root, cls.targets, cls.dir / 'absent.yaml')
+        return run_alloy(config, cls.dir / name, done, cls.root, cls.targets)
 
     def test_binary_matches_image_tag_and_formats_config(self):
         tag = yaml.safe_load(RELEASE.read_text())['spec']['values']['image']['tag']
@@ -505,29 +514,22 @@ class NativeAlloyTests(unittest.TestCase):
     def test_runner_output_absent_controller_and_ordinary_kept(self):
         self.assertEqual(runner_problems(self.base.entries), set())
 
-    def test_labels_timestamps_and_lines_match_promtail(self):
-        runtime = legacy.render(yaml.safe_load(legacy.PROMTAIL.read_text())['spec']['values'])
-        entries = run_promtail(runtime, self.dir / 'promtail', self.root, self.targets, ready)
-        self.assertEqual(*(sorted((sorted(labels.items()), ts, line) for labels, ts, line in run)
-                           for run in (entries, self.base.entries)))
+    def test_labels_timestamps_and_lines_match_expected_output(self):
+        self.assertEqual(canonical(self.base.entries), canonical(expected_entries(self.root)))
 
-    def test_legacy_positions_import_once_then_own_storage(self):
+    def test_restart_resumes_from_own_positions(self):
+        self.assertNotIn('legacy_positions_file', self.config)
         root, work, api = self.dir / 'positions-pods', self.dir / 'positions', hindsight(uid(0))
-        files = [write_pod(root, ORDINARY, [cri('prefix one'), cri('prefix two')]),
-                 write_pod(root, api, [cri(event(PREFIX_UUID, kind, 'old')) for kind in EVENTS[:2]])]
-        offsets = {str(path): str(path.stat().st_size) for path in files}
-        write_pod(root, ORDINARY, [cri('suffix one'), cri(SENTINEL)])
-        write_pod(root, api, [cri(event(UUID, kind, 'new')) for kind in EVENTS[2:]])
-        legacy_file = self.dir / 'promtail-positions.yaml'
-        legacy_file.write_text(yaml.safe_dump({'positions': offsets}))
+        write_pod(root, ORDINARY, [cri('before restart'), cri(SENTINEL)])
+        write_pod(root, api, [cri(event(PREFIX_UUID, kind, 'old')) for kind in EVENTS[:2]])
         first = run_alloy(self.config, work, lambda e: has_sentinel(e) and sum('operation_id' in x[2] for x in e) >= 2,
-                          root, [ORDINARY, api], legacy_file)
+                          root, [ORDINARY, api])
         self.assertEqual(sorted(x[2] for x in first.entries),
-                         sorted(['suffix one', SENTINEL] + [safe_line(k) for k in EVENTS[2:]]))
+                         sorted(['before restart', SENTINEL] + [safe_line(k, PREFIX_UUID) for k in EVENTS[:2]]))
         write_pod(root, ORDINARY, [cri('after restart ' + SENTINEL)])
         write_pod(root, api, [cri(event(RESTART_UUID, 'failed:', 'restart'))])
         second = run_alloy(self.config, work, lambda e: has_sentinel(e) and any(RESTART_UUID in x[2] for x in e),
-                           root, [ORDINARY, api], legacy_file)
+                           root, [ORDINARY, api])
         self.assertEqual(sorted(x[2] for x in second.entries), sorted(['after restart ' + SENTINEL, safe_line('failed:', RESTART_UUID)]))
 
     def test_short_lived_files_born_after_discovery_are_kept_whole(self):
@@ -558,7 +560,7 @@ class NativeAlloyTests(unittest.TestCase):
             return short >= 2 * lines and writer.ident is not None and not writer.is_alive()
 
         try:
-            run = run_alloy(self.config, self.dir / 'short-lived', done, root, [ORDINARY, job, api], self.dir / 'absent.yaml')
+            run = run_alloy(self.config, self.dir / 'short-lived', done, root, [ORDINARY, job, api])
         finally:
             if writer.ident is not None:
                 writer.join()
@@ -576,6 +578,35 @@ class NativeAlloyTests(unittest.TestCase):
                             for labels, _, _ in safe))
         self.assertFalse([line for labels, _, line in run.entries
                           if 'synthetic-secret' in line or (uid(95) in labels.get('filename', '') and 'pod_uid' not in labels)])
+
+class StaticLoggingTests(unittest.TestCase):
+    """Checks that need neither the Alloy binary nor the chart."""
+
+    def test_hindsight_api_emits_the_json_the_safe_pipeline_parses(self):
+        api_env = yaml.safe_load(HINDSIGHT.read_text())['spec']['values']['api']['env']
+        self.assertEqual(api_env['HINDSIGHT_API_LOG_LEVEL'], 'info')
+        self.assertEqual(api_env['HINDSIGHT_API_LOG_FORMAT'], 'json')
+        self.assertEqual(api_env['HINDSIGHT_API_LOG_JSON_FIELDS'], 'severity,message,timestamp,logger')
+
+    def test_logging_archive_rejects_extra_member_and_workflow_is_read_only(self):
+        workflow = WORKFLOW.read_text()
+        self.assertIn('permissions:\n  contents: read', workflow)
+        self.assertIn('hindsight-logging-ci-assets.py', workflow)
+        self.assertIn('persist-credentials: false', workflow)
+        spec = importlib.util.spec_from_file_location('logging_assets', ASSETS)
+        assets = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(assets)
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / 'alloy.zip'
+            with zipfile.ZipFile(archive, 'w') as zf:
+                zf.writestr('alloy-linux-amd64', b'synthetic')
+                zf.writestr('unexpected', b'extra')
+            with self.assertRaisesRegex(ValueError, 'archive checksum mismatch'):
+                assets.verified_alloy(archive, pathlib.Path(directory) / 'binary')
+            with mock.patch.object(assets, 'digest', return_value=assets.ALLOY_ARCHIVE):
+                with self.assertRaisesRegex(ValueError, 'unsafe archive members'):
+                    assets.verified_alloy(archive, pathlib.Path(directory) / 'binary')
+            self.assertFalse((pathlib.Path(directory) / 'binary').exists())
 
 if __name__ == '__main__':
     unittest.main()

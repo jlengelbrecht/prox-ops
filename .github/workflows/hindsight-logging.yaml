@@ -5,10 +5,8 @@ on:
     paths:
       - scripts/hindsight-logging-ci-assets.py
       - .github/workflows/hindsight-logging.yaml
-      - tests/hindsight-observability/test_promtail_native.py
       - tests/hindsight-observability/test_alloy_native.py
       - kubernetes/apps/ai/hermes-hindsight/app/hindsight.yaml
-      - kubernetes/apps/observability/loki/app/promtail-helmrelease.yaml
       - kubernetes/apps/observability/loki/app/alloy-helmrelease.yaml
       - kubernetes/apps/observability/loki/app/alloy-rbac.yaml
 permissions:
@@ -32,7 +30,6 @@ jobs:
           work=$(mktemp -d)
           mkdir -m 700 "$work/bin"
           curl -fsSL -o "$work/helm.tar.gz" https://get.helm.sh/helm-v3.19.0-linux-amd64.tar.gz
-          curl -fsSL -o "$work/promtail.zip" https://github.com/grafana/loki/releases/download/v3.5.1/promtail-linux-amd64.zip
           # Alloy release tags and archive digests (binary and chart) are pinned in the assets script.
           pin() { python -c 'import runpy, sys; print(runpy.run_path("scripts/hindsight-logging-ci-assets.py")[sys.argv[1]])' "$1"; }
           alloy_url=$(pin ALLOY_URL)
@@ -41,15 +38,10 @@ jobs:
           [[ "$alloy_url" =~ ^https://github\.com/grafana/alloy/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/alloy-linux-amd64\.zip$ ]]
           [[ "$alloy_chart_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$alloy_chart_sha" =~ ^[a-f0-9]{64}$ ]]
           curl -fsSL --max-time 300 --max-filesize 400000000 -o "$work/alloy.zip" "$alloy_url"
-          python scripts/hindsight-logging-ci-assets.py "$work/helm.tar.gz" "$work/promtail.zip" "$work/alloy.zip" "$work/bin"
-          "$work/bin/helm" pull promtail --repo https://grafana.github.io/helm-charts --version 6.17.1 --destination "$work"
-          echo "12115103a3b94932473fb3873aa670a68da9504e2f323c03790257088b479d9f  $work/promtail-6.17.1.tgz" | sha256sum -c
+          python scripts/hindsight-logging-ci-assets.py "$work/helm.tar.gz" "$work/alloy.zip" "$work/bin"
           "$work/bin/helm" pull alloy --repo https://grafana.github.io/helm-charts --version "$alloy_chart_version" --destination "$work"
           echo "$alloy_chart_sha  $work/alloy-$alloy_chart_version.tgz" | sha256sum -c
           echo "HINDSIGHT_HELM=$work/bin/helm" >> "$GITHUB_ENV"
-          echo "PROMTAIL_CHART=$work/promtail-6.17.1.tgz" >> "$GITHUB_ENV"
-          echo "PROMTAIL_BIN=$work/bin/promtail-linux-amd64" >> "$GITHUB_ENV"
           echo "ALLOY_CHART=$work/alloy-$alloy_chart_version.tgz" >> "$GITHUB_ENV"
           echo "ALLOY_BIN=$work/bin/alloy-linux-amd64" >> "$GITHUB_ENV"
-      - run: python -m unittest discover -s tests/hindsight-observability -p test_promtail_native.py -v
       - run: python -m unittest discover -s tests/hindsight-observability -p test_alloy_native.py -v

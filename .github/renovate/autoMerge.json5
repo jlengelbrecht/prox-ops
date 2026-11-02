@@ -376,7 +376,7 @@
     //   agentgateway        — v1alpha1 CRDs with breaking changes on a monthly cadence
     //   hermes, hindsight   — image and chart move in lockstep with forward-only
     //                         migrations on the shared database
-    //   paperclip, loki/promtail/alloy, crossplane — see their rules below
+    //   paperclip, loki/alloy, crossplane — see their rules below
     //
     // Core packages that auto-merge PATCH only (minor/major are manual):
     //   authentik, nvidia (device plugin / DCGM), envoy-gateway,
@@ -635,12 +635,12 @@
     },
     // Logging: after every patch/minor/digest opt-in so none of them can auto-merge it.
     {
-      "description": "FULLY MANUAL: Loki, Promtail and Alloy - an update can change the log sanitizer or replace Loki storage, and the logging fixture is path-filtered rather than a required check",
+      "description": "FULLY MANUAL: Loki and Alloy - an update can change the log sanitizer or replace Loki storage, and the logging fixture is path-filtered rather than a required check",
       "matchDatasources": ["docker", "helm", "github-release-attachments"],
       "matchPackageNames": [
-        "loki", "promtail", "alloy",
-        "grafana/loki", "grafana/promtail", "grafana/alloy",
-        "docker.io/grafana/loki", "docker.io/grafana/promtail", "docker.io/grafana/alloy"
+        "loki", "alloy",
+        "grafana/loki", "grafana/alloy",
+        "docker.io/grafana/loki", "docker.io/grafana/alloy"
       ],
       "automerge": false
     },

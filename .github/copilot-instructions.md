@@ -35,7 +35,7 @@ This is a **GitOps-managed Kubernetes homelab** running on Talos Linux v1.11.3 w
 - **Networking**: Cilium CNI with VLAN support
 - **Storage**: Rook-Ceph for persistent volumes
 - **Security**: Tetragon eBPF-based runtime monitoring
-- **Observability**: Prometheus, Loki, Grafana, Promtail
+- **Observability**: Prometheus, Loki, Grafana, Alloy
 
 ### Cluster Architecture
 - **15-node cluster**: 3 control plane, 12 workers
@@ -132,12 +132,12 @@ When reviewing PRs, focus on these critical aspects:
 
 **✅ VERIFY:**
 - `ServiceMonitor` resources for Prometheus scraping
-- Logs exported to stdout (not files) for Promtail collection
+- Logs exported to stdout (not files) for Alloy collection
 - JSON structured logging enabled where available
 - Grafana dashboards reference correct data sources
 
 **❌ DON'T SUGGEST:**
-- File-based logging with rotation (use stdout → Promtail → Loki)
+- File-based logging with rotation (use stdout → Alloy → Loki)
 - Direct writes to Loki (use log collectors)
 - Hardcoded Prometheus endpoints (use ServiceMonitor)
 

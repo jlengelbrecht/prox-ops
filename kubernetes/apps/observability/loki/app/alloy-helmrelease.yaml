@@ -40,9 +40,6 @@ spec:
       mounts:
         varlog: true
         extra:
-          - name: promtail-positions
-            mountPath: /run/promtail
-            readOnly: true
           - name: alloy-storage
             mountPath: /var/lib/alloy
       # Root matches the existing collector: pod log files are root-owned 0640.
@@ -178,13 +175,11 @@ spec:
               regex         = "crossplane-system;provider-azuread"
             }
           }
-          // Promtail's offsets are imported once, then Alloy keeps its own.
           // Globs are expanded in-component every second: the 10s default
           // misses files of pods that live and die between two scans.
           loki.source.file "broad" {
-            targets               = discovery.relabel.broad.output
-            forward_to            = [loki.process.broad.receiver]
-            legacy_positions_file = "/run/promtail/positions.yaml"
+            targets    = discovery.relabel.broad.output
+            forward_to = [loki.process.broad.receiver]
             file_match {
               enabled     = true
               sync_period = "1s"
@@ -231,9 +226,8 @@ spec:
             }
           }
           loki.source.file "hindsight_safe" {
-            targets               = discovery.relabel.hindsight_safe.output
-            forward_to            = [loki.process.hindsight_safe.receiver]
-            legacy_positions_file = "/run/promtail/positions.yaml"
+            targets    = discovery.relabel.hindsight_safe.output
+            forward_to = [loki.process.hindsight_safe.receiver]
             file_match {
               enabled     = true
               sync_period = "1s"
@@ -310,10 +304,6 @@ spec:
           operator: Exists
       volumes:
         extra:
-          - name: promtail-positions
-            hostPath:
-              path: /run/promtail
-              type: DirectoryOrCreate
           - name: alloy-storage
             hostPath:
               path: /var/lib/alloy
