@@ -35,7 +35,7 @@ spec:
 
     # Allow proxyrunner to reach backend StatefulSet on mcpPort
     # Proxyrunner (app.kubernetes.io/name: mcpserver) → backend (toolhive: true) on mcpPort
-    # Port 3000 for stdio mode (n8n), Port 8080 for HTTP mode (graphiti with SERVER__PORT=8080)
+    # Port 3000 for stdio mode (n8n), Port 8080 for the proxyrunner HTTP port
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
@@ -72,7 +72,7 @@ spec:
 
     # Proxyrunner → backend StatefulSet (mcpPort)
     # Allows proxyrunner to forward requests to the backend MCP server
-    # Port 3000 for stdio mode (n8n), Port 8080 for HTTP mode (graphiti with SERVER__PORT=8080)
+    # Port 3000 for stdio mode (n8n), Port 8080 for the proxyrunner HTTP port
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
@@ -82,16 +82,6 @@ spec:
             - port: "3000"
               protocol: TCP
             - port: "8080"
-              protocol: TCP
-
-    # graphiti-mcp → FalkorDB (database namespace)
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: database
-            app.kubernetes.io/name: falkordb
-      toPorts:
-        - ports:
-            - port: "6379"
               protocol: TCP
 
     # n8n-mcp → n8n API (tools namespace)
@@ -105,7 +95,7 @@ spec:
             - port: "5678"
               protocol: TCP
 
-    # Allow HTTPS to external APIs (OpenAI for graphiti entity extraction)
+    # Allow HTTPS to external APIs
     # Note: Using toCIDRSet with except to block private ranges
     - toCIDRSet:
         - cidr: 0.0.0.0/0

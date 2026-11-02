@@ -97,14 +97,3 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-
-    # Egress to graphiti-mcp proxyrunner (ToolHive MCPServer creates pods with mcpserver label)
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: mcp
-            app.kubernetes.io/name: mcpserver
-            toolhive-name: graphiti
-      toPorts:
-        - ports:
-            - port: "8080"
-              protocol: TCP

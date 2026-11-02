@@ -171,7 +171,6 @@ GPU drivers and the NVIDIA Container Toolkit are baked into a dedicated Image Fa
 | SearXNG | Search backend for RAG |
 | Voice bridge | Voice I/O front-end |
 | Qdrant | Vector database |
-| FalkorDB | Graph database (Graphiti backend) |
 | CloudNative-PG | PostgreSQL operator + cluster |
 | Valkey | Redis-compatible cache |
 | ToolHive (+ UI, gateway, registry) | MCP server runtime |
@@ -230,7 +229,7 @@ prox-ops/
 │   │   ├── ai/              # Open WebUI, LiteLLM, KServe, MCP, ...
 │   │   ├── cache/           # Valkey
 │   │   ├── cert-manager/    # cert-manager operator + ClusterIssuers
-│   │   ├── database/        # CNPG, Qdrant, FalkorDB
+│   │   ├── database/        # CNPG, Qdrant
 │   │   ├── downloads/       # qBittorrent, SABnzbd
 │   │   ├── external-secrets/
 │   │   ├── flux-system/     # Flux operator + instance
