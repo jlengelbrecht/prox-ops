@@ -99,6 +99,15 @@ spec:
               name: authentik-warpgate
               key: AUTHENTIK_WARPGATE_CLIENT_SECRET
               optional: true
+        # OpenBao (client id is the literal "openbao" in the blueprint; the
+        # secret is 1Password-backed). optional, as for Warpgate: only
+        # openbao.yaml fails while the item doesn't exist.
+        - name: AUTHENTIK_OPENBAO_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: authentik-openbao
+              key: AUTHENTIK_OPENBAO_CLIENT_SECRET
+              optional: true
 
         # =============================================================
         # SOURCE CREDENTIALS
@@ -149,7 +158,7 @@ spec:
     server:
       replicas: 1
       podAnnotations:
-        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth"
+        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao"
       resources:
         requests:
           cpu: 100m
@@ -174,7 +183,7 @@ spec:
     worker:
       replicas: 1
       podAnnotations:
-        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth"
+        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao"
         configmap.reloader.stakater.com/reload: "authentik-blueprints"
       # No CPU limit: startup blueprint and outpost work was throttled hard enough
       # under a 500m limit that `ak healthcheck` missed its 3s timeout and the

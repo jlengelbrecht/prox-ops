@@ -1,11 +1,10 @@
 ---
 # Default-deny for the OpenBao server pods in both directions (the namespace-
-# wide default-deny below covers every other pod). Only what the
-# servers need to start, unseal and form a Raft cluster is open here; each
-# client (envoy-internal for the UI, the snapshot job, workloads using
-# Kubernetes auth) gets its own ingress rule in the change that adds it, and
-# the OIDC egress to Authentik comes with the login setup. Kubelet probes come
-# from the host and are not subject to this policy.
+# wide default-deny below covers every other pod). Open here: what the
+# servers need to start, unseal and form a Raft cluster, the web UI through
+# envoy-internal, and OIDC login against Authentik. Each further client (the snapshot job, workloads using Kubernetes auth) gets its
+# own ingress rule in the change that adds it. Kubelet probes come from the
+# host and are not subject to this policy.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -31,6 +30,16 @@ spec:
             - port: "8200"
               protocol: TCP
             - port: "8201"
+              protocol: TCP
+
+    # The web UI and API through envoy-internal (bao.homelab0.org).
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "8200"
               protocol: TCP
 
   egress:
@@ -67,6 +76,21 @@ spec:
       toPorts:
         - ports:
             - port: "12345"
+              protocol: TCP
+
+    # OIDC login: discovery, keys and token exchange with Authentik.
+    # authentik.homelab0.org resolves to the internal VIP, and the policy is
+    # evaluated against the gateway pods behind it (443 LB port, 10443 pod
+    # port), the same as for Warpgate.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
               protocol: TCP
 
     # Kubernetes auth: TokenReview calls. No toPorts: Cilium sees the post-DNAT

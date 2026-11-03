@@ -125,8 +125,8 @@ spec:
         enabled: true
         size: 5Gi
         storageClass: ceph-block
-      # Audit goes to stdout (into Loki), configured after init: a full file
-      # device would block every request.
+      # Audit goes to stdout (into Loki), declared in the config below: a full
+      # file device would block every request.
       auditStorage:
         enabled: false
 
@@ -188,3 +188,13 @@ spec:
             }
 
             service_registration "kubernetes" {}
+
+            # Every request and response, HMAC'd, to stdout and from there to
+            # Loki. Declared here rather than through the API, so it is in
+            # Git and exists from the first start.
+            audit "file" "stdout" {
+              description = "Audit log to standard output"
+              options {
+                file_path = "stdout"
+              }
+            }
