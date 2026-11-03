@@ -12,11 +12,14 @@
 # - Binds to the pod IP (downward API POD_IP), not all addresses: the connector
 #   has no authentication of its own, so only traffic that reaches the pod IP
 #   (and passes the network policy) can use it. httpGet probes without a host
-#   field dial the pod IP, which is where it listens.
+#   field dial the pod IP, which is where it listens; the exec readiness
+#   probe dials it too.
 # - The image is the yubihsm-tools image, which carries yubihsm-connector.
 # - /connector/status answers 200 even when the device is missing
-#   (status=NO_DEVICE), so the probes show the process is alive, not that the
-#   HSM is present. Device presence is guaranteed by the extended resource.
+#   (status=NO_DEVICE). Liveness only checks that the process answers;
+#   readiness also requires status=OK, so the pod is ready only while the HSM
+#   is attached (the YubiHSMUnavailable alert reads this). The extended
+#   resource keeps the pod on the node that has the device.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -63,11 +66,21 @@ spec:
             - name: http
               containerPort: 12345
               protocol: TCP
+          # Ready only while the HSM is attached: /connector/status answers
+          # 200 either way, with status=OK or status=NO_DEVICE in the body.
+          # Liveness stays a plain HTTP check, so a missing device doesn't
+          # restart the connector. OpenBao's alerts read this readiness.
           readinessProbe:
-            httpGet:
-              path: /connector/status
-              port: http
+            exec:
+              command:
+                - bash
+                - -c
+                - |
+                  exec 3<>/dev/tcp/"$POD_IP"/12345 || exit 1
+                  printf 'GET /connector/status HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3
+                  timeout 3 cat <&3 | grep -q '^status=OK'
             periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
             httpGet:

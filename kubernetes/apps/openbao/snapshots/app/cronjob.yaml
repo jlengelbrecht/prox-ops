@@ -1,0 +1,157 @@
+---
+# Daily Raft snapshot of OpenBao to the UNAS `proxmox` share (openbao/).
+#
+# The job logs in with Kubernetes auth (role openbao-snapshot: read on
+# sys/storage/raft/snapshot only, 10-minute token), saves the snapshot from
+# the active node, checks it against the checksums it carries, renames it
+# into place, prunes, and revokes its token.
+# Retention: the newest 7 snapshots, plus Sunday snapshots for 5 weeks.
+#
+# No extra encryption layer: everything in the snapshot is encrypted by
+# OpenBao's barrier, whose keyring only the HSM seal key (0x0211) can unwrap,
+# so a copy is useless without the HSM or the wrapped seal-key backup and its
+# wrap key from 1Password. Paths and metadata are not encrypted; the share is
+# LAN-only.
+# Restore: `bao operator raft snapshot restore -force <file>` on an
+# initialised cluster with the same seal (the HSM). See
+# .claude/.ai-docs/openbao/OPENBAO_PRODUCTION_DESIGN.md.
+#
+# Pinned to three non-GPU workers, one per Proxmox host, whose IPs are on the
+# share's NFS allowlist (the kubelet mounts the share, so the pod's network
+# policy doesn't apply to NFS).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openbao-snapshots
+spec:
+  schedule: "47 8 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1200
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: openbao-snapshots
+        spec:
+          restartPolicy: Never
+          serviceAccountName: openbao-snapshots
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values:
+                          - k8s-work-1
+                          - k8s-work-5
+                          - k8s-work-7
+          containers:
+            - name: snapshot
+              # The server image: the bao CLI always matches the servers.
+              image: ghcr.io/jlengelbrecht/openbao-hsm:sha-bf0c9501cfa2efc5d2c643f4567c627c8df26fbe@sha256:51bef8641736c44420d198127526aa938d808a1a0642c4df4443817622c09dbf
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  umask 077
+                  export BAO_ADDR=https://openbao-active.openbao.svc:8200
+                  export BAO_CACERT=/openbao-ca/ca.crt
+                  dir=/backup/openbao
+                  mkdir -p "$dir"
+
+                  BAO_TOKEN=$(bao write -field=token auth/kubernetes/login \
+                    role=openbao-snapshot jwt=@/var/run/secrets/openbao/token)
+                  export BAO_TOKEN
+
+                  ts=$(date -u +%Y%m%dT%H%M%SZ)
+                  tmp="$dir/.openbao-$ts.snap.tmp"
+                  out="$dir/openbao-$ts.snap"
+                  trap 'rm -f "$tmp"; rm -rf /tmp/check; bao token revoke -self >/dev/null 2>&1 || true' EXIT
+
+                  bao operator raft snapshot save "$tmp"
+
+                  # The snapshot is a gzip tarball with its own SHA256SUMS.
+                  mkdir /tmp/check
+                  tar -xzf "$tmp" -C /tmp/check
+                  (cd /tmp/check && sha256sum -c SHA256SUMS)
+                  size=$(stat -c %s "$tmp")
+                  mv "$tmp" "$out"
+                  echo "wrote $out ($size bytes, checksums OK)"
+
+                  # Prune: keep the newest 7, plus Sunday snapshots newer
+                  # than 35 days. Names sort by time.
+                  now=$(date -u +%s)
+                  n=0
+                  for f in $(ls -1 "$dir" | grep -E '^openbao-[0-9]{8}T[0-9]{6}Z\.snap$' | sort -r); do
+                    n=$((n + 1))
+                    [ "$n" -le 7 ] && continue
+                    day=${f#openbao-}; day=${day%%T*}
+                    epoch=$(date -u -d "$day" +%s)
+                    if [ "$(date -u -d "$day" +%u)" = 7 ] && [ $((now - epoch)) -lt 3024000 ]; then
+                      continue
+                    fi
+                    echo "pruning $f"
+                    rm -f "$dir/$f"
+                  done
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: openbao-ca
+                  mountPath: /openbao-ca
+                  readOnly: true
+                - name: token
+                  mountPath: /var/run/secrets/openbao
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            # Only the CA certificate from the server's TLS Secret, not its key.
+            - name: openbao-ca
+              secret:
+                secretName: openbao-server-tls
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+            # A short-lived service account token for the Kubernetes auth
+            # login, mounted here instead of the default automount.
+            - name: token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 600
+            - name: tmp
+              emptyDir:
+                medium: Memory
+                sizeLimit: 512Mi
+            - name: backup
+              persistentVolumeClaim:
+                claimName: openbao-backup-nfs

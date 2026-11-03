@@ -1,0 +1,80 @@
+---
+# OpenBao and the YubiHSM behind its seal. A sealed or crashed replica shows
+# as not ready (its readiness probe needs it unsealed), so pod readiness is
+# the signal; no OpenBao metrics endpoint is needed. The HSM is reachable
+# when yubihsm-connector is ready: its readiness checks for status=OK, which
+# it reports only while the device is attached.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: openbao-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: openbao-alerts
+      rules:
+        # Two of three replicas keep Raft quorum. Below that OpenBao stops
+        # serving.
+        - alert: OpenBaoQuorumAtRisk
+          # absent(): also fires when the pods are gone altogether.
+          expr: |
+            sum(kube_pod_status_ready{namespace="openbao",pod=~"openbao-[0-9]+",condition="true"}) < 2
+            or absent(kube_pod_status_ready{namespace="openbao",pod=~"openbao-[0-9]+",condition="true"})
+          for: 5m
+          labels:
+            severity: critical
+            component: openbao
+            pager: "true"
+          annotations:
+            summary: "Fewer than two OpenBao replicas are ready"
+            description: "Fewer than two of the 3 OpenBao replicas are ready (unsealed), or none are reported at all. Raft needs two. Check the pods in the openbao namespace and whether yubihsm-connector is up: replicas can only unseal through the HSM."
+
+        - alert: OpenBaoReplicaNotReady
+          expr: kube_pod_status_ready{namespace="openbao",pod=~"openbao-[0-9]+",condition="true"} == 0
+          for: 15m
+          labels:
+            severity: warning
+            component: openbao
+          annotations:
+            summary: "OpenBao replica {{ $labels.pod }} is not ready"
+            description: "{{ $labels.pod }} has been not ready (sealed, crashed or not joined) for 15 minutes. The others keep serving; a restart only helps once the HSM is reachable."
+
+        # The HSM serves OpenBao's unseal and the Entra workload identity
+        # signatures. Running OpenBao replicas keep working without it; any
+        # restart can't unseal until it's back.
+        - alert: YubiHSMUnavailable
+          expr: |
+            max(kube_deployment_status_replicas_available{namespace="hsm-system",deployment="yubihsm-connector"}) < 1
+            or absent(kube_deployment_status_replicas_available{namespace="hsm-system",deployment="yubihsm-connector"})
+          for: 5m
+          labels:
+            severity: critical
+            component: openbao
+            pager: "true"
+          annotations:
+            summary: "The YubiHSM is not reachable"
+            description: "yubihsm-connector has no ready pod, so the HSM is missing, unplugged or its node is down (k8s-work-12 on Thor). OpenBao replicas can't unseal after a restart, and Entra workload identity can't sign new assertions."
+
+        - alert: OpenBaoBackupStale
+          expr: time() - kube_cronjob_status_last_successful_time{namespace="openbao",cronjob="openbao-snapshots"} > 26 * 3600
+          for: 15m
+          labels:
+            severity: critical
+            component: openbao
+            pager: "true"
+          annotations:
+            summary: "No successful OpenBao snapshot in over 26 hours"
+            description: "The last successful openbao/openbao-snapshots run finished {{ $value | humanizeDuration }} ago. Check the job logs in the openbao namespace."
+
+        - alert: OpenBaoBackupMissing
+          expr: absent(kube_cronjob_status_last_successful_time{namespace="openbao",cronjob="openbao-snapshots"})
+          for: 2h
+          labels:
+            severity: warning
+            component: openbao
+          annotations:
+            summary: "OpenBao snapshot CronJob has no successful run on record"
+            description: "kube-state-metrics reports no last successful time for openbao/openbao-snapshots. The CronJob may be missing, never succeeded, or the Kubernetes auth role openbao-snapshot is not set up (scripts/openbao-configure.sh)."

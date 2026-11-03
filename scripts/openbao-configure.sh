@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sets up OpenBao after init: the admin and reader policies, OIDC login
-# through authentik (groups openbao-admins / openbao-readers), and the
-# Kubernetes auth method. Safe to run again: every step is an upsert.
+# through authentik (groups openbao-admins / openbao-readers), the
+# Kubernetes auth method, and the snapshot job's role. Safe to run again: every step is an upsert.
 #
 # Needs the 1Password item Automation/openbao-oidc (field oidc-client-secret,
 # the same value authentik's OpenBao provider uses) and the authentik
@@ -116,7 +116,7 @@ if [[ $mode == revoke ]]; then
 fi
 
 # --- policies -------------------------------------------------------------
-for p in openbao-admin openbao-reader; do
+for p in openbao-admin openbao-reader openbao-snapshot; do
   log "Writing policy $p"
   payload=$POLICY_DIR/$p.hcl bao policy write "$p" - >/dev/null
 done
@@ -183,6 +183,18 @@ fi
 log "Configuring Kubernetes auth"
 jq -n '{kubernetes_host: "https://kubernetes.default.svc"}' >"$work/k8s.json"
 bao_write_json auth/kubernetes/config "$work/k8s.json"
+
+# The daily snapshot job (kubernetes/apps/openbao/snapshots): its service
+# account only, a token that lives just long enough for one snapshot.
+log "Writing the Kubernetes auth role openbao-snapshot"
+jq -n '{
+    bound_service_account_names: ["openbao-snapshots"],
+    bound_service_account_namespaces: ["openbao"],
+    token_policies: ["openbao-snapshot"],
+    token_ttl: "10m",
+    token_max_ttl: "10m",
+    token_no_default_policy: true}' >"$work/snapshot-role.json"
+bao_write_json auth/kubernetes/role/openbao-snapshot "$work/snapshot-role.json"
 
 log "Done. Log in at https://bao.homelab0.org: method OIDC, role default (leave blank)."
 if [[ $policies == root ]]; then
