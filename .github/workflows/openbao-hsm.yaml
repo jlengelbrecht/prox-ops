@@ -1,0 +1,95 @@
+name: OpenBao HSM image
+
+on:
+  pull_request:
+    paths:
+      - services/openbao-hsm/**
+      - .github/workflows/openbao-hsm.yaml
+  push:
+    branches: [main]
+    paths:
+      - services/openbao-hsm/**
+      - .github/workflows/openbao-hsm.yaml
+  workflow_dispatch:
+  # Weekly verify-only run: the exact Debian pins fail the build once trixie
+  # replaces them, and that failure is the alert. Scheduled runs never publish.
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  SMOKE_TEST: |
+    bao version | grep -q "^OpenBao v2.7.2 "
+    [ "$(id -u):$(id -g)" = "100:1000" ]
+    echo "9c5f36287c673f386e1533e9c044169a248e4ee50dd54810fa766e95bd41b788  /usr/bin/bao" | sha256sum -c -
+    echo "e88632ee52600513bd0e77242823ef57641f1eaac019d8c66515c8bca81e007d  /usr/lib/openbao/plugins/openbao-plugin-kms-pkcs11" | sha256sum -c -
+    test -f /usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so
+    test -f /usr/lib/x86_64-linux-gnu/libyubihsm_http.so.2
+    if ldd /usr/lib/openbao/plugins/openbao-plugin-kms-pkcs11 | grep "not found"; then exit 1; fi
+    if ldd /usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so | grep "not found"; then exit 1; fi
+    /usr/local/bin/docker-entrypoint.sh bao version >/dev/null
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build
+        run: docker build --build-arg VCS_REF="${GITHUB_SHA}" -t openbao-hsm:verification services/openbao-hsm
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          docker run --rm openbao-hsm:verification sh -ec "$SMOKE_TEST"
+
+  publish:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: openbao-hsm-publication
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: v0.24.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --build-arg VCS_REF="${GITHUB_SHA}" \
+            --provenance=false --sbom=false --metadata-file /tmp/openbao-hsm-image.json \
+            --tag "ghcr.io/jlengelbrecht/openbao-hsm:sha-${GITHUB_SHA}" \
+            --push services/openbao-hsm
+      - name: Smoke test the pushed digest, then move main
+        run: |
+          set -euo pipefail
+          digest=$(jq -r '."containerimage.digest"' /tmp/openbao-hsm-image.json)
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          # This build is separate from the verify job, so test what was pushed.
+          docker run --rm "ghcr.io/jlengelbrecht/openbao-hsm@${digest}" sh -ec "$SMOKE_TEST"
+          echo "Published ghcr.io/jlengelbrecht/openbao-hsm:sha-${GITHUB_SHA}@${digest}" >> "$GITHUB_STEP_SUMMARY"
+          # Move :main only to the tested digest, and only while the image's
+          # files on main still match this commit, so an older run finishing
+          # late can't win. Unrelated commits on main don't block it.
+          git fetch --quiet origin main
+          if ! git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- services/openbao-hsm .github/workflows/openbao-hsm.yaml; then
+            echo "A newer change to the image is on main; leaving :main to its run" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          docker buildx imagetools create --tag ghcr.io/jlengelbrecht/openbao-hsm:main \
+            "ghcr.io/jlengelbrecht/openbao-hsm@${digest}"
+          echo "Moved :main to ${digest}" >> "$GITHUB_STEP_SUMMARY"
