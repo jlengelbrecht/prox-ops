@@ -1,0 +1,16 @@
+---
+# Hardware security module access. yubihsm-connector is the only pod that holds
+# the YubiHSM 2 USB device; every other workload reaches the HSM through it.
+# Prune is disabled: deleting this namespace would delete the connector, and
+# with it every consumer's access to the HSM's signing keys.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hsm-system
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  labels:
+    kubernetes.io/metadata.name: hsm-system
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

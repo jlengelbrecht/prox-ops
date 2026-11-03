@@ -1,0 +1,33 @@
+---
+# dependsOn namespaces are the dependency's own CR namespace: kube-system's
+# kustomization.yaml applies `namespace: kube-system` to every CR in its tree.
+#
+# No dependsOn in the other direction (provider-azuread does not wait for this):
+# during the first rollout the connector stays Pending until the old provider
+# pod releases the device, and the new provider pod's signer retries until the
+# connector answers. A wait either way would deadlock.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app yubihsm-connector
+  namespace: flux-system
+spec:
+  targetNamespace: hsm-system
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    # The device plugin advertises devic.es/yubihsm2 and carries the admission
+    # policy that names this pod as the device's only consumer.
+    - name: yubihsm-device-plugin
+      namespace: kube-system
+  interval: 1h
+  retryInterval: 2m
+  timeout: 10m
+  path: ./kubernetes/apps/hsm-system/yubihsm-connector/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true

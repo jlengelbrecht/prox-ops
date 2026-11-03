@@ -1,0 +1,103 @@
+---
+# yubihsm-connector: the USB-to-HTTP bridge for the YubiHSM 2, and the only pod
+# that requests the device. Clients (the Crossplane assertion signer today,
+# OpenBao later) open their own authenticated, encrypted sessions with the HSM
+# through it, so the connector is a transport and never sees key material or
+# credentials. Its Service is still reachable only from the clients named in
+# networkpolicy.yaml.
+#
+# - One device, one pod: the extended resource pins the pod to the node that
+#   has the device, and strategy Recreate stops the old pod before the new one
+#   starts (a surge pod would sit Pending while the old one holds the device).
+# - Binds to the pod IP (downward API POD_IP), not all addresses: the connector
+#   has no authentication of its own, so only traffic that reaches the pod IP
+#   (and passes the network policy) can use it. httpGet probes without a host
+#   field dial the pod IP, which is where it listens.
+# - The image is the yubihsm-tools image, which carries yubihsm-connector.
+# - /connector/status answers 200 even when the device is missing
+#   (status=NO_DEVICE), so the probes show the process is alive, not that the
+#   HSM is present. Device presence is guaranteed by the extended resource.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yubihsm-connector
+  namespace: hsm-system
+  labels:
+    app.kubernetes.io/name: yubihsm-connector
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yubihsm-connector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yubihsm-connector
+    spec:
+      serviceAccountName: yubihsm-connector
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: yubihsm-connector
+          # Pin to the digest published by the yubihsm-tools workflow for the
+          # commit that added yubihsm-connector (version 0.3.0 of the image).
+          image: ghcr.io/jlengelbrecht/yubihsm-tools:sha-888d77fbb281b55a5f1b5dfb1303d3052e9f8505@sha256:734b0b5335c00fb7c2be65bccfab0afaf656e00a7b1ece2e72eb2820908da225
+          command: ["yubihsm-connector"]
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          args:
+            - --listen=$(POD_IP):12345
+          ports:
+            - name: http
+              containerPort: 12345
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /connector/status
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /connector/status
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+              devic.es/yubihsm2: 1
+            limits:
+              memory: 64Mi
+              devic.es/yubihsm2: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi

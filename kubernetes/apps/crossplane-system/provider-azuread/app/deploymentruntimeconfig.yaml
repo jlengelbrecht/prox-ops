@@ -16,14 +16,16 @@
 #   signing key never leaves the attached YubiHSM 2, and the signer's HSM
 #   credential (the xp-signer Secret) is mounted only into the signer, never
 #   into package-runtime.
-# - devic.es/yubihsm2: the HSM is a single USB device on node k8s-work-12, so
-#   the signer (and therefore the pod) is pinned to that node by the device
-#   plugin's scheduling.
-# - strategy: one HSM device, so a surge pod would sit Pending forever while
-#   the old pod still holds it. maxSurge 0 / maxUnavailable 1 stops the old pod
-#   before the new one is created. Not type Recreate: Crossplane applies the
+# - The signer does not hold the HSM. It reaches the YubiHSM 2 through the
+#   yubihsm-connector Service in hsm-system (the `connector` key of the
+#   xp-assertion-signer Secret, see externalsecret-signer.yaml), so the pod is
+#   no longer pinned to the node that has the USB device. The signing session
+#   is still opened by yubihsm-shell with the signer's own auth key; the
+#   connector only carries it.
+# - strategy: maxSurge 0 / maxUnavailable 1 stops the old pod before the new one
+#   is created. No longer needed for the device, but kept: Crossplane applies the
 #   Deployment as a merge patch, which cannot drop the defaulted rollingUpdate
-#   block, so the API server would reject the switch.
+#   block, so switching to type Recreate would be rejected by the API server.
 # - assertion and signer-tmp are memory-backed emptyDirs: the signed
 #   assertions and the signer's temp files never touch disk.
 # - package-runtime mounts only the assertion directory, read-only: it never
@@ -68,7 +70,7 @@ spec:
           initContainers:
             - name: assertion-signer
               restartPolicy: Always  # native sidecar: starts before package-runtime, keeps running
-              image: ghcr.io/jlengelbrecht/yubihsm-tools:sha-fd0f51b9dabaeb17917059757b27ea7988fc5305@sha256:b8e3e977d4cb19a8585b9a4713cb62c9c7264b607746c0fccaa2a0270c7dce59
+              image: ghcr.io/jlengelbrecht/yubihsm-tools:sha-888d77fbb281b55a5f1b5dfb1303d3052e9f8505@sha256:734b0b5335c00fb7c2be65bccfab0afaf656e00a7b1ece2e72eb2820908da225
               command: ["xp-assertion-signer", "run"]
               startupProbe:
                 exec:
@@ -84,10 +86,8 @@ spec:
                 requests:
                   cpu: 10m
                   memory: 32Mi
-                  devic.es/yubihsm2: 1
                 limits:
                   memory: 64Mi
-                  devic.es/yubihsm2: 1
               securityContext:
                 runAsNonRoot: true
                 runAsUser: 65532
