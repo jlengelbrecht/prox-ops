@@ -74,6 +74,42 @@ spec:
     - toEntities:
         - kube-apiserver
 ---
+# The short-lived HSM key-management pod (app.kubernetes.io/name:
+# openbao-hsm-admin): nothing reaches it; it reaches only DNS and the
+# connector. It runs only while the owner manages OpenBao's HSM objects.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: openbao-hsm-admin
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: openbao-hsm-admin
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  ingress:
+    - {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: hsm-system
+            app.kubernetes.io/name: yubihsm-connector
+      toPorts:
+        - ports:
+            - port: "12345"
+              protocol: TCP
+---
 # Every other pod in the namespace (a snapshot job, a restore drill, anything
 # added later) starts with no network access at all; each gets its own policy
 # in the change that adds it. Rules are additive, so this doesn't narrow the
