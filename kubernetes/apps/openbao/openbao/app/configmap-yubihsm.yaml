@@ -1,0 +1,12 @@
+---
+# Settings for Yubico's PKCS#11 module, read through YUBIHSM_PKCS11_CONF (set in
+# the image's plugin stanza to /openbao/userconfig/yubihsm/yubihsm_pkcs11.conf,
+# where the chart mounts this ConfigMap). No secrets.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yubihsm
+data:
+  yubihsm_pkcs11.conf: |
+    connector = http://yubihsm-connector.hsm-system.svc.cluster.local:12345
+    timeout = 5

@@ -1,0 +1,190 @@
+---
+# OpenBao: three replicas with integrated Raft storage, auto-unsealed by the
+# YubiHSM 2 (seal key 0x0211, auth key 0x0011) through yubihsm-connector.
+# Design: .claude/.ai-docs/openbao/OPENBAO_PRODUCTION_DESIGN.md (local).
+#
+# - Image: our openbao-hsm build (services/openbao-hsm): the official image is
+#   Alpine and can't load the glibc PKCS#11 plugin and module. The image also
+#   carries the plugin stanza, loaded as a second config file (extraArgs).
+# - Placement: one replica per Proxmox host and none on Thor, which holds the
+#   HSM, so one host outage never takes the HSM and a replica together.
+# - First install: pods report sealed (not ready) until the owner runs
+#   `bao operator init` once, so the install doesn't wait for readiness.
+#   Upgrades wait: by then the pods unseal themselves.
+# - Updates roll one pod at a time (RollingUpdate with OrderedReady stops at
+#   the first pod that doesn't become ready; the PDB limits evictions) so
+#   Reloader can restart pods when the TLS certificate or the PIN changes;
+#   each restart needs the HSM to be reachable to unseal.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: openbao
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: openbao
+  install:
+    disableWait: true
+  values:
+    global:
+      tlsDisable: false
+
+    injector:
+      enabled: false
+    csi:
+      enabled: false
+
+    ui:
+      enabled: true
+
+    server:
+      image:
+        registry: ghcr.io
+        repository: jlengelbrecht/openbao-hsm
+        tag: sha-bf0c9501cfa2efc5d2c643f4567c627c8df26fbe@sha256:51bef8641736c44420d198127526aa938d808a1a0642c4df4443817622c09dbf
+
+      updateStrategyType: RollingUpdate
+      logLevel: info
+      logFormat: json
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          memory: 512Mi
+
+      # The YubiHSM plugin stanza baked into the image.
+      extraArgs: "-config=/etc/openbao/plugin-kms.hcl"
+      extraEnvironmentVars:
+        # For the bao CLI inside the pod.
+        BAO_CACERT: /openbao/userconfig/openbao-server-tls/ca.crt
+
+      # Mounted at /openbao/userconfig/<name>/.
+      # The secrets are 0440 (288): readable through fsGroup 1000, not world.
+      extraVolumes:
+        - type: secret
+          name: openbao-server-tls
+          defaultMode: 288
+        - type: secret
+          name: openbao-hsm-pin
+          defaultMode: 288
+        - type: configMap
+          name: yubihsm
+
+      # The chart copies its config to /tmp; the root filesystem is read-only.
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+
+      statefulSet:
+        annotations:
+          reloader.stakater.com/auto: "true"
+        securityContext:
+          pod:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          container:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: openbao
+                  component: server
+              topologyKey: topology.kubernetes.io/zone
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: NotIn
+                    values:
+                      - thor
+
+      dataStorage:
+        enabled: true
+        size: 5Gi
+        storageClass: ceph-block
+      # Audit goes to stdout (into Loki), configured after init: a full file
+      # device would block every request.
+      auditStorage:
+        enabled: false
+
+      # Off on purpose: a sealed node is alive, and restarting it can't help.
+      livenessProbe:
+        enabled: false
+
+      ha:
+        enabled: true
+        replicas: 3
+        # Not the pod IP (the default): the certificate can't carry pod IPs.
+        # The namespace-qualified name, so clients in other namespaces can
+        # follow redirects. BAO_K8S_POD_NAME, not HOSTNAME: the chart defines
+        # HOSTNAME after this variable, so Kubernetes wouldn't expand it here.
+        apiAddr: "https://$(BAO_K8S_POD_NAME).openbao-internal.openbao.svc:8200"
+        raft:
+          enabled: true
+          setNodeId: true
+          # The chart's start script substitutes some upper-case placeholder
+          # words in this text, so none appear in it.
+          config: |
+            ui = true
+
+            listener "tcp" {
+              address         = "[::]:8200"
+              cluster_address = "[::]:8201"
+              tls_cert_file   = "/openbao/userconfig/openbao-server-tls/tls.crt"
+              tls_key_file    = "/openbao/userconfig/openbao-server-tls/tls.key"
+              tls_min_version = "tls12"
+            }
+
+            storage "raft" {
+              path = "/openbao/data"
+              retry_join {
+                leader_api_addr     = "https://openbao-0.openbao-internal:8200"
+                leader_ca_cert_file = "/openbao/userconfig/openbao-server-tls/ca.crt"
+              }
+              retry_join {
+                leader_api_addr     = "https://openbao-1.openbao-internal:8200"
+                leader_ca_cert_file = "/openbao/userconfig/openbao-server-tls/ca.crt"
+              }
+              retry_join {
+                leader_api_addr     = "https://openbao-2.openbao-internal:8200"
+                leader_ca_cert_file = "/openbao/userconfig/openbao-server-tls/ca.crt"
+              }
+            }
+
+            # Auto-unseal with the YubiHSM: the root key set is encrypted with
+            # 0x0211's public key and decrypted on the HSM (RSA-OAEP, SHA-256;
+            # the YubiHSM has no AES-GCM). The PIN file is "0011" + password.
+            seal "pkcs11" {
+              lib           = "yubihsm"
+              slot          = "0"
+              pin           = "file:///openbao/userconfig/openbao-hsm-pin/pin"
+              key_label     = "openbao-seal"
+              key_id        = "0x0211"
+              mechanism     = "CKM_RSA_PKCS_OAEP"
+              rsa_oaep_hash = "sha256"
+            }
+
+            service_registration "kubernetes" {}
