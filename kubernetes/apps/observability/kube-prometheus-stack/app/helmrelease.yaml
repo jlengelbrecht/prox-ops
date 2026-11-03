@@ -199,11 +199,11 @@ spec:
       envValueFrom:
         GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET:
           secretKeyRef:
-            name: grafana-oidc
+            name: grafana-oauth
             key: GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
       # Restart Grafana when the client secret rotates, as Authentik does.
       podAnnotations:
-        secret.reloader.stakater.com/reload: grafana-oidc
+        secret.reloader.stakater.com/reload: grafana-oauth
 
       # Persistence
       persistence:
