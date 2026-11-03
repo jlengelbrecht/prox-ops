@@ -1,0 +1,46 @@
+---
+# Warpgate access broker. dependsOn namespaces are the dependency's own CR
+# namespace: access/kustomization.yaml and volsync-system/kustomization.yaml
+# apply their own `namespace:` to every CR in their tree; external-secrets has
+# no namespace transform, so its Kustomization stays in flux-system.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app warpgate
+  namespace: flux-system
+spec:
+  targetNamespace: access
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: access-certificates
+      namespace: access
+    - name: external-secrets-operator
+      namespace: flux-system
+    - name: volsync
+      namespace: volsync-system
+  interval: 1h
+  retryInterval: 2m
+  timeout: 10m
+  path: ./kubernetes/apps/access/warpgate/app
+  postBuild:
+    # SECRET_DOMAIN for the external host and the DNS annotation.
+    substituteFrom:
+      - kind: Secret
+        name: cluster-secrets
+        optional: false
+    # Inputs of kubernetes/components/volsync. APP must equal the PVC name.
+    substitute:
+      APP: warpgate
+      APP_NS: access
+      # The image runs as UID/GID 1000 and the files are owned by it.
+      VOLSYNC_UID: "1000"
+      VOLSYNC_GID: "1000"
+      VOLSYNC_SCHEDULE: "0 */6 * * *"
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

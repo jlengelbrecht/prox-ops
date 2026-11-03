@@ -1,0 +1,18 @@
+---
+# Warpgate state: config, SQLite database, host keys and session recordings.
+# Name must equal APP in ../ks.yaml (the VolSync component backs up the PVC of
+# that name). Retain storage class plus prune disabled: removing this file
+# from Git must not delete the data.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: warpgate
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block-retain
+  resources:
+    requests:
+      storage: 10Gi
