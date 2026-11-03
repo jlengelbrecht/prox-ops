@@ -1,0 +1,95 @@
+---
+# yubihsm-connector: the USB-to-HTTP bridge for the YubiHSM 2, and the only pod
+# that requests the device. Clients (the Crossplane assertion signer today,
+# OpenBao later) open their own authenticated, encrypted sessions with the HSM
+# through it, so the connector is a transport and never sees key material or
+# credentials. Its Service is still reachable only from the clients named in
+# networkpolicy.yaml.
+#
+# - One device, one pod: the extended resource pins the pod to the node that
+#   has the device, and strategy Recreate stops the old pod before the new one
+#   starts (a surge pod would sit Pending while the old one holds the device).
+# - Listens on all addresses (the connector default is localhost only).
+# - The image is the yubihsm-tools image, which carries yubihsm-connector.
+# - /connector/status answers 200 even when the device is missing
+#   (status=NO_DEVICE), so the probes show the process is alive, not that the
+#   HSM is present. Device presence is guaranteed by the extended resource.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yubihsm-connector
+  namespace: hsm-system
+  labels:
+    app.kubernetes.io/name: yubihsm-connector
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: yubihsm-connector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yubihsm-connector
+    spec:
+      serviceAccountName: yubihsm-connector
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: yubihsm-connector
+          # Pin to the digest published by the yubihsm-tools workflow for the
+          # commit that added yubihsm-connector (version 0.3.0 of the image).
+          image: ghcr.io/jlengelbrecht/yubihsm-tools:REPLACE_WITH_SHA_TAG@sha256:REPLACE_WITH_DIGEST
+          command: ["yubihsm-connector"]
+          args:
+            - --listen=0.0.0.0:12345
+          ports:
+            - name: http
+              containerPort: 12345
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /connector/status
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /connector/status
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+              devic.es/yubihsm2: 1
+            limits:
+              memory: 64Mi
+              devic.es/yubihsm2: 1
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi

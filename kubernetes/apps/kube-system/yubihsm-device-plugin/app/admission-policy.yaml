@@ -1,10 +1,10 @@
 ---
-# Restricts which pod may request devic.es/yubihsm2: only a pod in
-# crossplane-system running as the provider-azuread service account. The
-# identity-system enrolment pod that originally needed the device is gone
-# (the HSM's factory credential was replaced during enrolment), so this
-# policy now exists purely to limit who can reach the device at all. A
-# future re-enrolment adds identity-system back in its own change.
+# Restricts which pod may request devic.es/yubihsm2: only the yubihsm-connector
+# pod in hsm-system, running as the yubihsm-connector service account. The
+# connector is the single holder of the USB device; the Crossplane assertion
+# signer and any other HSM client reach it over the connector's Service instead.
+# A future re-enrolment pod adds its own namespace and service account here in
+# its own change.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -33,8 +33,8 @@ spec:
   validations:
     - expression: >-
         !variables.wantsHsm ||
-        (request.namespace == 'crossplane-system' && object.spec.serviceAccountName == 'provider-azuread')
-      message: "Only pods in crossplane-system running as the provider-azuread service account may request devic.es/yubihsm2."
+        (request.namespace == 'hsm-system' && object.spec.serviceAccountName == 'yubihsm-connector')
+      message: "Only pods in hsm-system running as the yubihsm-connector service account may request devic.es/yubihsm2."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

@@ -1,0 +1,55 @@
+---
+# Default-deny for the connector in both directions, plus one ingress rule per
+# client. The connector is a transport (sessions are authenticated and
+# encrypted end to end between the client and the HSM), but it is also the only
+# door to the device and has no authentication of its own, so nothing that is
+# not a named client can reach it.
+#
+# Egress is empty: the connector talks only to the USB device. enableDefaultDeny
+# makes the egress direction enforced even though no rule allows anything (an
+# empty rule matches nothing), so it cannot resolve names or dial anything.
+# Kubelet probes come from the host and are not subject to this policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: yubihsm-connector
+  namespace: hsm-system
+  labels:
+    app.kubernetes.io/name: yubihsm-connector
+    app.kubernetes.io/component: networkpolicy
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: yubihsm-connector
+
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+
+  ingress:
+    # Crossplane assertion signer: the provider-azuread pod (label set by its
+    # DeploymentRuntimeConfig). Written against the container port: Cilium
+    # DNATs the Service to the endpoint before it evaluates policy.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: crossplane-system
+            app.kubernetes.io/name: provider-azuread
+      toPorts:
+        - ports:
+            - port: "12345"
+              protocol: TCP
+
+    # PLACEHOLDER, NOT ENABLED: a future OpenBao client. Uncomment it, with the
+    # real namespace and pod label, in the same change that deploys OpenBao,
+    # and give OpenBao's own policy the matching egress rule to this Service.
+    # - fromEndpoints:
+    #     - matchLabels:
+    #         io.kubernetes.pod.namespace: openbao
+    #         app.kubernetes.io/name: openbao
+    #   toPorts:
+    #     - ports:
+    #         - port: "12345"
+    #           protocol: TCP
+
+  egress:
+    - {}

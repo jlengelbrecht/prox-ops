@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: yubihsm-connector
+  namespace: hsm-system
+  labels:
+    app.kubernetes.io/name: yubihsm-connector
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: yubihsm-connector
+  ports:
+    - name: http
+      port: 12345
+      targetPort: http
+      protocol: TCP

@@ -7,7 +7,8 @@
 # (no PodMonitor), so port 8080 is closed. Kubelet probes come from the host and
 # are not subject to this policy.
 #
-# Egress: DNS, the API server, and two names on the public internet:
+# Egress: DNS, the API server, the yubihsm-connector Service in hsm-system (the
+# assertion signer's only route to the HSM), and two names on the public internet:
 # login.microsoftonline.com (token endpoint) and graph.microsoft.com, both on
 # 443. No toEntities: world, no toCIDR, no matchPattern. A metadata host or any
 # other name the provider turns out to need shows up as a dropped flow in Hubble
@@ -57,12 +58,25 @@ spec:
             dns:
               - matchName: login.microsoftonline.com
               - matchName: graph.microsoft.com
+              - matchName: yubihsm-connector.hsm-system.svc.cluster.local
 
     # Controller watches, status writes and leader election. No toPorts: the
     # pod dials the kubernetes Service and Cilium sees the post-DNAT port of the
     # control plane's real listener.
     - toEntities:
         - kube-apiserver
+
+    # The assertion signer's HSM, through yubihsm-connector. Written against the
+    # connector pod and its container port: Cilium DNATs the Service before it
+    # evaluates policy. Nothing else in hsm-system is reachable.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: hsm-system
+            app.kubernetes.io/name: yubihsm-connector
+      toPorts:
+        - ports:
+            - port: "12345"
+              protocol: TCP
 
     # Microsoft identity platform token endpoint and Microsoft Graph. matchName
     # only, never matchPattern.
