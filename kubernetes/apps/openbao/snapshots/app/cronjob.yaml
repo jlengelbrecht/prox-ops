@@ -141,12 +141,16 @@ spec:
                   - key: ca.crt
                     path: ca.crt
             # A short-lived service account token for the Kubernetes auth
-            # login, mounted here instead of the default automount.
+            # login, mounted here instead of the default automount. Its
+            # audience is "openbao", which the role requires, so the token
+            # can't be replayed against the Kubernetes API, and an API token
+            # can't log in to OpenBao.
             - name: token
               projected:
                 sources:
                   - serviceAccountToken:
                       path: token
+                      audience: openbao
                       expirationSeconds: 600
             - name: tmp
               emptyDir:

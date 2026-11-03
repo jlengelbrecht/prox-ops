@@ -185,11 +185,15 @@ jq -n '{kubernetes_host: "https://kubernetes.default.svc"}' >"$work/k8s.json"
 bao_write_json auth/kubernetes/config "$work/k8s.json"
 
 # The daily snapshot job (kubernetes/apps/openbao/snapshots): its service
-# account only, a token that lives just long enough for one snapshot.
+# account only, a token that lives just long enough for one snapshot. The
+# audience "openbao" must match the job's projected token: a token issued for
+# the Kubernetes API is refused, and the job's token is useless anywhere else.
+# Every future role sets the same audience.
 log "Writing the Kubernetes auth role openbao-snapshot"
 jq -n '{
     bound_service_account_names: ["openbao-snapshots"],
     bound_service_account_namespaces: ["openbao"],
+    audience: "openbao",
     token_policies: ["openbao-snapshot"],
     token_ttl: "10m",
     token_max_ttl: "10m",
