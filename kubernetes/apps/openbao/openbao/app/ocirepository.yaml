@@ -1,0 +1,14 @@
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: openbao
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  # renovate: datasource=docker depName=ghcr.io/openbao/charts/openbao
+  ref:
+    tag: 0.30.6
+  url: oci://ghcr.io/openbao/charts/openbao

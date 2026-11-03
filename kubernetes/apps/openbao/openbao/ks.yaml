@@ -1,0 +1,31 @@
+---
+# OpenBao, sealed by the YubiHSM 2. dependsOn namespaces are the dependency's
+# own CR namespace: openbao/kustomization.yaml moves every CR in this tree into
+# openbao.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app openbao
+  namespace: flux-system
+spec:
+  targetNamespace: openbao
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: openbao-secret-store
+      namespace: openbao
+    - name: openbao-certificates
+      namespace: openbao
+    - name: openbao-policies
+      namespace: openbao
+  interval: 1h
+  retryInterval: 2m
+  timeout: 10m
+  path: ./kubernetes/apps/openbao/openbao/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
