@@ -44,19 +44,37 @@ spec:
 
         # The HSM serves OpenBao's unseal and the Entra workload identity
         # signatures. Running OpenBao replicas keep working without it; any
-        # restart can't unseal until it's back.
+        # restart can't unseal until it's back. A warning, not a page: Thor
+        # powers off on the last day of each month for iDRAC updates and
+        # k8s-work-12 reboots for Talos patches, and the urgent case (replicas
+        # that can't unseal) already pages through OpenBaoQuorumAtRisk.
         - alert: YubiHSMUnavailable
           expr: |
             max(kube_deployment_status_replicas_available{namespace="hsm-system",deployment="yubihsm-connector"}) < 1
             or absent(kube_deployment_status_replicas_available{namespace="hsm-system",deployment="yubihsm-connector"})
-          for: 5m
+          for: 20m
+          labels:
+            severity: warning
+            component: openbao
+          annotations:
+            summary: "The YubiHSM is not reachable"
+            description: "yubihsm-connector has no ready pod, so the HSM is missing, unplugged or its node is down (k8s-work-12 on Thor). OpenBao replicas can't unseal after a restart, and Entra workload identity can't sign new assertions."
+
+        # A real loss (failed or unplugged unit) rather than a planned Thor
+        # shutdown: the monthly iDRAC power-off and Talos reboots end well
+        # inside 6 hours.
+        - alert: YubiHSMDownLong
+          expr: |
+            max(kube_deployment_status_replicas_available{namespace="hsm-system",deployment="yubihsm-connector"}) < 1
+            or absent(kube_deployment_status_replicas_available{namespace="hsm-system",deployment="yubihsm-connector"})
+          for: 6h
           labels:
             severity: critical
             component: openbao
             pager: "true"
           annotations:
-            summary: "The YubiHSM is not reachable"
-            description: "yubihsm-connector has no ready pod, so the HSM is missing, unplugged or its node is down (k8s-work-12 on Thor). OpenBao replicas can't unseal after a restart, and Entra workload identity can't sign new assertions."
+            summary: "The YubiHSM has been unreachable for over 6 hours"
+            description: "yubihsm-connector has had no ready pod for 6 hours, longer than any planned Thor or k8s-work-12 outage. Check the device on Thor. Until it's back, OpenBao replicas can't unseal after a restart and Entra workload identity can't sign."
 
         - alert: OpenBaoBackupStale
           expr: time() - kube_cronjob_status_last_successful_time{namespace="openbao",cronjob="openbao-snapshots"} > 26 * 3600
