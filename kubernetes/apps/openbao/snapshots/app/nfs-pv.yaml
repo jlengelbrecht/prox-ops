@@ -1,0 +1,25 @@
+---
+# The UNAS `proxmox` share, the same export as the etcd and VolSync backups.
+# NFSv3 only (the share is exported through a symlink). The job writes to
+# the openbao/ subdirectory.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: openbao-backup-nfs
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=3
+    - hard
+    - noatime
+  nfs:
+    server: 10.20.66.109
+    path: /var/nfs/shared/proxmox
+  claimRef:
+    name: openbao-backup-nfs
+    namespace: openbao
