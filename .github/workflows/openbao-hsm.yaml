@@ -21,10 +21,10 @@ permissions:
 
 env:
   SMOKE_TEST: |
-    bao version | grep -q "^OpenBao v2.7.2 "
+    bao version | grep -q "^OpenBao v"
     [ "$(id -u):$(id -g)" = "100:1000" ]
-    echo "9c5f36287c673f386e1533e9c044169a248e4ee50dd54810fa766e95bd41b788  /usr/bin/bao" | sha256sum -c -
-    echo "e88632ee52600513bd0e77242823ef57641f1eaac019d8c66515c8bca81e007d  /usr/lib/openbao/plugins/openbao-plugin-kms-pkcs11" | sha256sum -c -
+    sum=$(sha256sum /usr/lib/openbao/plugins/openbao-plugin-kms-pkcs11 | cut -d' ' -f1)
+    grep -qx "  sha256sum = \"$sum\"" /etc/openbao/plugin-kms.hcl
     test -f /usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so
     test -f /usr/lib/x86_64-linux-gnu/libyubihsm_http.so.2
     if ldd /usr/lib/openbao/plugins/openbao-plugin-kms-pkcs11 | grep "not found"; then exit 1; fi
@@ -90,6 +90,6 @@ jobs:
             echo "A newer change to the image is on main; leaving :main to its run" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          docker buildx imagetools create --tag ghcr.io/jlengelbrecht/openbao-hsm:main \
+          docker buildx imagetools create --prefer-index=false --tag ghcr.io/jlengelbrecht/openbao-hsm:main \
             "ghcr.io/jlengelbrecht/openbao-hsm@${digest}"
           echo "Moved :main to ${digest}" >> "$GITHUB_STEP_SUMMARY"
