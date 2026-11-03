@@ -10,7 +10,8 @@ kind: Component
 #                          must be able to read the PVC's files
 #   VOLSYNC_RUN_AS_NON_ROOT  default true; false only for a privileged mover
 #                          (see below)
-#   VOLSYNC_SCHEDULE      cron for the backup (default 0 3 * * *)
+#   VOLSYNC_SCHEDULE       cron for the backup (default 0 3 * * *); must not
+#                          start with "*" (it is substituted unquoted)
 #   VOLSYNC_SNAPSHOT_CLASS VolumeSnapshotClass (default ceph-block-snapshot)
 # All apps using this component share one restic password and one NFS export
 # (each app has its own repository path). That is fine for one owner; for
