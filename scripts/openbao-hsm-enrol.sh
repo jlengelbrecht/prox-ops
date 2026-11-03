@@ -99,12 +99,14 @@ cleanup() {
   # A backup that reached us but wasn't stored in 1Password yet (an interrupt,
   # or a failure after the tool printed it) is the only off-HSM copy: keep it
   # rather than shred it. It is useless without the wrap key.
+  # Never let this step stop the rest of the cleanup (pod removal, shredding).
   if [[ -z $blob_kept && -s $work/out ]] && grep -q '^BLOB ' "$work/out"; then
-    sed -n 's/^BLOB //p' "$work/out" | tr -d '\n' >"$work/kept.wrapped"
-    if install -m 600 "$work/kept.wrapped" "$keep"; then
-      printf 'error: the seal key 0x0211 exists on the HSM and its backup was NOT stored in 1Password. A copy is at %s; make sure the document %s/%s holds exactly that file. Tell the PM.\n' \
-        "$keep" "$WRAP_VAULT" "$BLOB_TITLE" >&2
-    fi
+    {
+      sed -n 's/^BLOB //p' "$work/out" | tr -d '\n' >"$work/kept.wrapped" &&
+        install -m 600 "$work/kept.wrapped" "$keep" &&
+        printf 'error: the seal key 0x0211 exists on the HSM and its backup was NOT stored in 1Password. A copy is at %s; make sure the document %s/%s holds exactly that file. Tell the PM.\n' \
+          "$keep" "$WRAP_VAULT" "$BLOB_TITLE" >&2
+    } || printf 'error: the seal key 0x0211 exists on the HSM and its backup could NOT be kept. Tell the PM (it re-exports the backup with get-wrapped).\n' >&2
   fi
   if [[ -n $pod_started ]]; then
     kubectl -n "$NS" delete pod "$POD" --wait=false >/dev/null 2>&1 || true
