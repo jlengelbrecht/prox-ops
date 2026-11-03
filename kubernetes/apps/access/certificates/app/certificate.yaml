@@ -1,0 +1,17 @@
+---
+# Warpgate serves each target on its own name under access.homelab0.org. The
+# shared *.homelab0.org certificate covers only one label, so this one adds
+# the nested wildcard.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: access-homelab0-org
+spec:
+  secretName: access-homelab0-org-tls
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  commonName: access.homelab0.org
+  dnsNames:
+    - access.homelab0.org
+    - "*.access.homelab0.org"
