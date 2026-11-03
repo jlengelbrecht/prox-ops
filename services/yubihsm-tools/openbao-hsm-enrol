@@ -34,7 +34,9 @@
 #      (get-wrapped) and print the backup, then verify its attributes.
 #      The blob is useless without the wrap key.
 # A failure in 1-2 leaves no seal key. To retry: delete 0x0020 and 0x0011
-# (admin key) and the 1Password items the driver created, then re-run.
+# (admin key: delete-wrap-key, delete-authentication-key) and the 1Password
+# items the driver created, then re-run. If 3 fails before BLOB is printed,
+# also delete 0x0211.
 #
 # Modes and input (stdin, one value per line, nothing else):
 #   --dry-run   reads nothing, contacts nothing; prints the plan.
@@ -43,9 +45,9 @@
 #               (32-60 of [A-Za-z0-9]), line 3 the wrap key (64 hex chars).
 #
 # Output on stdout (--apply): "SEAL-PUBKEY <base64 of PEM>" and
-# "BLOB <base64>", printed as soon as the backup exists and BEFORE the restore
-# test, so a failed test never leaves a seal key with no backup captured; then
-# "RESTORE-TEST PASSED". Everything else goes to stderr. All output is
+# "BLOB <base64>", printed right after the seal key is generated (which is only
+# after the restore test has passed) and before its attributes are checked;
+# then "RESTORE-TEST PASSED". Everything else goes to stderr. All output is
 # filtered against the secrets.
 #
 # Secret handling as in hsm-reset-enrol: values are read with `read -r`, never
