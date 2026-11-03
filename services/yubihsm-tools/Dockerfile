@@ -18,6 +18,7 @@ RUN apt-get update && \
         yubihsm-shell=2.6.0-5 \
         libyubihsm2=2.6.0-5 \
         libyubihsm-usb2=2.6.0-5 \
+        libyubihsm-http2=2.6.0-5 \
         yubihsm-pkcs11=2.6.0-5 \
         yubihsm-connector=3.0.5-2 \
         pkcs11-provider=1.0-3 \

@@ -9,10 +9,14 @@ A pod that holds the device can talk to it over USB directly:
 configuration file.
 
 The image also carries `yubihsm-connector` (Debian trixie, pinned), which bridges the USB
-device to HTTP. Run it as the only process that holds the device (`yubihsm-connector -l
-0.0.0.0:12345`) and every other client reaches the HSM with `yubihsm-shell --connector
-http://<service>:12345` instead. The connector is only a transport: sessions are
-authenticated and encrypted between the client and the device.
+device to HTTP. Run it as the only process that holds the device and every other client reaches the HSM
+with `yubihsm-shell --connector http://<service>:12345` instead. The connector has no
+authentication of its own and listens on plain HTTP: bind it to the pod IP
+(`-l <pod-ip>:12345`), not to all addresses, and treat the NetworkPolicy in front of its
+Service as the access control. Sessions are authenticated and encrypted between the client
+and the device, but the session handshake travels over that HTTP, so use a long random
+auth-key password. The image includes the HTTP backend (`libyubihsm-http2`) that
+`yubihsm-shell -C http://...` needs.
 
 The PKCS#11 module is at `/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so`; the OpenSSL
 provider is at `/usr/lib/x86_64-linux-gnu/ossl-modules/pkcs11.so`.
