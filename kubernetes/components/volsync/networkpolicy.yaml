@@ -1,0 +1,16 @@
+---
+# Mover pods need no network at all: the repository is a mounted volume (the
+# kubelet makes the NFS mount on the host, outside the pod's network) and
+# restic runs locally. Deny everything.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ${APP}-volsync-mover
+  namespace: ${APP_NS}
+spec:
+  endpointSelector:
+    matchLabels:
+      volsync.homelab0.org/mover: ${APP}
+  enableDefaultDeny:
+    ingress: true
+    egress: true

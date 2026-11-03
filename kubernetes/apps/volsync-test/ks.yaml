@@ -1,0 +1,32 @@
+---
+# dependsOn namespaces: kubernetes/apps/volsync-system/kustomization.yaml and
+# kubernetes/apps/kube-system/kustomization.yaml apply their own `namespace:`
+# to every CR, so those are the live namespaces of the dependencies.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app volsync-test
+  namespace: flux-system
+spec:
+  targetNamespace: volsync-test
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: volsync
+      namespace: volsync-system
+  interval: 1h
+  path: ./kubernetes/apps/volsync-test/app
+  postBuild:
+    substitute:
+      APP: volsync-test
+      APP_NS: volsync-test
+      VOLSYNC_UID: "1000"
+      VOLSYNC_GID: "1000"
+      VOLSYNC_SCHEDULE: "0,30 * * * *"
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

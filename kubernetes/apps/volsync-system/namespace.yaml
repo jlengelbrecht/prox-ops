@@ -1,0 +1,12 @@
+---
+# Holds the VolSync operator only. Mover pods run in the namespaces of the
+# volumes they back up, never here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: volsync-system
+  labels:
+    kubernetes.io/metadata.name: volsync-system
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

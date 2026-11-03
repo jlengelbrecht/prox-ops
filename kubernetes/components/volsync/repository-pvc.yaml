@@ -1,0 +1,16 @@
+---
+# Binds to the per-app NFS PV in repository-pv.yaml. The mover mounts it
+# at /mnt/repo; the restic repository lives under /mnt/repo/volsync/.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${APP}-volsync-repo
+  namespace: ${APP_NS}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: volsync-repo-${APP_NS}-${APP}
+  resources:
+    requests:
+      storage: 100Gi

@@ -1,0 +1,29 @@
+---
+# Upstream backube/volsync chart (mirrored). Only the restic mover is used.
+# manageCRDs (chart default) installs the ReplicationSource/Destination CRDs.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: volsync
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: volsync
+  interval: 1h
+  values:
+    fullnameOverride: volsync
+    manageCRDs: true
+    # The chart sets no runAsNonRoot of its own; the restricted namespace
+    # needs it.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65532
+      runAsGroup: 65532
+      seccompProfile:
+        type: RuntimeDefault
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
