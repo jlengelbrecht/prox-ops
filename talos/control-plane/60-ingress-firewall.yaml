@@ -47,12 +47,15 @@ portSelector:
   ports:
     - 2379-2380
   protocol: tcp
+# Replacing a controller with a new IP needs this list updated first.
 ingress:
   - subnet: 10.20.67.1/32
   - subnet: 10.20.67.2/32
   - subnet: 10.20.67.3/32
 ---
 # etcd, kube-controller-manager and kube-scheduler metrics for Prometheus.
+# Open to all pods because Prometheus has no fixed IP; etcd's 2381 serves
+# unauthenticated metrics only.
 apiVersion: v1alpha1
 kind: NetworkRuleConfig
 name: control-plane-metrics-ingress

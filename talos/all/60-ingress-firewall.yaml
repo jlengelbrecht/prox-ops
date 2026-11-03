@@ -2,6 +2,9 @@
 # interface, including the IoT (eth1) and DMZ (eth2) links on the workers.
 # Pod-to-pod and LoadBalancer traffic is handled by Cilium and isn't affected.
 #   nodes 10.20.67.0/28   pods 10.42.0.0/16   admin LAN 10.20.65.0/24
+# The nodes range must cover every node IP in topf.yaml (today .1-.15). A node
+# outside it can't reach the others' kubelet, apid or trustd and won't join.
+# kube-proxy replacement's health port (10256) is left closed: nothing uses it.
 apiVersion: v1alpha1
 kind: NetworkDefaultActionConfig
 ingress: block
@@ -29,17 +32,6 @@ portSelector:
 ingress:
   - subnet: 10.20.67.0/28
   - subnet: 10.42.0.0/16
----
-# Cilium VXLAN. Routing is native today; kept so a fallback to tunnelling works.
-apiVersion: v1alpha1
-kind: NetworkRuleConfig
-name: cilium-vxlan-ingress
-portSelector:
-  ports:
-    - 8472
-  protocol: udp
-ingress:
-  - subnet: 10.20.67.0/28
 ---
 # Hubble peer service, read by hubble-relay.
 apiVersion: v1alpha1
