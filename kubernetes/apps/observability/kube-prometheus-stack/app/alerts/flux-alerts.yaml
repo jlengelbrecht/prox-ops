@@ -11,45 +11,49 @@ spec:
   groups:
     - name: flux-alerts
       interval: 30s
+      # Readiness and suspension come from the Flux operator's flux_resource_info
+      # (one series per Flux object; exported_namespace is the object's namespace).
+      # The controllers stopped exporting gotk_reconcile_condition and
+      # gotk_suspend_status, so rules built on them could never fire.
       rules:
         - alert: FluxReconciliationFailure
-          expr: sum by (namespace, name, kind) (gotk_reconcile_condition{status="False",type="Ready"}) > 0
+          expr: max by (exported_namespace, name, kind, reason) (flux_resource_info{ready="False"}) > 0
           for: 10m
           labels:
             severity: critical
             component: flux
           annotations:
-            summary: "Flux {{ $labels.kind }} {{ $labels.namespace }}/{{ $labels.name }} reconciliation failing"
-            description: "Flux resource has failed reconciliation for more than 10 minutes."
+            summary: "Flux {{ $labels.kind }} {{ $labels.exported_namespace }}/{{ $labels.name }} reconciliation failing"
+            description: "Flux resource has failed reconciliation for more than 10 minutes (reason: {{ $labels.reason }})."
 
         - alert: FluxResourceSuspended
-          expr: sum by (namespace, name, kind) (gotk_suspend_status{suspended="true"}) > 0
+          expr: max by (exported_namespace, name, kind) (flux_resource_info{suspended="True"}) > 0
           for: 30m
           labels:
             severity: warning
             component: flux
           annotations:
-            summary: "Flux {{ $labels.kind }} {{ $labels.namespace }}/{{ $labels.name }} is suspended"
+            summary: "Flux {{ $labels.kind }} {{ $labels.exported_namespace }}/{{ $labels.name }} is suspended"
             description: "Flux resource has been suspended for more than 30 minutes."
 
         - alert: HelmReleaseStuck
-          expr: sum by (namespace, name) (gotk_reconcile_condition{kind="HelmRelease",status="Unknown",type="Ready"}) > 0
+          expr: max by (exported_namespace, name) (flux_resource_info{kind="HelmRelease",ready="Unknown"}) > 0
           for: 15m
           labels:
             severity: warning
             component: flux
           annotations:
-            summary: "HelmRelease {{ $labels.namespace }}/{{ $labels.name }} is stuck"
+            summary: "HelmRelease {{ $labels.exported_namespace }}/{{ $labels.name }} is stuck"
             description: "HelmRelease has been in Unknown state for more than 15 minutes."
 
         - alert: GitRepositorySyncFailure
-          expr: sum by (namespace, name) (gotk_reconcile_condition{kind="GitRepository",status="False",type="Ready"}) > 0
+          expr: max by (exported_namespace, name) (flux_resource_info{kind="GitRepository",ready="False"}) > 0
           for: 10m
           labels:
             severity: critical
             component: flux
           annotations:
-            summary: "GitRepository {{ $labels.namespace }}/{{ $labels.name }} sync failing"
+            summary: "GitRepository {{ $labels.exported_namespace }}/{{ $labels.name }} sync failing"
             description: "GitRepository has failed to sync for more than 10 minutes. Flux GitOps is broken."
 
         - alert: FluxSlowReconciliation
