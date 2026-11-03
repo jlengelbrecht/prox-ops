@@ -11,11 +11,11 @@
 #   - our own minimal entrypoint at the path the Helm chart calls (the official
 #     one needs dumb-init and bash syntax)
 #   - /bin/sh is busybox ash, not dash. The chart starts the server with
-#     `/bin/sh -ec "<script>"` and stops it with a preStop of
-#     `/bin/sh -c "sleep 5 && kill -SIGTERM $(pidof bao)"`. dash stays PID 1
-#     with bao as its child, so bao never gets the kubelet's SIGTERM, and it
-#     rejects `kill -SIGTERM`; so does bash in sh/POSIX mode. ash execs the
-#     script's last command (bao becomes PID 1) and accepts the preStop.
+#     `/bin/sh -ec "<script>"`, so PID 1 is sh with bao as its child (as in the
+#     official image) and the kubelet's SIGTERM never reaches bao. The chart
+#     relies on its preStop, `/bin/sh -c "sleep 5 && kill -SIGTERM $(pidof bao)"`,
+#     to stop bao gracefully. dash, and bash in sh mode, reject `kill -SIGTERM`,
+#     so every stop ended in SIGKILL; ash accepts it.
 # User openbao, uid 100 / gid 1000, as the chart's defaults expect. No secrets
 # or configuration in the image.
 #
@@ -53,7 +53,7 @@ RUN sum=$(sha256sum /usr/lib/openbao/plugins/openbao-plugin-kms-pkcs11 | cut -d'
       '  command   = "openbao-plugin-kms-pkcs11"' \
       "  sha256sum = \"$sum\"" \
       '  args      = ["-alias=yubihsm=/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so"]' \
-      '  env       = ["YUBIHSM_PKCS11_CONF=/openbao/config/yubihsm_pkcs11.conf"]' \
+      '  env       = ["YUBIHSM_PKCS11_CONF=/openbao/userconfig/yubihsm/yubihsm_pkcs11.conf"]' \
       '}' > /etc/openbao/plugin-kms.hcl && \
     chmod 0444 /etc/openbao/plugin-kms.hcl && \
     mkdir -p /openbao/config /openbao/data /openbao/audit /openbao/logs /home/openbao && \

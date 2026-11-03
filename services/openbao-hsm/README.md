@@ -13,7 +13,7 @@ The official image is Alpine (musl). The `kms-pkcs11` plugin and Yubico's `yubih
 | `/etc/openbao/plugin-kms.hcl` | plugin stanza with the sha256 of the binary above | generated at build |
 | `/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so` | Yubico PKCS#11 module, HTTP backend | Debian `yubihsm-pkcs11` / `libyubihsm-http2` 2.6.0-5 |
 | `/usr/local/bin/docker-entrypoint.sh` | minimal entrypoint at the path the Helm chart calls | this directory |
-| `/bin/sh` → busybox ash | so the chart's `sh -ec` start script execs bao as PID 1 (it gets SIGTERM) and its preStop `kill -SIGTERM` works; under dash, or bash in sh mode, they don't | Debian `busybox` |
+| `/bin/sh` → busybox ash | the chart stops bao through its preStop, `kill -SIGTERM $(pidof bao)`, because PID 1 is the chart's `sh` and not bao. dash, and bash in sh mode, reject that syntax, so pods would only stop through SIGKILL | Debian `busybox` |
 
 It runs as `openbao`, uid 100 / gid 1000, the OpenBao Helm chart's defaults. The working directory is `/home/openbao`, which must not contain a `yubihsm_pkcs11.conf`: the module reads one from the working directory before `YUBIHSM_PKCS11_CONF`. The image carries no secrets or configuration.
 
@@ -25,7 +25,9 @@ The build writes `/etc/openbao/plugin-kms.hcl`. It declares the baked-in binary 
 bao server -config=/tmp/storageconfig.hcl -config=/etc/openbao/plugin-kms.hcl
 ```
 
-With the Helm chart, set `server.extraArgs: "-config=/etc/openbao/plugin-kms.hcl"`. The seal stanza in the main config then uses `lib = "yubihsm"`. Provide the module's settings at `/openbao/config/yubihsm_pkcs11.conf`, because the plugin's environment contains only that path. The chart mounts its config ConfigMap over all of `/openbao/config`, so add the file to that ConfigMap. A nested `subPath` mount wouldn't pick up updates.
+With the Helm chart, set `server.extraArgs: "-config=/etc/openbao/plugin-kms.hcl"`. The seal stanza in the main config then uses `lib = "yubihsm"`.
+
+The plugin's environment contains only `YUBIHSM_PKCS11_CONF=/openbao/userconfig/yubihsm/yubihsm_pkcs11.conf`, so provide the module's settings there. Use a ConfigMap named `yubihsm` with a `yubihsm_pkcs11.conf` key, mounted through the chart's `server.extraVolumes` (`type: configMap, name: yubihsm`). The chart mounts that at `/openbao/userconfig/yubihsm/` as a whole directory, so updates propagate. The chart's own `/openbao/config` ConfigMap holds only its rendered server config, and it can't take extra files.
 
 ## Updating
 
