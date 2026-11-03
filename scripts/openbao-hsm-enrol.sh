@@ -93,7 +93,19 @@ case $(stat -f -c %T "$work") in
   *) die "$work is not RAM-backed; set XDG_RUNTIME_DIR to a tmpfs directory" ;;
 esac
 pod_started=""
+blob_kept=""
+keep="$HOME/openbao-seal-0x0211.wrapped"
 cleanup() {
+  # A backup that reached us but wasn't stored in 1Password yet (an interrupt,
+  # or a failure after the tool printed it) is the only off-HSM copy: keep it
+  # rather than shred it. It is useless without the wrap key.
+  if [[ -z $blob_kept && -s $work/out ]] && grep -q '^BLOB ' "$work/out"; then
+    sed -n 's/^BLOB //p' "$work/out" | tr -d '\n' >"$work/kept.wrapped"
+    if install -m 600 "$work/kept.wrapped" "$keep"; then
+      printf 'error: the seal key 0x0211 exists on the HSM and its backup was NOT stored in 1Password. A copy is at %s; make sure the document %s/%s holds exactly that file. Tell the PM.\n' \
+        "$keep" "$WRAP_VAULT" "$BLOB_TITLE" >&2
+    fi
+  fi
   if [[ -n $pod_started ]]; then
     kubectl -n "$NS" delete pod "$POD" --wait=false >/dev/null 2>&1 || true
   fi
@@ -136,9 +148,9 @@ for vt in "$BAO_VAULT/$BAO_ITEM" "$WRAP_VAULT/$WRAP_ITEM" "$WRAP_VAULT/$BLOB_TIT
 done
 
 log "Starting the key-management pod"
-kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1 && die "pod $NS/$POD already exists; delete it first"
-pod_started=1
-kubectl apply -f - >/dev/null <<EOF
+# create (not apply): fails if the pod already exists, so a concurrent or
+# leftover pod is never adopted, and cleanup is armed only for our own pod.
+kubectl create -f - >/dev/null <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -176,6 +188,7 @@ spec:
     - name: tmp
       emptyDir: {medium: Memory, sizeLimit: 16Mi}
 EOF
+pod_started=1
 kubectl -n "$NS" wait --for=condition=Ready "pod/$POD" --timeout=180s >/dev/null ||
   die "pod $NS/$POD did not become ready"
 
@@ -236,10 +249,11 @@ if [[ -n $blob ]]; then
     [[ $(op document get "$BLOB_TITLE" --vault "$WRAP_VAULT" | sha256sum) != $(printf '%s' "$blob" | sha256sum) ]]; then
     # Keep the only off-HSM copy rather than shredding it with the temp dir.
     # It is useless without the wrap key (in $WRAP_VAULT/$WRAP_ITEM).
-    keep="$HOME/openbao-seal-0x0211.wrapped"
     install -m 600 "$work/openbao-seal-0x0211.wrapped" "$keep"
+    blob_kept=1
     die "the seal key 0x0211 EXISTS on the HSM, but its backup is NOT in 1Password. A copy is at $keep; make sure the document $WRAP_VAULT/$BLOB_TITLE holds exactly that file (replace it if one was created). Don't re-run; tell the PM (it can also re-export the backup with get-wrapped)"
   fi
+  blob_kept=1
   if [[ -n $pub ]]; then
     op item edit "$WRAP_ITEM" --vault "$WRAP_VAULT" "seal-public-key[text]=$(printf '%s' "$pub" | base64 -d)" \
       </dev/null >/dev/null || log "warning: the seal public key was not stored on $WRAP_VAULT/$WRAP_ITEM (it can be read from the HSM later); carrying on"
