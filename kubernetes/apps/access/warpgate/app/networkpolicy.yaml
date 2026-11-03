@@ -70,10 +70,12 @@ spec:
               protocol: TCP
             - port: "10443"
               protocol: TCP
-    # SSH targets, one /32 each. MSI-Gaming (Bazzite PC); its firewall accepts
-    # SSH only from the node range, which is where Warpgate's traffic leaves from.
+    # SSH targets, one /32 each: MSI-Gaming (Bazzite PC) and devb0x (CachyOS
+    # workstation). Each host's firewall accepts SSH only from the node range,
+    # which is where Warpgate's traffic leaves from.
     - toCIDR:
         - 10.20.65.97/32
+        - 10.20.65.119/32
       toPorts:
         - ports:
             - port: "22"
