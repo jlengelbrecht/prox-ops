@@ -14,3 +14,9 @@ spec:
   enableDefaultDeny:
     ingress: true
     egress: true
+  # Cilium needs at least one rule; an empty rule matches nothing, so all
+  # traffic in both directions stays denied.
+  ingress:
+    - {}
+  egress:
+    - {}
