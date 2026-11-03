@@ -2,7 +2,8 @@
 # short-lived pod to replace the factory credential, create keys and print
 # certificates; and xp-assertion-signer, run as a sidecar, to sign client
 # assertions with a non-exportable HSM key. Carries no secrets or configuration
-# — only Yubico's packages from Debian trixie and the signer script. The
+# — only Yubico's packages from Debian trixie, the signer script and the
+# re-enrolment script. The
 # PKCS#11 module is at /usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so and
 # the OpenSSL provider is at /usr/lib/x86_64-linux-gnu/ossl-modules/pkcs11.so;
 # the signer uses neither (it calls yubihsm-shell directly). yubihsm-connector
@@ -11,8 +12,8 @@ FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/jlengelbrecht/prox-ops" \
       org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.version="0.3.0" \
-      org.opencontainers.image.description="YubiHSM 2 setup and signing tools (yubihsm-shell, yubihsm-connector, PKCS#11 module, OpenSSL provider, xp-assertion-signer); no secrets or config"
+      org.opencontainers.image.version="0.4.0" \
+      org.opencontainers.image.description="YubiHSM 2 setup and signing tools (yubihsm-shell, yubihsm-connector, PKCS#11 module, OpenSSL provider, xp-assertion-signer, hsm-reset-enrol); no secrets or config"
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         yubihsm-shell=2.6.0-5 \
@@ -25,6 +26,7 @@ RUN apt-get update && \
         openssl && \
     rm -rf /var/lib/apt/lists/*
 COPY --chmod=0555 xp-assertion-signer /usr/local/bin/xp-assertion-signer
+COPY --chmod=0555 hsm-reset-enrol /usr/local/bin/hsm-reset-enrol
 USER 65532:65532
 WORKDIR /tmp
 CMD ["sleep", "infinity"]
