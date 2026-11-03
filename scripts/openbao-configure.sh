@@ -7,6 +7,12 @@
 # the same value authentik's OpenBao provider uses) and the authentik
 # blueprint "OpenBao" applied.
 #
+# Rotating the client secret: authentik picks up a new 1Password value by
+# itself, but OpenBao only when this script runs again. Until then new OIDC
+# logins fail (existing tokens keep working), so run it with --token-stdin and
+# a current admin token right after changing the field. Without one, a new
+# root token takes the recovery key (bao operator generate-root).
+#
 # Token: the initial root token from Private/openbao-init, or, once that is
 # revoked, an admin token pasted on stdin with --token-stdin (copy it from the
 # web UI's user menu after an OIDC login).
