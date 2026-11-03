@@ -88,6 +88,6 @@ jobs:
             echo "A newer change to the image is on main; leaving :main to its run" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          docker buildx imagetools create --tag ghcr.io/jlengelbrecht/yubihsm-tools:main \
+          docker buildx imagetools create --prefer-index=false --tag ghcr.io/jlengelbrecht/yubihsm-tools:main \
             "ghcr.io/jlengelbrecht/yubihsm-tools@${digest}"
           echo "Moved :main to ${digest}" >> "$GITHUB_STEP_SUMMARY"
