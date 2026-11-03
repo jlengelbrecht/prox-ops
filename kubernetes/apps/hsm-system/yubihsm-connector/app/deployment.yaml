@@ -9,7 +9,10 @@
 # - One device, one pod: the extended resource pins the pod to the node that
 #   has the device, and strategy Recreate stops the old pod before the new one
 #   starts (a surge pod would sit Pending while the old one holds the device).
-# - Listens on all addresses (the connector default is localhost only).
+# - Binds to the pod IP (downward API POD_IP), not all addresses: the connector
+#   has no authentication of its own, so only traffic that reaches the pod IP
+#   (and passes the network policy) can use it. httpGet probes without a host
+#   field dial the pod IP, which is where it listens.
 # - The image is the yubihsm-tools image, which carries yubihsm-connector.
 # - /connector/status answers 200 even when the device is missing
 #   (status=NO_DEVICE), so the probes show the process is alive, not that the
@@ -49,8 +52,13 @@ spec:
           # commit that added yubihsm-connector (version 0.3.0 of the image).
           image: ghcr.io/jlengelbrecht/yubihsm-tools:REPLACE_WITH_SHA_TAG@sha256:REPLACE_WITH_DIGEST
           command: ["yubihsm-connector"]
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           args:
-            - --listen=0.0.0.0:12345
+            - --listen=$(POD_IP):12345
           ports:
             - name: http
               containerPort: 12345
