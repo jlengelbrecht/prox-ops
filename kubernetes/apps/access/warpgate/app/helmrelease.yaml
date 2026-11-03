@@ -93,7 +93,7 @@ spec:
     # step with setup.* and service.ports below.
     config_env_var_replace: WARPGATE_OIDC_CLIENT_SECRET
     overrides_config: |
-      external_host: access.${SECRET_DOMAIN}
+      external_host: access.homelab0.org
       database_url: "sqlite:/data/db"
       http:
         listen: "0.0.0.0:8888"
@@ -119,7 +119,7 @@ spec:
             type: custom
             client_id: warpgate
             client_secret: $$WARPGATE_OIDC_CLIENT_SECRET
-            issuer_url: https://authentik.${SECRET_DOMAIN}/application/o/warpgate/
+            issuer_url: https://authentik.homelab0.org/application/o/warpgate/
             scopes:
               - openid
               - email
@@ -133,7 +133,7 @@ spec:
               warpgate-admins: warpgate-admin
               warpgate-approvers: warpgate-approver
 
-    # The wildcard-capable certificate for access.${SECRET_DOMAIN} (cert-manager,
+    # The wildcard-capable certificate for access.homelab0.org (cert-manager,
     # ../../certificates), copied to /data/tls.*.pem at start.
     tls_cert_secret: access-homelab0-org-tls
 
@@ -159,7 +159,7 @@ spec:
     service:
       type: LoadBalancer
       annotations:
-        external-dns.alpha.kubernetes.io/hostname: access.${SECRET_DOMAIN}
+        external-dns.alpha.kubernetes.io/hostname: access.homelab0.org
         lbipam.cilium.io/ips: "10.20.67.27"
       ports:
         ssh: 22

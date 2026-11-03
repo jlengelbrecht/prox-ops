@@ -25,11 +25,10 @@ spec:
   timeout: 10m
   path: ./kubernetes/apps/access/warpgate/app
   postBuild:
-    # SECRET_DOMAIN for the external host and the DNS annotation.
-    substituteFrom:
-      - kind: Secret
-        name: cluster-secrets
-        optional: false
+    # No substituteFrom: the access namespace has no cluster-secrets Secret
+    # (this Kustomization is moved into it), so the domain is written out.
+    # postBuild stays because the VolSync component and the doubled-dollar
+    # escape in the HelmRelease values both rely on it.
     # Inputs of kubernetes/components/volsync. APP must equal the PVC name.
     substitute:
       APP: warpgate

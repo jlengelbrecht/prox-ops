@@ -1194,7 +1194,6 @@ data:
       # RSA key: with no signing key authentik signs ID tokens with HS256 and
       # serves a JWKS document Warpgate rejects.
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
-      scope_email: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-email]]
       scope_profile: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
       scope_openid: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
     entries:
@@ -1239,6 +1238,27 @@ data:
           expression: |
             wanted = {"warpgate-admins", "warpgate-approvers", "warpgate-operators"}
             return {"groups": sorted({g.name for g in user.all_groups() if g.name in wanted})}
+      # Warpgate requires the email claim and rejects a login whose email is
+      # not verified. The managed email mapping reports email_verified false,
+      # so this replaces it for the Warpgate provider only. The address is
+      # reported as verified only for users linked to the Entra source (the
+      # tenant admin controls those addresses); any other account, such as a
+      # local one, is reported unverified and Warpgate refuses it. Fails
+      # closed: an error in the lookup also reports unverified.
+      - model: authentik_providers_oauth2.scopemapping
+        id: scope-warpgate-email
+        identifiers:
+          name: Warpgate Email
+        attrs:
+          name: Warpgate Email
+          scope_name: email
+          description: "Returns the user's email, verified only for Entra-linked users"
+          expression: |
+            try:
+                from_entra = request.user.usersourceconnection_set.filter(source__slug="entra-id").exists()
+            except Exception:
+                from_entra = False
+            return {"email": request.user.email, "email_verified": bool(from_entra)}
       # Confidential client. The client id is a public identifier, declared
       # literally here and in the Warpgate config; the secret comes from the
       # authentik-warpgate Secret (1Password item "warpgate").
@@ -1258,7 +1278,7 @@ data:
           signing_key: !Context signing_key
           property_mappings:
             - !KeyOf scope-warpgate-groups
-            - !Context scope_email
+            - !KeyOf scope-warpgate-email
             - !Context scope_profile
             - !Context scope_openid
           redirect_uris:
