@@ -1,0 +1,14 @@
+---
+# OpenBao: the cluster's secrets and key service, sealed by the YubiHSM 2.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openbao
+  # Never pruned with the tree: it holds OpenBao's Raft data and CA.
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+  labels:
+    kubernetes.io/metadata.name: openbao
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

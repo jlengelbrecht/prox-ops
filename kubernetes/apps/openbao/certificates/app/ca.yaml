@@ -1,0 +1,40 @@
+---
+# A CA that exists only to sign OpenBao's listener certificate: Let's Encrypt
+# can't issue for in-cluster names like openbao-0.openbao-internal. It signs
+# nothing else. 10 years; cert-manager re-issues it a year before expiry
+# (Nov 2035) with a new key (cert-manager's default rotationPolicy: Always).
+# Clients that pin it (the envoy backend policy) must then pick up the new
+# ca.crt, and the server certificate keeps the old chain until its own next
+# renewal (up to 60 days), so re-issue it right after. Later, OpenBao's own
+# PKI can replace this CA.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: openbao-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-ca
+spec:
+  isCA: true
+  commonName: OpenBao internal CA
+  secretName: openbao-ca
+  duration: 87600h
+  renewBefore: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: openbao-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: openbao-ca
+spec:
+  ca:
+    secretName: openbao-ca

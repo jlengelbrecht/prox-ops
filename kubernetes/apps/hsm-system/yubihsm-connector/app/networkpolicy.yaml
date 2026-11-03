@@ -39,17 +39,32 @@ spec:
             - port: "12345"
               protocol: TCP
 
-    # PLACEHOLDER, NOT ENABLED: a future OpenBao client. Uncomment it, with the
-    # real namespace and pod label, in the same change that deploys OpenBao,
-    # and give OpenBao's own policy the matching egress rule to this Service.
-    # - fromEndpoints:
-    #     - matchLabels:
-    #         io.kubernetes.pod.namespace: openbao
-    #         app.kubernetes.io/name: openbao
-    #   toPorts:
-    #     - ports:
-    #         - port: "12345"
-    #           protocol: TCP
+    # OpenBao's HSM key management: a short-lived pod a cluster admin starts in
+    # the openbao namespace to create, back up or rotate OpenBao's HSM objects
+    # with the admin key (the owner pipes that password in over stdin). No such
+    # pod runs normally, so this path is closed until one is started, and it is
+    # deleted after each use.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: openbao
+            app.kubernetes.io/name: openbao-hsm-admin
+      toPorts:
+        - ports:
+            - port: "12345"
+              protocol: TCP
+
+    # OpenBao's server pods: the seal and External Keys. They authenticate to
+    # the HSM with their own auth key (domains 9 and 10 only); the connector is
+    # just the transport. OpenBao's policy has the matching egress rule.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: openbao
+            app.kubernetes.io/name: openbao
+            component: server
+      toPorts:
+        - ports:
+            - port: "12345"
+              protocol: TCP
 
   egress:
     - {}
