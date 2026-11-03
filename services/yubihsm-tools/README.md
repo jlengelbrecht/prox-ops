@@ -69,3 +69,12 @@ stdin only and never appear on an argv. `--dry-run` prints the plan, `--prefligh
 that the HSM is factory-fresh without changing anything, and `--selftest` runs the
 certificate builder against a throwaway software key. The header of the script documents the
 modes, input and secret handling.
+
+## OpenBao's HSM objects
+
+`/usr/local/bin/openbao-hsm-enrol` (bash) creates OpenBao's objects on an enrolled YubiHSM 2 through yubihsm-connector, using the admin key 0x0002:
+- the seal key 0x0211, rsa3072, `decrypt-oaep` and `exportable-under-wrap`;
+- the backup wrap key 0x0020, **imported** from the owner's key material so a copy exists outside the HSM;
+- OpenBao's auth key 0x0011, domains 9 and 10.
+
+It then exports the seal key wrapped under 0x0020, and proves restore with a throwaway key: wrap, delete, re-import the wrap key from the owner's copy, `put-wrapped`, compare the public key. The owner drives it from the devbox with `scripts/openbao-hsm-enrol.sh`, and secrets arrive on stdin only. `--dry-run` prints the plan and `--check` is a read-only preflight. yubihsm-shell 2.6.0's action-mode `decrypt-oaep` is not implemented, so the restore test compares public keys rather than decrypting.

@@ -1,0 +1,424 @@
+#!/usr/bin/env bash
+# openbao-hsm-enrol: creates OpenBao's objects on the YubiHSM 2 and its seal-key
+# backup.
+#
+# Runs inside a short-lived openbao-hsm-admin pod (yubihsm-tools image) that
+# reaches the HSM through yubihsm-connector. The owner drives it from the devbox
+# with scripts/openbao-hsm-enrol.sh; it is never run by hand with typed secrets.
+#
+# Fixed plan (no overrides except the connector URL):
+#   asymmetric-key 0x0211 openbao-seal         rsa3072 domain 9
+#                  caps decrypt-oaep, exportable-under-wrap
+#   wrap key       0x0020 openbao-backup-wrap  aes256-ccm-wrap domain 9
+#                  caps export-wrapped, import-wrapped
+#                  delegated decrypt-oaep, exportable-under-wrap
+#                  IMPORTED from the owner's key material, so a copy exists
+#                  outside the HSM (1Password Private)
+#   auth key       0x0011 openbao              domains 9,10
+#                  caps decrypt-oaep, sign-pss, delegated none
+# Transit keys (domain 10) are not created here.
+#
+# Order (so the seal key never exists without a captured backup):
+#   1. import the wrap key 0x0020 and create the auth key 0x0011; verify them
+#   2. restore test, with a throwaway rsa3072 key 0x02FF (a wrapped object keeps its ID,
+#            so the live 0x0211 can't be restored onto the same device):
+#            generate 0x02FF like 0x0211, export it under 0x0020, delete it,
+#            import the wrap key a SECOND time from the owner's copy as 0x0021,
+#            put-wrapped the blob under 0x0021, and check the restored key has
+#            the same public key and attributes, then delete 0x02FF and 0x0021.
+#            put-wrapped only succeeds if 0x0021 authenticates and decrypts the
+#            blob (AES-CCM), so a pass proves the owner's copy of the wrap key
+#            restores a wrapped key. (yubihsm-shell 2.6.0's action-mode
+#            decrypt-oaep is "not implemented", so no decrypt test here.)
+#   3. only then generate the seal key 0x0211, export it under 0x0020 at once
+#      (get-wrapped) and print the backup, then verify its attributes.
+#      The blob is useless without the wrap key.
+# A failure in 1-2 leaves no seal key. To retry: delete 0x0020 and 0x0011
+# (admin key: delete-wrap-key, delete-authentication-key) and the 1Password
+# items the driver created, then re-run. If 3 fails before BLOB is printed,
+# also delete 0x0211.
+#
+# Modes and input (stdin, one value per line, nothing else):
+#   --dry-run   reads nothing, contacts nothing; prints the plan.
+#   --check     line 1 admin password. Read-only preflight.
+#   --apply     line 1 admin password, line 2 NEW OpenBao auth-key password
+#               (32-60 of [A-Za-z0-9]), line 3 the wrap key (64 hex chars).
+#
+# Output on stdout (--apply): "SEAL-PUBKEY <base64 of PEM>" and
+# "BLOB <base64>", printed right after the seal key is generated (which is only
+# after the restore test has passed) and before its attributes are checked;
+# then "RESTORE-TEST PASSED". Everything else goes to stderr. All output is
+# filtered against the secrets.
+#
+# Secret handling as in hsm-reset-enrol: values are read with `read -r`, never
+# exported, never on an argv, never written to a file (the work directory holds
+# only public keys and the wrapped blob); they reach yubihsm-shell only through
+# anonymous pipes (file:/dev/fd/N). Output is checked against all three
+# secrets before it is printed. No --force: if any planned id or label
+# exists, or domains 9/10 are in use, it stops before writing anything.
+
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+PROG=openbao-hsm-enrol
+CONNECTOR=http://yubihsm-connector.hsm-system.svc.cluster.local:12345
+MODE=""
+
+ADMIN_ID=2
+
+SEAL_ID=0x0211
+SEAL_LABEL=openbao-seal
+SEAL_DOMAIN=9
+SEAL_CAPS=decrypt-oaep,exportable-under-wrap
+SEAL_ALGO=rsa3072
+
+WRAP_ID=0x0020
+WRAP_LABEL=openbao-backup-wrap
+WRAP_DOMAIN=9
+WRAP_CAPS=export-wrapped,import-wrapped
+WRAP_DELEGATED=decrypt-oaep,exportable-under-wrap
+
+BAO_ID=0x0011
+BAO_LABEL=openbao
+BAO_DOMAINS=9,10
+BAO_CAPS=decrypt-oaep,sign-pss
+
+TEST_ID=0x02FF
+TEST_LABEL=openbao-restore-test
+TEST_ALGO=rsa3072
+WRAP2_ID=0x0021
+WRAP2_LABEL=openbao-wrap-restore-test
+
+PLANNED_IDS=("$SEAL_ID" "$WRAP_ID" "$BAO_ID" "$TEST_ID" "$WRAP2_ID")
+PLANNED_LABELS=("$SEAL_LABEL" "$WRAP_LABEL" "$BAO_LABEL" "$TEST_LABEL" "$WRAP2_LABEL")
+NEEDED_ADMIN_CAPS=(generate-asymmetric-key delete-asymmetric-key put-authentication-key put-wrap-key delete-wrap-key export-wrapped import-wrapped)
+NEEDED_DELEGATED=(decrypt-oaep sign-pss exportable-under-wrap export-wrapped import-wrapped)
+NEEDED_ALGOS=(rsa3072 aes256-ccm-wrap)
+
+ADMIN_PW=""
+BAO_PW=""
+WRAP_KEY=""
+
+usage() {
+    sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0" >&2
+    exit 2
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run|--check|--apply)
+            [ -z "$MODE" ] || usage
+            MODE=${1#--}
+            ;;
+        --connector)
+            [ $# -ge 2 ] || usage
+            CONNECTOR=$2
+            shift
+            ;;
+        -h|--help) usage ;;
+        *) echo "$PROG: unknown argument: $1" >&2; usage ;;
+    esac
+    shift
+done
+[ -n "$MODE" ] || usage
+case "$CONNECTOR" in
+    http://*|https://*) ;;
+    *) echo "$PROG: connector must be an http:// or https:// URL" >&2; exit 2 ;;
+esac
+
+# ---- helpers ----------------------------------------------------------------
+
+WORK=""
+TEST_STARTED=""
+cleanup() {
+    # If the restore test was interrupted, remove its throwaway objects so a
+    # re-run isn't refused by the preflight. Best effort: they hold nothing
+    # (0x02FF is a throwaway key, 0x0021 the same material as 0x0020).
+    if [ -n "$TEST_STARTED" ] && [ -n "$ADMIN_PW" ]; then
+        yhs_admin -a delete-object -i "$TEST_ID" -t asymmetric-key >/dev/null 2>&1 || true
+        yhs_admin -a delete-object -i "$WRAP2_ID" -t wrap-key >/dev/null 2>&1 || true
+    fi
+    if [ -n "$WORK" ] && [ -d "$WORK" ]; then rm -rf "$WORK"; fi
+}
+trap cleanup EXIT
+
+die() { echo "$PROG: STOP: $*" >&2; exit 1; }
+info() { echo "$PROG: $*" >&2; }
+hex4() { printf '0x%04x' "$(( $1 ))"; }
+
+withhold() {
+    local s=$1 v
+    for v in "$ADMIN_PW" "$BAO_PW" "$WRAP_KEY"; do
+        if [ -n "$v" ] && [[ "$s" == *"$v"* ]]; then
+            s="<output withheld: it contained a secret>"
+        fi
+    done
+    printf '%s' "$s"
+}
+
+yhs() { # <authkey> <password> <args>
+    local id=$1 pw=$2
+    shift 2
+    yubihsm-shell -C "$CONNECTOR" --authkey "$(( id ))" -p file:/dev/fd/3 "$@" \
+        </dev/null 3< <(printf '%s\n' "$pw")
+}
+yhs_noauth() { yubihsm-shell -C "$CONNECTOR" "$@" </dev/null; }
+yhs_admin() { yhs "$ADMIN_ID" "$ADMIN_PW" "$@"; }
+yhs_bao() { yhs "$BAO_ID" "$BAO_PW" "$@"; }
+
+run() { # <description> <command...>
+    local what=$1 out rc=0
+    shift
+    out=$("$@" 2>&1) || rc=$?
+    [ "$rc" -eq 0 ] || die "$what failed (exit $rc): $(withhold "$out")"
+    withhold "$out"
+}
+
+field() {
+    local line=", $1"
+    sed -n "s/.*, $2: \\([^,]*\\).*/\\1/p" <<<"$line" | head -n1
+}
+has() { tr ':' '\n' <<<"$1" | grep -qx -- "$2"; }
+same_set() {
+    local a b
+    a=$(tr ':' '\n' <<<"$1" | grep -v '^$' | sort -u | tr '\n' ' ')
+    b=$(tr ',' '\n' <<<"$2" | grep -v '^$' | sort -u | tr '\n' ' ')
+    [ "$a" = "$b" ]
+}
+
+read_secret() { # <varname> <description>
+    local v=""
+    [ ! -t 0 ] || die "secrets are read from a pipe only (run through scripts/openbao-hsm-enrol.sh)"
+    IFS= read -r v || [ -n "$v" ] || die "stdin ended before: $2"
+    v=${v%$'\r'}
+    printf -v "$1" '%s' "$v"
+}
+no_extra_input() {
+    local extra=""
+    if IFS= read -r -t 2 extra || [ -n "$extra" ]; then
+        die "unexpected extra input on stdin"
+    fi
+}
+
+object_info() { # <id> <type>
+    run "get-object-info $1 ($2)" yhs_admin -a get-object-info -i "$1" -t "$2" | grep '^id: ' | head -n1
+}
+
+# put_key_repl <session-pw> <command-template> <new-secret> <expect-regex>
+# Interactive mode over a coprocess: the command line carries only
+# file:/dev/fd/4 for the new secret (auth-key password or wrap-key hex).
+put_key_repl() {
+    local spw=$1 tmpl=$2 nsec=$3 expect=$4 line sid=""
+    coproc YHS {
+        # stdbuf: the REPL prints parse errors on stdout, block-buffered.
+        exec stdbuf -oL yubihsm-shell -C "$CONNECTOR" -P 2>&1 \
+            3< <(printf '%s\n' "$spw") \
+            4< <(printf '%s\n' "$nsec")
+    }
+    local yin=${YHS[1]} yout=${YHS[0]} ypid=$YHS_PID
+    repl_expect() {
+        local re=$1 t=$2
+        REPL_MATCH=""
+        while IFS= read -r -t "$t" line <&"$yout"; do
+            line=$(withhold "$line")
+            if [[ "$line" =~ $re ]]; then REPL_MATCH=$line; return 0; fi
+            case "$line" in
+                *Failed*|*Unable*|*Invalid*|*"Not connected"*|*Wrong*|*rror*|*"not matching"*)
+                    printf 'quit\n' 1>&"$yin" 2>/dev/null || true
+                    die "yubihsm-shell (interactive): $line" ;;
+            esac
+        done
+        printf 'quit\n' 1>&"$yin" 2>/dev/null || true
+        die "yubihsm-shell (interactive): timed out waiting for /$re/"
+    }
+    printf 'session open %s file:/dev/fd/3\n' "$ADMIN_ID" 1>&"$yin"
+    repl_expect 'Created session [0-9]+' 30
+    sid=${REPL_MATCH##*Created session }
+    sid=${sid%%[!0-9]*}
+    [ -n "$sid" ] || die "could not parse the session id"
+    # shellcheck disable=SC2059  # the template is ours, not input
+    printf "$tmpl\\n" "$sid" 1>&"$yin"
+    repl_expect "$expect" 30
+    printf 'session close %s\nquit\n' "$sid" 1>&"$yin"
+    wait "$ypid" 2>/dev/null || true
+}
+
+# ---- modes ------------------------------------------------------------------
+
+if [ "$MODE" = dry-run ]; then
+    cat <<EOF
+$PROG plan (connector $CONNECTOR):
+  check     admin $(hex4 $ADMIN_ID) caps ${NEEDED_ADMIN_CAPS[*]}
+            delegated ${NEEDED_DELEGATED[*]}; ids/labels free; domains 9 and 10 unused
+  import    wrap key $WRAP_ID $WRAP_LABEL domain $WRAP_DOMAIN caps $WRAP_CAPS delegated $WRAP_DELEGATED
+  create    auth key $BAO_ID $BAO_LABEL domains $BAO_DOMAINS caps $BAO_CAPS delegated none
+  verify    both objects' labels, domains, capabilities and delegated sets
+  test      generate $TEST_ID ($TEST_ALGO), wrap under $WRAP_ID, delete, import the wrap key again as
+            $WRAP2_ID, put-wrapped under $WRAP2_ID, compare public key + attributes, delete both
+  generate  $SEAL_ID $SEAL_LABEL $SEAL_ALGO domain $SEAL_DOMAIN caps $SEAL_CAPS
+  backup    get-wrapped $SEAL_ID under $WRAP_ID at once -> SEAL-PUBKEY, BLOB; then verify $SEAL_ID
+EOF
+    exit 0
+fi
+
+command -v yubihsm-shell >/dev/null || die "yubihsm-shell not found in PATH"
+command -v openssl >/dev/null || die "openssl not found in PATH"
+
+read_secret ADMIN_PW "admin password"
+[ -n "$ADMIN_PW" ] || die "line 1 (admin password) is empty"
+if [ "$MODE" = apply ]; then
+    read_secret BAO_PW "new OpenBao auth-key password"
+    [[ "$BAO_PW" =~ ^[A-Za-z0-9]{32,60}$ ]] || die "line 2 must be 32-60 characters of [A-Za-z0-9]"
+    [ "$BAO_PW" != "$ADMIN_PW" ] || die "the OpenBao password must differ from the admin password"
+    read_secret WRAP_KEY "wrap key"
+    [[ "$WRAP_KEY" =~ ^[0-9a-f]{64}$ ]] || die "line 3 must be the wrap key as 64 lowercase hex characters"
+fi
+no_extra_input
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/$PROG.XXXXXX")
+
+# ---- preflight (read-only) --------------------------------------------------
+
+info "connector: $CONNECTOR"
+devinfo=$(run "get-device-info (connector reachable?)" yhs_noauth -a get-device-info)
+fw=$(sed -n 's/^Version number:[[:space:]]*//p' <<<"$devinfo")
+[ -n "$fw" ] || die "could not read the firmware version"
+algos=$(tr -s ', \t' '\n' <<<"$devinfo")
+for a in "${NEEDED_ALGOS[@]}"; do
+    grep -qx -- "$a" <<<"$algos" || die "device does not report algorithm $a"
+done
+info "device firmware $fw"
+
+admin_line=$(object_info "$ADMIN_ID" authentication-key)
+admin_caps=$(field "$admin_line" capabilities)
+admin_deleg=$(field "$admin_line" delegated_capabilities)
+missing=()
+for c in "${NEEDED_ADMIN_CAPS[@]}"; do has "$admin_caps" "$c" || missing+=("cap:$c"); done
+for c in "${NEEDED_DELEGATED[@]}"; do has "$admin_deleg" "$c" || missing+=("delegated:$c"); done
+admin_dom=$(field "$admin_line" domains)
+for d in 9 10; do has "$admin_dom" "$d" || missing+=("domain:$d"); done
+[ ${#missing[@]} -eq 0 ] || die "admin key $(hex4 $ADMIN_ID) lacks ${missing[*]}"
+
+inventory=$(run "list-objects" yhs_admin -a list-objects | grep '^id: ' || true)
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    oid=$(sed -n 's/^id: \(0x[0-9a-fA-F]*\),.*/\1/p' <<<"$line")
+    otype=$(sed -n 's/^id: 0x[0-9a-fA-F]*, type: \([a-z-]*\).*/\1/p' <<<"$line")
+    for p in "${PLANNED_IDS[@]}"; do
+        [ "$(( oid ))" -ne "$(( p ))" ] || die "id $p is already used ($otype)"
+    done
+    [ "$(( oid ))" -eq "$ADMIN_ID" ] && continue
+    oline=$(object_info "$oid" "$otype")
+    olabel=$(field "$oline" label)
+    for l in "${PLANNED_LABELS[@]}"; do
+        [ "$olabel" != "\"$l\"" ] || die "label $l is already used by $oid"
+    done
+    odomains=$(field "$oline" domains)
+    for d in 9 10; do
+        ! has "$odomains" "$d" || die "domain $d is already used by $oid ($otype)"
+    done
+done <<<"$inventory"
+info "preflight OK: ids and labels free, domains 9 and 10 unused, admin key has what it needs"
+
+if [ "$MODE" = check ]; then
+    info "--check: no changes made"
+    exit 0
+fi
+
+# ---- writes -------------------------------------------------------------------
+
+
+info "importing wrap key $WRAP_ID ($WRAP_LABEL)"
+put_key_repl "$ADMIN_PW" \
+    "put wrapkey %s $(( WRAP_ID )) $WRAP_LABEL $WRAP_DOMAIN $WRAP_CAPS $WRAP_DELEGATED file:/dev/fd/4" \
+    "$WRAP_KEY" "Stored Wrap key $(hex4 $WRAP_ID)"
+
+info "creating auth key $BAO_ID ($BAO_LABEL)"
+put_key_repl "$ADMIN_PW" \
+    "put authkey %s $(( BAO_ID )) $BAO_LABEL $BAO_DOMAINS $BAO_CAPS none file:/dev/fd/4" \
+    "$BAO_PW" "Stored Authentication key $(hex4 $BAO_ID)"
+
+# ---- verification -------------------------------------------------------------
+
+wrap_line=$(object_info "$WRAP_ID" wrap-key)
+[ "$(field "$wrap_line" label)" = "\"$WRAP_LABEL\"" ] || die "$WRAP_ID: wrong label"
+same_set "$(field "$wrap_line" domains)" "$WRAP_DOMAIN" || die "$WRAP_ID: wrong domains"
+same_set "$(field "$wrap_line" capabilities)" "$WRAP_CAPS" || die "$WRAP_ID: capabilities are $(field "$wrap_line" capabilities)"
+same_set "$(field "$wrap_line" delegated_capabilities)" "$WRAP_DELEGATED" || die "$WRAP_ID: delegated are $(field "$wrap_line" delegated_capabilities)"
+
+bao_line=$(object_info "$BAO_ID" authentication-key)
+same_set "$(field "$bao_line" domains)" "$BAO_DOMAINS" || die "$BAO_ID: wrong domains"
+same_set "$(field "$bao_line" capabilities)" "$BAO_CAPS" || die "$BAO_ID: capabilities are $(field "$bao_line" capabilities)"
+[ -z "$(field "$bao_line" delegated_capabilities | tr -d '[:space:]')" ] || die "$BAO_ID: delegated should be empty"
+run "list-objects as $BAO_ID" yhs_bao -a list-objects >/dev/null
+info "objects verified; $BAO_ID logs in"
+
+# ---- restore test (throwaway key) -----------------------------------------------
+
+info "restore test: generating throwaway $TEST_ID"
+TEST_STARTED=1
+run "generate $TEST_ID" yhs_admin -a generate-asymmetric-key -i "$TEST_ID" -l "$TEST_LABEL" \
+    -d "$SEAL_DOMAIN" -c "$SEAL_CAPS" -A "$TEST_ALGO" >/dev/null
+run "get-public-key $TEST_ID" yhs_bao -a get-public-key -i "$TEST_ID" -t asymmetric-key \
+    --outformat PEM --out "$WORK/test.pub" >/dev/null
+run "get-wrapped $TEST_ID" yhs_admin -a get-wrapped --wrap-id "$(( WRAP_ID ))" -i "$TEST_ID" \
+    -t asymmetric-key --outformat base64 --out "$WORK/test.wrapped" >/dev/null
+run "delete $TEST_ID" yhs_admin -a delete-object -i "$TEST_ID" -t asymmetric-key >/dev/null
+info "restore test: importing the wrap key again from the owner's copy as $WRAP2_ID"
+put_key_repl "$ADMIN_PW" \
+    "put wrapkey %s $(( WRAP2_ID )) $WRAP2_LABEL $WRAP_DOMAIN import-wrapped $WRAP_DELEGATED file:/dev/fd/4" \
+    "$WRAP_KEY" "Stored Wrap key $(hex4 $WRAP2_ID)"
+imported=$(run "put-wrapped under $WRAP2_ID" yhs_admin -a put-wrapped --wrap-id "$(( WRAP2_ID ))" \
+    --in "$WORK/test.wrapped" --informat base64)
+grep -qi "imported as $(hex4 $TEST_ID)" <<<"$imported" || die "put-wrapped did not restore $TEST_ID: $imported"
+run "get-public-key of the restored $TEST_ID" yhs_bao -a get-public-key -i "$TEST_ID" -t asymmetric-key \
+    --outformat PEM --out "$WORK/test.restored.pub" >/dev/null
+[ "$(openssl pkey -pubin -in "$WORK/test.pub" -outform DER | sha256sum)" = \
+  "$(openssl pkey -pubin -in "$WORK/test.restored.pub" -outform DER | sha256sum)" ] ||
+    die "the restored key's public key differs from the original"
+restored_line=$(object_info "$TEST_ID" asymmetric-key)
+same_set "$(field "$restored_line" domains)" "$SEAL_DOMAIN" || die "restored $TEST_ID: wrong domains"
+same_set "$(field "$restored_line" capabilities)" "$SEAL_CAPS" || die "restored $TEST_ID: wrong capabilities"
+run "delete $TEST_ID" yhs_admin -a delete-object -i "$TEST_ID" -t asymmetric-key >/dev/null
+run "delete $WRAP2_ID" yhs_admin -a delete-object -i "$WRAP2_ID" -t wrap-key >/dev/null
+TEST_STARTED=""
+info "restore test PASSED: the owner's copy of the wrap key restores a wrapped key"
+
+# ---- the seal key: generated only now, exported at once ----------------------
+
+info "generating $SEAL_ALGO key $SEAL_ID ($SEAL_LABEL); RSA keygen can take a while"
+run "generate the seal key" yhs_admin -a generate-asymmetric-key -i "$SEAL_ID" -l "$SEAL_LABEL" \
+    -d "$SEAL_DOMAIN" -c "$SEAL_CAPS" -A "$SEAL_ALGO" >/dev/null
+
+info "exporting $SEAL_ID wrapped under $WRAP_ID"
+run "get-wrapped $SEAL_ID" yhs_admin -a get-wrapped --wrap-id "$(( WRAP_ID ))" -i "$SEAL_ID" \
+    -t asymmetric-key --outformat base64 --out "$WORK/seal.wrapped" >/dev/null
+[ -s "$WORK/seal.wrapped" ] || die "the wrapped seal key is empty"
+run "get-public-key $SEAL_ID" yhs_bao -a get-public-key -i "$SEAL_ID" -t asymmetric-key \
+    --outformat PEM --out "$WORK/seal.pub" >/dev/null
+grep -q -- '-----BEGIN PUBLIC KEY-----' "$WORK/seal.pub" || die "no PEM public key for $SEAL_ID"
+withhold "SEAL-PUBKEY $(base64 -w0 <"$WORK/seal.pub")"; echo
+withhold "BLOB $(tr -d '\n' <"$WORK/seal.wrapped")"; echo
+info "backup emitted"
+
+seal_line=$(object_info "$SEAL_ID" asymmetric-key)
+[ "$(field "$seal_line" algorithm)" = "$SEAL_ALGO" ] || die "$SEAL_ID: wrong algorithm"
+[ "$(field "$seal_line" label)" = "\"$SEAL_LABEL\"" ] || die "$SEAL_ID: wrong label"
+same_set "$(field "$seal_line" domains)" "$SEAL_DOMAIN" || die "$SEAL_ID: wrong domains"
+same_set "$(field "$seal_line" capabilities)" "$SEAL_CAPS" || die "$SEAL_ID: capabilities are $(field "$seal_line" capabilities)"
+[ "$(field "$seal_line" origin)" = generated ] || die "$SEAL_ID: origin is not generated"
+
+final=$(run "list-objects" yhs_admin -a list-objects | grep '^id: ' || true)
+for gone in "$TEST_ID" "$WRAP2_ID"; do
+    if grep -qi "^id: $(hex4 "$gone")," <<<"$final"; then die "$gone still exists after the test"; fi
+done
+
+cat >&2 <<EOF
+== OpenBao HSM enrolment complete ==
+$(withhold "$seal_line")
+$(withhold "$wrap_line")
+$(withhold "$bao_line")
+PKCS#11 PIN for OpenBao = "0011" immediately followed by the OpenBao password (no separator, no newline)
+EOF
+echo "RESTORE-TEST PASSED"
