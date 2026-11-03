@@ -1,0 +1,73 @@
+---
+# Restore drill helpers, not reconciled by Flux. Delete the pod after use.
+# 1. seed: write a marker file into the source PVC, then wait for the next
+#    backup (the test schedule runs every 30 minutes).
+#      kubectl apply -f kubernetes/apps/volsync-test/restore/seed-and-verify.yaml
+#      kubectl -n volsync-test logs pod/volsync-test-seed
+#      kubectl -n volsync-test delete pod volsync-test-seed
+# 2. after restore.yaml has completed, check the restored PVC holds the file:
+#      kubectl -n volsync-test logs pod/volsync-test-verify
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volsync-test-seed
+  namespace: volsync-test
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: seed
+      image: docker.io/library/alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+      command: ["/bin/sh", "-c", "date -u > /data/marker.txt && sha256sum /data/marker.txt && cat /data/marker.txt"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: volsync-test
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volsync-test-verify
+  namespace: volsync-test
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: verify
+      image: docker.io/library/alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+      command: ["/bin/sh", "-c", "sha256sum /data/marker.txt && cat /data/marker.txt"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+          readOnly: true
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: volsync-test-restored

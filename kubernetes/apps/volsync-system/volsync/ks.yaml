@@ -1,0 +1,29 @@
+---
+# VolSync operator (CRDs + controller). Replication sources live with the
+# apps they protect; see kubernetes/components/volsync.
+#
+# dependsOn namespace: kubernetes/apps/volsync-system/kustomization.yaml
+# applies `namespace: volsync-system` to every CR in this tree, so the live
+# Kustomization (and the value dependsOn must name) is volsync-system.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app volsync
+  namespace: flux-system
+spec:
+  targetNamespace: volsync-system
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: snapshot-controller-class
+      namespace: kube-system
+  interval: 1h
+  path: ./kubernetes/apps/volsync-system/volsync/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  timeout: 5m
+  wait: true

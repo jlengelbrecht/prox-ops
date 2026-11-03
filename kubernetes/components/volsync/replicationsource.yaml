@@ -1,0 +1,54 @@
+---
+apiVersion: volsync.backube/v1alpha1
+kind: ReplicationSource
+metadata:
+  name: ${APP}
+  namespace: ${APP_NS}
+spec:
+  sourcePVC: ${APP}
+  trigger:
+    schedule: ${VOLSYNC_SCHEDULE:=0 3 * * *}
+  restic:
+    repository: ${APP}-volsync
+    copyMethod: Snapshot
+    volumeSnapshotClassName: ${VOLSYNC_SNAPSHOT_CLASS:=ceph-block-snapshot}
+    cacheCapacity: 1Gi
+    cacheStorageClassName: ceph-block
+    pruneIntervalDays: 7
+    retain:
+      daily: 7
+      weekly: 4
+      monthly: 3
+    moverSecurityContext:
+      runAsNonRoot: true
+      runAsUser: ${VOLSYNC_UID:=1000}
+      runAsGroup: ${VOLSYNC_GID:=1000}
+      fsGroup: ${VOLSYNC_GID:=1000}
+      seccompProfile:
+        type: RuntimeDefault
+    moverPodLabels:
+      volsync.homelab0.org/mover: ${APP}
+    moverAffinity:
+      # The share's NFS allowlist is per node IP; only these workers (one per
+      # Proxmox host) are on it, as for the etcd snapshot job.
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values:
+                    - k8s-work-1
+                    - k8s-work-5
+                    - k8s-work-7
+    moverVolumes:
+      - mountPath: repo
+        volumeSource:
+          persistentVolumeClaim:
+            claimName: ${APP}-volsync-repo
+    moverResources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 1Gi

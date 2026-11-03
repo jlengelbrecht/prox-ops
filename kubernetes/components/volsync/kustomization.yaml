@@ -1,0 +1,25 @@
+---
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Off-cluster backup for one PVC. Add to an app's kustomization with
+#   components: [../../../components/volsync]
+# and set these on the Flux Kustomization (spec.postBuild.substitute):
+#   APP                    PVC to back up; also names every object below
+#   APP_NS                 namespace the PVC lives in
+#   VOLSYNC_UID / _GID     user/group the mover runs as (default 1000/1000);
+#                          must be able to read the PVC's files
+#   VOLSYNC_SCHEDULE       cron for the backup (default 0 3 * * *)
+#   VOLSYNC_SNAPSHOT_CLASS VolumeSnapshotClass (default ceph-block-snapshot)
+# All apps using this component share one restic password and one NFS export
+# (each app has its own repository path). That is fine for one owner; for
+# data that needs separation, use a per-app secret and PV subpath instead.
+# The 100Gi PV/PVC size is nominal for NFS.
+# The namespace must allow non-root pods (restricted is fine). A volume whose
+# files are owned by root needs a namespace annotated
+# volsync.backube/privileged-movers: "true" instead.
+resources:
+  - ./repository-pv.sops.yaml
+  - ./repository-pvc.yaml
+  - ./repository-secret.sops.yaml
+  - ./networkpolicy.yaml
+  - ./replicationsource.yaml

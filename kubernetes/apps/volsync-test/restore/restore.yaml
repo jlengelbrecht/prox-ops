@@ -1,0 +1,59 @@
+---
+# Restore drill, NOT part of any Kustomization (Flux does not reconcile this
+# directory). It restores the newest backup of volsync-test into a fresh PVC.
+# Run by hand after a backup exists; delete both objects afterwards:
+#   kubectl apply -f kubernetes/apps/volsync-test/restore/restore.yaml
+#   kubectl -n volsync-test get replicationdestination volsync-test-restore -w
+# The mover reads the same repository secret and NFS volume as the source.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: volsync-test-restored
+  namespace: volsync-test
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: volsync.backube/v1alpha1
+kind: ReplicationDestination
+metadata:
+  name: volsync-test-restore
+  namespace: volsync-test
+spec:
+  trigger:
+    manual: restore-once
+  restic:
+    repository: volsync-test-volsync
+    destinationPVC: volsync-test-restored
+    copyMethod: Direct
+    cacheCapacity: 1Gi
+    cacheStorageClassName: ceph-block
+    moverSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    moverPodLabels:
+      volsync.homelab0.org/mover: volsync-test
+    moverAffinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values:
+                    - k8s-work-1
+                    - k8s-work-5
+                    - k8s-work-7
+    moverVolumes:
+      - mountPath: repo
+        volumeSource:
+          persistentVolumeClaim:
+            claimName: volsync-test-volsync-repo
