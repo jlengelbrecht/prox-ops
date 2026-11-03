@@ -372,7 +372,7 @@
     //   rook / ceph         — OSD corruption / PG rebalancing risk and CSI drivers
     //                         that failed during a past network disruption; a patch
     //                         can restart storage daemons, so a human picks the window
-    //   generic-device-plugin, yubihsm-tools — privileged path to the YubiHSM
+    //   generic-device-plugin, yubihsm-tools, openbao-hsm — privileged path to the YubiHSM
     //   hermes, hindsight   — image and chart move in lockstep with forward-only
     //                         migrations on the shared database
     //   paperclip, loki/alloy, crossplane — see their rules below
@@ -434,6 +434,11 @@
       "description": "FULLY MANUAL: yubihsm-tools base image - the image that sets up and signs with the YubiHSM; review every bump",
       "automerge": false,
       "matchFileNames": ["services/yubihsm-tools/**"]
+    },
+    {
+      "description": "FULLY MANUAL: openbao-hsm image - OpenBao and the plugin that unseals it with the YubiHSM; review every bump",
+      "automerge": false,
+      "matchFileNames": ["services/openbao-hsm/**"]
     },
     {
       "description": "kube-prometheus-stack: minor and major are manual (CRD migrations, multi-component bundle); patch auto-merges after a 5 day soak",
