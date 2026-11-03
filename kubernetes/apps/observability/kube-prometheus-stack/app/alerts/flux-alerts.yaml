@@ -15,16 +15,20 @@ spec:
       # (one series per Flux object; exported_namespace is the object's namespace).
       # The controllers stopped exporting gotk_reconcile_condition and
       # gotk_suspend_status, so rules built on them could never fire.
+      # Grouping leaves out `reason`: a changing reason would end the series and
+      # restart the `for` timer. DependencyNotReady, SourceNotReady and
+      # NoSourceArtifact are excluded: they only say an upstream object failed,
+      # and that object alerts on its own.
       rules:
         - alert: FluxReconciliationFailure
-          expr: max by (exported_namespace, name, kind, reason) (flux_resource_info{ready="False"}) > 0
+          expr: max by (exported_namespace, name, kind) (flux_resource_info{ready="False",reason!~"DependencyNotReady|SourceNotReady|NoSourceArtifact"}) > 0
           for: 10m
           labels:
             severity: critical
             component: flux
           annotations:
             summary: "Flux {{ $labels.kind }} {{ $labels.exported_namespace }}/{{ $labels.name }} reconciliation failing"
-            description: "Flux resource has failed reconciliation for more than 10 minutes (reason: {{ $labels.reason }})."
+            description: "Flux resource has failed reconciliation for more than 10 minutes."
 
         - alert: FluxResourceSuspended
           expr: max by (exported_namespace, name, kind) (flux_resource_info{suspended="True"}) > 0
@@ -45,6 +49,16 @@ spec:
           annotations:
             summary: "HelmRelease {{ $labels.exported_namespace }}/{{ $labels.name }} is stuck"
             description: "HelmRelease has been in Unknown state for more than 15 minutes."
+
+        - alert: FluxMetricsAbsent
+          expr: absent(flux_resource_info)
+          for: 15m
+          labels:
+            severity: critical
+            component: flux
+          annotations:
+            summary: "Flux resource metrics are missing"
+            description: "flux_resource_info has no series for 15 minutes, so every other Flux alert is blind. Check the flux-operator pod and its scrape target."
 
         - alert: GitRepositorySyncFailure
           expr: max by (exported_namespace, name) (flux_resource_info{kind="GitRepository",ready="False"}) > 0
