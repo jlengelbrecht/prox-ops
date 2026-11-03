@@ -146,7 +146,7 @@ sign_assertion() {
     sa_in=$2
     sa_out=$3
     if [ "$SIGN_MODE" = hsm ]; then
-        yubihsm-shell -C yhusb:// --authkey "$AUTH_KEY_ID" -p "$PASSWORD" \
+        yubihsm-shell -C "$CONNECTOR" --authkey "$AUTH_KEY_ID" -p "$PASSWORD" \
             -a sign-pkcs1v15 -i "$sa_key" -A rsa-pkcs1-sha256 \
             --in "$sa_in" --informat binary --outformat binary --out "$sa_out" \
             >/dev/null 2>&1
@@ -213,6 +213,22 @@ read_config() {
     [ -s "$f" ] || die2 "missing or empty config file: $f"
     read_raw "$f"
     PASSWORD=$RAW_VALUE
+
+    # Optional: where yubihsm-shell reaches the HSM. Absent means direct USB;
+    # an http(s) URL means a yubihsm-connector (the pod then needs no device).
+    CONNECTOR=yhusb://
+    f="$cfgdir/connector"
+    if [ -s "$f" ]; then
+        read_raw "$f"
+        CONNECTOR=$RAW_VALUE
+        case "$CONNECTOR" in
+            yhusb://|http://*|https://*) ;;
+            *) die2 "bad value in config file: $f" ;;
+        esac
+        case "$CONNECTOR" in
+            *[!A-Za-z0-9.:/_-]*) die2 "bad value in config file: $f" ;;
+        esac
+    fi
 
     f="$cfgdir/tenant-id"
     [ -s "$f" ] || die2 "missing or empty config file: $f"

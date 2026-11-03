@@ -4,9 +4,15 @@ Debian trixie-slim plus `yubihsm-shell`, `libyubihsm2`/`libyubihsm-usb2`, `yubih
 `pkcs11-provider`, and `openssl`, for a short-lived pod that reaches the YubiHSM 2 through
 the device plugin on one worker.
 
-The image has no yubihsm-connector, so talk to the HSM over USB directly:
+A pod that holds the device can talk to it over USB directly:
 `yubihsm-shell --connector yhusb://`, and `connector = yhusb://` in the PKCS#11 module's
 configuration file.
+
+The image also carries `yubihsm-connector` (Debian trixie, pinned), which bridges the USB
+device to HTTP. Run it as the only process that holds the device (`yubihsm-connector -l
+0.0.0.0:12345`) and every other client reaches the HSM with `yubihsm-shell --connector
+http://<service>:12345` instead. The connector is only a transport: sessions are
+authenticated and encrypted between the client and the device.
 
 The PKCS#11 module is at `/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so`; the OpenSSL
 provider is at `/usr/lib/x86_64-linux-gnu/ossl-modules/pkcs11.so`.
@@ -41,7 +47,9 @@ processes unless the pod sets `shareProcessNamespace: true`, which the signer's 
 not do. The argument is still visible to anything else running in the signer container
 itself; that is a known limitation of passing the password on the command line.
 
-The signer talks to the HSM over direct USB (`yhusb://`) with `yubihsm-shell` and does
+By default the signer talks to the HSM over direct USB (`yhusb://`). An optional `connector`
+config file (`http://host:port`, `https://...` or `yhusb://`) points `yubihsm-shell` at a
+yubihsm-connector instead, so the pod needs no device. Signing goes through `yubihsm-shell` and does
 not use the PKCS#11 module or the OpenSSL provider above. In our setup, logging in
 through the OpenSSL provider failed with a password that `yubihsm-shell` accepted, and
 that wasn't debugged further; signing through `yubihsm-shell` avoids the extra layers.
