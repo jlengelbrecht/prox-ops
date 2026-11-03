@@ -1,0 +1,55 @@
+---
+# GitHub App (homebot.0, already installed on this repo with Commit statuses:
+# read and write) that Flux uses to post commit statuses. The 1Password item is
+# the same one the Actions runner scale set reads.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: github-status-app
+spec:
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: onepassword-connect
+  target:
+    name: github-status-app
+    creationPolicy: Owner
+  refreshInterval: 1h
+  data:
+    - secretKey: githubAppID
+      remoteRef:
+        key: GitHub Actions Runner App
+        property: github_app_id
+    - secretKey: githubAppInstallationID
+      remoteRef:
+        key: GitHub Actions Runner App
+        property: github_app_installation_id
+    - secretKey: githubAppPrivateKey
+      remoteRef:
+        key: GitHub Actions Runner App
+        property: notesPlain
+---
+apiVersion: notification.toolkit.fluxcd.io/v1
+kind: Provider
+metadata:
+  name: github-status
+spec:
+  type: github
+  address: https://github.com/jlengelbrecht/prox-ops
+  secretRef:
+    name: github-status-app
+---
+# One status per commit for the root sync and one for the app tree, so each
+# commit on main shows whether Flux applied it.
+apiVersion: notification.toolkit.fluxcd.io/v1
+kind: Alert
+metadata:
+  name: github-status
+spec:
+  providerRef:
+    name: github-status
+  eventSeverity: info
+  eventSources:
+    - kind: Kustomization
+      name: flux-system
+    - kind: Kustomization
+      name: cluster-apps
