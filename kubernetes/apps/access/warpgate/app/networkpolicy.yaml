@@ -1,0 +1,72 @@
+---
+# Namespace default: nothing in `access` sends or receives traffic unless a
+# later policy allows it. Cilium needs at least one rule when enableDefaultDeny
+# is set; an empty rule matches nothing, so the section stays fully denied.
+# The VolSync movers carry their own deny-all policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  endpointSelector: {}
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  ingress:
+    - {}
+  egress:
+    - {}
+---
+# Warpgate.
+# Ingress: LAN clients only, on the pod's listener ports (the Service maps
+# 443 to 8888 and 22 to 2222). The cluster runs Cilium in DSR mode, so
+# LoadBalancer traffic keeps the client's source address and is matched by
+# fromCIDR, the same way the Plex policy admits LAN devices. The ranges are
+# the admin LAN (10.20.65.0/24) and the servers VLAN (10.20.66.0/23), not the
+# whole 10.20.64.0/18.
+# Egress: kube-dns, and the internal gateway pods that serve Authentik
+# (authentik.homelab0.org resolves to the internal VIP, and the policy is
+# evaluated against the gateway pods behind it: 443 LB port, 10443 pod port)
+# for the OIDC discovery, token and key requests. Nothing else yet. Targets are
+# added with their own egress rules when they are enrolled. envoy-external is
+# deliberately not admitted.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: warpgate
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: warpgate
+      app.kubernetes.io/instance: warpgate
+  ingress:
+    - fromCIDR:
+        - 10.20.65.0/24
+        - 10.20.66.0/23
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
+            - port: "2222"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP

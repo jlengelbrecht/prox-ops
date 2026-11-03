@@ -1,0 +1,182 @@
+---
+# Warpgate (warp-tech/warpgate): access broker for SSH and HTTPS sessions with
+# OIDC login (Authentik), session recording and admin approvals. LAN only: the
+# Service is a Cilium LoadBalancer on 10.20.67.27, not published on the public
+# gateway or the Cloudflare tunnel.
+#
+# Exposed listeners: HTTPS (admin UI, user portal, HTTP targets) on 443 and
+# SSH on 22. The Kubernetes, MySQL and PostgreSQL listeners are off.
+#
+# State (config, SQLite, SSH host keys, recordings) lives on the `warpgate`
+# PVC (pvc.yaml) and is backed up by the VolSync component. One replica: SQLite
+# and on-disk recordings cannot be shared, and the chart refuses more with
+# them. The chart switches to Recreate for a RWO volume.
+#
+# SSO providers exist only in the YAML config, so the config is supplied whole
+# through overrides_config. `internal-install-files` copies it to /data on
+# every start, replacing the client-secret placeholder with the value from the
+# Secret. A doubled dollar sign is Flux's escape, rendered as one. Everything else
+# (admin account, SSH host keys, recording storage) is initialised in the
+# database by the setup init container while the database is empty.
+#
+# Roles. Warpgate has access roles (who may connect to which targets) and admin
+# roles (what an admin may do), and both must be created by hand in the admin
+# UI before the first SSO login, because the mappings below only attach users
+# to roles that already exist:
+#   access role  warpgate-operators  <- Authentik group warpgate-operators
+#   admin role   warpgate-admin      <- Authentik group warpgate-admins
+#                                       (all permissions)
+#   admin role   warpgate-approver   <- Authentik group warpgate-approvers
+#                                       (Sessions > Approve and view only)
+# Operators and approvers are separate groups, so an approver does not get
+# target access and an operator cannot approve sessions.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: warpgate
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: warpgate
+  interval: 1h
+  values:
+    replicaCount: 1
+
+    image:
+      repository: ghcr.io/warp-tech/warpgate
+      # Warpgate 0.30.3 includes the fixes of the 0.30.0 and 0.30.1 security
+      # advisories (see the pull request that introduced this file).
+      # Tag only: the chart runs semverCompare on the tag and fails on a
+      # tag@digest value, and pinning a digest in a post-renderer would keep
+      # serving the old image after a Renovate tag bump. The 0.30.3 digest at
+      # the time of writing is
+      # sha256:a7f4c9db45fd94f8c28b10919e734ec0c6cfaf9407171b5a7a46ee7916f534df
+      # renovate: datasource=docker depName=ghcr.io/warp-tech/warpgate
+      tag: "0.30.3"
+
+    # Restart on a certificate renewal, a secret rotation or an ExternalSecret
+    # refresh. The certificate is copied into /data at start, so a restart is
+    # what makes Warpgate serve a renewed one.
+    deploymentAnnotations:
+      reloader.stakater.com/auto: "true"
+
+    # Pod Security "restricted": the image runs as UID 1000; fsGroup makes the
+    # new RBD volume writable for it.
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+    # Own PVC (pvc.yaml); the chart creates none.
+    data:
+      pvc:
+        enabled: true
+        claimName: warpgate
+
+    # Replaces the config `unattended-setup` would generate. Keep the ports in
+    # step with setup.* and service.ports below.
+    config_env_var_replace: WARPGATE_OIDC_CLIENT_SECRET
+    overrides_config: |
+      external_host: access.homelab0.org
+      database_url: "sqlite:/data/db"
+      http:
+        listen: "0.0.0.0:8888"
+        external_port: 443
+        certificate: /data/tls.certificate.pem
+        key: /data/tls.key.pem
+      ssh:
+        enable: true
+        listen: "0.0.0.0:2222"
+        external_port: 22
+      log:
+        # Retention of session logs and, with them, session recordings:
+        # a recording is deleted once its session ended this long ago.
+        # Warpgate has no separate setting for recordings.
+        retention: 2160h
+        # Audit log entries (365 days is the Warpgate default).
+        audit_retention: 8760h
+      sso_providers:
+        - name: authentik
+          label: Authentik
+          auto_create_users: true
+          provider:
+            type: custom
+            client_id: warpgate
+            client_secret: $$WARPGATE_OIDC_CLIENT_SECRET
+            issuer_url: https://authentik.homelab0.org/application/o/warpgate/
+            scopes:
+              - openid
+              - email
+              - profile
+              - groups
+            roles_claim: groups
+            role_mappings:
+              warpgate-operators: warpgate-operators
+            admin_roles_claim: groups
+            admin_role_mappings:
+              warpgate-admins: warpgate-admin
+              warpgate-approvers: warpgate-approver
+
+    # The wildcard-capable certificate for access.homelab0.org (cert-manager,
+    # ../../certificates), copied to /data/tls.*.pem at start.
+    tls_cert_secret: access-homelab0-org-tls
+
+    # Credential encryption at rest (target credentials).
+    envFromSecret:
+      WARPGATE_ENCRYPTION_KEY: warpgate-secret/encryptionKey
+
+    setup:
+      enabled: true
+      envFromSecret:
+        WARPGATE_ADMIN_PASSWORD: warpgate-secret/adminPassword
+        WARPGATE_OIDC_CLIENT_SECRET: warpgate-secret/oidcClientSecret
+      recordSessions: true
+      # 0 turns a listener off. Unprivileged container ports; the Service maps
+      # them to 22 and 443.
+      http: 8888
+      ssh: 2222
+      mysql: 0
+      pgsql: 0
+      kubernetes: 0
+      disableIpV6: true
+
+    service:
+      type: LoadBalancer
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: access.homelab0.org
+        lbipam.cilium.io/ips: "10.20.67.27"
+      ports:
+        ssh: 22
+        http: 443
+        mysql: 0
+        pgsql: 0
+        kubernetes: 0
+
+  # The chart has no switch for the service account token, and Warpgate does
+  # not talk to the Kubernetes API (the Kubernetes listener is off).
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: warpgate
+            patch: |
+              - op: add
+                path: /spec/template/spec/automountServiceAccountToken
+                value: false
