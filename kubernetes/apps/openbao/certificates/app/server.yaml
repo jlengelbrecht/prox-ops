@@ -1,0 +1,39 @@
+---
+# OpenBao's TLS listener (8200 API, 8201 cluster). Names cover the chart's
+# Services, every pod through the headless openbao-internal Service (Raft
+# retry_join and request forwarding), loopback for probes, and the internal
+# hostname envoy-internal routes to. 90 days, renewed at 60; the pods reload it
+# when it changes (handled in the HelmRelease).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-server
+spec:
+  secretName: openbao-server-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - client auth
+  dnsNames:
+    - openbao
+    - openbao.openbao
+    - openbao.openbao.svc
+    - openbao.openbao.svc.cluster.local
+    - openbao-active
+    - openbao-active.openbao.svc
+    - openbao-active.openbao.svc.cluster.local
+    - openbao-internal
+    - "*.openbao-internal"
+    - "*.openbao-internal.openbao.svc"
+    - "*.openbao-internal.openbao.svc.cluster.local"
+    - bao.homelab0.org
+  ipAddresses:
+    - 127.0.0.1
+  issuerRef:
+    name: openbao-ca
+    kind: Issuer

@@ -1,0 +1,26 @@
+---
+# The restricted 1Password store OpenBao reads its HSM PIN from. No
+# targetNamespace: the ExternalSecret lives in identity-system (next to the
+# identity Connect server's other token) and the store is cluster-scoped.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app openbao-secret-store
+  namespace: flux-system
+spec:
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: identity-secret-store
+      namespace: flux-system
+  interval: 1h
+  retryInterval: 2m
+  timeout: 5m
+  path: ./kubernetes/apps/openbao/secret-store/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
