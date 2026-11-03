@@ -18,10 +18,9 @@
 #                  caps decrypt-oaep, sign-pss, delegated none
 # Transit keys (domain 10) are not created here.
 #
-# Then:
-#   backup   0x0211 is exported under 0x0020 (get-wrapped) and printed as
-#            "BLOB <base64>". The blob is useless without the wrap key.
-#   restore  test, with a throwaway key 0x02FF (a wrapped object keeps its ID,
+# Order (so the seal key never exists without a captured backup):
+#   1. import the wrap key 0x0020 and create the auth key 0x0011; verify them
+#   2. restore test, with a throwaway rsa3072 key 0x02FF (a wrapped object keeps its ID,
 #            so the live 0x0211 can't be restored onto the same device):
 #            generate 0x02FF like 0x0211, export it under 0x0020, delete it,
 #            import the wrap key a SECOND time from the owner's copy as 0x0021,
@@ -31,6 +30,11 @@
 #            blob (AES-CCM), so a pass proves the owner's copy of the wrap key
 #            restores a wrapped key. (yubihsm-shell 2.6.0's action-mode
 #            decrypt-oaep is "not implemented", so no decrypt test here.)
+#   3. only then generate the seal key 0x0211, export it under 0x0020 at once
+#      (get-wrapped) and print the backup, then verify its attributes.
+#      The blob is useless without the wrap key.
+# A failure in 1-2 leaves no seal key. To retry: delete 0x0020 and 0x0011
+# (admin key) and the 1Password items the driver created, then re-run.
 #
 # Modes and input (stdin, one value per line, nothing else):
 #   --dry-run   reads nothing, contacts nothing; prints the plan.
@@ -80,7 +84,7 @@ BAO_CAPS=decrypt-oaep,sign-pss
 
 TEST_ID=0x02FF
 TEST_LABEL=openbao-restore-test
-TEST_ALGO=rsa2048
+TEST_ALGO=rsa3072
 WRAP2_ID=0x0021
 WRAP2_LABEL=openbao-wrap-restore-test
 
@@ -88,7 +92,7 @@ PLANNED_IDS=("$SEAL_ID" "$WRAP_ID" "$BAO_ID" "$TEST_ID" "$WRAP2_ID")
 PLANNED_LABELS=("$SEAL_LABEL" "$WRAP_LABEL" "$BAO_LABEL" "$TEST_LABEL" "$WRAP2_LABEL")
 NEEDED_ADMIN_CAPS=(generate-asymmetric-key delete-asymmetric-key put-authentication-key put-wrap-key delete-wrap-key export-wrapped import-wrapped)
 NEEDED_DELEGATED=(decrypt-oaep sign-pss exportable-under-wrap export-wrapped import-wrapped)
-NEEDED_ALGOS=(rsa3072 rsa2048 aes256-ccm-wrap)
+NEEDED_ALGOS=(rsa3072 aes256-ccm-wrap)
 
 ADMIN_PW=""
 BAO_PW=""
@@ -218,7 +222,7 @@ put_key_repl() {
             line=$(withhold "$line")
             if [[ "$line" =~ $re ]]; then REPL_MATCH=$line; return 0; fi
             case "$line" in
-                *Failed*|*Unable*|*Invalid*|*"Not connected"*|*Wrong*|*rror*)
+                *Failed*|*Unable*|*Invalid*|*"Not connected"*|*Wrong*|*rror*|*"not matching"*)
                     printf 'quit\n' 1>&"$yin" 2>/dev/null || true
                     die "yubihsm-shell (interactive): $line" ;;
             esac
@@ -245,13 +249,13 @@ if [ "$MODE" = dry-run ]; then
 $PROG plan (connector $CONNECTOR):
   check     admin $(hex4 $ADMIN_ID) caps ${NEEDED_ADMIN_CAPS[*]}
             delegated ${NEEDED_DELEGATED[*]}; ids/labels free; domains 9 and 10 unused
-  generate  $SEAL_ID $SEAL_LABEL $SEAL_ALGO domain $SEAL_DOMAIN caps $SEAL_CAPS
   import    wrap key $WRAP_ID $WRAP_LABEL domain $WRAP_DOMAIN caps $WRAP_CAPS delegated $WRAP_DELEGATED
   create    auth key $BAO_ID $BAO_LABEL domains $BAO_DOMAINS caps $BAO_CAPS delegated none
-  verify    every object's type, label, domains, capabilities, delegated set, origin
-  backup    get-wrapped $SEAL_ID under $WRAP_ID -> BLOB
-  test      generate $TEST_ID, wrap under $WRAP_ID, delete, import the wrap key again as $WRAP2_ID,
-            put-wrapped under $WRAP2_ID, compare public key + attributes, delete $TEST_ID and $WRAP2_ID
+  verify    both objects' labels, domains, capabilities and delegated sets
+  test      generate $TEST_ID ($TEST_ALGO), wrap under $WRAP_ID, delete, import the wrap key again as
+            $WRAP2_ID, put-wrapped under $WRAP2_ID, compare public key + attributes, delete both
+  generate  $SEAL_ID $SEAL_LABEL $SEAL_ALGO domain $SEAL_DOMAIN caps $SEAL_CAPS
+  backup    get-wrapped $SEAL_ID under $WRAP_ID at once -> SEAL-PUBKEY, BLOB; then verify $SEAL_ID
 EOF
     exit 0
 fi
@@ -290,6 +294,8 @@ admin_deleg=$(field "$admin_line" delegated_capabilities)
 missing=()
 for c in "${NEEDED_ADMIN_CAPS[@]}"; do has "$admin_caps" "$c" || missing+=("cap:$c"); done
 for c in "${NEEDED_DELEGATED[@]}"; do has "$admin_deleg" "$c" || missing+=("delegated:$c"); done
+admin_dom=$(field "$admin_line" domains)
+for d in 9 10; do has "$admin_dom" "$d" || missing+=("domain:$d"); done
 [ ${#missing[@]} -eq 0 ] || die "admin key $(hex4 $ADMIN_ID) lacks ${missing[*]}"
 
 inventory=$(run "list-objects" yhs_admin -a list-objects | grep '^id: ' || true)
@@ -320,9 +326,6 @@ fi
 
 # ---- writes -------------------------------------------------------------------
 
-info "generating $SEAL_ALGO key $SEAL_ID ($SEAL_LABEL); RSA keygen can take a while"
-run "generate the seal key" yhs_admin -a generate-asymmetric-key -i "$SEAL_ID" -l "$SEAL_LABEL" \
-    -d "$SEAL_DOMAIN" -c "$SEAL_CAPS" -A "$SEAL_ALGO" >/dev/null
 
 info "importing wrap key $WRAP_ID ($WRAP_LABEL)"
 put_key_repl "$ADMIN_PW" \
@@ -336,13 +339,6 @@ put_key_repl "$ADMIN_PW" \
 
 # ---- verification -------------------------------------------------------------
 
-seal_line=$(object_info "$SEAL_ID" asymmetric-key)
-[ "$(field "$seal_line" algorithm)" = "$SEAL_ALGO" ] || die "$SEAL_ID: wrong algorithm"
-[ "$(field "$seal_line" label)" = "\"$SEAL_LABEL\"" ] || die "$SEAL_ID: wrong label"
-same_set "$(field "$seal_line" domains)" "$SEAL_DOMAIN" || die "$SEAL_ID: wrong domains"
-same_set "$(field "$seal_line" capabilities)" "$SEAL_CAPS" || die "$SEAL_ID: capabilities are $(field "$seal_line" capabilities)"
-[ "$(field "$seal_line" origin)" = generated ] || die "$SEAL_ID: origin is not generated"
-
 wrap_line=$(object_info "$WRAP_ID" wrap-key)
 [ "$(field "$wrap_line" label)" = "\"$WRAP_LABEL\"" ] || die "$WRAP_ID: wrong label"
 same_set "$(field "$wrap_line" domains)" "$WRAP_DOMAIN" || die "$WRAP_ID: wrong domains"
@@ -355,19 +351,6 @@ same_set "$(field "$bao_line" capabilities)" "$BAO_CAPS" || die "$BAO_ID: capabi
 [ -z "$(field "$bao_line" delegated_capabilities | tr -d '[:space:]')" ] || die "$BAO_ID: delegated should be empty"
 run "list-objects as $BAO_ID" yhs_bao -a list-objects >/dev/null
 info "objects verified; $BAO_ID logs in"
-
-# ---- backup -------------------------------------------------------------------
-
-info "exporting $SEAL_ID wrapped under $WRAP_ID"
-run "get-wrapped $SEAL_ID" yhs_admin -a get-wrapped --wrap-id "$(( WRAP_ID ))" -i "$SEAL_ID" \
-    -t asymmetric-key --outformat base64 --out "$WORK/seal.wrapped" >/dev/null
-[ -s "$WORK/seal.wrapped" ] || die "the wrapped seal key is empty"
-run "get-public-key $SEAL_ID" yhs_bao -a get-public-key -i "$SEAL_ID" -t asymmetric-key \
-    --outformat PEM --out "$WORK/seal.pub" >/dev/null
-grep -q -- '-----BEGIN PUBLIC KEY-----' "$WORK/seal.pub" || die "no PEM public key for $SEAL_ID"
-withhold "SEAL-PUBKEY $(base64 -w0 <"$WORK/seal.pub")"; echo
-withhold "BLOB $(tr -d '\n' <"$WORK/seal.wrapped")"; echo
-info "backup emitted"
 
 # ---- restore test (throwaway key) -----------------------------------------------
 
@@ -384,8 +367,9 @@ info "restore test: importing the wrap key again from the owner's copy as $WRAP2
 put_key_repl "$ADMIN_PW" \
     "put wrapkey %s $(( WRAP2_ID )) $WRAP2_LABEL $WRAP_DOMAIN import-wrapped $WRAP_DELEGATED file:/dev/fd/4" \
     "$WRAP_KEY" "Stored Wrap key $(hex4 $WRAP2_ID)"
-run "put-wrapped under $WRAP2_ID" yhs_admin -a put-wrapped --wrap-id "$(( WRAP2_ID ))" \
-    --in "$WORK/test.wrapped" --informat base64 >/dev/null
+imported=$(run "put-wrapped under $WRAP2_ID" yhs_admin -a put-wrapped --wrap-id "$(( WRAP2_ID ))" \
+    --in "$WORK/test.wrapped" --informat base64)
+grep -qi "imported as $(hex4 $TEST_ID)" <<<"$imported" || die "put-wrapped did not restore $TEST_ID: $imported"
 run "get-public-key of the restored $TEST_ID" yhs_bao -a get-public-key -i "$TEST_ID" -t asymmetric-key \
     --outformat PEM --out "$WORK/test.restored.pub" >/dev/null
 [ "$(openssl pkey -pubin -in "$WORK/test.pub" -outform DER | sha256sum)" = \
@@ -398,6 +382,30 @@ run "delete $TEST_ID" yhs_admin -a delete-object -i "$TEST_ID" -t asymmetric-key
 run "delete $WRAP2_ID" yhs_admin -a delete-object -i "$WRAP2_ID" -t wrap-key >/dev/null
 TEST_STARTED=""
 info "restore test PASSED: the owner's copy of the wrap key restores a wrapped key"
+
+# ---- the seal key: generated only now, exported at once ----------------------
+
+info "generating $SEAL_ALGO key $SEAL_ID ($SEAL_LABEL); RSA keygen can take a while"
+run "generate the seal key" yhs_admin -a generate-asymmetric-key -i "$SEAL_ID" -l "$SEAL_LABEL" \
+    -d "$SEAL_DOMAIN" -c "$SEAL_CAPS" -A "$SEAL_ALGO" >/dev/null
+
+info "exporting $SEAL_ID wrapped under $WRAP_ID"
+run "get-wrapped $SEAL_ID" yhs_admin -a get-wrapped --wrap-id "$(( WRAP_ID ))" -i "$SEAL_ID" \
+    -t asymmetric-key --outformat base64 --out "$WORK/seal.wrapped" >/dev/null
+[ -s "$WORK/seal.wrapped" ] || die "the wrapped seal key is empty"
+run "get-public-key $SEAL_ID" yhs_bao -a get-public-key -i "$SEAL_ID" -t asymmetric-key \
+    --outformat PEM --out "$WORK/seal.pub" >/dev/null
+grep -q -- '-----BEGIN PUBLIC KEY-----' "$WORK/seal.pub" || die "no PEM public key for $SEAL_ID"
+withhold "SEAL-PUBKEY $(base64 -w0 <"$WORK/seal.pub")"; echo
+withhold "BLOB $(tr -d '\n' <"$WORK/seal.wrapped")"; echo
+info "backup emitted"
+
+seal_line=$(object_info "$SEAL_ID" asymmetric-key)
+[ "$(field "$seal_line" algorithm)" = "$SEAL_ALGO" ] || die "$SEAL_ID: wrong algorithm"
+[ "$(field "$seal_line" label)" = "\"$SEAL_LABEL\"" ] || die "$SEAL_ID: wrong label"
+same_set "$(field "$seal_line" domains)" "$SEAL_DOMAIN" || die "$SEAL_ID: wrong domains"
+same_set "$(field "$seal_line" capabilities)" "$SEAL_CAPS" || die "$SEAL_ID: capabilities are $(field "$seal_line" capabilities)"
+[ "$(field "$seal_line" origin)" = generated ] || die "$SEAL_ID: origin is not generated"
 
 final=$(run "list-objects" yhs_admin -a list-objects | grep '^id: ' || true)
 for gone in "$TEST_ID" "$WRAP2_ID"; do
