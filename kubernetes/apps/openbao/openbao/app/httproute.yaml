@@ -1,0 +1,46 @@
+---
+# The OpenBao web UI and API at bao.homelab0.org, LAN only (envoy-internal).
+# Envoy terminates the public certificate and re-encrypts to the active node,
+# verifying it against OpenBao's own CA (BackendTLSPolicy below). Standby
+# nodes would forward to the active node anyway; going straight there saves
+# a hop.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openbao
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: bao.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - bao.homelab0.org
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: openbao-active
+          port: 8200
+---
+# TLS from Envoy to OpenBao. The CA is the ca.crt key of the server
+# certificate's Secret (cert-manager writes the issuing CA there); Envoy
+# Gateway reads only that key. The hostname is one of the certificate's SANs.
+apiVersion: gateway.networking.k8s.io/v1
+kind: BackendTLSPolicy
+metadata:
+  name: openbao
+spec:
+  targetRefs:
+    - group: ""
+      kind: Service
+      name: openbao-active
+  validation:
+    caCertificateRefs:
+      - group: ""
+        kind: Secret
+        name: openbao-server-tls
+    hostname: openbao-active.openbao.svc

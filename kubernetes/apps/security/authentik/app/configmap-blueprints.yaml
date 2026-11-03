@@ -1330,3 +1330,127 @@ data:
         attrs:
           policy: !Find [authentik_policies_expression.expressionpolicy, [name, deny-ungranted-ai-browser-test]]
           enabled: true
+
+  # =============================================================
+  # OPENBAO BLUEPRINT
+  # Its own file for the same reason as Warpgate's: the client secret comes
+  # from a 1Password-backed Secret that may not exist yet, and a failure here
+  # leaves every other application alone.
+  # =============================================================
+  openbao.yaml: |
+    version: 1
+    metadata:
+      name: OpenBao
+      labels:
+        blueprints.goauthentik.io/description: "OpenBao: OIDC provider, groups and application"
+    context:
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      # RSA key: OpenBao verifies ID tokens against the provider's JWKS, which
+      # is empty when authentik signs with HS256.
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      scope_profile: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
+      scope_openid: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
+    entries:
+      # Role groups. Membership is managed in authentik, not here. OpenBao
+      # maps each to a policy through an external identity group:
+      #   openbao-admins   policy openbao-admin (everything)
+      #   openbao-readers  policy openbao-reader (read and list)
+      - model: authentik_core.group
+        id: group-openbao-admins
+        identifiers:
+          name: openbao-admins
+        attrs:
+          name: openbao-admins
+          attributes: {}
+      - model: authentik_core.group
+        id: group-openbao-readers
+        identifiers:
+          name: openbao-readers
+        attrs:
+          name: openbao-readers
+          attributes: {}
+      # OpenBao reads group names from the "groups" claim. Only the two role
+      # groups are emitted, so unrelated group names never reach it.
+      - model: authentik_providers_oauth2.scopemapping
+        id: scope-openbao-groups
+        identifiers:
+          name: OpenBao Groups
+        attrs:
+          name: OpenBao Groups
+          scope_name: groups
+          description: "Returns the OpenBao role groups the user belongs to"
+          expression: |
+            wanted = {"openbao-admins", "openbao-readers"}
+            return {"groups": sorted({g.name for g in user.all_groups() if g.name in wanted})}
+      # Confidential client. The client id is a public identifier, declared
+      # literally here and in OpenBao's OIDC config; the secret comes from the
+      # authentik-openbao Secret (1Password item "openbao-oidc"). Redirects:
+      # the web UI, and the CLI's local listener for `bao login -method=oidc`.
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-openbao
+        identifiers:
+          name: OpenBao
+        attrs:
+          name: OpenBao
+          client_id: openbao
+          client_secret: !Env AUTHENTIK_OPENBAO_CLIENT_SECRET
+          client_type: confidential
+          grant_types:
+            - authorization_code
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          signing_key: !Context signing_key
+          property_mappings:
+            - !KeyOf scope-openbao-groups
+            - !Context scope_profile
+            - !Context scope_openid
+          redirect_uris:
+            - matching_mode: strict
+              url: https://bao.homelab0.org/ui/vault/auth/oidc/oidc/callback
+            - matching_mode: strict
+              url: http://localhost:8250/oidc/callback
+          access_code_validity: minutes=1
+          access_token_validity: minutes=5
+          include_claims_in_id_token: true
+          sub_mode: hashed_user_id
+          issuer_mode: per_provider
+      # Members of the two role groups only (one expression policy: with
+      # policy_engine_mode all, two group bindings would require both).
+      - model: authentik_core.application
+        id: app-openbao
+        identifiers:
+          slug: openbao
+        attrs:
+          name: OpenBao
+          slug: openbao
+          group: Tools
+          policy_engine_mode: all
+          meta_launch_url: https://bao.homelab0.org
+          provider: !KeyOf provider-openbao
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-openbao-access
+        identifiers:
+          name: openbao-access
+        attrs:
+          expression: |
+            return (
+                ak_is_group_member(request.user, name="openbao-admins")
+                or ak_is_group_member(request.user, name="openbao-readers")
+            )
+      - model: authentik_policies.policybinding
+        id: binding-openbao-access
+        identifiers:
+          target: !KeyOf app-openbao
+          order: 0
+        attrs:
+          policy: !KeyOf policy-openbao-access
+          enabled: true
+      # Exclude the agent account from every ungranted app.
+      - model: authentik_policies.policybinding
+        identifiers:
+          target: !KeyOf app-openbao
+          order: 90
+        attrs:
+          policy: !Find [authentik_policies_expression.expressionpolicy, [name, deny-ungranted-ai-browser-test]]
+          enabled: true
