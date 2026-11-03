@@ -13,7 +13,8 @@ kind: Component
 #   VOLSYNC_SCHEDULE       cron for the backup (default 0 3 * * *); must not
 #                          start with "*" (it is substituted unquoted)
 #   VOLSYNC_SNAPSHOT_CLASS VolumeSnapshotClass (default ceph-block-snapshot)
-# All apps using this component share one restic password and one NFS export
+# All apps using this component share one restic password (1Password item
+# "volsync-restic") and one NFS export
 # (each app has its own repository path). That is fine for one owner; for
 # data that needs separation, use a per-app secret and PV subpath instead.
 # The 100Gi PV/PVC size is nominal for NFS.
@@ -24,8 +25,8 @@ kind: Component
 # namespace's Pod Security enforcement (restricted rejects the pod). That
 # weakens the namespace's security boundary; prefer fixing file ownership.
 resources:
-  - ./repository-pv.sops.yaml
+  - ./repository-pv.yaml
   - ./repository-pvc.yaml
-  - ./repository-secret.sops.yaml
+  - ./externalsecret.yaml
   - ./networkpolicy.yaml
   - ./replicationsource.yaml
