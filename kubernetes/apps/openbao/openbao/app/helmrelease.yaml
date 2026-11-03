@@ -26,6 +26,10 @@ spec:
     name: openbao
   install:
     disableWait: true
+  # A rolling restart re-unseals each replica through the HSM one by one;
+  # leave room for an image pull on each node. Rollback after failed retries
+  # comes from the cluster-wide HelmRelease defaults (kubernetes/flux/cluster).
+  timeout: 15m
   values:
     global:
       tlsDisable: false
