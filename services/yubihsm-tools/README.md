@@ -57,3 +57,15 @@ yubihsm-connector instead, so the pod needs no device. Signing goes through `yub
 not use the PKCS#11 module or the OpenSSL provider above. In our setup, logging in
 through the OpenSSL provider failed with a password that `yubihsm-shell` accepted, and
 that wasn't debugged further; signing through `yubihsm-shell` avoids the extra layers.
+
+## Re-enrolment after a factory reset
+
+`/usr/local/bin/hsm-reset-enrol` (bash) re-creates the cluster's objects on a factory-reset
+YubiHSM 2 through yubihsm-connector: the admin key 0x0002 with a wide delegated set, the three
+identity keys 0x0101-0x0103 (rsa2048, `sign-pkcs` and `sign-pss`, not exportable), the signer
+auth key 0x0003, and deletes the factory key. `--certs` then builds one self-signed certificate
+per identity key, signed on the HSM. The owner drives it from the devbox; secrets arrive on
+stdin only and never appear on an argv. `--dry-run` prints the plan, `--preflight` checks
+that the HSM is factory-fresh without changing anything, and `--selftest` runs the
+certificate builder against a throwaway software key. The header of the script documents the
+modes, input and secret handling.
