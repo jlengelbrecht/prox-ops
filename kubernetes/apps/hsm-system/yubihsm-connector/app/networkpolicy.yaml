@@ -39,6 +39,17 @@ spec:
             - port: "12345"
               protocol: TCP
 
+    # Temporary: the re-enrolment pod (yubihsm-enrolment), for as long as it
+    # exists. Removed together with that pod.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: hsm-system
+            app.kubernetes.io/name: yubihsm-enrolment
+      toPorts:
+        - ports:
+            - port: "12345"
+              protocol: TCP
+
     # PLACEHOLDER, NOT ENABLED: a future OpenBao client. Uncomment it, with the
     # real namespace and pod label, in the same change that deploys OpenBao,
     # and give OpenBao's own policy the matching egress rule to this Service.

@@ -1,0 +1,40 @@
+---
+# Nothing reaches the pod; it reaches only DNS and the connector.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: yubihsm-enrolment
+  namespace: hsm-system
+  labels:
+    app.kubernetes.io/name: yubihsm-enrolment
+    app.kubernetes.io/component: networkpolicy
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: yubihsm-enrolment
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  # An empty rule matches nothing; with enableDefaultDeny the direction stays
+  # enforced (an empty list fails schema validation, see the connector policy).
+  ingress:
+    - {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: hsm-system
+            app.kubernetes.io/name: yubihsm-connector
+      toPorts:
+        - ports:
+            - port: "12345"
+              protocol: TCP

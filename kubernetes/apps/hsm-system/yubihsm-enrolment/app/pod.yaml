@@ -1,0 +1,57 @@
+---
+# A bare Pod, not a Deployment: it ends by itself after 4 hours
+# (activeDeadlineSeconds) and is not recreated, so a forgotten enrolment pod
+# does not stay around. It holds no secrets: the owner's devbox script pipes
+# the passwords in over `kubectl exec -i` stdin, and hsm-reset-enrol hands
+# them to yubihsm-shell through anonymous pipes. It does not use the USB
+# device; it reaches the HSM through yubihsm-connector.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: yubihsm-enrolment
+  namespace: hsm-system
+  labels:
+    app.kubernetes.io/name: yubihsm-enrolment
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 14400
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  dnsConfig:
+    options:
+      - name: ndots
+        value: "1"
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: enrol
+      image: ghcr.io/jlengelbrecht/yubihsm-tools:sha-c5782ec4a169203d9ebff38fdccf8de7ed043a8e@sha256:fe1c37e253a7a0db0bef2b32c25a75f69cb6e3d5d42922d315180483ff0b0794
+      command: ["sleep", "14400"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        privileged: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    # Throwaway keys and certificate parts only; memory-backed, gone with the pod.
+    - name: tmp
+      emptyDir:
+        medium: Memory
+        sizeLimit: 16Mi
