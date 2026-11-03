@@ -42,6 +42,31 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm openbao-hsm:verification sh -ec "$SMOKE_TEST"
+      - name: Stop test (the chart's exact start command and preStop)
+        run: |
+          set -euo pipefail
+          # The OpenBao chart 0.30.6 starts the server with this /bin/sh -ec
+          # script and stops it with this preStop. bao must end up as PID 1 and
+          # exit cleanly on the preStop's SIGTERM, not wait for SIGKILL.
+          trap 'docker rm -f bao-stop-test >/dev/null 2>&1 || true' EXIT
+          cfg=$(mktemp -d)
+          printf '%s\n' 'listener "tcp" {' '  address = "127.0.0.1:8200"' '  tls_disable = true' '}' 'storage "inmem" {}' > "$cfg/extraconfig-from-values.hcl"
+          chmod -R a+rX "$cfg"
+          docker run -d --name bao-stop-test --read-only --tmpfs /tmp -v "$cfg:/openbao/config:ro" \
+            openbao-hsm:verification /bin/sh -ec '
+            cp /openbao/config/extraconfig-from-values.hcl /tmp/storageconfig.hcl;
+            [ -n "${HOST_IP}" ] && sed -Ei "s|HOST_IP|${HOST_IP?}|g" /tmp/storageconfig.hcl;
+            [ -n "${POD_IP}" ] && sed -Ei "s|POD_IP|${POD_IP?}|g" /tmp/storageconfig.hcl;
+            /usr/local/bin/docker-entrypoint.sh bao server -config=/tmp/storageconfig.hcl'
+          for _ in $(seq 1 30); do
+            docker exec bao-stop-test sh -c 'BAO_ADDR=http://127.0.0.1:8200 bao status >/dev/null 2>&1; [ $? -ne 1 ]' && break
+            sleep 1
+          done
+          [ "$(docker exec bao-stop-test cat /proc/1/comm)" = "bao" ]
+          docker exec bao-stop-test /bin/sh -c "sleep 1 && kill -SIGTERM \$(pidof bao)"
+          rc=$(timeout 20 docker wait bao-stop-test)
+          docker logs bao-stop-test 2>&1 | tail -n 5
+          [ "$rc" = "0" ]
 
   publish:
     needs: verify
