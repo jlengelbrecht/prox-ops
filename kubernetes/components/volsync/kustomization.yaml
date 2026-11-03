@@ -8,15 +8,20 @@ kind: Component
 #   APP_NS                 namespace the PVC lives in
 #   VOLSYNC_UID / _GID     user/group the mover runs as (default 1000/1000);
 #                          must be able to read the PVC's files
-#   VOLSYNC_SCHEDULE       cron for the backup (default 0 3 * * *)
+#   VOLSYNC_RUN_AS_NON_ROOT  default true; false only for a privileged mover
+#                          (see below)
+#   VOLSYNC_SCHEDULE      cron for the backup (default 0 3 * * *)
 #   VOLSYNC_SNAPSHOT_CLASS VolumeSnapshotClass (default ceph-block-snapshot)
 # All apps using this component share one restic password and one NFS export
 # (each app has its own repository path). That is fine for one owner; for
 # data that needs separation, use a per-app secret and PV subpath instead.
 # The 100Gi PV/PVC size is nominal for NFS.
 # The namespace must allow non-root pods (restricted is fine). A volume whose
-# files are owned by root needs a namespace annotated
-# volsync.backube/privileged-movers: "true" instead.
+# files are owned by root needs a privileged mover: set VOLSYNC_RUN_AS_NON_ROOT
+# to false and VOLSYNC_UID/GID to 0, annotate the namespace
+# volsync.backube/privileged-movers: "true", AND relax or exempt the
+# namespace's Pod Security enforcement (restricted rejects the pod). That
+# weakens the namespace's security boundary; prefer fixing file ownership.
 resources:
   - ./repository-pv.sops.yaml
   - ./repository-pvc.yaml

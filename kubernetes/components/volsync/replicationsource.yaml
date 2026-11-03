@@ -7,7 +7,7 @@ metadata:
 spec:
   sourcePVC: ${APP}
   trigger:
-    schedule: ${VOLSYNC_SCHEDULE:=0 3 * * *}
+    schedule: "${VOLSYNC_SCHEDULE:=0 3 * * *}"
   restic:
     repository: ${APP}-volsync
     copyMethod: Snapshot
@@ -20,7 +20,7 @@ spec:
       weekly: 4
       monthly: 3
     moverSecurityContext:
-      runAsNonRoot: true
+      runAsNonRoot: ${VOLSYNC_RUN_AS_NON_ROOT:=true}
       runAsUser: ${VOLSYNC_UID:=1000}
       runAsGroup: ${VOLSYNC_GID:=1000}
       fsGroup: ${VOLSYNC_GID:=1000}
