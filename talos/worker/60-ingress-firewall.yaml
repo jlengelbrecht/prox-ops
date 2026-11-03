@@ -1,0 +1,12 @@
+# Worker addition to the host ingress firewall in all/60-ingress-firewall.yaml.
+# Talos API: the controllers proxy talosctl to workers; the admin LAN may connect directly.
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: apid-ingress
+portSelector:
+  ports:
+    - 50000
+  protocol: tcp
+ingress:
+  - subnet: 10.20.67.0/28
+  - subnet: 10.20.65.0/24

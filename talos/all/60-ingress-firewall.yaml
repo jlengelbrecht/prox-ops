@@ -1,0 +1,60 @@
+# Host ingress firewall: drop anything not listed here. It covers every
+# interface, including the IoT (eth1) and DMZ (eth2) links on the workers.
+# Pod-to-pod and LoadBalancer traffic is handled by Cilium and isn't affected.
+#   nodes 10.20.67.0/28   pods 10.42.0.0/16   admin LAN 10.20.65.0/24
+# The nodes range must cover every node IP in topf.yaml (today .1-.15). A node
+# outside it can't reach the others' kubelet, apid or trustd and won't join.
+# kube-proxy replacement's health port (10256) is left closed: nothing uses it.
+apiVersion: v1alpha1
+kind: NetworkDefaultActionConfig
+ingress: block
+---
+# kube-apiserver on the controllers; metrics-server and Prometheus from pods.
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: kubelet-ingress
+portSelector:
+  ports:
+    - 10250
+  protocol: tcp
+ingress:
+  - subnet: 10.20.67.0/28
+  - subnet: 10.42.0.0/16
+---
+# Cilium health checks between nodes and to the per-node health endpoints.
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: cilium-health-ingress
+portSelector:
+  ports:
+    - 4240
+  protocol: tcp
+ingress:
+  - subnet: 10.20.67.0/28
+  - subnet: 10.42.0.0/16
+---
+# Hubble peer service, read by hubble-relay.
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: hubble-peer-ingress
+portSelector:
+  ports:
+    - 4244
+  protocol: tcp
+ingress:
+  - subnet: 10.20.67.0/28
+  - subnet: 10.42.0.0/16
+---
+# Metrics scraped by Prometheus from host-network pods: node-exporter, Tetragon,
+# cilium-agent, cilium-operator, cilium-envoy and Hubble.
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: metrics-ingress
+portSelector:
+  ports:
+    - 2112
+    - 9100
+    - 9962-9965
+  protocol: tcp
+ingress:
+  - subnet: 10.42.0.0/16

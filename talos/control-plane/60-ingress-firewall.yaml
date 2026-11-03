@@ -1,0 +1,69 @@
+# Control-plane additions to the host ingress firewall in all/60-ingress-firewall.yaml.
+#
+# Talos API: other nodes, the admin LAN, and pods (tuppr and the etcd backup
+# reach it through the default/talos Service; namespace limits are in
+# 02-talos-api-access.yaml).
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: apid-ingress
+portSelector:
+  ports:
+    - 50000
+  protocol: tcp
+ingress:
+  - subnet: 10.20.67.0/28
+  - subnet: 10.20.65.0/24
+  - subnet: 10.42.0.0/16
+---
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: trustd-ingress
+portSelector:
+  ports:
+    - 50001
+  protocol: tcp
+ingress:
+  - subnet: 10.20.67.0/28
+---
+# Kubernetes API, including the 10.20.67.20 VIP. The servers VLAN is included
+# for hosts there that run kubectl.
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: kubernetes-api-ingress
+portSelector:
+  ports:
+    - 6443
+  protocol: tcp
+ingress:
+  - subnet: 10.20.67.0/28
+  - subnet: 10.20.65.0/24
+  - subnet: 10.20.66.0/23
+  - subnet: 10.42.0.0/16
+---
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: etcd-ingress
+portSelector:
+  ports:
+    - 2379-2380
+  protocol: tcp
+# Replacing a controller with a new IP needs this list updated first.
+ingress:
+  - subnet: 10.20.67.1/32
+  - subnet: 10.20.67.2/32
+  - subnet: 10.20.67.3/32
+---
+# etcd, kube-controller-manager and kube-scheduler metrics for Prometheus.
+# Open to all pods because Prometheus has no fixed IP; etcd's 2381 serves
+# unauthenticated metrics only.
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: control-plane-metrics-ingress
+portSelector:
+  ports:
+    - 2381
+    - 10257
+    - 10259
+  protocol: tcp
+ingress:
+  - subnet: 10.42.0.0/16
