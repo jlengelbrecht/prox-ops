@@ -146,10 +146,22 @@ sign_assertion() {
     sa_in=$2
     sa_out=$3
     if [ "$SIGN_MODE" = hsm ]; then
-        yubihsm-shell -C yhusb:// --authkey "$AUTH_KEY_ID" -p "$PASSWORD" \
+        # stderr goes to a file next to the output and is logged only when the
+        # call fails. The password is passed with -p (argv), which yubihsm-shell
+        # does not echo; lines containing it are dropped anyway.
+        sa_err="$sa_out.err"
+        sa_rc=0
+        yubihsm-shell -C "$CONNECTOR" --authkey "$AUTH_KEY_ID" -p "$PASSWORD" \
             -a sign-pkcs1v15 -i "$sa_key" -A rsa-pkcs1-sha256 \
             --in "$sa_in" --informat binary --outformat binary --out "$sa_out" \
-            >/dev/null 2>&1
+            >/dev/null 2>"$sa_err" || sa_rc=$?
+        if [ "$sa_rc" -eq 0 ]; then
+            rm -f "$sa_err"
+            return 0
+        fi
+        { grep -vF -e "$PASSWORD" "$sa_err" 2>/dev/null | head -n 5 | tr -d "\000-\010\013-\037" | sed "s/^/$prog: yubihsm-shell: /" >&2; } || true
+        rm -f "$sa_err"
+        return "$sa_rc"
     else
         openssl dgst -sha256 -sign "$sa_key" -out "$sa_out" "$sa_in" >/dev/null 2>&1
     fi
@@ -213,6 +225,29 @@ read_config() {
     [ -s "$f" ] || die2 "missing or empty config file: $f"
     read_raw "$f"
     PASSWORD=$RAW_VALUE
+
+    # Optional: where yubihsm-shell reaches the HSM. Absent means direct USB;
+    # an http(s) URL means a yubihsm-connector (the pod then needs no device).
+    CONNECTOR=yhusb://
+    f="$cfgdir/connector"
+    if [ -s "$f" ]; then
+        read_raw "$f"
+        CONNECTOR=$RAW_VALUE
+        case "$CONNECTOR" in
+            yhusb://) ;;
+            http://*|https://*)
+                conn_host=${CONNECTOR#*://}
+                conn_host=${conn_host%%[/:]*}
+                [ -n "$conn_host" ] || die2 "connector URL has no host in config file: $f"
+                ;;
+            *) die2 "bad value in config file: $f" ;;
+        esac
+        case "$CONNECTOR" in
+            *[!A-Za-z0-9.:/_-]*) die2 "bad value in config file: $f" ;;
+        esac
+    elif [ -e "$f" ]; then
+        echo "$prog: warning: config file is empty, using direct USB: $f" >&2
+    fi
 
     f="$cfgdir/tenant-id"
     [ -s "$f" ] || die2 "missing or empty config file: $f"
@@ -474,6 +509,17 @@ cmd_selftest() {
     if ! openssl dgst -sha256 -verify "$pub" -signature "$sigfile" "$sifile" >/dev/null 2>&1; then
         echo "selftest: signature verification failed"
         exit 1
+    fi
+
+    # The HTTP connector backend must be installed: without libyubihsm-http2,
+    # yubihsm-shell -C http://... fails at init with "Generic error". With it,
+    # init reaches the network and fails only because nothing listens.
+    if command -v yubihsm-shell >/dev/null 2>&1; then
+        http_out=$(yubihsm-shell -C http://127.0.0.1:1 -a get-device-info 2>&1 || true)
+        case "$http_out" in
+            *"Unable to find a suitable connector"*) ;;
+            *) echo "selftest: HTTP connector backend not working: $http_out"; exit 1 ;;
+        esac
     fi
 
     echo "selftest ok"

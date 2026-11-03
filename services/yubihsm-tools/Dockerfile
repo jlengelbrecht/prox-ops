@@ -5,19 +5,22 @@
 # — only Yubico's packages from Debian trixie and the signer script. The
 # PKCS#11 module is at /usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so and
 # the OpenSSL provider is at /usr/lib/x86_64-linux-gnu/ossl-modules/pkcs11.so;
-# the signer uses neither (it calls yubihsm-shell directly).
+# the signer uses neither (it calls yubihsm-shell directly). yubihsm-connector
+# is the one process that holds the USB device when the HSM is shared.
 FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/jlengelbrecht/prox-ops" \
       org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.version="0.2.0" \
-      org.opencontainers.image.description="YubiHSM 2 setup and signing tools (yubihsm-shell, PKCS#11 module, OpenSSL provider, xp-assertion-signer); no secrets or config"
+      org.opencontainers.image.version="0.3.0" \
+      org.opencontainers.image.description="YubiHSM 2 setup and signing tools (yubihsm-shell, yubihsm-connector, PKCS#11 module, OpenSSL provider, xp-assertion-signer); no secrets or config"
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         yubihsm-shell=2.6.0-5 \
         libyubihsm2=2.6.0-5 \
         libyubihsm-usb2=2.6.0-5 \
+        libyubihsm-http2=2.6.0-5 \
         yubihsm-pkcs11=2.6.0-5 \
+        yubihsm-connector=3.0.5-2 \
         pkcs11-provider=1.0-3 \
         openssl && \
     rm -rf /var/lib/apt/lists/*
