@@ -1,0 +1,23 @@
+---
+# OpenBao's public CA certificate (openbao-ca, valid to 2036), so External
+# Secrets can verify OpenBao from this namespace: a namespaced generator can't
+# read a Secret in another namespace. A certificate and nothing else. It is on
+# the high-entropy-base64 allowlist in .gitleaks.toml, so keep it that way.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbao-ca
+  namespace: observability
+data:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIBgTCCASagAwIBAgIUHl4XOzYhTbhoMxjMQ8gf8ID6dsYwCgYIKoZIzj0EAwIw
+    HjEcMBoGA1UEAxMTT3BlbkJhbyBpbnRlcm5hbCBDQTAeFw0yNjExMDMxODI4MTla
+    Fw0zNjEwMzExODI4MTlaMB4xHDAaBgNVBAMTE09wZW5CYW8gaW50ZXJuYWwgQ0Ew
+    WTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASMsdYR6lPH4k3AodMO7IXOMdTobxoU
+    ZPTAmhUzMq3mJX754uylNLBoKGXypSfcEvHxCrYuSn+Ji+w8DGODadu4o0IwQDAO
+    BgNVHQ8BAf8EBAMCAqQwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUSthXZ7nQ
+    qLc6i/1gWY6tlQ8pQnkwCgYIKoZIzj0EAwIDSQAwRgIhAP6i+T9GAtJ7JYws/ziN
+    4Owd9f9UmvUUKK/XGoiszulQAiEArbRGsRKjurTN4Ir+vW8a5qXK6ysWfyoIvuTb
+    x6JfTvg=
+    -----END CERTIFICATE-----

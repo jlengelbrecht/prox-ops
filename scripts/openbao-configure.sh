@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Sets up OpenBao after init: the admin and reader policies, OIDC login
 # through authentik (groups openbao-admins / openbao-readers), the
-# Kubernetes auth method, and the snapshot job's role. Safe to run again: every step is an upsert.
+# Kubernetes auth method, the snapshot job's role, and the database engine with
+# the Zabbix login. Safe to run again: every step is an upsert. Only the first
+# run writes the Zabbix static role, and that rotates Zabbix's password at once.
 #
 # Needs the 1Password item Automation/openbao-oidc (field oidc-client-secret,
 # the same value authentik's OpenBao provider uses) and the authentik
-# blueprint "OpenBao" applied.
+# blueprint "OpenBao" applied, and the field OPENBAO_PASSWORD on
+# Automation/postgres-cluster (the same password CNPG gives the openbao role).
 #
 # Rotating the client secret: authentik picks up a new 1Password value by
 # itself, but OpenBao only when this script runs again. Until then new OIDC
@@ -32,6 +35,10 @@ POD=openbao-0
 CONTAINER=openbao
 ROOT_REF=op://Private/openbao-init/root-token
 OIDC_REF=op://Automation/openbao-oidc/oidc-client-secret
+DB_REF=op://Automation/postgres-cluster/OPENBAO_PASSWORD
+# OpenBao's templates, filled in with the username and password it stores.
+DB_LOGIN='{{username}}:{{password}}'
+DB_URL="postgresql://$DB_LOGIN@postgres-rw.database.svc:5432/postgres?sslmode=require"
 POLICY_DIR=$(cd "$(dirname "$0")/.." && pwd)/kubernetes/apps/openbao/openbao/config
 DISCOVERY_URL=https://authentik.homelab0.org/application/o/openbao/
 
@@ -116,7 +123,7 @@ if [[ $mode == revoke ]]; then
 fi
 
 # --- policies -------------------------------------------------------------
-for p in openbao-admin openbao-reader openbao-snapshot; do
+for p in openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db; do
   log "Writing policy $p"
   payload=$POLICY_DIR/$p.hcl bao policy write "$p" - >/dev/null
 done
@@ -199,6 +206,62 @@ jq -n '{
     token_max_ttl: "10m",
     token_no_default_policy: true}' >"$work/snapshot-role.json"
 bao_write_json auth/kubernetes/role/openbao-snapshot "$work/snapshot-role.json"
+
+# External Secrets, for Zabbix's namespace only. Same audience rule as above.
+log "Writing the Kubernetes auth role zabbix-db"
+jq -n '{
+    bound_service_account_names: ["zabbix-openbao"],
+    bound_service_account_namespaces: ["observability"],
+    audience: "openbao",
+    token_policies: ["openbao-zabbix-db"],
+    token_ttl: "10m",
+    token_max_ttl: "10m",
+    token_no_default_policy: true}' >"$work/zabbix-role.json"
+bao_write_json auth/kubernetes/role/zabbix-db "$work/zabbix-role.json"
+
+# --- database engine --------------------------------------------------------
+# Writing the static role the first time rotates the password at once, so
+# refuse unless both sides are ready: CNPG must have stopped managing the
+# password, and External Secrets must be set up to fetch the new one.
+log "Checking that Zabbix is ready to move to OpenBao"
+kubectl -n database get cluster postgres -o json >"$work/cluster.json"
+[[ $(jq -r '.spec.managed.roles[] | select(.name == "zabbix") | .passwordSecret // empty' "$work/cluster.json") == "" ]] ||
+  die "CNPG still manages the zabbix password; merge the Zabbix change and let Flux apply it first"
+kubectl -n observability get vaultdynamicsecret zabbix-db >/dev/null 2>&1 ||
+  die "the External Secrets generator observability/zabbix-db is missing; merge the Zabbix change and let Flux apply it first"
+
+# CNPG grants the membership, with Postgres' defaults. Changing the password
+# also needs ADMIN OPTION, which CNPG can't set, and turning off INHERIT and SET
+# means openbao can reset the password but not act as zabbix or read its data.
+log "Giving the openbao Postgres role ADMIN OPTION on zabbix, without its privileges"
+primary=$(jq -r '.status.currentPrimary // empty' "$work/cluster.json")
+[[ -n $primary ]] || die "CNPG reports no primary for the postgres cluster"
+kubectl -n database exec "$primary" -c postgres -- \
+  psql -q -d postgres -v ON_ERROR_STOP=1 \
+  -c 'GRANT zabbix TO openbao WITH ADMIN OPTION, INHERIT FALSE, SET FALSE' >/dev/null ||
+  die "could not grant ADMIN OPTION; check that CNPG created the openbao role"
+
+if [[ -z $(bao_json secrets list | jq -r '."database/".accessor // empty') ]]; then
+  log "Enabling the database secrets engine at database/"
+  bao secrets enable -path=database -description="CNPG roles rotated by OpenBao" database >/dev/null
+fi
+
+log "Configuring the connection to CNPG"
+op read -n "$DB_REF" >"$work/db-password" 2>/dev/null || die "could not read $DB_REF; add the field first"
+# sslmode=require, not verify-full: CNPG's CA renews every 90 days, and a copy
+# here would expire and stop rotation.
+jq -n --arg url "$DB_URL" --rawfile password "$work/db-password" '{
+    plugin_name: "postgresql-database-plugin",
+    allowed_roles: ["zabbix"],
+    connection_url: $url,
+    username: "openbao",
+    password: $password}' >"$work/db-config.json"
+bao_write_json database/config/cnpg "$work/db-config.json" ||
+  die "OpenBao refused the database connection. Check that CNPG has reconciled the openbao role and the network policies are in place"
+
+log "Writing the static role zabbix (rotates the password on first run)"
+jq -n '{db_name: "cnpg", username: "zabbix", rotation_period: "720h"}' >"$work/zabbix-static.json"
+bao_write_json database/static-roles/zabbix "$work/zabbix-static.json"
 
 log "Done. Log in at https://bao.homelab0.org: method OIDC, role default (leave blank)."
 if [[ $policies == root ]]; then
