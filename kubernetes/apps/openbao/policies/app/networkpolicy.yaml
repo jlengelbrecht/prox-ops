@@ -2,10 +2,10 @@
 # Default-deny for the OpenBao server pods in both directions (the namespace-
 # wide default-deny below covers every other pod). Open here: what the
 # servers need to start, unseal and form a Raft cluster, the web UI through
-# envoy-internal, OIDC login against Authentik, and the snapshot job. Each
-# further client (workloads using Kubernetes auth) gets its own ingress rule
-# in the change that adds it. Kubelet probes come from the host and are not
-# subject to this policy.
+# envoy-internal, OIDC login against Authentik, the snapshot job, and metrics
+# for Prometheus. Each further client (workloads using Kubernetes auth) gets
+# its own ingress rule in the change that adds it. Kubelet probes come from the
+# host and are not subject to this policy.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -50,6 +50,16 @@ spec:
       toPorts:
         - ports:
             - port: "8200"
+              protocol: TCP
+
+    # Prometheus: the metrics-only listener.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8220"
               protocol: TCP
 
   egress:
