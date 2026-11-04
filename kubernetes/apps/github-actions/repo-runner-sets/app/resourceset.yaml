@@ -217,9 +217,9 @@ spec:
       # plenty. Separate from the cattle/pets scale set in ../../gha-runner-scale-set.
       minRunners: 0
       maxRunners: 2
-      # runnerImage is set once the runner-steward image has been built from
-      # the private runner-images repository (pr-agent, flux-local, helm, flux).
-      # Until then the stock runner image is enough to test the network path.
+      # Built by the private runner-images repository and pinned by digest:
+      # runner plus pr-agent, flux-local, helm and flux.
+      runnerImage: ghcr.io/jlengelbrecht/runner-steward@sha256:8c692169ae301ccd8ee35b39e3017b451e42f83a10c55b7984cacb403eecb7b0
       # LiteLLM, reached through the envoy-internal gateway. Nothing else
       # internal is allowed; GitHub comes from the template defaults.
       gatewayFQDNs:
