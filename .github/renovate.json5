@@ -4,6 +4,7 @@
     'config:recommended',
     'docker:enableMajor',
     'helpers:pinGitHubActionDigests',
+    'abandonments:recommended',
     'github>jlengelbrecht/prox-ops//.github/renovate/autoMerge.json5',
     'github>jlengelbrecht/prox-ops//.github/renovate/customManagers.json5',
     'github>jlengelbrecht/prox-ops//.github/renovate/groups.json5',
@@ -11,7 +12,7 @@
   ],
   dependencyDashboard: true,
   dependencyDashboardTitle: '🤖 Renovate Dashboard 🤖',
-  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Updates flow continuously, rate-limited (max 20 open PRs, 6 new/hour; majors capped at 10 open) with per-package soak windows. Check a box to run immediately.\n\n---\n',
+  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Patch and minor updates flow continuously with per-package soak windows and are not held back by the PR limits. Major updates wait here until you tick their box. Check a box to create that PR now.\n\n---\n',
   dependencyDashboardFooter: '\n---\n\n📚 **Documentation:** [Renovate Docs](https://docs.renovatebot.com/) | ⚙️ **Config:** `.github/renovate.json5`',
   suppressNotifications: [
     'prEditedNotification',
@@ -69,6 +70,20 @@
   },
   labels: [
     'renovate',
+  ],
+  // Credentials for private GHCR images. The value comes from the Mend developer portal
+  // (Credentials page of the jlengelbrecht account), referenced here by name only.
+  // `password` (not `token`) because GHCR's v2 API needs HTTP Basic, and `hostType: docker`
+  // keeps the app's automatic GitHub rule from shadowing this one. Private images tracked
+  // here: ghcr.io/jlengelbrecht/{groschen,agent-router-base,runner-build,runner-afk} and
+  // ghcr.io/lumose-health/discord-bot.
+  hostRules: [
+    {
+      matchHost: 'ghcr.io',
+      hostType: 'docker',
+      username: 'jlengelbrecht',
+      password: '{{ secrets.GHCR_READ_TOKEN }}',
+    },
   ],
   packageRules: [
     {
@@ -872,6 +887,53 @@
       matchPackageNames: ['!revenz/fileflows'],
       prConcurrentLimit: 10,
       branchConcurrentLimit: 15,
+      // A major never merges by itself, so it waits on the Dependency Dashboard until
+      // someone ticks it. That keeps unreviewed majors out of the PR list and the queue.
+      // Majors that already have an open PR keep it. The Spektr rule below opts back out.
+      dependencyDashboardApproval: true,
+    },
+    {
+      // Renovate treats every 0.x update as breaking, patches included, so this stays on
+      // minor/major and only labels. Policy for 0.x minors is in the zer0ver rule below.
+      description: 'Label breaking minor and major updates',
+      matchIsBreaking: true,
+      matchUpdateTypes: ['minor', 'major'],
+      addLabels: ['breaking'],
+    },
+    {
+      // 0.x minors can break at any time. They get the breaking commit prefix and a
+      // major- branch, and they are never auto-merged. Placed after every automerge opt-in
+      // so it wins, and before the Spektr rule so Spektr (v0.x today) keeps merging.
+      // The lumose-health images are owner-controlled and keep their no-soak automerge.
+      description: 'zer0ver: 0.x minor updates are treated as breaking and need review',
+      matchUpdateTypes: ['minor'],
+      matchCurrentVersion: '/^v?0\\./',
+      matchPackageNames: ['!/^ghcr\\.io\\/lumose-health\\//'],
+      automerge: false,
+      additionalBranchPrefix: 'major-',
+      commitMessagePrefix: '{{semanticCommitType}}({{semanticCommitScope}})!:',
+    },
+    {
+      // Updates that can merge on their own must never wait behind PRs that need a human.
+      // The limits count every open PR and branch, so a pile of manual PRs used to starve
+      // these (101 updates were rate-limited). Rules that need review
+      // (manual tiers, majors, 0.x minors) still count against the limits and still
+      // open as PRs; they just no longer block the rest.
+      description: 'Non-breaking patch, digest and pin updates are exempt from the PR and branch limits',
+      matchUpdateTypes: ['patch', 'digest', 'pin', 'pinDigest'],
+      prConcurrentLimit: 0,
+      branchConcurrentLimit: 0,
+      prHourlyLimit: 0,
+      prPriority: 5,
+    },
+    {
+      description: 'Non-breaking minor updates (not 0.x) are exempt from the PR and branch limits',
+      matchUpdateTypes: ['minor'],
+      matchCurrentVersion: '!/^v?0\\./',
+      prConcurrentLimit: 0,
+      branchConcurrentLimit: 0,
+      prHourlyLimit: 0,
+      prPriority: 5,
     },
     {
       // These manifests are completed Jobs or one-shot rehearsal Pods. Their pod template
@@ -1017,6 +1079,8 @@
       prConcurrentLimit: 0,
       prHourlyLimit: 0,
       prPriority: 10,
+      // Spektr majors merge on required CI like its other releases; no dashboard approval.
+      dependencyDashboardApproval: false,
       addLabels: ['spektr'],
     },
   ],
