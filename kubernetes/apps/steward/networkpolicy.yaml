@@ -1,0 +1,16 @@
+---
+# Default-deny for the namespace in both directions. The worker's own policy
+# opens only what it needs, and it takes no ingress at all.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  endpointSelector: {}
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  ingress:
+    - {}
+  egress:
+    - {}

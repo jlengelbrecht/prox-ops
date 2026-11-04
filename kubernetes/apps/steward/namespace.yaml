@@ -1,0 +1,13 @@
+---
+# Home of the merge gate's evidence worker. OpenBao's rules match this name
+# (the merge-evidence auth role and an ingress rule on openbao-server), so it
+# exists in Git before anything can run here. Only that worker belongs in it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: steward
+  labels:
+    kubernetes.io/metadata.name: steward
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

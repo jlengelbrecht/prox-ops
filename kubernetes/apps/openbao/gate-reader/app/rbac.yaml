@@ -1,0 +1,54 @@
+---
+# What a gate-reader token can do. It's only ever bound per namespace (see
+# resourceset.yaml), so a token reads one namespace. No Secrets, ConfigMaps,
+# pod logs or exec: keep it that way, the worker's input is untrusted.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gate-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "persistentvolumeclaims", "events"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list"]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list"]
+  - apiGroups: ["flagger.app"]
+    resources: ["canaries"]
+    verbs: ["get", "list"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters"]
+    verbs: ["get", "list"]
+---
+# OpenBao's Kubernetes secrets engine issues tokens with this, in
+# service_account_name mode, which creates nothing else. resourceNames limits
+# it to accounts named gate-reader: OpenBao can't mint a token for any other
+# account, and a namespace without gate-reader can't be read at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openbao-gate-token-issuer
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: ["gate-reader"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openbao-gate-token-issuer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openbao-gate-token-issuer
+subjects:
+  - kind: ServiceAccount
+    name: openbao
+    namespace: openbao

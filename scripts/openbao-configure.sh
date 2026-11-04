@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Sets up OpenBao after init: the admin and reader policies, OIDC login
 # through authentik (groups openbao-admins / openbao-readers), the
-# Kubernetes auth method, the snapshot job's role, and the database engine with
-# the Zabbix login. Safe to run again: every step is an upsert. Only the first
+# Kubernetes auth method, the snapshot job's role, the database engine with the
+# Zabbix login, and the Kubernetes secrets engine for the merge gate. Safe to run again: every step is an upsert. Only the first
 # run writes the Zabbix static role, and that rotates Zabbix's password at once.
 #
 # Needs the 1Password item Automation/openbao-oidc (field oidc-client-secret,
@@ -131,7 +131,7 @@ if [[ $mode == revoke ]]; then
 fi
 
 # --- policies -------------------------------------------------------------
-for p in openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db; do
+for p in openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db openbao-gate; do
   log "Writing policy $p"
   payload=$POLICY_DIR/$p.hcl bao policy write "$p" - >/dev/null
 done
@@ -226,6 +226,40 @@ jq -n '{
     token_max_ttl: "10m",
     token_no_default_policy: true}' >"$work/zabbix-role.json"
 bao_write_json auth/kubernetes/role/zabbix-db "$work/zabbix-role.json"
+
+# The merge gate's evidence worker (EPIC-051): its service account only.
+log "Writing the Kubernetes auth role merge-evidence"
+jq -n '{
+    bound_service_account_names: ["merge-evidence"],
+    bound_service_account_namespaces: ["steward"],
+    audience: "openbao",
+    token_policies: ["openbao-gate"],
+    token_ttl: "10m",
+    token_max_ttl: "10m",
+    token_no_default_policy: true}' >"$work/gate-auth-role.json"
+bao_write_json auth/kubernetes/role/merge-evidence "$work/gate-auth-role.json"
+
+# --- Kubernetes secrets engine ----------------------------------------------
+# Short gate-reader tokens, one namespace per request. service_account_name mode
+# creates nothing in the cluster, and "*" is safe here: a token can only exist
+# where kubernetes/apps/openbao/gate-reader put an account, which is the
+# allowlist. 10m is the shortest token Kubernetes issues. Revoking the lease
+# doesn't revoke the token; to do that, delete the account and let Flux
+# recreate it.
+if [[ -z $(bao_json secrets list | jq -r '."kubernetes/".accessor // empty') ]]; then
+  log "Enabling the Kubernetes secrets engine at kubernetes/"
+  bao secrets enable -path=kubernetes -description="short tokens for gate-reader accounts" kubernetes >/dev/null
+fi
+log "Configuring the Kubernetes secrets engine"
+jq -n '{kubernetes_host: "https://kubernetes.default.svc"}' >"$work/k8s-engine.json"
+bao_write_json kubernetes/config "$work/k8s-engine.json"
+log "Writing the Kubernetes secrets engine role gate-reader"
+jq -n '{
+    service_account_name: "gate-reader",
+    allowed_kubernetes_namespaces: ["*"],
+    token_default_ttl: "10m",
+    token_max_ttl: "10m"}' >"$work/gate-role.json"
+bao_write_json kubernetes/roles/gate-reader "$work/gate-role.json"
 
 # --- database engine --------------------------------------------------------
 # Writing the static role the first time rotates the password at once, so
