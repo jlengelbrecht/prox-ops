@@ -12,7 +12,8 @@
 # Usage:
 #   scripts/openbao-break-glass.sh          print a root token; revoke it when done
 #   scripts/openbao-break-glass.sh --test   mint one, check it is root, revoke it
-#                                           at once and print nothing secret (drills)
+#                                           at once (drills); prints the token only
+#                                           if the revoke fails
 #
 # A printed root token never expires on its own. Revoke it when you are done:
 # bao token revoke -self with that token, or Revoke token in the UI's user menu.
@@ -67,15 +68,25 @@ for x in $(printf "%s" "$enc" | base64 -d | od -An -v -tu1); do
   shift
 done
 
-policies=$(BAO_TOKEN=$tok bao token lookup -field=policies)
+# From here on a failure must not lose the token: root tokens never expire, so
+# it is either confirmed revoked or shown to the operator.
+policies=$(BAO_TOKEN=$tok bao token lookup -field=policies 2>/dev/null) || policies=unknown
 if [ "$mode" = test ]; then
-  BAO_TOKEN=$tok bao token revoke -self >/dev/null
-  if BAO_TOKEN=$tok bao token lookup >/dev/null 2>&1; then
-    echo "error: the test token is still valid; revoke it by hand" >&2
+  if ! BAO_TOKEN=$tok bao token revoke -self >/dev/null 2>&1 ||
+    BAO_TOKEN=$tok bao token lookup >/dev/null 2>&1; then
+    echo "error: could not revoke the test token; revoke it by hand:" >&2
+    echo "$tok" >&2
     exit 1
   fi
-  echo "OK: the recovery key produced a token with policies $policies; it is revoked."
+  case $policies in
+    *root*) echo "OK: the recovery key produced a token with policies $policies; it is revoked." ;;
+    *)
+      echo "error: the token was revoked, but its policies were $policies, not root" >&2
+      exit 1
+      ;;
+  esac
 else
+  [ "$policies" != unknown ] || echo "warning: could not look up the token; check that OpenBao is healthy" >&2
   echo "Root token (policies $policies). Revoke it as soon as you are done:"
   echo "$tok"
 fi
