@@ -36,6 +36,11 @@ permissions:
 jobs:
   check-ceph-version:
     name: Verify Ceph Version Compatibility
+    # Same-repository PRs only. This runner holds the Proxmox SSH key and reaches
+    # the Proxmox hosts, so a fork PR must never start the job. The runner's
+    # job-started hook enforces the same rule where a fork's own workflow file
+    # cannot remove it.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: gha-runner-scale-set  # Self-hosted K8s runner with Proxmox network access
     steps:
       - name: Checkout repository

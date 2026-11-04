@@ -10,14 +10,29 @@ trap 'rm -rf "$tmp"' EXIT
 
 failures=0
 
+# The guard kills the nearest ancestor named Runner.Worker on deny, exactly as
+# in the runner pod. Each case therefore runs the guard under a stand-in worker
+# (a copy of bash named Runner.Worker) that, like the real StepsRunner, goes on
+# to run a later `if: always()` step after the hook step ends. The marker file
+# is that later step: a pass must reach it, a deny must not.
+mkdir "$tmp/bin"
+cp "$(command -v bash)" "$tmp/bin/Runner.Worker"
+
 # expect <pass|deny> <event name> <payload json or @missing> <description>
 expect() {
   local want="$1" event="$2" payload="$3" desc="$4" path="$tmp/event.json" got
-  rm -f "$path"
+  rm -f "$path" "$tmp/always-step-ran"
   if [[ "$payload" != "@missing" ]]; then
     printf '%s' "$payload" >"$path"
   fi
-  if GITHUB_EVENT_NAME="$event" GITHUB_EVENT_PATH="$path" bash "$guard" >"$tmp/out" 2>&1; then
+  # Run in a subshell so bash's own "Killed" job message stays out of the output.
+  {
+    (
+      export GITHUB_EVENT_NAME="$event" GITHUB_EVENT_PATH="$path" GUARD="$guard" OUT="$tmp/out" MARK="$tmp/always-step-ran"
+      "$tmp/bin/Runner.Worker" -c 'bash "$GUARD" >"$OUT" 2>&1; echo "hook exit $?" >>"$OUT"; touch "$MARK"'
+    ) || true
+  } 2>/dev/null
+  if [[ -e "$tmp/always-step-ran" ]]; then
     got=pass
   else
     got=deny
@@ -71,6 +86,19 @@ expect deny push "@missing" "missing payload file"
 expect deny push "not json" "unparseable payload"
 expect deny push '[]' "payload is not an object"
 expect deny "" "{$base}" "empty GITHUB_EVENT_NAME"
+
+# Without a Runner.Worker or Runner.Listener ancestor the guard cannot kill
+# anything; it still exits 1 with an error line. Not reachable inside a runner.
+rm -f "$tmp/event.json"
+if GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$tmp/event.json" bash "$guard" >"$tmp/out" 2>&1; then
+  printf 'FAIL  no-worker deny exited 0\n'
+  failures=$((failures + 1))
+elif grep -q '^::error::' "$tmp/out"; then
+  printf 'ok    deny  no worker ancestor: exits 1 with ::error::\n'
+else
+  printf 'FAIL  no-worker deny without ::error:: line\n'
+  failures=$((failures + 1))
+fi
 
 if ((failures > 0)); then
   printf '%d failure(s)\n' "$failures"
