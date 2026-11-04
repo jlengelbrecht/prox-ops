@@ -197,8 +197,11 @@ spec:
               }
             }
 
+            # Retention outlives the 10m usage gauges, and is short because
+            # old gauge series are served until it ends (after a failover,
+            # the previous leader's values).
             telemetry {
-              prometheus_retention_time = "12h"
+              prometheus_retention_time = "15m"
               disable_hostname          = true
             }
 
