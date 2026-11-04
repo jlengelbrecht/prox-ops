@@ -8,6 +8,12 @@
 # and workflow_dispatch events, so both this file and the steward code come from the
 # default branch. It never checks out or runs PR
 # code: it reads PR data through the API only. It never merges anything.
+#
+# The render job is the one place PR content is read from disk: it checks out the PR merge
+# ref and renders it with flux-local in a pinned container. It holds no secrets and no app
+# token, has a read-only token that is not persisted, and runs nothing from the PR. Its
+# JSON goes to an artifact of this run, which the evaluate job classifies with
+# default-branch code.
 name: "Merge Steward"
 
 on:
@@ -44,6 +50,8 @@ env:
   PYYAML_VERSION: "6.0.3"
   # renovate: datasource=pypi depName=pytest
   PYTEST_VERSION: "9.0.2"
+  # renovate: datasource=docker depName=ghcr.io/allenporter/flux-local
+  FLUX_LOCAL_VERSION: "v8.4.0@sha256:c0be852e30f299ce6a220cc992b0c21a2a0b0684cc17713b9d718e18d9c8beff"
 
 jobs:
   test:
@@ -72,12 +80,103 @@ jobs:
             exit 1
           fi
 
+  # Renders the PR merge ref and its first parent (the base it merges into) with
+  # flux-local and uploads the JSON. Renovate PRs from this repository only.
+  render:
+    name: merge-steward render
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the PR merged into its base
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          path: pull
+          fetch-depth: 2
+          persist-credentials: false
+
+      # GitHub builds the merge ref asynchronously, so it can still be the previous push's
+      # merge commit. Refuse to render unless its second parent is this event's head.
+      - name: Check the merge ref and find its base
+        id: base
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          merged_head=$(git -C pull rev-parse HEAD^2)
+          if [ "$merged_head" != "$HEAD_SHA" ]; then
+            echo "::error::the PR merge ref is stale (built from another head); re-run this workflow"
+            exit 1
+          fi
+          echo "head=$merged_head" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git -C pull rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout that base
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base
+          persist-credentials: false
+
+      # Full context (--unified 100000) so each object diff carries the whole object;
+      # CRDs included and Secrets skipped; app.kubernetes.io/version labels kept so
+      # version skew stays visible. Logs go to files, never to the job log.
+      # flux build writes kustomization files into both trees, so they stay writable.
+      # meta.json is written after flux-local exits, outside the container, with the head
+      # the merge ref was verified to contain. The container drops all capabilities.
+      - name: Render with flux-local
+        env:
+          HEAD_SHA: ${{ steps.base.outputs.head }}
+        run: |
+          set -u
+          out="$RUNNER_TEMP/render"
+          mkdir -p "$out"
+          rc=0
+          for res in helmrelease kustomization; do
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+              -v "$PWD:/github/workspace" -v "$out:/out" -w /github/workspace/pull \
+              "ghcr.io/allenporter/flux-local:${FLUX_LOCAL_VERSION}" \
+              diff "$res" --output json --unified 100000 --limit-bytes 0 \
+              --all-namespaces --no-skip-crds --skip-secrets \
+              --path /github/workspace/pull/kubernetes/flux/cluster \
+              --path-orig /github/workspace/base/kubernetes/flux/cluster \
+              --sources "flux-system,homelab-identity=tests/flux-local/homelab-identity" \
+              --strip-attrs "helm.sh/chart,checksum/config" \
+              --output-file "/out/$res.json" > "$RUNNER_TEMP/flux-$res.log" 2>&1 || rc=1
+            echo "$res: flux-local exit $rc"
+          done
+          rm -f "$out/meta.json"
+          printf '{"head_sha": "%s", "failed": %d}\n' "$HEAD_SHA" "$rc" > "$out/meta.json"
+
+      - name: Upload the render result
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: merge-steward-render
+          path: |
+            ${{ runner.temp }}/render/meta.json
+            ${{ runner.temp }}/render/helmrelease.json
+            ${{ runner.temp }}/render/kustomization.json
+          if-no-files-found: warn
+          retention-days: 3
+
   evaluate:
     name: merge-steward evaluate
     # Events that can change the verdict: new code, the override label, the soak status,
     # a check suite finishing on a PR head, the sweep, or a manual run. Check suites of the
     # homebot-0 app are skipped so a published verdict does not trigger another evaluation.
+    needs: render
+    # Runs when render is skipped (non-Renovate PRs, other events) or fails (needs-human).
     if: >-
+      !cancelled() && (
       (github.event_name == 'pull_request_target' &&
         (contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) ||
          github.event.label.name == 'steward/human-approved')) ||
@@ -85,19 +184,19 @@ jobs:
       (github.event_name == 'check_suite' &&
         github.event.check_suite.app.id != 1091574 &&
         github.event.check_suite.pull_requests[0] != null) ||
-      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # PR events group by PR number; status and check suite events by head commit, so a burst
-    # of finishing checks collapses into one pending evaluation. A new push cancels a running
-    # evaluation; a label event waits for it.
+    # of finishing checks collapses into one pending evaluation. Nothing is cancelled in
+    # progress: a run whose push is superseded stops by itself (--event-sha and the head
+    # check while it waits), so an older run that queues late cannot cancel a newer one
+    # that already holds this run's render result.
     concurrency:
       group: >-
         merge-steward-${{ github.event.pull_request.number || inputs.pr || github.event.sha ||
         github.event.check_suite.head_sha || 'sweep' }}
-      cancel-in-progress: >-
-        ${{ github.event_name == 'pull_request_target' &&
-        contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) }}
+      cancel-in-progress: false
     permissions:
       contents: read        # read changed manifests through the API
       pull-requests: write  # sticky comment and steward/* labels
@@ -127,6 +226,14 @@ jobs:
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
           permission-checks: write
 
+      # Only from this run: the artifact the render job above uploaded for this event.
+      - name: Download this run's render result
+        if: github.event_name == 'pull_request_target' && needs.render.result == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: merge-steward-render
+          path: ${{ runner.temp }}/render
+
       - name: Evaluate
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -147,11 +254,11 @@ jobs:
           cd scripts/merge-steward
           case "$EVENT" in
             pull_request_target)
-              if [ "$ACTION" = "labeled" ]; then
-                python steward.py --pr "$PR_NUMBER" --wait 300 --labeled-sha "$HEAD_SHA"
-              else
-                python steward.py --pr "$PR_NUMBER" --wait 1200
-              fi ;;
+              case "$ACTION" in
+                labeled) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 300 --labeled-sha "$HEAD_SHA" ;;
+                unlabeled) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 300 ;;
+                *) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 1200 --render-dir "$RUNNER_TEMP/render" ;;
+              esac ;;
             workflow_dispatch)
               if [ "$DRY_RUN" = "true" ]; then
                 python steward.py --pr "$PR_NUMBER" --dry-run

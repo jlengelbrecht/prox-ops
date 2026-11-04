@@ -1,0 +1,282 @@
+{
+ "description": "rook-ceph v1.20.9 -> v1.21.1 and ceph-csi-drivers 1.0.4 -> 1.1.0: expected CRD flag",
+ "pr": 1837,
+ "recorded": "2026-11-04",
+ "reports": {
+  "helmrelease": [
+   {
+    "diffs": [
+     {
+      "diff": "--- HelmRelease: rook-ceph/ceph-csi-drivers ClusterRole: rook-ceph/rook-ceph-cephfs-csi-ceph-com-ctrlplugin-cr\n\n+++ HelmRelease: rook-ceph/ceph-csi-drivers ClusterRole: rook-ceph/rook-ceph-cephfs-csi-ceph-com-ctrlplugin-cr\n\n@@ -1,220 +1,222 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: ClusterRole\n metadata:\n   name: rook-ceph-cephfs-csi-ceph-com-ctrlplugin-cr\n rules:\n - apiGroups:\n   - ''\n   resources:\n   - secrets\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - ''\n   resources:\n   - configmaps\n   verbs:\n   - get\n - apiGroups:\n   - ''\n   resources:\n   - nodes\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - csinodes\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - ''\n   resources:\n   - persistentvolumes\n   verbs:\n   - get\n   - list\n   - watch\n   - create\n   - delete\n   - patch\n   - update\n - apiGroups:\n   - ''\n   resources:\n   - persistentvolumeclaims\n   verbs:\n   - get\n   - list\n   - watch\n   - patch\n   - update\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - storageclasses\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - ''\n   resources:\n   - events\n   verbs:\n   - list\n   - watch\n   - create\n   - update\n   - patch\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - volumeattachments\n   verbs:\n   - get\n   - list\n   - watch\n   - patch\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - volumeattachments/status\n   verbs:\n   - patch\n - apiGroups:\n   - ''\n   resources:\n   - persistentvolumeclaims/status\n   verbs:\n   - patch\n - apiGroups:\n   - snapshot.storage.k8s.io\n   resources:\n   - volumesnapshots\n   verbs:\n   - get\n   - list\n+  - watch\n+  - update\n - apiGroups:\n   - snapshot.storage.k8s.io\n   resources:\n   - volumesnapshotclasses\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - snapshot.storage.k8s.io\n   resources:\n   - volumesnapshotcontents\n   verbs:\n   - get\n   - list\n   - watch\n   - patch\n   - update\n - apiGroups:\n   - snapshot.storage.k8s.io\n   resources:\n   - volumesnapshotcontents/status\n   verbs:\n   - update\n   - patch\n - apiGroups:\n   - groupsnapshot.storage.k8s.io\n   resources:\n   - volumegroupsnapshotclasses\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - groupsnapshot.storage.k8s.io\n   resources:\n   - volumegroupsnapshotcontents\n   verbs:\n   - get\n   - list\n   - watch\n   - update\n   - patch\n - apiGroups:\n   - groupsnapshot.storage.k8s.io\n   resources:\n   - volumegroupsnapshotcontents/status\n   verbs:\n   - update\n   - patch\n - apiGroups:\n   - groupsnapshot.storage.openshift.io\n   resources:\n   - volumegroupsnapshotclasses\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - groupsnapshot.storage.openshift.io\n   resources:\n   - volumegroupsnapshotcontents\n   verbs:\n   - get\n   - list\n   - watch\n   - update\n   - patch\n - apiGroups:\n   - groupsnapshot.storage.openshift.io\n   resources:\n   - volumegroupsnapshotcontents/status\n   verbs:\n   - update\n   - patch\n - apiGroups:\n   - replication.storage.openshift.io\n   resources:\n   - volumegroupreplicationcontents\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - replication.storage.openshift.io\n   resources:\n   - volumegroupreplicationclasses\n   verbs:\n   - get\n - apiGroups:\n   - ''\n   resources:\n   - serviceaccounts\n   verbs:\n   - get\n - apiGroups:\n   - ''\n   resources:\n   - serviceaccounts/token\n   verbs:\n   - create\n - apiGroups:\n   - authentication.k8s.io\n   resources:\n   - tokenreviews\n   verbs:\n   - create\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - volumeattributesclasses\n   verbs:\n   - get\n   - list\n   - watch\n ",
+      "kind": "ClusterRole",
+      "kustomization_path": ".",
+      "name": "rook-ceph-cephfs-csi-ceph-com-ctrlplugin-cr",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/ceph-csi-drivers ClusterRole: rook-ceph/rook-ceph-cephfs-csi-ceph-com-nodeplugin-cr\n\n+++ HelmRelease: rook-ceph/ceph-csi-drivers ClusterRole: rook-ceph/rook-ceph-cephfs-csi-ceph-com-nodeplugin-cr\n\n@@ -1,62 +1,68 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: ClusterRole\n metadata:\n   name: rook-ceph-cephfs-csi-ceph-com-nodeplugin-cr\n rules:\n - apiGroups:\n   - ''\n   resources:\n   - nodes\n   verbs:\n   - get\n - apiGroups:\n   - ''\n   resources:\n   - secrets\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - ''\n   resources:\n   - configmaps\n   verbs:\n   - get\n - apiGroups:\n   - ''\n   resources:\n   - serviceaccounts\n   verbs:\n   - get\n - apiGroups:\n   - ''\n   resources:\n   - serviceaccounts/token\n   verbs:\n   - create\n - apiGroups:\n   - ''\n   resources:\n   - events\n   verbs:\n   - list\n   - watch\n   - create\n   - update\n   - patch\n - apiGroups:\n   - ''\n   resources:\n   - persistentvolumes\n+  verbs:\n+  - get\n+- apiGroups:\n+  - ''\n+  resources:\n   - persistentvolumeclaims\n   verbs:\n   - get\n+  - patch\n - apiGroups:\n   - authentication.k8s.io\n   resources:\n   - tokenreviews\n   verbs:\n   - create\n ",
+      "kind": "ClusterRole",
+      "kustomization_path": ".",
+      "name": "rook-ceph-cephfs-csi-ceph-com-nodeplugin-cr",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/ceph-csi-drivers ClusterRole: rook-ceph/rook-ceph-rbd-csi-ceph-com-ctrlplugin-cr\n\n+++ HelmRelease: rook-ceph/ceph-csi-drivers ClusterRole: rook-ceph/rook-ceph-rbd-csi-ceph-com-ctrlplugin-cr\n\n@@ -1,235 +1,236 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: ClusterRole\n metadata:\n   name: rook-ceph-rbd-csi-ceph-com-ctrlplugin-cr\n rules:\n - apiGroups:\n   - ''\n   resources:\n   - secrets\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - ''\n   resources:\n   - persistentvolumes\n   verbs:\n   - get\n   - list\n   - watch\n   - create\n   - delete\n   - patch\n   - update\n - apiGroups:\n   - ''\n   resources:\n   - persistentvolumeclaims\n   verbs:\n   - get\n   - list\n   - watch\n   - update\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - storageclasses\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - ''\n   resources:\n   - events\n   verbs:\n   - list\n   - watch\n   - create\n   - update\n   - patch\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - volumeattachments\n   verbs:\n   - get\n   - list\n   - watch\n   - patch\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - volumeattachments/status\n   verbs:\n   - patch\n - apiGroups:\n   - ''\n   resources:\n   - nodes\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - csinodes\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - ''\n   resources:\n   - persistentvolumeclaims/status\n   verbs:\n   - patch\n - apiGroups:\n   - snapshot.storage.k8s.io\n   resources:\n   - volumesnapshots\n   verbs:\n   - get\n   - list\n   - watch\n+  - update\n - apiGroups:\n   - snapshot.storage.k8s.io\n   resources:\n   - volumesnapshotclasses\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - snapshot.storage.k8s.io\n   resources:\n   - volumesnapshotcontents\n   verbs:\n   - get\n   - list\n   - watch\n   - patch\n   - update\n - apiGroups:\n   - snapshot.storage.k8s.io\n   resources:\n   - volumesnapshotcontents/status\n   verbs:\n   - update\n   - patch\n - apiGroups:\n   - ''\n   resources:\n   - configmaps\n   verbs:\n   - get\n - apiGroups:\n   - ''\n   resources:\n   - serviceaccounts\n   verbs:\n   - get\n - apiGroups:\n   - ''\n   resources:\n   - serviceaccounts/token\n   verbs:\n   - create\n - apiGroups:\n   - groupsnapshot.storage.k8s.io\n   resources:\n   - volumegroupsnapshotclasses\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - groupsnapshot.storage.k8s.io\n   resources:\n   - volumegroupsnapshotcontents\n   verbs:\n   - get\n   - list\n   - watch\n   - update\n   - patch\n - apiGroups:\n   - groupsnapshot.storage.k8s.io\n   resources:\n   - volumegroupsnapshotcontents/status\n   verbs:\n   - update\n   - patch\n - apiGroups:\n   - groupsnapshot.storage.openshift.io\n   resources:\n   - volumegroupsnapshotclasses\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - groupsnapshot.storage.openshift.io\n   resources:\n   - volumegroupsnapshotcontents\n   verbs:\n   - get\n   - list\n   - watch\n   - update\n   - patch\n - apiGroups:\n   - groupsnapshot.storage.openshift.io\n   resources:\n   - volumegroupsnapshotcontents/status\n   verbs:\n   - update\n   - patch\n - apiGroups:\n   - replication.storage.openshift.io\n   resources:\n   - volumegroupreplicationcontents\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - replication.storage.openshift.io\n   resources:\n   - volumegroupreplicationclasses\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - authentication.k8s.io\n   resources:\n   - tokenreviews\n   verbs:\n   - create\n - apiGroups:\n   - authorization.k8s.io\n   resources:\n   - subjectaccessreviews\n   verbs:\n   - create\n - apiGroups:\n   - cbt.storage.k8s.io\n   resources:\n   - snapshotmetadataservices\n   verbs:\n   - get\n   - list\n - apiGroups:\n   - storage.k8s.io\n   resources:\n   - volumeattributesclasses\n   verbs:\n   - get\n   - list\n   - watch\n ",
+      "kind": "ClusterRole",
+      "kustomization_path": ".",
+      "name": "rook-ceph-rbd-csi-ceph-com-ctrlplugin-cr",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/ceph-csi-drivers Role: rook-ceph/rook-ceph-cephfs-csi-ceph-com-ctrlplugin-r\n\n+++ HelmRelease: rook-ceph/ceph-csi-drivers Role: rook-ceph/rook-ceph-cephfs-csi-ceph-com-ctrlplugin-r\n\n@@ -1,48 +1,49 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: Role\n metadata:\n   name: rook-ceph-cephfs-csi-ceph-com-ctrlplugin-r\n+  namespace: rook-ceph\n rules:\n - apiGroups:\n   - coordination.k8s.io\n   resources:\n   - leases\n   verbs:\n   - get\n   - watch\n   - list\n   - delete\n   - update\n   - create\n - apiGroups:\n   - csiaddons.openshift.io\n   resources:\n   - csiaddonsnodes\n   verbs:\n   - get\n   - watch\n   - list\n   - create\n   - update\n   - delete\n - apiGroups:\n   - ''\n   resources:\n   - pods\n   verbs:\n   - get\n - apiGroups:\n   - apps\n   resources:\n   - replicasets\n   verbs:\n   - get\n - apiGroups:\n   - apps\n   resources:\n   - deployments/finalizers\n   - daemonsets/finalizers\n   verbs:\n   - update\n ",
+      "kind": "Role",
+      "kustomization_path": ".",
+      "name": "rook-ceph-cephfs-csi-ceph-com-ctrlplugin-r",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/ceph-csi-drivers Role: rook-ceph/rook-ceph-cephfs-csi-ceph-com-nodeplugin-r\n\n+++ HelmRelease: rook-ceph/ceph-csi-drivers Role: rook-ceph/rook-ceph-cephfs-csi-ceph-com-nodeplugin-r\n\n@@ -1,37 +1,38 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: Role\n metadata:\n   name: rook-ceph-cephfs-csi-ceph-com-nodeplugin-r\n+  namespace: rook-ceph\n rules:\n - apiGroups:\n   - csiaddons.openshift.io\n   resources:\n   - csiaddonsnodes\n   verbs:\n   - get\n   - watch\n   - list\n   - create\n   - update\n   - delete\n - apiGroups:\n   - ''\n   resources:\n   - pods\n   verbs:\n   - get\n - apiGroups:\n   - apps\n   resources:\n   - replicasets\n   verbs:\n   - get\n - apiGroups:\n   - apps\n   resources:\n   - deployments/finalizers\n   - daemonsets/finalizers\n   verbs:\n   - update\n ",
+      "kind": "Role",
+      "kustomization_path": ".",
+      "name": "rook-ceph-cephfs-csi-ceph-com-nodeplugin-r",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/ceph-csi-drivers Role: rook-ceph/rook-ceph-rbd-csi-ceph-com-ctrlplugin-r\n\n+++ HelmRelease: rook-ceph/ceph-csi-drivers Role: rook-ceph/rook-ceph-rbd-csi-ceph-com-ctrlplugin-r\n\n@@ -1,48 +1,49 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: Role\n metadata:\n   name: rook-ceph-rbd-csi-ceph-com-ctrlplugin-r\n+  namespace: rook-ceph\n rules:\n - apiGroups:\n   - coordination.k8s.io\n   resources:\n   - leases\n   verbs:\n   - get\n   - watch\n   - list\n   - delete\n   - update\n   - create\n - apiGroups:\n   - csiaddons.openshift.io\n   resources:\n   - csiaddonsnodes\n   verbs:\n   - get\n   - watch\n   - list\n   - create\n   - update\n   - delete\n - apiGroups:\n   - ''\n   resources:\n   - pods\n   verbs:\n   - get\n - apiGroups:\n   - apps\n   resources:\n   - replicasets\n   verbs:\n   - get\n - apiGroups:\n   - apps\n   resources:\n   - deployments/finalizers\n   - daemonsets/finalizers\n   verbs:\n   - update\n ",
+      "kind": "Role",
+      "kustomization_path": ".",
+      "name": "rook-ceph-rbd-csi-ceph-com-ctrlplugin-r",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/ceph-csi-drivers RoleBinding: rook-ceph/rook-ceph-cephfs-csi-ceph-com-ctrlplugin-rb\n\n+++ HelmRelease: rook-ceph/ceph-csi-drivers RoleBinding: rook-ceph/rook-ceph-cephfs-csi-ceph-com-ctrlplugin-rb\n\n@@ -1,14 +1,15 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: RoleBinding\n metadata:\n   name: rook-ceph-cephfs-csi-ceph-com-ctrlplugin-rb\n+  namespace: rook-ceph\n roleRef:\n   apiGroup: rbac.authorization.k8s.io\n   kind: Role\n   name: rook-ceph-cephfs-csi-ceph-com-ctrlplugin-r\n subjects:\n - kind: ServiceAccount\n   name: rook-ceph-cephfs-csi-ceph-com-ctrlplugin-sa\n   namespace: rook-ceph\n ",
+      "kind": "RoleBinding",
+      "kustomization_path": ".",
+      "name": "rook-ceph-cephfs-csi-ceph-com-ctrlplugin-rb",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/ceph-csi-drivers RoleBinding: rook-ceph/rook-ceph-cephfs-csi-ceph-com-nodeplugin-rb\n\n+++ HelmRelease: rook-ceph/ceph-csi-drivers RoleBinding: rook-ceph/rook-ceph-cephfs-csi-ceph-com-nodeplugin-rb\n\n@@ -1,14 +1,15 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: RoleBinding\n metadata:\n   name: rook-ceph-cephfs-csi-ceph-com-nodeplugin-rb\n+  namespace: rook-ceph\n roleRef:\n   apiGroup: rbac.authorization.k8s.io\n   kind: Role\n   name: rook-ceph-cephfs-csi-ceph-com-nodeplugin-r\n subjects:\n - kind: ServiceAccount\n   name: rook-ceph-cephfs-csi-ceph-com-nodeplugin-sa\n   namespace: rook-ceph\n ",
+      "kind": "RoleBinding",
+      "kustomization_path": ".",
+      "name": "rook-ceph-cephfs-csi-ceph-com-nodeplugin-rb",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/ceph-csi-drivers RoleBinding: rook-ceph/rook-ceph-rbd-csi-ceph-com-ctrlplugin-rb\n\n+++ HelmRelease: rook-ceph/ceph-csi-drivers RoleBinding: rook-ceph/rook-ceph-rbd-csi-ceph-com-ctrlplugin-rb\n\n@@ -1,14 +1,15 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: RoleBinding\n metadata:\n   name: rook-ceph-rbd-csi-ceph-com-ctrlplugin-rb\n+  namespace: rook-ceph\n roleRef:\n   apiGroup: rbac.authorization.k8s.io\n   kind: Role\n   name: rook-ceph-rbd-csi-ceph-com-ctrlplugin-r\n subjects:\n - kind: ServiceAccount\n   name: rook-ceph-rbd-csi-ceph-com-ctrlplugin-sa\n   namespace: rook-ceph\n ",
+      "kind": "RoleBinding",
+      "kustomization_path": ".",
+      "name": "rook-ceph-rbd-csi-ceph-com-ctrlplugin-rb",
+      "namespace": "rook-ceph"
+     }
+    ],
+    "kind": "HelmRelease",
+    "kustomization_path": ".",
+    "name": "ceph-csi-drivers",
+    "namespace": "rook-ceph"
+   },
+   {
+    "diffs": [
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ServiceAccount: rook-ceph/ceph-csi\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ServiceAccount: rook-ceph/ceph-csi\n\n@@ -1,12 +1,13 @@\n\n ---\n apiVersion: v1\n kind: ServiceAccount\n metadata:\n   name: ceph-csi\n+  namespace: rook-ceph\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n automountServiceAccountToken: true\n ",
+      "kind": "ServiceAccount",
+      "kustomization_path": ".",
+      "name": "ceph-csi",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ServiceAccount: rook-ceph/rook-ceph-osd\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ServiceAccount: rook-ceph/rook-ceph-osd\n\n@@ -1,16 +1,16 @@\n\n ---\n kind: ServiceAccount\n apiVersion: v1\n metadata:\n   name: rook-ceph-osd\n   namespace: rook-ceph\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n ",
+      "kind": "ServiceAccount",
+      "kustomization_path": ".",
+      "name": "rook-ceph-osd",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ServiceAccount: rook-ceph/rook-ceph-mgr\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ServiceAccount: rook-ceph/rook-ceph-mgr\n\n@@ -1,16 +1,16 @@\n\n ---\n kind: ServiceAccount\n apiVersion: v1\n metadata:\n   name: rook-ceph-mgr\n   namespace: rook-ceph\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n ",
+      "kind": "ServiceAccount",
+      "kustomization_path": ".",
+      "name": "rook-ceph-mgr",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ConfigMap: rook-ceph/rook-ceph-operator-config\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ConfigMap: rook-ceph/rook-ceph-operator-config\n\n@@ -1,26 +1,26 @@\n\n ---\n kind: ConfigMap\n apiVersion: v1\n metadata:\n   name: rook-ceph-operator-config\n   namespace: rook-ceph\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n data:\n   ROOK_LOG_LEVEL: INFO\n   ROOK_CEPH_COMMANDS_TIMEOUT_SECONDS: '15'\n   ROOK_OBC_WATCH_OPERATOR_NAMESPACE: 'true'\n   ROOK_OBC_ALLOW_ADDITIONAL_CONFIG_FIELDS: maxObjects,maxSize\n   ROOK_CEPH_ALLOW_LOOP_DEVICES: 'false'\n   ROOK_CEPH_MON_RUN_AS_ROOT: 'false'\n   ROOK_DELETE_UNUSED_CRUSH_RULES: 'true'\n   ROOK_ENABLE_DISCOVERY_DAEMON: 'false'\n-  ROOK_CREATE_CSI_OPERATOR_RESOURCES: 'true'\n+  ROOK_CREATE_CSI_OPERATOR_RESOURCES: null\n ",
+      "kind": "ConfigMap",
+      "kustomization_path": ".",
+      "name": "rook-ceph-operator-config",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ConfigMap: rook-ceph/rook-csi-operator-image-set-configmap\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ConfigMap: rook-ceph/rook-csi-operator-image-set-configmap\n\n@@ -1,24 +1,24 @@\n\n ---\n apiVersion: v1\n kind: ConfigMap\n metadata:\n   name: rook-csi-operator-image-set-configmap\n   namespace: rook-ceph\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n data:\n-  provisioner: registry.k8s.io/sig-storage/csi-provisioner:v6.2.0\n-  attacher: registry.k8s.io/sig-storage/csi-attacher:v4.12.0\n-  resizer: registry.k8s.io/sig-storage/csi-resizer:v2.1.0\n-  snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.5.0\n-  registrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0\n-  plugin: quay.io/cephcsi/cephcsi:v3.17.1\n-  addons: quay.io/csiaddons/k8s-sidecar:v0.14.0\n+  provisioner: ''\n+  attacher: ''\n+  resizer: ''\n+  snapshotter: ''\n+  registrar: ''\n+  plugin: ''\n+  addons: ''\n ",
+      "kind": "ConfigMap",
+      "kustomization_path": ".",
+      "name": "rook-csi-operator-image-set-configmap",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator CustomResourceDefinition: rook-ceph/cephconnections.csi.ceph.io\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator CustomResourceDefinition: rook-ceph/cephconnections.csi.ceph.io\n\n@@ -1,83 +1,83 @@\n\n ---\n apiVersion: apiextensions.k8s.io/v1\n kind: CustomResourceDefinition\n metadata:\n   name: cephconnections.csi.ceph.io\n   annotations:\n     controller-gen.kubebuilder.io/version: v0.17.2\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n spec:\n   group: csi.ceph.io\n   names:\n     kind: CephConnection\n     listKind: CephConnectionList\n     plural: cephconnections\n     singular: cephconnection\n   scope: Namespaced\n   versions:\n   - name: v1\n     schema:",
+      "kind": "CustomResourceDefinition",
+      "kustomization_path": ".",
+      "name": "cephconnections.csi.ceph.io",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator CustomResourceDefinition: rook-ceph/clientprofiles.csi.ceph.io\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator CustomResourceDefinition: rook-ceph/clientprofiles.csi.ceph.io\n\n@@ -1,195 +1,248 @@\n\n ---\n apiVersion: apiextensions.k8s.io/v1\n kind: CustomResourceDefinition\n metadata:\n   name: clientprofiles.csi.ceph.io\n   annotations:\n     controller-gen.kubebuilder.io/version: v0.17.2\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n spec:\n   group: csi.ceph.io\n   names:\n     kind: ClientProfile\n     listKind: ClientProfileList\n     plural: clientprofiles\n     singular: clientprofile\n   scope: Namespaced\n   versions:\n   - name: v1\n     schema:",
+      "kind": "CustomResourceDefinition",
+      "kustomization_path": ".",
+      "name": "clientprofiles.csi.ceph.io",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator CustomResourceDefinition: rook-ceph/clientprofilemappings.csi.ceph.io\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator CustomResourceDefinition: rook-ceph/clientprofilemappings.csi.ceph.io\n\n@@ -1,88 +1,88 @@\n\n ---\n apiVersion: apiextensions.k8s.io/v1\n kind: CustomResourceDefinition\n metadata:\n   name: clientprofilemappings.csi.ceph.io\n   annotations:\n     controller-gen.kubebuilder.io/version: v0.17.2\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n spec:\n   group: csi.ceph.io\n   names:\n     kind: ClientProfileMapping\n     listKind: ClientProfileMappingList\n     plural: clientprofilemappings\n     singular: clientprofilemapping\n   scope: Namespaced\n   versions:\n   - name: v1\n     schema:",
+      "kind": "CustomResourceDefinition",
+      "kustomization_path": ".",
+      "name": "clientprofilemappings.csi.ceph.io",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ClusterRole: rook-ceph/ceph-csi-cephconnection-viewer-role\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ClusterRole: rook-ceph/ceph-csi-cephconnection-viewer-role\n\n@@ -1,26 +1,26 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: ClusterRole\n metadata:\n   name: ceph-csi-cephconnection-viewer-role\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n rules:\n - apiGroups:\n   - csi.ceph.io\n   resources:\n   - cephconnections\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - csi.ceph.io\n   resources:\n   - cephconnections/status\n   verbs:\n   - get\n ",
+      "kind": "ClusterRole",
+      "kustomization_path": ".",
+      "name": "ceph-csi-cephconnection-viewer-role",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ClusterRole: rook-ceph/ceph-csi-cephconnections-editor-role\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ClusterRole: rook-ceph/ceph-csi-cephconnections-editor-role\n\n@@ -1,30 +1,30 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: ClusterRole\n metadata:\n   name: ceph-csi-cephconnections-editor-role\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n rules:\n - apiGroups:\n   - csi.ceph.io\n   resources:\n   - cephconnections\n   verbs:\n   - create\n   - delete\n   - get\n   - list\n   - patch\n   - update\n   - watch\n - apiGroups:\n   - csi.ceph.io\n   resources:\n   - cephconnections/status\n   verbs:\n   - get\n ",
+      "kind": "ClusterRole",
+      "kustomization_path": ".",
+      "name": "ceph-csi-cephconnections-editor-role",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ClusterRole: rook-ceph/ceph-csi-clientprofile-viewer-role\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ClusterRole: rook-ceph/ceph-csi-clientprofile-viewer-role\n\n@@ -1,26 +1,26 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: ClusterRole\n metadata:\n   name: ceph-csi-clientprofile-viewer-role\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n rules:\n - apiGroups:\n   - csi.ceph.io\n   resources:\n   - clientprofiles\n   verbs:\n   - get\n   - list\n   - watch\n - apiGroups:\n   - csi.ceph.io\n   resources:\n   - clientprofiles/status\n   verbs:\n   - get\n ",
+      "kind": "ClusterRole",
+      "kustomization_path": ".",
+      "name": "ceph-csi-clientprofile-viewer-role",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ClusterRoleBinding: rook-ceph/ceph-csi-manager-rolebinding\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ClusterRoleBinding: rook-ceph/ceph-csi-manager-rolebinding\n\n@@ -1,19 +1,19 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: ClusterRoleBinding\n metadata:\n   name: ceph-csi-manager-rolebinding\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n roleRef:\n   apiGroup: rbac.authorization.k8s.io\n   kind: ClusterRole\n   name: ceph-csi-manager-role\n subjects:\n - kind: ServiceAccount\n   name: ceph-csi\n   namespace: rook-ceph\n ",
+      "kind": "ClusterRoleBinding",
+      "kustomization_path": ".",
+      "name": "ceph-csi-manager-rolebinding",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ClusterRoleBinding: rook-ceph/ceph-csi-metrics-auth-rolebinding\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ClusterRoleBinding: rook-ceph/ceph-csi-metrics-auth-rolebinding\n\n@@ -1,19 +1,19 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: ClusterRoleBinding\n metadata:\n   name: ceph-csi-metrics-auth-rolebinding\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n roleRef:\n   apiGroup: rbac.authorization.k8s.io\n   kind: ClusterRole\n   name: ceph-csi-metrics-auth-role\n subjects:\n - kind: ServiceAccount\n   name: ceph-csi\n   namespace: rook-ceph\n ",
+      "kind": "ClusterRoleBinding",
+      "kustomization_path": ".",
+      "name": "ceph-csi-metrics-auth-rolebinding",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator ClusterRoleBinding: rook-ceph/rook-ceph-mgr-cluster\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator ClusterRoleBinding: rook-ceph/rook-ceph-mgr-cluster\n\n@@ -1,23 +1,23 @@\n\n ---\n kind: ClusterRoleBinding\n apiVersion: rbac.authorization.k8s.io/v1\n metadata:\n   name: rook-ceph-mgr-cluster\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n roleRef:\n   apiGroup: rbac.authorization.k8s.io\n   kind: ClusterRole\n   name: rook-ceph-mgr-cluster\n subjects:\n - kind: ServiceAccount\n   name: rook-ceph-mgr\n   namespace: rook-ceph\n ",
+      "kind": "ClusterRoleBinding",
+      "kustomization_path": ".",
+      "name": "rook-ceph-mgr-cluster",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator Role: rook-ceph/ceph-csi-leader-election-role\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator Role: rook-ceph/ceph-csi-leader-election-role\n\n@@ -1,44 +1,44 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: Role\n metadata:\n   name: ceph-csi-leader-election-role\n   namespace: rook-ceph\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n rules:\n - apiGroups:\n   - ''\n   resources:\n   - configmaps\n   verbs:\n   - get\n   - list\n   - watch\n   - create\n   - update\n   - patch\n   - delete\n - apiGroups:\n   - coordination.k8s.io\n   resources:\n   - leases\n   verbs:\n   - get\n   - list\n   - watch\n   - create\n   - update\n   - patch\n   - delete\n - apiGroups:\n   - ''\n   resources:\n   - events\n   verbs:\n   - create\n   - patch\n ",
+      "kind": "Role",
+      "kustomization_path": ".",
+      "name": "ceph-csi-leader-election-role",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator Role: rook-ceph/rook-ceph-osd\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator Role: rook-ceph/rook-ceph-osd\n\n@@ -1,46 +1,46 @@\n\n ---\n kind: Role\n apiVersion: rbac.authorization.k8s.io/v1\n metadata:\n   name: rook-ceph-osd\n   namespace: rook-ceph\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n rules:\n - apiGroups:\n   - ''\n   resources:\n   - secrets\n   verbs:\n   - get\n   - update\n - apiGroups:\n   - ''\n   resources:\n   - configmaps\n   verbs:\n   - get\n   - list\n   - watch\n   - create\n   - update\n   - delete\n - apiGroups:\n   - ceph.rook.io\n   resources:\n   - cephclusters\n   - cephclusters/finalizers\n   verbs:\n   - get\n   - list\n   - create\n   - update\n   - delete\n ",
+      "kind": "Role",
+      "kustomization_path": ".",
+      "name": "rook-ceph-osd",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator Role: rook-ceph/rook-ceph-mgr\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator Role: rook-ceph/rook-ceph-mgr\n\n@@ -1,85 +1,85 @@\n\n ---\n kind: Role\n apiVersion: rbac.authorization.k8s.io/v1\n metadata:\n   name: rook-ceph-mgr\n   namespace: rook-ceph\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n rules:\n - apiGroups:\n   - ''\n   resources:\n   - pods\n   - services\n   - pods/log\n   verbs:\n   - get\n   - list\n   - watch\n   - create\n   - update\n   - delete\n - apiGroups:\n   - batch\n   resources:\n   - jobs\n   verbs:\n   - get\n   - list\n   - watch\n   - create\n   - update\n   - delete\n - apiGroups:\n   - ceph.rook.io\n   resources:\n   - cephclients\n   - cephclusters\n   - cephclusters/finalizers\n   - cephblockpools\n   - cephfilesystems\n   - cephnfses\n   - cephnvmeofgateways\n   - cephobjectstores\n   - cephobjectstoreusers\n   - cephobjectrealms\n   - cephobjectzonegroups\n   - cephobjectzones\n   - cephbuckettopics\n   - cephbucketnotifications\n   - cephrbdmirrors\n   - cephfilesystemmirrors\n   - cephfilesystemsubvolumegroups\n   - cephblockpoolradosnamespaces\n   - cephcosidrivers\n   verbs:\n   - get\n   - list\n   - watch\n   - create\n   - update\n   - delete\n   - patch\n - apiGroups:\n   - apps\n   resources:\n   - deployments/scale\n   - deployments\n   verbs:\n   - patch\n   - delete\n - apiGroups:\n   - ''\n   resources:\n   - persistentvolumeclaims\n   verbs:\n   - delete\n ",
+      "kind": "Role",
+      "kustomization_path": ".",
+      "name": "rook-ceph-mgr",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator RoleBinding: rook-ceph/ceph-csi-leader-election-rolebinding\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator RoleBinding: rook-ceph/ceph-csi-leader-election-rolebinding\n\n@@ -1,20 +1,20 @@\n\n ---\n apiVersion: rbac.authorization.k8s.io/v1\n kind: RoleBinding\n metadata:\n   name: ceph-csi-leader-election-rolebinding\n   namespace: rook-ceph\n   labels:\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n roleRef:\n   apiGroup: rbac.authorization.k8s.io\n   kind: Role\n   name: ceph-csi-leader-election-role\n subjects:\n - kind: ServiceAccount\n   name: ceph-csi\n   namespace: rook-ceph\n ",
+      "kind": "RoleBinding",
+      "kustomization_path": ".",
+      "name": "ceph-csi-leader-election-rolebinding",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator RoleBinding: rook-ceph/rook-ceph-cluster-mgmt\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator RoleBinding: rook-ceph/rook-ceph-cluster-mgmt\n\n@@ -1,24 +1,24 @@\n\n ---\n kind: RoleBinding\n apiVersion: rbac.authorization.k8s.io/v1\n metadata:\n   name: rook-ceph-cluster-mgmt\n   namespace: rook-ceph\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n roleRef:\n   apiGroup: rbac.authorization.k8s.io\n   kind: ClusterRole\n   name: rook-ceph-cluster-mgmt\n subjects:\n - kind: ServiceAccount\n   name: rook-ceph-system\n   namespace: rook-ceph\n ",
+      "kind": "RoleBinding",
+      "kustomization_path": ".",
+      "name": "rook-ceph-cluster-mgmt",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator RoleBinding: rook-ceph/rook-ceph-osd\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator RoleBinding: rook-ceph/rook-ceph-osd\n\n@@ -1,24 +1,24 @@\n\n ---\n kind: RoleBinding\n apiVersion: rbac.authorization.k8s.io/v1\n metadata:\n   name: rook-ceph-osd\n   namespace: rook-ceph\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n roleRef:\n   apiGroup: rbac.authorization.k8s.io\n   kind: Role\n   name: rook-ceph-osd\n subjects:\n - kind: ServiceAccount\n   name: rook-ceph-osd\n   namespace: rook-ceph\n ",
+      "kind": "RoleBinding",
+      "kustomization_path": ".",
+      "name": "rook-ceph-osd",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator Deployment: rook-ceph/ceph-csi-controller-manager\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator Deployment: rook-ceph/ceph-csi-controller-manager\n\n@@ -1,81 +1,81 @@\n\n ---\n apiVersion: apps/v1\n kind: Deployment\n metadata:\n   name: ceph-csi-controller-manager\n   namespace: rook-ceph\n   labels:\n     control-plane: controller-manager\n     app.kubernetes.io/name: ceph-csi\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.0.4\n+    app.kubernetes.io/version: v1.1.0\n     app.kubernetes.io/managed-by: Helm\n spec:\n   replicas: 1\n   selector:\n     matchLabels:\n       control-plane: ceph-csi-op-controller-manager\n       app.kubernetes.io/name: ceph-csi\n       app.kubernetes.io/instance: rook-ceph-operator\n   template:\n     metadata:\n       labels:\n         control-plane: ceph-csi-op-controller-manager\n         app.kubernetes.io/name: ceph-csi\n         app.kubernetes.io/instance: rook-ceph-operator\n       annotations:\n         kubectl.kubernetes.io/default-container: manager\n     spec:\n       containers:\n       - args:\n         - --leader-elect\n         command:\n         - /manager\n         env:\n         - name: OPERATOR_NAMESPACE\n           valueFrom:\n             fieldRef:\n               fieldPath: metadata.namespace\n         - name: CSI_SERVICE_ACCOUNT_PREFIX\n           value: ''\n         - name: WATCH_NAMESPACE\n           value: ''\n         - name: KUBERNETES_CLUSTER_DOMAIN\n           value: cluster.local\n-        image: quay.io/cephcsi/ceph-csi-operator:v1.0.4\n+        image: quay.io/cephcsi/ceph-csi-operator:v1.1.0\n         livenessProbe:\n           httpGet:\n             path: /healthz\n             port: 8081\n           initialDelaySeconds: 15\n           periodSeconds: 20\n         name: manager\n         readinessProbe:\n           httpGet:\n             path: /readyz\n             port: 8081\n           initialDelaySeconds: 5\n           periodSeconds: 10\n         resources:\n           limits:\n             cpu: 500m\n             memory: 128Mi\n           requests:\n             cpu: 10m\n             memory: 64Mi\n         securityContext:\n           allowPrivilegeEscalation: false\n           capabilities:\n             drop:\n             - ALL\n           readOnlyRootFilesystem: true\n       imagePullSecrets: []\n       nodeSelector: {}\n       priorityClassName: null\n       securityContext:\n         runAsNonRoot: true\n       serviceAccountName: ceph-csi\n       terminationGracePeriodSeconds: 10\n       tolerations: []\n       topologySpreadConstraints: []\n ",
+      "kind": "Deployment",
+      "kustomization_path": ".",
+      "name": "ceph-csi-controller-manager",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator Deployment: rook-ceph/rook-ceph-operator\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator Deployment: rook-ceph/rook-ceph-operator\n\n@@ -1,89 +1,89 @@\n\n ---\n kind: Deployment\n apiVersion: apps/v1\n metadata:\n   name: rook-ceph-operator\n   namespace: rook-ceph\n   labels:\n     operator: rook\n     storage-backend: ceph\n     app.kubernetes.io/name: rook-ceph\n     app.kubernetes.io/instance: rook-ceph-operator\n-    app.kubernetes.io/version: v1.20.9\n+    app.kubernetes.io/version: v1.21.1\n     app.kubernetes.io/part-of: rook-ceph-operator\n     app.kubernetes.io/managed-by: Helm\n     app.kubernetes.io/created-by: helm\n spec:\n   replicas: 1\n   selector:\n     matchLabels:\n       app: rook-ceph-operator\n   strategy:\n     type: Recreate\n   template:\n     metadata:\n       labels:\n         app: rook-ceph-operator\n     spec:\n       tolerations:\n       - effect: NoExecute\n         key: node.kubernetes.io/unreachable\n         operator: Exists\n         tolerationSeconds: 5\n       containers:\n       - name: rook-ceph-operator\n-        image: docker.io/rook/ceph:v1.20.9\n+        image: docker.io/rook/ceph:v1.21.1\n         imagePullPolicy: IfNotPresent\n         args:\n         - ceph\n         - operator\n         securityContext:\n           capabilities:\n             drop:\n             - ALL\n           runAsGroup: 2016\n           runAsNonRoot: true\n           runAsUser: 2016\n         volumeMounts:\n         - mountPath: /var/lib/rook\n           name: rook-config\n         - mountPath: /etc/ceph\n           name: default-config-dir\n         env:\n         - name: ROOK_CURRENT_NAMESPACE_ONLY\n           value: 'false'\n         - name: ROOK_RECONCILE_CONCURRENT_CLUSTERS\n           value: '1'\n         - name: ROOK_HOSTPATH_REQUIRES_PRIVILEGED\n           value: 'false'\n         - name: ROOK_DISABLE_DEVICE_HOTPLUG\n           value: 'false'\n         - name: ROOK_DISCOVER_DEVICES_INTERVAL\n           value: 60m\n         - name: ROOK_UNREACHABLE_NODE_TOLERATION_SECONDS\n           value: '5'\n         - name: NODE_NAME\n           valueFrom:\n             fieldRef:\n               fieldPath: spec.nodeName\n         - name: POD_NAME\n           valueFrom:\n             fieldRef:\n               fieldPath: metadata.name\n         - name: POD_NAMESPACE\n           valueFrom:\n             fieldRef:\n               fieldPath: metadata.namespace\n         resources:\n           limits:\n             memory: 512Mi\n           requests:\n             cpu: 200m\n             memory: 128Mi\n       serviceAccountName: rook-ceph-system\n       volumes:\n       - name: rook-config\n         emptyDir: {}\n       - name: default-config-dir\n         emptyDir: {}\n ",
+      "kind": "Deployment",
+      "kustomization_path": ".",
+      "name": "rook-ceph-operator",
+      "namespace": "rook-ceph"
+     },
+     {
+      "diff": "--- HelmRelease: rook-ceph/rook-ceph-operator NetworkPolicy: rook-ceph/ceph-csi-ceph-csi-controller-manager\n\n+++ HelmRelease: rook-ceph/rook-ceph-operator NetworkPolicy: rook-ceph/ceph-csi-ceph-csi-controller-manager\n\n@@ -0,0 +1,21 @@\n\n+---\n+apiVersion: networking.k8s.io/v1\n+kind: NetworkPolicy\n+metadata:\n+  name: ceph-csi-ceph-csi-controller-manager\n+  namespace: rook-ceph\n+  labels:\n+    app.kubernetes.io/name: ceph-csi\n+    app.kubernetes.io/instance: rook-ceph-operator\n+    app.kubernetes.io/version: v1.1.0\n+    app.kubernetes.io/managed-by: Helm\n+spec:\n+  egress:\n+  - {}\n+  podSelector:\n+    matchLabels:\n+      control-plane: ceph-csi-op-controller-manager\n+  policyTypes:\n+  - Ingress\n+  - Egress\n+",
+      "kind": "NetworkPolicy",
+      "kustomization_path": ".",
+      "name": "ceph-csi-ceph-csi-controller-manager",
+      "namespace": "rook-ceph"
+     }
+    ],
+    "kind": "HelmRelease",
+    "kustomization_path": ".",
+    "name": "rook-ceph-operator",
+    "namespace": "rook-ceph"
+   }
+  ],
+  "kustomization": [
+   {
+    "diffs": [
+     {
+      "diff": "--- kubernetes/apps/rook-ceph/rook-ceph-operator/app Kustomization: rook-ceph/rook-ceph-operator HelmRelease: rook-ceph/rook-ceph-operator\n\n+++ kubernetes/apps/rook-ceph/rook-ceph-operator/app Kustomization: rook-ceph/rook-ceph-operator HelmRelease: rook-ceph/rook-ceph-operator\n\n@@ -1,61 +1,61 @@\n\n ---\n apiVersion: helm.toolkit.fluxcd.io/v2\n kind: HelmRelease\n metadata:\n   labels:\n     kustomize.toolkit.fluxcd.io/name: rook-ceph-operator\n     kustomize.toolkit.fluxcd.io/namespace: rook-ceph\n   name: rook-ceph-operator\n   namespace: rook-ceph\n spec:\n   chart:\n     spec:\n       chart: rook-ceph\n       sourceRef:\n         kind: HelmRepository\n         name: rook-ceph\n-      version: v1.20.9\n+      version: v1.21.1\n   install:\n     crds: CreateReplace\n     remediation:\n       retries: 3\n     strategy:\n       name: RetryOnFailure\n   interval: 1h\n   postRenderers:\n   - kustomize:\n       patches:\n       - patch: |\n           apiVersion: v1\n           kind: ConfigMap\n           metadata:\n             name: rook-csi-operator-image-set-configmap\n             annotations:\n               helm.sh/resource-policy: keep\n         target:\n           kind: ConfigMap\n           name: rook-csi-operator-image-set-configmap\n   rollback:\n     cleanupOnFail: true\n     recreate: true\n   timeout: 15m\n   upgrade:\n     cleanupOnFail: true\n     crds: CreateReplace\n     remediation:\n       remediateLastFailure: true\n       retries: 2\n     strategy:\n       name: RemediateOnFailure\n   values:\n     crds:\n       enabled: true\n     monitoring:\n       enabled: true\n     resources:\n       limits:\n         memory: 512Mi\n       requests:\n         cpu: 200m\n         memory: 128Mi\n ",
+      "kind": "HelmRelease",
+      "kustomization_path": "kubernetes/apps/rook-ceph/rook-ceph-operator/app",
+      "name": "rook-ceph-operator",
+      "namespace": "rook-ceph"
+     }
+    ],
+    "kind": "Kustomization",
+    "kustomization_path": "kubernetes/apps/rook-ceph/rook-ceph-operator/app",
+    "name": "rook-ceph-operator",
+    "namespace": "rook-ceph"
+   },
+   {
+    "diffs": [
+     {
+      "diff": "--- kubernetes/apps/rook-ceph/ceph-csi-drivers/app Kustomization: rook-ceph/ceph-csi-drivers HelmRelease: rook-ceph/ceph-csi-drivers\n\n+++ kubernetes/apps/rook-ceph/ceph-csi-drivers/app Kustomization: rook-ceph/ceph-csi-drivers HelmRelease: rook-ceph/ceph-csi-drivers\n\n@@ -1,191 +1,191 @@\n\n ---\n apiVersion: helm.toolkit.fluxcd.io/v2\n kind: HelmRelease\n metadata:\n   labels:\n     kustomize.toolkit.fluxcd.io/name: ceph-csi-drivers\n     kustomize.toolkit.fluxcd.io/namespace: rook-ceph\n   name: ceph-csi-drivers\n   namespace: rook-ceph\n spec:\n   chart:\n     spec:\n       chart: ceph-csi-drivers\n       sourceRef:\n         kind: HelmRepository\n         name: ceph-csi-operator\n-      version: 1.0.4\n+      version: 1.1.0\n   dependsOn:\n   - name: rook-ceph-operator\n   driftDetection:\n     mode: enabled\n   install:\n     crds: CreateReplace\n     remediation:\n       retries: 3\n     strategy:\n       name: RetryOnFailure\n   interval: 1h\n   postRenderers:\n   - kustomize:\n       patches:\n       - patch: |\n           apiVersion: v1\n           kind: placeholder\n           metadata:\n             name: placeholder\n             annotations:\n               helm.sh/resource-policy: keep\n         target:\n           kind: Driver|OperatorConfig|ServiceAccount|ClusterRole|ClusterRoleBinding|Role|RoleBinding\n   rollback:\n     cleanupOnFail: true\n     recreate: true\n   timeout: 15m\n   upgrade:\n     cleanupOnFail: true\n     crds: CreateReplace\n     remediation:\n       remediateLastFailure: true\n       retries: 2\n     strategy:\n       name: RemediateOnFailure\n   values:\n     drivers:\n       cephfs:\n         clusterName: rook-ceph-external\n         controllerPlugin:\n           deploymentStrategy:\n             type: Recreate\n           priorityClassName: system-cluster-critical\n           replicas: 2\n           resources:\n             attacher:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 100m\n                 memory: 128Mi\n             provisioner:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 100m\n                 memory: 128Mi\n             resizer:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 100m\n                 memory: 128Mi\n             snapshotter:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 100m\n                 memory: 128Mi\n         grpcTimeout: 150\n         imageSet:\n           name: rook-csi-operator-image-set-configmap\n         log:\n           rotation:\n             enabled: false\n         name: rook-ceph.cephfs.csi.ceph.com\n         nodePlugin:\n           kubeletDirPath: /var/lib/kubelet\n           priorityClassName: system-node-critical\n           resources:\n             plugin:\n               limits:\n                 memory: 1Gi\n               requests:\n                 cpu: 100m\n                 memory: 512Mi\n             registrar:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 50m\n                 memory: 128Mi\n           updateStrategy:\n             type: RollingUpdate\n         snapshotPolicy: volumeSnapshot\n       nfs:\n         enabled: false\n       nvmeof:\n         enabled: false\n       rbd:\n         clusterName: rook-ceph-external\n         controllerPlugin:\n           deploymentStrategy:\n             type: Recreate\n           priorityClassName: system-cluster-critical\n           replicas: 2\n           resources:\n             attacher:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 100m\n                 memory: 128Mi\n             provisioner:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 100m\n                 memory: 128Mi\n             resizer:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 100m\n                 memory: 128Mi\n             snapshotter:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 100m\n                 memory: 128Mi\n         grpcTimeout: 150\n         imageSet:\n           name: rook-csi-operator-image-set-configmap\n         log:\n           rotation:\n             enabled: false\n         name: rook-ceph.rbd.csi.ceph.com\n         nodePlugin:\n           kubeletDirPath: /var/lib/kubelet\n           priorityClassName: system-node-critical\n           resources:\n             plugin:\n               limits:\n                 memory: 1Gi\n               requests:\n                 cpu: 100m\n                 memory: 512Mi\n             registrar:\n               limits:\n                 memory: 256Mi\n               requests:\n                 cpu: 50m\n                 memory: 128Mi\n           updateStrategy:\n             type: RollingUpdate\n         snapshotPolicy: volumeSnapshot\n     operatorConfig:\n       driverSpecDefaults:\n         clusterName: rook-ceph-external\n         controllerPlugin:\n           priorityClassName: system-cluster-critical\n           replicas: 2\n         grpcTimeout: 150\n         imageSet:\n           name: rook-csi-operator-image-set-configmap\n         log:\n           rotation:\n             enabled: false\n         nodePlugin:\n           kubeletDirPath: /var/lib/kubelet\n           priorityClassName: system-node-critical\n       namespace: rook-ceph\n ",
+      "kind": "HelmRelease",
+      "kustomization_path": "kubernetes/apps/rook-ceph/ceph-csi-drivers/app",
+      "name": "ceph-csi-drivers",
+      "namespace": "rook-ceph"
+     }
+    ],
+    "kind": "Kustomization",
+    "kustomization_path": "kubernetes/apps/rook-ceph/ceph-csi-drivers/app",
+    "name": "ceph-csi-drivers",
+    "namespace": "rook-ceph"
+   }
+  ]
+ },
+ "sanitised": "Secrets skipped at render time; at most 3 objects per kind; CRD bodies cut to 30 lines."
+}

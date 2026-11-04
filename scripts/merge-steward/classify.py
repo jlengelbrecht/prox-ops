@@ -37,6 +37,8 @@ def load_policy(path):
     for check in required:
         if not isinstance(check, dict) or not check.get("name") or not isinstance(check.get("app_id"), int):
             raise ValueError("each required check needs a name and an integer app_id")
+    if not isinstance(policy.get("steward_app_id"), int):
+        raise ValueError("policy key steward_app_id must be an integer")
     deadline = policy.get("required_checks_deadline_minutes")
     if not isinstance(deadline, int) or deadline <= 0:
         raise ValueError("policy key required_checks_deadline_minutes must be a positive integer")

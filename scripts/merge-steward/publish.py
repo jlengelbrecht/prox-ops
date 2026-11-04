@@ -74,8 +74,10 @@ def remove_label(gh, number, label):
             raise
 
 
-def check_payload(verdict, reason, text):
+def check_payload(verdict, reason, text, detail=None):
     payload = {"name": CHECK_NAME, "output": {"title": reason[:250], "summary": text[:60000]}}
+    if detail:
+        payload["output"]["text"] = detail[:60000]
     if verdict == HOLD:
         payload["status"] = "in_progress"
     else:
@@ -84,9 +86,12 @@ def check_payload(verdict, reason, text):
     return payload
 
 
-def publish_check(app_gh, sha, verdict, reason, text):
-    """Create a new check run per evaluation; GitHub uses the latest run of a name."""
-    app_gh.post("check-runs", dict(check_payload(verdict, reason, text), head_sha=sha))
+def publish_check(app_gh, sha, verdict, reason, text, detail=None):
+    """Create a new check run per evaluation; GitHub uses the latest run of a name.
+
+    detail goes to output.text, where the steward keeps its render record.
+    """
+    app_gh.post("check-runs", dict(check_payload(verdict, reason, text, detail), head_sha=sha))
 
 
 def set_labels(gh, number, current, verdict):
