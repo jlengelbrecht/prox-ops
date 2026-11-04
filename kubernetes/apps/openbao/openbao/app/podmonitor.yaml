@@ -1,0 +1,29 @@
+---
+# Every replica's own metrics, from the metrics-only listener on 8220. A
+# PodMonitor rather than the chart's ServiceMonitor: it targets the pods, so
+# sealed replicas (not Ready, so not Service endpoints) are still scraped.
+# Only the CA is read from the server's TLS Secret; the server name is a SAN.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: openbao
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openbao
+      component: server
+  podMetricsEndpoints:
+    - port: metrics
+      path: /v1/sys/metrics
+      params:
+        format:
+          - prometheus
+      scheme: https
+      interval: 30s
+      scrapeTimeout: 10s
+      tlsConfig:
+        ca:
+          secret:
+            name: openbao-server-tls
+            key: ca.crt
+        serverName: openbao-internal
