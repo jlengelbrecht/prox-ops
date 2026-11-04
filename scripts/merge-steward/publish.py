@@ -5,6 +5,7 @@ wherever the steward runs. Labels and the comment use the workflow token, whose 
 do not start other workflows.
 """
 
+from datetime import datetime
 from urllib.parse import quote
 
 from classify import HOLD, NEEDS, PASS
@@ -17,19 +18,52 @@ LABEL_COLORS = {"steward/pass": "0e8a16", "steward/needs-human": "d93f0b", "stew
 COMMENT_AUTHOR = "github-actions[bot]"
 
 
-def verify_override(gh, number, label):
-    """Return (admin_login, ignored_login) for the most recent application of the label."""
-    events = gh.paginate(f"issues/{number}/events")
-    applied = [e for e in events if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == label]
-    if not applied:
-        return None, None
-    login = (applied[-1].get("actor") or {}).get("login")
+def _when(stamp):
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def newest_label_event(timeline, label):
+    """The newest `labeled` event for the label in the PR timeline, or None."""
+    applied = [e for e in timeline if e.get("event") == "labeled" and (e.get("label") or {}).get("name") == label]
+    return applied[-1] if applied else None
+
+
+def labeller_problem(gh, login):
+    """None when login is a repository admin, else why the label does not count.
+
+    A 404 means the actor is not a collaborator at all (App actors such as renovate[bot]),
+    so it counts as "not admin". Any other API error raises, and the caller fails closed.
+    """
     if not login:
-        return None, "unknown"
-    perm = gh.get(f"collaborators/{quote(login)}/permission")
+        return "the labeller is unknown"
+    try:
+        perm = gh.get(f"collaborators/{quote(login)}/permission")
+    except GitHubError as err:
+        if err.status == 404:
+            return f"{login} is not a collaborator on this repository"
+        raise
     if (perm or {}).get("permission") == "admin":
-        return login, None
-    return None, login
+        return None
+    return f"{login} is not a repository admin"
+
+
+def label_postdates_head(timeline, event):
+    """True when the label event is newer than every commit and force push in the timeline.
+
+    Commit events carry git dates, force pushes a server time. A commit without a date
+    counts as newer, so the check fails closed.
+    """
+    labelled = _when(event["created_at"])
+    for item in timeline:
+        if item.get("event") == "committed":
+            stamp = (item.get("committer") or {}).get("date")
+        elif item.get("event") == "head_ref_force_pushed":
+            stamp = item.get("created_at")
+        else:
+            continue
+        if not stamp or _when(stamp) >= labelled:
+            return False
+    return True
 
 
 def remove_label(gh, number, label):

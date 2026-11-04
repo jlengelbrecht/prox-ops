@@ -4,8 +4,9 @@
 # every other PR gets needs-human until a repository admin adds `steward/human-approved`.
 # All verdicts come from deterministic rules in scripts/merge-steward/policy.yaml.
 #
-# The evaluate job runs on pull_request_target, status and schedule events, so both this
-# file and the steward code come from the default branch. It never checks out or runs PR
+# The evaluate job runs on pull_request_target, status, check_run, check_suite, schedule
+# and workflow_dispatch events, so both this file and the steward code come from the
+# default branch. It never checks out or runs PR
 # code: it reads PR data through the API only. It never merges anything.
 name: "Merge Steward"
 
@@ -14,9 +15,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   pull_request_target:
+    branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
   # Renovate flips renovate/stability-days when a soak ends.
   status:
+  # A check that finishes (or fails) after the PR event re-evaluates the PR it belongs to.
+  check_run:
+    types: [completed]
+  check_suite:
+    types: [completed]
   schedule:
     - cron: "17 */6 * * *"
   workflow_dispatch:
@@ -25,6 +32,11 @@ on:
         description: "Pull request number to evaluate"
         required: true
         type: number
+      dry_run:
+        description: "Print the verdict only; post no check run, label or comment"
+        required: false
+        default: true
+        type: boolean
 
 permissions: {}
 
@@ -64,18 +76,33 @@ jobs:
   evaluate:
     name: merge-steward evaluate
     # Events that can change the verdict: new code, the override label, the soak status,
-    # the sweep, or a manual run.
+    # a check finishing on a PR head, the sweep, or a manual run. The steward's own check
+    # run and jobs (names starting merge-steward, check suites of the homebot-0 app) are
+    # skipped so a published verdict does not trigger another evaluation.
     if: >-
       (github.event_name == 'pull_request_target' &&
         (contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) ||
          github.event.label.name == 'steward/human-approved')) ||
       (github.event_name == 'status' && github.event.context == 'renovate/stability-days') ||
+      (github.event_name == 'check_run' &&
+        !startsWith(github.event.check_run.name, 'merge-steward') &&
+        github.event.check_run.pull_requests[0] != null) ||
+      (github.event_name == 'check_suite' &&
+        github.event.check_suite.app.id != 1091574 &&
+        github.event.check_suite.pull_requests[0] != null) ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # PR events group by PR number; status and check events by head commit, so a burst of
+    # finishing checks collapses into one pending evaluation. A new push cancels a running
+    # evaluation; a label event waits for it.
     concurrency:
-      group: merge-steward-${{ github.event.pull_request.number || inputs.pr || github.event.sha || 'sweep' }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+      group: >-
+        merge-steward-${{ github.event.pull_request.number || inputs.pr || github.event.sha ||
+        github.event.check_run.head_sha || github.event.check_suite.head_sha || 'sweep' }}
+      cancel-in-progress: >-
+        ${{ github.event_name == 'pull_request_target' &&
+        contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) }}
     permissions:
       contents: read        # read changed manifests through the API
       pull-requests: write  # sticky comment and steward/* labels
@@ -114,6 +141,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STATUS_SHA: ${{ github.event.sha }}
+          CHECK_SHA: ${{ github.event.check_run.head_sha || github.event.check_suite.head_sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           if [ ! -f scripts/merge-steward/steward.py ]; then
@@ -128,7 +157,13 @@ jobs:
               else
                 python steward.py --pr "$PR_NUMBER" --wait 1200
               fi ;;
-            workflow_dispatch) python steward.py --pr "$PR_NUMBER" --wait 600 ;;
+            workflow_dispatch)
+              if [ "$DRY_RUN" = "true" ]; then
+                python steward.py --pr "$PR_NUMBER" --dry-run
+              else
+                python steward.py --pr "$PR_NUMBER" --wait 600
+              fi ;;
             status) python steward.py --sha "$STATUS_SHA" --wait 300 ;;
+            check_run | check_suite) python steward.py --sha "$CHECK_SHA" --wait 120 ;;
             schedule) python steward.py --sweep ;;
           esac

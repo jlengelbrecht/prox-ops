@@ -13,7 +13,8 @@ import yaml
 PASS, HOLD, NEEDS = "pass", "hold", "needs-human"
 ALL_TYPES = ["digest", "pinDigest", "pin", "patch", "minor", "major", "replacement", "rollback", "bump"]
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
-_VERSION = re.compile(r"(\d+)(?:\.\d+)*")
+# A version number standing on its own: not part of a digest, hash or longer word.
+_VERSION = re.compile(r"(?<![0-9A-Za-z])v?(\d+(?:\.\d+)*)(?![0-9A-Za-z])")
 
 
 @dataclass
@@ -30,6 +31,15 @@ def load_policy(path):
     for key in ("authors", "protected_paths", "manual_packages", "pass_update_types", "ignore_checks"):
         if not isinstance(policy.get(key), list):
             raise ValueError(f"policy key {key} must be a list")
+    required = policy.get("required_checks")
+    if not isinstance(required, list) or not required:
+        raise ValueError("policy key required_checks must be a non-empty list")
+    for check in required:
+        if not isinstance(check, dict) or not check.get("name") or not isinstance(check.get("app_id"), int):
+            raise ValueError("each required check needs a name and an integer app_id")
+    deadline = policy.get("required_checks_deadline_minutes")
+    if not isinstance(deadline, int) or deadline <= 0:
+        raise ValueError("policy key required_checks_deadline_minutes must be a positive integer")
     for rule in policy["manual_packages"]:
         if rule["update_types"] == "all":
             rule["update_types"] = list(ALL_TYPES)
@@ -82,7 +92,7 @@ def parse_packages(body):
         change = row.get("change", "").split("→")[0]
         version = _VERSION.search(change)
         rows.append({"name": name, "update": row.get("update") or None,
-                     "current": version.group(0) if version else None})
+                     "current": version.group(1) if version else None})
     return rows
 
 
@@ -127,7 +137,9 @@ def policy_stage(pr, files, job_files, policy):
             return Stage("policy", NEEDS, f"cannot classify package {pkg['name'] or '?'}")
         if kind not in policy["pass_update_types"]:
             return Stage("policy", NEEDS, f"{pkg['name']} is a {kind} update")
-        if kind == "minor" and pkg["current"] and pkg["current"].split(".")[0] == "0":
+        if kind == "minor" and not pkg["current"]:
+            return Stage("policy", NEEDS, f"{pkg['name']} minor: cannot read the current version")
+        if kind == "minor" and pkg["current"].split(".")[0] == "0":
             return Stage("policy", NEEDS, f"{pkg['name']} is a 0.x minor update")
         for rule in policy["manual_packages"]:
             if kind in rule["update_types"] and any(name_match(p, pkg["name"]) for p in rule["match"]):

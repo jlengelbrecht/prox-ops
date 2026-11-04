@@ -7,32 +7,53 @@ from fold import MARKER, comment, fold, summary
 POLICY = load_policy(Path(__file__).resolve().parents[1] / "policy.yaml")
 
 
-def run(name, status="completed", conclusion="success"):
-    return {"name": name, "status": status, "conclusion": conclusion}
+def run(name, status="completed", conclusion="success", app=15368):
+    return {"name": name, "status": status, "conclusion": conclusion, "app": {"id": app}}
+
+
+REQUIRED = [run(c["name"], app=c["app_id"]) for c in POLICY["required_checks"]]
 
 
 def test_green_checks_pass_and_own_runs_are_ignored():
-    runs = [run("Flux Local Success"), run("Labeler", conclusion="skipped"),
+    runs = REQUIRED + [run("Flux Local Diff", conclusion="skipped"),
             run("merge-steward", conclusion="failure"), run("merge-steward evaluate", status="in_progress")]
     stage, pending = evaluate(runs, [{"context": "x", "state": "success"}], POLICY)
     assert stage.verdict == PASS and pending == []
 
 
 def test_soak_status_pending_holds():
-    stage, _ = evaluate([run("Flux Local Success")], [{"context": "renovate/stability-days", "state": "pending"}], POLICY)
+    stage, _ = evaluate(REQUIRED, [{"context": "renovate/stability-days", "state": "pending"}], POLICY)
     assert stage.verdict == HOLD and "soaking" in stage.reason
 
 
 def test_failing_non_required_check_is_needs_human():
-    stage, _ = evaluate([run("Flux Local Success"), run("verify", conclusion="failure")], [], POLICY)
+    stage, _ = evaluate(REQUIRED + [run("verify", conclusion="failure")], [], POLICY)
     assert stage.verdict == NEEDS and "verify" in stage.reason
     stage, _ = evaluate([], [{"context": "ci/x", "state": "error"}], POLICY)
     assert stage.verdict == NEEDS
 
 
 def test_running_checks_hold_and_are_reported_as_pending():
-    stage, pending = evaluate([run("Flux Local Test", status="queued")], [], POLICY)
+    stage, pending = evaluate(REQUIRED + [run("Flux Local Test", status="queued")], [], POLICY)
     assert stage.verdict == HOLD and pending == ["Flux Local Test"]
+
+
+def test_required_checks_must_exist_be_green_and_come_from_their_app():
+    deadline = POLICY["required_checks_deadline_minutes"]
+    stage, pending = evaluate(REQUIRED[1:], [], POLICY, age_minutes=5)
+    assert stage.verdict == HOLD and REQUIRED[0]["name"] in stage.reason and REQUIRED[0]["name"] in pending
+    stage, _ = evaluate(REQUIRED[1:], [], POLICY, age_minutes=deadline + 1)
+    assert stage.verdict == NEEDS and "never reported" in stage.reason
+    skipped = [dict(REQUIRED[0], conclusion="skipped")] + REQUIRED[1:]
+    assert evaluate(skipped, [], POLICY)[0].verdict == NEEDS
+    foreign = [dict(REQUIRED[0], app={"id": 1})] + REQUIRED[1:]
+    assert evaluate(foreign, [], POLICY)[0].verdict == HOLD
+
+
+def test_empty_check_set_never_passes():
+    assert evaluate([], [], POLICY)[0].verdict == HOLD
+    assert evaluate([], [], POLICY, age_minutes=10**6)[0].verdict == NEEDS
+    assert evaluate([], [{"context": "x", "state": "success"}], POLICY)[0].verdict != PASS
 
 
 def test_fold_defaults_to_needs_human():

@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -23,8 +24,10 @@ from classify import NEEDS, Stage
 from ghapi import GitHub, GitHubError
 
 POLICY = Path(__file__).with_name("policy.yaml")
-_JOB_KIND = re.compile(r"^kind:\s*Job\s*$", re.MULTILINE)
-_APPROVAL = re.compile(r"^<!-- merge-steward-approval login=([A-Za-z0-9-]+) fp=([0-9a-f]{64}) -->$", re.MULTILINE)
+# kind: Job, quoted or not, with or without a trailing comment, at any indent (a list item too).
+_JOB_KIND = re.compile(r"""^[ \t]*(?:-[ \t]+)?kind:[ \t]*(["']?)Job\1[ \t]*(?:#.*)?$""", re.MULTILINE)
+_APPROVAL = re.compile(r"^<!-- merge-steward-approval login=(?P<login>[A-Za-z0-9-]+) event=(?P<event>[0-9]+) "
+                       r"fp=(?P<fp>[0-9a-f]{64}) -->$", re.MULTILINE)
 
 
 def job_manifests(gh, files, sha):
@@ -68,7 +71,7 @@ def stages_for(gh, pr, files, policy, wait_seconds):
     while True:
         runs = gh.paginate(f"commits/{sha}/check-runs?filter=latest", key="check_runs")
         statuses = gh.paginate(f"commits/{sha}/status", key="statuses")
-        stage, pending = checks.evaluate(runs, statuses, policy)
+        stage, pending = checks.evaluate(runs, statuses, policy, head_age_minutes(commits, pr))
         # Two clean polls in a row, so a job that starts after another finishes is not missed.
         stable = stable + 1 if not pending else 0
         if stable >= 2 or (stable and wait_seconds == 0) or stage.verdict == NEEDS or time.monotonic() > deadline:
@@ -78,27 +81,51 @@ def stages_for(gh, pr, files, policy, wait_seconds):
     return stages
 
 
+def head_age_minutes(commits, pr, now=None):
+    """Minutes since the head commit was made (its committer date), else since the PR opened."""
+    stamp = ((commits[-1].get("commit") or {}).get("committer") or {}).get("date") if commits else None
+    stamp = stamp or pr.get("created_at")
+    if not stamp:
+        return 0
+    now = now or datetime.now(timezone.utc)
+    return (now - datetime.fromisoformat(stamp.replace("Z", "+00:00"))).total_seconds() / 60
+
+
 def check_override(gh, pr, files, comment, policy, labeled_sha, dry_run):
     """Return (admin_login or None, approval marker or None, Stage or None).
 
-    The approval binds to a fingerprint of the PR's changes, recorded in the steward's own
-    comment when the label is applied. Any later change to the diff drops the label.
+    The PR timeline anchors the approval: the newest application of the label must come
+    from an admin and post-date every commit and force push. The run for that labeled
+    event (its head unchanged) records a fingerprint of the diff in the steward's comment,
+    bound to that label event.
+    Later runs need the same fingerprint, so a clean rebase keeps the approval and any
+    change to the diff drops it, whatever dates the commits carry.
     """
     number, label = pr["number"], policy["override_label"]
-    admin, ignored = publish.verify_override(gh, number, label)
+    timeline = gh.paginate(f"issues/{number}/timeline")
+    event = publish.newest_label_event(timeline, label)
     problem = None
-    if ignored:
-        problem = f"{label} ignored: {ignored} is not a repository admin"
-    elif admin:
-        fp = fingerprint(files)
-        recorded = _APPROVAL.search(comment["body"]) if comment else None
-        if labeled_sha and labeled_sha == pr["head"]["sha"]:
-            return admin, f"<!-- merge-steward-approval login={admin} fp={fp} -->", None
-        if not labeled_sha and recorded and recorded.group(2) == fp:
-            return recorded.group(1), recorded.group(0), None
-        problem = f"the PR changed after {label} was applied; re-apply it to approve this version"
+    if event is None:
+        problem = f"{label} has no labelling event in the PR timeline"
     else:
-        problem = f"{label} has no recorded labelling event"
+        login = (event.get("actor") or {}).get("login")
+        why = publish.labeller_problem(gh, login)
+        if why:
+            problem = f"{label} ignored: {why}"
+        else:
+            fp, event_id = fingerprint(files), str(event["id"])
+            recorded = _APPROVAL.search(comment["body"]) if comment else None
+            marker = f"<!-- merge-steward-approval login={login} event={event_id} fp={fp} -->"
+            if recorded and recorded.group("event") == event_id:
+                if recorded.group("fp") == fp:
+                    return recorded.group("login"), recorded.group(0), None
+            elif not labeled_sha:
+                # Only the run for the labeled event records an approval; commit dates are
+                # set by the pusher, so other runs re-verify an existing record only.
+                problem = f"no recorded approval yet for {label}; re-apply it to approve this version"
+            elif labeled_sha == pr["head"]["sha"] and publish.label_postdates_head(timeline, event):
+                return login, marker, None
+            problem = problem or f"the PR changed after {label} was applied; re-apply it to approve this version"
     if not dry_run:
         publish.remove_label(gh, number, label)
     return None, None, Stage("override", NEEDS, problem)
