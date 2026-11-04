@@ -89,16 +89,24 @@ bao_write_json() { # <path> <json-file>
   payload=$2 bao write "$1" - >/dev/null
 }
 
+# Every path below reads from 1Password, so fail here, not halfway through.
+op whoami --format json >"$work/whoami" 2>/dev/null || die "sign in to 1Password first: eval \"\$(op signin)\""
+[[ $(jq -r '.user_type // empty' "$work/whoami") != SERVICE_ACCOUNT ]] ||
+  die "1Password is signed in as a service account; sign in as yourself"
+
 if [[ $token_source == stdin ]]; then
   log "Reading the token from stdin"
-  IFS= read -r t || true
+  # -s: at a terminal the token would otherwise echo, and end up in scrollback.
+  if [[ -t 0 ]]; then
+    IFS= read -rs -p "OpenBao token: " t || true
+    echo
+  else
+    IFS= read -r t || true
+  fi
   [[ -n ${t:-} ]] || die "no token on stdin"
   printf '%s' "$t" >"$work/token"
   unset t
 else
-  op whoami --format json >"$work/whoami" 2>/dev/null || die "sign in to 1Password first: eval \"\$(op signin)\""
-  [[ $(jq -r '.user_type // empty' "$work/whoami") != SERVICE_ACCOUNT ]] ||
-    die "1Password is signed in as a service account; sign in as yourself"
   op read -n "$ROOT_REF" >"$work/token" 2>/dev/null || die "could not read $ROOT_REF"
 fi
 
@@ -136,7 +144,7 @@ fi
 acc=$(oidc_accessor)
 
 log "Configuring OIDC against authentik"
-op read -n "$OIDC_REF" >"$work/oidc-secret" 2>/dev/null || die "could not read $OIDC_REF; create the item first"
+op read -n "$OIDC_REF" >"$work/oidc-secret" 2>/dev/null || die "could not read $OIDC_REF; does the item exist?"
 jq -n --arg url "$DISCOVERY_URL" --rawfile secret "$work/oidc-secret" '{
     oidc_discovery_url: $url,
     oidc_client_id: "openbao",
@@ -247,7 +255,7 @@ if [[ -z $(bao_json secrets list | jq -r '."database/".accessor // empty') ]]; t
 fi
 
 log "Configuring the connection to CNPG"
-op read -n "$DB_REF" >"$work/db-password" 2>/dev/null || die "could not read $DB_REF; add the field first"
+op read -n "$DB_REF" >"$work/db-password" 2>/dev/null || die "could not read $DB_REF; does the field exist?"
 # sslmode=require, not verify-full: CNPG's CA renews every 90 days, and a copy
 # here would expire and stop rotation.
 jq -n --arg url "$DB_URL" --rawfile password "$work/db-password" '{
