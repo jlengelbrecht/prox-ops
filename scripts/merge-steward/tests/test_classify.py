@@ -117,6 +117,28 @@ def test_unclassifiable_is_needs_human():
     assert stage(["| app | replacement | `1.0.0` → `1.0.1` |"]).verdict == NEEDS
 
 
+def test_version_is_not_read_out_of_a_digest():
+    digest = parse_packages(table("| app | digest | `abc1234` → `def5678` |"))
+    assert digest[0]["current"] is None
+    assert parse_packages(table("| app | minor | `v1.2.3` → `v1.3.0` |"))[0]["current"] == "1.2.3"
+    assert parse_packages(table("| app | minor | `sha256:9f86d0` → `1.0.0` |"))[0]["current"] is None
+
+
+def test_minor_without_a_readable_current_version_is_needs_human():
+    result = stage(["| app | minor | `latest` → `1.3.0` |"], labels=("update/minor",))
+    assert result.verdict == NEEDS and "current version" in result.reason
+
+
+def test_policy_loader_requires_required_checks(tmp_path):
+    import yaml
+    base = yaml.safe_load((Path(__file__).resolve().parents[1] / "policy.yaml").read_text())
+    for bad in ([], [{"name": "x"}], [{"name": "x", "app_id": "15368"}]):
+        path = tmp_path / "policy.yaml"
+        path.write_text(yaml.safe_dump(dict(base, required_checks=bad)))
+        with pytest.raises(ValueError):
+            load_policy(path)
+
+
 def test_policy_loader_rejects_unknown_versions(tmp_path):
     bad = tmp_path / "policy.yaml"
     bad.write_text("version: 2\n")

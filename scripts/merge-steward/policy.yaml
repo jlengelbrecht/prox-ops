@@ -16,6 +16,20 @@ override_label: steward/human-approved
 # Check runs the steward ignores when it reads the head commit: its own check run and job.
 ignore_checks: ["merge-steward", "merge-steward evaluate"]
 
+# Check runs that must exist on the head commit, come from the named GitHub App (15368 is
+# GitHub Actions, 46505 GitGuardian) and conclude success: the ruleset's required set. A
+# missing one is hold until the deadline (minutes after the head commit), then needs-human.
+required_checks:
+  - {name: "Flux Local Pre-Job", app_id: 15368}
+  - {name: "Flux Local Success", app_id: 15368}
+  - {name: "GitGuardian Security Checks", app_id: 46505}
+  - {name: "Labeler", app_id: 15368}
+  - {name: "Security Gate", app_id: 15368}
+  - {name: "Multi-Layer Bug Detection", app_id: 15368}
+  - {name: "Talos and Kubernetes versions agree", app_id: 15368}
+  - {name: "Talos upgrade path is supported", app_id: 15368}
+required_checks_deadline_minutes: 120
+
 # Update types that may pass when nothing else matches. Everything else (major,
 # replacement, rollback, bump, unknown) is needs-human.
 pass_update_types: [digest, pinDigest, pin, patch, minor]
@@ -62,11 +76,12 @@ manual_packages:
     match: ["ghcr.io/squat/generic-device-plugin"]
     update_types: all
   - reason: LiteLLM, Hermes and Hindsight carry schema migrations
-    match: ["docker.io/nousresearch/hermes-agent", "hermes-agent", "ghcr.io/vectorize-io/hindsight-api",
-            "ghcr.io/vectorize-io/hindsight-control-plane", "hindsight", "/litellm/"]
+    # Regexes, so every image and chart name for these apps is caught (Renovate's rule lists
+    # exact names; the steward is deliberately broader).
+    match: ["/hermes-agent/", "/hindsight/", "/litellm/"]
     update_types: all
   - reason: Paperclip migrations need a pg_dump first
-    match: ["ghcr.io/paperclipai/paperclip"]
+    match: ["/paperclip/"]
     update_types: all
   - reason: provider-azuread is fully manual
     match: ["/provider-azuread/"]
@@ -81,7 +96,7 @@ manual_packages:
     match: ["/postgresql/", "/postgres/", "/valkey/", "/redis/", "/mariadb/"]
     update_types: [minor, major]
   - reason: app runs database or storage migrations on minor or major
-    match: ["/open-webui/", "/qdrant/", "n8nio/n8n", "docker.io/n8nio/n8n"]
+    match: ["/open-webui/", "/qdrant/", "/n8n/"]
     update_types: [minor, major]
   - reason: Loki, Alloy and Crossplane minor or major
     match: ["loki", "alloy", "grafana/loki", "grafana/alloy", "docker.io/grafana/loki",
