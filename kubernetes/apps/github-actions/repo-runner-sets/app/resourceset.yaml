@@ -23,6 +23,11 @@
 #               ghcr.io/actions/actions-runner. When set, the pod also gets
 #               imagePullSecrets ghcr-runner-images (ghcr-pull-secret.yaml) so
 #               private GHCR images pull. Pin by digest.
+#   gatewayFQDNs
+#               optional list of hostnames served by the envoy-internal gateway
+#               that the runner may resolve and reach on TCP 443. DNS answers
+#               them and a toEndpoints rule admits the gateway pods; see the
+#               comment above resourcesTemplate for why toFQDNs cannot do this.
 #   runnerMemory, runnerDisk
 #               optional runner container limits, default 4Gi, 10Gi.
 #               runnerDisk also sizes the work emptyDir. Requests stay small.
@@ -141,6 +146,12 @@ spec:
         # PostgreSQL's apt repository (PGDG): PostgreSQL 18 server and client
         # for runner-build. Ubuntu 24.04 ships only PostgreSQL 16.
         - apt.postgresql.org
+        # runner-steward: hash-locked Python wheels for pr-agent and flux-local
+        # (PyPI index plus its file host), and helm from its release host (aqua
+        # verifies the published checksum).
+        - pypi.org
+        - files.pythonhosted.org
+        - get.helm.sh
     - name: groschen
       repoUrl: https://github.com/jlengelbrecht/Groschen
       minRunners: 0
@@ -199,6 +210,20 @@ spec:
       # runner-base (gh, Node.js 24, ShellCheck, yq) plus python3, sqlite3,
       # openssh-client, perl and column for the kit's test suite.
       runnerImage: ghcr.io/jlengelbrecht/runner-afk@sha256:27b639562ff2ee3d669a366b283bd95a3913eaeac7ee63bb6e24bce04ae15297
+    - name: prox-ops-steward
+      repoUrl: https://github.com/jlengelbrecht/prox-ops
+      # Review runners for the Renovate PR steward. One PR-Agent review is a
+      # few model calls against a single-slot local model, so two runners are
+      # plenty. Separate from the cattle/pets scale set in ../../gha-runner-scale-set.
+      minRunners: 0
+      maxRunners: 2
+      # Built by the private runner-images repository and pinned by digest:
+      # runner plus pr-agent, flux-local, helm and flux.
+      runnerImage: ghcr.io/jlengelbrecht/runner-steward@sha256:8c692169ae301ccd8ee35b39e3017b451e42f83a10c55b7984cacb403eecb7b0
+      # LiteLLM, reached through the envoy-internal gateway. Nothing else
+      # internal is allowed; GitHub comes from the template defaults.
+      gatewayFQDNs:
+        - ai-api.homelab0.org
     # Adding a repository is one entry. Only name and repoUrl are required:
     # - name: example-repo
     #   repoUrl: https://github.com/jlengelbrecht/example-repo
@@ -217,6 +242,18 @@ spec:
   #     and artifacts (GitHub's published host list, matched by name)
   #   - GHCR, Go module proxy and checksum DB, npm, then the entry's extraFQDNs
   # Actions service hosts are the only pattern ($fqdnPatterns).
+  #
+  # gatewayFQDNs are for names behind the envoy-internal gateway (for example
+  # ai-api.homelab0.org, LiteLLM). They resolve to the gateway's LoadBalancer
+  # VIP, and Cilium translates the VIP to a gateway pod address before egress
+  # policy runs (bpf-lb-sock is off, so the datapath does the translation).
+  # The policy therefore sees the destination as the envoy-internal endpoint on
+  # its pod port 10443, never as the VIP or the FQDN, so a toFQDNs rule never
+  # matches. These names get a DNS allowance and one toEndpoints rule to the
+  # gateway pods instead (same lane as the Paperclip and Obsidian policies).
+  # The rule is L3/L4, so a runner with it can reach every envoy-internal
+  # route; each route enforces its own authentication. envoy-external is
+  # deliberately not admitted.
   resourcesTemplate: |
     <<- $fqdnNames := list "github.com" "api.github.com" "codeload.github.com" "uploads.github.com" "raw.githubusercontent.com" "objects.githubusercontent.com" "release-assets.githubusercontent.com" "ghcr.io" "pkg-containers.githubusercontent.com" "proxy.golang.org" "sum.golang.org" "storage.googleapis.com" "registry.npmjs.org" >>
     <<- range $i := until 20 >>
@@ -226,6 +263,7 @@ spec:
     <<- $fqdnNames = append $fqdnNames $fqdn >>
     <<- end >>
     <<- $fqdnPatterns := list "*.actions.githubusercontent.com" >>
+    <<- $gatewayFQDNs := get inputs "gatewayFQDNs" | default (list) >>
     ---
     apiVersion: v1
     kind: ServiceAccount
@@ -451,6 +489,9 @@ spec:
                   <<- range $pattern := $fqdnPatterns >>
                   - matchPattern: << $pattern | quote >>
                   <<- end >>
+                  <<- range $fqdn := $gatewayFQDNs >>
+                  - matchName: << $fqdn | quote >>
+                  <<- end >>
         # HTTPS allowlist; see the comment above resourcesTemplate.
         - toFQDNs:
             <<- range $fqdn := $fqdnNames >>
@@ -463,3 +504,17 @@ spec:
             - ports:
                 - port: "443"
                   protocol: TCP
+        <<- if $gatewayFQDNs >>
+        # Gateway-served names (gatewayFQDNs). The LoadBalancer port is 443 and
+        # the pod port is 10443; both are listed so either addressing mode works.
+        - toEndpoints:
+            - matchLabels:
+                io.kubernetes.pod.namespace: network
+                gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+          toPorts:
+            - ports:
+                - port: "443"
+                  protocol: TCP
+                - port: "10443"
+                  protocol: TCP
+        <<- end >>
