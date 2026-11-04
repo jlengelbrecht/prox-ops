@@ -28,7 +28,7 @@ on:
   check_suite:
     types: [completed]
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 * * * *"
   workflow_dispatch:
     inputs:
       pr:
@@ -95,10 +95,12 @@ jobs:
             fi
             [ "$attempt" = 10 ] && break
             sleep 20
-            git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
-              fetch --quiet --no-tags --depth=2 origin "+$MERGE_REF:refs/remotes/origin/steward-merge"
-            git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
-              checkout --quiet --force --detach refs/remotes/origin/steward-merge
+            # A failed fetch is a retry, not a failed render.
+            if git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+              fetch --quiet --no-tags --depth=2 origin "+$MERGE_REF:refs/remotes/origin/steward-merge"; then
+              git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+                checkout --quiet --force --detach refs/remotes/origin/steward-merge
+            fi
           done
           echo "::warning::the PR merge ref was not rebuilt for this head; recording the render as stale"
           echo "fresh=false" >> "$GITHUB_OUTPUT"
@@ -173,7 +175,7 @@ jobs:
     name: merge-steward evaluate
     # Events that can change the verdict: new code, the override label, the soak status,
     # a check suite finishing on a PR head, the sweep, or a manual run. Check suites of the
-    # homebot-0 app are skipped so a published verdict does not trigger another evaluation.
+    # steward app are skipped so a published verdict does not trigger another evaluation.
     needs: render
     # Runs when render is skipped (non-Renovate PRs, other events) or fails (needs-human).
     if: >-
@@ -183,11 +185,14 @@ jobs:
          github.event.label.name == 'steward/human-approved')) ||
       (github.event_name == 'status' && github.event.context == 'renovate/stability-days') ||
       (github.event_name == 'check_suite' &&
-        github.event.check_suite.app.id != 1091574 &&
+        github.event.check_suite.app.id != 5615799 &&
         github.event.check_suite.pull_requests[0] != null) ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Holds the steward app's key. The environment only admits runs from main, so a
+    # workflow edited on a branch cannot use it to post this check.
+    environment: merge-steward
     # PR events group by PR number; status and check suite events by head commit, so a burst
     # of finishing checks collapses into one pending evaluation. Nothing is cancelled in
     # progress: a run whose push is superseded stops by itself (--event-sha and the head
@@ -217,14 +222,16 @@ jobs:
           python-version: '3.15'
       - run: python -m pip install "PyYAML==${PYYAML_VERSION}"
 
-      # The check run is posted by the homebot-0 app so its source stays fixed for the
-      # ruleset. The token can only write checks and expires within the hour.
+      # The check run is posted by the steward app so its source stays fixed for the
+      # ruleset. The token can only write checks and expires within the hour. A dry run
+      # writes nothing, so it needs no token.
       - name: Generate GitHub App token
         id: app-token
+        if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
-          app-id: ${{ secrets.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.STEWARD_APP_ID }}
+          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           permission-checks: write
 
       # Only from this run: the artifact the render job above uploaded for this event.

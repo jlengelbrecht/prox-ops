@@ -16,12 +16,18 @@ POLICY = load_policy(Path(__file__).resolve().parents[1] / "policy.yaml")
 SHA = "c" * 40
 LABEL = "steward/human-approved"
 SECRET_SHAPES = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|-----BEGIN [A-Z ]*PRIVATE KEY")
+@pytest.fixture(autouse=True)
+def fresh_head(monkeypatch):
+    """Keep the head commit inside the deadline, whatever the real clock says."""
+    monkeypatch.setattr(steward, "head_age_minutes", lambda *a: 1)
+
+
 LABELLED_AT = "2026-11-04T12:00:00Z"
 COMMITTED_AT = "2026-11-04T11:00:00Z"
 # Every check the policy requires, green, from the expected app.
 REQUIRED = [{"name": c["name"], "app": {"id": c["app_id"]}, "status": "completed", "conclusion": "success"}
             for c in POLICY["required_checks"]]
-def recorded(verdict="pass", reason="1 Deployment", app=1091574, sha=SHA, run_id=10):
+def recorded(verdict="pass", reason="1 Deployment", app=5615799, sha=SHA, run_id=10):
     """An earlier merge-steward check run carrying a render record."""
     text = f"<!-- merge-steward-render sha={sha} verdict={verdict} reason={reason} -->"
     return {"id": run_id, "name": "merge-steward", "app": {"id": app}, "status": "completed",
