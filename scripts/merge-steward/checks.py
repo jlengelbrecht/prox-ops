@@ -14,17 +14,27 @@ from classify import HOLD, NEEDS, PASS, Stage
 OK_CONCLUSIONS = {"success", "neutral", "skipped"}
 
 
+BAD_CONCLUSIONS = {"failure", "cancelled", "timed_out", "action_required", "stale"}
+
+
 def _required(check_runs, policy, age_minutes):
-    """Return (failed, pending, missing) for policy["required_checks"]."""
+    """Return (failed, pending, missing) for policy["required_checks"].
+
+    The same name can appear in several check suites on one commit (a job skipped in one
+    workflow run and run in another). A required check is satisfied when at least one run
+    of that name from that app concluded success and none concluded badly; skipped and
+    neutral runs are ignored. Only skipped or neutral runs count as missing.
+    """
     failed, pending, missing = [], [], []
     for want in policy["required_checks"]:
         runs = [r for r in check_runs if r["name"] == want["name"] and (r.get("app") or {}).get("id") == want["app_id"]]
-        if not runs:
-            missing.append(want["name"])
+        bad = sorted({str(r["conclusion"]) for r in runs if r["status"] == "completed" and r["conclusion"] in BAD_CONCLUSIONS})
+        if bad:
+            failed.append(f"{want['name']} ({', '.join(bad)})")
         elif any(r["status"] != "completed" for r in runs):
             pending.append(want["name"])
-        elif any(r["conclusion"] != "success" for r in runs):
-            failed.append(f"{want['name']} ({', '.join(sorted({str(r['conclusion']) for r in runs}))})")
+        elif not any(r["conclusion"] == "success" for r in runs):
+            missing.append(want["name"])
     if missing and age_minutes > policy["required_checks_deadline_minutes"]:
         failed += [f"{name} (never reported)" for name in missing]
         missing = []

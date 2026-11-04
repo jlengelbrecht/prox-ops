@@ -44,8 +44,6 @@ def test_required_checks_must_exist_be_green_and_come_from_their_app():
     assert stage.verdict == HOLD and REQUIRED[0]["name"] in stage.reason and REQUIRED[0]["name"] in pending
     stage, _ = evaluate(REQUIRED[1:], [], POLICY, age_minutes=deadline + 1)
     assert stage.verdict == NEEDS and "never reported" in stage.reason
-    skipped = [dict(REQUIRED[0], conclusion="skipped")] + REQUIRED[1:]
-    assert evaluate(skipped, [], POLICY)[0].verdict == NEEDS
     foreign = [dict(REQUIRED[0], app={"id": 1})] + REQUIRED[1:]
     assert evaluate(foreign, [], POLICY)[0].verdict == HOLD
 
@@ -87,3 +85,28 @@ def test_untrusted_reasons_cannot_inject_markdown():
     text = summary([Stage("policy", NEEDS, hostile)], NEEDS, hostile)
     for bad in ("@", "![", "<img", "`", "| col", "\n## head"):
         assert bad not in text
+
+
+def test_required_check_across_suites_success_and_skipped_passes():
+    # Multi-Layer Bug Detection appears in two suites; a skipped twin must not block.
+    runs = REQUIRED + [dict(REQUIRED[0], conclusion="skipped"), dict(REQUIRED[1], conclusion="neutral")]
+    assert evaluate(runs, [], POLICY)[0].verdict == PASS
+
+
+def test_required_check_across_suites_success_and_failure_fails():
+    for bad in ("failure", "cancelled", "timed_out", "action_required", "stale"):
+        stage, _ = evaluate(REQUIRED + [dict(REQUIRED[0], conclusion=bad)], [], POLICY)
+        assert stage.verdict == NEEDS and REQUIRED[0]["name"] in stage.reason, bad
+
+
+def test_required_check_skipped_only_holds_then_needs_human():
+    runs = [dict(REQUIRED[0], conclusion="skipped"), dict(REQUIRED[0], conclusion="skipped")] + REQUIRED[1:]
+    stage, pending = evaluate(runs, [], POLICY, age_minutes=5)
+    assert stage.verdict == HOLD and REQUIRED[0]["name"] in pending
+    stage, _ = evaluate(runs, [], POLICY, age_minutes=POLICY["required_checks_deadline_minutes"] + 1)
+    assert stage.verdict == NEEDS and "never reported" in stage.reason
+
+
+def test_required_check_still_running_in_another_suite_holds():
+    runs = REQUIRED + [dict(REQUIRED[0], status="in_progress", conclusion=None)]
+    assert evaluate(runs, [], POLICY)[0].verdict == HOLD
