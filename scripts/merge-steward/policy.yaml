@@ -1,0 +1,89 @@
+# Merge steward policy. The steward reads this file from the default branch only.
+#
+# Anything the steward cannot match to a rule below gets the needs-human verdict.
+# manual_packages mirrors the "automerge": false rules in .github/renovate/autoMerge.json5
+# and .github/renovate.json5; test_policy_drift.py fails when the two disagree.
+# Package patterns use Renovate's syntax: "/regex/" or an exact name.
+version: 1
+
+# PR authors whose PRs the steward evaluates. Every other author gets needs-human.
+authors: ["renovate[bot]"]
+
+base_branch: main
+soak_status: renovate/stability-days
+override_label: steward/human-approved
+
+# Check runs the steward ignores when it reads the head commit: its own check run and job.
+ignore_checks: ["merge-steward", "merge-steward evaluate"]
+
+# Update types that may pass when nothing else matches. Everything else (major,
+# replacement, rollback, bump, unknown) is needs-human.
+pass_update_types: [digest, pinDigest, pin, patch, minor]
+
+# Any changed file matching one of these globs gets needs-human.
+protected_paths:
+  # Node lifecycle and upgrade automation
+  - talos/**
+  - terraform/**
+  - kubernetes/apps/system-upgrade/**
+  # CI and automation: workflows, Renovate config, labels, repo scripts
+  - .github/**
+  - .gitleaks.toml
+  - scripts/merge-steward/**
+  # Secrets machinery and security boundaries
+  - "**/*.sops.yaml"
+  - kubernetes/apps/external-secrets/**
+  - kubernetes/apps/identity-system/**
+  - kubernetes/apps/security-system/**
+  - kubernetes/apps/hsm-system/**
+  - kubernetes/apps/openbao/**
+  - kubernetes/apps/cert-manager/**
+  # Stateful storage and the cluster backbone
+  - kubernetes/apps/rook-ceph/**
+  - kubernetes/flux/**
+  - kubernetes/apps/flux-system/**
+  - kubernetes/apps/kube-system/**
+  - kubernetes/apps/network/**
+  # Renovate rules that match on file names with "automerge": false
+  - services/yubihsm-tools/**
+  - services/openbao-hsm/**
+  - services/obsidian-mcp/**
+  - scripts/hindsight-logging-ci-assets.py
+  - kubernetes/apps/observability/kube-prometheus-stack/app/helmrelease.yaml
+  - kubernetes/apps/crossplane-system/provider-azuread/app/provider.yaml
+
+# Packages a human merges. update_types lists the update types that need a human;
+# "all" means every update type.
+manual_packages:
+  - reason: rook-ceph and Ceph are fully manual
+    match: ["/rook/", "/ceph/"]
+    update_types: all
+  - reason: YubiHSM device plugin is fully manual
+    match: ["ghcr.io/squat/generic-device-plugin"]
+    update_types: all
+  - reason: LiteLLM, Hermes and Hindsight carry schema migrations
+    match: ["docker.io/nousresearch/hermes-agent", "hermes-agent", "ghcr.io/vectorize-io/hindsight-api",
+            "ghcr.io/vectorize-io/hindsight-control-plane", "hindsight", "/litellm/"]
+    update_types: all
+  - reason: Paperclip migrations need a pg_dump first
+    match: ["ghcr.io/paperclipai/paperclip"]
+    update_types: all
+  - reason: provider-azuread is fully manual
+    match: ["/provider-azuread/"]
+    update_types: all
+  - reason: core infrastructure minor or major
+    match: ["/authentik/", "/goauthentik/", "/nvidia/", "/nvidia-device-plugin/", "kube-prometheus-stack",
+            "/envoy-gateway/", "/envoyproxy/", "/cert-manager/", "/cilium/", "/external-secrets/",
+            "/cloudnative-pg/", "/flux-operator/", "/flux-instance/", "/coredns/", "/multus/",
+            "siderolabs/talos", "ghcr.io/siderolabs/kubelet"]
+    update_types: [minor, major]
+  - reason: stateful data layer minor or major
+    match: ["/postgresql/", "/postgres/", "/valkey/", "/redis/", "/mariadb/"]
+    update_types: [minor, major]
+  - reason: app runs database or storage migrations on minor or major
+    match: ["/open-webui/", "/qdrant/", "n8nio/n8n", "docker.io/n8nio/n8n"]
+    update_types: [minor, major]
+  - reason: Loki, Alloy and Crossplane minor or major
+    match: ["loki", "alloy", "grafana/loki", "grafana/alloy", "docker.io/grafana/loki",
+            "docker.io/grafana/alloy", "crossplane"]
+    update_types: [minor, major]

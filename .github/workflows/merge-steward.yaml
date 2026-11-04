@@ -1,0 +1,42 @@
+---
+# Merge steward: unit tests for the policy engine in scripts/merge-steward. The job
+# that evaluates PRs and posts the merge-steward check run is added separately.
+name: "Merge Steward"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+env:
+  # renovate: datasource=pypi depName=pyyaml
+  PYYAML_VERSION: "6.0.3"
+  # renovate: datasource=pypi depName=pytest
+  PYTEST_VERSION: "9.0.2"
+
+jobs:
+  test:
+    name: merge-steward tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.15'
+      - run: python -m pip install "PyYAML==${PYYAML_VERSION}" "pytest==${PYTEST_VERSION}"
+      - name: Unit tests (output kept for the secret-shape check)
+        run: |
+          set -o pipefail
+          python -m pytest -q scripts/merge-steward/tests 2>&1 | tee pytest.log
+      - name: No secret-shaped strings in test output
+        run: |
+          if grep -Eq 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|-----BEGIN [A-Z ]*PRIVATE KEY' pytest.log; then
+            echo "::error::secret-shaped string in steward test output"
+            exit 1
+          fi
