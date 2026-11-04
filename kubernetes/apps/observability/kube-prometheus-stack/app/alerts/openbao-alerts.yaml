@@ -1,9 +1,11 @@
 ---
 # OpenBao and the YubiHSM behind its seal. A sealed or crashed replica shows
 # as not ready (its readiness probe needs it unsealed), so pod readiness is
-# the signal; no OpenBao metrics endpoint is needed. The HSM is reachable
-# when yubihsm-connector is ready: its readiness checks for status=OK, which
-# it reports only while the device is attached.
+# the signal for seal state: vault_core_unsealed and vault_core_active keep
+# old series for the telemetry retention time, under more than one label set.
+# OpenBao's own metrics cover Raft health. The HSM is reachable when
+# yubihsm-connector is ready: its readiness checks for status=OK, which it
+# reports only while the device is attached.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -41,6 +43,46 @@ spec:
           annotations:
             summary: "OpenBao replica {{ $labels.pod }} is not ready"
             description: "{{ $labels.pod }} has been not ready (sealed, crashed or not joined) for 15 minutes. The others keep serving; a restart only helps once the HSM is reachable."
+
+        # Autopilot's own count of the voters Raft can lose, reported by the
+        # leader. This also catches replicas that are ready but not healthy
+        # voters, which pod readiness can't see.
+        - alert: OpenBaoNoFailureTolerance
+          expr: min(vault_autopilot_failure_tolerance) < 1
+          for: 15m
+          labels:
+            severity: warning
+            component: openbao
+          annotations:
+            summary: "OpenBao can't lose another replica"
+            description: "Raft autopilot reports no failure tolerance for 15 minutes: one more replica lost means no quorum. Check bao operator raft list-peers and bao operator raft autopilot state."
+
+        # Each election raises the Raft term, which survives pod restarts, so
+        # the rise over an hour counts them even between scrapes. A rolling
+        # restart causes one or two.
+        - alert: OpenBaoLeaderFlapping
+          expr: max(vault_raft_storage_stats_term) - max(vault_raft_storage_stats_term offset 1h) > 3
+          labels:
+            severity: warning
+            component: openbao
+          annotations:
+            summary: "OpenBao ran {{ $value }} Raft elections in an hour"
+            description: "Repeated Raft elections usually mean slow storage or network trouble between replicas. Check the OpenBao logs and Ceph latency."
+
+        # Scrapes go to each pod, so these work while a replica is sealed.
+        # Without them the alerts above stop firing unnoticed.
+        - alert: OpenBaoMetricsDown
+          expr: |
+            up{namespace="openbao",pod=~"openbao-[0-9]+"} == 0
+            or absent(up{namespace="openbao",pod=~"openbao-[0-9]+"})
+            or count(up{namespace="openbao",pod=~"openbao-[0-9]+"}) < count(kube_pod_info{namespace="openbao",pod=~"openbao-[0-9]+"})
+          for: 15m
+          labels:
+            severity: warning
+            component: openbao
+          annotations:
+            summary: "Prometheus can't scrape OpenBao metrics"
+            description: "Scrapes of the metrics listener (port 8220) have failed for 15 minutes, or a replica has no target. Check the PodMonitor openbao/openbao, the openbao-server network policy and the server certificate."
 
         # The HSM serves OpenBao's unseal and the Entra workload identity
         # signatures. Running OpenBao replicas keep working without it; any
