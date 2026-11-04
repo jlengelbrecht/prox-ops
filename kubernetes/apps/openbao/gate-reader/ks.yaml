@@ -1,0 +1,27 @@
+---
+# Read-only accounts for the merge gate's evidence worker. dependsOn namespaces
+# are the dependency's own CR namespace (openbao/kustomization.yaml moves every
+# CR in this tree into openbao).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app openbao-gate-reader
+  namespace: flux-system
+spec:
+  targetNamespace: openbao
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: openbao
+      namespace: openbao
+  interval: 1h
+  retryInterval: 2m
+  timeout: 5m
+  path: ./kubernetes/apps/openbao/gate-reader/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

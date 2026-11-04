@@ -1,0 +1,78 @@
+---
+# The namespaces the merge gate may inspect. This list is the allowlist: each
+# entry gets a gate-reader ServiceAccount and a RoleBinding, and OpenBao can
+# only issue a token for an account that exists. A Renovate PR touching any
+# other namespace gets no token, so it goes to a human.
+#
+# Left out on purpose: openbao, security, access, identity-system, hsm-system,
+# kube-system, rook-ceph, network, cert-manager, external-secrets,
+# github-actions. Think before adding one of these.
+#
+# flux-system is here only for reading Kustomization status, through a Role
+# limited to that. It holds the SOPS age key and the Git deploy key, so never
+# widen it. ResourceSet renders these because this tree's targetNamespace would
+# otherwise move them into openbao.
+apiVersion: fluxcd.controlplane.io/v1
+kind: ResourceSet
+metadata:
+  name: gate-reader
+spec:
+  inputs:
+    - namespace: ai
+    - namespace: cache
+    - namespace: crossplane-system
+    - namespace: database
+    - namespace: default
+    - namespace: downloads
+    - namespace: flagger-pilot
+    - namespace: flagger-system
+    - namespace: flux-system
+    - namespace: groschen
+    - namespace: health
+    - namespace: iot
+    - namespace: mcp
+    - namespace: media
+    - namespace: notes
+    - namespace: observability
+    - namespace: system-upgrade
+    - namespace: tools
+    - namespace: volsync-system
+  resourcesTemplate: |
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: gate-reader
+      namespace: << inputs.namespace >>
+    automountServiceAccountToken: false
+    <<- if eq inputs.namespace "flux-system" >>
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: gate-reader-kustomizations
+      namespace: flux-system
+    rules:
+      - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+        resources: ["kustomizations"]
+        verbs: ["get", "list"]
+    <<- end >>
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: gate-reader
+      namespace: << inputs.namespace >>
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+    <<- if eq inputs.namespace "flux-system" >>
+      kind: Role
+      name: gate-reader-kustomizations
+    <<- else >>
+      kind: ClusterRole
+      name: gate-reader
+    <<- end >>
+    subjects:
+      - kind: ServiceAccount
+        name: gate-reader
+        namespace: << inputs.namespace >>
