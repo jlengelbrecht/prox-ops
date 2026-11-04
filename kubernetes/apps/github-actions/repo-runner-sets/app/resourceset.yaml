@@ -28,6 +28,13 @@
 #               that the runner may resolve and reach on TCP 443. DNS answers
 #               them and a toEndpoints rule admits the gateway pods; see the
 #               comment above resourcesTemplate for why toFQDNs cannot do this.
+#   litellmDirect
+#               optional boolean. When true the runner may resolve
+#               litellm.ai.svc.cluster.local and reach the LiteLLM pods (ai
+#               namespace) directly on TCP 4000, over plain HTTP, and nothing
+#               else internal. The litellm CiliumNetworkPolicy in
+#               ../../../ai/litellm/app/networkpolicy.yaml must admit the
+#               scale set's pods too; the two sides are kept in step by hand.
 #   runnerMemory, runnerDisk
 #               optional runner container limits, default 4Gi, 10Gi.
 #               runnerDisk also sizes the work emptyDir. Requests stay small.
@@ -220,10 +227,11 @@ spec:
       # Built by the private runner-images repository and pinned by digest:
       # runner plus pr-agent, flux-local, helm and flux.
       runnerImage: ghcr.io/jlengelbrecht/runner-steward@sha256:8c692169ae301ccd8ee35b39e3017b451e42f83a10c55b7984cacb403eecb7b0
-      # LiteLLM, reached through the envoy-internal gateway. Nothing else
-      # internal is allowed; GitHub comes from the template defaults.
-      gatewayFQDNs:
-        - ai-api.homelab0.org
+      # LiteLLM, reached directly at http://litellm.ai.svc.cluster.local:4000.
+      # Deliberately not through the envoy-internal gateway: that rule is
+      # L3/L4 and would reach every internal route. Nothing else internal is
+      # allowed; GitHub comes from the template defaults.
+      litellmDirect: true
     # Adding a repository is one entry. Only name and repoUrl are required:
     # - name: example-repo
     #   repoUrl: https://github.com/jlengelbrecht/example-repo
@@ -264,6 +272,7 @@ spec:
     <<- end >>
     <<- $fqdnPatterns := list "*.actions.githubusercontent.com" >>
     <<- $gatewayFQDNs := get inputs "gatewayFQDNs" | default (list) >>
+    <<- $litellmDirect := get inputs "litellmDirect" | default false >>
     ---
     apiVersion: v1
     kind: ServiceAccount
@@ -492,6 +501,9 @@ spec:
                   <<- range $fqdn := $gatewayFQDNs >>
                   - matchName: << $fqdn | quote >>
                   <<- end >>
+                  <<- if $litellmDirect >>
+                  - matchName: "litellm.ai.svc.cluster.local"
+                  <<- end >>
         # HTTPS allowlist; see the comment above resourcesTemplate.
         - toFQDNs:
             <<- range $fqdn := $fqdnNames >>
@@ -516,5 +528,18 @@ spec:
                 - port: "443"
                   protocol: TCP
                 - port: "10443"
+                  protocol: TCP
+        <<- end >>
+        <<- if $litellmDirect >>
+        # LiteLLM pods only (litellmDirect), plain HTTP on the pod port. The
+        # Service is translated to a pod before policy runs, so this matches
+        # the pod, not the ClusterIP. No other ai-namespace workload is named.
+        - toEndpoints:
+            - matchLabels:
+                io.kubernetes.pod.namespace: ai
+                app.kubernetes.io/name: litellm
+          toPorts:
+            - ports:
+                - port: "4000"
                   protocol: TCP
         <<- end >>
