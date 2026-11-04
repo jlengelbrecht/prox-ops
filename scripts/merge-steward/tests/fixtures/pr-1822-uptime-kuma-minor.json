@@ -1,0 +1,42 @@
+{
+ "description": "uptime-kuma 2.4.0 -> 2.5.8 (app chart, stale version label): expected clean",
+ "pr": 1822,
+ "recorded": "2026-11-04",
+ "reports": {
+  "helmrelease": [
+   {
+    "diffs": [
+     {
+      "diff": "--- HelmRelease: media/uptime-kuma Deployment: media/uptime-kuma\n\n+++ HelmRelease: media/uptime-kuma Deployment: media/uptime-kuma\n\n@@ -1,82 +1,82 @@\n\n ---\n apiVersion: apps/v1\n kind: Deployment\n metadata:\n   name: uptime-kuma\n   namespace: media\n   labels:\n     app.kubernetes.io/name: uptime-kuma\n     app.kubernetes.io/instance: uptime-kuma\n     app.kubernetes.io/version: 1.23.17\n     app.kubernetes.io/managed-by: Helm\n spec:\n   replicas: 1\n   selector:\n     matchLabels:\n       app.kubernetes.io/name: uptime-kuma\n       app.kubernetes.io/instance: uptime-kuma\n   strategy:\n     type: Recreate\n   template:\n     metadata:\n       labels:\n         app.kubernetes.io/name: uptime-kuma\n         app.kubernetes.io/instance: uptime-kuma\n     spec:\n       automountServiceAccountToken: false\n       serviceAccountName: default\n       securityContext:\n         fsGroup: 1000\n         seccompProfile:\n           type: RuntimeDefault\n       containers:\n       - name: uptime-kuma\n         securityContext:\n           allowPrivilegeEscalation: false\n           capabilities:\n             add:\n             - SETUID\n             - SETGID\n             drop:\n             - ALL\n-        image: louislam/uptime-kuma:2.4.0\n+        image: louislam/uptime-kuma:2.5.8\n         imagePullPolicy: IfNotPresent\n         env: null\n         ports:\n         - name: http\n           containerPort: 3001\n           protocol: TCP\n         volumeMounts:\n         - mountPath: /app/data\n           name: storage\n         livenessProbe:\n           initialDelaySeconds: 30\n           periodSeconds: 10\n           timeoutSeconds: 5\n           failureThreshold: 3\n           successThreshold: 1\n           exec:\n             command:\n             - extra/healthcheck\n         readinessProbe:\n           initialDelaySeconds: 10\n           periodSeconds: 10\n           timeoutSeconds: 5\n           failureThreshold: 3\n           successThreshold: 1\n           httpGet:\n             path: /\n             port: 3001\n             scheme: HTTP\n         resources:\n           limits:\n             cpu: 500m\n             memory: 512Mi\n           requests:\n             cpu: 50m\n             memory: 128Mi\n       volumes:\n       - name: storage\n         persistentVolumeClaim:\n           claimName: uptime-kuma-pvc\n ",
+      "kind": "Deployment",
+      "kustomization_path": ".",
+      "name": "uptime-kuma",
+      "namespace": "media"
+     }
+    ],
+    "kind": "HelmRelease",
+    "kustomization_path": ".",
+    "name": "uptime-kuma",
+    "namespace": "media"
+   }
+  ],
+  "kustomization": [
+   {
+    "diffs": [
+     {
+      "diff": "--- kubernetes/apps/media/uptime-kuma/app Kustomization: media/uptime-kuma HelmRelease: media/uptime-kuma\n\n+++ kubernetes/apps/media/uptime-kuma/app Kustomization: media/uptime-kuma HelmRelease: media/uptime-kuma\n\n@@ -1,81 +1,81 @@\n\n ---\n apiVersion: helm.toolkit.fluxcd.io/v2\n kind: HelmRelease\n metadata:\n   labels:\n     app.kubernetes.io/name: uptime-kuma\n     kustomize.toolkit.fluxcd.io/name: uptime-kuma\n     kustomize.toolkit.fluxcd.io/namespace: media\n   name: uptime-kuma\n   namespace: media\n spec:\n   chart:\n     spec:\n       chart: uptime-kuma\n       sourceRef:\n         kind: HelmRepository\n         name: uptime-kuma\n         namespace: media\n       version: 2.25.0\n   install:\n     crds: CreateReplace\n     remediation:\n       retries: 3\n     strategy:\n       name: RetryOnFailure\n   interval: 1h\n   rollback:\n     cleanupOnFail: true\n     recreate: true\n   timeout: 10m\n   upgrade:\n     cleanupOnFail: true\n     crds: CreateReplace\n     remediation:\n       remediateLastFailure: true\n       retries: 2\n     strategy:\n       name: RemediateOnFailure\n   values:\n     image:\n       repository: louislam/uptime-kuma\n-      tag: 2.4.0\n+      tag: 2.5.8\n     livenessProbe:\n       enabled: true\n       failureThreshold: 3\n       initialDelaySeconds: 30\n       periodSeconds: 10\n       timeoutSeconds: 5\n     podSecurityContext:\n       fsGroup: 1000\n       seccompProfile:\n         type: RuntimeDefault\n     readinessProbe:\n       enabled: true\n       failureThreshold: 3\n       initialDelaySeconds: 10\n       periodSeconds: 10\n       timeoutSeconds: 5\n     resources:\n       limits:\n         cpu: 500m\n         memory: 512Mi\n       requests:\n         cpu: 50m\n         memory: 128Mi\n     securityContext:\n       allowPrivilegeEscalation: false\n       capabilities:\n         add:\n         - SETUID\n         - SETGID\n         drop:\n         - ALL\n     service:\n       port: 3001\n     strategy:\n       type: Recreate\n     volume:\n       enabled: true\n       existingClaim: uptime-kuma-pvc\n ",
+      "kind": "HelmRelease",
+      "kustomization_path": "kubernetes/apps/media/uptime-kuma/app",
+      "name": "uptime-kuma",
+      "namespace": "media"
+     }
+    ],
+    "kind": "Kustomization",
+    "kustomization_path": "kubernetes/apps/media/uptime-kuma/app",
+    "name": "uptime-kuma",
+    "namespace": "media"
+   }
+  ]
+ },
+ "sanitised": "Secrets skipped at render time; at most 3 objects per kind; CRD bodies cut to 30 lines."
+}

@@ -20,7 +20,8 @@ import checks
 import classify
 import fold
 import publish
-from classify import NEEDS, Stage
+import render
+from classify import HOLD, NEEDS, Stage
 from ghapi import GitHub, GitHubError
 
 POLICY = Path(__file__).with_name("policy.yaml")
@@ -28,6 +29,14 @@ POLICY = Path(__file__).with_name("policy.yaml")
 _JOB_KIND = re.compile(r"""^[ \t]*(?:-[ \t]+)?kind:[ \t]*(["']?)Job\1[ \t]*(?:#.*)?$""", re.MULTILINE)
 _APPROVAL = re.compile(r"^<!-- merge-steward-approval login=(?P<login>[A-Za-z0-9-]+) event=(?P<event>[0-9]+) "
                        r"fp=(?P<fp>[0-9a-f]{64}) -->$", re.MULTILINE)
+# The render result, kept in the app-written check run so later events can reuse it.
+_RENDER = re.compile(r"^<!-- merge-steward-render sha=(?P<sha>[0-9a-f]{40}) verdict=(?P<verdict>pass|hold|needs-human) "
+                     r"reason=(?P<reason>[^\n]*?) -->$", re.MULTILINE)
+RENDER_WAITING = "render not evaluated yet"
+
+
+class Superseded(Exception):
+    """The PR head moved while this run waited; a newer run owns the verdict."""
 
 
 def job_manifests(gh, files, sha):
@@ -57,7 +66,40 @@ def fingerprint(files):
     return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
 
 
-def stages_for(gh, pr, files, policy, wait_seconds):
+def recorded_render(gh, sha, policy):
+    """The render stage recorded for sha in an earlier merge-steward check run, or None.
+
+    Only runs written by the steward's app count; the newest one with a record wins.
+    """
+    runs = gh.paginate(f"commits/{sha}/check-runs?check_name={publish.CHECK_NAME}&filter=all", key="check_runs")
+    mine = [r for r in runs if r.get("name") == publish.CHECK_NAME
+            and (r.get("app") or {}).get("id") == policy["steward_app_id"]]
+    for run in sorted(mine, key=lambda r: r["id"], reverse=True):
+        found = _RENDER.search((run.get("output") or {}).get("text") or "")
+        if found and found.group("sha") == sha:
+            return Stage("render", found.group("verdict"), found.group("reason"))
+    return None
+
+
+def render_record(sha, stage):
+    return f"<!-- merge-steward-render sha={sha} verdict={stage.verdict} reason={fold.clean(stage.reason)} -->"
+
+
+def render_stage(gh, pr, policy, render_dir, age_minutes):
+    """From this run's render artifact (PR events), else from the recorded result.
+
+    No evidence yet is hold until the checks deadline, then needs-human.
+    """
+    sha = pr["head"]["sha"]
+    stage = render.from_artifact(render_dir, sha) if render_dir else recorded_render(gh, sha, policy)
+    if stage is not None:
+        return stage
+    if age_minutes > policy["required_checks_deadline_minutes"]:
+        return Stage("render", NEEDS, "render evidence unavailable")
+    return Stage("render", HOLD, RENDER_WAITING)
+
+
+def stages_for(gh, pr, files, policy, wait_seconds, render_dir=None):
     number, sha = pr["number"], pr["head"]["sha"]
     commits = gh.paginate(f"pulls/{number}/commits")
     stages = [classify.identity(pr, commits, policy)]
@@ -77,7 +119,10 @@ def stages_for(gh, pr, files, policy, wait_seconds):
         if stable >= 2 or (stable and wait_seconds == 0) or stage.verdict == NEEDS or time.monotonic() > deadline:
             break
         time.sleep(30)
+        if gh.get(f"pulls/{number}")["head"]["sha"] != sha:
+            raise Superseded()
     stages.append(stage)
+    stages.append(render_stage(gh, pr, policy, render_dir, head_age_minutes(commits, pr)))
     return stages
 
 
@@ -131,16 +176,17 @@ def check_override(gh, pr, files, comment, policy, labeled_sha, dry_run):
     return None, None, Stage("override", NEEDS, problem)
 
 
-def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None):
+def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, render_dir=None):
     number, sha = pr["number"], pr["head"]["sha"]
     labels = {l["name"] for l in pr["labels"]}
     label = policy["override_label"]
     comment = publish.find_comment(gh, number)
     previous = _APPROVAL.search(comment["body"]) if comment else None
     approval = previous.group(0) if previous else None  # kept if evaluation errors out
+    stages = []
     try:
         files = gh.paginate(f"pulls/{number}/files")
-        stages = stages_for(gh, pr, files, policy, wait_seconds)
+        stages = stages_for(gh, pr, files, policy, wait_seconds, render_dir)
         override = None
         if label in labels:
             override, approval, problem = check_override(gh, pr, files, comment, policy, labeled_sha, dry_run)
@@ -150,17 +196,30 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None):
         else:
             approval = None
         verdict, reason = fold.fold(stages, override)
+    except Superseded:
+        print(f"PR #{number}: head moved while waiting; leaving it to the newer run", file=sys.stderr)
+        return None
     except Exception as err:  # fail closed on any error, without echoing response bodies
-        stages, verdict, reason = [], NEEDS, f"steward error ({type(err).__name__}); a human must review"
+        verdict, reason = NEEDS, f"steward error ({type(err).__name__}); a human must review"
         detail = str(err) if isinstance(err, GitHubError) else type(err).__name__
         print(f"PR #{number}: evaluation error: {detail}", file=sys.stderr)
+    # Keep the render result (from this run's artifact or an earlier record) with the check run.
+    # A hold (no render yet, or a stale merge ref) is never recorded, so later events
+    # keep waiting for a real render instead of reusing it.
+    rendered = next((s for s in stages if s.name == "render" and s.verdict != HOLD), None)
+    waiting = any(s.name == "render" and s.reason == RENDER_WAITING for s in stages)
     print(json.dumps({"pr": number, "sha": sha[:12], "verdict": verdict, "reason": fold.clean(reason)}))
     if dry_run:
         return verdict
+    if waiting and verdict == HOLD:
+        # The PR event's run has not classified the render yet; it publishes when it does.
+        print(f"PR #{number}: {RENDER_WAITING}; leaving the verdict to the pull request run", file=sys.stderr)
+        return None
     if gh.get(f"pulls/{number}")["head"]["sha"] != sha:
         print(f"PR #{number}: head moved during evaluation; leaving it to the newer run", file=sys.stderr)
         return None
-    publish.publish_check(app_gh, sha, verdict, fold.clean(reason, 250), fold.summary(stages, verdict, reason))
+    record = render_record(sha, rendered) if rendered else None
+    publish.publish_check(app_gh, sha, verdict, fold.clean(reason, 250), fold.summary(stages, verdict, reason), record)
     publish.set_labels(gh, number, labels, verdict)
     body = fold.comment(stages, verdict, reason, sha, label) + (f"\n{approval}" if approval else "")
     publish.upsert_comment(gh, number, comment, body)
@@ -175,6 +234,8 @@ def main(argv=None):
     target.add_argument("--sweep", action="store_true")
     parser.add_argument("--wait", type=int, default=0, help="seconds to wait for running checks")
     parser.add_argument("--labeled-sha", help="head commit when the override label was applied")
+    parser.add_argument("--event-sha", help="head commit of the triggering PR event; skip the PR if it moved")
+    parser.add_argument("--render-dir", help="this run's render artifact (pull request events)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -194,8 +255,11 @@ def main(argv=None):
     for pr in prs:
         if pr["state"] != "open":
             continue
+        if args.event_sha and pr["head"]["sha"] != args.event_sha:
+            print(f"PR #{pr['number']}: superseded by a newer push; leaving it to that run", file=sys.stderr)
+            continue
         try:
-            evaluate(gh, app_gh, pr, policy, args.wait, args.dry_run, args.labeled_sha)
+            evaluate(gh, app_gh, pr, policy, args.wait, args.dry_run, args.labeled_sha, args.render_dir)
         except Exception as err:  # publishing failed; the check stays missing, which blocks merge
             failures += 1
             detail = str(err) if isinstance(err, GitHubError) else type(err).__name__

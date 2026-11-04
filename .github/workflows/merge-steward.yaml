@@ -6,14 +6,18 @@
 #
 # The evaluate job runs on pull_request_target, status, check_suite, schedule
 # and workflow_dispatch events, so both this file and the steward code come from the
-# default branch. It never checks out or runs PR
-# code: it reads PR data through the API only. It never merges anything.
+# default branch. It never checks out or runs PR code: it reads PR data through the API. It never merges anything.
+#
+# The render job is the one place PR content is read from disk: it checks out the PR merge
+# ref and renders it with flux-local in a pinned container. It holds no secrets and no app
+# token, has a read-only token that is not persisted, and runs nothing from the PR. Its
+# JSON goes to an artifact of this run, which the evaluate job classifies with
+# default-branch code.
 name: "Merge Steward"
 
+# The unit tests live in merge-steward-tests.yaml, so pull_request and pull_request_target
+# events do not create each other's skipped runs.
 on:
-  # Unit tests run the PR's own code, without secrets.
-  pull_request:
-    types: [opened, synchronize, reopened]
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -42,42 +46,138 @@ permissions: {}
 env:
   # renovate: datasource=pypi depName=pyyaml
   PYYAML_VERSION: "6.0.3"
-  # renovate: datasource=pypi depName=pytest
-  PYTEST_VERSION: "9.0.2"
+  # renovate: datasource=docker depName=ghcr.io/allenporter/flux-local
+  FLUX_LOCAL_VERSION: "v8.4.0@sha256:c0be852e30f299ce6a220cc992b0c21a2a0b0684cc17713b9d718e18d9c8beff"
 
 jobs:
-  test:
-    name: merge-steward tests
-    if: github.event_name == 'pull_request'
+  # Renders the PR merge ref and its first parent (the base it merges into) with
+  # flux-local and uploads the JSON. Renovate PRs from this repository only.
+  render:
+    name: merge-steward render
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
+      github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Checkout the PR merged into its base
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          path: pull
+          fetch-depth: 2
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+
+      # GitHub builds the merge ref asynchronously, so it can still be the previous push's
+      # merge commit. Re-fetch it every 20 s for about 3 minutes until its second parent is
+      # this event's head. If it never is, render nothing and record the run as stale.
+      # The fetch is anonymous (public repository, no credentials persisted).
+      - name: Wait for a merge ref built from this head
+        id: base
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 10); do
+            if [ "$(git -C pull rev-parse HEAD^2)" = "$HEAD_SHA" ]; then
+              {
+                echo "fresh=true"
+                echo "head=$HEAD_SHA"
+                echo "sha=$(git -C pull rev-parse HEAD^1)"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            [ "$attempt" = 10 ] && break
+            sleep 20
+            git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+              fetch --quiet --no-tags --depth=2 origin "+$MERGE_REF:refs/remotes/origin/steward-merge"
+            git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+              checkout --quiet --force --detach refs/remotes/origin/steward-merge
+          done
+          echo "::warning::the PR merge ref was not rebuilt for this head; recording the render as stale"
+          echo "fresh=false" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout that base
+        if: steps.base.outputs.fresh == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          python-version: '3.15'
-      - run: python -m pip install "PyYAML==${PYYAML_VERSION}" "pytest==${PYTEST_VERSION}"
-      - name: Unit tests (output kept for the secret-shape check)
+          ref: ${{ steps.base.outputs.sha }}
+          path: base
+          persist-credentials: false
+
+      # Full context (--unified 100000) so each object diff carries the whole object;
+      # CRDs included and Secrets skipped; app.kubernetes.io/version labels kept so
+      # version skew stays visible. Logs go to files, never to the job log.
+      # flux build writes kustomization files into both trees, so they stay writable.
+      # meta.json is written after flux-local exits, outside the container, with the head
+      # the merge ref was verified to contain. The container drops all capabilities.
+      - name: Render with flux-local
+        id: flux
+        if: steps.base.outputs.fresh == 'true'
         run: |
-          set -o pipefail
-          python -m pytest -q scripts/merge-steward/tests 2>&1 | tee pytest.log
-      - name: No secret-shaped strings in test output
+          set -u
+          out="$RUNNER_TEMP/render"
+          mkdir -p "$out"
+          rc=0
+          for res in helmrelease kustomization; do
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+              -v "$PWD:/github/workspace" -v "$out:/out" -w /github/workspace/pull \
+              "ghcr.io/allenporter/flux-local:${FLUX_LOCAL_VERSION}" \
+              diff "$res" --output json --unified 100000 --limit-bytes 0 \
+              --all-namespaces --no-skip-crds --skip-secrets \
+              --path /github/workspace/pull/kubernetes/flux/cluster \
+              --path-orig /github/workspace/base/kubernetes/flux/cluster \
+              --sources "flux-system,homelab-identity=tests/flux-local/homelab-identity" \
+              --strip-attrs "helm.sh/chart,checksum/config" \
+              --output-file "/out/$res.json" > "$RUNNER_TEMP/flux-$res.log" 2>&1 || rc=1
+            echo "$res: flux-local exit $rc"
+          done
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Record the render outcome
+        env:
+          FRESH: ${{ steps.base.outputs.fresh }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RC: ${{ steps.flux.outputs.rc }}
         run: |
-          if grep -Eq 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|-----BEGIN [A-Z ]*PRIVATE KEY' pytest.log; then
-            echo "::error::secret-shaped string in steward test output"
-            exit 1
+          set -euo pipefail
+          out="$RUNNER_TEMP/render"
+          mkdir -p "$out"
+          rm -f "$out/meta.json"
+          if [ "$FRESH" = "true" ]; then
+            printf '{"head_sha": "%s", "failed": %d}\n' "$HEAD_SHA" "${RC:-1}" > "$out/meta.json"
+          else
+            printf '{"head_sha": "%s", "stale": true}\n' "$HEAD_SHA" > "$out/meta.json"
           fi
+
+      - name: Upload the render result
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: merge-steward-render
+          path: |
+            ${{ runner.temp }}/render/meta.json
+            ${{ runner.temp }}/render/helmrelease.json
+            ${{ runner.temp }}/render/kustomization.json
+          if-no-files-found: warn
+          retention-days: 3
 
   evaluate:
     name: merge-steward evaluate
     # Events that can change the verdict: new code, the override label, the soak status,
     # a check suite finishing on a PR head, the sweep, or a manual run. Check suites of the
     # homebot-0 app are skipped so a published verdict does not trigger another evaluation.
+    needs: render
+    # Runs when render is skipped (non-Renovate PRs, other events) or fails (needs-human).
     if: >-
+      !cancelled() && (
       (github.event_name == 'pull_request_target' &&
         (contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) ||
          github.event.label.name == 'steward/human-approved')) ||
@@ -85,19 +185,19 @@ jobs:
       (github.event_name == 'check_suite' &&
         github.event.check_suite.app.id != 1091574 &&
         github.event.check_suite.pull_requests[0] != null) ||
-      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # PR events group by PR number; status and check suite events by head commit, so a burst
-    # of finishing checks collapses into one pending evaluation. A new push cancels a running
-    # evaluation; a label event waits for it.
+    # of finishing checks collapses into one pending evaluation. Nothing is cancelled in
+    # progress: a run whose push is superseded stops by itself (--event-sha and the head
+    # check while it waits), so an older run that queues late cannot cancel a newer one
+    # that already holds this run's render result.
     concurrency:
       group: >-
         merge-steward-${{ github.event.pull_request.number || inputs.pr || github.event.sha ||
         github.event.check_suite.head_sha || 'sweep' }}
-      cancel-in-progress: >-
-        ${{ github.event_name == 'pull_request_target' &&
-        contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) }}
+      cancel-in-progress: false
     permissions:
       contents: read        # read changed manifests through the API
       pull-requests: write  # sticky comment and steward/* labels
@@ -127,6 +227,14 @@ jobs:
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
           permission-checks: write
 
+      # Only from this run: the artifact the render job above uploaded for this event.
+      - name: Download this run's render result
+        if: github.event_name == 'pull_request_target' && needs.render.result == 'success'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: merge-steward-render
+          path: ${{ runner.temp }}/render
+
       - name: Evaluate
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -147,11 +255,11 @@ jobs:
           cd scripts/merge-steward
           case "$EVENT" in
             pull_request_target)
-              if [ "$ACTION" = "labeled" ]; then
-                python steward.py --pr "$PR_NUMBER" --wait 300 --labeled-sha "$HEAD_SHA"
-              else
-                python steward.py --pr "$PR_NUMBER" --wait 1200
-              fi ;;
+              case "$ACTION" in
+                labeled) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 300 --labeled-sha "$HEAD_SHA" ;;
+                unlabeled) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 300 ;;
+                *) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 1200 --render-dir "$RUNNER_TEMP/render" ;;
+              esac ;;
             workflow_dispatch)
               if [ "$DRY_RUN" = "true" ]; then
                 python steward.py --pr "$PR_NUMBER" --dry-run

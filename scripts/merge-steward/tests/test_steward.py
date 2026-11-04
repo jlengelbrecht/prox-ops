@@ -21,6 +21,13 @@ COMMITTED_AT = "2026-11-04T11:00:00Z"
 # Every check the policy requires, green, from the expected app.
 REQUIRED = [{"name": c["name"], "app": {"id": c["app_id"]}, "status": "completed", "conclusion": "success"}
             for c in POLICY["required_checks"]]
+def recorded(verdict="pass", reason="1 Deployment", app=1091574, sha=SHA, run_id=10):
+    """An earlier merge-steward check run carrying a render record."""
+    text = f"<!-- merge-steward-render sha={sha} verdict={verdict} reason={reason} -->"
+    return {"id": run_id, "name": "merge-steward", "app": {"id": app}, "status": "completed",
+            "conclusion": "failure", "output": {"text": text}}
+
+
 FILES = [{"filename": "kubernetes/apps/observability/uptime-kuma/app/helmrelease.yaml", "status": "modified",
           "patch": "@@ -1 +1 @@\n-tag: 2.4.0\n+tag: 2.4.1"}]
 
@@ -68,7 +75,7 @@ def routes(pr, runs=None, statuses=None, timeline=None, permission="admin", cont
         "pulls/7/commits": [{"author": {"login": "renovate[bot]"}, "commit": {"committer": {"date": COMMITTED_AT}}}],
         "pulls/7/files": files or FILES,
         "contents/": {"encoding": "base64", "content": base64.b64encode(content.encode()).decode()},
-        f"commits/{SHA}/check-runs": {"check_runs": runs if runs is not None else REQUIRED},
+        f"commits/{SHA}/check-runs": {"check_runs": runs if runs is not None else REQUIRED + [recorded()]},
         f"commits/{SHA}/status": {"statuses": statuses or []},
         "issues/7/timeline": timeline if timeline is not None else [COMMIT_EVENT],
         "collaborators/": permission if isinstance(permission, Exception) else {"permission": permission},
@@ -104,7 +111,7 @@ def test_soaking_pr_holds_in_progress():
 
 
 def test_failing_verify_is_failure():
-    _, check, _ = run(renovate_pr(), runs=REQUIRED + [{"name": "verify", "status": "completed", "conclusion": "failure"}])
+    _, check, _ = run(renovate_pr(), runs=REQUIRED + [recorded(), {"name": "verify", "status": "completed", "conclusion": "failure"}])
     assert check["conclusion"] == "failure" and "verify" in check["output"]["title"]
 
 
@@ -249,7 +256,7 @@ def test_permission_lookup_403_fails_closed_and_keeps_the_label():
 
 
 def test_missing_required_check_holds_then_needs_human_after_the_deadline(monkeypatch):
-    partial = [r for r in REQUIRED if r["name"] != "Labeler"]
+    partial = [r for r in REQUIRED if r["name"] != "Labeler"] + [recorded()]
     verdict, check, _ = run(renovate_pr(), runs=partial)
     assert verdict == "hold" and "Labeler" in check["output"]["title"]
     monkeypatch.setattr(steward, "head_age_minutes", lambda *a: POLICY["required_checks_deadline_minutes"] + 1)
@@ -258,12 +265,12 @@ def test_missing_required_check_holds_then_needs_human_after_the_deadline(monkey
 
 
 def test_required_check_from_another_app_does_not_count():
-    spoofed = [dict(r, app={"id": 999}) if r["name"] == "Security Gate" else r for r in REQUIRED]
+    spoofed = [dict(r, app={"id": 999}) if r["name"] == "Security Gate" else r for r in REQUIRED] + [recorded()]
     assert run(renovate_pr(), runs=spoofed)[0] == "hold"
 
 
 def test_empty_check_set_never_passes():
-    assert run(renovate_pr(), runs=[])[0] == "hold"
+    assert run(renovate_pr(), runs=[recorded()])[0] == "hold"
 
 
 @pytest.mark.parametrize("text", ["kind: Job\n", 'kind: "Job"\n', "kind: 'Job'  # one-off\n", "  - kind: Job\n"])
@@ -296,3 +303,82 @@ def test_main_sweep_skips_other_authors(monkeypatch, capsys):
     fake_env(monkeypatch, gh)
     assert steward.main(["--sweep", "--dry-run"]) == 0
     assert [json.loads(l)["pr"] for l in capsys.readouterr().out.splitlines()] == [7]
+
+
+def test_render_flags_reach_the_verdict():
+    verdict, check, _ = run(renovate_pr(), runs=REQUIRED + [recorded("needs-human", "CRD: CustomResourceDefinition x")])
+    assert verdict == "needs-human" and check["output"]["title"].startswith("render: CRD")
+    assert "verdict=needs-human" in check["output"]["text"]  # the record is carried forward
+
+
+def test_render_record_from_another_app_or_commit_is_ignored(monkeypatch):
+    for other in (recorded(app=15368), recorded(sha="d" * 40)):
+        verdict, check, _ = run(renovate_pr(), runs=REQUIRED + [other])
+        assert verdict is None and check is None  # nothing published while the PR run is pending
+
+
+def test_newest_render_record_wins():
+    runs = REQUIRED + [recorded("needs-human", "major: x", run_id=10), recorded("pass", "1 Deployment", run_id=11)]
+    assert run(renovate_pr(), runs=runs)[0] == "pass"
+
+
+def test_missing_render_evidence_needs_human_after_the_deadline(monkeypatch):
+    monkeypatch.setattr(steward, "head_age_minutes", lambda *a: POLICY["required_checks_deadline_minutes"] + 1)
+    verdict, check, _ = run(renovate_pr(), runs=REQUIRED)
+    assert verdict == "needs-human" and "render evidence unavailable" in check["output"]["summary"]
+
+
+def artifact(tmp_path, head=SHA, failed=0, helmrelease=()):
+    (tmp_path / "meta.json").write_text(json.dumps({"head_sha": head, "failed": failed}))
+    (tmp_path / "helmrelease.json").write_text(json.dumps(list(helmrelease)))
+    (tmp_path / "kustomization.json").write_text("[]")
+    return str(tmp_path)
+
+
+def run_with_artifact(directory, runs=None):
+    gh, app = FakeGitHub(routes(renovate_pr(), runs=runs if runs is not None else REQUIRED)), FakeGitHub({})
+    verdict = steward.evaluate(gh, app, renovate_pr(), POLICY, 0, False, render_dir=directory)
+    return verdict, (app.writes[0][2] if app.writes else None)
+
+
+def test_pull_request_run_classifies_the_artifact_and_records_it(tmp_path):
+    verdict, check = run_with_artifact(artifact(tmp_path))
+    assert verdict == "pass" and f"merge-steward-render sha={SHA} verdict=pass" in check["output"]["text"]
+
+
+def test_artifact_failures_are_needs_human(tmp_path):
+    assert run_with_artifact(artifact(tmp_path, failed=1))[0] == "needs-human"
+    assert run_with_artifact(str(tmp_path / "absent"))[0] == "needs-human"
+
+
+def test_artifact_for_an_older_head_publishes_nothing(tmp_path):
+    verdict, check = run_with_artifact(artifact(tmp_path, head="d" * 40))
+    assert verdict is None and check is None
+
+
+def test_artifact_beats_an_older_record(tmp_path):
+    hr = {"kind": "Deployment", "name": "a", "namespace": "n", "diff": "@@ -0,0 +1,2 @@\n+kind: Deployment\n+x: 1"}
+    verdict, check = run_with_artifact(artifact(tmp_path, helmrelease=[{"diffs": [hr]}]), REQUIRED + [recorded()])
+    assert verdict == "needs-human" and check["output"]["title"].startswith("render: added")
+
+
+def test_superseded_event_is_skipped(monkeypatch, capsys):
+    gh = FakeGitHub(routes(renovate_pr()))
+    fake_env(monkeypatch, gh)
+    assert steward.main(["--pr", "7", "--event-sha", "d" * 40, "--dry-run"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_head_moving_while_waiting_publishes_nothing(monkeypatch):
+    pr = renovate_pr()
+    gh, app = FakeGitHub(routes(pr, runs=REQUIRED + [recorded(), {"name": "x", "status": "queued"}])), FakeGitHub({})
+    gh.routes["pulls/7"] = dict(pr, head=dict(pr["head"], sha="e" * 40))
+    monkeypatch.setattr(steward.time, "sleep", lambda s: None)
+    assert steward.evaluate(gh, app, pr, POLICY, 600, False) is None and app.writes == []
+
+
+def test_stale_merge_ref_publishes_hold_without_a_record(tmp_path):
+    (tmp_path / "meta.json").write_text(json.dumps({"head_sha": SHA, "stale": True}))
+    verdict, check = run_with_artifact(str(tmp_path))
+    assert verdict == "hold" and check["status"] == "in_progress" and "stale" in check["output"]["title"]
+    assert "text" not in check["output"]

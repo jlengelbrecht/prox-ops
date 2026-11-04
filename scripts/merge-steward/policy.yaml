@@ -12,6 +12,9 @@ authors: ["renovate[bot]"]
 base_branch: main
 soak_status: renovate/stability-days
 override_label: steward/human-approved
+# The GitHub App that posts the merge-steward check run (homebot-0). Only its runs carry
+# a render record the steward trusts.
+steward_app_id: 1091574
 
 # Check runs the steward ignores when it reads the head commit: its own check run and job.
 ignore_checks: ["merge-steward", "merge-steward evaluate"]
@@ -28,6 +31,8 @@ required_checks:
   - {name: "Multi-Layer Bug Detection", app_id: 15368}
   - {name: "Talos and Kubernetes versions agree", app_id: 15368}
   - {name: "Talos upgrade path is supported", app_id: 15368}
+  # The secretless render job in the merge steward workflow.
+  - {name: "merge-steward render", app_id: 15368}
 required_checks_deadline_minutes: 120
 
 # Update types that may pass when nothing else matches. Everything else (major,
