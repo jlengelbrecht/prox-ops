@@ -28,7 +28,7 @@ _Production-grade Kubernetes homelab — Proxmox VE • Talos Linux • Flux Git
 
 [![Security Gate](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/security-gate.yaml?branch=main&label=security&logo=github&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/security-gate.yaml)
 [![Release](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/release.yaml?branch=main&label=release&logo=github&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/release.yaml)
-[![Renovate](https://img.shields.io/github/actions/workflow/status/jlengelbrecht/prox-ops/renovate.yaml?branch=main&label=renovate&logo=renovatebot&logoColor=white&style=flat-square)](https://github.com/jlengelbrecht/prox-ops/actions/workflows/renovate.yaml)
+[![Renovate](https://img.shields.io/badge/renovate-enabled-brightgreen?logo=renovatebot&logoColor=white&style=flat-square)](https://developer.mend.io/github/jlengelbrecht/prox-ops)
 
 </div>
 
