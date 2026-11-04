@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # Runner job-started hook: run only jobs from trusted events of this repository.
 #
-# The runner executes this script (ACTIONS_RUNNER_HOOK_JOB_STARTED) before the
-# first workflow step. A non-zero exit fails the job before any user code runs.
+# The runner executes this script (ACTIONS_RUNNER_HOOK_JOB_STARTED) as a step
+# before the first workflow step.
+#
+# A non-zero exit alone is NOT enough. The runner (actions/runner v2.338.2,
+# src/Runner.Worker/StepsRunner.cs) only marks the job failed and keeps going:
+# every later step whose condition holds still runs, and `if: always()` and
+# `if: failure()` hold after a failed step. So a denied job is stopped by
+# SIGKILLing the Runner.Worker process that is executing it. No further step
+# can start; the listener sees the worker die abnormally, reports the job as
+# failed (JobDispatcher.cs), and the ephemeral runner pod finishes.
 #
 # Why the check lives on the runner and not in the workflow: for pull_request
 # events the workflow file is read from the pull request's own merge ref, so a
@@ -12,7 +20,8 @@
 # admin access. This script ships with the runner pod from a ConfigMap, so
 # nothing in the job can skip or modify it.
 #
-# Allowlist; every other event is denied (exit 1, one ::error:: line):
+# Allowlist; every other event is denied (one ::error:: line, then the worker is
+# killed and the hook exits 1):
 #   - push, workflow_dispatch, schedule, merge_group, release
 #   - pull_request, pull_request_review, pull_request_review_comment whose head
 #     repository is this repository (a null head repo is a deleted fork)
@@ -27,8 +36,46 @@
 # this guard only decides which events may start a job here.
 set -euo pipefail
 
+# Do not trust the inherited environment for the commands below.
+export PATH=/usr/local/bin:/usr/bin:/bin
+unset BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH
+
+# ancestor_pid <comm>: pid of the nearest ancestor process whose name is <comm>.
+ancestor_pid() {
+  local pid="$$" name key val ppid
+  while [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1)); do
+    name=""
+    read -r name <"/proc/${pid}/comm" 2>/dev/null || true
+    if [[ "$name" == "$1" ]]; then
+      printf '%s' "$pid"
+      return 0
+    fi
+    ppid=""
+    while read -r key val; do
+      if [[ "$key" == "PPid:" ]]; then
+        ppid="$val"
+        break
+      fi
+    done <"/proc/${pid}/status" 2>/dev/null || true
+    pid="$ppid"
+  done
+  return 1
+}
+
 deny() {
-  printf '::error::Self-hosted runner job guard blocked this job: %s\n' "$1"
+  local msg target
+  msg="Self-hosted runner job guard blocked this job: $1"
+  printf '::error::%s\n' "$msg"
+  printf '%s\n' "$msg" >&2
+  # Exiting non-zero only fails this step; `if: always()` steps would still run.
+  # Kill the worker so nothing else can start. Fall back to the listener, which
+  # takes the worker down with it.
+  target="$(ancestor_pid Runner.Worker || ancestor_pid Runner.Listener || true)"
+  if [[ -n "$target" ]]; then
+    kill -KILL "$target" 2>/dev/null || true
+  else
+    printf '::error::job guard could not find the runner worker to terminate\n'
+  fi
   exit 1
 }
 

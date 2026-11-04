@@ -417,7 +417,7 @@ spec:
                 env:
                   - name: BUILDKIT_HOST
                     value: tcp://127.0.0.1:1234
-                  # Fork guard; a non-zero exit fails the job before any step runs.
+                  # Fork guard; on a denied event the hook kills Runner.Worker so no later step (including if: always()) runs.
                   - name: ACTIONS_RUNNER_HOOK_JOB_STARTED
                     value: /home/runner/hooks/job-started-guard.sh
                 securityContext:

@@ -70,7 +70,8 @@ spec:
             env:
               - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
                 value: "false"
-              # Fork guard: a non-zero exit fails the job before any step runs.
+              # Fork guard: on a denied event the hook kills Runner.Worker, so no later
+              # step (including if: always()) can run.
               # The script is the ConfigMap shared with the per-repository scale
               # sets (repo-runner-sets/app). If the ConfigMap is missing the pod
               # stays in ContainerCreating, so the failure mode is closed.
