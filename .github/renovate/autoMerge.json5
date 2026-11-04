@@ -442,6 +442,24 @@
       "matchFileNames": ["services/openbao-hsm/**", "kubernetes/apps/openbao/**"]
     },
     {
+      "description": "openbao-hsm: the HelmRelease and the snapshot job follow :main with a pinned digest, in one PR so the snapshot job's bao matches the servers",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/jlengelbrecht/openbao-hsm"],
+      "matchCurrentValue": "main",
+      "allowedVersions": "/^main$/",
+      "pinDigests": true,
+      "groupName": "openbao-hsm image",
+      "groupSlug": "openbao-hsm-image"
+    },
+    {
+      "description": "openbao-hsm: digest refreshes of :main only, never another tag",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["ghcr.io/jlengelbrecht/openbao-hsm"],
+      "matchCurrentValue": "main",
+      "matchUpdateTypes": ["major", "minor", "patch", "pin", "rollback", "bump", "replacement"],
+      "enabled": false
+    },
+    {
       "description": "kube-prometheus-stack: minor and major are manual (CRD migrations, multi-component bundle); patch auto-merges after a 5 day soak",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,
