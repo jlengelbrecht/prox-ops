@@ -1,10 +1,10 @@
-FROM python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b AS build
+FROM python:3.13-slim@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1 AS build
 WORKDIR /app
 COPY requirements.txt ./
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/python -m pip install --no-cache-dir --no-compile --require-hashes -r requirements.txt
 
-FROM python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
+FROM python:3.13-slim@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/jlengelbrecht/prox-ops" \
       org.opencontainers.image.revision="${VCS_REF}" \
