@@ -57,16 +57,16 @@ spec:
             summary: "OpenBao can't lose another replica"
             description: "Raft autopilot reports no failure tolerance for 15 minutes: one more replica lost means no quorum. Check bao operator raft list-peers and bao operator raft autopilot state."
 
-        # Each election raises the Raft term. Taken across all replicas so
-        # that a pod restart, which starts a new series, doesn't count. A
-        # rolling restart causes one or two.
+        # Each election raises the Raft term, which survives pod restarts, so
+        # the rise over an hour counts them even between scrapes. A rolling
+        # restart causes one or two.
         - alert: OpenBaoLeaderFlapping
-          expr: changes(max(vault_raft_storage_stats_term)[1h:1m]) > 3
+          expr: max(vault_raft_storage_stats_term) - max(vault_raft_storage_stats_term offset 1h) > 3
           labels:
             severity: warning
             component: openbao
           annotations:
-            summary: "OpenBao elected a leader {{ $value }} times in an hour"
+            summary: "OpenBao ran {{ $value }} Raft elections in an hour"
             description: "Repeated Raft elections usually mean slow storage or network trouble between replicas. Check the OpenBao logs and Ceph latency."
 
         # Scrapes go to each pod, so these work while a replica is sealed.
@@ -75,13 +75,14 @@ spec:
           expr: |
             up{namespace="openbao",pod=~"openbao-[0-9]+"} == 0
             or absent(up{namespace="openbao",pod=~"openbao-[0-9]+"})
+            or count(up{namespace="openbao",pod=~"openbao-[0-9]+"}) < count(kube_pod_info{namespace="openbao",pod=~"openbao-[0-9]+"})
           for: 15m
           labels:
             severity: warning
             component: openbao
           annotations:
             summary: "Prometheus can't scrape OpenBao metrics"
-            description: "Scrapes of the metrics listener (port 8220) have failed for 15 minutes, or there are no targets. Check the PodMonitor openbao/openbao, the openbao-server network policy and the server certificate."
+            description: "Scrapes of the metrics listener (port 8220) have failed for 15 minutes, or a replica has no target. Check the PodMonitor openbao/openbao, the openbao-server network policy and the server certificate."
 
         # The HSM serves OpenBao's unseal and the Entra workload identity
         # signatures. Running OpenBao replicas keep working without it; any
