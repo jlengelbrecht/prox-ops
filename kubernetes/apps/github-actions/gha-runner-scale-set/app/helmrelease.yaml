@@ -70,6 +70,12 @@ spec:
             env:
               - name: ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER
                 value: "false"
+              # Fork guard: a non-zero exit fails the job before any step runs.
+              # The script is the ConfigMap shared with the per-repository scale
+              # sets (repo-runner-sets/app). If the ConfigMap is missing the pod
+              # stays in ContainerCreating, so the failure mode is closed.
+              - name: ACTIONS_RUNNER_HOOK_JOB_STARTED
+                value: /home/runner/hooks/job-started-guard.sh
 
             # Resource allocation
             # Increased from 500m/1Gi to 1000m/2Gi (requests) and 2000m/4Gi to 4000m/8Gi (limits)
@@ -108,11 +114,19 @@ spec:
             volumeMounts:
               - name: work
                 mountPath: /home/runner/_work
+              - name: job-guard
+                mountPath: /home/runner/hooks
+                readOnly: true
 
         # Volumes
         volumes:
           - name: work
             emptyDir: {}
+          - name: job-guard
+            configMap:
+              name: gha-runner-job-guard
+              # 0555 in decimal, so YAML 1.1 and 1.2 parsers agree.
+              defaultMode: 365
 
         # Graceful termination period for runner cleanup during node drain
         # Reduced to 30s to work with workflow drain timeout (Layer 3)
