@@ -113,12 +113,32 @@ spec:
         # Retired with ToolHive: dropped once its database is gone.
         - name: toolhive
           ensure: absent
+        # Zabbix: OpenBao owns the password (static role, rotated every 30 days,
+        # kubernetes/apps/observability/zabbix). Deliberately no passwordSecret
+        # here, so CNPG leaves it alone instead of overwriting each rotation.
         - name: zabbix
           ensure: present
           login: true
           createdb: false
+        # OpenBao's login for rotating the roles above that it owns. Postgres
+        # 16 needs CREATEROLE plus ADMIN OPTION on each role to change its
+        # password; CNPG can only grant plain membership, so
+        # scripts/openbao-configure.sh adds the option and turns off INHERIT
+        # and SET, so openbao can't read the role's data. inRoles must list
+        # each role, or CNPG revokes that grant.
+        - name: openbao
+          ensure: present
+          login: true
+          superuser: false
+          createdb: false
+          createrole: true
+          replication: false
+          bypassrls: false
+          connectionLimit: 5
+          inRoles:
+            - zabbix
           passwordSecret:
-            name: zabbix-db-credentials
+            name: openbao-db-credentials
         - name: glycemicgpt_bot
           ensure: present
           login: true

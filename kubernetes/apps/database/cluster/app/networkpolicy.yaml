@@ -79,6 +79,17 @@ spec:
             - port: "5432"
               protocol: TCP
 
+    # OpenBao servers (database engine: password rotation)
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: openbao
+            app.kubernetes.io/name: openbao
+            component: server
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
     # Internal database namespace traffic (operator, pooler, etc.)
     # Ports: 5432=PostgreSQL, 8000=status (operator health checks), 9187=metrics
     - fromEndpoints:

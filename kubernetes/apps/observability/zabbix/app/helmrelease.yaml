@@ -52,8 +52,9 @@ spec:
     zabbixServer:
       enabled: true
       replicaCount: 1
-      # Stakater Reloader: restart pod when database credentials change
-      podAnnotations:
+      # Stakater Reloader: restart when OpenBao rotates the database password.
+      # The pods read it as an env var, so they need the restart.
+      extraDeploymentAnnotations:
         secret.reloader.stakater.com/reload: "zabbix-db-secret"
       resources:
         requests:
@@ -102,8 +103,9 @@ spec:
     zabbixWeb:
       enabled: true
       replicaCount: 1
-      # Stakater Reloader: restart pod when database credentials change
-      podAnnotations:
+      # Stakater Reloader: restart when OpenBao rotates the database password.
+      # The pods read it as an env var, so they need the restart.
+      extraDeploymentAnnotations:
         secret.reloader.stakater.com/reload: "zabbix-db-secret"
       resources:
         requests:

@@ -1,0 +1,36 @@
+---
+# How External Secrets reaches OpenBao for the Zabbix database login. The
+# service account is only an identity: no pod runs as it, External Secrets
+# requests a token for it. OpenBao's Kubernetes auth role zabbix-db binds this
+# account in this namespace, with audience openbao.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zabbix-openbao
+  namespace: observability
+automountServiceAccountToken: false
+---
+# The static role's current password, rotated by OpenBao every 30 days. A read
+# only: each refresh returns the same password until a rotation.
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: VaultDynamicSecret
+metadata:
+  name: zabbix-db
+  namespace: observability
+spec:
+  method: GET
+  path: database/static-creds/zabbix
+  provider:
+    server: https://openbao-active.openbao.svc:8200
+    caProvider:
+      type: ConfigMap
+      name: openbao-ca
+      key: ca.crt
+    auth:
+      kubernetes:
+        mountPath: kubernetes
+        role: zabbix-db
+        serviceAccountRef:
+          name: zabbix-openbao
+          audiences:
+            - openbao
