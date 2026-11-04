@@ -230,6 +230,18 @@ def write_artifact(tmp_path, head="a" * 40, failed=0, reports=([], [])):
     return tmp_path
 
 
+def test_empty_reports_after_a_clean_run_mean_no_rendered_change(tmp_path):
+    directory = write_artifact(tmp_path)
+    (directory / "helmrelease.json").write_text("")
+    (directory / "kustomization.json").write_text("\n")
+    assert render.from_artifact(directory, "a" * 40).verdict == PASS
+    # A missing report is not an empty one, and a failed run never counts as clean.
+    (directory / "helmrelease.json").unlink()
+    assert render.from_artifact(directory, "a" * 40).verdict == NEEDS
+    (directory / "helmrelease.json").write_text("")
+    assert render.from_artifact(write_artifact(tmp_path, failed=1), "a" * 40).verdict == NEEDS
+
+
 def test_artifact_is_bound_to_the_head_and_fails_closed(tmp_path):
     assert render.from_artifact(write_artifact(tmp_path), "a" * 40).verdict == PASS
     assert render.from_artifact(tmp_path, "b" * 40) is None

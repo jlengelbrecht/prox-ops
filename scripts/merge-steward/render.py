@@ -282,7 +282,9 @@ def from_artifact(directory, head_sha):
     if meta.get("failed") != 0:
         return Stage("render", NEEDS, "render failed (flux-local exited non-zero)")
     try:
-        reports = [json.loads((Path(directory) / f"{name}.json").read_text()) for name in ("helmrelease", "kustomization")]
+        # flux-local writes an empty file, not an empty list, when nothing rendered differently.
+        texts = [(Path(directory) / f"{name}.json").read_text() for name in ("helmrelease", "kustomization")]
+        reports = [json.loads(text) if text.strip() else [] for text in texts]
         return classify(*reports)[0]
     except Exception as err:  # fail closed
         return Stage("render", NEEDS, f"render failed ({type(err).__name__})")
