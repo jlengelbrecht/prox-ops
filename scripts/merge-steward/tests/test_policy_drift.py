@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from classify import ALL_TYPES, glob_match, load_policy, name_match
 
@@ -86,6 +87,37 @@ def test_every_manual_renovate_rule_is_covered():
             if not covered(name, types):
                 gaps.append(f"package {name} {types}")
     assert not gaps, "policy.yaml misses Renovate manual rules: " + "; ".join(gaps)
+
+
+@needs_node
+def test_release_exceptions_mirror_a_renovate_automerge_rule():
+    rules = json5(ROOT / ".github/renovate.json5")["packageRules"]
+    assert POLICY["release_exceptions"], "found no release exceptions; the parser is broken"
+    for exception in POLICY["release_exceptions"]:
+        package = exception["package"]
+        mirrored = [r for r in rules if package in r.get("matchPackageNames", []) and r.get("automerge") is True]
+        assert len(mirrored) == 1, f"{package} needs exactly one Renovate automerge rule"
+        assert mirrored[0]["matchFileNames"] == [exception["file"]]
+        assert mirrored[0]["allowedVersions"] == f"/{exception['tag_pattern']}/"
+        assert mirrored[0]["ignoreUnstable"] is False  # prereleases are part of the exception
+        manual = [r for r in manual_rules() if package in r.get("matchPackageNames", [])]
+        assert not manual, f"{package} has an exception here and a manual rule in Renovate"
+
+
+def test_release_exceptions_name_the_real_object():
+    for exception in POLICY["release_exceptions"]:
+        doc = yaml.safe_load((ROOT / exception["file"]).read_text())
+        target = exception["oci_repository"]
+        assert doc["kind"] == "OCIRepository" and doc["spec"]["url"] == target["url"]
+        assert (doc["metadata"]["namespace"], doc["metadata"]["name"]) == (target["namespace"], target["name"])
+        assert target["url"] == f"oci://{exception['package']}"
+        assert not any(glob_match(g, exception["file"]) for g in POLICY["protected_paths"])
+
+
+def test_no_manual_package_rule_shadows_a_release_exception():
+    for exception in POLICY["release_exceptions"]:
+        for rule in POLICY["manual_packages"]:
+            assert not any(name_match(p, exception["package"]) for p in rule["match"]), rule["reason"]
 
 
 def test_regex_matchers_catch_every_image_name():

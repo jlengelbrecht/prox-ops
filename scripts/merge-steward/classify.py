@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 PASS, HOLD, NEEDS = "pass", "hold", "needs-human"
+OUT_OF_SCOPE = "not a Renovate PR, out of scope"
 ALL_TYPES = ["digest", "pinDigest", "pin", "patch", "minor", "major", "replacement", "rollback", "bump"]
 _LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 # A version number standing on its own: not part of a digest, hash or longer word.
@@ -28,7 +29,8 @@ def load_policy(path):
     policy = yaml.safe_load(Path(path).read_text())
     if not isinstance(policy, dict) or policy.get("version") != 1:
         raise ValueError("unsupported policy file")
-    for key in ("authors", "protected_paths", "manual_packages", "pass_update_types", "ignore_checks"):
+    for key in ("authors", "protected_paths", "manual_packages", "pass_update_types", "ignore_checks",
+                "release_exceptions"):
         if not isinstance(policy.get(key), list):
             raise ValueError(f"policy key {key} must be a list")
     required = policy.get("required_checks")
@@ -39,9 +41,18 @@ def load_policy(path):
             raise ValueError("each required check needs a name and an integer app_id")
     if not isinstance(policy.get("steward_app_id"), int):
         raise ValueError("policy key steward_app_id must be an integer")
+    if not isinstance(policy.get("commit_signer"), str) or not policy["commit_signer"]:
+        raise ValueError("policy key commit_signer must be a login")
     deadline = policy.get("required_checks_deadline_minutes")
     if not isinstance(deadline, int) or deadline <= 0:
         raise ValueError("policy key required_checks_deadline_minutes must be a positive integer")
+    for rule in policy["release_exceptions"]:
+        target = rule.get("oci_repository") or {}
+        if not (rule.get("package") and rule.get("file") and all(target.get(k) for k in ("namespace", "name", "url"))):
+            raise ValueError("a release exception needs a package, a file and an oci_repository")
+        if not rule.get("update_types") or not set(rule["update_types"]) <= set(policy["pass_update_types"]):
+            raise ValueError("a release exception may only name update types that can pass")
+        re.compile(rule["tag_pattern"])
     for rule in policy["manual_packages"]:
         if rule["update_types"] == "all":
             rule["update_types"] = list(ALL_TYPES)
@@ -98,24 +109,99 @@ def parse_packages(body):
     return rows
 
 
+def _parties(pr):
+    """Author login and type, head repo and base repo, from the API's PR object; None when missing."""
+    user = pr.get("user") or {}
+    head = ((pr.get("head") or {}).get("repo") or {}).get("full_name")
+    base = ((pr.get("base") or {}).get("repo") or {}).get("full_name")
+    return user.get("login"), user.get("type"), head, base
+
+
+def out_of_scope(pr, policy):
+    """True only for a readable, same-repo PR opened by a person.
+
+    Anything else goes to identity(): an unreadable author or head repo, every fork, every
+    Bot (a retired or other dependency app can hold auto-merge), and a login that differs
+    from Renovate's only by case.
+    """
+    login, kind, head, base = _parties(pr)
+    if not (login and head and base) or kind != "User" or head != base:
+        return False
+    return login.casefold() not in {a.casefold() for a in policy["authors"]}
+
+
+def _signed(commit, policy):
+    verification = (commit.get("commit") or {}).get("verification") or {}
+    return ((commit.get("committer") or {}).get("login") == policy["commit_signer"]
+            and verification.get("verified") is True)
+
+
+def _renovate_authored(commit, policy):
+    author = commit.get("author") or {}
+    return author.get("login") in policy["authors"] and author.get("type") == "Bot"
+
+
+def is_renovate_push(commit, policy):
+    """True for a commit Renovate itself made: one parent, its author, and GitHub's signature.
+
+    Renovate commits through the GitHub API, so web-flow is the committer. A plain git push
+    can forge both names but not that signature.
+    """
+    return len(commit.get("parents") or []) == 1 and _renovate_authored(commit, policy) and _signed(commit, policy)
+
+
+def commit_problem(commits, policy):
+    """Why the branch is not one Renovate-authored commit plus GitHub merges, or None.
+
+    A person's update-branch leaves one of two shapes. A merge: GitHub-signed, authored by
+    that person. A rebase: Renovate still the author, that person the committer, no
+    signature. Neither says anything about the content, and git can forge the second, so
+    steward.commit_stage compares the branch with Renovate's last push.
+    """
+    own, others = [], set()
+    for commit in commits:
+        parents = len(commit.get("parents") or [])
+        if parents == 1 and _renovate_authored(commit, policy):
+            own.append(commit)
+        elif not (parents == 2 and _signed(commit, policy)):
+            others.add((commit.get("author") or {}).get("login") or "unknown")
+    if others:
+        return "branch has commits not made by Renovate: " + ", ".join(sorted(others))
+    if len(own) != 1:
+        return f"branch has {len(own)} Renovate commits, expected exactly one"
+    return None
+
+
 def identity(pr, commits, policy):
-    author = pr["user"]["login"]
-    if author not in policy["authors"] or pr["user"].get("type") != "Bot":
-        return Stage("identity", NEEDS, f"author {author} is not on the steward allowlist")
-    if pr["head"]["repo"] is None or pr["head"]["repo"]["full_name"] != pr["base"]["repo"]["full_name"]:
+    login, kind, head, base = _parties(pr)
+    if not login or not kind:
+        return Stage("identity", NEEDS, "the PR author is unreadable")
+    if not head or not base:
+        return Stage("identity", NEEDS, "the head repository is unreadable")
+    if head != base:
         return Stage("identity", NEEDS, "head branch is not in this repository")
+    if login not in policy["authors"] or kind != "Bot":
+        return Stage("identity", NEEDS, f"author {login} is not the Renovate app")
     if pr["base"]["ref"] != policy["base_branch"]:
         return Stage("identity", NEEDS, f"base branch is not {policy['base_branch']}")
-    others = sorted({(c.get("author") or {}).get("login") or "unknown" for c in commits} - set(policy["authors"]))
-    if others or not commits:
-        return Stage("identity", NEEDS, "branch has commits from other authors: " + ", ".join(others or ["none"]))
-    return Stage("identity", PASS, f"opened by {author}")
+    problem = commit_problem(commits, policy)
+    if problem:
+        return Stage("identity", NEEDS, problem)
+    return Stage("identity", PASS, f"opened by {login}")
 
 
 def _label_update_type(labels):
     order = ["major", "minor", "patch", "pin", "pinDigest", "digest"]
     found = [t for t in order if f"update/{t}" in labels]
     return found[0] if found else None
+
+
+def release_exception(packages, files, policy):
+    """The exception covering the whole PR, or None. Any other package or file in the PR rules it out."""
+    if len(packages) != 1 or len(files) != 1:
+        return None
+    return next((rule for rule in policy["release_exceptions"]
+                 if rule["package"] == packages[0]["name"] and rule["file"] == files[0]), None)
 
 
 def policy_stage(pr, files, job_files, policy):
@@ -127,12 +213,15 @@ def policy_stage(pr, files, job_files, policy):
     if job_files:
         return Stage("policy", NEEDS, f"changes a Job manifest: {job_files[0]}")
     labels = {l["name"] for l in pr["labels"]}
-    if "breaking" in labels or "!:" in pr["title"]:
-        return Stage("policy", NEEDS, "Renovate marked the update as breaking")
     packages = parse_packages(pr.get("body"))
+    fallback = _label_update_type(labels)
+    exception = release_exception(packages, files, policy)
+    if exception and (packages[0]["update"] or fallback) not in exception["update_types"]:
+        exception = None
+    if not exception and ("breaking" in labels or "!:" in pr["title"]):
+        return Stage("policy", NEEDS, "Renovate marked the update as breaking")
     if not packages:
         return Stage("policy", NEEDS, "no Renovate package table in the PR body")
-    fallback = _label_update_type(labels)
     for pkg in packages:
         kind = pkg["update"] or fallback
         if not pkg["name"] or not kind:
@@ -141,10 +230,10 @@ def policy_stage(pr, files, job_files, policy):
             return Stage("policy", NEEDS, f"{pkg['name']} is a {kind} update")
         if kind == "minor" and not pkg["current"]:
             return Stage("policy", NEEDS, f"{pkg['name']} minor: cannot read the current version")
-        if kind == "minor" and pkg["current"].split(".")[0] == "0":
+        if kind == "minor" and pkg["current"].split(".")[0] == "0" and not exception:
             return Stage("policy", NEEDS, f"{pkg['name']} is a 0.x minor update")
         for rule in policy["manual_packages"]:
             if kind in rule["update_types"] and any(name_match(p, pkg["name"]) for p in rule["match"]):
                 return Stage("policy", NEEDS, f"{pkg['name']} {kind}: {rule['reason']}")
     names = ", ".join(f"{p['name']} ({p['update'] or fallback})" for p in packages)
-    return Stage("policy", PASS, f"default tier: {names}")
+    return Stage("policy", PASS, f"{'release exception' if exception else 'default tier'}: {names}")

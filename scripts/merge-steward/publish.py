@@ -1,10 +1,11 @@
 """Publish a verdict: the merge-steward check run, the sticky comment and steward/* labels.
 
-The check run is written with the GitHub App token so its source stays the same app
-wherever the steward runs. Labels and the comment use the workflow token, whose events
-do not start other workflows.
+The check run and the comment are written with the GitHub App token, so their source stays
+the same app and only that app can leave an approval record. Labels carry no trust and use
+the workflow token, whose events do not start other workflows.
 """
 
+import sys
 from datetime import datetime
 from urllib.parse import quote
 
@@ -15,7 +16,8 @@ from ghapi import GitHubError
 CHECK_NAME = "merge-steward"
 VERDICT_LABELS = {PASS: "steward/pass", NEEDS: "steward/needs-human", HOLD: "steward/hold"}
 LABEL_COLORS = {"steward/pass": "0e8a16", "steward/needs-human": "d93f0b", "steward/hold": "fbca04"}
-COMMENT_AUTHOR = "github-actions[bot]"
+# Author of the sticky comment before the app took over that write.
+LEGACY_COMMENT_AUTHOR = "github-actions[bot]"
 
 
 def _when(stamp):
@@ -95,11 +97,12 @@ def publish_check(app_gh, sha, verdict, reason, text, detail=None):
 
 
 def set_labels(gh, number, current, verdict):
-    want = VERDICT_LABELS[verdict]
+    """Leave only the label for verdict; a verdict of None clears them all."""
+    want = VERDICT_LABELS.get(verdict)
     for label in VERDICT_LABELS.values():
         if label != want and label in current:
             remove_label(gh, number, label)
-    if want not in current:
+    if want and want not in current:
         try:
             gh.post("labels", {"name": want, "color": LABEL_COLORS[want], "description": "Merge steward verdict"})
         except GitHubError as err:
@@ -108,11 +111,27 @@ def set_labels(gh, number, current, verdict):
         gh.post(f"issues/{number}/labels", {"labels": [want]})
 
 
-def find_comment(gh, number):
-    """The steward's sticky comment: written by the workflow token and starting with the marker."""
-    comments = gh.paginate(f"issues/{number}/comments")
-    mine = [c for c in comments if c["user"]["login"] == COMMENT_AUTHOR and c["body"].startswith(MARKER)]
-    return mine[0] if mine else None
+def find_comments(gh, number, policy):
+    """Return (sticky, stale): the app's sticky comment, and the marker comments to remove.
+
+    The comment belongs to the app by id, which GitHub sets, not by login. Stale ones are
+    those the workflow token wrote and duplicates from racing runs. Only the app's comment
+    counts for an approval record, so an old record has to be applied again.
+    """
+    comments = [c for c in gh.paginate(f"issues/{number}/comments") if c["body"].startswith(MARKER)]
+    mine = [c for c in comments
+            if (c.get("performed_via_github_app") or {}).get("id") == policy["steward_app_id"]]
+    legacy = [c for c in comments if (c.get("user") or {}).get("login") == LEGACY_COMMENT_AUTHOR]
+    return (mine[0] if mine else None), mine[1:] + legacy
+
+
+def delete_comments(gh, comments):
+    """Best effort: a stale comment is ignored from now on, so a refusal does not stop the run."""
+    for comment in comments:
+        try:
+            gh.delete(f"issues/comments/{comment['id']}")
+        except GitHubError as err:
+            print(f"could not delete comment {comment['id']}: {err}", file=sys.stderr)
 
 
 def upsert_comment(gh, number, existing, body):

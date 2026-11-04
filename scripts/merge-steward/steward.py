@@ -1,7 +1,7 @@
 """Merge steward entry point: evaluate one PR, the PRs on a commit, or sweep all open ones.
 
-Environment: GITHUB_REPOSITORY, GITHUB_TOKEN (reads, labels, comment) and
-STEWARD_APP_TOKEN (check run). --dry-run prints the verdict and writes nothing.
+Environment: GITHUB_REPOSITORY, GITHUB_TOKEN (reads, labels) and STEWARD_APP_TOKEN (check
+run, comment). --dry-run prints the verdict and writes nothing.
 """
 
 import argparse
@@ -21,7 +21,7 @@ import classify
 import fold
 import publish
 import render
-from classify import HOLD, NEEDS, Stage
+from classify import HOLD, NEEDS, OUT_OF_SCOPE, PASS, Stage
 from ghapi import GitHub, GitHubError
 
 POLICY = Path(__file__).with_name("policy.yaml")
@@ -33,6 +33,8 @@ _APPROVAL = re.compile(r"^<!-- merge-steward-approval login=(?P<login>[A-Za-z0-9
 _RENDER = re.compile(r"^<!-- merge-steward-render sha=(?P<sha>[0-9a-f]{40}) verdict=(?P<verdict>pass|hold|needs-human) "
                      r"reason=(?P<reason>[^\n]*?) -->$", re.MULTILINE)
 RENDER_WAITING = "render not evaluated yet"
+# Activity entries that put a commit on a branch.
+PUSH_TYPES = ("push", "force_push", "branch_creation")
 
 
 class Superseded(Exception):
@@ -66,15 +68,25 @@ def fingerprint(files):
     return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
 
 
+def head_blobs(files):
+    """Filename to blob at the head of the diff. Unlike the fingerprint, this is position-bound."""
+    return {f["filename"]: f.get("sha") for f in files}
+
+
+def steward_runs(gh, sha, policy):
+    """The merge-steward check runs on sha written by the steward's app, newest first."""
+    runs = gh.paginate(f"commits/{sha}/check-runs?check_name={publish.CHECK_NAME}&filter=all", key="check_runs")
+    mine = [r for r in runs if r.get("name") == publish.CHECK_NAME
+            and (r.get("app") or {}).get("id") == policy["steward_app_id"]]
+    return sorted(mine, key=lambda r: r["id"], reverse=True)
+
+
 def recorded_render(gh, sha, policy):
     """The render stage recorded for sha in an earlier merge-steward check run, or None.
 
     Only runs written by the steward's app count; the newest one with a record wins.
     """
-    runs = gh.paginate(f"commits/{sha}/check-runs?check_name={publish.CHECK_NAME}&filter=all", key="check_runs")
-    mine = [r for r in runs if r.get("name") == publish.CHECK_NAME
-            and (r.get("app") or {}).get("id") == policy["steward_app_id"]]
-    for run in sorted(mine, key=lambda r: r["id"], reverse=True):
+    for run in steward_runs(gh, sha, policy):
         found = _RENDER.search((run.get("output") or {}).get("text") or "")
         if found and found.group("sha") == sha:
             return Stage("render", found.group("verdict"), found.group("reason"))
@@ -91,12 +103,48 @@ def render_stage(gh, pr, policy, render_dir, age_minutes):
     No evidence yet is hold until the checks deadline, then needs-human.
     """
     sha = pr["head"]["sha"]
-    stage = render.from_artifact(render_dir, sha) if render_dir else recorded_render(gh, sha, policy)
+    exceptions = policy["release_exceptions"]
+    stage = render.from_artifact(render_dir, sha, exceptions) if render_dir else recorded_render(gh, sha, policy)
     if stage is not None:
         return stage
     if age_minutes > policy["required_checks_deadline_minutes"]:
         return Stage("render", NEEDS, "render evidence unavailable")
     return Stage("render", HOLD, RENDER_WAITING)
+
+
+def commit_stage(gh, pr, files, policy, age_minutes):
+    """The branch must carry exactly what Renovate last pushed.
+
+    The activity log names each pusher, which no commit metadata can forge. An update-branch
+    merge, a server-side rebase and a hand-resolved conflict all sit on top of Renovate's
+    push, so what separates them is whether the content still equals that push. The patch
+    alone says nothing about where in a file it applies, so each changed file's head blob
+    must match too. A base-branch change to a file Renovate touched also trips this, which
+    is safe: a Renovate rebase clears it.
+    """
+    ref = quote(f"refs/heads/{pr['head']['ref']}", safe="")
+    pushes = [a for a in gh.paginate(f"activity?ref={ref}") if a.get("activity_type") in PUSH_TYPES]
+    head = next((a for a in pushes if a.get("after") == pr["head"]["sha"]), None)
+    if head is None:
+        if age_minutes > policy["required_checks_deadline_minutes"]:
+            return Stage("commits", NEEDS, "no record of who pushed this head")
+        return Stage("commits", HOLD, "waiting for the push to reach the activity log")
+    own = [a for a in pushes if (a.get("actor") or {}).get("login") in policy["authors"]]
+    if not own:
+        return Stage("commits", NEEDS, "Renovate never pushed to this branch")
+    try:
+        pushed = gh.get(f"commits/{max(own, key=lambda a: a.get('timestamp') or '')['after']}")
+    except GitHubError as err:
+        if err.status != 404:
+            raise
+        return Stage("commits", NEEDS, "the last push by Renovate can no longer be read")
+    if not classify.is_renovate_push(pushed, policy):
+        return Stage("commits", NEEDS, "the last push by Renovate is not a commit signed for Renovate")
+    blobs = head_blobs(files)
+    if None in blobs.values() or blobs != head_blobs(pushed["files"]) or fingerprint(pushed["files"]) != fingerprint(files):
+        pusher = (head.get("actor") or {}).get("login") or "unknown"
+        return Stage("commits", NEEDS, f"the diff differs from Renovate's last push; head pushed by {pusher}")
+    return Stage("commits", PASS, "the diff equals Renovate's last push")
 
 
 def stages_for(gh, pr, files, policy, wait_seconds, render_dir=None):
@@ -107,6 +155,7 @@ def stages_for(gh, pr, files, policy, wait_seconds, render_dir=None):
         return stages
     if len(commits) != pr["commits"] or len(files) != pr["changed_files"]:
         return stages + [Stage("policy", NEEDS, "PR is too large to read in full")]
+    stages.append(commit_stage(gh, pr, files, policy, head_age_minutes(commits, pr)))
     paths = [f["filename"] for f in files] + [f["previous_filename"] for f in files if f.get("previous_filename")]
     stages.append(classify.policy_stage(pr, paths, job_manifests(gh, files, sha), policy))
     deadline, stable = time.monotonic() + wait_seconds, 0
@@ -176,11 +225,40 @@ def check_override(gh, pr, files, comment, policy, labeled_sha, dry_run):
     return None, None, Stage("override", NEEDS, problem)
 
 
+def publish_out_of_scope(gh, app_gh, pr, policy, dry_run):
+    """Post success without judging the PR, and clear what an earlier verdict left behind.
+
+    A check run belongs to the commit, so another open PR on this head that the steward does
+    judge keeps its verdict. An existing out-of-scope result is not posted again.
+    """
+    number, sha = pr["number"], pr["head"]["sha"]
+    print(json.dumps({"pr": number, "sha": sha[:12], "verdict": PASS, "reason": OUT_OF_SCOPE}))
+    if dry_run:
+        return PASS
+    if gh.get(f"pulls/{number}")["head"]["sha"] != sha:
+        print(f"PR #{number}: head moved during evaluation; leaving it to the newer run", file=sys.stderr)
+        return None
+    shared = [p for p in gh.get(f"commits/{sha}/pulls") if p["number"] != number and p.get("state") == "open"]
+    if not all(classify.out_of_scope(p, policy) for p in shared):
+        print(f"PR #{number}: another open PR shares this head; leaving the check to it", file=sys.stderr)
+        return None
+    newest = next(iter(steward_runs(gh, sha, policy)), {})
+    if (newest.get("output") or {}).get("title") != OUT_OF_SCOPE or newest.get("conclusion") != "success":
+        stage = Stage("scope", PASS, OUT_OF_SCOPE)
+        publish.publish_check(app_gh, sha, PASS, OUT_OF_SCOPE, fold.summary([stage], PASS, OUT_OF_SCOPE))
+    publish.set_labels(gh, number, {l["name"] for l in pr["labels"]}, None)
+    comment, stale = publish.find_comments(gh, number, policy)
+    publish.delete_comments(app_gh, stale + ([comment] if comment else []))
+    return PASS
+
+
 def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, render_dir=None):
+    if classify.out_of_scope(pr, policy):
+        return publish_out_of_scope(gh, app_gh, pr, policy, dry_run)
     number, sha = pr["number"], pr["head"]["sha"]
     labels = {l["name"] for l in pr["labels"]}
     label = policy["override_label"]
-    comment = publish.find_comment(gh, number)
+    comment, stale = publish.find_comments(gh, number, policy)
     previous = _APPROVAL.search(comment["body"]) if comment else None
     approval = previous.group(0) if previous else None  # kept if evaluation errors out
     stages = []
@@ -222,7 +300,8 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
     publish.publish_check(app_gh, sha, verdict, fold.clean(reason, 250), fold.summary(stages, verdict, reason), record)
     publish.set_labels(gh, number, labels, verdict)
     body = fold.comment(stages, verdict, reason, sha, label) + (f"\n{approval}" if approval else "")
-    publish.upsert_comment(gh, number, comment, body)
+    publish.upsert_comment(app_gh, number, comment, body)
+    publish.delete_comments(app_gh, stale)
     return verdict
 
 
@@ -250,7 +329,7 @@ def main(argv=None):
         prs = [gh.get(f"pulls/{p['number']}") for p in prs]
     else:
         prs = [gh.get(f"pulls/{p['number']}") for p in gh.paginate("pulls?state=open")
-               if p["user"]["login"] in policy["authors"]]
+               if (p.get("user") or {}).get("login") in policy["authors"]]
     failures = 0
     for pr in prs:
         if pr["state"] != "open":

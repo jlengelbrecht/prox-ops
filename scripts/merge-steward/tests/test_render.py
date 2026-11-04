@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 import render
-from classify import NEEDS, PASS
+from classify import NEEDS, PASS, load_policy
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -261,3 +261,76 @@ def test_cli_fails_closed(tmp_path, capsys):
     results = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [r["verdict"] for r in results] == [NEEDS, NEEDS]
     assert all(r["reason"].startswith("render failed") for r in results)
+
+
+EXCEPTIONS = load_policy(Path(render.__file__).with_name("policy.yaml"))["release_exceptions"]
+PR_1880 = json.loads((FIXTURES / "pr-1880-agent-router-base.json").read_text())
+OLD_DIGEST, NEW_DIGEST = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+
+
+def router(tag, digest, name="agent-router-base", namespace="ai", url="oci://ghcr.io/jlengelbrecht/agent-router-base"):
+    return {"kind": "OCIRepository", "metadata": {"name": name, "namespace": namespace},
+            "spec": {"url": url, "ref": {"tag": tag, "digest": digest}}}
+
+
+def release_verdict(before, after):
+    return render.classify(obj_diff("OCIRepository", before, after), exceptions=EXCEPTIONS)[0]
+
+
+def test_real_render_of_1880_passes_with_the_exception_and_is_flagged_without_it():
+    assert render.classify(PR_1880, exceptions=EXCEPTIONS)[0].verdict == PASS
+    plain = render.classify(PR_1880)[0]
+    assert plain.verdict == NEEDS and plain.reason.startswith("major")
+
+
+def test_the_same_real_bump_on_another_package_is_flagged():
+    for old, new in (("name: agent-router-base", "name: other-base"),
+                     ("oci://ghcr.io/jlengelbrecht/agent-router-base", "oci://ghcr.io/jlengelbrecht/other-base"),
+                     ("namespace: ai", "namespace: other")):
+        other = json.loads(json.dumps(PR_1880).replace(old, new))
+        assert render.classify(other, exceptions=EXCEPTIONS)[0].verdict == NEEDS, new
+
+
+@pytest.mark.parametrize("old,new", [
+    ("v0.8.3", "v0.9.0-rc.2"), ("v0.8.2", "v0.8.3-rc.1"), ("v0.8.3-rc.1", "v0.8.3-rc.2"), ("v0.8.3-rc.2", "v0.8.3"),
+])
+def test_excepted_release_tags_pass(old, new):
+    assert release_verdict(router(old, OLD_DIGEST), router(new, NEW_DIGEST)).verdict == PASS
+
+
+def test_digest_only_rebuild_of_a_tag_passes():
+    assert release_verdict(router("v0.8.3", OLD_DIGEST), router("v0.8.3", NEW_DIGEST)).verdict == PASS
+
+
+@pytest.mark.parametrize("old,new,reason", [
+    ("v0.9.0", "v1.0.0", "major"),
+    ("v0.9.0", "v0.8.3", "version"),  # a rollback needs a person
+    ("v0.9.5", "v0.9.2", "version"),
+    ("v0.9.0", "v0.9.0-rc.1", "version"),
+    ("v0.8.3", "0.9.0", "version"),  # outside the release tag format
+    ("v0.8.3", "latest", "version"),
+    ("v0.8.3", "v0.9.0-", "version"),
+])
+def test_other_tags_on_the_excepted_object_are_flagged(old, new, reason):
+    assert release_verdict(router(old, OLD_DIGEST), router(new, NEW_DIGEST)).reason.startswith(reason)
+
+
+def test_digest_must_stay_a_digest_on_the_excepted_object():
+    after = router("v0.9.0", "sha256:short")
+    assert release_verdict(router("v0.8.3", OLD_DIGEST), after).reason.startswith("changed spec.ref.digest")
+    dropped = router("v0.9.0", NEW_DIGEST)
+    del dropped["spec"]["ref"]["digest"]
+    assert release_verdict(router("v0.8.3", OLD_DIGEST), dropped).verdict == NEEDS
+
+
+def test_other_fields_on_the_excepted_object_are_flagged():
+    moved = router("v0.9.0", NEW_DIGEST, url="oci://ghcr.io/evil/agent-router-base")
+    assert release_verdict(router("v0.8.3", OLD_DIGEST), moved).verdict == NEEDS
+    extra = router("v0.9.0", NEW_DIGEST)
+    extra["spec"]["secretRef"] = {"name": "other"}
+    assert release_verdict(router("v0.8.3", OLD_DIGEST), extra).reason.startswith("changed spec.secretRef")
+
+
+def test_other_objects_in_the_same_render_get_the_normal_verdict():
+    report = PR_1880 + obj_diff("Deployment", pod("app:1.2.0"), pod("app:2.0.0"))
+    assert render.classify(report, exceptions=EXCEPTIONS)[0].verdict == NEEDS

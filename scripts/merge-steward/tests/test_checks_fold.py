@@ -67,7 +67,8 @@ def test_fold_order_needs_human_beats_hold_beats_pass():
     assert fold(stages)[0] == HOLD
     stages[2] = Stage("checks", PASS, "")
     assert fold(stages)[0] == NEEDS  # render stage missing
-    assert fold(stages + [Stage("render", PASS, "")])[0] == PASS
+    assert fold(stages + [Stage("render", PASS, "")])[0] == NEEDS  # the commits stage is missing
+    assert fold(stages + [Stage("commits", PASS, ""), Stage("render", PASS, "")])[0] == PASS
 
 
 def test_override_passes_with_the_admin_named():
