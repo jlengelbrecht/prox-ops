@@ -1,7 +1,7 @@
 ---
 # Every replica's own metrics, from the metrics-only listener on 8220. A
-# PodMonitor rather than the chart's ServiceMonitor: it targets the pods, so
-# sealed replicas (not Ready, so not Service endpoints) are still scraped.
+# PodMonitor rather than the chart's ServiceMonitor: no Service exposes 8220,
+# and it scrapes each replica directly, including sealed ones.
 # Only the CA is read from the server's TLS Secret; the server name is a SAN.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
