@@ -728,6 +728,23 @@
       "prBodyNotes": [
         "**provider-azuread re-tag**: the tag did not change but its digest did. Do not merge until upstream explains the re-publish."
       ]
+    },
+    // obsidian-mcp Python dependencies: the image build pins hashes and its verify job is
+    // not a required check, so a resolver conflict would still auto-merge. Batch them into
+    // one weekly PR and merge by hand until that pipeline is fixed.
+    {
+      "description": "obsidian-mcp Python dependencies: one weekly PR, manual merge",
+      "matchFileNames": ["services/obsidian-mcp/**"],
+      "groupName": "obsidian-mcp python dependencies",
+      "schedule": ["before 6am on monday"],
+      "automerge": false
+    },
+    // n8n minors carry database migrations.
+    {
+      "description": "n8n: minor and major are manual (database migrations)",
+      "matchPackageNames": ["n8nio/n8n", "docker.io/n8nio/n8n"],
+      "matchUpdateTypes": ["minor", "major"],
+      "automerge": false
     }
   ]
 }
