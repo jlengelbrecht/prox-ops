@@ -18,6 +18,22 @@ spec:
         - ports:
             - port: "4000"
               protocol: TCP
+    # Allow ingress from the merge-steward runner pods only (direct, plain HTTP
+    # in-cluster). The listener pod of the same scale set is excluded. Pairs with
+    # litellmDirect in github-actions/repo-runner-sets/app/resourceset.yaml.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: github-actions
+            actions.github.com/scale-set-name: gha-prox-ops-steward
+          matchExpressions:
+            - key: app.kubernetes.io/component
+              operator: NotIn
+              values:
+                - runner-scale-set-listener
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
     # Allow ingress from other AI services (Open WebUI, etc.)
     - fromEndpoints:
         - matchLabels:
