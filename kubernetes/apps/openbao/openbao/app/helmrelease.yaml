@@ -28,7 +28,8 @@ spec:
     disableWait: true
   # A rolling restart re-unseals each replica through the HSM one by one;
   # leave room for an image pull on each node. Rollback after failed retries
-  # comes from the cluster-wide HelmRelease defaults (kubernetes/flux/cluster).
+  # comes from the cluster-wide HelmRelease defaults (kubernetes/flux/cluster),
+  # which turn recreate off here so a rollback also rolls one pod at a time.
   timeout: 15m
   values:
     global:

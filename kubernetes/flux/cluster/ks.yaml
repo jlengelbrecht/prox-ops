@@ -52,6 +52,20 @@ spec:
               target:
                 group: helm.toolkit.fluxcd.io
                 kind: HelmRelease
+            - # OpenBao rolls back one pod at a time: recreate restarts all
+              # replicas together, and with the HSM down none could unseal.
+              patch: |-
+                apiVersion: helm.toolkit.fluxcd.io/v2
+                kind: HelmRelease
+                metadata:
+                  name: _
+                spec:
+                  rollback:
+                    recreate: false
+              target:
+                group: helm.toolkit.fluxcd.io
+                kind: HelmRelease
+                name: openbao
       target:
         group: kustomize.toolkit.fluxcd.io
         kind: Kustomization
