@@ -80,7 +80,11 @@ until bao status >/dev/null 2>&1; do
   fi
   sleep 1
 done
-grep -q "unsealed with stored key" "$work/server.log"
+if ! grep -q "unsealed with stored key" "$work/server.log"; then
+  cat "$work/server.log"
+  echo "error: the server is up but did not unseal through the seal" >&2
+  exit 1
+fi
 kill "$server"
 wait "$server" || true
 echo "OK: initialised, restarted and unsealed itself through PKCS#11"
