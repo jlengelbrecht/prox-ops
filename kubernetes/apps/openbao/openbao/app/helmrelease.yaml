@@ -162,6 +162,21 @@ spec:
               tls_min_version = "tls12"
             }
 
+            # Break glass: a new root token from the recovery key alone, when
+            # no admin can log in. The bao CLI's generate-root needs a token
+            # now, and the unauthenticated sys/generate-root endpoints are off
+            # by default (anyone who can reach them can cancel an attempt), so
+            # they are enabled on this loopback listener only. Reaching it
+            # takes kubectl exec into a server pod. Procedure:
+            # .claude/.ai-docs/openbao/OPENBAO_RUNBOOKS.md, section 2.
+            listener "tcp" {
+              address         = "127.0.0.1:8210"
+              tls_cert_file   = "/openbao/userconfig/openbao-server-tls/tls.crt"
+              tls_key_file    = "/openbao/userconfig/openbao-server-tls/tls.key"
+              tls_min_version = "tls12"
+              disable_unauthed_generate_root_endpoints = false
+            }
+
             storage "raft" {
               path = "/openbao/data"
               retry_join {
