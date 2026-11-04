@@ -71,6 +71,16 @@ jobs:
           rc=$(timeout 20 docker wait bao-stop-test)
           docker logs bao-stop-test 2>&1 | tail -n 5
           [ "$rc" = "0" ]
+      - name: Unseal test (this bao and plugin, through a SoftHSM token)
+        run: |
+          set -euo pipefail
+          docker build -q -t openbao-hsm:softhsm - <<'EOF'
+          FROM openbao-hsm:verification
+          USER 0
+          RUN apt-get update && apt-get install -y --no-install-recommends softhsm2 opensc
+          USER 100:1000
+          EOF
+          docker run --rm -i --entrypoint sh openbao-hsm:softhsm -s <services/openbao-hsm/test-softhsm-unseal.sh
 
   publish:
     needs: verify

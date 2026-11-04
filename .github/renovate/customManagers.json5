@@ -234,6 +234,21 @@
     },
     {
       "customType": "regex",
+      "description": "Track openbao-hsm in the OpenBao HelmRelease: the chart splits registry, repository and tag, so read the tag and digest here",
+      "managerFilePatterns": [
+        "/^kubernetes/apps/openbao/openbao/app/helmrelease\\.yaml$/"
+      ],
+      "matchStrings": [
+        // Matches: # renovate: datasource=docker depName=ghcr.io/jlengelbrecht/openbao-hsm
+        //          tag: main@sha256:<64 hex>
+        "# renovate: datasource=docker depName=ghcr\\.io/jlengelbrecht/openbao-hsm\\n\\s*tag:\\s*(?<currentValue>[\\w.-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/jlengelbrecht/openbao-hsm",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
       // The metrics workflow pins the Prometheus release archive by tag AND by the
       // archive's SHA-256. github-release-attachments resolves the new digest from
       // the release's checksum file, so a bump rewrites both values in one match.
