@@ -688,6 +688,17 @@
         "**provider-azuread**: manual merge, no auto-merge. The provider package is unsigned: check that the new tag was published by the upstream release workflow and that the digest in this PR matches the run's output. Merge only after flux-local, CI and a security review pass."
       ]
     },
+    // Loki, Alloy and Crossplane: keep patch and minor in separate PRs, so a pending manual
+    // minor never swallows a patch that is allowed to auto-merge.
+    {
+      "description": "Separate patch from minor for packages whose patch auto-merges but minor is manual",
+      "matchPackageNames": [
+        "crossplane", "loki", "alloy",
+        "grafana/loki", "grafana/alloy",
+        "docker.io/grafana/loki", "docker.io/grafana/alloy"
+      ],
+      "separateMinorPatch": true
+    },
     // Crossplane core chart: patch releases auto-merge after a 7-day soak; minor and major
     // stay manual. The chart only carries the controller; the provider that can write to
     // Entra is the rule above. Listed after the default rules so these win.
