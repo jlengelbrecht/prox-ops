@@ -650,8 +650,9 @@
     },
     // Logging: after every patch/minor/digest opt-in so none of them can auto-merge it.
     {
-      "description": "FULLY MANUAL: Loki and Alloy - an update can change the log sanitizer or replace Loki storage, and the logging fixture is path-filtered rather than a required check",
+      "description": "Loki and Alloy: minor and major are manual (an update can change the log sanitizer or replace Loki storage); patch auto-merges through the default patch rule. The logging fixture is path-filtered rather than a required check, so the fixture rule below keeps any PR that touches it manual.",
       "matchDatasources": ["docker", "helm", "github-release-attachments"],
+      "matchUpdateTypes": ["minor", "major"],
       "matchPackageNames": [
         "loki", "alloy",
         "grafana/loki", "grafana/alloy",
@@ -671,22 +672,41 @@
       "matchDatasources": ["docker"],
       "automerge": false
     },
-    // Crossplane and provider-azuread: last so no patch/minor/digest opt-in can
-    // auto-merge them. The provider holds write access to the Entra tenant and its
-    // package is unsigned with no attestations, so every release soaks 7 days and
-    // merges by hand after review. Provider.spec.package stays pinned by tag and
-    // digest; the custom manager in customManagers.json5 moves both together.
-    // No matchDatasources: this covers the helm chart, the custom-manager docker
-    // dependency, and any Crossplane image or ImageConfig pinned later.
+    // provider-azuread: last so no patch/minor/digest opt-in can auto-merge it. The
+    // provider holds write access to the Entra tenant and its package is unsigned with no
+    // attestations, so every release soaks 7 days and merges by hand after review.
+    // Provider.spec.package stays pinned by tag and digest; the custom manager in
+    // customManagers.json5 moves both together. No matchDatasources: this covers the
+    // custom-manager docker dependency and any provider image or ImageConfig pinned later.
     {
-      "description": "FULLY MANUAL: Crossplane chart and provider-azuread package - 7-day soak, never auto-merged, digest pin kept",
-      "matchPackageNames": ["/crossplane/", "/provider-azuread/"],
+      "description": "FULLY MANUAL: provider-azuread package - 7-day soak, never auto-merged, digest pin kept",
+      "matchPackageNames": ["/provider-azuread/"],
       "minimumReleaseAge": "7 days",
       "automerge": false,
       "pinDigests": true,
       "prBodyNotes": [
-        "**Crossplane / provider-azuread**: manual merge, no auto-merge. The provider package is unsigned: check that the new tag was published by the upstream release workflow and that the digest in this PR matches the run's output. Merge only after flux-local, CI and a security review pass."
+        "**provider-azuread**: manual merge, no auto-merge. The provider package is unsigned: check that the new tag was published by the upstream release workflow and that the digest in this PR matches the run's output. Merge only after flux-local, CI and a security review pass."
       ]
+    },
+    // Crossplane core chart: patch releases auto-merge after a 7-day soak; minor and major
+    // stay manual. The chart only carries the controller; the provider that can write to
+    // Entra is the rule above. Listed after the default rules so these win.
+    {
+      "description": "Crossplane chart: minor and major are manual; patch auto-merges after a 7 day soak",
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["crossplane"],
+      "matchUpdateTypes": ["minor", "major"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false
+    },
+    {
+      "description": "Crossplane chart: auto-merge patch updates after a 7 day soak",
+      "matchDatasources": ["helm"],
+      "matchPackageNames": ["crossplane"],
+      "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "7 days",
+      "automerge": true,
+      "automergeType": "pr"
     },
     {
       "description": "provider-azuread: a digest change under an existing tag is a re-tagged release - manual, and treated as a supply-chain event",
