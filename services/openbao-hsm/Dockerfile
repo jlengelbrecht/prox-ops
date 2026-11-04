@@ -24,7 +24,7 @@
 FROM ghcr.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f AS bao
 FROM ghcr.io/openbao/openbao-plugin-kms-pkcs11:v0.2.1@sha256:babba58243c7db7ffb9b906e25f35643704e8814792f5b678b3c215acba284f5 AS kms
 
-FROM docker.io/library/debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+FROM docker.io/library/debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/jlengelbrecht/prox-ops" \
       org.opencontainers.image.revision="${VCS_REF}" \
