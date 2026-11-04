@@ -163,12 +163,50 @@ def test_allowlisted_changes_pass():
     assert verdict("Deployment", pod("app:1.2.0@sha256:aa"), pod("app:1.2.0@sha256:bb")).verdict == PASS
 
 
-def test_label_churn_passes_but_new_labels_do_not():
-    a = {"kind": "Service", "metadata": {"name": "s", "labels": {"helm.sh/chart": "x-1.0.0"}}}
-    b = {"kind": "Service", "metadata": {"name": "s", "labels": {"helm.sh/chart": "x-1.1.0"}}}
-    assert verdict("Service", a, b).verdict == PASS
-    c = {"kind": "Service", "metadata": {"name": "s", "labels": {"helm.sh/chart": "x-1.0.0", "new": "y"}}}
-    assert verdict("Service", a, c).verdict == NEEDS
+def test_only_version_labels_may_churn():
+    svc = lambda labels, ann=None: {"kind": "Service", "metadata": {"name": "s", "labels": labels,  # noqa: E731
+                                                                     "annotations": ann or {}}}
+    assert verdict("Service", svc({"helm.sh/chart": "x-1.0.0", "app.kubernetes.io/version": "1.0"}),
+                   svc({"helm.sh/chart": "x-1.1.0", "app.kubernetes.io/version": "1.1"})).verdict == PASS
+    assert verdict("Service", svc({"helm.sh/chart": "x-1.0.0"}), svc({"helm.sh/chart": "x-1.0.0", "new": "y"})).verdict == NEEDS
+    assert verdict("Service", svc({"app": "a"}), svc({"app": "b"})).verdict == NEEDS
+
+
+def test_external_dns_hostname_change_is_flagged():
+    svc = lambda host: {"kind": "Service", "metadata": {"name": "s", "annotations": {  # noqa: E731
+        "external-dns.alpha.kubernetes.io/hostname": host}}}
+    assert verdict("Service", svc("a.example.org"), svc("b.example.org")).verdict == NEEDS
+
+
+def test_lbipam_ip_change_is_flagged():
+    svc = lambda ip: {"kind": "Service", "metadata": {"name": "s", "annotations": {"lbipam.cilium.io/ips": ip}}}  # noqa: E731
+    assert verdict("Service", svc("192.0.2.10"), svc("192.0.2.11")).verdict == NEEDS
+
+
+def test_pod_label_rename_is_flagged():
+    before, after = pod("app:1.2.0"), pod("app:1.2.0")
+    before["spec"]["template"]["metadata"] = {"labels": {"app.kubernetes.io/name": "app", "app.kubernetes.io/version": "1.2.0"}}
+    after["spec"]["template"]["metadata"] = {"labels": {"app.kubernetes.io/instance": "app", "app.kubernetes.io/version": "1.2.0"}}
+    assert verdict("Deployment", before, after).verdict == NEEDS
+    after["spec"]["template"]["metadata"] = {"labels": {"app.kubernetes.io/name": "app", "app.kubernetes.io/version": "1.2.1"}}
+    assert verdict("Deployment", before, after).verdict == PASS
+    after["spec"]["template"]["metadata"] = {"labels": {"app.kubernetes.io/name": "app2", "app.kubernetes.io/version": "1.2.0"}}
+    assert verdict("Deployment", before, after).verdict == NEEDS
+
+
+def test_pod_template_annotations_never_pass():
+    before, after = pod("app:1.2.0"), pod("app:1.2.0")
+    before["spec"]["template"]["metadata"] = {"annotations": {"checksum/secret": "a"}}
+    after["spec"]["template"]["metadata"] = {"annotations": {"checksum/secret": "b"}}
+    assert verdict("Deployment", before, after).verdict == NEEDS
+
+
+def test_digest_rules():
+    assert verdict("Deployment", pod("app:1.2.0@sha256:aa"), pod("app:1.2.0@sha256:bb")).verdict == PASS
+    assert verdict("Deployment", pod("app:1.2.0"), pod("app:1.2.0@sha256:bb")).verdict == PASS
+    assert verdict("Deployment", pod("app:1.2.0@sha256:aa"), pod("app:1.2.0")).reason.startswith("image")
+    assert verdict("Deployment", pod("app:1.2.0@sha256:aa"), pod("app:1.2.1")).reason.startswith("image")
+    assert verdict("Deployment", pod("app:1.2.0@sha256:aa"), pod("app:1.2.1@sha256:bb")).verdict == PASS
 
 
 def test_image_repository_change_and_zero_x_minor_are_flagged():

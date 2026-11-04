@@ -375,3 +375,10 @@ def test_head_moving_while_waiting_publishes_nothing(monkeypatch):
     gh.routes["pulls/7"] = dict(pr, head=dict(pr["head"], sha="e" * 40))
     monkeypatch.setattr(steward.time, "sleep", lambda s: None)
     assert steward.evaluate(gh, app, pr, POLICY, 600, False) is None and app.writes == []
+
+
+def test_stale_merge_ref_publishes_hold_without_a_record(tmp_path):
+    (tmp_path / "meta.json").write_text(json.dumps({"head_sha": SHA, "stale": True}))
+    verdict, check = run_with_artifact(str(tmp_path))
+    assert verdict == "hold" and check["status"] == "in_progress" and "stale" in check["output"]["title"]
+    assert "text" not in check["output"]

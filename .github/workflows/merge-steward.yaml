@@ -6,8 +6,7 @@
 #
 # The evaluate job runs on pull_request_target, status, check_suite, schedule
 # and workflow_dispatch events, so both this file and the steward code come from the
-# default branch. It never checks out or runs PR
-# code: it reads PR data through the API only. It never merges anything.
+# default branch. It never checks out or runs PR code: it reads PR data through the API. It never merges anything.
 #
 # The render job is the one place PR content is read from disk: it checks out the PR merge
 # ref and renders it with flux-local in a pinned container. It holds no secrets and no app
@@ -16,10 +15,9 @@
 # default-branch code.
 name: "Merge Steward"
 
+# The unit tests live in merge-steward-tests.yaml, so pull_request and pull_request_target
+# events do not create each other's skipped runs.
 on:
-  # Unit tests run the PR's own code, without secrets.
-  pull_request:
-    types: [opened, synchronize, reopened]
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -48,38 +46,10 @@ permissions: {}
 env:
   # renovate: datasource=pypi depName=pyyaml
   PYYAML_VERSION: "6.0.3"
-  # renovate: datasource=pypi depName=pytest
-  PYTEST_VERSION: "9.0.2"
   # renovate: datasource=docker depName=ghcr.io/allenporter/flux-local
   FLUX_LOCAL_VERSION: "v8.4.0@sha256:c0be852e30f299ce6a220cc992b0c21a2a0b0684cc17713b9d718e18d9c8beff"
 
 jobs:
-  test:
-    name: merge-steward tests
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.15'
-      - run: python -m pip install "PyYAML==${PYYAML_VERSION}" "pytest==${PYTEST_VERSION}"
-      - name: Unit tests (output kept for the secret-shape check)
-        run: |
-          set -o pipefail
-          python -m pytest -q scripts/merge-steward/tests 2>&1 | tee pytest.log
-      - name: No secret-shaped strings in test output
-        run: |
-          if grep -Eq 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_|-----BEGIN [A-Z ]*PRIVATE KEY' pytest.log; then
-            echo "::error::secret-shaped string in steward test output"
-            exit 1
-          fi
-
   # Renders the PR merge ref and its first parent (the base it merges into) with
   # flux-local and uploads the JSON. Renovate PRs from this repository only.
   render:
@@ -103,22 +73,38 @@ jobs:
           persist-credentials: false
 
       # GitHub builds the merge ref asynchronously, so it can still be the previous push's
-      # merge commit. Refuse to render unless its second parent is this event's head.
-      - name: Check the merge ref and find its base
+      # merge commit. Re-fetch it every 20 s for about 3 minutes until its second parent is
+      # this event's head. If it never is, render nothing and record the run as stale.
+      # The fetch is anonymous (public repository, no credentials persisted).
+      - name: Wait for a merge ref built from this head
         id: base
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+          GIT_LFS_SKIP_SMUDGE: "1"
         run: |
           set -euo pipefail
-          merged_head=$(git -C pull rev-parse HEAD^2)
-          if [ "$merged_head" != "$HEAD_SHA" ]; then
-            echo "::error::the PR merge ref is stale (built from another head); re-run this workflow"
-            exit 1
-          fi
-          echo "head=$merged_head" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git -C pull rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 10); do
+            if [ "$(git -C pull rev-parse HEAD^2)" = "$HEAD_SHA" ]; then
+              {
+                echo "fresh=true"
+                echo "head=$HEAD_SHA"
+                echo "sha=$(git -C pull rev-parse HEAD^1)"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            [ "$attempt" = 10 ] && break
+            sleep 20
+            git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+              fetch --quiet --no-tags --depth=2 origin "+$MERGE_REF:refs/remotes/origin/steward-merge"
+            git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+              checkout --quiet --force --detach refs/remotes/origin/steward-merge
+          done
+          echo "::warning::the PR merge ref was not rebuilt for this head; recording the render as stale"
+          echo "fresh=false" >> "$GITHUB_OUTPUT"
 
       - name: Checkout that base
+        if: steps.base.outputs.fresh == 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ steps.base.outputs.sha }}
@@ -132,8 +118,8 @@ jobs:
       # meta.json is written after flux-local exits, outside the container, with the head
       # the merge ref was verified to contain. The container drops all capabilities.
       - name: Render with flux-local
-        env:
-          HEAD_SHA: ${{ steps.base.outputs.head }}
+        id: flux
+        if: steps.base.outputs.fresh == 'true'
         run: |
           set -u
           out="$RUNNER_TEMP/render"
@@ -153,8 +139,23 @@ jobs:
               --output-file "/out/$res.json" > "$RUNNER_TEMP/flux-$res.log" 2>&1 || rc=1
             echo "$res: flux-local exit $rc"
           done
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Record the render outcome
+        env:
+          FRESH: ${{ steps.base.outputs.fresh }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RC: ${{ steps.flux.outputs.rc }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/render"
+          mkdir -p "$out"
           rm -f "$out/meta.json"
-          printf '{"head_sha": "%s", "failed": %d}\n' "$HEAD_SHA" "$rc" > "$out/meta.json"
+          if [ "$FRESH" = "true" ]; then
+            printf '{"head_sha": "%s", "failed": %d}\n' "$HEAD_SHA" "${RC:-1}" > "$out/meta.json"
+          else
+            printf '{"head_sha": "%s", "stale": true}\n' "$HEAD_SHA" > "$out/meta.json"
+          fi
 
       - name: Upload the render result
         if: ${{ !cancelled() }}

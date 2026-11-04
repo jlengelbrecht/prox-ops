@@ -204,7 +204,9 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
         detail = str(err) if isinstance(err, GitHubError) else type(err).__name__
         print(f"PR #{number}: evaluation error: {detail}", file=sys.stderr)
     # Keep the render result (from this run's artifact or an earlier record) with the check run.
-    rendered = next((s for s in stages if s.name == "render" and s.reason != RENDER_WAITING), None)
+    # A hold (no render yet, or a stale merge ref) is never recorded, so later events
+    # keep waiting for a real render instead of reusing it.
+    rendered = next((s for s in stages if s.name == "render" and s.verdict != HOLD), None)
     waiting = any(s.name == "render" and s.reason == RENDER_WAITING for s in stages)
     print(json.dumps({"pr": number, "sha": sha[:12], "verdict": verdict, "reason": fold.clean(reason)}))
     if dry_run:

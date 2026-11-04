@@ -13,7 +13,9 @@ field. Only these changes may pass:
 - HelmRelease `spec.values`, but only when flux-local rendered that release, so the
   effect of the values is classified object by object
 - OCIRepository `spec.ref.tag`, non-major
-- the value of an existing label or annotation (object or pod template metadata)
+- the value of a version label: `app.kubernetes.io/version`, `app.kubernetes.io/managed-by`
+  or `helm.sh/chart` on the object, `app.kubernetes.io/version` on a pod template.
+  Annotations never pass: external-dns hostnames and Cilium LB IPs live there.
 
 Everything else is needs-human: any other field, any other kind, and any added or
 removed object. A parse problem or a flux-local failure is needs-human too.
@@ -28,7 +30,7 @@ from pathlib import Path
 
 import yaml
 
-from classify import NEEDS, PASS, Stage
+from classify import HOLD, NEEDS, PASS, Stage
 from fold import clean
 
 WORKLOADS = {"Deployment", "DaemonSet", "StatefulSet", "ReplicaSet"}
@@ -59,6 +61,10 @@ PRIORITY = ["render", "CRD", "webhook", "removed", "added", "privileged pod spec
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _SEMVER = re.compile(r"^v?(\d+)\.(\d+)")
 _MISSING = object()
+STALE = "the PR merge ref was stale; re-run the render (pull_request_target run)"
+# Labels whose value may change silently. Other labels feed Service and policy selectors.
+OBJECT_LABELS = {"app.kubernetes.io/version", "app.kubernetes.io/managed-by", "helm.sh/chart"}
+TEMPLATE_LABELS = {"app.kubernetes.io/version"}
 
 
 def rebuild(diff):
@@ -136,8 +142,11 @@ def _image_flag(before, after, old, new):
     new_repo, new_tag, new_digest = _split_image(new)
     if old_repo != new_repo:
         return "image"
+    if old_digest and not new_digest:
+        return "image"  # the digest pin was dropped
     if old_tag == new_tag:
-        return None if old_digest != new_digest else "image"
+        # Same tag: a new digest on both sides, or a digest added.
+        return None if new_digest and old_digest != new_digest else "image"
     flag = _major_change(old_tag, new_tag)
     if flag:
         return flag
@@ -149,11 +158,14 @@ def _image_flag(before, after, old, new):
 
 
 def _metadata_churn(path, old, new):
-    """The value of an existing label or annotation changed."""
-    meta = path[:2] in (("metadata", "labels"), ("metadata", "annotations"))
-    template = path[:4] in (("spec", "template", "metadata", "labels"), ("spec", "template", "metadata", "annotations"))
-    depth = 3 if meta else 5 if template else 0
-    return bool(depth) and len(path) == depth and old is not _MISSING and new is not _MISSING
+    """The value of an allowlisted version label changed (never an annotation)."""
+    if old is _MISSING or new is _MISSING:
+        return False
+    if len(path) == 3 and path[:2] == ("metadata", "labels"):
+        return path[2] in OBJECT_LABELS
+    if len(path) == 5 and path[:4] == ("spec", "template", "metadata", "labels"):
+        return path[4] in TEMPLATE_LABELS
+    return False
 
 
 def _keys(value):
@@ -264,6 +276,9 @@ def from_artifact(directory, head_sha):
         return Stage("render", NEEDS, "render evidence unavailable")
     if meta.get("head_sha") != head_sha:
         return None
+    if meta.get("stale") is True:
+        # GitHub had not rebuilt the merge ref for this head within the render job's wait.
+        return Stage("render", HOLD, STALE)
     if meta.get("failed") != 0:
         return Stage("render", NEEDS, "render failed (flux-local exited non-zero)")
     try:
