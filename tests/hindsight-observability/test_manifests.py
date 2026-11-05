@@ -50,7 +50,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(mon['spec']['endpoints'][0]['path'], '/metrics')
         env = {x['name']: x.get('value') for x in dep['spec']['template']['spec']['containers'][0]['env']}
         for key, value in {'HINDSIGHT_API_LLM_MAX_CONCURRENT': '2',
-                           'HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT': '1',
+                           'HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT': '2',
                            'HINDSIGHT_API_METRICS_BACKLOG_ENABLED': 'true',
                            'HINDSIGHT_API_METRICS_INCLUDE_BANK_ID': 'true'}.items():
             self.assertEqual(env[key], value)

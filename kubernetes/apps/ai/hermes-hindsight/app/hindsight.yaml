@@ -198,7 +198,9 @@ spec:
           HINDSIGHT_API_LLM_MAX_CONCURRENT: "2"
           # 1 capped retain near 175 LLM calls an hour: a backlog built up, and
           # batches waiting on the permit hit the 1h wall-clock limit and failed.
-          HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "3"
+          # The global limit above also applies, and 2 is the subscription
+          # budget, so a higher value here does nothing.
+          HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "2"
           HINDSIGHT_API_METRICS_BACKLOG_ENABLED: "true"
           HINDSIGHT_API_METRICS_INCLUDE_BANK_ID: "true"
           HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT: "1"
@@ -333,6 +335,7 @@ spec:
       env:
         <<: *hindsight-env
         HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
+        HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "1"
         HINDSIGHT_API_DB_POOL_MIN_SIZE: "2"
         HINDSIGHT_API_DB_POOL_MAX_SIZE: "4"
         HINDSIGHT_API_WORKER_MAX_SLOTS: "2"
