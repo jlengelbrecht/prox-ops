@@ -1468,10 +1468,19 @@ data:
       labels:
         blueprints.goauthentik.io/description: "Security and admin events to Discord"
     entries:
+      # On a rebuilt instance the rule needs the admin group to exist. Without
+      # this it applies with no group and never sends.
+      - model: authentik_blueprints.metaapplyblueprint
+        attrs:
+          identifiers:
+            name: authentik Bootstrap
+          required: false
       # Generic webhook with a fixed body, not the Slack format: that one copies
       # the event's context strings into the message, and a failed login's
       # context holds whatever was typed as the username, sometimes a password.
-      # Only these fields leave Authentik; details stay under Events.
+      # Only these fields leave Authentik; details stay under Events. After
+      # rotating the webhook, run ak apply_blueprint: a restart alone keeps the
+      # old URL stored on the transport.
       - model: authentik_events.notificationwebhookmapping
         id: mapping-discord-body
         identifiers:
@@ -1484,7 +1493,7 @@ data:
             model = (event.context.get("model") or {}).get("model_name")
             target = f" {model}" if model else ""
             return {
-                "content": f"Authentik `{event.action}`{target} by `{actor}` from `{event.client_ip}`",
+                "content": f"Authentik `{event.action}`{target} in `{event.app}` by `{actor}` from `{event.client_ip}`",
                 "allowed_mentions": {"parse": []},
             }
       - model: authentik_events.notificationtransport
@@ -1503,6 +1512,9 @@ data:
       # login_failed (anyone can trigger it, and a burst on this shared webhook
       # could rate-limit Alertmanager's alerts), and property_mapping_exception
       # (a failing body mapping would raise it again on every send).
+      # Plex's source task logs a configuration_error each run while its token
+      # is invalid; it still shows in the in-app inbox. Remove the app check
+      # once that source is re-authenticated.
       # useroauthsourceconnection changes on every Entra login. Blueprints
       # don't raise model_* events, so those mean a change outside Git.
       - model: authentik_policies_expression.expressionpolicy
@@ -1515,9 +1527,11 @@ data:
             event = request.context.get("event")
             if event is None:
                 return False
+            if event.action == "configuration_error":
+                return event.app != "authentik.sources.plex.tasks"
             if event.action in (
-                "configuration_error",
                 "system_exception",
+                "system_task_exception",
                 "policy_exception",
                 "suspicious_request",
                 "password_set",
@@ -1525,7 +1539,9 @@ data:
                 "impersonation_ended",
             ):
                 return True
-            if event.action in ("model_created", "model_updated", "model_deleted"):
+            if event.action in ("model_created", "model_deleted"):
+                return True
+            if event.action == "model_updated":
                 model = (event.context.get("model") or {}).get("model_name")
                 return model != "useroauthsourceconnection"
             return False
