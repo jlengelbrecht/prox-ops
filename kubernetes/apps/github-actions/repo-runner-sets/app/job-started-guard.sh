@@ -26,9 +26,17 @@
 #   - pull_request, pull_request_review, pull_request_review_comment whose head
 #     repository is this repository (a null head repo is a deleted fork)
 #   - workflow_run whose triggering run's head repository is this repository
-# Denied examples: pull_request_target, issue_comment, issues,
+#   - pull_request_target whose head repository is this repository, only on a
+#     runner set that opts in with RUNNER_GUARD_ALLOW_PR_TARGET=true (see below)
+# Denied examples: pull_request_target anywhere else, issue_comment, issues,
 # repository_dispatch, and any event added to GitHub later. A missing or
 # unparseable event payload is denied too (fail closed).
+#
+# The opt-in is set on the runner pod by the ResourceSet and is read only for
+# pull_request_target, whose workflow file comes from the base branch, so a fork
+# cannot remove the same-repository check. Those jobs hold secrets, which is why
+# this stays off unless a runner set needs it, and why such a set must run only
+# workflows that never check out the PR.
 #
 # Out of scope: an allowed event still runs a workflow from the base branch,
 # and that workflow can check out an untrusted ref (a fork PR head, a branch
@@ -109,6 +117,11 @@ case "$event_name" in
     ;;
   workflow_run)
     require_same_repo '.workflow_run.head_repository.full_name' "triggering run"
+    ;;
+  pull_request_target)
+    [[ "${RUNNER_GUARD_ALLOW_PR_TARGET:-}" == "true" ]] \
+      || deny "event 'pull_request_target' is not allowed on this runner set"
+    require_same_repo '.pull_request.head.repo.full_name' "pull request"
     ;;
   *)
     deny "event '${event_name}' is not on the self-hosted runner allowlist"
