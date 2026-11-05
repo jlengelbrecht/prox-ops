@@ -770,6 +770,12 @@ data:
           expression: !Format
             - |
               user = request.user
+              # Harness accounts reach Warpgate's agent application and nothing
+              # else. Applications with no other grant carry this binding, which
+              # keeps app passwords away from apps open to any signed-in user.
+              # An application added without it would be open to them.
+              if user.path == "agents/harnesses" or "prox-ops/agent-harness" in user.attributes:
+                  return getattr(request.obj, "slug", None) == "warpgate-agents"
               return not (
                   user.pk == %s
                   or user.username == "ai-browser-test"
@@ -1326,6 +1332,160 @@ data:
       - model: authentik_policies.policybinding
         identifiers:
           target: !KeyOf app-warpgate
+          order: 90
+        attrs:
+          policy: !Find [authentik_policies_expression.expressionpolicy, [name, deny-ungranted-ai-browser-test]]
+          enabled: true
+      # Agent harness accounts. One per harness so Warpgate attributes each
+      # session to it. They are service accounts with no password; each signs
+      # in with an app password an administrator creates in authentik and
+      # stores in 1Password. Warpgate keys users by email, so each carries an
+      # address nobody can receive mail at.
+      # Create-only: an account that already holds one of these usernames, for
+      # example one enrolled through a source, is left alone and never adopted.
+      - model: authentik_core.group
+        id: group-warpgate-agents-read
+        identifiers:
+          name: warpgate-agents-read
+        attrs:
+          name: warpgate-agents-read
+          is_superuser: false
+          parents: []
+          roles: []
+      - model: authentik_core.user
+        state: created
+        identifiers:
+          username: agent-claude
+        attrs:
+          username: agent-claude
+          name: Agent harness claude
+          email: agent-claude@invalid.homelab0.org
+          type: service_account
+          path: agents/harnesses
+          is_active: true
+          groups:
+            - !KeyOf group-warpgate-agents-read
+          attributes:
+            goauthentik.io/user/can-change-username: false
+            goauthentik.io/user/can-change-email: false
+            prox-ops/agent-harness: claude
+      - model: authentik_core.user
+        state: created
+        identifiers:
+          username: agent-codex
+        attrs:
+          username: agent-codex
+          name: Agent harness codex
+          email: agent-codex@invalid.homelab0.org
+          type: service_account
+          path: agents/harnesses
+          is_active: true
+          groups:
+            - !KeyOf group-warpgate-agents-read
+          attributes:
+            goauthentik.io/user/can-change-username: false
+            goauthentik.io/user/can-change-email: false
+            prox-ops/agent-harness: codex
+      - model: authentik_core.user
+        state: created
+        identifiers:
+          username: agent-opencode
+        attrs:
+          username: agent-opencode
+          name: Agent harness opencode
+          email: agent-opencode@invalid.homelab0.org
+          type: service_account
+          path: agents/harnesses
+          is_active: true
+          groups:
+            - !KeyOf group-warpgate-agents-read
+          attributes:
+            goauthentik.io/user/can-change-username: false
+            goauthentik.io/user/can-change-email: false
+            prox-ops/agent-harness: opencode
+      - model: authentik_providers_oauth2.scopemapping
+        id: scope-warpgate-agent-groups
+        identifiers:
+          name: Warpgate Agent Groups
+        attrs:
+          name: Warpgate Agent Groups
+          scope_name: groups
+          description: "Returns the Warpgate agent group, the only group this provider emits"
+          expression: |
+            return {"groups": sorted({g.name for g in user.all_groups() if g.name == "warpgate-agents-read"})}
+      # The human mapping trusts only Entra-linked accounts, which harness
+      # accounts are not. These addresses are set by this blueprint, so the
+      # claim is true for harness accounts and false for any other account.
+      - model: authentik_providers_oauth2.scopemapping
+        id: scope-warpgate-agent-email
+        identifiers:
+          name: Warpgate Agent Email
+        attrs:
+          name: Warpgate Agent Email
+          scope_name: email
+          description: "Returns the harness account's email, verified only for harness accounts"
+          expression: |
+            is_harness = request.user.type == "service_account" and request.user.path == "agents/harnesses"
+            return {"email": request.user.email, "email_verified": bool(is_harness)}
+      # A separate provider so the human login keeps its authorization_code
+      # only grant list, and a mistake in agent group membership can never map
+      # to a Warpgate admin role. Each provider has its own issuer, so Warpgate
+      # needs a matching sso_providers entry. No client secret is involved: the
+      # app password authenticates the client_credentials request.
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-warpgate-agents
+        identifiers:
+          name: Warpgate Agents
+        attrs:
+          name: Warpgate Agents
+          client_id: warpgate-agents
+          client_type: confidential
+          grant_types:
+            - client_credentials
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          signing_key: !Context signing_key
+          property_mappings:
+            - !KeyOf scope-warpgate-agent-groups
+            - !KeyOf scope-warpgate-agent-email
+            - !Context scope_profile
+            - !Context scope_openid
+          redirect_uris: []
+          access_token_validity: minutes=5
+          include_claims_in_id_token: true
+          sub_mode: hashed_user_id
+          issuer_mode: per_provider
+      - model: authentik_core.application
+        id: app-warpgate-agents
+        identifiers:
+          slug: warpgate-agents
+        attrs:
+          name: Warpgate Agents
+          slug: warpgate-agents
+          group: Tools
+          policy_engine_mode: all
+          provider: !KeyOf provider-warpgate-agents
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-warpgate-agents-access
+        identifiers:
+          name: warpgate-agents-access
+        attrs:
+          expression: |
+            return (
+                request.user.type == "service_account"
+                and request.user.path == "agents/harnesses"
+                and ak_is_group_member(request.user, name="warpgate-agents-read")
+            )
+      - model: authentik_policies.policybinding
+        identifiers:
+          target: !KeyOf app-warpgate-agents
+          order: 0
+        attrs:
+          policy: !KeyOf policy-warpgate-agents-access
+          enabled: true
+      - model: authentik_policies.policybinding
+        identifiers:
+          target: !KeyOf app-warpgate-agents
           order: 90
         attrs:
           policy: !Find [authentik_policies_expression.expressionpolicy, [name, deny-ungranted-ai-browser-test]]
