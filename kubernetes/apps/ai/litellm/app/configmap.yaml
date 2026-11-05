@@ -35,38 +35,84 @@ data:
           description: "OpenAI GPT-4o-mini (gpt-3.5-turbo compat)"
 
       # =====================================================
-      # Anthropic Claude Models (for Claude Code / Moltbot)
-      # Uses Claude Max subscription via OAuth token forwarding
-      # STORY-063: Per-model header forwarding configured in model_group_settings
+      # Anthropic passthrough, for real Claude Code clients only
+      # No api_key here on purpose, and none in the pod environment. A client
+      # that forwards its own Claude Code login (Authorization: Bearer
+      # sk-ant-oat...) is passed through; a request without one fails with
+      # "Missing Anthropic API Key" and no stored credential is ever used.
+      # Never store a Claude subscription token in LiteLLM, and only give this
+      # model to virtual keys held by Claude Code users. Header forwarding is
+      # scoped to this model group in litellm_settings.model_group_settings.
       # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
       # =====================================================
-
-      # Anthropic Claude Models - DISABLED (no API key configured)
-      # LiteLLM's x-api-key header is incompatible with Anthropic OAuth tokens.
-      # Set ANTHROPIC_API_KEY env var with a standard API key to enable.
-      - model_name: "claude-default"
+      - model_name: "anthropic/*"
         litellm_params:
-          model: anthropic/claude-opus-4-20250514
-        model_info:
-          description: "Anthropic Claude default - REQUIRES ANTHROPIC_API_KEY"
+          model: "anthropic/*"
 
-      - model_name: "claude-opus"
-        litellm_params:
-          model: anthropic/claude-opus-4-20250514
-        model_info:
-          description: "Anthropic Claude Opus 4 - REQUIRES ANTHROPIC_API_KEY"
+      # =====================================================
+      # ChatGPT Pro subscription (chatgpt/ provider)
+      # One OAuth login for the whole proxy, stored in auth.json under
+      # CHATGPT_TOKEN_DIR (PVC litellm-data, see helmrelease.yaml). Spend is
+      # recorded as $0, so only rpm/tpm and key limits bound usage.
+      # Chat completions are bridged to the Codex Responses backend; sampling
+      # and token-limit parameters are dropped by the bridge.
+      # =====================================================
 
-      - model_name: "claude-sonnet"
+      # Merge steward PR review. Pinned, no fallbacks, not on the smart router.
+      # If the login or the model is unavailable the request fails and the
+      # steward reports needs-human. Keep this name out of any fallbacks list.
+      - model_name: "merge-steward-review"
         litellm_params:
-          model: anthropic/claude-sonnet-4-20250514
+          model: "chatgpt/gpt-6.1-sol"
+          reasoning_effort: "high"
+          timeout: 300
+          max_retries: 0
         model_info:
-          description: "Anthropic Claude Sonnet 4 - REQUIRES ANTHROPIC_API_KEY"
+          description: "Merge steward review on ChatGPT Pro. Pinned, no fallbacks."
 
-      - model_name: "claude-3-5-sonnet"
+      - model_name: "chatgpt-gpt-6-luna"
         litellm_params:
-          model: anthropic/claude-3-5-sonnet-20241022
+          model: "chatgpt/gpt-6-luna"
+          timeout: 180
         model_info:
-          description: "Anthropic Claude 3.5 Sonnet - REQUIRES ANTHROPIC_API_KEY"
+          description: "ChatGPT Pro gpt-6-luna (smart-router MEDIUM tier)"
+
+      - model_name: "chatgpt-gpt-6-sol"
+        litellm_params:
+          model: "chatgpt/gpt-6-sol"
+          timeout: 300
+        model_info:
+          description: "ChatGPT Pro gpt-6-sol (smart-router COMPLEX tier)"
+
+      - model_name: "chatgpt-gpt-6.1-sol"
+        litellm_params:
+          model: "chatgpt/gpt-6.1-sol"
+          reasoning_effort: "high"
+          timeout: 300
+        model_info:
+          description: "ChatGPT Pro gpt-6.1-sol (smart-router REASONING tier)"
+
+      # =====================================================
+      # smart-router: complexity-based routing for callers that want it.
+      # Heuristic scorer (no classifier model call), one model per tier, no
+      # pools and no adaptive selection. Tiers resolve to the model names in
+      # this list. SIMPLE is local and free but scales from zero (~150s first
+      # request); reorder the tiers if that latency matters to a caller.
+      # Reference: https://docs.litellm.ai/docs/proxy/auto_routing
+      # =====================================================
+      - model_name: "smart-router"
+        litellm_params:
+          model: "auto_router/complexity_router"
+          complexity_router_config:
+            classifier_type: heuristic
+            adaptive: false
+            tiers:
+              SIMPLE: "qwen36-27b"
+              MEDIUM: "chatgpt-gpt-6-luna"
+              COMPLEX: "chatgpt-gpt-6-sol"
+              REASONING: "chatgpt-gpt-6.1-sol"
+        model_info:
+          description: "Complexity router: qwen36-27b, then ChatGPT Pro models by tier"
 
       # =====================================================
       # KServe InferenceServices (vLLM/Custom)
@@ -112,22 +158,6 @@ data:
       num_retries: 0
       # Timeout for routing decisions (not per-request timeout)
       timeout: 120
-
-    # =====================================================
-    # STORY-063: Per-Model Header Forwarding for Claude Max
-    # Only Claude models forward client headers (OAuth token)
-    # OpenAI and KServe models are unaffected
-    # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
-    # =====================================================
-    model_group_settings:
-      claude-default:
-        forward_client_headers_to_llm_api: true
-      claude-opus:
-        forward_client_headers_to_llm_api: true
-      claude-sonnet:
-        forward_client_headers_to_llm_api: true
-      claude-3-5-sonnet:
-        forward_client_headers_to_llm_api: true
 
     # =====================================================
     # EPIC-022: Guardrails Configuration
@@ -206,10 +236,9 @@ data:
       # Stop the 5-minute upstream /v1/models discovery (router.arefresh_model_info).
       # It counts as traffic for the scale-to-zero KServe models, so qwen36-27b never unloads.
       disable_model_info_refresh: true
-      # STORY-063: Forward client headers to LLM API for OAuth token
-      # Enables Claude Max subscription OAuth to pass through to Anthropic
-      # Reference: https://docs.litellm.ai/docs/tutorials/claude_code_max_subscription
-      forward_client_headers_to_llm_api: true
+      # Client headers are NOT forwarded globally. Only the anthropic/* model group
+      # forwards them (litellm_settings.model_group_settings), so a Claude Code
+      # login reaches Anthropic and nothing else sees client headers.
       # Rate limiting
       max_parallel_requests: 50
       # STORY-150: Request timeout must accommodate the longest model cold start
@@ -225,6 +254,10 @@ data:
     litellm_settings:
       # Drop unsupported params instead of erroring
       drop_params: true
+      # Forward client headers (the Claude Code login) to the anthropic/* models only
+      model_group_settings:
+        forward_client_headers_to_llm_api:
+          - "anthropic/*"
       # Enable logging for audit
       set_verbose: false
       # Note: Custom callback removed - using direct api_key in model config instead

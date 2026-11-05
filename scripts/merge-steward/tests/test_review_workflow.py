@@ -157,7 +157,9 @@ def test_the_model_is_set_only_in_the_policy():
                          ("CONFIG__AI_TIMEOUT", "call_timeout_seconds"), ("REVIEW_TIMEOUT", "review_timeout_seconds")):
         assert env[key] == f"${{{{ steps.prepare.outputs.{setting} }}}}" and setting in model
     text = ACTION_FILE.read_text() + "".join(p.read_text() for p in WORKFLOWS if "merge-steward" in p.name)
-    assert model["alias"] not in text
+    # The alias is also the name of the composite action, its artifact and the environment, so
+    # look for it where a model name would go rather than anywhere in the text.
+    assert f"openai/{model['alias']}" not in text and f"MODEL: {model['alias']}" not in text
     for name in REVIEW_JOBS:
         assert model["review_timeout_seconds"] + 120 <= STEWARD[name]["timeout-minutes"] * 60
 

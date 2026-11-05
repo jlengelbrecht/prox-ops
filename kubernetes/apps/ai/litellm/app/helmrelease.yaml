@@ -21,6 +21,21 @@ spec:
   dependsOn:
     - name: litellm-postgres
       namespace: ai
+  # RWO volume (values.volumes below): a rolling update would start the new pod while the old
+  # one still holds the volume, and on a different node it never attaches. Recreate stops the
+  # old pod first (about a minute of downtime per rollout). "add" because the chart renders no
+  # strategy of its own.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: litellm
+            patch: |
+              - op: add
+                path: /spec/strategy
+                value:
+                  type: Recreate
   values:
     # Image configuration - uses the litellm-database image (bundles Prisma)
     image:
@@ -29,8 +44,22 @@ spec:
       # renovate: datasource=docker depName=ghcr.io/berriai/litellm-database
       tag: v1.108.0@sha256:80c91fd00cc039e8880474f539544b919f14cd258a22f22ce4218b864c4ff14a
 
-    # Replica count
+    # Replica count. Must stay 1: the ChatGPT login (auth.json on the RWO PVC below) uses a
+    # single-use refresh token and LiteLLM has no cross-process lock around the refresh. A
+    # second replica would race the refresh and lose the login. Do not scale or add an HPA.
     replicaCount: 1
+
+    # ChatGPT Pro login for the chatgpt/ provider. LiteLLM reads and rewrites auth.json here
+    # when the access token rotates, so the volume must be writable and retained (litellm-data
+    # lives in the protected litellm-storage Kustomization). The login itself is a one-time
+    # human device-code step, see the merge steward runbook; nothing here holds a token.
+    volumes:
+      - name: chatgpt-auth
+        persistentVolumeClaim:
+          claimName: litellm-data
+    volumeMounts:
+      - name: chatgpt-auth
+        mountPath: /var/lib/litellm/chatgpt
 
     # Master key from ExternalSecret
     masterkeySecretName: litellm-masterkey
@@ -126,6 +155,8 @@ spec:
     envVars:
       LITELLM_TELEMETRY: "false"
       LITELLM_LOG: "INFO"
+      # Where the chatgpt/ provider keeps auth.json (the PVC mounted above)
+      CHATGPT_TOKEN_DIR: /var/lib/litellm/chatgpt
       # Enable database storage for UI settings (logo, themes, etc.)
       STORE_MODEL_IN_DB: "True"
       # Never let a proxy pod diff/alter the schema at start. A pod running an
@@ -212,5 +243,5 @@ spec:
           secretKeyRef:
             name: litellm-lakera
             key: api-key
-      # Note: Anthropic OAuth removed - incompatible with LiteLLM x-api-key header
-      # Set ANTHROPIC_API_KEY with standard API key to enable Claude models
+      # Deliberately no ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN: the anthropic/* models only
+      # work with a Claude Code login forwarded by the client. Do not add one.
