@@ -9,6 +9,7 @@ import sys
 from datetime import datetime
 from urllib.parse import quote
 
+import inline
 from classify import HOLD, NEEDS, PASS
 from fold import ADVISORY_MARKER, MARKER
 from ghapi import GitHubError
@@ -126,11 +127,39 @@ def set_unavailable_label(gh, number, current, unavailable):
         gh.post(f"issues/{number}/labels", {"labels": [UNAVAILABLE_LABEL]})
 
 
-def upsert_advisory(gh, number, body):
-    """Advisory comments carry no trust and use the workflow token."""
-    mine = [c for c in gh.paginate(f"issues/{number}/comments")
-            if c["body"].startswith(ADVISORY_MARKER) and (c.get("user") or {}).get("login") == LEGACY_COMMENT_AUTHOR]
-    upsert_comment(gh, number, mine[0] if mine else None, body)
+def upsert_advisory(gh, app_gh, number, body, policy):
+    """Write the advisory summary as the steward app, and remove what the workflow token wrote.
+
+    gh only reads. The comment belongs to the app by id, as the sticky verdict comment does.
+    The ones the workflow token wrote before the app took this over, and duplicates from racing
+    runs, go after the new text is in place. A comment from anyone else is never touched.
+    """
+    comments = [c for c in gh.paginate(f"issues/{number}/comments") if c["body"].startswith(ADVISORY_MARKER)]
+    mine = [c for c in comments if (c.get("performed_via_github_app") or {}).get("id") == policy["steward_app_id"]]
+    legacy = [c for c in comments if (c.get("user") or {}).get("login") == LEGACY_COMMENT_AUTHOR]
+    upsert_comment(app_gh, number, mine[0] if mine else None, body)
+    delete_comments(app_gh, mine[1:] + legacy)
+
+
+def post_inline(gh, app_gh, number, sha, anchored, findings, policy):
+    """Post each anchored finding on its line as the app. Returns the positions that are on the diff.
+
+    A finding whose key is already on the PR counts as posted and is not repeated, so a rerun or
+    a rebase adds nothing. GitHub refusing a line (the diff moved, the file is gone) leaves that
+    finding for the summary; nothing here raises on it.
+    """
+    done = inline.posted_keys(gh.paginate(f"pulls/{number}/comments"), policy["steward_app_id"])
+    placed = set()
+    for anchor in anchored:
+        if anchor["key"] in done:
+            placed.add(anchor["index"])
+            continue
+        try:
+            app_gh.post(f"pulls/{number}/comments", inline.payload(anchor, findings[anchor["index"]]["text"], sha))
+            placed.add(anchor["index"])
+        except GitHubError as err:
+            print(f"PR #{number}: inline comment on {anchor['path']} refused: {err.status}", file=sys.stderr)
+    return placed
 
 
 def find_comments(gh, number, policy):

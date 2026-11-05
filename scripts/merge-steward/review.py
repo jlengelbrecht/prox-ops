@@ -240,11 +240,33 @@ def _text(value):
     return value.strip() if isinstance(value, str) else ""
 
 
-def _row(path, text, changed, first=False):
-    """One finding. A path that is malformed, or outside the PR's diff, is left out."""
+MAX_LINE = 1_000_000
+
+
+def _line(value):
+    """A 1-based line number from the model, or None.
+
+    An int or a string of plain digits (PR-Agent reads both). Booleans, floats and anything
+    else are not line numbers.
+    """
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,7}", value.strip()):
+        value = int(value)
+    return value if type(value) is int and 1 <= value <= MAX_LINE else None
+
+
+def _row(path, text, changed, first=False, start=None, end=None):
+    """One finding. A path that is malformed, or outside the PR's diff, is left out.
+
+    start and end are the model's line numbers in the head version of the file. They are only
+    a claim: whoever posts on a line checks it against the diff first (inline.anchors).
+    """
     path = _text(path)
-    return {"file": path if _PATH.match(path) and (changed is None or path in changed) else "",
-            "text": assessment(text) if first and text.startswith(ASSESSMENT) else scrub(text)}
+    row = {"file": path if _PATH.match(path) and (changed is None or path in changed) else "",
+           "text": assessment(text) if first and text.startswith(ASSESSMENT) else scrub(text)}
+    start, end = _line(start), _line(end)
+    if row["file"] and start and not first:
+        row.update(start=start, end=end if end and end >= start else start)
+    return row
 
 
 def _items(value):
@@ -254,7 +276,8 @@ def _items(value):
 
 def _findings(review, changed):
     issues, modes = _items(review.get("key_issues_to_review")), _items(review.get("failure_modes"))
-    rows = [_row(i.get("relevant_file"), f"{_text(i.get('issue_header'))}: {_text(i.get('issue_content'))}", changed, n == 0)
+    rows = [_row(i.get("relevant_file"), f"{_text(i.get('issue_header'))}: {_text(i.get('issue_content'))}", changed, n == 0,
+                 i.get("start_line"), i.get("end_line"))
             for n, i in enumerate(i for i in issues[:MAX_ISSUES] if isinstance(i, dict))]
     return rows + [_row("", f"Could fail: {_text(m.get('what'))} Trigger: {_text(m.get('trigger'))}", changed)
                    for m in modes[:MAX_MODES] if isinstance(m, dict)]
@@ -294,7 +317,8 @@ def checked(raw, changed=None):
     rows = raw.get("findings")
     if result["available"]:
         rows = [r for r in (rows if isinstance(rows, list) else [])[:MAX_ISSUES + MAX_MODES] if isinstance(r, dict)]
-        result["findings"] = [_row(r.get("file"), _text(r.get("text")), changed, n == 0) for n, r in enumerate(rows)]
+        result["findings"] = [_row(r.get("file"), _text(r.get("text")), changed, n == 0, r.get("start"), r.get("end"))
+                              for n, r in enumerate(rows)]
         result.update({k: raw[k] for k, shape in _PROVENANCE.items()
                        if isinstance(raw.get(k), str) and shape.fullmatch(raw[k])})
     return result
