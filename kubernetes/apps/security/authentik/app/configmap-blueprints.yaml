@@ -1499,7 +1499,10 @@ data:
           # The rule targets a group; one message per event, not one per member.
           send_once: true
       # Left out on purpose: secret_rotate (the expiring tokens rotate about 80
-      # times a day), login and authorize_application (normal use).
+      # times a day), login and authorize_application (normal use),
+      # login_failed (anyone can trigger it, and a burst on this shared webhook
+      # could rate-limit Alertmanager's alerts), and property_mapping_exception
+      # (a failing body mapping would raise it again on every send).
       # useroauthsourceconnection changes on every Entra login. Blueprints
       # don't raise model_* events, so those mean a change outside Git.
       - model: authentik_policies_expression.expressionpolicy
@@ -1516,9 +1519,7 @@ data:
                 "configuration_error",
                 "system_exception",
                 "policy_exception",
-                "property_mapping_exception",
                 "suspicious_request",
-                "login_failed",
                 "password_set",
                 "impersonation_started",
                 "impersonation_ended",
