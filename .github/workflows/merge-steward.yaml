@@ -3,7 +3,9 @@
 # from this repository: pass, needs-human, or in_progress while a release soaks. A
 # same-repo PR by a person gets success as out of scope. Any other Bot and any fork PR get
 # needs-human.
-# All verdicts come from deterministic rules in scripts/merge-steward/policy.yaml.
+# Verdicts come from deterministic rules in scripts/merge-steward/policy.yaml. With the
+# repository variable MERGE_STEWARD_AI set to "true", an AI review joins them and can only
+# lower the result (.github/actions/merge-steward-review). Without it no review runs and nothing waits.
 #
 # The evaluate job runs on pull_request_target, status, check_suite, schedule
 # and workflow_dispatch events, so both this file and the steward code come from the
@@ -37,7 +39,7 @@ on:
         required: true
         type: number
       dry_run:
-        description: "Print the verdict only; post no check run, label or comment"
+        description: "Print the verdict only; post nothing and run no AI review"
         required: false
         default: true
         type: boolean
@@ -173,13 +175,132 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
 
+  # The review whose result the evaluate job folds in. Also runs for a manual evaluation,
+  # which is how a PR gets a review after a failed one or after AI was switched on. The login
+  # here must match policy.yaml authors: review.mode expects a review for every author listed.
+  #
+  # The key lives in its own environment, limited to main, and not in merge-steward. A job
+  # gets every secret of its environment, and this one runs next to hostile input on a
+  # self-hosted runner, so it must not share an environment with the steward app's key.
+  review:
+    name: merge-steward review
+    needs: render
+    if: >-
+      !cancelled() && vars.MERGE_STEWARD_AI == 'true' && (
+      (github.event_name == 'workflow_dispatch' && !inputs.dry_run) ||
+      (github.event_name == 'pull_request_target' &&
+        contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
+        github.event.pull_request.user.login == 'renovate[bot]' &&
+        github.event.pull_request.user.type == 'Bot' &&
+        github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: gha-prox-ops-steward
+    # Runner time only; time spent queued for the runner does not count. Keep this above
+    # ai.model.review_timeout_seconds in policy.yaml.
+    timeout-minutes: 20
+    environment: merge-steward-review
+    # A newer push replaces the review of the old one. The group is per PR on purpose: a
+    # GitHub concurrency group holds one pending job and drops the rest, so a shared group
+    # would lose queued reviews. The queue across PRs is the single runner (maxRunners: 1).
+    concurrency:
+      group: merge-steward-review-${{ github.event.pull_request.number || inputs.pr }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    steps:
+      - name: Checkout steward code from the default branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/merge-steward
+            .github/actions/merge-steward-review
+      - uses: ./.github/actions/merge-steward-review
+        with:
+          pr: ${{ github.event.pull_request.number || inputs.pr }}
+          rendered: ${{ needs.render.result == 'success' }}
+          llm-key: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
+
+  # Same review for every other same-repo PR, kept apart so that their merge-steward check
+  # does not wait in the review queue. Never for a fork, and not for a draft: these share the
+  # one runner with verdict reviews, so each one delays them.
+  advisory-review:
+    name: merge-steward advisory review
+    if: >-
+      vars.MERGE_STEWARD_AI == 'true' &&
+      github.event_name == 'pull_request_target' &&
+      contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'renovate[bot]' &&
+      github.event.pull_request.head.repo.fork == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: gha-prox-ops-steward
+    timeout-minutes: 20
+    environment: merge-steward-review
+    concurrency:
+      group: merge-steward-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+    steps:
+      - name: Checkout steward code from the default branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/merge-steward
+            .github/actions/merge-steward-review
+      - uses: ./.github/actions/merge-steward-review
+        with:
+          pr: ${{ github.event.pull_request.number }}
+          llm-key: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
+
+  advisory-publish:
+    name: merge-steward advisory
+    needs: advisory-review
+    if: needs.advisory-review.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write  # the advisory comment
+    steps:
+      - name: Checkout steward code from the default branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/merge-steward
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.15'
+      - run: python -m pip install "PyYAML==${PYYAML_VERSION}"
+      # Absent when the policy turned this PR's review off, or PR-Agent wrote nothing.
+      - name: Download the review result
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: merge-steward-review
+          path: ${{ runner.temp }}/review
+      - name: Post the advisory review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: python scripts/merge-steward/steward.py --pr "$PR_NUMBER" --advisory-only --review-dir "$RUNNER_TEMP/review"
+
   evaluate:
     name: merge-steward evaluate
     # Events that can change the verdict: new code, the override label, the soak status,
     # a check suite finishing on a PR head, the sweep, or a manual run. Check suites of the
     # steward app are skipped so a published verdict does not trigger another evaluation.
-    needs: render
-    # Runs when render is skipped (non-Renovate PRs, other events) or fails (needs-human).
+    needs: [render, review]
+    # Runs when render or review is skipped (non-Renovate PRs, other events) or fails
+    # (needs-human).
     if: >-
       !cancelled() && (
       (github.event_name == 'pull_request_target' &&
@@ -247,9 +368,21 @@ jobs:
           name: merge-steward-render
           path: ${{ runner.temp }}/render
 
+      # A cancelled review means a newer run replaced it. That run owns the verdict.
+      - name: Download this run's AI review result
+        id: review
+        if: needs.review.result == 'success' || needs.review.result == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: merge-steward-review
+          path: ${{ runner.temp }}/review
+
       - name: Evaluate
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          MERGE_STEWARD_AI: ${{ vars.MERGE_STEWARD_AI }}
+          REVIEWED: ${{ needs.review.result == 'success' || needs.review.result == 'failure' }}
           STEWARD_APP_TOKEN: ${{ steps.app-token.outputs.token }}
           EVENT: ${{ github.event_name }}
           ACTION: ${{ github.event.action }}
@@ -264,19 +397,21 @@ jobs:
             echo "::notice::the steward code is not on the default branch yet; nothing to evaluate"
             exit 0
           fi
+          review=()
+          if [ "$REVIEWED" = "true" ]; then review=(--review-dir "$RUNNER_TEMP/review"); fi
           cd scripts/merge-steward
           case "$EVENT" in
             pull_request_target)
               case "$ACTION" in
                 labeled) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 300 --labeled-sha "$HEAD_SHA" ;;
                 unlabeled) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 300 ;;
-                *) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 1200 --render-dir "$RUNNER_TEMP/render" ;;
+                *) python steward.py --pr "$PR_NUMBER" --event-sha "$HEAD_SHA" --wait 1200 --render-dir "$RUNNER_TEMP/render" "${review[@]}" ;;
               esac ;;
             workflow_dispatch)
               if [ "$DRY_RUN" = "true" ]; then
                 python steward.py --pr "$PR_NUMBER" --dry-run
               else
-                python steward.py --pr "$PR_NUMBER" --wait 600
+                python steward.py --pr "$PR_NUMBER" --wait 600 "${review[@]}"
               fi ;;
             status) python steward.py --sha "$STATUS_SHA" --wait 300 ;;
             check_suite) python steward.py --sha "$CHECK_SHA" --wait 120 ;;

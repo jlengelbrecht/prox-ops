@@ -68,7 +68,16 @@ def test_a_pr_that_cannot_be_read_is_not_reviewed():
 
 
 @pytest.mark.parametrize("change", [
-    {"verdict_authority": "decide"}, {"review_scope": {"renovate": "verdict", "same_repo": "verdict"}},
+    {"verdict_authority": "decide"}, {"needs_human_on": {"risks": [], "recommendations": ["changes_required"]}},
+    {"needs_human_on": {"risks": ["high"], "recommendations": ["needs_review"]}},
+    {"needs_human_on": {"risks": ["high", "severe"], "recommendations": ["changes_required"]}},
+    {"model": dict(POLICY["ai"]["model"], extra="x")}, {"model": dict(POLICY["ai"]["model"], run="x")},
+    {"model": dict(POLICY["ai"]["model"], call_timeout_seconds=True)},
+    {"model": {"alias": "bad name; rm -rf /"}}, {"model": {"alias": "m", "context_tokens": 0}},
+    {"model": {"alias": "m", "context_tokens": 10, "max_prompt_tokens": 10, "call_timeout_seconds": 1,
+               "review_timeout_seconds": 2}},
+    {"model": {"alias": "m", "context_tokens": 10, "max_prompt_tokens": 5, "call_timeout_seconds": 3,
+               "review_timeout_seconds": 2}}, {"review_scope": {"renovate": "verdict", "same_repo": "verdict"}},
     {"review_scope": {"renovate": "always", "same_repo": "off"}}, {"context_chars": {}},
 ])
 def test_policy_refuses_unknown_ai_settings(tmp_path, change):
@@ -82,6 +91,23 @@ def test_policy_refuses_unknown_ai_settings(tmp_path, change):
 
 def test_the_authority_setting_is_lower_only():
     assert POLICY["ai"]["verdict_authority"] == "lower_only"
+
+
+def test_medium_and_needs_review_are_a_stated_pass():
+    assert POLICY["ai"]["needs_human_on"] == {"risks": ["high"], "recommendations": ["changes_required"]}
+
+
+def test_with_ai_on_the_llm_stage_is_expected(monkeypatch):
+    clean = [Stage(n, PASS, "") for n in fold.EXPECTED]
+    assert fold.fold(clean)[0] == PASS
+    verdict, reason = fold.fold(clean, expected=fold.EXPECTED + ("llm",))
+    assert verdict == NEEDS and "llm" in reason
+    seen = []
+    real = fold.fold
+    monkeypatch.setattr(fold, "fold", lambda s, o=None, e=fold.EXPECTED: seen.append(e) or real(s, o, e))
+    evaluate(renovate_pr(), ai=True)
+    evaluate(renovate_pr(), ai=False)
+    assert "llm" in seen[0] and "llm" not in seen[1]
 
 
 @pytest.mark.parametrize("risk,recommendation,expected", [
@@ -438,11 +464,20 @@ def job_args(tmp, **kw):
 
 def test_prepare_carries_evidence_only_when_the_file_exists(tmp_path):
     gh = FakeGitHub(routes(renovate_pr()))
-    assert review_job.prepare(gh, job_args(tmp_path), POLICY) == {"run": "true", "sha": SHA}
+    outputs = review_job.prepare(gh, job_args(tmp_path), POLICY)
+    assert (outputs["run"], outputs["sha"], outputs["url"]) == ("true", SHA, renovate_pr()["html_url"])
+    assert outputs["alias"] == POLICY["ai"]["model"]["alias"]
     assert "None collected" in (tmp_path / "context.md").read_text()
     (tmp_path / "evidence.md").write_text("HelmRelease media/app Ready=True")
     review_job.prepare(gh, job_args(tmp_path), POLICY)
     assert "HelmRelease media/app Ready=True" in (tmp_path / "context.md").read_text()
+
+
+def test_prepare_outputs_cannot_be_overridden_by_the_model_block(tmp_path):
+    outputs = review_job.prepare(FakeGitHub(routes(renovate_pr())), job_args(tmp_path), POLICY)
+    assert set(outputs) == {"alias", "context_tokens", "max_prompt_tokens", "call_timeout_seconds",
+                            "review_timeout_seconds", "run", "sha", "url"}
+    assert outputs["run"] in ("true", "false") and outputs["sha"] == SHA
 
 
 def test_prepare_skips_forks_closed_prs_and_superseded_commits(tmp_path):

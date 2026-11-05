@@ -23,10 +23,6 @@ from fold import clean
 VERDICT, ADVISORY, OFF = "verdict", "advisory", "off"
 RISKS = ("low", "medium", "high")
 RECOMMENDATIONS = ("no_concerns_found", "needs_review", "changes_required")
-# What each policy value of ai.verdict_authority lets the AI do. A stage result can only
-# add needs-human in fold(), so lower_only cannot clear what another stage said. Giving the
-# AI more say means adding a value here and code that acts on it.
-AUTHORITY = {"lower_only": {"risks": {"high"}, "recommendations": {"changes_required"}}}
 UNAVAILABLE_LABEL = "steward/llm-unavailable"
 UNAVAILABLE = "AI unavailable"
 WAITING = "AI review not finished yet"
@@ -45,7 +41,9 @@ MAX_ISSUES, MAX_MODES, TEXT_LIMIT = 3, 3, 300
 RAW_LIMIT, DECODE_ROUNDS = 4000, 8
 RESULT_FILE, REVIEW_FILE, CONTEXT_FILE = "result.json", "review.json", "context.md"
 # A step that collects cluster evidence writes this file into the review directory before
-# the context is built. The prompt carries it when it exists.
+# the context is built. The prompt carries it when it exists. It is expected to hold one fact
+# per fixed-format line, with any free text cut to about 120 characters: the model can repeat
+# what it reads, and the scrub does not remove namespace or workload names.
 EVIDENCE_FILE = "evidence.md"
 _RECORD = re.compile(r"^<!-- merge-steward-llm sha=(?P<sha>[0-9a-f]{40}) data=(?P<data>[A-Za-z0-9_=-]+) -->$", re.MULTILINE)
 _CREDENTIAL = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}"
@@ -224,10 +222,10 @@ def from_record(text, sha):
 
 
 def stage(result, policy):
-    """The llm stage. Only the rule named by ai.verdict_authority can make it needs-human."""
+    """The llm stage. policy.yaml ai.needs_human_on names the answers that lower the verdict."""
     if not result["available"]:
         return Stage("llm", NEEDS, f"{UNAVAILABLE}: {REASONS[result['reason']]}")
-    rule = AUTHORITY[policy["ai"]["verdict_authority"]]
+    rule = policy["ai"]["needs_human_on"]
     said = f"risk {result['risk']}, recommendation {result['recommendation']}"
     lowered = result["risk"] in rule["risks"] or result["recommendation"] in rule["recommendations"]
     return Stage("llm", NEEDS if lowered else PASS, f"AI assessment: {said}")

@@ -307,6 +307,8 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
     previous = _APPROVAL.search(comment["body"]) if comment else None
     approval = previous.group(0) if previous else None  # kept if evaluation errors out
     stages, ai_result = [], None
+    # Set here, apart from the stage below: with AI on, a verdict needs the llm stage to exist.
+    expected = fold.EXPECTED + (("llm",) if ai_mode == review.VERDICT else ())
     try:
         files = gh.paginate(f"pulls/{number}/files")
         stages = stages_for(gh, pr, files, policy, wait_seconds, render_dir)
@@ -323,7 +325,7 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
                 stages.append(problem)
         else:
             approval = None
-        verdict, reason = fold.fold(stages, override)
+        verdict, reason = fold.fold(stages, override, expected)
     except Superseded:
         print(f"PR #{number}: head moved while waiting; leaving it to the newer run", file=sys.stderr)
         return None

@@ -42,7 +42,10 @@ def prepare(gh, args, policy):
         text = evidence.read_text(errors="replace") if evidence.is_file() else ""
         lines = render_lines(gh, sha, args.render_dir, policy)
         (out / review.CONTEXT_FILE).write_text(review.context(pr, lines, text, policy))
-    return {"run": "true" if run else "false", "sha": sha}
+        # PR-Agent drops an empty context file without a word.
+        assert (out / review.CONTEXT_FILE).stat().st_size > 0
+    model = policy["ai"]["model"]  # exactly the validated keys; run, sha and url come last
+    return {**model, "run": "true" if run else "false", "sha": sha, "url": pr["html_url"]}
 
 
 def collect(args):

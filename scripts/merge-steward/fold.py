@@ -25,7 +25,7 @@ def clean(text, limit=200):
     return _AMPERSAND.sub("&amp;", _UNSAFE.sub(" ", str(text))[:limit])
 
 
-def fold(stages, override=None):
+def fold(stages, override=None, expected=EXPECTED):
     """Return (verdict, reason). override is the login of a verified admin, or None."""
     if override:
         return PASS, f"human-approved by {override}"
@@ -39,7 +39,7 @@ def fold(stages, override=None):
         if stage.verdict == HOLD:
             return HOLD, f"{stage.name}: {stage.reason}"
     seen = {s.name for s in stages}
-    missing = [name for name in EXPECTED if name not in seen]
+    missing = [name for name in expected if name not in seen]
     if missing:
         return NEEDS, "stage did not run: " + ", ".join(missing)
     return PASS, "all stages passed"

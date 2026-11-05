@@ -21,8 +21,8 @@ override_label: steward/human-approved
 steward_app_id: 5615799
 
 # Check runs the steward ignores when it reads the head commit: its own check run and jobs.
-ignore_checks: ["merge-steward", "merge-steward evaluate", "merge-steward review / pr-agent",
-                "merge-steward advisory review / pr-agent", "merge-steward advisory"]
+ignore_checks: ["merge-steward", "merge-steward evaluate", "merge-steward review",
+                "merge-steward advisory review", "merge-steward advisory"]
 
 # Check runs that must exist on the head commit, come from the named GitHub App (15368 is
 # GitHub Actions, 46505 GitGuardian) and conclude success: the ruleset's required set. A
@@ -42,10 +42,15 @@ required_checks_deadline_minutes: 120
 
 # AI review. It runs only when the repository variable MERGE_STEWARD_AI is "true".
 ai:
-  # What the AI may decide. lower_only: risk high or recommendation changes_required gives
-  # needs-human, and nothing it says can clear another stage. This is the one setting to
-  # change if the AI's role widens; review.py AUTHORITY defines each value.
+  # What the AI may decide. lower_only: the answers below give needs-human, and nothing it
+  # says can clear another stage. This is the one setting to change if the AI's role widens.
   verdict_authority: lower_only
+  # The AI's answers that give needs-human. medium and needs_review deliberately count as
+  # a pass: they mean "worth a look", and the check is for what would break. Change this
+  # only as a decision about how many PRs reach a human. high and changes_required must stay.
+  needs_human_on:
+    risks: [high]
+    recommendations: [changes_required]
   # Which PRs get a review. Fork PRs never do, and no value here changes that.
   #   verdict:  the result feeds the merge-steward verdict
   #   advisory: the result is posted as a comment and changes no verdict
@@ -53,8 +58,16 @@ ai:
   review_scope:
     renovate: verdict      # renovate[bot] from this repository
     same_repo: advisory    # any other author from this repository (advisory or off)
+  # The model, and the only place to change it. alias is a LiteLLM model name, which the
+  # review key must be allowed to use. A slow or cold model needs the longer timeouts.
+  model:
+    alias: qwen36-27b
+    context_tokens: 65536         # the model's whole context, output included
+    max_prompt_tokens: 40000      # what PR-Agent may send in one call
+    call_timeout_seconds: 300     # one model call
+    review_timeout_seconds: 780   # all of PR-Agent, retries included; under the job timeout
   # Upper bounds for the context file, in characters. Their sum stays within
-  # ARTIFACTS__MAX_ARTIFACT_SIZE in merge-steward-review.yaml.
+  # ARTIFACTS__MAX_ARTIFACT_SIZE in .github/actions/merge-steward-review.
   context_chars: {render: 3000, evidence: 6000, release_notes: 14000}
 
 # Update types that may pass when nothing else matches. Everything else (major,
