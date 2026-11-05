@@ -1454,3 +1454,75 @@ data:
         attrs:
           policy: !Find [authentik_policies_expression.expressionpolicy, [name, deny-ungranted-ai-browser-test]]
           enabled: true
+
+  # =============================================================
+  # NOTIFICATIONS BLUEPRINT
+  # Sends security and admin events to Discord. Its own file for the same
+  # reason as Warpgate's: the webhook comes from a 1Password-backed Secret, and
+  # a failure here leaves every other blueprint alone.
+  # =============================================================
+  notifications.yaml: |
+    version: 1
+    metadata:
+      name: Notifications
+      labels:
+        blueprints.goauthentik.io/description: "Security and admin events to Discord"
+    entries:
+      - model: authentik_events.notificationtransport
+        id: transport-discord
+        identifiers:
+          name: discord-security
+        attrs:
+          name: discord-security
+          # Discord accepts Slack's format on the webhook URL plus /slack.
+          mode: webhook_slack
+          webhook_url: !Format ["%s/slack", !Env AUTHENTIK_DISCORD_WEBHOOK_URL]
+          # The rule targets a group; one message per event, not one per member.
+          send_once: true
+      # Left out on purpose: secret_rotate (the expiring tokens rotate about 80
+      # times a day), login and authorize_application (normal use).
+      # useroauthsourceconnection changes on every Entra login. Blueprints
+      # don't raise model_* events, so those mean a change outside Git.
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-discord-events
+        identifiers:
+          name: discord-security-events
+        attrs:
+          name: discord-security-events
+          expression: |
+            event = request.context.get("event")
+            if event is None:
+                return False
+            if event.action in (
+                "configuration_error",
+                "system_exception",
+                "policy_exception",
+                "property_mapping_exception",
+                "suspicious_request",
+                "login_failed",
+                "password_set",
+                "impersonation_started",
+                "impersonation_ended",
+            ):
+                return True
+            if event.action in ("model_created", "model_updated", "model_deleted"):
+                model = event.context.get("model", {}).get("model_name")
+                return model != "useroauthsourceconnection"
+            return False
+      - model: authentik_events.notificationrule
+        id: rule-discord-events
+        identifiers:
+          name: discord-security-events
+        attrs:
+          name: discord-security-events
+          severity: alert
+          destination_group: !Find [authentik_core.group, [name, "authentik Admins"]]
+          transports:
+            - !KeyOf transport-discord
+      - model: authentik_policies.policybinding
+        identifiers:
+          target: !KeyOf rule-discord-events
+          order: 0
+        attrs:
+          policy: !KeyOf policy-discord-events
+          enabled: true

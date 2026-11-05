@@ -113,6 +113,14 @@ spec:
               name: authentik-openbao
               key: AUTHENTIK_OPENBAO_CLIENT_SECRET
               optional: true
+        # Discord webhook (notifications.yaml). optional, as for Warpgate: only
+        # that blueprint fails while the Secret doesn't exist.
+        - name: AUTHENTIK_DISCORD_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: authentik-discord
+              key: AUTHENTIK_DISCORD_WEBHOOK_URL
+              optional: true
 
         # =============================================================
         # SOURCE CREDENTIALS
