@@ -31,7 +31,10 @@ on:
   check_suite:
     types: [completed]
   schedule:
+    # The full sweep, once an hour. The other one only evaluates open PRs whose head has no
+    # merge-steward check, which is what a run that failed or hit the API rate limit leaves.
     - cron: "17 * * * *"
+    - cron: "2,32 * * * *"
   workflow_dispatch:
     inputs:
       pr:
@@ -449,6 +452,7 @@ jobs:
           STATUS_SHA: ${{ github.event.sha }}
           CHECK_SHA: ${{ github.event.check_suite.head_sha }}
           DRY_RUN: ${{ inputs.dry_run }}
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
           set -euo pipefail
           if [ ! -f scripts/merge-steward/steward.py ]; then
@@ -473,5 +477,10 @@ jobs:
               fi ;;
             status) python steward.py --sha "$STATUS_SHA" --wait 300 ;;
             check_suite) python steward.py --sha "$CHECK_SHA" --wait 120 ;;
-            schedule) python steward.py --sweep ;;
+            schedule)
+              if [ "$SCHEDULE" = "17 * * * *" ]; then
+                python steward.py --sweep
+              else
+                python steward.py --sweep --missing-only
+              fi ;;
           esac

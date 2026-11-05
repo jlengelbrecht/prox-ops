@@ -40,6 +40,8 @@ def test_the_verdict_step_fails_clearly_without_a_token(env, monkeypatch, capsys
 
 def test_a_dry_run_needs_no_token(env, monkeypatch):
     class Reads:
+        repo, api = "o/r", "https://api.github.com"
+
         def __init__(self, *a, **k):
             pass
 
