@@ -21,3 +21,37 @@ spec:
   timeout: 5m
   dependsOn:
     - name: litellm-postgres-storage
+---
+# Inputs of kubernetes/components/db-dump.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: litellm-postgres-dump
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  path: ./kubernetes/apps/ai/litellm-postgres/dump
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  dependsOn:
+    - name: litellm-postgres
+    - name: external-secrets-operator
+      namespace: flux-system
+  postBuild:
+    substitute:
+      APP: litellm-postgres
+      APP_NS: ai
+      DB_HOST: litellm-postgres
+      DB_USER: litellm
+      DB_SECRET: litellm-postgres-secret
+      DB_SECRET_KEY: POSTGRES_PASSWORD
+      DB_SELECTOR_KEY: app.kubernetes.io/name
+      DB_SELECTOR_VALUE: litellm-postgres
+      DUMP_SCHEDULE: "47 7 * * *"
