@@ -26,6 +26,10 @@ inputs:
     description: "This run has a render artifact"
     required: false
     default: "false"
+  render-artifact:
+    description: "Name of the render artifact to download"
+    required: false
+    default: "merge-steward-render"
   llm-key:
     description: "Model key; empty is recorded as unavailable"
     required: false
@@ -39,7 +43,7 @@ runs:
       continue-on-error: true
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
-        name: merge-steward-render
+        name: ${{ inputs.render-artifact }}
         path: ${{ runner.temp }}/render
 
     # prepare also reads upstream release notes for a PR without any, from api.github.com only.

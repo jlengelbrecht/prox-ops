@@ -270,12 +270,158 @@ jobs:
           rendered: ${{ needs.render.result == 'success' }}
           llm-key: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
 
+  # Renders a same-repo PR from a person for its advisory review, so the model sees what a
+  # change does to the cluster. Same container, same read-only token, same nothing-from-the-PR-runs
+  # rules as the render job above, and no secrets. It is a separate job on purpose: evaluate
+  # does not wait for it, so the merge-steward check for these PRs is not delayed by a render.
+  # Its result goes to its own artifact, which only the advisory review reads.
+  advisory-render:
+    name: merge-steward advisory render
+    if: >-
+      vars.MERGE_STEWARD_AI == 'true' &&
+      github.event_name == 'pull_request_target' &&
+      contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'renovate[bot]' &&
+      github.event.pull_request.head.repo.fork == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: merge-steward-advisory-render-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read   # the changed file names
+    steps:
+      # Only a PR that touches the cluster tree has anything to render. The others record an
+      # explicit "no render" for the review instead of paying for a render of nothing.
+      - name: Look for changes the render can show
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          names=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          if grep -Eq '^(kubernetes|tests/flux-local)/' <<<"$names"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout the PR merged into its base
+        if: steps.scope.outputs.relevant == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          path: pull
+          fetch-depth: 2
+          persist-credentials: false
+
+      # Same wait as the render job: the merge ref is built asynchronously.
+      - name: Wait for a merge ref built from this head
+        id: base
+        if: steps.scope.outputs.relevant == 'true'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_REF: refs/pull/${{ github.event.pull_request.number }}/merge
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 10); do
+            if [ "$(git -C pull rev-parse HEAD^2)" = "$HEAD_SHA" ]; then
+              {
+                echo "fresh=true"
+                echo "sha=$(git -C pull rev-parse HEAD^1)"
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            [ "$attempt" = 10 ] && break
+            sleep 20
+            if git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+              fetch --quiet --no-tags --depth=2 origin "+$MERGE_REF:refs/remotes/origin/steward-merge"; then
+              git -C pull -c core.hooksPath=/dev/null -c core.fsmonitor=false \
+                checkout --quiet --force --detach refs/remotes/origin/steward-merge
+            fi
+          done
+          echo "::warning::the PR merge ref was not rebuilt for this head; recording the render as stale"
+          echo "fresh=false" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout that base
+        if: steps.base.outputs.fresh == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Render with flux-local
+        id: flux
+        if: steps.base.outputs.fresh == 'true'
+        run: |
+          set -u
+          out="$RUNNER_TEMP/render"
+          mkdir -p "$out"
+          rc=0
+          for res in helmrelease kustomization; do
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+              -v "$PWD:/github/workspace" -v "$out:/out" -w /github/workspace/pull \
+              "ghcr.io/allenporter/flux-local:${FLUX_LOCAL_VERSION}" \
+              diff "$res" --output json --unified 100000 --limit-bytes 0 \
+              --all-namespaces --no-skip-crds --skip-secrets \
+              --path /github/workspace/pull/kubernetes/flux/cluster \
+              --path-orig /github/workspace/base/kubernetes/flux/cluster \
+              --sources "flux-system,homelab-identity=tests/flux-local/homelab-identity" \
+              --strip-attrs "helm.sh/chart,checksum/config" \
+              --output-file "/out/$res.json" > "$RUNNER_TEMP/flux-$res.log" 2>&1 || rc=1
+            echo "$res: flux-local exit $rc"
+          done
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Record the render outcome
+        env:
+          RELEVANT: ${{ steps.scope.outputs.relevant }}
+          FRESH: ${{ steps.base.outputs.fresh }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RC: ${{ steps.flux.outputs.rc }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/render"
+          mkdir -p "$out"
+          rm -f "$out/meta.json"
+          if [ "$RELEVANT" != "true" ]; then
+            printf '{"head_sha": "%s", "skipped": true}\n' "$HEAD_SHA" > "$out/meta.json"
+          elif [ "$FRESH" = "true" ]; then
+            printf '{"head_sha": "%s", "failed": %d}\n' "$HEAD_SHA" "${RC:-1}" > "$out/meta.json"
+          else
+            printf '{"head_sha": "%s", "stale": true}\n' "$HEAD_SHA" > "$out/meta.json"
+          fi
+
+      - name: Upload the render result
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: merge-steward-advisory-render
+          path: |
+            ${{ runner.temp }}/render/meta.json
+            ${{ runner.temp }}/render/helmrelease.json
+            ${{ runner.temp }}/render/kustomization.json
+          if-no-files-found: warn
+          retention-days: 3
+
   # Same review for every other same-repo PR, kept apart so that their merge-steward check
   # does not wait in the review queue. Never for a fork, and not for a draft: these share the
   # one runner with verdict reviews, so each one delays them.
   advisory-review:
     name: merge-steward advisory review
+    needs: advisory-render
+    # A skipped, failed or stale render only means the review goes without it; a cancelled one
+    # means a newer push replaced this run.
     if: >-
+      !cancelled() && needs.advisory-render.result != 'cancelled' &&
       vars.MERGE_STEWARD_AI == 'true' &&
       github.event_name == 'pull_request_target' &&
       contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
@@ -305,6 +451,8 @@ jobs:
       - uses: ./.github/actions/merge-steward-review
         with:
           pr: ${{ github.event.pull_request.number }}
+          rendered: ${{ needs.advisory-render.result == 'success' }}
+          render-artifact: merge-steward-advisory-render
           llm-key: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
 
   # Posts the advisory review as the steward app, like the verdict comment: the summary comment
