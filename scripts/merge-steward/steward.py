@@ -69,6 +69,13 @@ def fingerprint(files):
     return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
 
 
+def diff_fingerprint(pr, files):
+    """The fingerprint, or None when this list cannot be trusted to be the whole diff."""
+    if len(files) != pr["changed_files"] or any(not f.get("patch") and not f.get("sha") for f in files):
+        return None
+    return fingerprint(files)
+
+
 def head_blobs(files):
     """Filename to blob at the head of the diff. Unlike the fingerprint, this is position-bound."""
     return {f["filename"]: f.get("sha") for f in files}
@@ -122,16 +129,42 @@ def recorded_review(gh, sha, policy):
     return None
 
 
+def reused_review(gh, pr, files, policy):
+    """An earlier head's AI result that still stands for this head, or None for a new review.
+
+    The branch's activity log, which GitHub writes, names the earlier heads. Only the newest
+    head with any AI record counts: if its diff or model differs, or that review failed, the
+    answer is a new review. A reused result counts in the llm stage just as the original did.
+    Every other stage still judges this head on its own, commit_stage's blob check included.
+    """
+    sha, fp = pr["head"]["sha"], diff_fingerprint(pr, files)
+    if not fp:
+        return None
+    try:
+        ref = quote(f"refs/heads/{pr['head']['ref']}", safe="")
+        pushes = [a for a in gh.paginate(f"activity?ref={ref}") if a.get("activity_type") in PUSH_TYPES]
+        heads = dict.fromkeys(a.get("after") for a in sorted(pushes, key=lambda a: a.get("timestamp") or "", reverse=True))
+        for head in [h for h in heads if h and h != sha][:review.REUSE_LOOKBACK]:
+            for run in steward_runs(gh, head, policy):
+                text = (run.get("output") or {}).get("text")
+                if review.from_record(text, head) is not None:
+                    return review.reusable(text, head, fp, policy)
+    except GitHubError as err:
+        print(f"PR #{pr['number']}: cannot look for a reusable review: {err}", file=sys.stderr)
+    return None
+
+
 def llm_stage(gh, pr, files, policy, review_dir, age_minutes):
     """Return (Stage, result to show and record, or None).
 
-    From this run's review artifact (PR events), else from the recorded result. No result
-    yet is hold until the checks deadline, then needs-human, because a queued review can
-    take a while.
+    From this run's review artifact (PR events), else from the recorded result, else from an
+    earlier head with the same diff. No result yet is hold until the checks deadline, then
+    needs-human, because a queued review can take a while.
     """
     sha = pr["head"]["sha"]
     changed = {f["filename"] for f in files}
-    result = review.from_artifact(review_dir, sha, changed) if review_dir else recorded_review(gh, sha, policy)
+    result = review.from_artifact(review_dir, sha, changed) if review_dir else (
+        recorded_review(gh, sha, policy) or reused_review(gh, pr, files, policy))
     if result is not None:
         return review.stage(result, policy), result
     if age_minutes > policy["required_checks_deadline_minutes"]:
@@ -348,7 +381,9 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
     if gh.get(f"pulls/{number}")["head"]["sha"] != sha:
         print(f"PR #{number}: head moved during evaluation; leaving it to the newer run", file=sys.stderr)
         return None
-    records = ([render_record(sha, rendered)] if rendered else []) + ([review.record(sha, ai_result)] if ai_result else [])
+    records = [render_record(sha, rendered)] if rendered else []
+    if ai_result:
+        records.append(review.record(sha, ai_result, diff_fingerprint(pr, files)))
     publish.publish_check(app_gh, sha, verdict, fold.clean(reason, 250), fold.summary(stages, verdict, reason, ai_result),
                           "\n".join(records) or None)
     publish.set_labels(gh, number, labels, verdict)

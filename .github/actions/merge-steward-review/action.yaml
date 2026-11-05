@@ -42,6 +42,7 @@ runs:
         name: merge-steward-render
         path: ${{ runner.temp }}/render
 
+    # prepare also reads upstream release notes for a PR without any, from api.github.com only.
     # Cluster evidence goes here once its service exists: a step that writes
     # $GITHUB_WORKSPACE/steward-review/evidence.md. The next step adds the file to the prompt
     # when it is there, bounded by ai.context_chars.evidence.
@@ -165,9 +166,10 @@ runs:
       env:
         STATUS: ${{ steps.agent.outputs.status }}
         SHA: ${{ steps.prepare.outputs.sha }}
+        MODEL: ${{ steps.prepare.outputs.alias }}
       run: |
         /opt/pr-agent/bin/python scripts/merge-steward/review_job.py collect \
-          --out "$GITHUB_WORKSPACE/steward-review" --sha "$SHA" --status "${STATUS:-failed}"
+          --out "$GITHUB_WORKSPACE/steward-review" --sha "$SHA" --status "${STATUS:-failed}" --model "$MODEL"
 
     # result.json only: the context, PR-Agent's raw output and its log stay on the runner.
     - name: Upload the result

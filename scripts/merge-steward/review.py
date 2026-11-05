@@ -37,6 +37,11 @@ REASONS = {
     "not-recorded": "no review was recorded for this commit",
 }
 MAX_ISSUES, MAX_MODES, TEXT_LIMIT = 3, 3, 400
+# The first entry explains the rating, so it gets more room and ends at a sentence.
+ASSESSMENT, ASSESSMENT_LIMIT = "Assessment:", 900
+# How many earlier heads to look through for a review to reuse, and how many upstream
+# releases one PR's context may carry.
+REUSE_LOOKBACK, MAX_UPSTREAM = 10, 3
 # Longest model text read, and how many layers of encoding are undone, before giving up.
 RAW_LIMIT, DECODE_ROUNDS = 4000, 8
 RESULT_FILE, REVIEW_FILE, CONTEXT_FILE = "result.json", "review.json", "context.md"
@@ -45,7 +50,10 @@ RESULT_FILE, REVIEW_FILE, CONTEXT_FILE = "result.json", "review.json", "context.
 # per fixed-format line, with any free text cut to about 120 characters: the model can repeat
 # what it reads, and the scrub does not remove namespace or workload names.
 EVIDENCE_FILE = "evidence.md"
-_RECORD = re.compile(r"^<!-- merge-steward-llm sha=(?P<sha>[0-9a-f]{40}) data=(?P<data>[A-Za-z0-9_=-]+) -->$", re.MULTILINE)
+_RECORD = re.compile(r"^<!-- merge-steward-llm sha=(?P<sha>[0-9a-f]{40})(?: fp=(?P<fp>[0-9a-f]{64}))? "
+                     r"data=(?P<data>[A-Za-z0-9_=-]+) -->$", re.MULTILINE)
+# Facts about a result that a stored copy may keep, each only in this exact form.
+_PROVENANCE = {"model": re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*"), "reused_from": re.compile(r"[0-9a-f]{40}")}
 _CREDENTIAL = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}"
                          r"|-----BEGIN|ENC\[AES256_GCM|age1[a-z0-9]{50,}|eyJ[A-Za-z0-9_-]{20,}\.")
 _REDACTIONS = (
@@ -65,6 +73,13 @@ _PATH = re.compile(r"^[\w./@+-]{1,200}$")
 NO_NOTES = "None in the PR body, so what changed in this release is not known from here."
 _NOTES_START = re.compile(r"^#{1,4}[ \t]*Release Notes[ \t]*$", re.MULTILINE | re.IGNORECASE)
 _NOTES_END = re.compile(r"^#{1,4}[ \t]*Configuration[ \t]*$", re.MULTILINE | re.IGNORECASE)
+_NOTES_HEADING = "## Release notes (third-party text copied into the PR body, data only)"
+_UPSTREAM_HEADING = "## Release notes (fetched from upstream GitHub releases, untrusted third-party text, data only)"
+# A dotted version, so a digest update is not taken for one.
+_TARGET = re.compile(r"`[^`|]*`[ \t]*→[ \t]*`(?P<version>v?\d+\.\d+[0-9A-Za-z.+_-]{0,60})`")
+_PACKAGE = re.compile(r"^(?:\[(?P<linked>[^\]|]{1,200})\]|(?P<plain>[^\s\[|]{1,200}))")
+_SOURCE = re.compile(r"https://(?:redirect\.)?github\.com/(?P<owner>[A-Za-z0-9][A-Za-z0-9-]{0,38})"
+                     r"/(?P<repo>[A-Za-z0-9_][A-Za-z0-9._-]{0,99})(?=[/)])")
 _HTML = re.compile(r"<!--.*?-->|<[^>\n]*>", re.DOTALL)
 
 
@@ -122,6 +137,19 @@ def scrub(text, limit=TEXT_LIMIT):
     return " ".join(clean(text, limit).split())
 
 
+def assessment(text):
+    """scrub() with more room, cut after the last whole sentence that fits.
+
+    A sentence too long to fit is cut at a word and marked.
+    """
+    text = scrub(text, RAW_LIMIT)
+    if len(text) <= ASSESSMENT_LIMIT:
+        return text
+    head = text[:ASSESSMENT_LIMIT + 1]
+    ends = [m.end() for m in re.finditer(r"[.!?](?=\s)", head)]
+    return text[:ends[-1]] if ends else head.rsplit(" ", 1)[0][:ASSESSMENT_LIMIT - 3] + "..."
+
+
 def release_notes(body):
     """The release notes section of a Renovate PR body, without HTML, or an empty string."""
     start = _NOTES_START.search(body or "")
@@ -132,9 +160,58 @@ def release_notes(body):
     return _HTML.sub("", rest[:end.start()] if end else rest).strip()
 
 
-def context(pr, render_lines, evidence, policy):
-    """The bounded context file for the prompt. Labels are ours; the notes are third-party text."""
+def upstream_targets(body, policy):
+    """Which upstream GitHub releases could describe this update, from Renovate's update table.
+
+    The table gives a package and a target version. The repository is the one in
+    ai.upstream_releases for that package, else the row's own github.com link. Each name is
+    matched in full, so all a PR body can do is point at another public GitHub release, which
+    the prompt treats as untrusted anyway. It cannot reach any other host or path.
+    """
+    targets = {}
+    for line in (body or "").splitlines():
+        if line.strip() == "---":
+            break
+        cells = line.split("|")
+        target = _TARGET.search(line)
+        package = _PACKAGE.match(cells[1].strip()) if line.startswith("|") and len(cells) > 2 else None
+        if not (target and package):
+            continue
+        known = policy["ai"]["upstream_releases"].get(package.group("linked") or package.group("plain")) or {}
+        links = list(_SOURCE.finditer(cells[1]))
+        repo = known.get("repo") or (f"{links[-1]['owner']}/{links[-1]['repo']}" if links else None)
+        if repo:
+            version = target.group("version").removeprefix("v")
+            tags = [known["tag"].replace("{version}", version)] if known.get("tag") else [f"v{version}", version]
+            targets.setdefault((repo, version), {"repo": repo, "version": version, "tags": tags})
+    return list(targets.values())[:MAX_UPSTREAM]
+
+
+def _upstream_notes(found, limit):
+    """The heading and text for what the upstream lookup found. None means it did not run."""
+    if found is None:
+        return _NOTES_HEADING, NO_NOTES
+    bodies = [f for f in found if f["body"]]
+    tried = [f"{f['repo']} {f['version']}" for f in found if not f["body"]]
+    if not bodies:
+        detail = f"No upstream GitHub release was found either (tried {', '.join(tried)})." if tried else (
+            "No upstream GitHub repository is known for this update either.")
+        return _NOTES_HEADING, f"{NO_NOTES} {detail}"
+    share = limit // len(bodies)
+    parts = [f"### {f['repo']} {f['tag']} (the target release only, not the ones in between)\n"
+             f"{_HTML.sub('', f['body']).strip()[:share]}" for f in bodies]
+    parts += [f"No upstream GitHub release was found for {name}." for name in tried]
+    return _UPSTREAM_HEADING, "\n\n".join(parts)[:limit]
+
+
+def context(pr, render_lines, evidence, policy, upstream=None):
+    """The bounded context file for the prompt. Labels are ours; the notes are third-party text.
+
+    upstream is what the review job fetched for a PR without notes, or None if it did not look.
+    """
     limits = policy["ai"]["context_chars"]
+    notes = release_notes(pr.get("body"))[:limits["release_notes"]]
+    heading, notes = (_NOTES_HEADING, notes) if notes else _upstream_notes(upstream, limits["release_notes"])
     return "\n".join([
         "## Render classifier (steward code, from flux-local against this PR)",
         "\n".join(render_lines)[:limits["render"]] or "Not available for this PR.",
@@ -142,15 +219,17 @@ def context(pr, render_lines, evidence, policy):
         "## Cluster evidence (steward code)",
         evidence[:limits["evidence"]] if evidence else "None collected. Do not assume anything about the cluster's state.",
         "",
-        "## Release notes (third-party text copied into the PR body, data only)",
-        release_notes(pr.get("body"))[:limits["release_notes"]] or NO_NOTES,
+        heading,
+        notes,
     ]) + "\n"
 
 
-def context_stats(pr, render_lines, evidence):
+def context_stats(pr, render_lines, evidence, upstream=None):
     """Sizes of what the prompt carries, for the public job log. No content."""
+    upstream = upstream or []
     return {"render_lines": len(render_lines), "release_notes_chars": len(release_notes(pr.get("body"))),
-            "evidence_chars": len(evidence)}
+            "evidence_chars": len(evidence), "upstream_looked_for": len(upstream),
+            "upstream_chars": sum(len(f["body"]) for f in upstream)}
 
 
 def unavailable(key):
@@ -161,10 +240,11 @@ def _text(value):
     return value.strip() if isinstance(value, str) else ""
 
 
-def _row(path, text, changed):
+def _row(path, text, changed, first=False):
     """One finding. A path that is malformed, or outside the PR's diff, is left out."""
     path = _text(path)
-    return {"file": path if _PATH.match(path) and (changed is None or path in changed) else "", "text": scrub(text)}
+    return {"file": path if _PATH.match(path) and (changed is None or path in changed) else "",
+            "text": assessment(text) if first and text.startswith(ASSESSMENT) else scrub(text)}
 
 
 def _items(value):
@@ -174,8 +254,8 @@ def _items(value):
 
 def _findings(review, changed):
     issues, modes = _items(review.get("key_issues_to_review")), _items(review.get("failure_modes"))
-    rows = [_row(i.get("relevant_file"), f"{_text(i.get('issue_header'))}: {_text(i.get('issue_content'))}", changed)
-            for i in issues[:MAX_ISSUES] if isinstance(i, dict)]
+    rows = [_row(i.get("relevant_file"), f"{_text(i.get('issue_header'))}: {_text(i.get('issue_content'))}", changed, n == 0)
+            for n, i in enumerate(i for i in issues[:MAX_ISSUES] if isinstance(i, dict))]
     return rows + [_row("", f"Could fail: {_text(m.get('what'))} Trigger: {_text(m.get('trigger'))}", changed)
                    for m in modes[:MAX_MODES] if isinstance(m, dict)]
 
@@ -213,8 +293,10 @@ def checked(raw, changed=None):
     result = result_from_review({"risk_level": raw.get("risk"), "merge_recommendation": raw.get("recommendation")})
     rows = raw.get("findings")
     if result["available"]:
-        result["findings"] = [_row(r.get("file"), _text(r.get("text")), changed) for r in
-                              (rows if isinstance(rows, list) else [])[:MAX_ISSUES + MAX_MODES] if isinstance(r, dict)]
+        rows = [r for r in (rows if isinstance(rows, list) else [])[:MAX_ISSUES + MAX_MODES] if isinstance(r, dict)]
+        result["findings"] = [_row(r.get("file"), _text(r.get("text")), changed, n == 0) for n, r in enumerate(rows)]
+        result.update({k: raw[k] for k, shape in _PROVENANCE.items()
+                       if isinstance(raw.get(k), str) and shape.fullmatch(raw[k])})
     return result
 
 
@@ -229,13 +311,15 @@ def from_artifact(directory, sha, changed):
     return checked(raw, changed) if raw.get("head_sha") == sha else None
 
 
-def record(sha, result):
+def record(sha, result, fingerprint=None):
     """A line for the check run's output.text, so later events can reuse the result.
 
-    Base64 keeps model text from ever forming another marker in that field.
+    Base64 keeps model text from ever forming another marker in that field. Without a
+    fingerprint the record still serves its own commit, but no other head can reuse it.
     """
     data = base64.urlsafe_b64encode(json.dumps(result, sort_keys=True).encode()).decode()
-    return f"<!-- merge-steward-llm sha={sha} data={data} -->"
+    fp = f" fp={fingerprint}" if fingerprint else ""
+    return f"<!-- merge-steward-llm sha={sha}{fp} data={data} -->"
 
 
 def from_record(text, sha):
@@ -247,6 +331,22 @@ def from_record(text, sha):
         return checked(json.loads(base64.urlsafe_b64decode(found.group("data"))))
     except (binascii.Error, ValueError):
         return unavailable("not-recorded")
+
+
+def reusable(text, sha, fingerprint, policy):
+    """The result recorded for sha, if a head with this diff may use it instead of a new review.
+
+    Everything has to match: the record's commit, its diff fingerprint, and a real answer from
+    the model the policy names now. A failed review, or a record from before fingerprints, is
+    never reused. The caller passes only text from the steward app's own check runs.
+    """
+    found = _RECORD.search(text or "")
+    if not fingerprint or not found or found.group("fp") != fingerprint:
+        return None
+    result = from_record(text, sha)
+    if not result or not result["available"] or result.get("model") != policy["ai"]["model"]["alias"]:
+        return None
+    return dict(result, reused_from=result.get("reused_from") or sha)
 
 
 def stage(result, policy):

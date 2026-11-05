@@ -52,8 +52,12 @@ def ai_lines(result):
     lines = [f"**AI assessment:** risk {clean(result['risk'])}, recommendation {clean(result['recommendation'])}"]
     for row in result["findings"]:
         where = f"{clean(row['file'], 150)}: " if row["file"] else ""
-        lines.append(f"- {where}{clean(row['text'], 420)}")
-    return lines if len(lines) > 1 else lines + ["- The model gave no reasons for this rating, so treat it as unexplained."]
+        lines.append(f"- {where}{clean(row['text'], 1000)}")
+    if len(lines) == 1:
+        lines.append("- The model gave no reasons for this rating, so treat it as unexplained.")
+    if result.get("reused_from"):
+        lines.append(f"- Not reviewed again: commit {clean(result['reused_from'][:12])} has the same diff, so its review stands.")
+    return lines
 
 
 def summary(stages, verdict, reason, ai=None):

@@ -22,7 +22,7 @@ steward_app_id: 5615799
 
 # Check runs the steward ignores when it reads the head commit: its own check run and jobs.
 ignore_checks: ["merge-steward", "merge-steward evaluate", "merge-steward review",
-                "merge-steward advisory review", "merge-steward advisory"]
+                "merge-steward advisory review", "merge-steward advisory", "merge-steward reuse check"]
 
 # Check runs that must exist on the head commit, come from the named GitHub App (15368 is
 # GitHub Actions, 46505 GitGuardian) and conclude success: the ruleset's required set. A
@@ -72,6 +72,19 @@ ai:
   # Upper bounds for the context file, in characters. Their sum stays within
   # ARTIFACTS__MAX_ARTIFACT_SIZE in .github/actions/merge-steward-review.
   context_chars: {render: 3000, evidence: 6000, release_notes: 14000}
+  # Where to find upstream notes for a Renovate PR whose body has none. An entry is for a
+  # package whose update table has no GitHub link, or whose link or tags are wrong for the
+  # package (a chart versioned apart from its app, a monorepo with prefixed tags). Without an
+  # entry the steward uses the link in the table and tries v<version> and <version>.
+  upstream_releases:
+    quay.io/cilium/tetragon: {repo: cilium/tetragon}
+    quay.io/cilium/tetragon-operator: {repo: cilium/tetragon}
+    docker.io/nousresearch/hermes-agent: {repo: NousResearch/hermes-agent}
+    ghcr.io/sirkirby/unifi-network-mcp: {repo: sirkirby/unifi-network-mcp, tag: "network/v{version}"}
+    ghcr.io/openbao/openbao-plugin-kms-pkcs11: {repo: openbao/openbao-plugins, tag: "kms-pkcs11-v{version}"}
+    external-dns: {repo: kubernetes-sigs/external-dns, tag: "external-dns-helm-chart-{version}"}
+    ghcr.io/home-operations/charts-mirror/external-dns: {repo: kubernetes-sigs/external-dns, tag: "external-dns-helm-chart-{version}"}
+    ghcr.io/coredns/charts/coredns: {repo: coredns/helm, tag: "coredns-{version}"}
 
 # Update types that may pass when nothing else matches. Everything else (major,
 # replacement, rollback, bump, unknown) is needs-human.
