@@ -180,7 +180,8 @@ def clean_answer(text):
     lines = []
     for raw in str(text or "").replace("\r", "").split("\n")[:MAX_ANSWER_LINES]:
         raw = raw.strip()
-        lines.append(review.scrub(raw, LINE_LIMIT) if raw else "")
+        # scrub cuts to the limit before clean() escapes & as &amp;, which can grow a line five times.
+        lines.append(review.scrub(raw, LINE_LIMIT)[:LINE_LIMIT] if raw else "")
     while lines and not lines[-1]:
         lines.pop()
     return "\n".join(lines)

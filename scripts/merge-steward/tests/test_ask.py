@@ -511,3 +511,9 @@ def test_quotes_and_backslashes_cannot_assemble_a_setting(body):
 
 def test_quotes_become_typographic_marks_so_the_question_stays_readable():
     assert ask_job.question_of("/ask what's \"this\"?") == "what\u2019s \u201dthis\u201d?"
+
+
+def test_an_answer_of_ampersands_stays_under_the_comment_limit():
+    answer = "\n".join("&" * 5000 for _ in range(100))
+    body = ask_job.reply({"comment": 55, "available": True, "answer": answer})
+    assert len(body) < 65536 and body.count("\n") < 60
