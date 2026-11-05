@@ -251,8 +251,12 @@ spec:
   #   - GitHub web, API, source archives and release-asset uploads
   #   - raw/objects/release-assets.githubusercontent.com: raw files, LFS and
   #     release downloads
-  #   - productionresultssa0-19.blob.core.windows.net: Actions results, logs
-  #     and artifacts (GitHub's published host list, matched by name)
+  #   - productionresultssa{0-19,30-49,100-199}.blob.core.windows.net: Actions
+  #     results, logs and artifacts. This is GitHub's published list
+  #     (api.github.com/meta, domains.actions), matched by name, not by a
+  #     prefix pattern, so only those accounts resolve. A run that is handed a
+  #     host outside the list fails its artifact upload with getaddrinfo
+  #     EAI_AGAIN; productionresultssa30 did, on 2026-11-05.
   #   - GHCR, Go module proxy and checksum DB, npm, then the entry's extraFQDNs
   # Actions service hosts are the only pattern ($fqdnPatterns).
   #
@@ -269,7 +273,7 @@ spec:
   # deliberately not admitted.
   resourcesTemplate: |
     <<- $fqdnNames := list "github.com" "api.github.com" "codeload.github.com" "uploads.github.com" "raw.githubusercontent.com" "objects.githubusercontent.com" "release-assets.githubusercontent.com" "ghcr.io" "pkg-containers.githubusercontent.com" "proxy.golang.org" "sum.golang.org" "storage.googleapis.com" "registry.npmjs.org" >>
-    <<- range $i := until 20 >>
+    <<- range $i := concat (until 20) (untilStep 30 50 1) (untilStep 100 200 1) >>
     <<- $fqdnNames = append $fqdnNames (printf "productionresultssa%d.blob.core.windows.net" $i) >>
     <<- end >>
     <<- range $fqdn := (get inputs "extraFQDNs" | default (list)) >>
