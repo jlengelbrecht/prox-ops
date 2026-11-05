@@ -506,7 +506,7 @@ def test_context_is_bounded_and_labels_each_source():
 
 
 def job_args(tmp, **kw):
-    defaults = dict(pr=7, sha="", out=str(tmp), render_dir=None, status="ok")
+    defaults = dict(pr=7, sha="", out=str(tmp), render_dir=None, status="ok", model="merge-steward-review")
     return type("Args", (), dict(defaults, **kw))
 
 
@@ -536,7 +536,7 @@ def test_prepare_logs_sizes_and_no_content(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "SENTINEL" not in out
     stats = json.loads(out)["context"]
-    assert set(stats) == {"render_lines", "release_notes_chars", "evidence_chars"}
+    assert set(stats) == {"render_lines", "release_notes_chars", "evidence_chars", "upstream_looked_for", "upstream_chars"}
     assert all(type(v) is int for v in stats.values())
     assert stats["release_notes_chars"] == len("SENTINEL notes") and stats["evidence_chars"] == len("SENTINEL evidence")
 

@@ -169,6 +169,22 @@ def test_the_prompt_requires_a_reason_for_every_rating():
     assert "never empty" in text and '"Assessment"' in text and "why that gives your risk_level" in text
 
 
+def test_the_reuse_check_holds_no_secret_and_only_a_failure_free_output_skips_the_review():
+    gate = STEWARD["review-gate"]
+    assert gate["runs-on"] == "ubuntu-latest" and "environment" not in gate
+    assert set(gate["permissions"].values()) == {"read"} and "secrets." not in yaml.safe_dump(gate)
+    assert "github.event.action == 'synchronize'" in gate["if"]
+    assert gate["permissions"].keys() >= {"contents", "pull-requests", "checks"}
+    for step in gate["steps"]:
+        if "actions/checkout" in step.get("uses", ""):
+            assert "default_branch" in step["with"]["ref"] and step["with"]["persist-credentials"] is False
+    step = next(s for s in gate["steps"] if s.get("id") == "gate")
+    assert step["continue-on-error"] is True and "${{" not in step["run"]
+    review = STEWARD["review"]
+    assert "review-gate" in review["needs"]
+    assert "!cancelled()" in review["if"] and "needs.review-gate.outputs.reuse != 'true'" in review["if"]
+
+
 def test_review_jobs_are_ignored_by_the_checks_stage():
-    names = {j["name"] for k, j in STEWARD.items() if k in REVIEW_JOBS + ("advisory-publish",)}
+    names = {j["name"] for k, j in STEWARD.items() if k in REVIEW_JOBS + ("advisory-publish", "review-gate")}
     assert names <= set(POLICY["ignore_checks"])

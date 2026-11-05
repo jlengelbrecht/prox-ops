@@ -85,6 +85,15 @@ def _check_ai(ai):
     limits = ai.get("context_chars") or {}
     if not all(isinstance(limits.get(k), int) and limits[k] > 0 for k in ("render", "evidence", "release_notes")):
         raise ValueError("policy key ai.context_chars needs render, evidence and release_notes")
+    upstream = ai.get("upstream_releases")
+    if not isinstance(upstream, dict) or not all(_upstream_entry(v) for v in upstream.values()):
+        raise ValueError("policy key ai.upstream_releases maps a package to a repo and an optional tag with {version}")
+
+
+def _upstream_entry(entry):
+    return (isinstance(entry, dict) and set(entry) <= {"repo", "tag"}
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_][A-Za-z0-9._-]*", str(entry.get("repo") or ""))
+            and ("tag" not in entry or re.fullmatch(r"[A-Za-z0-9._/-]*\{version\}[A-Za-z0-9._-]*", str(entry["tag"]))))
 
 
 def glob_match(pattern, path):
