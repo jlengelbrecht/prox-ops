@@ -59,11 +59,14 @@ ai:
     renovate: verdict      # renovate[bot] from this repository
     same_repo: advisory    # any other author from this repository (advisory or off)
   # The model, and the only place to change it. alias is a LiteLLM model name, which the
-  # review key must be allowed to use. A slow or cold model needs the longer timeouts.
+  # review key must be allowed to use. merge-steward-review is pinned in LiteLLM to the
+  # ChatGPT Pro model (chatgpt/ provider) with no fallbacks. If the login or the model is
+  # unavailable the call fails and the verdict is needs-human. A reasoning model can take
+  # minutes, so the call timeout is generous.
   model:
-    alias: qwen36-27b
-    context_tokens: 65536         # the model's whole context, output included
-    max_prompt_tokens: 40000      # what PR-Agent may send in one call
+    alias: merge-steward-review
+    context_tokens: 400000        # well under the model's window; leaves room for output
+    max_prompt_tokens: 120000     # what PR-Agent may send in one call
     call_timeout_seconds: 300     # one model call
     review_timeout_seconds: 780   # all of PR-Agent, retries included; under the job timeout
   # Upper bounds for the context file, in characters. Their sum stays within
