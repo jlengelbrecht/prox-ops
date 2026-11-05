@@ -196,7 +196,11 @@ spec:
           # is not rejected for finish_reason alone. Raise a cap deliberately
           # when finish_reason=length shows up in traces, never to hide it.
           HINDSIGHT_API_LLM_MAX_CONCURRENT: "2"
-          HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "1"
+          # 1 capped retain near 175 LLM calls an hour: a backlog built up, and
+          # batches waiting on the permit hit the 1h wall-clock limit and failed.
+          # The global limit above also applies, and 2 is the subscription
+          # budget, so a higher value here does nothing.
+          HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "2"
           HINDSIGHT_API_METRICS_BACKLOG_ENABLED: "true"
           HINDSIGHT_API_METRICS_INCLUDE_BANK_ID: "true"
           HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT: "1"
@@ -331,6 +335,7 @@ spec:
       env:
         <<: *hindsight-env
         HINDSIGHT_API_LLM_MAX_CONCURRENT: "1"
+        HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "1"
         HINDSIGHT_API_DB_POOL_MIN_SIZE: "2"
         HINDSIGHT_API_DB_POOL_MAX_SIZE: "4"
         HINDSIGHT_API_WORKER_MAX_SLOTS: "2"
