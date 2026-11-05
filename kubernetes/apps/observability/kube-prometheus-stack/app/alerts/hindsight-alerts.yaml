@@ -38,8 +38,9 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: Hindsight retain pending without worker completion
-            description: Pending retain status, including deferred children, persisted without a worker completion with a 10m-old pending reference and a 10m rule hold. This is not job age or a new-failure count; inspect deferred rows, handled failures and worker state. Repeated handled failures can suppress this warning.
+            summary: Hindsight is behind on saving memories
+            description: Memory saves are waiting and none finished in the last 10 minutes. Nothing is down, but new memories arrive late.
+            action: Check the hindsight-api worker logs for timed-out or stuck retain jobs.
         - alert: HindsightMetricSeriesGrowth
           expr: count({__name__=~"hindsight_.*",namespace="ai",service="hindsight-api"}) > 4000
           for: 10m
