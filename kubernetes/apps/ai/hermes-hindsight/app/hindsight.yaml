@@ -196,7 +196,9 @@ spec:
           # is not rejected for finish_reason alone. Raise a cap deliberately
           # when finish_reason=length shows up in traces, never to hide it.
           HINDSIGHT_API_LLM_MAX_CONCURRENT: "2"
-          HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "1"
+          # 1 capped retain near 175 LLM calls an hour: a backlog built up, and
+          # batches waiting on the permit hit the 1h wall-clock limit and failed.
+          HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT: "3"
           HINDSIGHT_API_METRICS_BACKLOG_ENABLED: "true"
           HINDSIGHT_API_METRICS_INCLUDE_BANK_ID: "true"
           HINDSIGHT_API_CONSOLIDATION_LLM_MAX_CONCURRENT: "1"
