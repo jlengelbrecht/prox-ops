@@ -13,12 +13,16 @@ ADVISORY_MARKER = "<!-- merge-steward-review -->"
 EXPECTED = ("identity", "commits", "policy", "checks", "render")
 ICON = {PASS: "pass", HOLD: "hold", NEEDS: "needs-human"}
 # Reasons carry package names, paths and check names taken from the PR. Strip markdown and
-# HTML control characters and @ so nothing renders as a link, image, mention or table cell.
-_UNSAFE = re.compile(r"[`<>@!\[\]|\r\n]")
+# HTML control characters and @, and neutralise character references, so nothing renders as
+# a link, image, mention or table cell.
+_UNSAFE = re.compile(r"[`~<>@!\[\]|\\\r\n]")
+# GitHub decodes character references when it renders, so a `&` left alone could bring back
+# anything stripped here (&#64; is @). A `&amp;` this function wrote stays as it is.
+_AMPERSAND = re.compile(r"&(?!amp;)")
 
 
 def clean(text, limit=200):
-    return _UNSAFE.sub(" ", str(text))[:limit]
+    return _AMPERSAND.sub("&amp;", _UNSAFE.sub(" ", str(text))[:limit])
 
 
 def fold(stages, override=None):

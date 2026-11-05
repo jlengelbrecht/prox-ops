@@ -10,10 +10,12 @@ Pure code: nothing here calls GitHub.
 
 import base64
 import binascii
+import html
 import json
 import re
 import unicodedata
 from pathlib import Path
+from urllib.parse import unquote
 
 from classify import NEEDS, PASS, Stage, _parties
 from fold import clean
@@ -39,6 +41,8 @@ REASONS = {
     "not-recorded": "no review was recorded for this commit",
 }
 MAX_ISSUES, MAX_MODES, TEXT_LIMIT = 3, 3, 300
+# Longest model text read, and how many layers of encoding are undone, before giving up.
+RAW_LIMIT, DECODE_ROUNDS = 4000, 8
 RESULT_FILE, REVIEW_FILE, CONTEXT_FILE = "result.json", "review.json", "context.md"
 # A step that collects cluster evidence writes this file into the review directory before
 # the context is built. The prompt carries it when it exists.
@@ -48,6 +52,7 @@ _CREDENTIAL = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]+|s
                          r"|-----BEGIN|ENC\[AES256_GCM|age1[a-z0-9]{50,}|eyJ[A-Za-z0-9_-]{20,}\.")
 _REDACTIONS = (
     (re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE), "[url removed]"),
+    (re.compile(r"\b(?:mailto|xmpp|javascript|data|vbscript):\S+", re.IGNORECASE), "[url removed]"),
     (re.compile(r"\bwww\.\S+", re.IGNORECASE), "[url removed]"),
     (re.compile(r"\b[\w.-]+\.(?:homelab0\.org|svc\.cluster\.local|svc|lan|internal)\b", re.IGNORECASE), "[host removed]"),
     (re.compile(r"\b(?:10\.\d{1,3}|127\.\d{1,3}|192\.168|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b"), "[address removed]"),
@@ -56,6 +61,8 @@ _REDACTIONS = (
     (re.compile(r"#(?=\d)"), " no. "),
     (re.compile(r"\bGH-(?=\d)", re.IGNORECASE), "GH "),
 )
+WITHHELD_CREDENTIAL = "[withheld: looks like a credential]"
+WITHHELD_ENCODED = "[withheld: encoded too many times]"
 _PATH = re.compile(r"^[\w./@+-]{1,200}$")
 _NOTES_START = re.compile(r"^#{1,4}[ \t]*Release Notes[ \t]*$", re.MULTILINE | re.IGNORECASE)
 _NOTES_END = re.compile(r"^#{1,4}[ \t]*Configuration[ \t]*$", re.MULTILINE | re.IGNORECASE)
@@ -75,16 +82,45 @@ def mode(pr, policy):
     return scope["renovate"] if login in policy["authors"] and kind == "Bot" else scope["same_repo"]
 
 
+_FILLERS = "\u3164\u2800\u00ad\u115f\u1160\uffa0\U00013441\U00013442"
+# Emphasis characters between two alphanumerics add nothing a finding needs, and splitting a
+# token or a hostname with them hides it from the patterns while the reader still sees it.
+_INTRA_WORD = re.compile(r"(?<=[A-Za-z0-9_])[*~|]+(?=[A-Za-z0-9_])")
+
+
+def _plain(text):
+    """One round of undoing what a renderer or browser would undo, or what splits a pattern.
+
+    Characters that print as nothing are removed (control, format, combining marks and the
+    blank-looking letters), because a token with one inside still reads as that token.
+    Real spaces stay, so words never join.
+    """
+    text = unquote(html.unescape(text))
+    text = unicodedata.normalize("NFKD", _HTML.sub("", text)).replace("\\", "")
+    text = "".join(c for c in text if c not in _FILLERS and unicodedata.category(c)[0] != "M")
+    text = _INTRA_WORD.sub("", " ".join(text.split()))
+    return "".join(c for c in text if unicodedata.category(c) not in ("Cc", "Cf"))
+
+
 def scrub(text, limit=TEXT_LIMIT):
-    """Text safe to post in public, or a fixed note when it looks like a credential."""
-    # Control and format characters first: bidi overrides can make text read differently,
-    # and a zero-width character could split a credential past the check below.
-    text = "".join(c for c in " ".join(str(text).split()) if unicodedata.category(c) not in ("Cc", "Cf"))
+    """Text safe to post in public, or a fixed note when it looks like a credential.
+
+    Patterns must see what the page will show, so every encoding comes off first. Text that
+    never settles is withheld. clean() then leaves no character reference that could decode.
+    """
+    text = str(text)[:RAW_LIMIT]
+    for _ in range(DECODE_ROUNDS):
+        plain = _plain(text)
+        if plain == text:
+            break
+        text = plain
+    else:
+        return WITHHELD_ENCODED
     if _CREDENTIAL.search(text):
-        return "[withheld: looks like a credential]"
+        return WITHHELD_CREDENTIAL
     for pattern, note in _REDACTIONS:
         text = pattern.sub(note, text)
-    return clean(text, limit).strip()
+    return " ".join(clean(text, limit).split())
 
 
 def release_notes(body):

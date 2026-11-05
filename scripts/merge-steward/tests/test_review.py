@@ -1,7 +1,9 @@
 """The AI stage: scope, the lower-only rule, unavailable handling and what gets published."""
 
 import copy
+import html
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -210,10 +212,135 @@ def test_an_unknown_reason_of_any_type_is_a_plain_failure():
         assert review.unavailable(reason)["reason"] == "failed"
 
 
+KEY = "a" * 36
+
+
+@pytest.mark.parametrize("text", [
+    "&#64;josh", "&#x40;josh", "&#X40;josh", "&commat;josh", "&#64josh", "&amp;#64;josh", "&amp;amp;commat;josh",
+    "&amp;#x26;#x40;josh", "%40josh", "%2540josh", "%26%2364%3Bjosh", "\\@josh", "＠josh", "&#x200b;@josh",
+])
+def test_every_encoding_of_a_mention_is_removed(text):
+    out = review.scrub(text)
+    assert not re.search(r"[@＠]|&#|&commat|%40", out) and "@" not in html.unescape(out)
+
+
+@pytest.mark.parametrize("text", [
+    f"ghp&#95;{KEY}", f"ghp&#x5F;{KEY}", f"ghp&lowbar;{KEY}", f"&#103;hp_{KEY}", f"ghp&amp;#95;{KEY}",
+    f"ghp&amp;amp;lowbar;{KEY}", f"ghp%5F{KEY}", f"ghp%255F{KEY}", f"ghp\\_{KEY}", f"gh&#x200b;p_{KEY}",
+    f"ｇｈｐ＿{KEY}", f"gh<b></b>p_{KEY}", f"gh<!-- x -->p_{KEY}", "&#45;&#45;&#45;&#45;&#45;BEGIN PRIVATE KEY",
+])
+def test_every_encoding_of_a_credential_is_withheld(text):
+    assert review.scrub(text) == review.WITHHELD_CREDENTIAL
+
+
+@pytest.mark.parametrize("text,gone", [
+    ("10&#46;0&#46;0&#46;1", "10.0.0.1"), ("10&period;0&period;0&period;1", "10.0.0.1"), ("10%2E0%2E0%2E1", "10.0.0.1"),
+    ("bao&#46;homelab0&#46;org", "homelab0.org"), ("x&period;svc&period;cluster&period;local", "cluster.local"),
+    ("https&colon;&sol;&sol;evil.example/x", "evil.example"), ("https%3A%2F%2Fevil.example/x", "evil.example"),
+    ("&#104;ttps://evil.example", "evil.example"), ("www&#46;evil.example", "evil.example"),
+    ("mailto:a", "mailto"), ("java&#x73;cript:alert(1)", "javascript"), ("#&#49;2", "#12"), ("&#35;12", "#12"),
+    ("GH&#45;12", "GH-12"), ("&lt;img src=x&gt;", "<img"), ("&lbrack;a&rbrack;(b)", "[a]"), ("\\[a\\](b)", "[a]"),
+])
+def test_encoded_hosts_links_and_markup_are_removed(text, gone):
+    assert gone not in html.unescape(review.scrub(text))
+
+
+def test_no_character_reference_survives_to_be_decoded_by_the_page():
+    for text in ("A & B", "&#64;josh &copy; &bogus; &", "&amp", "&#", "%26amp%3B"):
+        assert not re.search(r"&(?!amp;)", review.scrub(text))
+    assert review.scrub("A & B") == "A &amp; B"
+
+
+def test_scrubbing_twice_changes_nothing():
+    for text in ("A & B", HOSTILE, "plain text", "100% of it", "see %zz"):
+        once = review.scrub(text)
+        assert review.scrub(once) == once
+
+
+@pytest.mark.parametrize("text", [
+    f"ghp_{KEY[:18]}*{KEY[18:]}", f"ghp_{KEY[:18]}~~{KEY[18:]}", f"ghp_{KEY[:18]}\u3164{KEY[18:]}",
+    f"ghp_{KEY[:18]}\u2800{KEY[18:]}", f"ghp_{KEY[:18]}\u0301{KEY[18:]}", f"ghp_{KEY[:18]}|{KEY[18:]}",
+    f"g*h*p*_{KEY}", f"ghp_{KEY[:18]}\u115f{KEY[18:]}", f"gh\u0305p_{KEY}",
+    f"ghp_{KEY[:18]}\U00013441{KEY[18:]}", f"ghp_{KEY[:18]}\U00013442{KEY[18:]}",
+])
+def test_a_credential_split_by_characters_the_eye_skips_is_withheld(text):
+    assert review.scrub(text) == review.WITHHELD_CREDENTIAL
+
+
+@pytest.mark.parametrize("text,gone", [
+    ("bao.home*lab0.org", "homelab0.org"), ("bao.homelab0\u3164.org", "homelab0.org"), ("10.0\u3164.0.1", "10.0.0.1"),
+    ("ht\u3164tp://evil.com/x", "evil.com"), ("10.0.0.\u0301 1", "10.0.0.1"), ("litellm.ai.svc.cluster.lo*cal", "cluster.local"),
+])
+def test_a_host_or_address_split_by_characters_the_eye_skips_is_removed(text, gone):
+    assert gone not in review.scrub(text) and gone.replace(".", "") not in review.scrub(text).replace(".", "")
+
+
+@pytest.mark.parametrize("text", [
+    "Risk - low risk patch bump of the chart", "Low risk - major version bump with a changelog",
+    "disk - 100Gi to 200Gi resize PVC check", "Mask - this is fine and bounded to patch",
+    "task - update image tag to the newest release", "Patch bump - no risk - safe to merge this update",
+    "Pushes gh s_ aaaaaaaaaaaaaaaaaaaa", "tough s_1234567890123456789012", "ghp_ ABCDEFGHIJKLMNOPQRST",
+    "upgrade gh * p_abcdefghijklmnopqrstuvwxyz", "Bump v1.9.3 to v1.10.0; chart 4.6.2 - see the notes",
+    "Image sha256 digest changed; tag stays 2.5.9", "R&D team, AT&T node, 2 * 3 pods", "Breaking: auth key removed in 2.1",
+])
+def test_ordinary_findings_are_not_taken_for_credentials(text):
+    out = review.scrub(text)
+    assert "[" not in out and html.unescape(out) == " ".join(text.split())
+
+
+def test_a_digest_is_shortened_but_the_finding_is_kept():
+    out = review.scrub("pinned digest sha256:" + "ab12" * 16 + " replaces the tag")
+    assert "long value removed" in out and "pinned digest" in out and "replaces the tag" in out
+
+
+def test_a_fence_cannot_open_inside_a_list_item():
+    assert "~" not in review.scrub("~~~ not code") and "~" not in fold.clean("~~~ x")
+
+
+def test_clean_keeps_a_render_record_parseable():
+    reason = fold.clean("A & B -> done")
+    record = f"<!-- merge-steward-render sha={'a' * 40} verdict=pass reason={reason} -->"
+    found = steward._RENDER.search(record)
+    assert found and found.group("reason") == reason
+
+
+def test_text_that_never_settles_is_withheld():
+    assert review.scrub("&" + "amp;" * 30 + "#64;josh") == review.WITHHELD_ENCODED
+    deep = "@"
+    for _ in range(30):
+        deep = deep.replace("%", "%25").replace("@", "%40")
+    assert review.scrub(deep) == review.WITHHELD_ENCODED
+
+
+def test_raw_text_is_bounded_before_decoding(monkeypatch):
+    seen = []
+    real = review._plain
+    monkeypatch.setattr(review, "_plain", lambda text: seen.append(len(text)) or real(text))
+    review.scrub("x" * 100000)
+    assert max(seen) == review.RAW_LIMIT
+    assert len(review.scrub("&amp;" * 100000)) <= review.TEXT_LIMIT * len("&amp;")
+
+
+def test_clean_leaves_no_live_reference_on_any_path():
+    assert fold.clean("&#64;x &commat;y") == "&amp;#64;x &amp;commat;y"
+    assert fold.clean(fold.clean("a & b")) == "a &amp; b"
+    assert "\\" not in fold.clean("\\@x")
+
+
+def test_an_encoded_answer_reaches_no_public_surface(tmp_path):
+    text = f"&#64;josh &#x68;ttps://evil.example ghp&#95;{KEY} 10&#46;0&#46;0&#46;1"
+    result = dict(LOW, risk="high", findings=[{"file": PATH, "text": text}, {"file": PATH, "text": "&commat;josh see &#35;12"}])
+    _, check, _, app = evaluate(renovate_pr(), artifact(tmp_path, result))
+    body = next(w[2]["body"] for w in app.writes if w[1] == "issues/7/comments")
+    for out in (body, check["output"]["summary"]):
+        shown = html.unescape(out)
+        assert "@josh" not in shown and "evil.example" not in shown and "ghp_" not in shown and "#12" not in shown
+
+
 def test_scrub_keeps_ordinary_findings_readable():
     text = "Breaking: config.yaml drops the auth key in v2.5.9"
     assert review.scrub(text) == text
-    assert "[long value removed]".strip("[]") in review.scrub("digest " + "a" * 64)
+    assert "long value removed" in review.scrub("digest " + "a" * 64)
 
 
 def test_a_hostile_answer_can_forge_no_marker_mention_or_link(tmp_path):
