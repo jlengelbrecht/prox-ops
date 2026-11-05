@@ -18,6 +18,11 @@ spec:
   values:
     global:
       env:
+        # Seeds the Base URL system setting on a rebuilt instance. The setting
+        # is required from 2026.11, and is only filled in while it is empty.
+        - name: AUTHENTIK_WEB__BASE_URL
+          value: https://authentik.homelab0.org
+
         # =============================================================
         # CORE AUTHENTIK SECRETS
         # =============================================================
@@ -215,6 +220,22 @@ spec:
         persistence:
           enabled: true
           existingClaim: data-authentik-postgresql-0  # Use protected PVC
+        # Only the server, the worker and the nightly backup reach Postgres.
+        # The chart default allows 5432 from every pod in the cluster.
+        networkPolicy:
+          allowExternal: false
+          extraIngress:
+            - ports:
+                - port: 5432
+                  protocol: TCP
+              from:
+                - podSelector:
+                    matchLabels:
+                      app.kubernetes.io/instance: authentik
+                      app.kubernetes.io/name: authentik
+                - podSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: authentik-backup
 
     redis:
       enabled: true
