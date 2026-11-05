@@ -1468,15 +1468,34 @@ data:
       labels:
         blueprints.goauthentik.io/description: "Security and admin events to Discord"
     entries:
+      # Generic webhook with a fixed body, not the Slack format: that one copies
+      # the event's context strings into the message, and a failed login's
+      # context holds whatever was typed as the username, sometimes a password.
+      # Only these fields leave Authentik; details stay under Events.
+      - model: authentik_events.notificationwebhookmapping
+        id: mapping-discord-body
+        identifiers:
+          name: discord-security-body
+        attrs:
+          name: discord-security-body
+          expression: |
+            event = notification.event
+            actor = (event.user or {}).get("username", "unknown")
+            model = (event.context.get("model") or {}).get("model_name")
+            target = f" {model}" if model else ""
+            return {
+                "content": f"Authentik `{event.action}`{target} by `{actor}` from `{event.client_ip}`",
+                "allowed_mentions": {"parse": []},
+            }
       - model: authentik_events.notificationtransport
         id: transport-discord
         identifiers:
           name: discord-security
         attrs:
           name: discord-security
-          # Discord accepts Slack's format on the webhook URL plus /slack.
-          mode: webhook_slack
-          webhook_url: !Format ["%s/slack", !Env AUTHENTIK_DISCORD_WEBHOOK_URL]
+          mode: webhook
+          webhook_url: !Env AUTHENTIK_DISCORD_WEBHOOK_URL
+          webhook_mapping_body: !KeyOf mapping-discord-body
           # The rule targets a group; one message per event, not one per member.
           send_once: true
       # Left out on purpose: secret_rotate (the expiring tokens rotate about 80
@@ -1506,7 +1525,7 @@ data:
             ):
                 return True
             if event.action in ("model_created", "model_updated", "model_deleted"):
-                model = event.context.get("model", {}).get("model_name")
+                model = (event.context.get("model") or {}).get("model_name")
                 return model != "useroauthsourceconnection"
             return False
       - model: authentik_events.notificationrule
