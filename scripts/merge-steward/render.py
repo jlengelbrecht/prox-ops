@@ -13,6 +13,8 @@ field. Only these changes may pass:
 - HelmRelease `spec.values`, but only when flux-local rendered that release, so the
   effect of the values is classified object by object
 - OCIRepository `spec.ref.tag`, non-major
+- on the one OCIRepository a policy release exception names: `spec.ref.tag` and
+  `spec.ref.digest`, where a 0.x minor and a prerelease also pass
 - the value of a version label: `app.kubernetes.io/version`, `app.kubernetes.io/managed-by`
   or `helm.sh/chart` on the object, `app.kubernetes.io/version` on a pod template.
   Annotations never pass: external-dns hostnames and Cilium LB IPs live there.
@@ -60,6 +62,9 @@ PRIORITY = ["render", "CRD", "webhook", "removed", "added", "privileged pod spec
             "changed"]
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _SEMVER = re.compile(r"^v?(\d+)\.(\d+)")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_RELEASE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(-)?")
+_RELEASE_FIELDS = (("spec", "ref", "tag"), ("spec", "ref", "digest"))
 _MISSING = object()
 STALE = "the PR merge ref was stale; re-run the render (pull_request_target run)"
 # Labels whose value may change silently. Other labels feed Service and policy selectors.
@@ -187,7 +192,38 @@ def _pod_flag(path, new):
     return None
 
 
-def field_flag(kind, path, old, new, before, after, rendered):
+def _release_exception(before, after, exceptions):
+    """The exception naming this exact object, on both sides of the diff, or None."""
+    for rule in exceptions:
+        want = rule["oci_repository"]
+        if all((doc.get("metadata") or {}).get("namespace") == want["namespace"]
+               and (doc.get("metadata") or {}).get("name") == want["name"]
+               and (doc.get("spec") or {}).get("url") == want["url"] for doc in (before, after)):
+            return rule
+    return None
+
+
+def _release_order(tag):
+    """Sort key for a release tag: a prerelease comes before its final release."""
+    m = _RELEASE.match(str(tag))
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4) is None) if m else None
+
+
+def _release_flag(rule, path, old, new):
+    """Tag and digest of an excepted release: well formed, same major, and not going backwards."""
+    if path[-1] == "digest":
+        return None if all(_DIGEST.fullmatch(str(v)) for v in (old, new)) else "changed"
+    if not all(re.fullmatch(rule["tag_pattern"], str(v)) for v in (old, new)):
+        return "version"
+    a, b = _release_order(old), _release_order(new)
+    if not a or not b:
+        return "version"
+    if a[0] != b[0]:
+        return "major"
+    return "version" if b < a else None
+
+
+def field_flag(kind, path, old, new, before, after, rendered, exceptions=()):
     """None when the change is on the allowlist, else the reason flag."""
     if _metadata_churn(path, old, new):
         return None
@@ -208,6 +244,10 @@ def field_flag(kind, path, old, new, before, after, rendered):
         return _major_change(old, new)
     if kind == "HelmRelease" and path[:2] == ("spec", "values"):
         return None if rendered else "values"
+    if kind == "OCIRepository" and path in _RELEASE_FIELDS:
+        rule = _release_exception(before, after, exceptions)
+        if rule:
+            return _release_flag(rule, path, old, new)
     if kind == "OCIRepository" and path == ("spec", "ref", "tag"):
         return _major_change(old, new)
     if kind == "Cluster" and str((after or {}).get("apiVersion", "")).startswith("postgresql.cnpg.io/"):
@@ -215,7 +255,7 @@ def field_flag(kind, path, old, new, before, after, rendered):
     return KIND_FLAGS.get(kind, "changed")
 
 
-def object_flags(kind, before, after, rendered=False):
+def object_flags(kind, before, after, rendered=False, exceptions=()):
     """Flags for one object. rendered: flux-local rendered this HelmRelease's output."""
     if before is None and after is None:
         return []
@@ -225,7 +265,7 @@ def object_flags(kind, before, after, rendered=False):
         return ["removed"]
     flags = []
     for path, old, new in changes(before, after):
-        flag = field_flag(kind, path, old, new, before, after, rendered)
+        flag = field_flag(kind, path, old, new, before, after, rendered, exceptions)
         if flag:
             flags.append(flag if flag != "changed" else f"changed {'.'.join(map(str, path))[:60]}")
     return flags
@@ -236,8 +276,11 @@ def _rank(flag):
     return PRIORITY.index(flag) if flag in PRIORITY else len(PRIORITY)
 
 
-def classify(*reports):
-    """reports: parsed flux-local JSON lists. Returns (Stage, Counter of changed kinds)."""
+def classify(*reports, exceptions=()):
+    """reports: parsed flux-local JSON lists. Returns (Stage, Counter of changed kinds).
+
+    exceptions: the policy's release_exceptions. Without them no release exception applies.
+    """
     found, counts = [], Counter()
     # HelmReleases whose rendered output flux-local diffed (the helmrelease report).
     rendered = {(r.get("namespace"), r.get("name")) for report in reports for r in report
@@ -252,7 +295,7 @@ def classify(*reports):
                     continue
                 before, after = rebuild(obj["diff"])
                 was_rendered = (obj.get("namespace"), obj["name"]) in rendered
-                found += [(flag, obj) for flag in object_flags(kind, before, after, was_rendered)]
+                found += [(flag, obj) for flag in object_flags(kind, before, after, was_rendered, exceptions)]
     if not found:
         changed = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "no rendered changes"
         return Stage("render", PASS, changed), counts
@@ -263,7 +306,7 @@ def classify(*reports):
     return Stage("render", NEEDS, f"{flag}: {where}{more}"), counts
 
 
-def from_artifact(directory, head_sha):
+def from_artifact(directory, head_sha, exceptions=()):
     """Classify the render job's artifact for head_sha.
 
     Returns None when the artifact belongs to another commit (a newer push superseded
@@ -285,7 +328,7 @@ def from_artifact(directory, head_sha):
         # flux-local writes an empty file, not an empty list, when nothing rendered differently.
         texts = [(Path(directory) / f"{name}.json").read_text() for name in ("helmrelease", "kustomization")]
         reports = [json.loads(text) if text.strip() else [] for text in texts]
-        return classify(*reports)[0]
+        return classify(*reports, exceptions=exceptions)[0]
     except Exception as err:  # fail closed
         return Stage("render", NEEDS, f"render failed ({type(err).__name__})")
 

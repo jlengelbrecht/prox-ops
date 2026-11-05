@@ -1,7 +1,8 @@
 ---
-# Merge steward: posts the `merge-steward` check run (pass, needs-human, or in_progress
-# while a release soaks) on every PR. Only Renovate PRs from this repository can pass;
-# every other PR gets needs-human until a repository admin adds `steward/human-approved`.
+# Merge steward: posts the `merge-steward` check run on every PR. It judges Renovate PRs
+# from this repository: pass, needs-human, or in_progress while a release soaks. A
+# same-repo PR by a person gets success as out of scope. Any other Bot and any fork PR get
+# needs-human.
 # All verdicts come from deterministic rules in scripts/merge-steward/policy.yaml.
 #
 # The evaluate job runs on pull_request_target, status, check_suite, schedule
@@ -58,6 +59,7 @@ jobs:
       github.event_name == 'pull_request_target' &&
       contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
       github.event.pull_request.user.login == 'renovate[bot]' &&
+      github.event.pull_request.user.type == 'Bot' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -204,9 +206,9 @@ jobs:
         github.event.check_suite.head_sha || 'sweep' }}
       cancel-in-progress: false
     permissions:
-      contents: read        # read changed manifests through the API
-      pull-requests: write  # sticky comment and steward/* labels
-      issues: write         # create the steward/* labels and read label events
+      contents: read        # read changed manifests and the branch activity log
+      pull-requests: write  # steward/* labels; read the PR, comments and timeline
+      issues: write         # create the steward/* labels
       checks: read          # read check runs on the head commit
       statuses: read        # read renovate/stability-days and other commit statuses
     steps:
@@ -222,9 +224,11 @@ jobs:
           python-version: '3.15'
       - run: python -m pip install "PyYAML==${PYYAML_VERSION}"
 
-      # The check run is posted by the steward app so its source stays fixed for the
-      # ruleset. The token can only write checks and expires within the hour. A dry run
-      # writes nothing, so it needs no token.
+      # The check run and the sticky comment come from the steward app, so the check's source
+      # stays fixed for the ruleset and only the app can leave an approval record. Labels stay
+      # on the workflow token, so they start no other workflow. Checks covers the check run
+      # and pull requests the comment. The token expires within the hour. A dry run writes
+      # nothing, so it needs no token.
       - name: Generate GitHub App token
         id: app-token
         if: github.event_name != 'workflow_dispatch' || !inputs.dry_run
@@ -233,6 +237,7 @@ jobs:
           app-id: ${{ secrets.STEWARD_APP_ID }}
           private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
           permission-checks: write
+          permission-pull-requests: write
 
       # Only from this run: the artifact the render job above uploaded for this event.
       - name: Download this run's render result

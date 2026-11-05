@@ -8,7 +8,7 @@ import re
 from classify import HOLD, NEEDS, PASS
 
 MARKER = "<!-- merge-steward -->"
-EXPECTED = ("identity", "policy", "checks", "render")
+EXPECTED = ("identity", "commits", "policy", "checks", "render")
 ICON = {PASS: "pass", HOLD: "hold", NEEDS: "needs-human"}
 # Reasons carry package names, paths and check names taken from the PR. Strip markdown and
 # HTML control characters and @ so nothing renders as a link, image, mention or table cell.

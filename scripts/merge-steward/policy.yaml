@@ -6,8 +6,12 @@
 # Package patterns use Renovate's syntax: "/regex/" or an exact name.
 version: 1
 
-# PR authors whose PRs the steward evaluates. Every other author gets needs-human.
+# The Renovate app. Only its PRs from this repository are evaluated. A same-repo PR by a
+# person gets success as out of scope. Any other Bot and any fork PR get needs-human.
 authors: ["renovate[bot]"]
+# GitHub's committer for commits made through its API or web UI. Together with a valid
+# signature, this is what shows a commit did not arrive by plain git push.
+commit_signer: web-flow
 
 base_branch: main
 soak_status: renovate/stability-days
@@ -38,6 +42,24 @@ required_checks_deadline_minutes: 120
 # Update types that may pass when nothing else matches. Everything else (major,
 # replacement, rollback, bump, unknown) is needs-human.
 pass_update_types: [digest, pinDigest, pin, patch, minor]
+
+# Releases that keep merging on required checks, including 0.x minors and prereleases that
+# Renovate marks as breaking. An exception applies only when the PR is that one package in
+# that one file, so anything else in the PR gets the normal verdict. The render stage
+# accepts its tag and digest only on the named object, and only for tags matching
+# tag_pattern. Spektr mirrors the Renovate rule "Auto-merge Spektr release and digest
+# updates after required CI" in .github/renovate.json5: upstream releases are tested once
+# they land in the cluster. test_policy_drift.py keeps the two in step. Majors are not on
+# the list and stay needs-human.
+release_exceptions:
+  - package: ghcr.io/jlengelbrecht/agent-router-base
+    file: kubernetes/apps/ai/agent-router/app/ocirepository.yaml
+    update_types: [digest, patch, minor]
+    tag_pattern: '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+    oci_repository:
+      namespace: ai
+      name: agent-router-base
+      url: oci://ghcr.io/jlengelbrecht/agent-router-base
 
 # Any changed file matching one of these globs gets needs-human.
 protected_paths:
@@ -74,6 +96,11 @@ protected_paths:
 # Packages a human merges. update_types lists the update types that need a human;
 # "all" means every update type.
 manual_packages:
+  # Digest bumps pass every check while the image's build pipeline is broken (#1812).
+  # Remove this rule once that pipeline is fixed.
+  - reason: obsidian-mcp image needs a human until its build pipeline is fixed
+    match: ["ghcr.io/jlengelbrecht/obsidian-mcp"]
+    update_types: all
   - reason: rook-ceph and Ceph are fully manual
     match: ["/rook/", "/ceph/"]
     update_types: all
