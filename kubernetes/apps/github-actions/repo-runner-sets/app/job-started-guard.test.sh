@@ -70,13 +70,32 @@ expect pass pull_request_review_comment "{$base,$same}" "same-repo pull_request_
 
 expect deny pull_request_target "{$base,$same}" "pull_request_target from same repo"
 expect deny pull_request_target "{$base,$fork}" "pull_request_target from fork"
+ic='"action":"created","issue":{"pull_request":{}},"comment":{"author_association":"OWNER","user":{"type":"User","login":"o"}},"sender":{"type":"User"}'
+ic_member='"action":"created","issue":{"pull_request":{}},"comment":{"author_association":"MEMBER","user":{"type":"User","login":"o"}},"sender":{"type":"User"}'
+ic_collab='"action":"created","issue":{"pull_request":{}},"comment":{"author_association":"COLLABORATOR","user":{"type":"User","login":"o"}},"sender":{"type":"User"}'
+ic_none='"action":"created","issue":{"pull_request":{}},"comment":{"author_association":"NONE","user":{"type":"User","login":"o"}},"sender":{"type":"User"}'
+ic_edited='"action":"edited","issue":{"pull_request":{}},"comment":{"author_association":"OWNER","user":{"type":"User","login":"o"}},"sender":{"type":"User"}'
+ic_deleted='"action":"deleted","issue":{"pull_request":{}},"comment":{"author_association":"OWNER","user":{"type":"User","login":"o"}},"sender":{"type":"User"}'
+ic_issue='"action":"created","issue":{},"comment":{"author_association":"OWNER","user":{"type":"User","login":"o"}},"sender":{"type":"User"}'
+ic_botuser='"action":"created","issue":{"pull_request":{}},"comment":{"author_association":"OWNER","user":{"type":"Bot","login":"o"}},"sender":{"type":"User"}'
+ic_botsender='"action":"created","issue":{"pull_request":{}},"comment":{"author_association":"OWNER","user":{"type":"User","login":"o"}},"sender":{"type":"Bot"}'
 export RUNNER_GUARD_ALLOW_PR_TARGET=true
 expect pass pull_request_target "{$base,$same}" "opted-in same-repo pull_request_target"
 expect deny pull_request_target "{$base,$fork}" "opted-in pull_request_target from fork"
 expect deny pull_request_target "{$base,$gone}" "opted-in pull_request_target, deleted fork"
 expect deny pull_request_target "{$base}" "opted-in pull_request_target without pull_request"
 expect deny pull_request "{$base,$fork}" "opt-in does not change fork pull_request"
-expect deny issue_comment "{$base,$same}" "opt-in does not change issue_comment"
+expect deny issue_comment "{$base,$same}" "opt-in alone does not admit a pull_request payload as issue_comment"
+expect pass issue_comment "{$base,$ic}" "opted-in owner comment on a pull request"
+expect deny issue_comment "{$base,$ic_member}" "opted-in comment by a member"
+expect deny issue_comment "{$base,$ic_collab}" "opted-in comment by a collaborator"
+expect deny issue_comment "{$base,$ic_none}" "opted-in comment by a stranger"
+expect deny issue_comment "{$base,$ic_edited}" "opted-in edited comment"
+expect deny issue_comment "{$base,$ic_deleted}" "opted-in deleted comment"
+expect deny issue_comment "{$base,$ic_issue}" "opted-in comment on a plain issue"
+expect deny issue_comment "{$base,$ic_botuser}" "opted-in owner-association comment by a bot account"
+expect deny issue_comment "{$base,$ic_botsender}" "opted-in comment with a bot sender"
+expect deny issue_comment "{$ic}" "opted-in comment without repository"
 expect pass push "{$base}" "opt-in does not change push"
 export RUNNER_GUARD_ALLOW_PR_TARGET=yes
 expect deny pull_request_target "{$base,$same}" "pull_request_target with another opt-in value"
@@ -90,6 +109,10 @@ expect deny workflow_run "{$base,$run_fork}" "workflow_run from a fork head"
 expect deny workflow_run "{$base,$run_gone}" "workflow_run with null head_repository"
 expect deny workflow_run "{$base}" "workflow_run without workflow_run object"
 expect deny issue_comment "{$base,$same}" "issue_comment"
+expect deny issue_comment "{$base,$ic}" "owner comment on a pull request without the opt-in"
+export RUNNER_GUARD_ALLOW_PR_TARGET=yes
+expect deny issue_comment "{$base,$ic}" "owner comment with another opt-in value"
+unset RUNNER_GUARD_ALLOW_PR_TARGET
 expect deny issues "{$base}" "issues"
 expect deny repository_dispatch "{$base}" "repository_dispatch"
 expect deny some_future_event "{$base}" "unknown event"
