@@ -428,7 +428,16 @@ def main(argv=None):
     policy = classify.load_policy(POLICY)
     repo = os.environ["GITHUB_REPOSITORY"]
     gh = GitHub(os.environ["GITHUB_TOKEN"], repo)
-    app_gh = None if args.dry_run else GitHub(os.environ["STEWARD_APP_TOKEN"], repo)
+    app_token = os.environ.get("STEWARD_APP_TOKEN", "")
+    if not args.dry_run and not app_token:
+        # A run started from the workflow as it was before the app token step existed can reach
+        # this code on the new default branch. The advisory comment is optional; a verdict is not.
+        if args.advisory_only:
+            print("::warning::STEWARD_APP_TOKEN is not set; skipping the advisory comment")
+            return 0
+        print("::error::STEWARD_APP_TOKEN is not set; the check run cannot be published", file=sys.stderr)
+        return 1
+    app_gh = None if args.dry_run else GitHub(app_token, repo)
     if args.advisory_only:
         pr = gh.get(f"pulls/{args.pr}")
         if pr["state"] == "open" and review.mode(pr, policy) == review.ADVISORY:
