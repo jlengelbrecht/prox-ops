@@ -53,10 +53,38 @@ def load_policy(path):
         if not rule.get("update_types") or not set(rule["update_types"]) <= set(policy["pass_update_types"]):
             raise ValueError("a release exception may only name update types that can pass")
         re.compile(rule["tag_pattern"])
+    _check_ai(policy.get("ai"))
     for rule in policy["manual_packages"]:
         if rule["update_types"] == "all":
             rule["update_types"] = list(ALL_TYPES)
     return policy
+
+
+def _check_ai(ai):
+    """An unknown value stops the steward rather than giving the AI an unintended role."""
+    if not isinstance(ai, dict) or ai.get("verdict_authority") != "lower_only":
+        raise ValueError("policy key ai.verdict_authority must be lower_only")
+    lowers = ai.get("needs_human_on") or {}
+    risks, recommendations = set(lowers.get("risks") or []), set(lowers.get("recommendations") or [])
+    if not ("high" in risks <= {"low", "medium", "high"}
+            and "changes_required" in recommendations <= {"no_concerns_found", "needs_review", "changes_required"}):
+        raise ValueError("policy key ai.needs_human_on must keep high and changes_required")
+    model = ai.get("model") or {}
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", str(model.get("alias") or "")):
+        raise ValueError("policy key ai.model.alias must be a model name")
+    numbers = ("context_tokens", "max_prompt_tokens", "call_timeout_seconds", "review_timeout_seconds")
+    if set(model) != {"alias", *numbers}:
+        raise ValueError("policy key ai.model must have exactly alias and the four limits")
+    if not all(type(model[k]) is int and model[k] > 0 for k in numbers):
+        raise ValueError("policy key ai.model needs positive token limits and timeouts")
+    if model["max_prompt_tokens"] >= model["context_tokens"] or model["call_timeout_seconds"] > model["review_timeout_seconds"]:
+        raise ValueError("policy key ai.model has limits that cannot work together")
+    scope = ai.get("review_scope") or {}
+    if scope.get("renovate") not in ("verdict", "advisory", "off") or scope.get("same_repo") not in ("advisory", "off"):
+        raise ValueError("policy key ai.review_scope has an unknown value")
+    limits = ai.get("context_chars") or {}
+    if not all(isinstance(limits.get(k), int) and limits[k] > 0 for k in ("render", "evidence", "release_notes")):
+        raise ValueError("policy key ai.context_chars needs render, evidence and release_notes")
 
 
 def glob_match(pattern, path):

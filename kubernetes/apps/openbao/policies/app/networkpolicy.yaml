@@ -3,8 +3,8 @@
 # wide default-deny below covers every other pod). Open here: what the
 # servers need to start, unseal and form a Raft cluster, the web UI through
 # envoy-internal, OIDC login against Authentik, the snapshot job, metrics for
-# Prometheus, External Secrets, the merge gate's evidence worker, and the
-# database engine. Workloads that use
+# Prometheus, External Secrets, Warpgate, the merge gate's evidence worker, and
+# the database engine. Workloads that use
 # Kubernetes auth directly each get an ingress rule in the change that adds
 # them; those going through External Secrets need none. Kubelet probes come
 # from the host and are not subject to this policy.
@@ -59,6 +59,27 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: external-secrets
             app.kubernetes.io/name: external-secrets
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+
+    # The job that rotates Warpgate's Kubernetes target tokens. The service
+    # account comes from the pod's real identity, so a label can't claim it.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: warpgate-tokens
+            io.cilium.k8s.policy.serviceaccount: warpgate-tokens
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+
+    # Warpgate's secret backend, directly, so Envoy doesn't see its traffic.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: access
+            app.kubernetes.io/name: warpgate
       toPorts:
         - ports:
             - port: "8200"
@@ -202,6 +223,39 @@ spec:
     egress: true
   ingress:
     - {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: openbao
+            component: server
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+---
+# The token rotation job: DNS and the OpenBao servers, nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: warpgate-tokens
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: warpgate-tokens
+      io.cilium.k8s.policy.serviceaccount: warpgate-tokens
+  enableDefaultDeny:
+    ingress: true
+    egress: true
   egress:
     - toEndpoints:
         - matchLabels:

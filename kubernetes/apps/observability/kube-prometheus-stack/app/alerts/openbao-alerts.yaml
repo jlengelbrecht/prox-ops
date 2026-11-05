@@ -129,6 +129,27 @@ spec:
             summary: "No successful OpenBao snapshot in over 26 hours"
             description: "The last successful openbao/openbao-snapshots run finished {{ $value | humanizeDuration }} ago. Check the job logs in the openbao namespace."
 
+        # Tokens last 14 days and rotate weekly, so this leaves about 5 days.
+        - alert: OpenBaoWarpgateTokenStale
+          expr: time() - kube_cronjob_status_last_successful_time{namespace="openbao",cronjob="warpgate-tokens"} > 9 * 86400
+          for: 15m
+          labels:
+            severity: warning
+            component: openbao
+          annotations:
+            summary: "Warpgate's Kubernetes target token hasn't rotated in over 9 days"
+            description: "The last successful openbao/warpgate-tokens run finished {{ $value | humanizeDuration }} ago. The k8s-read target stops working when its 14-day token expires. Check the job logs in the openbao namespace."
+
+        - alert: OpenBaoWarpgateTokenMissing
+          expr: absent(kube_cronjob_status_last_successful_time{namespace="openbao",cronjob="warpgate-tokens"})
+          for: 2h
+          labels:
+            severity: warning
+            component: openbao
+          annotations:
+            summary: "Warpgate's token job has no successful run on record"
+            description: "kube-state-metrics reports no last successful time for openbao/warpgate-tokens. The CronJob may be missing, never succeeded, or the Kubernetes auth role warpgate-tokens is not set up (scripts/openbao-configure.sh)."
+
         - alert: OpenBaoBackupMissing
           expr: absent(kube_cronjob_status_last_successful_time{namespace="openbao",cronjob="openbao-snapshots"})
           for: 2h

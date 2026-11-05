@@ -5,7 +5,8 @@
 # gateway or the Cloudflare tunnel.
 #
 # Exposed listeners: HTTPS (admin UI, user portal, HTTP targets) on 443 and
-# SSH on 22. The Kubernetes, MySQL and PostgreSQL listeners are off.
+# SSH on 22, plus the Kubernetes API proxy on 6443 for agents. The MySQL and
+# PostgreSQL listeners are off.
 #
 # State (config, SQLite, SSH host keys, recordings) lives on the `warpgate`
 # PVC (pvc.yaml) and is backed up by the VolSync component. One replica: SQLite
@@ -54,9 +55,28 @@ spec:
                 path: token
                 audience: openbao
                 expirationSeconds: 3600
+      # Private CAs Warpgate must trust: OpenBao's, and the cluster's for
+      # Kubernetes targets. Added to the image's public CAs by SSL_CERT_DIR
+      # (postRenderers below): the chart has no way to set it. Both are public.
+      - name: trust
+        projected:
+          sources:
+            - configMap:
+                name: openbao-ca
+                items:
+                  - key: ca.crt
+                    path: openbao-ca.crt
+            - configMap:
+                name: kube-root-ca.crt
+                items:
+                  - key: ca.crt
+                    path: kubernetes-ca.crt
     volume_mounts:
       - name: openbao-token
         mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+        readOnly: true
+      - name: trust
+        mountPath: /etc/warpgate-trust
         readOnly: true
 
     image:
@@ -124,6 +144,12 @@ spec:
         enable: true
         listen: "0.0.0.0:2222"
         external_port: 22
+      kubernetes:
+        enable: true
+        listen: "0.0.0.0:6443"
+        external_port: 6443
+        certificate: /data/tls.certificate.pem
+        key: /data/tls.key.pem
       log:
         # Retention of session logs and, with them, session recordings:
         # a recording is deleted once its session ended this long ago.
@@ -173,7 +199,7 @@ spec:
       ssh: 2222
       mysql: 0
       pgsql: 0
-      kubernetes: 0
+      kubernetes: 6443
       disableIpV6: true
 
     service:
@@ -186,7 +212,7 @@ spec:
         http: 443
         mysql: 0
         pgsql: 0
-        kubernetes: 0
+        kubernetes: 6443
 
   # The chart has no switch for the service account token. Warpgate gets only
   # the openbao-audience token above, never one for the Kubernetes API.
@@ -200,3 +226,8 @@ spec:
               - op: add
                 path: /spec/template/spec/automountServiceAccountToken
                 value: false
+              - op: add
+                path: /spec/template/spec/containers/0/env/-
+                value:
+                  name: SSL_CERT_DIR
+                  value: /etc/warpgate-trust

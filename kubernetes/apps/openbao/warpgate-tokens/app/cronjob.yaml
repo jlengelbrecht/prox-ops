@@ -1,0 +1,95 @@
+---
+# Weekly rotation of Warpgate's Kubernetes target token. Warpgate can only read
+# KV, so this asks OpenBao's Kubernetes engine for a new token and writes it to
+# kv/warpgate/k8s-read, where the target references it. Warpgate rebuilds its
+# upstream client every 5 minutes, so it picks the new token up by itself.
+#
+# Tokens last 14 days, so one failed run breaks nothing, and the alert
+# OpenBaoWarpgateTokenStale warns first. To revoke one now, delete the account
+# and let Flux recreate it.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: warpgate-tokens
+spec:
+  schedule: "23 9 * * 0"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: warpgate-tokens
+        spec:
+          restartPolicy: Never
+          serviceAccountName: warpgate-tokens
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: rotate
+              # The server image: the bao CLI always matches the servers.
+              image: ghcr.io/jlengelbrecht/openbao-hsm:main@sha256:36795275411dbc244dd8386616ac88c8f945e866183f279568ec0f56148a852e
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  export BAO_ADDR=https://openbao-active.openbao.svc:8200
+                  export BAO_CACERT=/openbao-ca/ca.crt
+
+                  BAO_TOKEN=$(bao write -field=token auth/kubernetes/login \
+                    role=warpgate-tokens jwt=@/var/run/secrets/openbao/token)
+                  export BAO_TOKEN
+                  trap 'bao token revoke -self >/dev/null 2>&1 || true' EXIT
+
+                  k8s_token=$(bao write -field=service_account_token \
+                    kubernetes/creds/warpgate-k8s-read kubernetes_namespace=access)
+                  printf '{"data":{"token":"%s"}}' "$k8s_token" |
+                    bao write kv/data/warpgate/k8s-read - >/dev/null
+                  echo "rotated kv/warpgate/k8s-read"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+              volumeMounts:
+                - name: openbao-ca
+                  mountPath: /openbao-ca
+                  readOnly: true
+                - name: token
+                  mountPath: /var/run/secrets/openbao
+                  readOnly: true
+          volumes:
+            # Only the CA certificate from the server's TLS Secret, not its key.
+            - name: openbao-ca
+              secret:
+                secretName: openbao-server-tls
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+            - name: token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      audience: openbao
+                      expirationSeconds: 600

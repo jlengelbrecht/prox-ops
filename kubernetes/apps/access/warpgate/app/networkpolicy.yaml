@@ -19,7 +19,7 @@ spec:
 ---
 # Warpgate.
 # Ingress: LAN clients only, on the pod's listener ports (the Service maps
-# 443 to 8888 and 22 to 2222). The cluster runs Cilium in DSR mode, so
+# 443 to 8888 and 22 to 2222; 6443 is the Kubernetes API proxy). The cluster runs Cilium in DSR mode, so
 # LoadBalancer traffic keeps the client's source address and is matched by
 # fromCIDR, the same way the Plex policy admits LAN devices. The ranges are
 # the admin LAN (10.20.65.0/24) and the servers VLAN (10.20.66.0/23), not the
@@ -29,7 +29,9 @@ spec:
 # evaluated against the gateway pods behind it: 443 LB port, 10443 pod port)
 # for the OIDC discovery, token and key requests. Nothing else yet. Targets are
 # added with their own egress rules when they are enrolled. envoy-external is
-# deliberately not admitted.
+# deliberately not admitted. OpenBao is reached directly on 8200 (its secret
+# backend), so Envoy doesn't see tokens or target credentials.
+# The Kubernetes API is the upstream of its Kubernetes targets.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -48,6 +50,8 @@ spec:
             - port: "8888"
               protocol: TCP
             - port: "2222"
+              protocol: TCP
+            - port: "6443"
               protocol: TCP
   egress:
     - toEndpoints:
@@ -70,6 +74,23 @@ spec:
               protocol: TCP
             - port: "10443"
               protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: openbao
+            app.kubernetes.io/name: openbao
+            component: server
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+    # 6443: Cilium sees the post-DNAT port of the control plane's listener.
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+
     # SSH targets, one /32 each: MSI-Gaming (Bazzite PC) and devb0x (CachyOS
     # workstation). Each host's firewall accepts SSH only from the node range,
     # which is where Warpgate's traffic leaves from.
