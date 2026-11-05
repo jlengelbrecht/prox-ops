@@ -1,0 +1,181 @@
+---
+# Nightly dump of Authentik's Postgres to the UNAS `proxmox` share (authentik/).
+#
+# This database is the only copy of Authentik's users, applications, flows and
+# policies. It also holds password hashes, OAuth client secrets and signing
+# keys, so the dump is encrypted before it leaves the pod. Two containers keep
+# the jobs apart: `dump` holds the database password and sees only the
+# memory-backed scratch volume; `encrypt` holds no secret and is the only one
+# that mounts the share.
+#
+# Encrypted to the repository's SOPS age recipient, so restoring needs that
+# private key and nothing from this cluster, OpenBao or Authentik.
+# Retention: the newest 7 dumps, plus Sunday dumps for 5 weeks.
+#
+# Pinned to three non-GPU workers, one per Proxmox host, whose IPs are on the
+# share's NFS allowlist (the kubelet mounts the share).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: authentik-backup
+spec:
+  schedule: "17 8 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: authentik-backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values:
+                          - k8s-work-1
+                          - k8s-work-5
+                          - k8s-work-7
+          initContainers:
+            - name: dump
+              # Same major version as the server, so pg_dump can read it.
+              image: docker.io/library/postgres:17.10-bookworm@sha256:b3a8c8424f60a6d1f2ea8e1ec90f76b7779a0bf673568b1072cfadfbe79e783d
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  umask 077
+                  pg_dump --format=custom --file=/dump/authentik.dump --no-password
+                  # A dump that can't list its contents, or lacks the users
+                  # table, must fail the job rather than replace a good one.
+                  pg_restore --list /dump/authentik.dump >/dump/toc
+                  grep -q 'TABLE DATA public authentik_core_user ' /dump/toc
+                  rm -f /dump/toc
+                  echo "dumped $(stat -c %s /dump/authentik.dump) bytes"
+              env:
+                - name: PGHOST
+                  value: authentik-postgresql
+                - name: PGUSER
+                  value: authentik
+                - name: PGDATABASE
+                  value: authentik
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: authentik-secret
+                      key: POSTGRES_PASSWORD
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              volumeMounts:
+                - name: dump
+                  mountPath: /dump
+          containers:
+            - name: encrypt
+              image: ghcr.io/getsops/sops:v3.13.3-alpine@sha256:ae501277bf742f1662e0f881f43dd8fd6798b489a8058e921dbf6cda597140ea
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  umask 077
+                  dir=/backup/authentik
+                  mkdir -p "$dir"
+                  # A killed run (OOM, deadline) skips the trap and leaves a
+                  # partial file that the prune step never lists.
+                  rm -f "${dir:?}"/.authentik-*.dump.sops.tmp
+
+                  ts=$(date -u +%Y%m%dT%H%M%SZ)
+                  tmp="$dir/.authentik-$ts.dump.sops.tmp"
+                  out="$dir/authentik-$ts.dump.sops"
+                  trap 'rm -f "${tmp:?}" /dump/authentik.dump' EXIT
+
+                  sops encrypt --age "$AGE_RECIPIENT" \
+                    --input-type binary --output-type json \
+                    /dump/authentik.dump >"$tmp"
+                  grep -q '"sops"' "$tmp"
+                  mv "$tmp" "$out"
+                  echo "wrote $out ($(stat -c %s "$out") bytes)"
+
+                  # Prune: keep the newest 7, plus Sunday dumps newer than 35
+                  # days. Names sort by time.
+                  now=$(date -u +%s)
+                  n=0
+                  for f in $(ls -1 "$dir" | grep -E '^authentik-[0-9]{8}T[0-9]{6}Z\.dump\.sops$' | sort -r); do
+                    n=$((n + 1))
+                    [ "$n" -le 7 ] && continue
+                    day=${f#authentik-}; day=${day%%T*}
+                    day="$(echo "$day" | cut -c1-4)-$(echo "$day" | cut -c5-6)-$(echo "$day" | cut -c7-8)"
+                    epoch=$(date -u -d "$day" +%s)
+                    if [ "$(date -u -d "$day" +%u)" = 7 ] && [ $((now - epoch)) -lt 3024000 ]; then
+                      continue
+                    fi
+                    echo "pruning $f"
+                    rm -f "${dir:?}/${f:?}"
+                  done
+              env:
+                # Public: see kustomization.yaml.
+                - name: AGE_RECIPIENT
+                  valueFrom:
+                    configMapKeyRef:
+                      name: authentik-backup
+                      key: AGE_RECIPIENT
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              # sops holds the whole file in memory while it encodes it, and
+              # measured about 12 times the file size at its peak. This limit
+              # also covers the memory-backed dump, and suits a dump to about
+              # 150 MB. If this container is OOM-killed, raise it.
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 256Mi
+                limits:
+                  memory: 2Gi
+              volumeMounts:
+                - name: dump
+                  mountPath: /dump
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            # Unencrypted dump: memory only, gone when the pod ends.
+            - name: dump
+              emptyDir:
+                medium: Memory
+                sizeLimit: 256Mi
+            - name: backup
+              persistentVolumeClaim:
+                claimName: authentik-backup-nfs
