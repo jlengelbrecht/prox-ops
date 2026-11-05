@@ -288,6 +288,16 @@ def test_the_summary_alone_is_unchanged_when_nothing_is_inline():
     assert "commented on the changed lines" not in fold.advisory(result, SHA)
 
 
+@pytest.mark.parametrize("separator", ["\x0b", "\x0c", "\x1c", "\x85", " ", " ", "\r"])
+def test_odd_line_separators_inside_a_line_do_not_shift_the_numbers(separator):
+    patch = f"@@ -1,2 +1,3 @@\n a\n+b{separator}c\n+d"
+    assert inline.visible(patch) == {1: "a", 2: f"b{separator}c", 3: "d"}
+
+
+def test_a_trailing_newline_does_not_add_a_line():
+    assert inline.visible("@@ -1,2 +1,2 @@\n a\n+b\n") == {1: "a", 2: "b"}
+
+
 def test_identical_lines_in_different_blocks_are_different_spots():
     patch = "@@ -1,4 +1,4 @@\n a:\n+  enabled: true\n b:\n+  enabled: true"
     file = dict(FILE, patch=patch)

@@ -28,7 +28,9 @@ def visible(patch):
     Added lines and context lines can take a comment; removed lines have no head number.
     """
     lines, number = {}, None
-    for raw in (patch or "").splitlines():
+    # Split on newline only, as git does: str.splitlines also splits on \x0b, \x85,   and
+    # others, which a file line can contain and which would shift every number after it.
+    for raw in (patch or "").removesuffix("\n").split("\n"):
         hunk = _HUNK.match(raw)
         if hunk:
             number = int(hunk.group("new"))
