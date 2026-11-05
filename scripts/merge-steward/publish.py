@@ -10,8 +10,9 @@ from datetime import datetime
 from urllib.parse import quote
 
 from classify import HOLD, NEEDS, PASS
-from fold import MARKER
+from fold import ADVISORY_MARKER, MARKER
 from ghapi import GitHubError
+from review import UNAVAILABLE_LABEL
 
 CHECK_NAME = "merge-steward"
 VERDICT_LABELS = {PASS: "steward/pass", NEEDS: "steward/needs-human", HOLD: "steward/hold"}
@@ -109,6 +110,27 @@ def set_labels(gh, number, current, verdict):
             if err.status != 422:  # 422: the label already exists
                 raise
         gh.post(f"issues/{number}/labels", {"labels": [want]})
+
+
+def set_unavailable_label(gh, number, current, unavailable):
+    """Show that a PR's verdict was reached without its AI review."""
+    if not unavailable:
+        if UNAVAILABLE_LABEL in current:
+            remove_label(gh, number, UNAVAILABLE_LABEL)
+    elif UNAVAILABLE_LABEL not in current:
+        try:
+            gh.post("labels", {"name": UNAVAILABLE_LABEL, "color": "d4c5f9", "description": "Merge steward: no AI review"})
+        except GitHubError as err:
+            if err.status != 422:  # 422: the label already exists
+                raise
+        gh.post(f"issues/{number}/labels", {"labels": [UNAVAILABLE_LABEL]})
+
+
+def upsert_advisory(gh, number, body):
+    """Advisory comments carry no trust and use the workflow token."""
+    mine = [c for c in gh.paginate(f"issues/{number}/comments")
+            if c["body"].startswith(ADVISORY_MARKER) and (c.get("user") or {}).get("login") == LEGACY_COMMENT_AUTHOR]
+    upsert_comment(gh, number, mine[0] if mine else None, body)
 
 
 def find_comments(gh, number, policy):

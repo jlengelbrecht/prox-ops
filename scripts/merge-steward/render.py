@@ -281,6 +281,19 @@ def classify(*reports, exceptions=()):
 
     exceptions: the policy's release_exceptions. Without them no release exception applies.
     """
+    found, counts = _scan(reports, exceptions)
+    if not found:
+        changed = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "no rendered changes"
+        return Stage("render", PASS, changed), counts
+    flag, obj = min(found, key=lambda f: _rank(f[0]))
+    where = f"{obj['kind']} {obj.get('namespace') or '-'}/{obj['name']}"
+    others = len({(f, o["kind"], o["name"]) for f, o in found}) - 1
+    more = f" (+{others} more)" if others else ""
+    return Stage("render", NEEDS, f"{flag}: {where}{more}"), counts
+
+
+def _scan(reports, exceptions=()):
+    """Returns (flags found as (flag, object) pairs, Counter of changed kinds)."""
     found, counts = [], Counter()
     # HelmReleases whose rendered output flux-local diffed (the helmrelease report).
     rendered = {(r.get("namespace"), r.get("name")) for report in reports for r in report
@@ -296,14 +309,7 @@ def classify(*reports, exceptions=()):
                 before, after = rebuild(obj["diff"])
                 was_rendered = (obj.get("namespace"), obj["name"]) in rendered
                 found += [(flag, obj) for flag in object_flags(kind, before, after, was_rendered, exceptions)]
-    if not found:
-        changed = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "no rendered changes"
-        return Stage("render", PASS, changed), counts
-    flag, obj = min(found, key=lambda f: _rank(f[0]))
-    where = f"{obj['kind']} {obj.get('namespace') or '-'}/{obj['name']}"
-    others = len({(f, o["kind"], o["name"]) for f, o in found}) - 1
-    more = f" (+{others} more)" if others else ""
-    return Stage("render", NEEDS, f"{flag}: {where}{more}"), counts
+    return found, counts
 
 
 def from_artifact(directory, head_sha, exceptions=()):
@@ -331,6 +337,17 @@ def from_artifact(directory, head_sha, exceptions=()):
         return classify(*reports, exceptions=exceptions)[0]
     except Exception as err:  # fail closed
         return Stage("render", NEEDS, f"render failed ({type(err).__name__})")
+
+
+def object_lines(directory, exceptions=(), limit=40):
+    """One line per flag found in the artifact, for the AI review's context. Empty on any problem."""
+    try:
+        texts = [(Path(directory) / f"{name}.json").read_text() for name in ("helmrelease", "kustomization")]
+        found, counts = _scan([json.loads(text) if text.strip() else [] for text in texts], exceptions)
+    except Exception:  # the review goes on without it; the verdict comes from the render stage
+        return []
+    lines = [f"flagged: {flag}: {obj['kind']} {obj.get('namespace') or '-'}/{obj['name']}" for flag, obj in found]
+    return lines[:limit] + [f"changed: {n} {k}" for k, n in sorted(counts.items())]
 
 
 def main(argv=None):

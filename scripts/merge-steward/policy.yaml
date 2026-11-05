@@ -20,8 +20,9 @@ override_label: steward/human-approved
 # a render record the steward trusts.
 steward_app_id: 5615799
 
-# Check runs the steward ignores when it reads the head commit: its own check run and job.
-ignore_checks: ["merge-steward", "merge-steward evaluate"]
+# Check runs the steward ignores when it reads the head commit: its own check run and jobs.
+ignore_checks: ["merge-steward", "merge-steward evaluate", "merge-steward review / pr-agent",
+                "merge-steward advisory review / pr-agent", "merge-steward advisory"]
 
 # Check runs that must exist on the head commit, come from the named GitHub App (15368 is
 # GitHub Actions, 46505 GitGuardian) and conclude success: the ruleset's required set. A
@@ -38,6 +39,23 @@ required_checks:
   # The secretless render job in the merge steward workflow.
   - {name: "merge-steward render", app_id: 15368}
 required_checks_deadline_minutes: 120
+
+# AI review. It runs only when the repository variable MERGE_STEWARD_AI is "true".
+ai:
+  # What the AI may decide. lower_only: risk high or recommendation changes_required gives
+  # needs-human, and nothing it says can clear another stage. This is the one setting to
+  # change if the AI's role widens; review.py AUTHORITY defines each value.
+  verdict_authority: lower_only
+  # Which PRs get a review. Fork PRs never do, and no value here changes that.
+  #   verdict:  the result feeds the merge-steward verdict
+  #   advisory: the result is posted as a comment and changes no verdict
+  #   off:      no review
+  review_scope:
+    renovate: verdict      # renovate[bot] from this repository
+    same_repo: advisory    # any other author from this repository (advisory or off)
+  # Upper bounds for the context file, in characters. Their sum stays within
+  # ARTIFACTS__MAX_ARTIFACT_SIZE in merge-steward-review.yaml.
+  context_chars: {render: 3000, evidence: 6000, release_notes: 14000}
 
 # Update types that may pass when nothing else matches. Everything else (major,
 # replacement, rollback, bump, unknown) is needs-human.
