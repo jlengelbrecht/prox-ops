@@ -52,8 +52,8 @@ def ai_lines(result):
     lines = [f"**AI assessment:** risk {clean(result['risk'])}, recommendation {clean(result['recommendation'])}"]
     for row in result["findings"]:
         where = f"{clean(row['file'], 150)}: " if row["file"] else ""
-        lines.append(f"- {where}{clean(row['text'], 320)}")
-    return lines if len(lines) > 1 else lines + ["- No findings given."]
+        lines.append(f"- {where}{clean(row['text'], 420)}")
+    return lines if len(lines) > 1 else lines + ["- The model gave no reasons for this rating, so treat it as unexplained."]
 
 
 def summary(stages, verdict, reason, ai=None):
