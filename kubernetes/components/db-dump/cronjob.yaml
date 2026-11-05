@@ -135,10 +135,11 @@ spec:
               emptyDir:
                 medium: Memory
                 sizeLimit: 4Gi
+            # restic builds its pack files here before writing them out.
             - name: tmp
               emptyDir:
                 medium: Memory
-                sizeLimit: 64Mi
+                sizeLimit: 512Mi
             - name: scripts
               configMap:
                 name: dbdump-scripts
