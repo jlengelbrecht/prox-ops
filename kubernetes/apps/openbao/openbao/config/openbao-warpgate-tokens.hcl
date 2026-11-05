@@ -1,4 +1,4 @@
-# The weekly job that rotates Warpgate's Kubernetes target tokens (Kubernetes
+# The hourly job that rotates Warpgate's Kubernetes target tokens (Kubernetes
 # auth role warpgate-tokens): get a token for one account, store it. Only
 # kubernetes_namespace may be set, so it can't choose the lifetime or audience.
 # Written by scripts/openbao-configure.sh.

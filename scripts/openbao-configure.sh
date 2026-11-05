@@ -255,7 +255,7 @@ jq -n '{
     token_no_default_policy: true}' >"$work/warpgate-role.json"
 bao_write_json auth/kubernetes/role/warpgate "$work/warpgate-role.json"
 
-# The weekly job that rotates Warpgate's Kubernetes target token.
+# The hourly job that rotates Warpgate's Kubernetes target token.
 log "Writing the Kubernetes auth role warpgate-tokens"
 jq -n '{
     bound_service_account_names: ["warpgate-tokens"],
@@ -297,14 +297,14 @@ jq -n '{
     token_max_ttl: "10m"}' >"$work/gate-role.json"
 bao_write_json kubernetes/roles/gate-reader "$work/gate-role.json"
 
-# Warpgate's k8s-read target. 14 days and rotated weekly, so one failed run
-# breaks nothing.
+# Warpgate's k8s-read target. Rotated hourly and short, because a leaked token
+# would skip Warpgate's approval; 4 hours survives 2 failed runs.
 log "Writing the Kubernetes secrets engine role warpgate-k8s-read"
 jq -n '{
     service_account_name: "warpgate-k8s-read",
     allowed_kubernetes_namespaces: ["access"],
-    token_default_ttl: "336h",
-    token_max_ttl: "336h"}' >"$work/warpgate-k8s-role.json"
+    token_default_ttl: "4h",
+    token_max_ttl: "4h"}' >"$work/warpgate-k8s-role.json"
 bao_write_json kubernetes/roles/warpgate-k8s-read "$work/warpgate-k8s-role.json"
 
 # --- database engine --------------------------------------------------------

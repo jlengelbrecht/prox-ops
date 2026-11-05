@@ -1,21 +1,24 @@
 ---
-# Weekly rotation of Warpgate's Kubernetes target token. Warpgate can only read
+# Hourly rotation of Warpgate's Kubernetes target token. Warpgate can only read
 # KV, so this asks OpenBao's Kubernetes engine for a new token and writes it to
 # kv/warpgate/k8s-read, where the target references it. Warpgate rebuilds its
 # upstream client every 5 minutes, so it picks the new token up by itself.
 #
-# Tokens last 14 days, so one failed run breaks nothing, and the alert
-# OpenBaoWarpgateTokenStale warns first. To revoke one now, delete the account
-# and let Flux recreate it.
+# A leaked token would work directly against the Kubernetes API, skipping
+# Warpgate's approval, so tokens last only 4 hours. That survives 2 failed runs.
+# After a third, the token expires as the next run starts, so reads can fail for
+# a few minutes; OpenBaoWarpgateTokenStale fires well before that. Rotating
+# doesn't revoke older tokens: to do that, delete the account and let Flux
+# recreate it.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: warpgate-tokens
 spec:
-  schedule: "23 9 * * 0"
+  schedule: "23 * * * *"
   timeZone: Etc/UTC
   concurrencyPolicy: Forbid
-  startingDeadlineSeconds: 3600
+  startingDeadlineSeconds: 1800
   successfulJobsHistoryLimit: 2
   failedJobsHistoryLimit: 2
   jobTemplate:
