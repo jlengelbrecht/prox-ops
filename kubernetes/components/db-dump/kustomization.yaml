@@ -1,0 +1,34 @@
+---
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# Nightly logical dump of one Postgres server to the UNAS, as a restic
+# repository per server. Logical dumps restore onto a newer major version, which
+# a disk copy can't, so they are also the way back from a failed upgrade.
+#
+# Add to a kustomization with
+#   components: [../../../../components/db-dump]
+# and set these on the Flux Kustomization (spec.postBuild.substitute):
+#   APP                  name of the server; also names every object below
+#   APP_NS               namespace the job and the password Secret live in
+#   DB_HOST              Postgres service name
+#   DB_USER              role that can dump every database listed
+#   DB_SECRET            Secret holding that role's password, in APP_NS
+#   DB_SECRET_KEY        key in that Secret (default password)
+#   DB_SELECTOR_KEY, DB_SELECTOR_VALUE  label on the Postgres pods, for egress
+#   DB_NAMES             databases to dump (default: all that allow connections,
+#                        so a new database is covered without a change here)
+#   DB_SSLMODE           default prefer; require for CNPG
+#   DUMP_SCHEDULE        cron, default 37 7 * * *
+#   DUMP_RESTIC_ITEM     1Password item with field RESTIC_PASSWORD
+#                        (default volsync-restic)
+#
+# The Postgres role and the server's own network policy must admit pods labelled
+# app.kubernetes.io/name: ${APP}-dbdump. Restore steps:
+# .claude/.ai-docs/database/DB_RESTORE_RUNBOOK.md (local).
+resources:
+  - ./configmap.yaml
+  - ./cronjob.yaml
+  - ./externalsecret.yaml
+  - ./networkpolicy.yaml
+  - ./repository-pv.yaml
+  - ./repository-pvc.yaml

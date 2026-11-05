@@ -1,0 +1,67 @@
+---
+# Scripts for the CronJob. Substitution is off so Flux leaves the shell
+# variables alone; the job passes its settings as environment variables.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # No variables here: substitution is off for this object.
+  name: dbdump-scripts
+  annotations:
+    kustomize.toolkit.fluxcd.io/substitute: disabled
+data:
+  dump.sh: |
+    #!/bin/sh
+    set -eu
+    umask 077
+
+    databases=${DB_NAMES:-}
+    if [ -z "$databases" ]; then
+      databases=$(psql -d postgres -Atc \
+        "select datname from pg_database where datallowconn and not datistemplate order by 1")
+    fi
+
+    # Roles without their password hashes: a restore sets those again from
+    # 1Password, and this keeps the hashes out of the repository.
+    pg_dumpall --file=/dump/globals.sql --globals-only --no-role-passwords
+
+    for db in $databases; do
+      file="/dump/$db.dump"
+      pg_dump --format=custom --dbname="$db" --file="$file"
+
+      # A dump that can't list its contents, or has lost the tables, must fail
+      # the job rather than replace a good one.
+      pg_restore --list "$file" >/dump/toc
+      tables=$(psql -d "$db" -Atc \
+        "select count(*) from pg_tables where schemaname not in ('pg_catalog','information_schema')")
+      if [ "$tables" != 0 ]; then
+        grep -q ' TABLE DATA ' /dump/toc
+      fi
+      rm -f /dump/toc
+      echo "$db: $tables tables, $(stat -c %s "$file") bytes"
+    done
+  backup.sh: |
+    #!/bin/sh
+    set -eu
+    umask 077
+
+    restic="restic --no-cache"
+    # Never create the repository here. If it were lost, a new empty one would
+    # turn this job green and hide that every older backup is gone. The first
+    # run sets RESTIC_INIT=true by hand; see the restore runbook.
+    if [ "${RESTIC_INIT:-}" = true ]; then
+      $restic init
+    fi
+    if ! $restic cat config >/dev/null; then
+      echo "repository missing or wrong password" >&2
+      exit 1
+    fi
+
+    cd /dump
+    $restic backup --host "$APP" --tag dbdump .
+
+    # Daily for a week, weekly for 5 weeks, monthly for a quarter.
+    $restic forget --host "$APP" --keep-daily 7 --keep-weekly 5 --keep-monthly 3 --prune
+    $restic check
+    if [ "$(date -u +%u)" = 7 ]; then
+      $restic check --read-data-subset=10%
+    fi

@@ -9,10 +9,12 @@ spec:
     matchLabels:
       app.kubernetes.io/name: litellm-postgres
   ingress:
-    # Allow ingress ONLY from LiteLLM pods
+    # Allow ingress ONLY from LiteLLM pods and the nightly dump
     - fromEndpoints:
         - matchLabels:
             app.kubernetes.io/name: litellm
+        - matchLabels:
+            app.kubernetes.io/name: litellm-postgres-dbdump
       toPorts:
         - ports:
             - port: "5432"
