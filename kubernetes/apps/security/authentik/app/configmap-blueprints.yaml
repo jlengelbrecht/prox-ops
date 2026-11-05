@@ -1341,6 +1341,8 @@ data:
       # in with an app password an administrator creates in authentik and
       # stores in 1Password. Warpgate keys users by email, so each carries an
       # address nobody can receive mail at.
+      # Create-only: an account that already holds one of these usernames, for
+      # example one enrolled through a source, is left alone and never adopted.
       - model: authentik_core.group
         id: group-warpgate-agents-read
         identifiers:
@@ -1351,6 +1353,7 @@ data:
           parents: []
           roles: []
       - model: authentik_core.user
+        state: created
         identifiers:
           username: agent-claude
         attrs:
@@ -1367,6 +1370,7 @@ data:
             goauthentik.io/user/can-change-email: false
             prox-ops/agent-harness: claude
       - model: authentik_core.user
+        state: created
         identifiers:
           username: agent-codex
         attrs:
@@ -1383,6 +1387,7 @@ data:
             goauthentik.io/user/can-change-email: false
             prox-ops/agent-harness: codex
       - model: authentik_core.user
+        state: created
         identifiers:
           username: agent-opencode
         attrs:
