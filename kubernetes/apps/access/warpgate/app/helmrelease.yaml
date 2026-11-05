@@ -54,9 +54,28 @@ spec:
                 path: token
                 audience: openbao
                 expirationSeconds: 3600
+      # Private CAs Warpgate must trust: OpenBao's, and the cluster's for
+      # Kubernetes targets. Added to the image's public CAs by SSL_CERT_DIR
+      # (postRenderers below): the chart has no way to set it. Both are public.
+      - name: trust
+        projected:
+          sources:
+            - configMap:
+                name: openbao-ca
+                items:
+                  - key: ca.crt
+                    path: openbao-ca.crt
+            - configMap:
+                name: kube-root-ca.crt
+                items:
+                  - key: ca.crt
+                    path: kubernetes-ca.crt
     volume_mounts:
       - name: openbao-token
         mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+        readOnly: true
+      - name: trust
+        mountPath: /etc/warpgate-trust
         readOnly: true
 
     image:
@@ -200,3 +219,8 @@ spec:
               - op: add
                 path: /spec/template/spec/automountServiceAccountToken
                 value: false
+              - op: add
+                path: /spec/template/spec/containers/0/env/-
+                value:
+                  name: SSL_CERT_DIR
+                  value: /etc/warpgate-trust

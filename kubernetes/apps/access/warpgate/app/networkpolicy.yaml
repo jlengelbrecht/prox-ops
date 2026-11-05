@@ -29,7 +29,8 @@ spec:
 # evaluated against the gateway pods behind it: 443 LB port, 10443 pod port)
 # for the OIDC discovery, token and key requests. Nothing else yet. Targets are
 # added with their own egress rules when they are enrolled. envoy-external is
-# deliberately not admitted.
+# deliberately not admitted. OpenBao is reached directly on 8200 (its secret
+# backend), so Envoy doesn't see tokens or target credentials.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -69,6 +70,15 @@ spec:
             - port: "443"
               protocol: TCP
             - port: "10443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: openbao
+            app.kubernetes.io/name: openbao
+            component: server
+      toPorts:
+        - ports:
+            - port: "8200"
               protocol: TCP
     # SSH targets, one /32 each: MSI-Gaming (Bazzite PC) and devb0x (CachyOS
     # workstation). Each host's firewall accepts SSH only from the node range,

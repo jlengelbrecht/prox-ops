@@ -3,8 +3,8 @@
 # wide default-deny below covers every other pod). Open here: what the
 # servers need to start, unseal and form a Raft cluster, the web UI through
 # envoy-internal, OIDC login against Authentik, the snapshot job, metrics for
-# Prometheus, External Secrets, the merge gate's evidence worker, and the
-# database engine. Workloads that use
+# Prometheus, External Secrets, Warpgate, the merge gate's evidence worker, and
+# the database engine. Workloads that use
 # Kubernetes auth directly each get an ingress rule in the change that adds
 # them; those going through External Secrets need none. Kubelet probes come
 # from the host and are not subject to this policy.
@@ -59,6 +59,16 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: external-secrets
             app.kubernetes.io/name: external-secrets
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+
+    # Warpgate's secret backend, directly, so Envoy doesn't see its traffic.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: access
+            app.kubernetes.io/name: warpgate
       toPorts:
         - ports:
             - port: "8200"
