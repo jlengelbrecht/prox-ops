@@ -70,6 +70,17 @@ expect pass pull_request_review_comment "{$base,$same}" "same-repo pull_request_
 
 expect deny pull_request_target "{$base,$same}" "pull_request_target from same repo"
 expect deny pull_request_target "{$base,$fork}" "pull_request_target from fork"
+export RUNNER_GUARD_ALLOW_PR_TARGET=true
+expect pass pull_request_target "{$base,$same}" "opted-in same-repo pull_request_target"
+expect deny pull_request_target "{$base,$fork}" "opted-in pull_request_target from fork"
+expect deny pull_request_target "{$base,$gone}" "opted-in pull_request_target, deleted fork"
+expect deny pull_request_target "{$base}" "opted-in pull_request_target without pull_request"
+expect deny pull_request "{$base,$fork}" "opt-in does not change fork pull_request"
+expect deny issue_comment "{$base,$same}" "opt-in does not change issue_comment"
+expect pass push "{$base}" "opt-in does not change push"
+export RUNNER_GUARD_ALLOW_PR_TARGET=yes
+expect deny pull_request_target "{$base,$same}" "pull_request_target with another opt-in value"
+unset RUNNER_GUARD_ALLOW_PR_TARGET
 expect deny pull_request "{$base,$fork}" "fork pull_request"
 expect deny pull_request_review "{$base,$fork}" "fork pull_request_review"
 expect deny pull_request_review_comment "{$base,$fork}" "fork pull_request_review_comment"

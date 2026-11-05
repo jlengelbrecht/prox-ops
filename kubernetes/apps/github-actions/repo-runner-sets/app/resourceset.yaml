@@ -28,6 +28,7 @@
 #               that the runner may resolve and reach on TCP 443. DNS answers
 #               them and a toEndpoints rule admits the gateway pods; see the
 #               comment above resourcesTemplate for why toFQDNs cannot do this.
+#   allowPullRequestTarget  job guard admits same-repo pull_request_target here
 #   litellmDirect
 #               optional boolean. When true the runner may resolve
 #               litellm.ai.svc.cluster.local and reach the LiteLLM pods (ai
@@ -233,6 +234,9 @@ spec:
       # L3/L4 and would reach every internal route. Nothing else internal is
       # allowed; GitHub comes from the template defaults.
       litellmDirect: true
+      # Default-branch review jobs on Renovate and other same-repo PRs run under
+      # pull_request_target. The job guard still refuses forks.
+      allowPullRequestTarget: true
     # Adding a repository is one entry. Only name and repoUrl are required:
     # - name: example-repo
     #   repoUrl: https://github.com/jlengelbrecht/example-repo
@@ -421,6 +425,10 @@ spec:
                   # Fork guard; on a denied event the hook kills Runner.Worker so no later step (including if: always()) runs.
                   - name: ACTIONS_RUNNER_HOOK_JOB_STARTED
                     value: /home/runner/hooks/job-started-guard.sh
+                  <<- if get inputs "allowPullRequestTarget" >>
+                  - name: RUNNER_GUARD_ALLOW_PR_TARGET
+                    value: "true"
+                  <<- end >>
                 securityContext:
                   runAsNonRoot: true
                   runAsUser: 1001
