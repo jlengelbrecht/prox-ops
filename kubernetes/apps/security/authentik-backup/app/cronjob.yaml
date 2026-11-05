@@ -152,12 +152,16 @@ spec:
                 capabilities:
                   drop:
                     - ALL
+              # sops holds the whole file in memory while it encodes it, and
+              # measured about 12 times the file size at its peak. This limit
+              # also covers the memory-backed dump, and suits a dump to about
+              # 150 MB. If this container is OOM-killed, raise it.
               resources:
                 requests:
                   cpu: 50m
-                  memory: 64Mi
+                  memory: 256Mi
                 limits:
-                  memory: 512Mi
+                  memory: 2Gi
               volumeMounts:
                 - name: dump
                   mountPath: /dump

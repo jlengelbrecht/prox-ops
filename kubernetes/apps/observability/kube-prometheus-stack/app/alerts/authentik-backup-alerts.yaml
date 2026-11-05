@@ -1,7 +1,8 @@
 ---
 # The security/authentik-backup CronJob runs daily. These page when no run has
 # succeeded for over a day, because that dump is the only copy of Authentik's
-# users, applications, flows and policies outside the cluster.
+# users, applications, flows and policies outside the cluster. The Missing rule
+# covers a job that has never succeeded, which the Stale rule can't see.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -27,10 +28,11 @@ spec:
 
         - alert: AuthentikBackupMissing
           expr: absent(kube_cronjob_status_last_successful_time{namespace="security",cronjob="authentik-backup"})
-          for: 2h
+          for: 26h
           labels:
-            severity: warning
+            severity: critical
             component: authentik
+            pager: "true"
           annotations:
             summary: "Authentik backup CronJob has no successful run on record"
             description: "kube-state-metrics reports no last successful time for security/authentik-backup. The CronJob may be missing, or it has not succeeded yet."
