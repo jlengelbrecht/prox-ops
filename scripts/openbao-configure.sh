@@ -298,7 +298,7 @@ jq -n '{
 bao_write_json kubernetes/roles/gate-reader "$work/gate-role.json"
 
 # Warpgate's k8s-read target. Rotated hourly and short, because a leaked token
-# would skip Warpgate's approval; 4 hours survives about 3 failed runs.
+# would skip Warpgate's approval; 4 hours survives 2 failed runs.
 log "Writing the Kubernetes secrets engine role warpgate-k8s-read"
 jq -n '{
     service_account_name: "warpgate-k8s-read",

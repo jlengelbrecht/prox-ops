@@ -5,9 +5,11 @@
 # upstream client every 5 minutes, so it picks the new token up by itself.
 #
 # A leaked token would work directly against the Kubernetes API, skipping
-# Warpgate's approval, so tokens last only 4 hours. That survives about 3 failed
-# runs, and the alert OpenBaoWarpgateTokenStale warns first. Rotating doesn't
-# revoke older tokens: to do that, delete the account and let Flux recreate it.
+# Warpgate's approval, so tokens last only 4 hours. That survives 2 failed runs.
+# After a third, the token expires as the next run starts, so reads can fail for
+# a few minutes; OpenBaoWarpgateTokenStale fires well before that. Rotating
+# doesn't revoke older tokens: to do that, delete the account and let Flux
+# recreate it.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
