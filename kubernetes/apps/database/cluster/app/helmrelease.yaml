@@ -41,12 +41,18 @@ spec:
                     className: ceph-block-snapshot-retain
                     snapshotOwnerReference: none
                     online: false
+              # The chart renders the rolling tag from version.postgresql, and
+              # upstream has deprecated that tag family. Hold the image that is
+              # running until the move to a current image.
+              - op: replace
+                path: /spec/imageName
+                value: ghcr.io/cloudnative-pg/postgresql:16@sha256:368c1a13935ff8850d76cfb427d5c29877a74de0531e198a7a683d4cfb97260b
   values:
     # Cluster name
     fullnameOverride: postgres
 
-    # PostgreSQL version - pin major version for stability
-    # Renovate will propose minor/patch updates within 16.x
+    # PostgreSQL major version. The exact image is pinned by digest in the
+    # postRenderers patch above.
     version:
       postgresql: "16"
 
