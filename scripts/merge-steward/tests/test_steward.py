@@ -69,7 +69,7 @@ class FakeGitHub:
 
 def renovate_pr(update="patch", labels=None, login="renovate[bot]"):
     body = f"| Package | Update | Change |\n|---|---|---|\n| louislam/uptime-kuma | {update} | `2.4.0` → `2.4.1` |"
-    return {"number": 7, "state": "open", "title": "fix(container): update uptime-kuma", "body": body,
+    return {"number": 7, "state": "open", "html_url": "https://github.com/o/r/pull/7", "title": "fix(container): update uptime-kuma", "body": body,
             "labels": [{"name": n} for n in (labels or [f"update/{update}"])], "commits": 1, "changed_files": 1,
             "user": {"login": login, "type": "Bot" if login.endswith("[bot]") else "User"},
             "head": {"sha": SHA, "ref": "renovate/uptime-kuma", "repo": {"full_name": "o/r"}},

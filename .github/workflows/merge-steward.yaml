@@ -5,7 +5,7 @@
 # needs-human.
 # Verdicts come from deterministic rules in scripts/merge-steward/policy.yaml. With the
 # repository variable MERGE_STEWARD_AI set to "true", an AI review joins them and can only
-# lower the result (merge-steward-review.yaml). Without it no review runs and nothing waits.
+# lower the result (.github/actions/merge-steward-review). Without it no review runs and nothing waits.
 #
 # The evaluate job runs on pull_request_target, status, check_suite, schedule
 # and workflow_dispatch events, so both this file and the steward code come from the
@@ -176,9 +176,12 @@ jobs:
           retention-days: 3
 
   # The review whose result the evaluate job folds in. Also runs for a manual evaluation,
-  # which is how a PR gets a review after a failed one or after AI was switched on. Keep
-  # the key out of everything but this call and the advisory one below. The login here must
-  # match policy.yaml authors: review.mode expects a review for every author listed there.
+  # which is how a PR gets a review after a failed one or after AI was switched on. The login
+  # here must match policy.yaml authors: review.mode expects a review for every author listed.
+  #
+  # The key lives in its own environment, limited to main, and not in merge-steward. A job
+  # gets every secret of its environment, and this one runs next to hostile input on a
+  # self-hosted runner, so it must not share an environment with the steward app's key.
   review:
     name: merge-steward review
     needs: render
@@ -190,40 +193,72 @@ jobs:
         github.event.pull_request.user.login == 'renovate[bot]' &&
         github.event.pull_request.user.type == 'Bot' &&
         github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: gha-prox-ops-steward
+    # Runner time only; time spent queued for the runner does not count. Keep this above
+    # ai.model.review_timeout_seconds in policy.yaml.
+    timeout-minutes: 20
+    environment: merge-steward-review
+    # A newer push replaces the review of the old one. The group is per PR on purpose: a
+    # GitHub concurrency group holds one pending job and drops the rest, so a shared group
+    # would lose queued reviews. The queue across PRs is the single runner (maxRunners: 1).
+    concurrency:
+      group: merge-steward-review-${{ github.event.pull_request.number || inputs.pr }}
+      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: read
       checks: read
-    uses: ./.github/workflows/merge-steward-review.yaml
-    with:
-      pr: ${{ github.event.pull_request.number || inputs.pr }}
-      sha: ${{ github.event.pull_request.head.sha || '' }}
-      rendered: ${{ needs.render.result == 'success' }}
-    secrets:
-      MERGE_STEWARD_LLM_KEY: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
+    steps:
+      - name: Checkout steward code from the default branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/merge-steward
+            .github/actions/merge-steward-review
+      - uses: ./.github/actions/merge-steward-review
+        with:
+          pr: ${{ github.event.pull_request.number || inputs.pr }}
+          rendered: ${{ needs.render.result == 'success' }}
+          llm-key: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
 
   # Same review for every other same-repo PR, kept apart so that their merge-steward check
-  # does not wait in the review queue. Never for a fork. The token only posts one comment.
+  # does not wait in the review queue. Never for a fork, and not for a draft: these share the
+  # one runner with verdict reviews, so each one delays them.
   advisory-review:
     name: merge-steward advisory review
     if: >-
       vars.MERGE_STEWARD_AI == 'true' &&
       github.event_name == 'pull_request_target' &&
       contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
+      github.event.pull_request.draft == false &&
       github.event.pull_request.user.login != 'renovate[bot]' &&
       github.event.pull_request.head.repo.fork == false &&
       github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: gha-prox-ops-steward
+    timeout-minutes: 20
+    environment: merge-steward-review
+    concurrency:
+      group: merge-steward-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: read
       checks: read
-    uses: ./.github/workflows/merge-steward-review.yaml
-    with:
-      pr: ${{ github.event.pull_request.number }}
-      sha: ${{ github.event.pull_request.head.sha }}
-      rendered: false
-    secrets:
-      MERGE_STEWARD_LLM_KEY: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
+    steps:
+      - name: Checkout steward code from the default branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/merge-steward
+            .github/actions/merge-steward-review
+      - uses: ./.github/actions/merge-steward-review
+        with:
+          pr: ${{ github.event.pull_request.number }}
+          llm-key: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
 
   advisory-publish:
     name: merge-steward advisory
