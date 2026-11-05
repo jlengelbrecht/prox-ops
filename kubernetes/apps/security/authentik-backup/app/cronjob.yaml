@@ -110,6 +110,9 @@ spec:
                   umask 077
                   dir=/backup/authentik
                   mkdir -p "$dir"
+                  # A killed run (OOM, deadline) skips the trap and leaves a
+                  # partial file that the prune step never lists.
+                  rm -f "${dir:?}"/.authentik-*.dump.sops.tmp
 
                   ts=$(date -u +%Y%m%dT%H%M%SZ)
                   tmp="$dir/.authentik-$ts.dump.sops.tmp"
