@@ -164,6 +164,11 @@ def test_the_model_is_set_only_in_the_policy():
         assert model["review_timeout_seconds"] + 120 <= STEWARD[name]["timeout-minutes"] * 60
 
 
+def test_the_prompt_requires_a_reason_for_every_rating():
+    text = AGENT["env"]["PR_REVIEWER__EXTRA_INSTRUCTIONS"]
+    assert "never empty" in text and '"Assessment"' in text and "why that gives your risk_level" in text
+
+
 def test_review_jobs_are_ignored_by_the_checks_stage():
     names = {j["name"] for k, j in STEWARD.items() if k in REVIEW_JOBS + ("advisory-publish",)}
     assert names <= set(POLICY["ignore_checks"])

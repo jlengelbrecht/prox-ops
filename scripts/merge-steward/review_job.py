@@ -42,6 +42,7 @@ def prepare(gh, args, policy):
         text = evidence.read_text(errors="replace") if evidence.is_file() else ""
         lines = render_lines(gh, sha, args.render_dir, policy)
         (out / review.CONTEXT_FILE).write_text(review.context(pr, lines, text, policy))
+        print(json.dumps({"context": review.context_stats(pr, lines, text)}))
         # PR-Agent drops an empty context file without a word.
         assert (out / review.CONTEXT_FILE).stat().st_size > 0
     model = policy["ai"]["model"]  # exactly the validated keys; run, sha and url come last
@@ -52,17 +53,20 @@ def collect(args):
     """Turn PR-Agent's exit status and output into result.json for this commit."""
     out = Path(args.out)
     result = review.unavailable(args.status) if args.status != "ok" else None
+    answer = {}
     if result is None:
         try:
             raw = json.loads((out / review.REVIEW_FILE).read_text())
+            answer = review.shape(raw)
             result = review.result_from_review(raw.get("review") if isinstance(raw, dict) else None)
         except FileNotFoundError:
             result = review.unavailable("no-output")
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             result = review.unavailable("unparseable")
     (out / review.RESULT_FILE).write_text(json.dumps(dict(result, head_sha=args.sha)))
     print(json.dumps({"sha": args.sha[:12], "available": result["available"], "risk": result.get("risk"),
-                      "recommendation": result.get("recommendation"), "reason": result.get("reason")}))
+                      "recommendation": result.get("recommendation"), "reason": result.get("reason"),
+                      "reasons_given": len(result.get("findings") or []), "answer": answer}))
 
 
 def main(argv=None):

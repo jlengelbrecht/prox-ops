@@ -387,6 +387,53 @@ def test_a_finding_outside_the_diff_loses_its_path():
     assert review.result_from_review(review_data, {"other/file.yaml"})["findings"][0]["file"] == "other/file.yaml"
 
 
+BASE = {"risk_level": "medium", "merge_recommendation": "needs_review"}
+
+
+def test_the_reasons_reach_the_comment_and_the_check(tmp_path):
+    answer = {**BASE, "key_issues_to_review": [
+        {"relevant_file": PATH, "issue_header": "Assessment", "issue_content": "Moves app from 1.6 to 1.8. No notes, so behaviour changes are unknown."},
+        {"relevant_file": PATH, "issue_header": "Skew", "issue_content": "Chart label stays at 1.6."}],
+        "failure_modes": [{"what": "Pods crash on a removed flag.", "trigger": "Rollout."}]}
+    result = review.result_from_review(answer, {PATH})
+    _, check, _, app = evaluate(renovate_pr(), artifact(tmp_path, result))
+    posted = next(w[2]["body"] for w in app.writes if w[1] == "issues/7/comments")
+    for text in (posted, check["output"]["summary"]):
+        assert "Assessment: Moves app from 1.6 to 1.8." in text and "Could fail: Pods crash" in text and "Skew" in text
+    assert len(posted.splitlines()) <= 40
+
+
+def test_a_single_mapping_counts_as_one_finding():
+    answer = {**BASE, "key_issues_to_review": {"issue_header": "A", "issue_content": "B"}, "failure_modes": {"what": "C", "trigger": "D"}}
+    assert [r["text"] for r in review.result_from_review(answer)["findings"]] == ["A: B", "Could fail: C Trigger: D"]
+
+
+@pytest.mark.parametrize("value", [None, [], "No", 3, ["text"]])
+def test_other_shapes_give_no_findings_and_no_error(value):
+    answer = {**BASE, "key_issues_to_review": value, "failure_modes": value}
+    assert review.result_from_review(answer)["findings"] == []
+
+
+def test_a_rating_without_reasons_says_so():
+    assert "no reasons" in "\n".join(fold.ai_lines(dict(LOW, findings=[])))
+
+
+def test_shape_reports_counts_and_type_names_only():
+    secret = "SENTINEL text from the model"
+    raw = {"review": {**BASE, "key_issues_to_review": [{"issue_content": secret}], "failure_modes": secret},
+           "usage": {"completion_tokens": 12}}
+    shape = review.shape(raw)
+    assert shape == {"key_issues_to_review": "list:1", "failure_modes": "str", "security_concerns": "missing", "output_tokens": 12}
+    assert "SENTINEL" not in json.dumps(shape)
+    assert review.shape({"review": "x"}) == {"review": "str"} and review.shape([]) == {"review": "missing"}
+
+
+@pytest.mark.parametrize("tokens", ["SENTINEL", {"a": "SENTINEL"}, ["SENTINEL"], 1.5, -1, True, None])
+def test_only_a_plain_token_count_reaches_the_log(tokens):
+    shape = review.shape({"review": BASE, "usage": {"completion_tokens": tokens}})
+    assert shape["output_tokens"] is None and "SENTINEL" not in json.dumps(shape)
+
+
 def test_off_enum_model_output_is_unparseable():
     for bad in ({"risk_level": "LOW!", "merge_recommendation": "needs_review"}, {"risk_level": "low"}, None, [], "x"):
         assert review.result_from_review(bad) == review.unavailable("unparseable")
@@ -455,6 +502,7 @@ def test_context_is_bounded_and_labels_each_source():
     assert text.count("n" * 10) * 10 <= limits["release_notes"] + 10 and text.count("e" * 10) * 10 <= limits["evidence"]
     assert sum(limits.values()) + 500 <= 24000
     assert "None collected" in review.context(renovate_pr(), [], "", POLICY)
+    assert review.NO_NOTES in review.context(renovate_pr(), [], "", POLICY)
 
 
 def job_args(tmp, **kw):
@@ -478,6 +526,39 @@ def test_prepare_outputs_cannot_be_overridden_by_the_model_block(tmp_path):
     assert set(outputs) == {"alias", "context_tokens", "max_prompt_tokens", "call_timeout_seconds",
                             "review_timeout_seconds", "run", "sha", "url"}
     assert outputs["run"] in ("true", "false") and outputs["sha"] == SHA
+
+
+def test_prepare_logs_sizes_and_no_content(tmp_path, capsys):
+    body = "### Release Notes\nSENTINEL notes\n"
+    gh = FakeGitHub(routes(dict(renovate_pr(), body=body)))
+    (tmp_path / "evidence.md").write_text("SENTINEL evidence")
+    review_job.prepare(gh, job_args(tmp_path), POLICY)
+    out = capsys.readouterr().out
+    assert "SENTINEL" not in out
+    stats = json.loads(out)["context"]
+    assert set(stats) == {"render_lines", "release_notes_chars", "evidence_chars"}
+    assert all(type(v) is int for v in stats.values())
+    assert stats["release_notes_chars"] == len("SENTINEL notes") and stats["evidence_chars"] == len("SENTINEL evidence")
+
+
+def test_collect_logs_the_answers_shape_and_no_content(tmp_path, capsys):
+    (tmp_path / "review.json").write_text(json.dumps({"review": {**BASE, "key_issues_to_review": [
+        {"relevant_file": PATH, "issue_header": "Assessment", "issue_content": "SENTINEL"}]}}))
+    review_job.collect(job_args(tmp_path, sha=SHA, status="ok"))
+    out = capsys.readouterr().out
+    assert "SENTINEL" not in out
+    line = json.loads(out)
+    assert line["reasons_given"] == 1 and line["answer"]["key_issues_to_review"] == "list:1"
+    assert set(line) == {"sha", "available", "risk", "recommendation", "reason", "reasons_given", "answer"}
+    assert set(line["answer"]) == {"key_issues_to_review", "failure_modes", "security_concerns", "output_tokens"}
+    fixed = re.compile(r"missing|list:\d+|dict|str|int|float|bool")
+    assert all(v is None or isinstance(v, int) or fixed.fullmatch(v) for v in line["answer"].values())
+
+
+def test_collect_leaves_a_result_for_an_answer_too_deep_to_read(tmp_path):
+    (tmp_path / "review.json").write_text('{"review":' + "[" * 200000 + "]" * 200000 + "}")
+    review_job.collect(job_args(tmp_path, sha=SHA, status="ok"))
+    assert review.from_artifact(tmp_path, SHA, None)["available"] is False
 
 
 def test_prepare_skips_forks_closed_prs_and_superseded_commits(tmp_path):
