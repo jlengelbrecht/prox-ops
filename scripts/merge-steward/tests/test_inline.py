@@ -286,3 +286,13 @@ def test_the_summary_alone_is_unchanged_when_nothing_is_inline():
     result = dict(LOW, findings=[{"file": "f", "text": "Bug: x."}])
     assert fold.advisory(result, SHA) == fold.advisory(result, SHA, ())
     assert "commented on the changed lines" not in fold.advisory(result, SHA)
+
+
+def test_identical_lines_in_different_blocks_are_different_spots():
+    patch = "@@ -1,4 +1,4 @@\n a:\n+  enabled: true\n b:\n+  enabled: true"
+    file = dict(FILE, patch=patch)
+    first = inline.anchors([ASSESSMENT, finding(2)], [file])[0]["key"]
+    second = inline.anchors([ASSESSMENT, finding(4)], [file])[0]["key"]
+    assert first != second
+    both = inline.anchors([ASSESSMENT, finding(2), finding(4)], [file])
+    assert len(both) == 2

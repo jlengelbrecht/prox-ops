@@ -40,13 +40,15 @@ def visible(patch):
     return lines
 
 
-def key(path, texts):
+def key(path, texts, occurrence=0):
     """Identity of a comment: the file and the code it sits on, not the model's wording.
 
     A rerun words the same finding differently and a rebase moves it to another line number,
     but the code under it stays, so this is what stops a second comment on the same spot.
+    occurrence counts the identical lines above it in the diff, so the same text in another
+    block (enabled: true) is another spot.
     """
-    material = "\0".join([path] + [t.strip() for t in texts])
+    material = "\0".join([path, str(occurrence)] + [t.strip() for t in texts])
     return hashlib.sha256(material.encode()).hexdigest()[:24]
 
 
@@ -68,7 +70,8 @@ def anchors(findings, files):
             end = start
         if start not in shown:
             continue
-        digest = key(row["file"], [shown[n] for n in range(start, end + 1)])
+        above = sum(1 for n, text in shown.items() if n < start and text.strip() == shown[start].strip())
+        digest = key(row["file"], [shown[n] for n in range(start, end + 1)], above)
         if digest in seen:
             continue
         seen.add(digest)
