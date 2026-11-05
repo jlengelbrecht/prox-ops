@@ -219,11 +219,12 @@ spec:
       runnerImage: ghcr.io/jlengelbrecht/runner-afk@sha256:27b639562ff2ee3d669a366b283bd95a3913eaeac7ee63bb6e24bce04ae15297
     - name: prox-ops-steward
       repoUrl: https://github.com/jlengelbrecht/prox-ops
-      # Review runners for the Renovate PR steward. One PR-Agent review is a
-      # few model calls against a single-slot local model, so two runners are
-      # plenty. Separate from the cattle/pets scale set in ../../gha-runner-scale-set.
+      # Review runners for the merge steward. The local model has one slot, so
+      # one runner is the review queue: other jobs wait for it instead of
+      # timing out at the model. Separate from the cattle/pets scale set in
+      # ../../gha-runner-scale-set.
       minRunners: 0
-      maxRunners: 2
+      maxRunners: 1
       # Built by the private runner-images repository and pinned by digest:
       # runner plus pr-agent, flux-local, helm and flux.
       runnerImage: ghcr.io/jlengelbrecht/runner-steward@sha256:8c692169ae301ccd8ee35b39e3017b451e42f83a10c55b7984cacb403eecb7b0
