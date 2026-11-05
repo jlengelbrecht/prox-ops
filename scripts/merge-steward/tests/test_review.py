@@ -451,21 +451,44 @@ def advisory(pr, tmp, result=LOW, dry_run=False):
     return gh, app
 
 
+def summary_write(clients):
+    """The advisory summary write: (client name, method, path, body) from either client."""
+    for name, client in clients.items():
+        for method, path, body in client.writes:
+            if path.startswith("issues/") and "comments" in path and "body" in str(body or ""):
+                return name, method, path, body
+    return None
+
+
 def test_a_same_repo_pr_gets_an_advisory_comment_and_no_verdict_change(tmp_path):
     result = dict(LOW, risk="high", recommendation="changes_required", findings=[{"file": PATH, "text": "Bug: x."}])
     gh, app = advisory(renovate_pr(login="someone"), tmp_path, result)
-    body = next(w[2]["body"] for w in gh.writes if w[1] == "issues/7/comments")
-    assert body.startswith(fold.ADVISORY_MARKER) and "risk high" in body and "does not affect any check" in body
+    name, method, path, body = summary_write({"gh": gh, "app": app})
+    assert (name, method, path) == ("app", "POST", "issues/7/comments")  # the app, never the workflow token
+    assert body["body"].startswith(fold.ADVISORY_MARKER) and "risk high" in body["body"] and "does not affect any check" in body["body"]
+    assert not [w for w in gh.writes if "comments" in w[1]]
     check = next(w[2] for w in app.writes if w[1] == "check-runs")
     assert check["conclusion"] == "success" and "not a Renovate PR" in check["output"]["title"]
 
 
 def test_the_advisory_comment_is_updated_not_repeated(tmp_path):
     pr = renovate_pr(login="someone")
+    mine = {"id": 9, "body": fold.ADVISORY_MARKER + "\nold", "user": {"login": "homebot-bouncer[bot]"},
+            "performed_via_github_app": {"id": POLICY["steward_app_id"]}}
+    gh, app = FakeGitHub(routes(pr, comments=[mine])), FakeGitHub({})
+    steward.evaluate(gh, app, pr, POLICY, 0, False, None, None, True, artifact(tmp_path))
+    assert any(w[0] == "PATCH" and w[1] == "issues/comments/9" for w in app.writes)
+    assert not any(w[1] == "issues/7/comments" for w in app.writes)
+
+
+def test_the_workflow_token_comment_is_replaced_by_the_apps(tmp_path):
+    pr = renovate_pr(login="someone")
     old = {"id": 9, "body": fold.ADVISORY_MARKER + "\nold", "user": {"login": "github-actions[bot]"}}
     gh, app = FakeGitHub(routes(pr, comments=[old])), FakeGitHub({})
     steward.evaluate(gh, app, pr, POLICY, 0, False, None, None, True, artifact(tmp_path))
-    assert any(w[0] == "PATCH" and w[1] == "issues/comments/9" for w in gh.writes)
+    assert ("POST", "issues/7/comments") in [(w[0], w[1]) for w in app.writes]
+    assert ("DELETE", "issues/comments/9", None) in app.writes
+    assert all(w[1].startswith("issues/7/labels") for w in gh.writes)
 
 
 def test_an_advisory_comment_from_anyone_else_is_not_touched(tmp_path):
@@ -473,18 +496,18 @@ def test_an_advisory_comment_from_anyone_else_is_not_touched(tmp_path):
     forged = {"id": 9, "body": fold.ADVISORY_MARKER, "user": {"login": "someone"}}
     gh, app = FakeGitHub(routes(pr, comments=[forged])), FakeGitHub({})
     steward.evaluate(gh, app, pr, POLICY, 0, False, None, None, True, artifact(tmp_path))
-    assert not any(w[1] == "issues/comments/9" for w in gh.writes)
+    assert not any(w[1] == "issues/comments/9" for w in gh.writes + app.writes)
 
 
 def test_a_failed_advisory_review_stays_quiet(tmp_path):
-    gh, _ = advisory(renovate_pr(login="someone"), tmp_path, review.unavailable("timeout"))
-    assert not any(w[1] == "issues/7/comments" for w in gh.writes)
+    gh, app = advisory(renovate_pr(login="someone"), tmp_path, review.unavailable("timeout"))
+    assert not any("comments" in w[1] for w in gh.writes + app.writes)
 
 
 def test_a_fork_gets_no_comment_and_no_llm_stage_even_with_a_result_present(tmp_path):
     pr = fork(renovate_pr(login="someone"))
     gh, app = advisory(pr, tmp_path)
-    assert not any(w[1] == "issues/7/comments" for w in gh.writes)
+    assert not any(fold.ADVISORY_MARKER in str(w[2]) or "pulls/7/comments" in w[1] for w in gh.writes + app.writes)
     assert "llm" not in next(w[2] for w in app.writes if w[1] == "check-runs")["output"]["summary"]
 
 

@@ -96,7 +96,7 @@ PERSON_ON_TOP = [push(SHA, "owner", "push", "2026-11-04T11:30:00Z"), push(EARLIE
 
 
 def routes(pr, runs=None, statuses=None, timeline=None, permission="admin", content="kind: Deployment\n",
-           files=None, comments=None, commits=None, activity=None, renovate_files=None):
+           files=None, comments=None, commits=None, activity=None, renovate_files=None, line_comments=None):
     return {
         "pulls/7": pr,
         "pulls/7/commits": commits or [OWN_COMMIT],
@@ -111,6 +111,7 @@ def routes(pr, runs=None, statuses=None, timeline=None, permission="admin", cont
         "issues/7/timeline": timeline if timeline is not None else [COMMIT_EVENT],
         "collaborators/": permission if isinstance(permission, Exception) else {"permission": permission},
         "issues/7/comments": comments or [],
+        "pulls/7/comments": line_comments or [],
     }
 
 

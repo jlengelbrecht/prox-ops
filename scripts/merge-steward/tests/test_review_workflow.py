@@ -188,3 +188,20 @@ def test_the_reuse_check_holds_no_secret_and_only_a_failure_free_output_skips_th
 def test_review_jobs_are_ignored_by_the_checks_stage():
     names = {j["name"] for k, j in STEWARD.items() if k in REVIEW_JOBS + ("advisory-publish", "review-gate")}
     assert names <= set(POLICY["ignore_checks"])
+
+
+def test_the_advisory_comments_come_from_the_app_through_the_steward_environment():
+    job = STEWARD["advisory-publish"]
+    assert job["environment"] == "merge-steward"
+    assert set(job["permissions"].values()) == {"read"}  # the workflow token only reads
+    token = next(s for s in job["steps"] if s.get("id") == "app-token")
+    assert token["uses"].startswith("actions/create-github-app-token@")
+    assert {k for k in token["with"] if k.startswith("permission-")} == {"permission-pull-requests"}
+    assert token["with"]["permission-pull-requests"] == "write"
+    post = next(s for s in job["steps"] if s.get("name") == "Post the advisory review")
+    assert post["env"]["STEWARD_APP_TOKEN"] == "${{ steps.app-token.outputs.token }}"
+    assert "${{" not in post["run"] and "--advisory-only" in post["run"]
+    # No PR code: only default-branch steward code is checked out.
+    for step in job["steps"]:
+        if "actions/checkout" in step.get("uses", ""):
+            assert "default_branch" in step["with"]["ref"] and step["with"]["persist-credentials"] is False

@@ -19,6 +19,7 @@ from urllib.parse import quote
 import checks
 import classify
 import fold
+import inline
 import publish
 import render
 import review
@@ -172,8 +173,12 @@ def llm_stage(gh, pr, files, policy, review_dir, age_minutes):
     return Stage("llm", HOLD, review.WAITING), None
 
 
-def post_advisory(gh, pr, review_dir, dry_run):
-    """Post a review that changes no verdict. A failed review stays quiet."""
+def post_advisory(gh, app_gh, pr, review_dir, policy, dry_run):
+    """Post a review that changes no verdict. A failed review stays quiet.
+
+    gh reads and app_gh writes, so the comments come from the steward app. Findings that sit on
+    a changed line go on that line; the summary keeps the rating and the rest.
+    """
     number, sha = pr["number"], pr["head"]["sha"]
     try:
         files = gh.paginate(f"pulls/{number}/files")
@@ -181,9 +186,20 @@ def post_advisory(gh, pr, review_dir, dry_run):
         if not result or not result["available"]:
             print(f"PR #{number}: no advisory review to post", file=sys.stderr)
         elif not dry_run:
-            publish.upsert_advisory(gh, number, fold.advisory(result, sha))
+            if gh.get(f"pulls/{number}")["head"]["sha"] != sha:
+                print(f"PR #{number}: head moved; leaving the advisory review to the newer run", file=sys.stderr)
+                return
+            placed = set()
+            try:
+                anchored = inline.anchors(result["findings"], files)
+                placed = publish.post_inline(gh, app_gh, number, sha, anchored, result["findings"], policy)
+            except GitHubError as err:  # the summary below still carries every finding
+                print(f"PR #{number}: inline comments failed: {err}", file=sys.stderr)
+            publish.upsert_advisory(gh, app_gh, number, fold.advisory(result, sha, placed), policy)
     except GitHubError as err:  # advisory: the PR's verdict must not depend on this comment
         print(f"PR #{number}: advisory comment failed: {err}", file=sys.stderr)
+    except Exception as err:  # evaluate calls this before it publishes the verdict; never let it stop that
+        print(f"PR #{number}: advisory comment failed: {type(err).__name__}", file=sys.stderr)
 
 
 def commit_stage(gh, pr, files, policy, age_minutes):
@@ -330,7 +346,7 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
              ai_enabled=False, review_dir=None):
     ai_mode = review.mode(pr, policy) if ai_enabled else review.OFF
     if ai_mode == review.ADVISORY and review_dir:
-        post_advisory(gh, pr, review_dir, dry_run)
+        post_advisory(gh, app_gh, pr, review_dir, policy, dry_run)
     if classify.out_of_scope(pr, policy):
         return publish_out_of_scope(gh, app_gh, pr, policy, dry_run)
     number, sha = pr["number"], pr["head"]["sha"]
@@ -412,12 +428,12 @@ def main(argv=None):
     policy = classify.load_policy(POLICY)
     repo = os.environ["GITHUB_REPOSITORY"]
     gh = GitHub(os.environ["GITHUB_TOKEN"], repo)
+    app_gh = None if args.dry_run else GitHub(os.environ["STEWARD_APP_TOKEN"], repo)
     if args.advisory_only:
         pr = gh.get(f"pulls/{args.pr}")
         if pr["state"] == "open" and review.mode(pr, policy) == review.ADVISORY:
-            post_advisory(gh, pr, args.review_dir, args.dry_run)
+            post_advisory(gh, app_gh, pr, args.review_dir, policy, args.dry_run)
         return 0
-    app_gh = None if args.dry_run else GitHub(os.environ["STEWARD_APP_TOKEN"], repo)
     # Off until the variable says otherwise: with AI on, a PR without a review is needs-human.
     ai_enabled = os.environ.get("MERGE_STEWARD_AI") == "true"
     if args.pr:

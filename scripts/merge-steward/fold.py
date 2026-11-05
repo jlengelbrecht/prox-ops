@@ -45,14 +45,22 @@ def fold(stages, override=None, expected=EXPECTED):
     return PASS, "all stages passed"
 
 
-def ai_lines(result):
-    """The AI's assessment as markdown. Its text was scrubbed by review.py."""
+def ai_lines(result, inline=()):
+    """The AI's assessment as markdown. Its text was scrubbed by review.py.
+
+    inline holds the positions of findings already posted on the diff; they are counted, not
+    repeated.
+    """
     if not result or not result.get("available"):
         return []
     lines = [f"**AI assessment:** risk {clean(result['risk'])}, recommendation {clean(result['recommendation'])}"]
-    for row in result["findings"]:
+    for position, row in enumerate(result["findings"]):
+        if position in inline:
+            continue
         where = f"{clean(row['file'], 150)}: " if row["file"] else ""
         lines.append(f"- {where}{clean(row['text'], 1000)}")
+    if inline:
+        lines.append(f"- {len(inline)} finding{'s' if len(inline) != 1 else ''} commented on the changed lines.")
     if len(lines) == 1:
         lines.append("- The model gave no reasons for this rating, so treat it as unexplained.")
     if result.get("reused_from"):
@@ -78,7 +86,7 @@ def comment(stages, verdict, reason, sha, override_label, ai=None):
     return "\n".join(body)
 
 
-def advisory(result, sha):
+def advisory(result, sha, inline=()):
     """The comment for a PR whose review changes no verdict."""
-    return "\n".join([ADVISORY_MARKER, "### AI review (advisory)", ""] + ai_lines(result) + [
+    return "\n".join([ADVISORY_MARKER, "### AI review (advisory)", ""] + ai_lines(result, inline) + [
         "", f"Reviewed commit `{sha[:12]}`. This comment does not affect any check."])

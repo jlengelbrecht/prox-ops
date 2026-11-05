@@ -304,15 +304,19 @@ jobs:
           pr: ${{ github.event.pull_request.number }}
           llm-key: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
 
+  # Posts the advisory review as the steward app, like the verdict comment: the summary comment
+  # and a comment on each changed line a finding points at. Nothing here runs PR code, and the
+  # job reads the PR only through the API. The environment only admits runs from main.
   advisory-publish:
     name: merge-steward advisory
     needs: advisory-review
     if: needs.advisory-review.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: merge-steward
     permissions:
       contents: read
-      pull-requests: write  # the advisory comment
+      pull-requests: read  # the workflow token only reads; the app writes
     steps:
       - name: Checkout steward code from the default branch
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -324,6 +328,15 @@ jobs:
         with:
           python-version: '3.15'
       - run: python -m pip install "PyYAML==${PYYAML_VERSION}"
+      # Pull requests covers the summary comment and the comments on lines. The token expires
+      # within the hour.
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.STEWARD_APP_ID }}
+          private-key: ${{ secrets.STEWARD_APP_PRIVATE_KEY }}
+          permission-pull-requests: write
       # Absent when the policy turned this PR's review off, or PR-Agent wrote nothing.
       - name: Download the review result
         continue-on-error: true
@@ -334,6 +347,7 @@ jobs:
       - name: Post the advisory review
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          STEWARD_APP_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python scripts/merge-steward/steward.py --pr "$PR_NUMBER" --advisory-only --review-dir "$RUNNER_TEMP/review"
 
