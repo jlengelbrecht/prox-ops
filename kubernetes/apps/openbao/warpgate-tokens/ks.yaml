@@ -1,0 +1,29 @@
+---
+# Rotates the service account tokens Warpgate's Kubernetes targets use.
+# dependsOn namespaces are the dependency's own CR namespace
+# (openbao/kustomization.yaml moves every CR in this tree into openbao).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app openbao-warpgate-tokens
+  namespace: flux-system
+spec:
+  targetNamespace: openbao
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: openbao
+      namespace: openbao
+    - name: openbao-policies
+      namespace: openbao
+  interval: 1h
+  retryInterval: 2m
+  timeout: 5m
+  path: ./kubernetes/apps/openbao/warpgate-tokens/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

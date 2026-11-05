@@ -64,6 +64,17 @@ spec:
             - port: "8200"
               protocol: TCP
 
+    # The job that rotates Warpgate's Kubernetes target tokens. The service
+    # account comes from the pod's real identity, so a label can't claim it.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: warpgate-tokens
+            io.cilium.k8s.policy.serviceaccount: warpgate-tokens
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+
     # Warpgate's secret backend, directly, so Envoy doesn't see its traffic.
     - fromEndpoints:
         - matchLabels:
@@ -212,6 +223,39 @@ spec:
     egress: true
   ingress:
     - {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: openbao
+            component: server
+      toPorts:
+        - ports:
+            - port: "8200"
+              protocol: TCP
+---
+# The token rotation job: DNS and the OpenBao servers, nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: warpgate-tokens
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: warpgate-tokens
+      io.cilium.k8s.policy.serviceaccount: warpgate-tokens
+  enableDefaultDeny:
+    ingress: true
+    egress: true
   egress:
     - toEndpoints:
         - matchLabels:

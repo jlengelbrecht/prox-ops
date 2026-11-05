@@ -133,7 +133,7 @@ if [[ $mode == revoke ]]; then
 fi
 
 # --- policies -------------------------------------------------------------
-for p in openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db openbao-gate openbao-warpgate; do
+for p in openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db openbao-gate openbao-warpgate openbao-warpgate-tokens; do
   log "Writing policy $p"
   payload=$POLICY_DIR/$p.hcl bao policy write "$p" - >/dev/null
 done
@@ -255,6 +255,18 @@ jq -n '{
     token_no_default_policy: true}' >"$work/warpgate-role.json"
 bao_write_json auth/kubernetes/role/warpgate "$work/warpgate-role.json"
 
+# The weekly job that rotates Warpgate's Kubernetes target token.
+log "Writing the Kubernetes auth role warpgate-tokens"
+jq -n '{
+    bound_service_account_names: ["warpgate-tokens"],
+    bound_service_account_namespaces: ["openbao"],
+    audience: "openbao",
+    token_policies: ["openbao-warpgate-tokens"],
+    token_ttl: "10m",
+    token_max_ttl: "10m",
+    token_no_default_policy: true}' >"$work/warpgate-tokens-role.json"
+bao_write_json auth/kubernetes/role/warpgate-tokens "$work/warpgate-tokens-role.json"
+
 kv_mount=$(bao_json secrets list | jq -c '."kv/" // empty')
 if [[ -z $kv_mount ]]; then
   log "Enabling the KV v2 secrets engine at kv/"
@@ -284,6 +296,16 @@ jq -n '{
     token_default_ttl: "10m",
     token_max_ttl: "10m"}' >"$work/gate-role.json"
 bao_write_json kubernetes/roles/gate-reader "$work/gate-role.json"
+
+# Warpgate's k8s-read target. 14 days and rotated weekly, so one failed run
+# breaks nothing.
+log "Writing the Kubernetes secrets engine role warpgate-k8s-read"
+jq -n '{
+    service_account_name: "warpgate-k8s-read",
+    allowed_kubernetes_namespaces: ["access"],
+    token_default_ttl: "336h",
+    token_max_ttl: "336h"}' >"$work/warpgate-k8s-role.json"
+bao_write_json kubernetes/roles/warpgate-k8s-read "$work/warpgate-k8s-role.json"
 
 # --- database engine --------------------------------------------------------
 # Writing the static role the first time rotates the password at once, so
