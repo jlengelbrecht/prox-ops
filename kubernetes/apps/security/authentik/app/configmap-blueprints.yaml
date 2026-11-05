@@ -1454,3 +1454,117 @@ data:
         attrs:
           policy: !Find [authentik_policies_expression.expressionpolicy, [name, deny-ungranted-ai-browser-test]]
           enabled: true
+
+  # =============================================================
+  # NOTIFICATIONS BLUEPRINT
+  # Sends security and admin events to Discord. Its own file for the same
+  # reason as Warpgate's: the webhook comes from a 1Password-backed Secret, and
+  # a failure here leaves every other blueprint alone.
+  # =============================================================
+  notifications.yaml: |
+    version: 1
+    metadata:
+      name: Notifications
+      labels:
+        blueprints.goauthentik.io/description: "Security and admin events to Discord"
+    entries:
+      # On a rebuilt instance the rule needs the admin group to exist. Without
+      # this it applies with no group and never sends.
+      - model: authentik_blueprints.metaapplyblueprint
+        attrs:
+          identifiers:
+            path: system/bootstrap.yaml
+          required: false
+      # Generic webhook with a fixed body, not the Slack format: that one copies
+      # the event's context strings into the message, and a failed login's
+      # context holds whatever was typed as the username, sometimes a password.
+      # Only these fields leave Authentik; details stay under Events. After
+      # rotating the webhook, run ak apply_blueprint: a restart alone keeps the
+      # old URL stored on the transport.
+      - model: authentik_events.notificationwebhookmapping
+        id: mapping-discord-body
+        identifiers:
+          name: discord-security-body
+        attrs:
+          name: discord-security-body
+          expression: |
+            # Discord renders markdown, and an account holder can choose a
+            # username, so strip what could end a code span or add a line.
+            def safe(value):
+                cleaned = "".join(c for c in str(value) if c not in "`[]()*_~|\\<>\n\r\t")
+                return cleaned[:100] or "unknown"
+
+            event = notification.event
+            actor = safe((event.user or {}).get("username", "unknown"))
+            model = (event.context.get("model") or {}).get("model_name")
+            target = f" {model}" if model else ""
+            return {
+                "content": f"Authentik `{event.action}`{target} in `{event.app}` by `{actor}` from `{event.client_ip}`",
+                "allowed_mentions": {"parse": []},
+            }
+      - model: authentik_events.notificationtransport
+        id: transport-discord
+        identifiers:
+          name: discord-security
+        attrs:
+          name: discord-security
+          mode: webhook
+          webhook_url: !Env AUTHENTIK_DISCORD_WEBHOOK_URL
+          webhook_mapping_body: !KeyOf mapping-discord-body
+          # The rule targets a group; one message per event, not one per member.
+          send_once: true
+      # Left out on purpose: secret_rotate (the expiring tokens rotate about 80
+      # times a day), login and authorize_application (normal use),
+      # login_failed and suspicious_request (anyone can trigger them, and a burst
+      # on this shared webhook could rate-limit Alertmanager's alerts), and
+      # property_mapping_exception
+      # (a failing body mapping would raise it again on every send).
+      # Plex's source task logs a configuration_error each run while its token
+      # is invalid; it still shows in the in-app inbox. Remove the app check
+      # once that source is re-authenticated.
+      # useroauthsourceconnection changes on every Entra login. Blueprints
+      # don't raise model_* events, so those mean a change outside Git.
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-discord-events
+        identifiers:
+          name: discord-security-events
+        attrs:
+          name: discord-security-events
+          expression: |
+            event = request.context.get("event")
+            if event is None:
+                return False
+            if event.action == "configuration_error":
+                return event.app != "authentik.sources.plex.tasks"
+            if event.action in (
+                "system_exception",
+                "system_task_exception",
+                "policy_exception",
+                "password_set",
+                "impersonation_started",
+                "impersonation_ended",
+            ):
+                return True
+            if event.action in ("model_created", "model_deleted"):
+                return True
+            if event.action == "model_updated":
+                model = (event.context.get("model") or {}).get("model_name")
+                return model != "useroauthsourceconnection"
+            return False
+      - model: authentik_events.notificationrule
+        id: rule-discord-events
+        identifiers:
+          name: discord-security-events
+        attrs:
+          name: discord-security-events
+          severity: alert
+          destination_group: !Find [authentik_core.group, [name, "authentik Admins"]]
+          transports:
+            - !KeyOf transport-discord
+      - model: authentik_policies.policybinding
+        identifiers:
+          target: !KeyOf rule-discord-events
+          order: 0
+        attrs:
+          policy: !KeyOf policy-discord-events
+          enabled: true

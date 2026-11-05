@@ -113,6 +113,14 @@ spec:
               name: authentik-openbao
               key: AUTHENTIK_OPENBAO_CLIENT_SECRET
               optional: true
+        # Discord webhook (notifications.yaml). optional, as for Warpgate: only
+        # that blueprint fails while the Secret doesn't exist.
+        - name: AUTHENTIK_DISCORD_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: authentik-discord
+              key: AUTHENTIK_DISCORD_WEBHOOK_URL
+              optional: true
 
         # =============================================================
         # SOURCE CREDENTIALS
@@ -163,7 +171,7 @@ spec:
     server:
       replicas: 1
       podAnnotations:
-        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao"
+        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao,authentik-discord"
       resources:
         requests:
           cpu: 100m
@@ -188,7 +196,7 @@ spec:
     worker:
       replicas: 1
       podAnnotations:
-        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao"
+        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao,authentik-discord"
         configmap.reloader.stakater.com/reload: "authentik-blueprints"
       # No CPU limit: startup blueprint and outpost work was throttled hard enough
       # under a 500m limit that `ak healthcheck` missed its 3s timeout and the
