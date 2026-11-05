@@ -1,0 +1,13 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ./nfs-pv.yaml
+  - ./nfs-pvc.yaml
+  - ./cronjob.yaml
+configMapGenerator:
+  # Public: the same recipient as .sops.yaml. Kept here because Gitleaks allows
+  # age recipients in this file and flags them in others.
+  - name: authentik-backup
+    literals:
+      - AGE_RECIPIENT=age1metxlry78wefrmm5ny2zjavtucsmdvw2r3ctexu6h05ak4x2vc7qa02drd
