@@ -39,7 +39,7 @@ spec:
             severity: warning
           annotations:
             summary: Hindsight is behind on saving memories
-            description: '{{ $value | printf "%.0f" }} memory saves are waiting and none finished in the last 10 minutes. Nothing is down, but new memories arrive late.'
+            description: Memory saves are waiting and none finished in the last 10 minutes. Nothing is down, but new memories arrive late.
             action: Check the hindsight-api worker logs for timed-out or stuck retain jobs.
         - alert: HindsightMetricSeriesGrowth
           expr: count({__name__=~"hindsight_.*",namespace="ai",service="hindsight-api"}) > 4000
