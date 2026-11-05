@@ -1,6 +1,6 @@
 ---
 # Warpgate's Kubernetes target k8s-read, for coding agents checking their own
-# rollouts, with Josh approving each session. No pod runs as this account: its
+# rollouts, with no approval step. No pod runs as this account: its
 # token is issued by OpenBao and rotated by kubernetes/apps/openbao/warpgate-tokens.
 apiVersion: v1
 kind: ServiceAccount
@@ -11,7 +11,7 @@ automountServiceAccountToken: false
 ---
 # Read workloads, their status, events and logs. No Secrets or ConfigMaps, no
 # exec, attach or port-forward. Warpgate records responses, and pod logs can
-# hold sensitive values, which is why this target needs approval.
+# hold sensitive values, which is why agents reach this role only through it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

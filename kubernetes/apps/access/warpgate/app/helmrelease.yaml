@@ -178,6 +178,31 @@ spec:
             admin_role_mappings:
               warpgate-admins: warpgate-admin
               warpgate-approvers: warpgate-approver
+        # Agent harnesses present an authentik ID token as a bearer to the
+        # Kubernetes listener. Warpgate matches tokens to providers by issuer,
+        # and authentik gives each provider its own, so agents need this entry.
+        # It has no admin mappings and exists only for that check: the login
+        # page shows a button for it, which fails because the authentik
+        # provider has no authorization_code grant. Warpgate never sends the
+        # client secret during bearer verification, so it holds no real value.
+        - name: authentik-agents
+          label: Agents only
+          auto_create_users: true
+          provider:
+            type: custom
+            client_id: warpgate-agents
+            client_secret: unused
+            issuer_url: https://authentik.homelab0.org/application/o/warpgate-agents/
+            scopes:
+              - openid
+              - email
+              - profile
+              - groups
+            roles_claim: groups
+            role_mappings:
+              warpgate-agents-read: agent-read
+          kubernetes:
+            client_id: warpgate-agents
 
     # The wildcard-capable certificate for access.homelab0.org (cert-manager,
     # ../../certificates), copied to /data/tls.*.pem at start.
