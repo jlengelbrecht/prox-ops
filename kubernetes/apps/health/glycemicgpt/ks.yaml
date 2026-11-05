@@ -25,3 +25,42 @@ spec:
     namespace: flux-system
   targetNamespace: health
   wait: false
+---
+# Inputs of kubernetes/components/db-dump. GlycemicGPT is now Lumose; new objects
+# use that name, and DB_* names stay until the database itself moves. Superuser
+# access is off on this cluster, so this dumps as the database owner. It has its
+# own restic password because these are medical records.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: lumose-dump
+  namespace: flux-system
+spec:
+  targetNamespace: health
+  path: ./kubernetes/apps/health/glycemicgpt/dump
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  dependsOn:
+    - name: glycemicgpt
+    - name: external-secrets-operator
+      namespace: flux-system
+  postBuild:
+    substitute:
+      APP: lumose
+      APP_NS: health
+      DB_HOST: glycemicgpt-db-rw
+      DB_USER: glycemicgpt
+      DB_SECRET: glycemicgpt-db-app
+      DB_NAMES: glycemicgpt
+      DB_SSLMODE: require
+      DB_SELECTOR_KEY: cnpg.io/cluster
+      DB_SELECTOR_VALUE: glycemicgpt-db
+      DUMP_RESTIC_ITEM: lumose-dbdump
+      DUMP_SCHEDULE: "7 */6 * * *"
