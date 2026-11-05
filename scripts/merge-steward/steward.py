@@ -19,6 +19,7 @@ from urllib.parse import quote
 import checks
 import classify
 import fold
+import ghapi
 import inline
 import publish
 import render
@@ -37,6 +38,11 @@ _RENDER = re.compile(r"^<!-- merge-steward-render sha=(?P<sha>[0-9a-f]{40}) verd
 RENDER_WAITING = "render not evaluated yet"
 # Activity entries that put a commit on a branch.
 PUSH_TYPES = ("push", "force_push", "branch_creation")
+# The advisory job has 10 minutes in all, so it waits less for the rate limit than evaluate does.
+ADVISORY_RETRY_BUDGET = 100
+# The reason of the pending check a run leaves when GitHub would not let it read the PR. Sweeps
+# look for it, so a head that was held for this reason is evaluated again.
+RATE_LIMITED = "GitHub rate limit reached; the next run evaluates this commit again"
 
 
 class Superseded(Exception):
@@ -379,7 +385,12 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
         print(f"PR #{number}: head moved while waiting; leaving it to the newer run", file=sys.stderr)
         return None
     except Exception as err:  # fail closed on any error, without echoing response bodies
-        verdict, reason = NEEDS, f"steward error ({type(err).__name__}); a human must review"
+        if isinstance(err, GitHubError) and err.rate_limited:
+            # Not an answer about the PR: GitHub would not let this run read it. The check shows
+            # as pending, never as a pass, and the next sweep or event evaluates the head again.
+            verdict, reason = HOLD, RATE_LIMITED
+        else:
+            verdict, reason = NEEDS, f"steward error ({type(err).__name__}); a human must review"
         detail = str(err) if isinstance(err, GitHubError) else type(err).__name__
         print(f"PR #{number}: evaluation error: {detail}", file=sys.stderr)
     # Keep the render result (from this run's artifact or an earlier record) with the check run.
@@ -410,6 +421,27 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
     return verdict
 
 
+def lacks_verdict(gh, sha, policy):
+    """True when the head has no merge-steward check from the app, or only the rate-limit hold."""
+    newest = next(iter(steward_runs(gh, sha, policy)), None)
+    return newest is None or (newest.get("output") or {}).get("title") == RATE_LIMITED
+
+
+def sweep_candidates(gh, policy, missing_only):
+    """The open PRs a sweep evaluates, as listed (the list carries the author and the head).
+
+    A Renovate PR is evaluated every full sweep. Any other PR, and every PR in a missing-only
+    sweep, is evaluated only when its head has no merge-steward check from the steward app, or
+    only the pending check a rate-limited run leaves: that is what blocks the required check.
+    """
+    found = []
+    for listed in gh.paginate("pulls?state=open"):
+        renovate = (listed.get("user") or {}).get("login") in policy["authors"]
+        if (renovate and not missing_only) or lacks_verdict(gh, listed["head"]["sha"], policy):
+            found.append(listed)
+    return found
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     target = parser.add_mutually_exclusive_group(required=True)
@@ -422,12 +454,15 @@ def main(argv=None):
     parser.add_argument("--render-dir", help="this run's render artifact (pull request events)")
     parser.add_argument("--review-dir", help="this run's AI review result (pull request events)")
     parser.add_argument("--advisory-only", action="store_true", help="post the review in --review-dir and stop")
+    parser.add_argument("--missing-only", action="store_true",
+                        help="with --sweep: only the open PRs whose head has no merge-steward check yet")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     policy = classify.load_policy(POLICY)
     repo = os.environ["GITHUB_REPOSITORY"]
-    gh = GitHub(os.environ["GITHUB_TOKEN"], repo)
+    budget = ADVISORY_RETRY_BUDGET if args.advisory_only else ghapi.DEFAULT_BUDGET
+    workflow_gh = GitHub(os.environ["GITHUB_TOKEN"], repo, retry_budget=budget)
     app_token = os.environ.get("STEWARD_APP_TOKEN", "")
     if not args.dry_run and not app_token:
         # A run started from the workflow as it was before the app token step existed can reach
@@ -437,7 +472,10 @@ def main(argv=None):
             return 0
         print("::error::STEWARD_APP_TOKEN is not set; the check run cannot be published", file=sys.stderr)
         return 1
-    app_gh = None if args.dry_run else GitHub(app_token, repo)
+    app_gh = None if args.dry_run else GitHub(app_token, repo, retry_budget=budget)
+    # Reads the app's permissions cover use the app's own rate limit, which a burst of runs on
+    # the workflow token cannot exhaust. Labels and everything else stay on the workflow token.
+    gh = ghapi.SplitGitHub(workflow_gh, app_gh)
     if args.advisory_only:
         pr = gh.get(f"pulls/{args.pr}")
         if pr["state"] == "open" and review.mode(pr, policy) == review.ADVISORY:
@@ -445,14 +483,20 @@ def main(argv=None):
         return 0
     # Off until the variable says otherwise: with AI on, a PR without a review is needs-human.
     ai_enabled = os.environ.get("MERGE_STEWARD_AI") == "true"
-    if args.pr:
-        prs = [gh.get(f"pulls/{args.pr}")]
-    elif args.sha:
-        prs = [p for p in gh.get(f"commits/{args.sha}/pulls") if p["head"]["sha"] == args.sha]
-        prs = [gh.get(f"pulls/{p['number']}") for p in prs]
-    else:
-        prs = [gh.get(f"pulls/{p['number']}") for p in gh.paginate("pulls?state=open")
-               if (p.get("user") or {}).get("login") in policy["authors"]]
+    try:
+        if args.pr:
+            prs = [gh.get(f"pulls/{args.pr}")]
+        elif args.sha:
+            prs = [p for p in gh.get(f"commits/{args.sha}/pulls") if p["head"]["sha"] == args.sha]
+            prs = [gh.get(f"pulls/{p['number']}") for p in prs]
+        else:
+            prs = [gh.get(f"pulls/{p['number']}") for p in sweep_candidates(gh, policy, args.missing_only)]
+    except GitHubError as err:
+        # Nothing was evaluated, so no check was published and nothing passed. The sweeps that run
+        # every half hour evaluate any open PR whose head has no check, so this does not stay missing.
+        print(f"could not read the pull requests to evaluate ({err}); a later event or sweep evaluates them",
+              file=sys.stderr)
+        return 1
     failures = 0
     for pr in prs:
         if pr["state"] != "open":

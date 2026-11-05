@@ -39,6 +39,8 @@ FILES = [{"filename": "kubernetes/apps/observability/uptime-kuma/app/helmrelease
 
 
 class FakeGitHub:
+    repo, api = "o/r", "https://api.github.com"
+
     def __init__(self, routes):
         self.routes, self.writes, self.reads = routes, [], []
 
@@ -598,8 +600,10 @@ def test_main_sha_evaluates_only_open_prs_on_that_head(monkeypatch, capsys):
 
 def test_main_sweep_skips_other_authors(monkeypatch, capsys):
     gh = FakeGitHub(routes(renovate_pr()))
-    gh.routes["pulls"] = [{"number": 7, "user": {"login": "renovate[bot]"}}, {"number": 9, "user": {"login": "someone"}},
-                          {"number": 10, "user": None}]
+    head = {"sha": SHA}
+    gh.routes["pulls"] = [{"number": 7, "user": {"login": "renovate[bot]"}, "head": head},
+                          {"number": 9, "user": {"login": "someone"}, "head": head},
+                          {"number": 10, "user": None, "head": head}]
     fake_env(monkeypatch, gh)
     assert steward.main(["--sweep", "--dry-run"]) == 0
     assert [json.loads(l)["pr"] for l in capsys.readouterr().out.splitlines()] == [7]
