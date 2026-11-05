@@ -27,7 +27,7 @@ spec:
             action: "Check that job's logs. A dump failure is in the dump container, a repository failure in backup."
 
         - alert: DatabaseDumpMissing
-          expr: absent(kube_cronjob_status_last_successful_time{namespace="database",cronjob="postgres-dbdump"}) or absent(kube_cronjob_status_last_successful_time{namespace="ai",cronjob="litellm-postgres-dbdump"}) or absent(kube_cronjob_status_last_successful_time{namespace="media",cronjob="bookstack-mariadb-dbdump"})
+          expr: absent(kube_cronjob_status_last_successful_time{namespace="database",cronjob="postgres-dbdump"}) or absent(kube_cronjob_status_last_successful_time{namespace="ai",cronjob="litellm-postgres-dbdump"}) or absent(kube_cronjob_status_last_successful_time{namespace="media",cronjob="bookstack-mariadb-dbdump"}) or absent(kube_cronjob_status_last_successful_time{namespace="health",cronjob="lumose-dbdump"})
           for: 26h
           labels:
             severity: critical
@@ -35,4 +35,4 @@ spec:
           annotations:
             summary: "Database backup job has no successful run on record"
             description: "A database backup job has never succeeded, or the job is gone."
-            action: "Check the CronJobs named *-dbdump in the database, ai and media namespaces."
+            action: "Check the CronJobs named *-dbdump in the database, ai, media and health namespaces."
