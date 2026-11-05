@@ -1,0 +1,35 @@
+---
+# DNS and this server's Postgres, nothing else. The repository needs no network
+# from the pod: the kubelet mounts the NFS share on the host.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ${APP}-dbdump
+  namespace: ${APP_NS}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: ${APP}-dbdump
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  ingress:
+    - {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            ${DB_SELECTOR_KEY}: ${DB_SELECTOR_VALUE}
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP

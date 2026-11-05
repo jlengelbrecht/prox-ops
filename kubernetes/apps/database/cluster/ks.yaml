@@ -23,3 +23,37 @@ spec:
     - name: cloudnative-pg-operator
     - name: 1password-connect
       namespace: flux-system
+---
+# Inputs of kubernetes/components/db-dump.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: postgres-cluster-dump
+  namespace: flux-system
+spec:
+  targetNamespace: database
+  path: ./kubernetes/apps/database/cluster/dump
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  dependsOn:
+    - name: postgres-cluster
+    - name: external-secrets-operator
+      namespace: flux-system
+  postBuild:
+    substitute:
+      APP: postgres
+      APP_NS: database
+      DB_HOST: postgres-rw
+      DB_USER: postgres
+      DB_SECRET: postgres-superuser
+      DB_SSLMODE: require
+      DB_SELECTOR_KEY: cnpg.io/cluster
+      DB_SELECTOR_VALUE: postgres
+      DUMP_SCHEDULE: "37 7 * * *"

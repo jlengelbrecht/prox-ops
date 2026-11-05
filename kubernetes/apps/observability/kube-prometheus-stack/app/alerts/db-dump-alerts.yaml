@@ -1,0 +1,38 @@
+---
+# Every kubernetes/components/db-dump job runs at least daily. These page when no
+# run has succeeded for over a day, because those dumps are the only copy of
+# these databases outside Ceph. The Missing rule covers a job that has never
+# succeeded, which the Stale rule can't see; add new servers to its list.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: db-dump-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: db-dump-alerts
+      rules:
+        - alert: DatabaseDumpStale
+          expr: time() - kube_cronjob_status_last_successful_time{cronjob=~".+-dbdump"} > 26 * 3600
+          for: 15m
+          labels:
+            severity: critical
+            pager: "true"
+          annotations:
+            summary: "Database backup hasn't succeeded in over 26 hours"
+            description: "{{ $labels.namespace }}/{{ $labels.cronjob }} last succeeded {{ $value | humanizeDuration }} ago, so its newest copy off Ceph is getting old."
+            action: "Check that job's logs. A dump failure is in the dump container, a repository failure in backup."
+
+        - alert: DatabaseDumpMissing
+          expr: absent(kube_cronjob_status_last_successful_time{namespace="database",cronjob="postgres-dbdump"}) or absent(kube_cronjob_status_last_successful_time{namespace="ai",cronjob="litellm-postgres-dbdump"})
+          for: 26h
+          labels:
+            severity: critical
+            pager: "true"
+          annotations:
+            summary: "Database backup job has no successful run on record"
+            description: "A database backup job has never succeeded, or the job is gone."
+            action: "Check the CronJobs named *-dbdump in the database and ai namespaces."
