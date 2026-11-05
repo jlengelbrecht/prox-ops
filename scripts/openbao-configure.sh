@@ -2,8 +2,10 @@
 # Sets up OpenBao after init: the admin and reader policies, OIDC login
 # through authentik (groups openbao-admins / openbao-readers), the
 # Kubernetes auth method, the snapshot job's role, the database engine with the
-# Zabbix login, and the Kubernetes secrets engine for the merge gate. Safe to run again: every step is an upsert. Only the first
-# run writes the Zabbix static role, and that rotates Zabbix's password at once.
+# Zabbix login, the Kubernetes secrets engine for the merge gate, and KV and a
+# login for Warpgate's secret backend. Safe to run again: every step is an
+# upsert. Only the first run writes the Zabbix static role, and that rotates
+# Zabbix's password at once.
 #
 # Needs the 1Password item Automation/openbao-oidc (field oidc-client-secret,
 # the same value authentik's OpenBao provider uses) and the authentik
@@ -131,7 +133,7 @@ if [[ $mode == revoke ]]; then
 fi
 
 # --- policies -------------------------------------------------------------
-for p in openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db openbao-gate; do
+for p in openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db openbao-gate openbao-warpgate; do
   log "Writing policy $p"
   payload=$POLICY_DIR/$p.hcl bao policy write "$p" - >/dev/null
 done
@@ -238,6 +240,28 @@ jq -n '{
     token_max_ttl: "10m",
     token_no_default_policy: true}' >"$work/gate-auth-role.json"
 bao_write_json auth/kubernetes/role/merge-evidence "$work/gate-auth-role.json"
+
+# Warpgate's secret backend: its service account only, target credentials
+# under kv/warpgate. Warpgate's own secrets stay in 1Password. It renews this
+# token itself, so the TTL is longer than the other roles'.
+log "Writing the Kubernetes auth role warpgate"
+jq -n '{
+    bound_service_account_names: ["warpgate"],
+    bound_service_account_namespaces: ["access"],
+    audience: "openbao",
+    token_policies: ["openbao-warpgate"],
+    token_ttl: "1h",
+    token_max_ttl: "24h",
+    token_no_default_policy: true}' >"$work/warpgate-role.json"
+bao_write_json auth/kubernetes/role/warpgate "$work/warpgate-role.json"
+
+kv_mount=$(bao_json secrets list | jq -c '."kv/" // empty')
+if [[ -z $kv_mount ]]; then
+  log "Enabling the KV v2 secrets engine at kv/"
+  bao secrets enable -path=kv -version=2 -description="static credentials, read per path" kv >/dev/null
+elif [[ $(jq -r '"\(.type) \(.options.version // "1")"' <<<"$kv_mount") != "kv 2" ]]; then
+  die "kv/ is mounted, but it is not KV version 2; Warpgate can't read it"
+fi
 
 # --- Kubernetes secrets engine ----------------------------------------------
 # Short gate-reader tokens, one namespace per request. service_account_name mode

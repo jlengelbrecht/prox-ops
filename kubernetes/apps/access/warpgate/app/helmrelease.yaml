@@ -42,6 +42,23 @@ spec:
   values:
     replicaCount: 1
 
+    # Warpgate logs in to OpenBao with this token (secret backend, Kubernetes
+    # auth). It reads the default path, and the pod has no automounted token.
+    # The audience is openbao, so the token is useless against the Kubernetes
+    # API. Kubelet rotates it, and Warpgate re-reads it on every login.
+    volumes:
+      - name: openbao-token
+        projected:
+          sources:
+            - serviceAccountToken:
+                path: token
+                audience: openbao
+                expirationSeconds: 3600
+    volume_mounts:
+      - name: openbao-token
+        mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+        readOnly: true
+
     image:
       repository: ghcr.io/warp-tech/warpgate
       # Warpgate 0.30.3 includes the fixes of the 0.30.0 and 0.30.1 security
@@ -171,8 +188,8 @@ spec:
         pgsql: 0
         kubernetes: 0
 
-  # The chart has no switch for the service account token, and Warpgate does
-  # not talk to the Kubernetes API (the Kubernetes listener is off).
+  # The chart has no switch for the service account token. Warpgate gets only
+  # the openbao-audience token above, never one for the Kubernetes API.
   postRenderers:
     - kustomize:
         patches:
