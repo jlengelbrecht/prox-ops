@@ -1,6 +1,7 @@
 """Fold stage results into one verdict and render the check summary and PR comment.
 
-The default verdict is needs-human. Pass needs every expected stage to pass.
+The default verdict is needs-human. Pass needs every expected stage to pass, so a stage
+can only ever lower the result. That includes the AI stage.
 """
 
 import re
@@ -8,6 +9,7 @@ import re
 from classify import HOLD, NEEDS, PASS
 
 MARKER = "<!-- merge-steward -->"
+ADVISORY_MARKER = "<!-- merge-steward-review -->"
 EXPECTED = ("identity", "commits", "policy", "checks", "render")
 ICON = {PASS: "pass", HOLD: "hold", NEEDS: "needs-human"}
 # Reasons carry package names, paths and check names taken from the PR. Strip markdown and
@@ -39,18 +41,36 @@ def fold(stages, override=None):
     return PASS, "all stages passed"
 
 
-def summary(stages, verdict, reason):
+def ai_lines(result):
+    """The AI's assessment as markdown. Its text was scrubbed by review.py."""
+    if not result or not result.get("available"):
+        return []
+    lines = [f"**AI assessment:** risk {clean(result['risk'])}, recommendation {clean(result['recommendation'])}"]
+    for row in result["findings"]:
+        where = f"{clean(row['file'], 150)}: " if row["file"] else ""
+        lines.append(f"- {where}{clean(row['text'], 320)}")
+    return lines if len(lines) > 1 else lines + ["- No findings given."]
+
+
+def summary(stages, verdict, reason, ai=None):
     lines = [f"**Verdict:** {ICON[verdict]} ({clean(reason)})", "", "| Stage | Result | Reason |", "|---|---|---|"]
     for stage in stages:
         lines.append(f"| {stage.name} | {ICON.get(stage.verdict, 'unknown')} | {clean(stage.reason)} |")
-    return "\n".join(lines)
+    extra = ai_lines(ai)
+    return "\n".join(lines + ([""] + extra if extra else []))
 
 
-def comment(stages, verdict, reason, sha, override_label):
-    body = [MARKER, f"### Merge steward: {ICON[verdict]}", "", summary(stages, verdict, reason), "",
+def comment(stages, verdict, reason, sha, override_label, ai=None):
+    body = [MARKER, f"### Merge steward: {ICON[verdict]}", "", summary(stages, verdict, reason, ai), "",
             f"Evaluated commit `{sha[:12]}`. The verdict comes from deterministic rules in "
-            "`scripts/merge-steward/policy.yaml` on the default branch."]
+            "`scripts/merge-steward/policy.yaml` on the default branch. The AI assessment can only lower it."]
     if verdict != PASS:
         body += ["", f"To merge anyway, a repository admin adds the `{override_label}` label. "
                  "The steward checks the labeller's permission and ignores the label otherwise."]
     return "\n".join(body)
+
+
+def advisory(result, sha):
+    """The comment for a PR whose review changes no verdict."""
+    return "\n".join([ADVISORY_MARKER, "### AI review (advisory)", ""] + ai_lines(result) + [
+        "", f"Reviewed commit `{sha[:12]}`. This comment does not affect any check."])

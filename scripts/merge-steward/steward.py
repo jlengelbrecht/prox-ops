@@ -21,6 +21,7 @@ import classify
 import fold
 import publish
 import render
+import review
 from classify import HOLD, NEEDS, OUT_OF_SCOPE, PASS, Stage
 from ghapi import GitHub, GitHubError
 
@@ -110,6 +111,46 @@ def render_stage(gh, pr, policy, render_dir, age_minutes):
     if age_minutes > policy["required_checks_deadline_minutes"]:
         return Stage("render", NEEDS, "render evidence unavailable")
     return Stage("render", HOLD, RENDER_WAITING)
+
+
+def recorded_review(gh, sha, policy):
+    """The AI result recorded for sha in an earlier merge-steward check run, or None."""
+    for run in steward_runs(gh, sha, policy):
+        result = review.from_record((run.get("output") or {}).get("text"), sha)
+        if result is not None:
+            return result
+    return None
+
+
+def llm_stage(gh, pr, files, policy, review_dir, age_minutes):
+    """Return (Stage, result to show and record, or None).
+
+    From this run's review artifact (PR events), else from the recorded result. No result
+    yet is hold until the checks deadline, then needs-human, because a queued review can
+    take a while.
+    """
+    sha = pr["head"]["sha"]
+    changed = {f["filename"] for f in files}
+    result = review.from_artifact(review_dir, sha, changed) if review_dir else recorded_review(gh, sha, policy)
+    if result is not None:
+        return review.stage(result, policy), result
+    if age_minutes > policy["required_checks_deadline_minutes"]:
+        return review.stage(review.unavailable("not-recorded"), policy), None
+    return Stage("llm", HOLD, review.WAITING), None
+
+
+def post_advisory(gh, pr, review_dir, dry_run):
+    """Post a review that changes no verdict. A failed review stays quiet."""
+    number, sha = pr["number"], pr["head"]["sha"]
+    try:
+        files = gh.paginate(f"pulls/{number}/files")
+        result = review.from_artifact(review_dir, sha, {f["filename"] for f in files})
+        if not result or not result["available"]:
+            print(f"PR #{number}: no advisory review to post", file=sys.stderr)
+        elif not dry_run:
+            publish.upsert_advisory(gh, number, fold.advisory(result, sha))
+    except GitHubError as err:  # advisory: the PR's verdict must not depend on this comment
+        print(f"PR #{number}: advisory comment failed: {err}", file=sys.stderr)
 
 
 def commit_stage(gh, pr, files, policy, age_minutes):
@@ -252,7 +293,11 @@ def publish_out_of_scope(gh, app_gh, pr, policy, dry_run):
     return PASS
 
 
-def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, render_dir=None):
+def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, render_dir=None,
+             ai_enabled=False, review_dir=None):
+    ai_mode = review.mode(pr, policy) if ai_enabled else review.OFF
+    if ai_mode == review.ADVISORY and review_dir:
+        post_advisory(gh, pr, review_dir, dry_run)
     if classify.out_of_scope(pr, policy):
         return publish_out_of_scope(gh, app_gh, pr, policy, dry_run)
     number, sha = pr["number"], pr["head"]["sha"]
@@ -261,10 +306,15 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
     comment, stale = publish.find_comments(gh, number, policy)
     previous = _APPROVAL.search(comment["body"]) if comment else None
     approval = previous.group(0) if previous else None  # kept if evaluation errors out
-    stages = []
+    stages, ai_result = [], None
     try:
         files = gh.paginate(f"pulls/{number}/files")
         stages = stages_for(gh, pr, files, policy, wait_seconds, render_dir)
+        if ai_mode == review.VERDICT:
+            # After the other stages and whatever they said: every PR in scope gets an assessment.
+            age = head_age_minutes(gh.paginate(f"pulls/{number}/commits"), pr)
+            stage, ai_result = llm_stage(gh, pr, files, policy, review_dir, age)
+            stages.append(stage)
         override = None
         if label in labels:
             override, approval, problem = check_override(gh, pr, files, comment, policy, labeled_sha, dry_run)
@@ -285,7 +335,7 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
     # A hold (no render yet, or a stale merge ref) is never recorded, so later events
     # keep waiting for a real render instead of reusing it.
     rendered = next((s for s in stages if s.name == "render" and s.verdict != HOLD), None)
-    waiting = any(s.name == "render" and s.reason == RENDER_WAITING for s in stages)
+    waiting = any(s.reason in (RENDER_WAITING, review.WAITING) for s in stages)
     print(json.dumps({"pr": number, "sha": sha[:12], "verdict": verdict, "reason": fold.clean(reason)}))
     if dry_run:
         return verdict
@@ -296,10 +346,12 @@ def evaluate(gh, app_gh, pr, policy, wait_seconds, dry_run, labeled_sha=None, re
     if gh.get(f"pulls/{number}")["head"]["sha"] != sha:
         print(f"PR #{number}: head moved during evaluation; leaving it to the newer run", file=sys.stderr)
         return None
-    record = render_record(sha, rendered) if rendered else None
-    publish.publish_check(app_gh, sha, verdict, fold.clean(reason, 250), fold.summary(stages, verdict, reason), record)
+    records = ([render_record(sha, rendered)] if rendered else []) + ([review.record(sha, ai_result)] if ai_result else [])
+    publish.publish_check(app_gh, sha, verdict, fold.clean(reason, 250), fold.summary(stages, verdict, reason, ai_result),
+                          "\n".join(records) or None)
     publish.set_labels(gh, number, labels, verdict)
-    body = fold.comment(stages, verdict, reason, sha, label) + (f"\n{approval}" if approval else "")
+    publish.set_unavailable_label(gh, number, labels, any(review.is_unavailable(s) for s in stages))
+    body = fold.comment(stages, verdict, reason, sha, label, ai_result) + (f"\n{approval}" if approval else "")
     publish.upsert_comment(app_gh, number, comment, body)
     publish.delete_comments(app_gh, stale)
     return verdict
@@ -315,13 +367,22 @@ def main(argv=None):
     parser.add_argument("--labeled-sha", help="head commit when the override label was applied")
     parser.add_argument("--event-sha", help="head commit of the triggering PR event; skip the PR if it moved")
     parser.add_argument("--render-dir", help="this run's render artifact (pull request events)")
+    parser.add_argument("--review-dir", help="this run's AI review result (pull request events)")
+    parser.add_argument("--advisory-only", action="store_true", help="post the review in --review-dir and stop")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
     policy = classify.load_policy(POLICY)
     repo = os.environ["GITHUB_REPOSITORY"]
     gh = GitHub(os.environ["GITHUB_TOKEN"], repo)
+    if args.advisory_only:
+        pr = gh.get(f"pulls/{args.pr}")
+        if pr["state"] == "open" and review.mode(pr, policy) == review.ADVISORY:
+            post_advisory(gh, pr, args.review_dir, args.dry_run)
+        return 0
     app_gh = None if args.dry_run else GitHub(os.environ["STEWARD_APP_TOKEN"], repo)
+    # Off until the variable says otherwise: with AI on, a PR without a review is needs-human.
+    ai_enabled = os.environ.get("MERGE_STEWARD_AI") == "true"
     if args.pr:
         prs = [gh.get(f"pulls/{args.pr}")]
     elif args.sha:
@@ -338,7 +399,8 @@ def main(argv=None):
             print(f"PR #{pr['number']}: superseded by a newer push; leaving it to that run", file=sys.stderr)
             continue
         try:
-            evaluate(gh, app_gh, pr, policy, args.wait, args.dry_run, args.labeled_sha, args.render_dir)
+            evaluate(gh, app_gh, pr, policy, args.wait, args.dry_run, args.labeled_sha, args.render_dir,
+                     ai_enabled, args.review_dir)
         except Exception as err:  # publishing failed; the check stays missing, which blocks merge
             failures += 1
             detail = str(err) if isinstance(err, GitHubError) else type(err).__name__

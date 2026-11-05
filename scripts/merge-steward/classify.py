@@ -53,10 +53,23 @@ def load_policy(path):
         if not rule.get("update_types") or not set(rule["update_types"]) <= set(policy["pass_update_types"]):
             raise ValueError("a release exception may only name update types that can pass")
         re.compile(rule["tag_pattern"])
+    _check_ai(policy.get("ai"))
     for rule in policy["manual_packages"]:
         if rule["update_types"] == "all":
             rule["update_types"] = list(ALL_TYPES)
     return policy
+
+
+def _check_ai(ai):
+    """An unknown value stops the steward rather than giving the AI an unintended role."""
+    if not isinstance(ai, dict) or ai.get("verdict_authority") != "lower_only":
+        raise ValueError("policy key ai.verdict_authority must be lower_only")
+    scope = ai.get("review_scope") or {}
+    if scope.get("renovate") not in ("verdict", "advisory", "off") or scope.get("same_repo") not in ("advisory", "off"):
+        raise ValueError("policy key ai.review_scope has an unknown value")
+    limits = ai.get("context_chars") or {}
+    if not all(isinstance(limits.get(k), int) and limits[k] > 0 for k in ("render", "evidence", "release_notes")):
+        raise ValueError("policy key ai.context_chars needs render, evidence and release_notes")
 
 
 def glob_match(pattern, path):
