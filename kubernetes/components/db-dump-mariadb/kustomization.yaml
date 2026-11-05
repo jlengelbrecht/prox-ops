@@ -1,0 +1,28 @@
+---
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+# The MariaDB sibling of db-dump: a nightly mariadb-dump of one database to a
+# restic repository on the UNAS. Add to a kustomization with
+#   components: [../../../../components/db-dump-mariadb]
+# and set these on the Flux Kustomization (spec.postBuild.substitute):
+#   APP                  name of the server; also names every object below
+#   APP_NS               namespace the job and the password Secret live in
+#   DB_HOST              MariaDB service name
+#   DB_NAME              database to dump
+#   DB_USER              role that can dump it
+#   DB_SECRET, DB_SECRET_KEY  Secret and key holding that role's password
+#   DB_SELECTOR_KEY, DB_SELECTOR_VALUE  label on the MariaDB pods, for egress
+#   DUMP_SCHEDULE        cron, default 57 7 * * *
+#   DUMP_RESTIC_ITEM     1Password item with field RESTIC_PASSWORD
+#                        (default volsync-restic)
+#
+# The server's own network policy must admit pods labelled
+# app.kubernetes.io/name: ${APP}-dbdump. The first run sets RESTIC_INIT=true by
+# hand; steps are in .claude/.ai-docs/database/DB_RESTORE_RUNBOOK.md (local).
+resources:
+  - ./configmap.yaml
+  - ./cronjob.yaml
+  - ./externalsecret.yaml
+  - ./networkpolicy.yaml
+  - ./repository-pv.yaml
+  - ./repository-pvc.yaml

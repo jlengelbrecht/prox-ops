@@ -135,6 +135,14 @@ spec:
     matchLabels:
       app.kubernetes.io/instance: bookstack-mariadb-standalone
   ingress:
+    # Allow from the nightly dump
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: bookstack-mariadb-dbdump
+      toPorts:
+        - ports:
+            - port: "3306"
+              protocol: TCP
     # Allow from BookStack application
     - fromEndpoints:
         - matchLabels:

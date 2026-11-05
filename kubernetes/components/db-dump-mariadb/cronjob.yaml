@@ -1,0 +1,145 @@
+---
+# Two containers keep the jobs apart: `dump` holds the database password and sees
+# only the memory-backed scratch volume; `backup` holds the restic password and
+# is the only one that mounts the share. Each server sees only its own directory.
+#
+# Pinned to three non-GPU workers, one per Proxmox host, whose IPs are on the
+# share's NFS allowlist (the kubelet mounts the share).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ${APP}-dbdump
+  namespace: ${APP_NS}
+spec:
+  schedule: "${DUMP_SCHEDULE:=57 7 * * *}"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 5400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: ${APP}-dbdump
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values:
+                          - k8s-work-1
+                          - k8s-work-5
+                          - k8s-work-7
+          initContainers:
+            - name: dump
+              # Same image as the server, so the dump client matches it.
+              image: docker.io/mariadb:11.4.8@sha256:bc474f00629f0123c10f9e1bca193a45d18af15a274cf0656acda64f1086c3b6
+              command:
+                - /bin/sh
+                - /scripts/dump.sh
+              env:
+                - name: DB_HOST
+                  value: ${DB_HOST}
+                - name: DB_NAME
+                  value: ${DB_NAME}
+                - name: DB_USER
+                  value: ${DB_USER}
+                - name: MYSQL_PWD
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${DB_SECRET}
+                      key: ${DB_SECRET_KEY}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              # Scratch is memory-backed, so its contents count against this.
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 512Mi
+                limits:
+                  memory: 3Gi
+              volumeMounts:
+                - name: dump
+                  mountPath: /dump
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+          containers:
+            - name: backup
+              image: docker.io/restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510
+              command:
+                - /bin/sh
+                - /scripts/backup.sh
+              env:
+                - name: APP
+                  value: ${APP}
+                - name: HOME
+                  value: /tmp
+                - name: RESTIC_REPOSITORY
+                  value: /mnt/repo
+                - name: RESTIC_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: ${APP}-dbdump
+                      key: RESTIC_PASSWORD
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 2Gi
+              volumeMounts:
+                - name: dump
+                  mountPath: /dump
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+                - name: repo
+                  mountPath: /mnt/repo
+                  subPath: dbdump/${APP_NS}/${APP}
+          volumes:
+            - name: dump
+              emptyDir:
+                medium: Memory
+                sizeLimit: 2Gi
+            # restic builds its pack files here before writing them out.
+            - name: tmp
+              emptyDir:
+                medium: Memory
+                sizeLimit: 512Mi
+            - name: scripts
+              configMap:
+                name: mariadb-dbdump-scripts
+            - name: repo
+              persistentVolumeClaim:
+                claimName: ${APP}-dbdump-repo

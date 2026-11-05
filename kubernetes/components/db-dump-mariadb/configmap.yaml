@@ -1,0 +1,56 @@
+---
+# Scripts for the CronJob. Substitution is off so Flux leaves the shell
+# variables alone; the job passes its settings as environment variables.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # No variables here: substitution is off for this object.
+  name: mariadb-dbdump-scripts
+  annotations:
+    kustomize.toolkit.fluxcd.io/substitute: disabled
+data:
+  dump.sh: |
+    #!/bin/sh
+    set -eu
+    umask 077
+
+    file="/dump/$DB_NAME.sql.gz"
+    # sh has no pipefail, so write the dump first and compress after.
+    mariadb-dump --host="$DB_HOST" --user="$DB_USER" --single-transaction \
+      --routines --events --databases "$DB_NAME" >/dump/dump.sql
+
+    # A dump cut short lacks the closing line, and one that lost the schema has
+    # no tables. Either must fail the job rather than replace a good one.
+    tail -n 1 /dump/dump.sql | grep -q 'Dump completed'
+    tables=$(grep -c '^CREATE TABLE' /dump/dump.sql)
+    [ "$tables" -gt 0 ]
+
+    gzip -c /dump/dump.sql >"$file"
+    rm -f /dump/dump.sql
+    echo "$DB_NAME: $tables tables, $(stat -c %s "$file") bytes"
+  backup.sh: |
+    #!/bin/sh
+    set -eu
+    umask 077
+
+    restic="restic --no-cache"
+    # Never create the repository here. If it were lost, a new empty one would
+    # turn this job green and hide that every older backup is gone. The first
+    # run sets RESTIC_INIT=true by hand; see the restore runbook.
+    if [ "${RESTIC_INIT:-}" = true ]; then
+      $restic init
+    fi
+    if ! $restic cat config >/dev/null; then
+      echo "repository missing or wrong password" >&2
+      exit 1
+    fi
+
+    cd /dump
+    $restic backup --host "$APP" --tag dbdump .
+
+    # Daily for a week, weekly for 5 weeks, monthly for a quarter.
+    $restic forget --host "$APP" --keep-daily 7 --keep-weekly 5 --keep-monthly 3 --prune
+    $restic check
+    if [ "$(date -u +%u)" = 7 ]; then
+      $restic check --read-data-subset=10%
+    fi

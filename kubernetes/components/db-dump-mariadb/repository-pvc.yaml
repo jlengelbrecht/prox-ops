@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${APP}-dbdump-repo
+  namespace: ${APP_NS}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: dbdump-repo-${APP_NS}-${APP}
+  resources:
+    requests:
+      storage: 100Gi
