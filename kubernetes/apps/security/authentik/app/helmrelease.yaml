@@ -9,7 +9,7 @@ spec:
     spec:
       chart: authentik
       # renovate: datasource=helm registryUrl=https://charts.goauthentik.io
-      version: 2026.5.6
+      version: 2026.8.5
       sourceRef:
         kind: HelmRepository
         name: authentik
@@ -201,6 +201,11 @@ spec:
 
     postgresql:
       enabled: true
+      # Held on bookworm: the chart's default moves to trixie, whose glibc can
+      # change en_US.utf8 sort order and leave text indexes stale. That move
+      # needs its own change with a reindex, not a ride on an app upgrade.
+      image:
+        tag: "17.10-bookworm"
       auth:
         existingSecret: authentik-secret
         secretKeys:
