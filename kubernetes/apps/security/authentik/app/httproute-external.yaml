@@ -21,6 +21,13 @@ spec:
         - name: authentik-server
           port: 80
       filters:
+        # Read by the is-internal-network login policy. "set" overwrites
+        # whatever the client sent.
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Homelab-Gateway
+                value: "external"
         - type: ResponseHeaderModifier
           responseHeaderModifier:
             set:

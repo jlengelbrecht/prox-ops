@@ -1170,17 +1170,79 @@ data:
           profile_url: https://graph.microsoft.com/v1.0/me
       # Entra is the only upstream login on both identification stages.
       - model: authentik_stages_identification.identificationstage
+        id: stage-default-identification
         identifiers:
           name: default-authentication-identification
         attrs:
           sources:
             - !KeyOf source-entra
       - model: authentik_stages_identification.identificationstage
+        id: stage-external-identification
         identifiers:
           name: external-authentication-identification
         attrs:
+          user_fields: []
+          show_source_labels: true
           sources:
             - !KeyOf source-entra
+
+      # Local password login is limited to internal clients; everyone else
+      # gets Entra only. The routes set X-Homelab-Gateway and overwrite any
+      # value a client sends. X-Forwarded-For alone proves nothing: clients
+      # can prepend to it and Cloudflare passes that through. They cannot
+      # remove what Envoy appends, so every entry must be allowed. Pod
+      # addresses are skipped because they are proxy hops.
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-is-internal-network
+        identifiers:
+          name: is-internal-network
+        attrs:
+          expression: |
+            import ipaddress
+
+            meta = request.http_request.META
+            if meta.get("HTTP_X_HOMELAB_GATEWAY", "") != "internal":
+                return False
+
+            allowed = [ipaddress.ip_network(n) for n in ("10.20.65.0/24", "10.20.66.0/23")]
+            pods = ipaddress.ip_network("10.42.0.0/16")
+            try:
+                hops = [
+                    ipaddress.ip_address(entry.strip())
+                    for entry in meta.get("HTTP_X_FORWARDED_FOR", "").split(",")
+                    if entry.strip()
+                ]
+            except ValueError:
+                return False
+
+            clients = [ip for ip in hops if ip not in pods]
+            return bool(clients) and all(any(ip in net for net in allowed) for ip in clients)
+      - model: authentik_flows.flowstagebinding
+        id: binding-external-identification
+        identifiers:
+          target: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+          stage: !KeyOf stage-external-identification
+          order: 5
+        attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: any}
+      - model: authentik_flows.flowstagebinding
+        id: binding-default-identification
+        identifiers:
+          target: !Find [authentik_flows.flow, [slug, default-authentication-flow]]
+          stage: !KeyOf stage-default-identification
+          order: 10
+        attrs: {evaluate_on_plan: false, re_evaluate_policies: true, policy_engine_mode: any}
+      - model: authentik_policies.policybinding
+        identifiers:
+          policy: !KeyOf policy-is-internal-network
+          target: !KeyOf binding-external-identification
+          order: 0
+        attrs: {negate: true, enabled: true, timeout: 30}
+      - model: authentik_policies.policybinding
+        identifiers:
+          policy: !KeyOf policy-is-internal-network
+          target: !KeyOf binding-default-identification
+          order: 0
+        attrs: {negate: false, enabled: true, timeout: 30}
 
   # =============================================================
   # WARPGATE BLUEPRINT
