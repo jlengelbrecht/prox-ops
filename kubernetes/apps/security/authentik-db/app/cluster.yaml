@@ -17,7 +17,8 @@ spec:
   affinity:
     enablePodAntiAffinity: true
     podAntiAffinityType: required
-    topologyKey: kubernetes.io/hostname
+    # One instance per Proxmox host, so losing a host is a switchover.
+    topologyKey: topology.kubernetes.io/zone
 
   bootstrap:
     initdb:
