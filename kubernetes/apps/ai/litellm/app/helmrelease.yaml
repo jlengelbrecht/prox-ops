@@ -36,6 +36,19 @@ spec:
                 path: /spec/strategy
                 value:
                   type: Recreate
+              # Helm hooks bypass post-renderers. Add the PVC only to the proxy;
+              # the chart's migration Job never receives these shared values.
+              - op: add
+                path: /spec/template/spec/volumes/-
+                value:
+                  name: chatgpt-auth
+                  persistentVolumeClaim:
+                    claimName: litellm-data
+              - op: add
+                path: /spec/template/spec/containers/0/volumeMounts/-
+                value:
+                  name: chatgpt-auth
+                  mountPath: /var/lib/litellm/chatgpt
   values:
     # Image configuration - uses the litellm-database image (bundles Prisma)
     image:
@@ -49,17 +62,9 @@ spec:
     # second replica would race the refresh and lose the login. Do not scale or add an HPA.
     replicaCount: 1
 
-    # ChatGPT Pro login for the chatgpt/ provider. LiteLLM reads and rewrites auth.json here
-    # when the access token rotates, so the volume must be writable and retained (litellm-data
-    # lives in the protected litellm-storage Kustomization). The login itself is a one-time
-    # human device-code step, see the merge steward runbook; nothing here holds a token.
-    volumes:
-      - name: chatgpt-auth
-        persistentVolumeClaim:
-          claimName: litellm-data
-    volumeMounts:
-      - name: chatgpt-auth
-        mountPath: /var/lib/litellm/chatgpt
+    # ChatGPT Pro login for the chatgpt/ provider. LiteLLM reads and rewrites
+    # auth.json on the retained litellm-data PVC. The proxy-only post-render
+    # patch above mounts it without giving the migration hook the same RWO PVC.
 
     # Master key from ExternalSecret
     masterkeySecretName: litellm-masterkey
