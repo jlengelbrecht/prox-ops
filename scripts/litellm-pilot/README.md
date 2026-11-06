@@ -7,8 +7,10 @@ This Linux-host-only kit prepares an explicit, project-local OpenCode client for
 From the repository root, create a new disposable project directory outside any Git worktree. The generator requires a nonexistent output path and refuses symlinked paths, global OpenCode paths, and Git worktrees:
 
 ```sh
-node scripts/litellm-pilot/generate.mjs --output /tmp/litellm-pilot-client --gateway https://ai-api.homelab0.org/v1 --models anthropic/claude-sonnet-5,chatgpt-gpt-6-luna,qwen36-27b --model anthropic/claude-sonnet-5 --small-model qwen36-27b
+node scripts/litellm-pilot/generate.mjs --output /tmp/litellm-pilot-client --gateway https://ai-api.homelab0.org/v1 --models anthropic/claude-sonnet-5,chatgpt-gpt-6-luna --model anthropic/claude-sonnet-5 --small-model chatgpt-gpt-6-luna
 ```
+
+The initial target providers are Claude, ChatGPT/Codex, Grok OAuth, and GitHub Copilot. Claude and ChatGPT are the only explicit candidates today. Grok and Copilot must be onboarded and qualified before their aliases are added to this client or any router. Local LLM integration is deferred; the existing `dub-text` workload is unchanged and stays outside this pilot. The generator and plugin allowlists accept only `anthropic/claude-sonnet-5` and `chatgpt-gpt-6-luna`; they refuse the removed `qwen36-27b` alias. The deployment's `XAI_OAUTH_TOKEN_DIR` setting only names where a Grok login would persist. It does not mean a login, access, or subscription billing has been tested.
 
 Run OpenCode inside that directory and select an explicit `litellm-pilot/<alias>` model. Omit any alias not authorized on the scoped pilot virtual key. The key must be owned by the pilot user, limited to those explicit aliases, and have per-key rpm and tpm limits as well as any applicable budget ceiling. Dollar budgets do not bound zero-priced subscription traffic. An empty LiteLLM key model list is unsafe because it permits metered aliases. Supply `LITELLM_PILOT_KEY` from an approved secret source in the local client environment; do not write its value into configuration, shell history, prompts, or reports. Never use the LiteLLM master key. No key is created by this offline kit.
 

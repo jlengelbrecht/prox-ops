@@ -75,7 +75,7 @@ data:
           model: "chatgpt/gpt-6-luna"
           timeout: 180
         model_info:
-          description: "ChatGPT Pro gpt-6-luna (smart-router MEDIUM tier)"
+          description: "ChatGPT Pro gpt-6-luna (smart-router SIMPLE and MEDIUM tiers)"
 
       - model_name: "chatgpt-gpt-6-sol"
         litellm_params:
@@ -96,8 +96,9 @@ data:
       # smart-router: complexity-based routing for callers that want it.
       # Heuristic scorer (no classifier model call), one model per tier, no
       # pools and no adaptive selection. Tiers resolve to the model names in
-      # this list. SIMPLE is local and free but scales from zero (~150s first
-      # request); reorder the tiers if that latency matters to a caller.
+      # this list. SIMPLE and MEDIUM share a subscription model: a deterministic
+      # routing choice, not a benchmark result. No fallback is configured here:
+      # if that login or its limits are unavailable, both tiers fail.
       # Reference: https://docs.litellm.ai/docs/proxy/auto_routing
       # =====================================================
       - model_name: "smart-router"
@@ -107,19 +108,12 @@ data:
             classifier_type: heuristic
             adaptive: false
             tiers:
-              SIMPLE: "qwen36-27b"
+              SIMPLE: "chatgpt-gpt-6-luna"
               MEDIUM: "chatgpt-gpt-6-luna"
               COMPLEX: "chatgpt-gpt-6-sol"
               REASONING: "chatgpt-gpt-6.1-sol"
         model_info:
-          description: "Complexity router: qwen36-27b, then ChatGPT Pro models by tier"
-
-      # =====================================================
-      # KServe InferenceServices (vLLM/Custom)
-      # Scale-to-zero models on RTX A5000 (k8s-work-10)
-      # Note: Only ONE model can run at a time due to GPU contention
-      # Cold starts expected on first request after scale-down
-      # =====================================================
+          description: "Complexity router: ChatGPT Pro models by tier"
 
       # =====================================================
       # STORY-150: Timeout optimization for cold starts
@@ -127,16 +121,6 @@ data:
       # Retries disabled globally via router_settings.num_retries: 0
       # Actual cold start measured: ~100-420s depending on model
       # =====================================================
-
-      - model_name: "qwen36-27b"
-        litellm_params:
-          # llama.cpp exposes the model under its --alias, not a /models/... path
-          model: "openai/qwen3.6-27b"
-          api_base: "http://qwen36-27b-predictor.ai.svc.cluster.local/v1"
-          api_key: "dummy"
-          timeout: 240        # Cold start ~120-180s (17.9GB GGUF from CephFS)
-        model_info:
-          description: "KServe Qwen3.6-27B llama.cpp + MTP (~150s cold start, tool calling)"
 
       # =====================================================
       # Qwen3-4B-Instruct on the RTX A2000 (k8s-work-4, 6GB, shared with Plex)
@@ -234,7 +218,7 @@ data:
 
     general_settings:
       # Stop the 5-minute upstream /v1/models discovery (router.arefresh_model_info).
-      # It counts as traffic for the scale-to-zero KServe models, so qwen36-27b never unloads.
+      # It counts as traffic for the scale-to-zero KServe model, so dub-text never unloads.
       disable_model_info_refresh: true
       # Client headers are NOT forwarded globally. Only the anthropic/* model group
       # forwards them (litellm_settings.model_group_settings), so a Claude Code

@@ -157,6 +157,10 @@ spec:
       LITELLM_LOG: "INFO"
       # Where the chatgpt/ provider keeps auth.json (the PVC mounted above)
       CHATGPT_TOKEN_DIR: /var/lib/litellm/chatgpt
+      # Separate login store for xai/ OAuth on the same PVC: it also defaults to
+      # auth.json, so it must never share the chatgpt directory. Storage only;
+      # this does not log in to or enable Grok.
+      XAI_OAUTH_TOKEN_DIR: /var/lib/litellm/chatgpt/xai
       # Enable database storage for UI settings (logo, themes, etc.)
       STORE_MODEL_IN_DB: "True"
       # Never let a proxy pod diff/alter the schema at start. A pod running an
