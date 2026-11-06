@@ -1,0 +1,33 @@
+---
+# Warpgate's admin API token, for the config-sync job. Generated in the cluster
+# and never stored anywhere else, so no person or agent handles it.
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: Password
+metadata:
+  name: warpgate-admin-token
+spec:
+  length: 64
+  symbols: 0
+  noUpper: false
+  allowRepeat: true
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: warpgate-admin-token
+spec:
+  refreshPolicy: CreatedOnce
+  target:
+    name: warpgate-admin-token
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      mergePolicy: Replace
+      data:
+        token: "{{ .password }}"
+  dataFrom:
+    - sourceRef:
+        generatorRef:
+          apiVersion: generators.external-secrets.io/v1alpha1
+          kind: Password
+          name: warpgate-admin-token

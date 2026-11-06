@@ -1,0 +1,35 @@
+{
+  "parameters": {
+    "admin_approval_grace_period_seconds": 3600
+  },
+  "roles": {
+    "agent-admin": "Coding agents, k8s-admin target only"
+  },
+  "targets": {
+    "k8s-admin": {
+      "description": "Write access for coding agents, approved per session",
+      "copy_options_from": "k8s-read",
+      "require_approval": true,
+      "roles": [
+        "agent-admin"
+      ]
+    }
+  },
+  "users": {
+    "agent-claude": {
+      "roles": [
+        "agent-admin"
+      ]
+    },
+    "agent-codex": {
+      "roles": [
+        "agent-admin"
+      ]
+    },
+    "agent-opencode": {
+      "roles": [
+        "agent-admin"
+      ]
+    }
+  }
+}

@@ -1,0 +1,47 @@
+---
+# RBAC can't exclude a namespace or a field, so this is what makes agent-write
+# safe next to Warpgate's admin token. An approved agent session can't write or
+# exec in the namespaces that hold the keys to everything else, and can only
+# suspend or resume Flux objects, because any other edit applies with Flux's own
+# rights. The namespace list holds what guards secrets, plus operators whose
+# service accounts can read Secrets cluster-wide. observability, database and
+# network have some too, and stay open for repair work. This doesn't stop a
+# privileged pod elsewhere reaching its node. It relies on agent-write having no
+# access to admissionregistration.k8s.io, fluxcd.controlplane.io or nodes/proxy.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: agent-write-limits
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE", "CONNECT"]
+        resources: ["*/*"]
+  matchConditions:
+    - name: agent-write-session
+      expression: request.userInfo.username == "system:serviceaccount:access:warpgate-k8s-admin"
+  validations:
+    - expression: >-
+        !(request.namespace in ["access", "cert-manager", "crossplane-system",
+        "external-secrets", "knative-serving", "kserve", "kube-system", "openbao",
+        "rook-ceph", "system-upgrade", "volsync-system"])
+      message: agent sessions can't change this namespace
+    - expression: request.namespace != "flux-system" || request.resource.group.endsWith(".toolkit.fluxcd.io")
+      message: agent sessions can only suspend or resume Flux objects in flux-system
+    - expression: >-
+        !request.resource.group.endsWith(".toolkit.fluxcd.io") ||
+        (request.operation == "UPDATE" && request.subResource == "" &&
+        object.spec.filter(k, k != "suspend").all(k, k in oldObject.spec && object.spec[k] == oldObject.spec[k]) &&
+        oldObject.spec.filter(k, k != "suspend").all(k, k in object.spec))
+      message: agent sessions can only suspend, resume or reconcile Flux objects
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: agent-write-limits
+spec:
+  policyName: agent-write-limits
+  validationActions: ["Deny"]

@@ -13,9 +13,9 @@ automountServiceAccountToken: false
 # Repair work without Secrets. RBAC can't deny, so this lists what is allowed:
 # no Secrets, no RBAC or webhook changes, no impersonation, no token requests,
 # and read-only for identity, secret stores and node upgrades. It stops direct
-# reads, which Warpgate would keep in a recording. It is not a hard boundary:
-# exec reaches what a pod holds, creating a pod can mount a Secret, and editing
-# a Flux object can apply manifests with Flux's own rights.
+# reads, which Warpgate would keep in a recording. agent-guardrails.yaml adds
+# the limits RBAC can't express. Neither is a hard boundary: exec reaches what a
+# pod holds, and creating a pod can mount a Secret in its own namespace.
 # A new API group needs adding here before agents can use it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -63,8 +63,8 @@ rules:
       - volsync.backube
     resources: ["*"]
     verbs: *write
-  # Suspend, resume and reconcile existing Flux objects, but not add or remove
-  # them.
+  # Suspend, resume and reconcile existing Flux objects. agent-guardrails.yaml
+  # refuses any other edit.
   - apiGroups:
       - helm.toolkit.fluxcd.io
       - kustomize.toolkit.fluxcd.io

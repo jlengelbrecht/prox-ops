@@ -213,6 +213,7 @@ spec:
     # Credential encryption at rest (target credentials).
     envFromSecret:
       WARPGATE_ENCRYPTION_KEY: warpgate-secret/encryptionKey
+      WARPGATE_ADMIN_TOKEN: warpgate-admin-token/token
 
     setup:
       enabled: true
@@ -253,6 +254,10 @@ spec:
               - op: add
                 path: /spec/template/spec/automountServiceAccountToken
                 value: false
+              # The chart can't pass flags to `run`. config-sync uses this API.
+              - op: add
+                path: /spec/template/spec/containers/0/command/-
+                value: --enable-admin-token
               - op: add
                 path: /spec/template/spec/containers/0/env/-
                 value:
