@@ -307,6 +307,16 @@ jq -n '{
     token_max_ttl: "4h"}' >"$work/warpgate-k8s-role.json"
 bao_write_json kubernetes/roles/warpgate-k8s-read "$work/warpgate-k8s-role.json"
 
+# Warpgate's k8s-admin target, role agent-write. Same short lifetime and hourly
+# rotation as k8s-read, because a leaked token would skip Warpgate's approval.
+log "Writing the Kubernetes secrets engine role warpgate-k8s-admin"
+jq -n '{
+    service_account_name: "warpgate-k8s-admin",
+    allowed_kubernetes_namespaces: ["access"],
+    token_default_ttl: "4h",
+    token_max_ttl: "4h"}' >"$work/warpgate-k8s-admin-role.json"
+bao_write_json kubernetes/roles/warpgate-k8s-admin "$work/warpgate-k8s-admin-role.json"
+
 # --- database engine --------------------------------------------------------
 # Writing the static role the first time rotates the password at once, so
 # refuse unless both sides are ready: CNPG must have stopped managing the
