@@ -25,6 +25,11 @@ spec:
     - name: agent-write-session
       expression: request.userInfo.username == "system:serviceaccount:access:warpgate-k8s-admin"
   variables:
+    # The API server leaves these out of the request when they're empty.
+    - name: requestNamespace
+      expression: 'has(request.namespace) ? request.namespace : ""'
+    - name: subResource
+      expression: 'has(request.subResource) ? request.subResource : ""'
     - name: flux
       expression: request.resource.group.endsWith(".toolkit.fluxcd.io")
     - name: annotations
@@ -45,19 +50,19 @@ spec:
       expression: 'has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []'
   validations:
     - expression: >-
-        request.namespace != "" ||
-        (request.resource.resource == "nodes" && request.subResource == "" && request.operation == "UPDATE")
+        variables.requestNamespace != "" ||
+        (request.resource.resource == "nodes" && variables.subResource == "" && request.operation == "UPDATE")
       message: agent sessions can only update nodes among cluster-scoped objects
     - expression: >-
-        !(request.namespace in ["access", "cert-manager", "crossplane-system",
+        !(variables.requestNamespace in ["access", "cert-manager", "crossplane-system",
         "external-secrets", "knative-serving", "kserve", "kube-system", "openbao",
         "rook-ceph", "security", "system-upgrade", "volsync-system"])
       message: agent sessions can't change this namespace
-    - expression: request.namespace != "flux-system" || variables.flux
+    - expression: variables.requestNamespace != "flux-system" || variables.flux
       message: agent sessions can only suspend or resume Flux objects in flux-system
     - expression: >-
         !variables.flux ||
-        (request.operation == "UPDATE" && request.subResource == "" &&
+        (request.operation == "UPDATE" && variables.subResource == "" &&
         object.spec.filter(k, k != "suspend").all(k, k in oldObject.spec && object.spec[k] == oldObject.spec[k]) &&
         oldObject.spec.filter(k, k != "suspend").all(k, k in object.spec) &&
         variables.annotations.filter(k, !k.startsWith("reconcile.fluxcd.io/")).all(k, k in variables.oldAnnotations && variables.annotations[k] == variables.oldAnnotations[k]) &&
