@@ -37,7 +37,6 @@ rules:
   - apiGroups: [""]
     resources:
       - configmaps
-      - nodes
       - persistentvolumeclaims
       - pods
       - pods/attach
@@ -48,6 +47,10 @@ rules:
       - replicationcontrollers
       - services
     verbs: &write ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  # Cordon and uncordon.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups:
       - apps
       - autoscaling

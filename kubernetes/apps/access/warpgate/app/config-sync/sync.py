@@ -14,6 +14,7 @@ import sys
 HOST, PORT, SNI = "warpgate", 443, "access.homelab0.org"
 BASE = "/@warpgate/admin/api"
 ADMIN_TARGET, ADMIN_ROLE, MAX_GRACE = "k8s-admin", "agent-admin", 3600
+SOURCE_TARGET = "k8s-read"
 TOKEN = os.environ["WARPGATE_ADMIN_TOKEN"]
 CTX = ssl.create_default_context()
 
@@ -44,6 +45,10 @@ def by_name(path, key="name"):
 def require(ok, message):
     if not ok:
         sys.exit(f"refused: {message}")
+
+
+def token_of(target):
+    return target.get("options", {}).get("auth", {}).get("token")
 
 
 def token_ref(source_name, source, target):
@@ -84,9 +89,12 @@ def sync_target(name, want, roles, targets):
 def tampered():
     """Weakened settings, found before sync repairs them."""
     found = []
-    target = by_name("/targets").get(ADMIN_TARGET)
+    targets = by_name("/targets")
+    target = targets.get(ADMIN_TARGET)
     if target and target["require_approval"] is not True:
         found.append(f"{ADMIN_TARGET} had approval turned off")
+    if target and token_of(target) != token_ref(SOURCE_TARGET, targets[SOURCE_TARGET]["options"], ADMIN_TARGET):
+        found.append(f"{ADMIN_TARGET} had its credential changed")
     grace = api("GET", "/parameters")["admin_approval_grace_period_seconds"]
     if grace is not None and grace > MAX_GRACE:
         found.append("approval memory was over 1 hour")
@@ -128,8 +136,12 @@ def sync(state):
 
 def verify():
     """Hard limits. Editing state.json can't relax these."""
-    target = by_name("/targets")[ADMIN_TARGET]
+    targets = by_name("/targets")
+    target = targets[ADMIN_TARGET]
     require(target["require_approval"] is True, f"{ADMIN_TARGET} no longer requires approval")
+    admin_token = token_of(target)
+    for name, other in targets.items():
+        require(name == ADMIN_TARGET or token_of(other) != admin_token, f"{name} shares the {ADMIN_TARGET} credential")
     roles = by_name("/roles")
     held = {t["name"] for t in api("GET", f"/role/{roles[ADMIN_ROLE]['id']}/targets")}
     require(held == {ADMIN_TARGET}, f"{ADMIN_ROLE} must hold only {ADMIN_TARGET}")
