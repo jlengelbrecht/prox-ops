@@ -188,6 +188,22 @@ spec:
           loki.process "broad" {
             forward_to = [loki.write.default.receiver]
             stage.cri {}
+            // Warpgate has no notifications of its own. This counter drives
+            // the WarpgateApprovalPending alert.
+            stage.match {
+              selector = "{namespace=\"access\"} |= \"Session is awaiting administrator approval\""
+              stage.metrics {
+                metric.counter {
+                  name        = "warpgate_approval_requests_total"
+                  description = "Warpgate sessions that asked for an administrator approval"
+                  match_all   = true
+                  action      = "inc"
+                  // Long idle gaps are normal. A recreated series restarts at 1,
+                  // which the alert's increase() can't see.
+                  max_idle_duration = "168h"
+                }
+              }
+            }
           }
           discovery.relabel "hindsight_safe" {
             targets = discovery.kubernetes.pods.targets

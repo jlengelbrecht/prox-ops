@@ -1,0 +1,109 @@
+---
+# Warpgate's Kubernetes target k8s-admin, the write path for coding agents. The
+# target requires a human approval in Warpgate for each session. No pod runs as
+# this account: its token is issued by OpenBao and rotated by
+# kubernetes/apps/openbao/warpgate-tokens.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warpgate-k8s-admin
+  namespace: access
+automountServiceAccountToken: false
+---
+# Repair work without Secrets. RBAC can't deny, so this lists what is allowed:
+# no Secrets, no RBAC or webhook changes, no impersonation, no token requests,
+# and read-only for identity, secret stores and node upgrades. It stops direct
+# reads, which Warpgate would keep in a recording. It is not a hard boundary:
+# exec reaches what a pod holds, creating a pod can mount a Secret, and editing
+# a Flux object can apply manifests with Flux's own rights.
+# A new API group needs adding here before agents can use it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-write
+rules:
+  - apiGroups: [""]
+    resources:
+      - componentstatuses
+      - endpoints
+      - events
+      - limitranges
+      - namespaces
+      - persistentvolumes
+      - podtemplates
+      - resourcequotas
+      - serviceaccounts
+    verbs: &read ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - nodes
+      - persistentvolumeclaims
+      - pods
+      - pods/attach
+      - pods/eviction
+      - pods/exec
+      - pods/log
+      - pods/portforward
+      - replicationcontrollers
+      - services
+    verbs: &write ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  - apiGroups:
+      - apps
+      - autoscaling
+      - batch
+      - cert-manager.io
+      - flagger.app
+      - gateway.networking.k8s.io
+      - policy
+      - postgresql.cnpg.io
+      - serving.knative.dev
+      - serving.kserve.io
+      - snapshot.storage.k8s.io
+      - volsync.backube
+    resources: ["*"]
+    verbs: *write
+  # Suspend, resume and reconcile existing Flux objects, but not add or remove
+  # them.
+  - apiGroups:
+      - helm.toolkit.fluxcd.io
+      - kustomize.toolkit.fluxcd.io
+      - notification.toolkit.fluxcd.io
+      - source.toolkit.fluxcd.io
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups:
+      - acme.cert-manager.io
+      - actions.github.com
+      - ceph.rook.io
+      - cilium.io
+      - coordination.k8s.io
+      - discovery.k8s.io
+      - events.k8s.io
+      - external-secrets.io
+      - gateway.envoyproxy.io
+      - k8s.cni.cncf.io
+      - metrics.k8s.io
+      - monitoring.coreos.com
+      - networking.k8s.io
+      - node.k8s.io
+      - objectbucket.io
+      - rbac.authorization.k8s.io
+      - scheduling.k8s.io
+      - storage.k8s.io
+      - tuppr.home-operations.com
+    resources: ["*"]
+    verbs: *read
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: warpgate-k8s-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-write
+subjects:
+  - kind: ServiceAccount
+    name: warpgate-k8s-admin
+    namespace: access

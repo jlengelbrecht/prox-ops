@@ -82,7 +82,7 @@ subjects:
 ---
 # OpenBao's Kubernetes secrets engine issues this account's token, for the
 # rotation job, which holds no Kubernetes rights itself. A RoleBinding here, so
-# with resourceNames OpenBao can mint a token for this one account and nothing
+# with resourceNames OpenBao can mint tokens for these two accounts and nothing
 # else. It lives in this tree because the openbao tree's targetNamespace would
 # move it.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -92,7 +92,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["serviceaccounts/token"]
-    resourceNames: ["warpgate-k8s-read"]
+    resourceNames: ["warpgate-k8s-read", "warpgate-k8s-admin"]
     verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

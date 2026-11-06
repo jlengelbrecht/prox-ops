@@ -129,6 +129,23 @@ spec:
             summary: "No successful OpenBao snapshot in over 26 hours"
             description: "The last successful openbao/openbao-snapshots run finished {{ $value | humanizeDuration }} ago. Check the job logs in the openbao namespace."
 
+        # A session gives up after about 10 minutes, so the window matches that:
+        # the alert stays up while a request may still be waiting, and its route
+        # repeats the page. The second half catches a counter's first sample,
+        # which increase() can't see.
+        - alert: WarpgateApprovalPending
+          expr: |
+            sum(increase(loki_process_custom_warpgate_approval_requests_total[10m])) > 0
+            or
+            sum(loki_process_custom_warpgate_approval_requests_total unless loki_process_custom_warpgate_approval_requests_total offset 10m) > 0
+          labels:
+            severity: warning
+            component: warpgate
+            pager: "true"
+          annotations:
+            summary: "An agent is waiting for approval in Warpgate"
+            description: "Approve or deny the session in the Warpgate admin UI at https://access.homelab0.org. It fails by itself after about 10 minutes."
+
         # Tokens last 4 hours and rotate hourly, so this leaves about an hour.
         - alert: OpenBaoWarpgateTokenStale
           expr: time() - kube_cronjob_status_last_successful_time{namespace="openbao",cronjob="warpgate-tokens"} > 2.5 * 3600

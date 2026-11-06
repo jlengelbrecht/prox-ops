@@ -1,8 +1,9 @@
 ---
-# Hourly rotation of Warpgate's Kubernetes target token. Warpgate can only read
-# KV, so this asks OpenBao's Kubernetes engine for a new token and writes it to
-# kv/warpgate/k8s-read, where the target references it. Warpgate rebuilds its
-# upstream client every 5 minutes, so it picks the new token up by itself.
+# Hourly rotation of Warpgate's Kubernetes target tokens. Warpgate can only read
+# KV, so this asks OpenBao's Kubernetes engine for new tokens and writes them to
+# kv/warpgate/k8s-read and kv/warpgate/k8s-admin, where the targets reference
+# them. Warpgate rebuilds its upstream client every 5 minutes, so it picks a new
+# token up by itself.
 #
 # A leaked token would work directly against the Kubernetes API, skipping
 # Warpgate's approval, so tokens last only 4 hours. That survives 2 failed runs.
@@ -57,11 +58,13 @@ spec:
                   export BAO_TOKEN
                   trap 'bao token revoke -self >/dev/null 2>&1 || true' EXIT
 
-                  k8s_token=$(bao write -field=service_account_token \
-                    kubernetes/creds/warpgate-k8s-read kubernetes_namespace=access)
-                  printf '{"data":{"token":"%s"}}' "$k8s_token" |
-                    bao write kv/data/warpgate/k8s-read - >/dev/null
-                  echo "rotated kv/warpgate/k8s-read"
+                  for target in k8s-read k8s-admin; do
+                    k8s_token=$(bao write -field=service_account_token \
+                      "kubernetes/creds/warpgate-$target" kubernetes_namespace=access)
+                    printf '{"data":{"token":"%s"}}' "$k8s_token" |
+                      bao write "kv/data/warpgate/$target" - >/dev/null
+                    echo "rotated kv/warpgate/$target"
+                  done
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
