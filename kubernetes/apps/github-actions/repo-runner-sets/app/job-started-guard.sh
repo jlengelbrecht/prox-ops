@@ -28,8 +28,13 @@
 #   - workflow_run whose triggering run's head repository is this repository
 #   - pull_request_target whose head repository is this repository, only on a
 #     runner set that opts in with RUNNER_GUARD_ALLOW_PR_TARGET=true (see below)
-# Denied examples: pull_request_target anywhere else, issue_comment, issues,
-# repository_dispatch, and any event added to GitHub later. A missing or
+#   - issue_comment, only on that same opted-in set, only a newly created comment on a
+#     pull request that the repository owner wrote (author_association OWNER, both the
+#     commenter and the sender a User). The payload does not say where the pull request
+#     comes from, so a fork is not refused here: the workflow has to check the PR through
+#     the API before the job does any work, and must never check the PR out.
+# Denied examples: pull_request_target and issue_comment anywhere else, any other
+# issue_comment, issues, repository_dispatch, and any event added to GitHub later. A missing or
 # unparseable event payload is denied too (fail closed).
 #
 # The opt-in is set on the runner pod by the ResourceSet and is read only for
@@ -122,6 +127,17 @@ case "$event_name" in
     [[ "${RUNNER_GUARD_ALLOW_PR_TARGET:-}" == "true" ]] \
       || deny "event 'pull_request_target' is not allowed on this runner set"
     require_same_repo '.pull_request.head.repo.full_name' "pull request"
+    ;;
+  issue_comment)
+    [[ "${RUNNER_GUARD_ALLOW_PR_TARGET:-}" == "true" ]] \
+      || deny "event 'issue_comment' is not allowed on this runner set"
+    jq -e '.action == "created"
+      and (.issue.pull_request | type) == "object"
+      and .comment.author_association == "OWNER"
+      and .comment.user.type == "User"
+      and .sender.type == "User"
+      and (.repository.full_name | type) == "string"' "$event_path" >/dev/null 2>&1 \
+      || deny "issue_comment is allowed here only for a new comment on a pull request by the repository owner"
     ;;
   *)
     deny "event '${event_name}' is not on the self-hosted runner allowlist"
