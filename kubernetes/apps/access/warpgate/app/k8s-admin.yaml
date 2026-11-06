@@ -1,0 +1,27 @@
+---
+# Warpgate's Kubernetes target k8s-admin, the write path for coding agents. The
+# target requires a human approval in Warpgate for each session. No pod runs as
+# this account: its token is issued by OpenBao and rotated by
+# kubernetes/apps/openbao/warpgate-tokens.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: warpgate-k8s-admin
+  namespace: access
+automountServiceAccountToken: false
+---
+# Warpgate records request and response bodies, so a Secret read through this
+# target lands in a recording on Warpgate's volume. Keep Secret reads out of
+# agent work; that is policy, not something this binding enforces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: warpgate-k8s-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: warpgate-k8s-admin
+    namespace: access
