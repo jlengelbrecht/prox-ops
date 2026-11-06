@@ -41,6 +41,8 @@ spec:
             secretKeyRef:
               name: authentik-secret
               key: AUTHENTIK_BOOTSTRAP_EMAIL
+        - name: AUTHENTIK_POSTGRESQL__SSLMODE
+          value: require
         - name: AUTHENTIK_POSTGRESQL__PASSWORD
           valueFrom:
             secretKeyRef:
@@ -159,6 +161,8 @@ spec:
               key: AUTHENTIK_ENTRA_CLIENT_SECRET
 
     authentik:
+      postgresql:
+        host: authentik-db-rw
       error_reporting:
         enabled: false
       disable_startup_analytics: true
@@ -212,39 +216,6 @@ spec:
       readinessProbe:
         timeoutSeconds: 10
 
+    # The chart's Postgres is off. Authentik uses the authentik-db cluster.
     postgresql:
-      enabled: true
-      # Held on bookworm: the chart's default moves to trixie, whose glibc can
-      # change en_US.utf8 sort order and leave text indexes stale. That move
-      # needs its own change with a reindex, not a ride on an app upgrade.
-      image:
-        tag: "17.10-bookworm"
-      auth:
-        existingSecret: authentik-secret
-        secretKeys:
-          adminPasswordKey: POSTGRES_PASSWORD
-          userPasswordKey: POSTGRES_PASSWORD
-      primary:
-        persistence:
-          enabled: true
-          existingClaim: data-authentik-postgresql-0  # Use protected PVC
-        # Only the server, the worker and the nightly backup reach Postgres.
-        # The chart default allows 5432 from every pod in the cluster.
-        networkPolicy:
-          allowExternal: false
-          extraIngress:
-            - ports:
-                - port: 5432
-                  protocol: TCP
-              from:
-                - podSelector:
-                    matchLabels:
-                      app.kubernetes.io/instance: authentik
-                      app.kubernetes.io/name: authentik
-                - podSelector:
-                    matchLabels:
-                      app.kubernetes.io/name: authentik-backup
-                # The import into authentik-db, removed with this database.
-                - podSelector:
-                    matchLabels:
-                      cnpg.io/cluster: authentik-db
+      enabled: false
