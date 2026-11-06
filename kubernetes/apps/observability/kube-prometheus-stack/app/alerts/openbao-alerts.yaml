@@ -129,14 +129,15 @@ spec:
             summary: "No successful OpenBao snapshot in over 26 hours"
             description: "The last successful openbao/openbao-snapshots run finished {{ $value | humanizeDuration }} ago. Check the job logs in the openbao namespace."
 
-        # A session gives up after about 10 minutes, so this pages at once. The
-        # second half catches a counter's first sample, which increase() can't
-        # see, including after the counter has gone idle and been recreated.
+        # A session gives up after about 10 minutes, so the window matches that:
+        # the alert stays up while a request may still be waiting, and its route
+        # repeats the page. The second half catches a counter's first sample,
+        # which increase() can't see.
         - alert: WarpgateApprovalPending
           expr: |
-            sum(increase(loki_process_custom_warpgate_approval_requests_total[3m])) > 0
+            sum(increase(loki_process_custom_warpgate_approval_requests_total[10m])) > 0
             or
-            sum(loki_process_custom_warpgate_approval_requests_total unless loki_process_custom_warpgate_approval_requests_total offset 3m) > 0
+            sum(loki_process_custom_warpgate_approval_requests_total unless loki_process_custom_warpgate_approval_requests_total offset 10m) > 0
           labels:
             severity: warning
             component: warpgate
