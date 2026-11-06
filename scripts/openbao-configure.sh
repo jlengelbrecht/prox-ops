@@ -307,7 +307,7 @@ jq -n '{
     token_max_ttl: "4h"}' >"$work/warpgate-k8s-role.json"
 bao_write_json kubernetes/roles/warpgate-k8s-read "$work/warpgate-k8s-role.json"
 
-# Warpgate's k8s-admin target, cluster-admin. Same short lifetime and hourly
+# Warpgate's k8s-admin target, role agent-write. Same short lifetime and hourly
 # rotation as k8s-read, because a leaked token would skip Warpgate's approval.
 log "Writing the Kubernetes secrets engine role warpgate-k8s-admin"
 jq -n '{
