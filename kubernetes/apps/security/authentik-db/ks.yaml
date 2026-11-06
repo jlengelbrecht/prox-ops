@@ -23,6 +23,12 @@ spec:
     name: flux-system
     namespace: flux-system
   wait: true
+  # The Cluster has no observedGeneration, so without this Flux can call it
+  # ready before the operator has written any status.
+  healthCheckExprs:
+    - apiVersion: postgresql.cnpg.io/v1
+      kind: Cluster
+      current: "has(status.conditions) && status.conditions.exists(c, c.type == 'Ready' && c.status == 'True')"
   interval: 30m
   retryInterval: 1m
   timeout: 15m

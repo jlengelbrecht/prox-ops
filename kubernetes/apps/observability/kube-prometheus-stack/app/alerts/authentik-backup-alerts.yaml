@@ -24,7 +24,7 @@ spec:
             pager: "true"
           annotations:
             summary: "No successful Authentik backup in over 26 hours"
-            description: "The last successful security/authentik-backup run finished {{ $value | humanizeDuration }} ago. Check the job's logs, the UNAS NFS share and the authentik-postgresql pod."
+            description: "The last successful security/authentik-backup run finished {{ $value | humanizeDuration }} ago. Check the job's logs, the UNAS NFS share and the authentik-db cluster."
 
         - alert: AuthentikBackupMissing
           expr: absent(kube_cronjob_status_last_successful_time{namespace="security",cronjob="authentik-backup"})
