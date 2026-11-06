@@ -1244,6 +1244,15 @@ data:
           order: 0
         attrs: {negate: false, enabled: true, timeout: 30}
 
+      # The local password path needs a second factor. A user with no MFA
+      # device is refused instead of skipping this stage. Entra and Plex
+      # logins use the source flows and never reach it.
+      - model: authentik_stages_authenticator_validate.authenticatorvalidatestage
+        identifiers:
+          name: default-authentication-mfa-validation
+        attrs:
+          not_configured_action: deny
+
   # =============================================================
   # WARPGATE BLUEPRINT
   # Kept in its own file on purpose: it needs the Warpgate client secret from
