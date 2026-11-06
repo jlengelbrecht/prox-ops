@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve, dirname, join, basename, parse } from 'node:path';
 import { homedir } from 'node:os';
 
-const allowed = new Set(['anthropic/claude-sonnet-5', 'chatgpt-gpt-6-luna']);
+const allowed = new Set(['anthropic/claude-sonnet-5', 'chatgpt-gpt-6-luna', 'qwen36-27b']);
 const gateway = 'https://ai-api.homelab0.org/v1';
 
 async function canonicalPath(path) {
@@ -28,7 +28,7 @@ export function buildConfig({ endpoint = gateway, models, model, smallModel }) {
   try { url = new URL(endpoint); } catch { throw new Error('Invalid pilot gateway endpoint'); }
   if (url.href !== gateway) throw new Error('Pilot gateway endpoint must be the pinned HTTPS gateway');
   if (!Array.isArray(models) || models.length === 0 || new Set(models).size !== models.length || models.some((m) => !allowed.has(m))) {
-    throw new Error('Pilot models must be unique explicit subscription aliases');
+    throw new Error('Pilot models must be unique explicit subscription/local aliases');
   }
   if (!models.includes(model) || !models.includes(smallModel)) {
     throw new Error('Pilot main and lightweight models must be selected from explicit allowed aliases');

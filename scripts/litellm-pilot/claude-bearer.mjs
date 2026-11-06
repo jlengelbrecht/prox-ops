@@ -6,7 +6,7 @@ import { join } from 'node:path';
 const GATEWAY = 'https://ai-api.homelab0.org/v1';
 const PROVIDER = 'litellm-pilot';
 const CLAUDE_MODELS = new Set(['anthropic/claude-sonnet-5']);
-const PILOT_MODELS = new Set([...CLAUDE_MODELS, 'chatgpt-gpt-6-luna']);
+const PILOT_MODELS = new Set([...CLAUDE_MODELS, 'chatgpt-gpt-6-luna', 'qwen36-27b']);
 const ERROR = 'Pilot Claude credential unavailable or request target not approved';
 
 function fail() { throw new Error(ERROR); }
