@@ -1,0 +1,28 @@
+---
+# Authentik's own CloudNativePG cluster, kept apart from the shared one so its
+# maintenance windows never take login down.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app authentik-db
+  namespace: flux-system
+spec:
+  targetNamespace: security
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: external-secrets-operator
+      namespace: flux-system
+    - name: cloudnative-pg-operator
+      namespace: database
+  path: ./kubernetes/apps/security/authentik-db/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
+  interval: 30m
+  retryInterval: 1m
+  timeout: 15m
