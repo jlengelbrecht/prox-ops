@@ -56,8 +56,18 @@ spec:
     - expression: >-
         !(variables.requestNamespace in ["access", "cert-manager", "crossplane-system",
         "external-secrets", "knative-serving", "kserve", "kube-system", "openbao",
-        "rook-ceph", "security", "system-upgrade", "volsync-system"])
+        "rook-ceph", "system-upgrade", "volsync-system"])
       message: agent sessions can't change this namespace
+    # security holds the identity provider. The one exception applies blueprints
+    # from Git, which a session can't otherwise do: exact command, worker only.
+    - expression: >-
+        variables.requestNamespace != "security" ||
+        (request.operation == "CONNECT" && variables.subResource == "exec" &&
+        request.name.startsWith("authentik-worker-") &&
+        object.command.size() >= 3 && object.command[0] == "ak" && object.command[1] == "apply_blueprint" &&
+        object.command.all(c, c == "ak" || c == "apply_blueprint" ||
+        (c.startsWith("mounted/cm-authentik-blueprints/") && !c.contains(".."))))
+      message: agent sessions can only run ak apply_blueprint in security
     - expression: variables.requestNamespace != "flux-system" || variables.flux
       message: agent sessions can only suspend or resume Flux objects in flux-system
     - expression: >-
