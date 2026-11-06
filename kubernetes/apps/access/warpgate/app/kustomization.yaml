@@ -10,7 +10,16 @@ resources:
   - ./openbao-ca.yaml
   - ./k8s-read.yaml
   - ./k8s-admin.yaml
+  - ./agent-guardrails.yaml
+  - ./admin-token.yaml
+  - ./config-sync/cronjob.yaml
   - ./externalsecret.yaml
   - ./pvc.yaml
   - ./helmrelease.yaml
   - ./networkpolicy.yaml
+
+configMapGenerator:
+  - name: warpgate-config-sync
+    files:
+      - sync.py=config-sync/sync.py
+      - state.json=config-sync/state.json

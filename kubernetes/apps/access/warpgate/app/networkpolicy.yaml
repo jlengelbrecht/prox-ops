@@ -42,6 +42,14 @@ spec:
       app.kubernetes.io/name: warpgate
       app.kubernetes.io/instance: warpgate
   ingress:
+    # The config-sync job, on the HTTPS listener only.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: warpgate-config-sync
+      toPorts:
+        - ports:
+            - port: "8888"
+              protocol: TCP
     - fromCIDR:
         - 10.20.65.0/24
         - 10.20.66.0/23

@@ -1,0 +1,76 @@
+---
+# RBAC can't exclude a namespace or a field, so this is what makes agent-write
+# safe next to Warpgate's admin token. An approved agent session can't write or
+# exec in the namespaces that hold the keys to everything else, and can only
+# suspend or resume Flux objects, because any other edit applies with Flux's own
+# rights. Cluster-scoped objects are limited to node updates, for cordoning.
+# The namespace list holds what guards secrets, plus operators whose
+# service accounts can read Secrets cluster-wide. observability, database and
+# network have some too, and stay open for repair work. This doesn't stop a
+# privileged pod elsewhere reaching its node. It relies on agent-write having no
+# access to admissionregistration.k8s.io, fluxcd.controlplane.io or nodes/proxy.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: agent-write-limits
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE", "CONNECT"]
+        resources: ["*/*"]
+  matchConditions:
+    - name: agent-write-session
+      expression: request.userInfo.username == "system:serviceaccount:access:warpgate-k8s-admin"
+  variables:
+    - name: flux
+      expression: request.resource.group.endsWith(".toolkit.fluxcd.io")
+    - name: annotations
+      expression: 'has(object.metadata.annotations) ? object.metadata.annotations : {}'
+    - name: oldAnnotations
+      expression: 'has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}'
+    - name: labels
+      expression: 'has(object.metadata.labels) ? object.metadata.labels : {}'
+    - name: oldLabels
+      expression: 'has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}'
+    - name: finalizers
+      expression: 'has(object.metadata.finalizers) ? object.metadata.finalizers : []'
+    - name: oldFinalizers
+      expression: 'has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []'
+    - name: owners
+      expression: 'has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []'
+    - name: oldOwners
+      expression: 'has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []'
+  validations:
+    - expression: >-
+        request.namespace != "" ||
+        (request.resource.resource == "nodes" && request.subResource == "" && request.operation == "UPDATE")
+      message: agent sessions can only update nodes among cluster-scoped objects
+    - expression: >-
+        !(request.namespace in ["access", "cert-manager", "crossplane-system",
+        "external-secrets", "knative-serving", "kserve", "kube-system", "openbao",
+        "rook-ceph", "security", "system-upgrade", "volsync-system"])
+      message: agent sessions can't change this namespace
+    - expression: request.namespace != "flux-system" || variables.flux
+      message: agent sessions can only suspend or resume Flux objects in flux-system
+    - expression: >-
+        !variables.flux ||
+        (request.operation == "UPDATE" && request.subResource == "" &&
+        object.spec.filter(k, k != "suspend").all(k, k in oldObject.spec && object.spec[k] == oldObject.spec[k]) &&
+        oldObject.spec.filter(k, k != "suspend").all(k, k in object.spec) &&
+        variables.annotations.filter(k, !k.startsWith("reconcile.fluxcd.io/")).all(k, k in variables.oldAnnotations && variables.annotations[k] == variables.oldAnnotations[k]) &&
+        variables.oldAnnotations.filter(k, !k.startsWith("reconcile.fluxcd.io/")).all(k, k in variables.annotations) &&
+        variables.labels == variables.oldLabels &&
+        variables.finalizers == variables.oldFinalizers &&
+        variables.owners == variables.oldOwners)
+      message: agent sessions can only suspend, resume or reconcile Flux objects
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: agent-write-limits
+spec:
+  policyName: agent-write-limits
+  validationActions: ["Deny"]

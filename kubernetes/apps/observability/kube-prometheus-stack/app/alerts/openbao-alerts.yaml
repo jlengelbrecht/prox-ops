@@ -146,6 +146,24 @@ spec:
             summary: "An agent is waiting for approval in Warpgate"
             description: "Approve or deny the session in the Warpgate admin UI at https://access.homelab0.org. It fails by itself after about 10 minutes."
 
+        # Runs every 15 minutes. It also fails if the agent write path has been
+        # weakened, so this is a security signal as well as a health one.
+        - alert: WarpgateConfigSyncFailing
+          expr: |
+            time() - kube_cronjob_status_last_successful_time{namespace="access",cronjob="warpgate-config-sync"} > 1800
+            or
+            kube_job_failed{namespace="access",job_name=~"warpgate-config-sync-.+",condition="true"} > 0
+            or
+            absent(kube_cronjob_status_last_successful_time{namespace="access",cronjob="warpgate-config-sync"})
+          for: 2m
+          labels:
+            severity: critical
+            component: warpgate
+            pager: "true"
+          annotations:
+            summary: "Warpgate config-sync is failing"
+            description: "Check the access/warpgate-config-sync job logs. A line starting 'refused:' means the k8s-admin approval path was changed."
+
         # Tokens last 4 hours and rotate hourly, so this leaves about an hour.
         - alert: OpenBaoWarpgateTokenStale
           expr: time() - kube_cronjob_status_last_successful_time{namespace="openbao",cronjob="warpgate-tokens"} > 2.5 * 3600
