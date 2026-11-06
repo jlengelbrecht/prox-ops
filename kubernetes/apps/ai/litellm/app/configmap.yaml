@@ -75,7 +75,7 @@ data:
           model: "chatgpt/gpt-6-luna"
           timeout: 180
         model_info:
-          description: "ChatGPT Pro gpt-6-luna (smart-router MEDIUM tier)"
+          description: "ChatGPT Pro gpt-6-luna (smart-router SIMPLE and MEDIUM tiers)"
 
       - model_name: "chatgpt-gpt-6-sol"
         litellm_params:
@@ -97,7 +97,8 @@ data:
       # Heuristic scorer (no classifier model call), one model per tier, no
       # pools and no adaptive selection. Tiers resolve to the model names in
       # this list. SIMPLE and MEDIUM share a subscription model: a deterministic
-      # routing choice, not a benchmark result.
+      # routing choice, not a benchmark result. No fallback is configured here:
+      # if that login or its limits are unavailable, both tiers fail.
       # Reference: https://docs.litellm.ai/docs/proxy/auto_routing
       # =====================================================
       - model_name: "smart-router"
@@ -217,7 +218,7 @@ data:
 
     general_settings:
       # Stop the 5-minute upstream /v1/models discovery (router.arefresh_model_info).
-      # It counts as traffic for the scale-to-zero KServe models, so qwen36-27b never unloads.
+      # It counts as traffic for the scale-to-zero KServe model, so dub-text never unloads.
       disable_model_info_refresh: true
       # Client headers are NOT forwarded globally. Only the anthropic/* model group
       # forwards them (litellm_settings.model_group_settings), so a Claude Code
