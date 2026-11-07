@@ -92,6 +92,11 @@ class Sync(unittest.TestCase):
         item.update(changes)
         self.store.write_text(json.dumps(state))
 
+    def hand_edit(self, title):
+        fields = self.item(title)["fields"]
+        next(f for f in fields if f["label"] == "password")["value"] = "typed by hand"
+        self.edit_item(title, fields=fields, updated_at="2026-11-07T01:00:00Z")
+
     def fields(self, title):
         return {f["label"]: f for f in self.item(title)["fields"]}
 
@@ -150,18 +155,18 @@ class Sync(unittest.TestCase):
     def test_a_hand_edit_holds_the_item_and_fails(self):
         self.lab.seed("pam/live/one", password=CANARY)
         self.sync()
-        self.edit_item("pam/live/one", updated_at="2026-11-07T01:00:00Z")
+        self.hand_edit("pam/live/one")
         self.lab.seed("pam/live/one", password="rotated")
         result = self.sync()
         self.assertEqual(result.returncode, 1)
         self.assertIn("pam/live/one", result.stdout)
         self.assertIn("edited", result.stdout)
-        self.assertEqual(self.fields("pam/live/one")["password"]["value"], CANARY)
+        self.assertEqual(self.fields("pam/live/one")["password"]["value"], "typed by hand")
 
     def test_a_hand_edit_holds_a_soft_delete_and_survives_a_new_version(self):
         self.lab.seed("pam/live/one", password=CANARY)
         self.sync()
-        self.edit_item("pam/live/one", updated_at="2026-11-07T01:00:00Z")
+        self.hand_edit("pam/live/one")
         self.lab.ok("DELETE", "kv/data/pam/live/one")
         result = self.sync()
         self.assertEqual(result.returncode, 1)
@@ -169,7 +174,7 @@ class Sync(unittest.TestCase):
         self.assertNotIn("deleted-in-openbao", self.item("pam/live/one")["tags"])
         self.lab.seed("pam/live/one", password="rotated")
         self.assertEqual(self.sync().returncode, 1)
-        self.assertEqual(self.fields("pam/live/one")["password"]["value"], CANARY)
+        self.assertEqual(self.fields("pam/live/one")["password"]["value"], "typed by hand")
 
     def test_values_come_from_the_version_asked_for(self):
         self.lab.seed("pam/live/one", password="first")
@@ -191,17 +196,21 @@ class Sync(unittest.TestCase):
         sync, bao = self.load_sync()
         full = {"updated_at": "later", "fields": [{"label": "bao_version", "value": "1"}]}
         with self.assertRaises(sync.Hold):
-            sync.check_not_edited(bao, full, "live/one", 1, "recorded")
-        sync.check_not_edited(bao, {**full, "updated_at": "recorded"}, "live/one", 1, "recorded")
+            sync.check_not_edited(bao, full, "live/one", 1, "recorded", "")
+        sync.check_not_edited(bao, {**full, "updated_at": "recorded"}, "live/one", 1, "recorded", "")
+        full["fields"].append({"label": "password", "value": "x"})
+        sync.check_not_edited(bao, full, "live/one", 1, "recorded", sync.digest({"password": "x"}))
+        with self.assertRaises(sync.Hold):
+            sync.check_not_edited(bao, full, "live/one", 1, "recorded", sync.digest({"password": "y"}))
 
     def test_recovery_compares_the_fields_with_that_version(self):
         self.lab.seed("pam/live/one", password=CANARY)
         sync, bao = self.load_sync()
         fields = [{"label": "bao_version", "value": "1"}, {"label": "password", "value": CANARY}]
-        sync.check_not_edited(bao, {"updated_at": "x", "fields": fields}, "live/one", 0, "")
+        sync.check_not_edited(bao, {"updated_at": "x", "fields": fields}, "live/one", 0, "", "")
         edited = [fields[0], {"label": "password", "value": "typed by hand"}]
         with self.assertRaises(sync.Hold):
-            sync.check_not_edited(bao, {"updated_at": "x", "fields": edited}, "live/one", 0, "")
+            sync.check_not_edited(bao, {"updated_at": "x", "fields": edited}, "live/one", 0, "", "")
 
     def test_an_item_ahead_of_openbao_holds_and_fails(self):
         self.lab.seed("pam/live/one", password=CANARY)
@@ -217,7 +226,7 @@ class Sync(unittest.TestCase):
     def test_one_held_item_doesnt_stop_the_others(self):
         self.lab.seed("pam/live/one", password=CANARY)
         self.sync()
-        self.edit_item("pam/live/one", updated_at="2026-11-07T01:00:00Z")
+        self.hand_edit("pam/live/one")
         self.lab.seed("pam/live/two", password=CANARY)
         self.assertEqual(self.sync().returncode, 1)
         self.assertEqual(self.fields("pam/live/two")["bao_version"]["value"], "1")
@@ -261,6 +270,22 @@ class Sync(unittest.TestCase):
         before = len(self.writes())
         self.assertClean(self.sync())
         self.assertEqual(len(self.writes()), before)
+
+    def test_a_tag_written_without_its_record_recovers_after_undelete(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.sync()
+        self.lab.ok("DELETE", "kv/data/pam/live/one")
+        before = self.custom("live/one")
+        self.assertClean(self.sync())
+        # Put the record back as it was before the tag write, as if the job died in between.
+        self.lab.ok("PATCH", "kv/metadata/pam/live/one", {"custom_metadata": before},
+                    headers={"Content-Type": "application/merge-patch+json"})
+        self.lab.ok("POST", "kv/undelete/pam/live/one", {"versions": [1]})
+        self.assertClean(self.sync())
+        self.assertNotIn("deleted-in-openbao", self.item("pam/live/one")["tags"])
+        self.lab.seed("pam/live/one", password="rotated")
+        self.assertClean(self.sync())
+        self.assertEqual(self.fields("pam/live/one")["password"]["value"], "rotated")
 
     def test_a_scheduled_deletion_still_syncs_until_it_passes(self):
         self.lab.ok("POST", "kv/metadata/pam/live/later", {"delete_version_after": "1h"})

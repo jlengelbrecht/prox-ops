@@ -154,8 +154,14 @@ def version_number(text, path, what):
         raise Hold(f"{path}: {what} isn't a version number")
 
 
+def as_strings(values):
+    """Values as 1Password holds them."""
+    return {k: v if isinstance(v, str) else json.dumps(v) for k, v in values.items()}
+
+
 def digest(values):
-    return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
+    """Of the values as stored in 1Password, so an item's own fields can be checked against it."""
+    return hashlib.sha256(json.dumps(as_strings(values), sort_keys=True).encode()).hexdigest()
 
 
 def tags_for(item, *extra):
@@ -190,18 +196,25 @@ def set_tags(item, tags):
     return op("item", "edit", item["id"], "--vault", VAULT, "--tags", ",".join(tags))
 
 
+def own_fields(full):
+    return {f.get("label"): f.get("value") for f in full.get("fields", [])
+            if not f.get("purpose") and f.get("label") not in RESERVED}
+
+
 def fields_match(full, values):
     """True when the item's own fields hold exactly these values."""
-    own = {f.get("label"): f.get("value") for f in full.get("fields", [])
-           if not f.get("purpose") and f.get("label") not in ("bao_path", "bao_version", "bao_hash")}
-    return own == {k: v if isinstance(v, str) else json.dumps(v) for k, v in values.items()}
+    return own_fields(full) == as_strings(values)
 
 
-def check_not_edited(bao, full, path, synced, recorded):
+def check_not_edited(bao, full, path, synced, recorded, recorded_hash):
     """Uses the freshly fetched item, so an edit made after the listing is still seen."""
     held = version_number(field(full, "bao_version") or 0, path, "bao_version")
     if held == synced:
-        if recorded and full.get("updated_at") != recorded:
+        # A newer timestamp alone can be the job's own tag write whose record step never ran.
+        # The recorded hash lives in OpenBao, out of agents' reach: fields that still hash to it
+        # haven't been edited.
+        if recorded and full.get("updated_at") != recorded and (
+                not recorded_hash or digest(own_fields(full)) != recorded_hash):
             raise Hold(f"{path}: the item was edited in 1Password; OpenBao stays the source")
         return
     # A run died between writing the item and recording it, so the timestamp can't be compared.
@@ -256,7 +269,7 @@ def sync_path(bao, path, item, listed, read):
     if deleted:
         if item is None or tagged:
             return None
-        check_not_edited(bao, op("item", "get", item["id"], "--vault", VAULT), path, synced, recorded)
+        check_not_edited(bao, op("item", "get", item["id"], "--vault", VAULT), path, synced, recorded, recorded_hash)
         bao.record(path, synced, set_tags(item, tags_for(item, DELETED_TAG)), recorded_hash)
         return "marked deleted"
 
@@ -275,7 +288,7 @@ def sync_path(bao, path, item, listed, read):
     held = version_number(field(full, "bao_version") or 0, path, "bao_version")
     if held > current:
         raise Hold(f"{path}: item is at version {held}, ahead of OpenBao at {current}; was OpenBao restored?")
-    check_not_edited(bao, full, path, synced, recorded)
+    check_not_edited(bao, full, path, synced, recorded, recorded_hash)
     if held == current:
         if field(full, "bao_hash") != content:
             raise Hold(f"{path}: same version as the item but different content; was OpenBao restored?")
