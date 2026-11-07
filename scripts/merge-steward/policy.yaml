@@ -7,8 +7,15 @@
 version: 1
 
 # The Renovate app. Only its PRs from this repository are evaluated. A same-repo PR by a
-# person gets success as out of scope. Any other Bot and any fork PR get needs-human.
+# person, or by an app named in trusted_apps, gets success as out of scope. Any other Bot and
+# any fork PR get needs-human.
 authors: ["renovate[bot]"]
+# In-repo apps whose PRs are treated like a person's: success as out of scope, and an advisory
+# review. Each entry is one exact login (case matters) and the PR must be a Bot from this
+# repository, never a fork. The loader refuses patterns and refuses a login also listed in
+# authors. Adding an app here lets it open PRs the steward does not judge, so name only apps
+# whose PRs a person reviews and merges.
+trusted_apps: ["homelab0-intern[bot]"]
 # GitHub's committer for commits made through its API or web UI. Together with a valid
 # signature, this is what shows a commit did not arrive by plain git push.
 commit_signer: web-flow
