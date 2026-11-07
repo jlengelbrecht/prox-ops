@@ -150,17 +150,19 @@ bao_list() { # <path> <file>: an empty list is exit 2 with {}, anything else sto
   fi
 }
 
-read_each() { # <path> <jq for each entry> <jq for the whole list>
+read_each() { # <path> <jq for each entry> <jq for the whole list> [name to leave out]
   local name names
   bao_list "$1" "$work/gate-names"
-  mapfile -t names < <(jq -r '.[] | select(. != "root")' "$work/gate-names")
+  mapfile -t names < <(jq -r --arg skip "${4:-}" '.[] | select($skip == "" or . != $skip)' "$work/gate-names")
   for name in "${names[@]}"; do
     bao_json read "$1/$name" | jq --arg name "$name" "$2"
   done | jq -s "$3"
 }
 
 read_gate_state() {
-  read_each sys/policies/acl '{($name): .data.policy}' 'add // {}' >"$work/gate-policies.json"
+  # The root policy has no text. Only this list may leave out a name: an entity, group or role
+  # can be called root too.
+  read_each sys/policies/acl '{($name): .data.policy}' 'add // {}' root >"$work/gate-policies.json"
   read_each identity/entity/name .data . >"$work/gate-entities.json"
   read_each identity/group/name .data . >"$work/gate-groups.json"
   local jwt_accessor pam_oidc_accessor
