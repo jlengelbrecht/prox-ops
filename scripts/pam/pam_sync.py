@@ -187,12 +187,25 @@ def set_tags(item, tags):
     return op("item", "edit", item["id"], "--vault", VAULT, "--tags", ",".join(tags))
 
 
-def check_not_edited(full, item, path, synced, recorded):
-    # After a run that died between writing the item and recording it, held is ahead of synced
-    # and the timestamp can't be compared: only a matching version shows a hand edit.
+def fields_match(full, values):
+    """True when the item's own fields hold exactly these values."""
+    own = {f.get("label"): f.get("value") for f in full.get("fields", [])
+           if not f.get("purpose") and f.get("label") not in ("bao_path", "bao_version", "bao_hash")}
+    return own == {k: v if isinstance(v, str) else json.dumps(v) for k, v in values.items()}
+
+
+def check_not_edited(bao, full, path, synced, recorded):
+    """Uses the freshly fetched item, so an edit made after the listing is still seen."""
     held = version_number(field(full, "bao_version") or 0, path, "bao_version")
-    if held == synced and recorded and item["updated_at"] != recorded:
-        raise Hold(f"{path}: the item was edited in 1Password; OpenBao stays the source")
+    if held == synced:
+        if recorded and full.get("updated_at") != recorded:
+            raise Hold(f"{path}: the item was edited in 1Password; OpenBao stays the source")
+        return
+    # A run died between writing the item and recording it, so the timestamp can't be compared.
+    # Compare the fields with the version the item claims to hold instead.
+    source = bao.values(path, held) if held > 0 else None
+    if source is None or not fields_match(full, source):
+        raise Hold(f"{path}: can't confirm the item still matches version {held}; check it by hand")
 
 
 def sync_path(bao, path, item):
@@ -211,7 +224,7 @@ def sync_path(bao, path, item):
     if deleted:
         if item is None or tagged:
             return None
-        check_not_edited(op("item", "get", item["id"], "--vault", VAULT), item, path, synced, recorded)
+        check_not_edited(bao, op("item", "get", item["id"], "--vault", VAULT), path, synced, recorded)
         bao.record(path, synced, set_tags(item, tags_for(item, DELETED_TAG))["updated_at"], recorded_hash)
         return "marked deleted"
 
@@ -230,11 +243,11 @@ def sync_path(bao, path, item):
     held = version_number(field(full, "bao_version") or 0, path, "bao_version")
     if held > current:
         raise Hold(f"{path}: item is at version {held}, ahead of OpenBao at {current}; was OpenBao restored?")
-    check_not_edited(full, item, path, synced, recorded)
+    check_not_edited(bao, full, path, synced, recorded)
     if held == current:
         if field(full, "bao_hash") != content:
             raise Hold(f"{path}: same version as the item but different content; was OpenBao restored?")
-        updated = set_tags(item, tags_for(item))["updated_at"] if tagged else item["updated_at"]
+        updated = set_tags(item, tags_for(item))["updated_at"] if tagged else full["updated_at"]
         bao.record(path, current, updated, content)
         return f"recorded version {current}"
     bao.record(path, current, update(full, path, current, content, values)["updated_at"], content)
