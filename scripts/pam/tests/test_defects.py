@@ -99,6 +99,10 @@ class Defect2PlainGrantRemovesTheGate(lab.Case):
         self.lab.policy("glob", gated("kv/data/pam/live/*") + plain(self.path))
         self.assertUngated("glob")
 
+    def test_the_legacy_policy_attribute_is_a_plain_grant(self):
+        self.lab.policy("a-legacy", f'path "{self.path}" {{\n  policy = "read"\n}}\n')
+        self.assertUngated("a-legacy", "z-gated")
+
     def test_a_capability_left_out_of_controlled_capabilities_runs_unapproved(self):
         self.lab.policy("subset", gated(self.path, '"read", "update"', controlled='controlled_capabilities = ["update"]'))
         self.assertUngated("subset")
