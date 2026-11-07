@@ -219,8 +219,23 @@ class Sync(unittest.TestCase):
         self.assertEqual(self.item("pam/live/one")["tags"], ["openbao-sync"])
         self.assertEqual(self.fields("pam/live/one")["password"]["value"], "back")
 
+    def test_an_empty_listing_with_items_holds_the_run(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.lab.seed("pam/live/two", password=CANARY)
+        self.sync()
+        self.lab.ok("DELETE", "kv/metadata/pam/live/one")
+        self.lab.ok("DELETE", "kv/metadata/pam/live/two")
+        before = len(self.writes())
+        result = self.sync()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("hold run: OpenBao lists nothing", result.stdout)
+        self.assertNotIn(CANARY, result.stdout + result.stderr)
+        self.assertEqual(len(self.writes()), before)
+        self.assertEqual(self.item("pam/live/one")["tags"], ["openbao-sync"])
+
     def test_full_delete_tags_the_item_and_keeps_it(self):
         self.lab.seed("pam/live/one", password=CANARY)
+        self.lab.seed("pam/live/kept", password=CANARY)
         self.sync()
         self.lab.ok("DELETE", "kv/metadata/pam/live/one")
         self.assertClean(self.sync())
@@ -229,6 +244,7 @@ class Sync(unittest.TestCase):
 
     def test_never_calls_delete(self):
         self.lab.seed("pam/live/one", password=CANARY)
+        self.lab.seed("pam/live/kept", password=CANARY)
         self.sync()
         self.lab.ok("DELETE", "kv/metadata/pam/live/one")
         self.sync()
@@ -271,6 +287,7 @@ class Sync(unittest.TestCase):
 
     def test_hand_added_tags_survive(self):
         self.lab.seed("pam/live/one", password=CANARY)
+        self.lab.seed("pam/live/kept", password=CANARY)
         self.sync()
         self.edit_item("pam/live/one", tags=["openbao-sync", "keep-me"])
         self.lab.ok("PATCH", "kv/metadata/pam/live/one", {"custom_metadata": {"pam_item_updated": self.item("pam/live/one")["updated_at"]}},

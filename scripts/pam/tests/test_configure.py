@@ -154,6 +154,34 @@ class Configure(unittest.TestCase):
         self.lab.ok("POST", "identity/entity-alias", {"name": "owner-sub", "canonical_id": eid, "mount_accessor": accessor})
         self.assertRefused("holds policies directly")
 
+    def test_an_entity_called_root_cant_hide(self):
+        eid = self.lab.ok("POST", "identity/entity", {"name": "root", "policies": ["pam-sync"]})["data"]["id"]
+        self.lab.ok("POST", "identity/entity-alias", {"name": "root", "canonical_id": eid, "mount_accessor": self.lab.jwt_accessor})
+        self.assertRefused("identity root holds pam-sync")
+
+    def test_a_group_called_root_cant_hide(self):
+        gid = self.lab.ok("POST", "identity/group", {"name": "root", "type": "external"})["data"]["id"]
+        self.lab.ok("POST", "identity/group-alias", {"name": "root", "mount_accessor": self.lab.jwt_accessor, "canonical_id": gid})
+        self.assertRefused("group root is aliased on the jwt mount")
+
+    def test_a_role_called_root_cant_hide(self):
+        self.lab.ok("POST", "auth/jwt/role/root", {
+            "role_type": "jwt", "user_claim": "preferred_username", "bound_audiences": [lab.AUDIENCE],
+            "token_policies": ["pam-agent"], "token_no_default_policy": True, "groups_claim": "groups"})
+        self.assertRefused("role root sets groups_claim")
+
+    def test_a_policy_called_root_stays_out_of_the_list(self):
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_refuses_a_wider_live_policy(self):
+        self.lab.policy("pam-agent", lab.AGENT_POLICY + 'path "kv/data/pam/live/x" {\n  capabilities = ["read"]\n}\n')
+        self.assertRefused("live pam-agent: plain grant")
+
+    def test_refuses_a_legacy_grant_in_a_repo_policy(self):
+        (self.config / "pam-test.hcl").write_text('path "kv/data/pam/live/x" {\n  policy = "read"\n}\n')
+        self.assertRefused("plain grant")
+
     def test_refuses_a_direct_reader_policy_on_an_agent(self):
         self.lab.ok("POST", "identity/entity/name/agent-claude", {"policies": ["pam-sync"]})
         result = self.configure("--check")

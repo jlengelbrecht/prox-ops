@@ -247,6 +247,11 @@ def run(bao):
     except (RuntimeError, KeyError, ValueError) as error:
         print(f"hold run: {error if isinstance(error, RuntimeError) else type(error).__name__}")
         return failures + 1
+    # OpenBao answers 404 for an empty listing, and for a mount that's missing or restored empty.
+    # Tagging every record as deleted on that is a decision for a person.
+    if not paths and items:
+        print(f"hold run: OpenBao lists nothing under kv/pam, but {len(items)} item(s) exist")
+        return failures + 1
 
     for path in paths:
         title = f"pam/{path}"
