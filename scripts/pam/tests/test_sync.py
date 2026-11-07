@@ -479,6 +479,43 @@ class Sync(unittest.TestCase):
         self.assertNotIn("pam/zz/gone: marked deleted", result.stdout)
         self.assertEqual(self.item("pam/zz/gone")["tags"], ["openbao-sync"])
 
+    def test_an_item_that_lost_its_tag_is_held_not_replaced(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.sync()
+        self.edit_item("pam/live/one", tags=["by-hand"])
+        self.lab.seed("pam/live/one", password="rotated")
+        result = self.sync()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("gone from the tagged listing", result.stdout)
+        self.assertEqual(len(self.items()), 1)
+        self.assertEqual(self.fields("pam/live/one")["password"]["value"], CANARY)
+
+    def test_an_item_renamed_onto_another_path_is_not_overwritten(self):
+        self.lab.seed("pam/live/a", password=CANARY)
+        self.sync()
+        self.edit_item("pam/live/a", title="pam/live/b", updated_at="2026-11-07T01:00:00Z")
+        self.lab.seed("pam/live/b", password=CANARY)
+        self.lab.seed("pam/live/b", password="rotated")
+        result = self.sync()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("synced from another path", result.stdout)
+        self.assertEqual(len(self.items()), 1)
+        fields = self.fields("pam/live/b")
+        self.assertEqual(fields["bao_path"]["value"], "live/a")
+        self.assertEqual(fields["password"]["value"], CANARY)
+
+    def test_a_hand_edit_holds_a_full_delete(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.lab.seed("pam/live/two", password=CANARY)
+        self.sync()
+        self.hand_edit("pam/live/one")
+        self.lab.ok("DELETE", "kv/metadata/pam/live/one")
+        result = self.sync()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("edited in 1Password and gone from OpenBao", result.stdout)
+        self.assertEqual(self.item("pam/live/one")["tags"], ["openbao-sync"])
+        self.assertEqual(self.fields("pam/live/one")["password"]["value"], "typed by hand")
+
     def test_bad_version_metadata_holds_one_path(self):
         self.lab.seed("pam/live/one", password=CANARY)
         self.lab.seed("pam/live/two", password=CANARY)

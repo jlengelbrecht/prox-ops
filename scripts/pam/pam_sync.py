@@ -206,6 +206,12 @@ def fields_match(full, values):
     return own_fields(full) == as_strings(values)
 
 
+def check_owner(full, path):
+    """An item renamed onto another path's title still names its own path in bao_path."""
+    if full.get("held") or field(full, "bao_path") != path:
+        raise Hold(f"{path}: the item titled pam/{path} was synced from another path")
+
+
 def check_not_edited(bao, full, path, synced, recorded, recorded_hash):
     """Uses the freshly fetched item, so an edit made after the listing is still seen."""
     held = version_number(field(full, "bao_version") or 0, path, "bao_version")
@@ -262,6 +268,8 @@ def sync_path(bao, path, item, listed, read):
             raise Hold(f"{path}: its item is now titled {shown(listed[known]['title'])}; rename it back to pam/{path}")
         if item is not None:
             raise Hold(f"{path}: the item titled pam/{path} is not the one this path was synced to")
+        # Untagged, moved or deleted by hand. Creating a replacement would hide that.
+        raise Hold(f"{path}: the item it was synced to is gone from the tagged listing; check it by hand")
     latest = meta["versions"].get(str(current), {})
     deleted = bool(latest.get("destroyed")) or already_past(latest.get("deletion_time"), path)
     tagged = item is not None and DELETED_TAG in (item.get("tags") or [])
@@ -269,7 +277,9 @@ def sync_path(bao, path, item, listed, read):
     if deleted:
         if item is None or tagged:
             return None
-        check_not_edited(bao, op("item", "get", item["id"], "--vault", VAULT), path, synced, recorded, recorded_hash)
+        full = op("item", "get", item["id"], "--vault", VAULT)
+        check_owner({**full, "held": item.get("held")}, path)
+        check_not_edited(bao, full, path, synced, recorded, recorded_hash)
         bao.record(path, synced, set_tags(item, tags_for(item, DELETED_TAG)), recorded_hash)
         return "marked deleted"
 
@@ -288,6 +298,7 @@ def sync_path(bao, path, item, listed, read):
     held = version_number(field(full, "bao_version") or 0, path, "bao_version")
     if held > current:
         raise Hold(f"{path}: item is at version {held}, ahead of OpenBao at {current}; was OpenBao restored?")
+    check_owner({**full, "held": item.get("held")}, path)
     check_not_edited(bao, full, path, synced, recorded, recorded_hash)
     if held == current:
         if field(full, "bao_hash") != content:
@@ -351,6 +362,12 @@ def run(bao):
             continue
         if title not in duplicates and DELETED_TAG not in (item.get("tags") or []):
             try:
+                # The record in OpenBao is gone, so check the item against its own bao_hash.
+                full = op("item", "get", item["id"], "--vault", VAULT)
+                if digest(own_fields(full)) != field(full, "bao_hash"):
+                    print(f"hold {shown(title)}: edited in 1Password and gone from OpenBao; check it by hand")
+                    failures += 1
+                    continue
                 set_tags(item, tags_for(item, DELETED_TAG))
                 print(f"{shown(title)}: marked deleted")
             except RuntimeError as error:
