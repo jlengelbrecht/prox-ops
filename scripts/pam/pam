@@ -269,7 +269,7 @@ def run_filtered(command, env, secrets):
         raise Stop(REFUSED, f"could not run {command[0]}: {type(e).__name__}")
     child = running["child"]
     try:
-        return pump(child, secrets)
+        return pump(child, secrets, stop_group)
     finally:
         # Nothing the command started may outlive pam: its environment holds the value.
         stop_group()
@@ -282,12 +282,19 @@ def run_filtered(command, env, secrets):
         running["timer"].cancel()
 
 
-def pump(child, secrets):
+def pump(child, secrets, stop_group):
+    """Copies the child's output through the redactor. Once the command itself
+    exits, anything it left running gets the same TERM then KILL, so a
+    background worker holding the pipes can't keep pam waiting."""
     selector = selectors.DefaultSelector()
     for source, target in ((child.stdout, sys.stdout.buffer), (child.stderr, sys.stderr.buffer)):
         selector.register(source, selectors.EVENT_READ, (target, Redactor(secrets)))
+    stopping = False
     while selector.get_map():
-        for key, _ in selector.select():
+        if not stopping and child.poll() is not None:
+            stop_group()
+            stopping = True
+        for key, _ in selector.select(timeout=0.5):
             target, redactor = key.data
             data = os.read(key.fd, 1 << 16)
             if not data:
