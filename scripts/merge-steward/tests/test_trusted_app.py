@@ -15,7 +15,7 @@ from test_review import advisory, artifact, LOW
 from test_review_workflow import GITHUB
 from test_steward import POLICY, SHA, FakeGitHub, fresh_head, renovate_pr, routes  # noqa: F401
 
-APP = "homelab0-intern[bot]"
+APP = "homelab0-agents[bot]"
 POLICY_FILE = Path(__file__).resolve().parents[1] / "policy.yaml"
 
 
@@ -32,9 +32,9 @@ def test_the_named_app_in_this_repository_is_out_of_scope():
 
 
 @pytest.mark.parametrize("login", [
-    "Homelab0-Intern[bot]", "HOMELAB0-INTERN[BOT]", "homelab0-intern[Bot]", "homelab0-intern[bot] ", " homelab0-intern[bot]",
-    "homelab0-intern-2[bot]", "homelab0-intern", "xhomelab0-intern[bot]", "homelab0-inte[bot]", "homelab0[bot]",
-    "homelab0-intern[bot]​", "homelab0‑intern[bot]",
+    "homelab0-intern[bot]", "Homelab0-Agents[bot]", "HOMELAB0-AGENTS[BOT]", "homelab0-agents[Bot]", "homelab0-agents[bot] ", " homelab0-agents[bot]",
+    "homelab0-agents-2[bot]", "homelab0-agents", "xhomelab0-agents[bot]", "homelab0-agen[bot]", "homelab0[bot]",
+    "homelab0-agents[bot]​", "homelab0‑agents[bot]",
 ])
 def test_a_lookalike_of_the_app_is_needs_human(login):
     pr = app_pr(login)
@@ -111,9 +111,9 @@ def test_the_loader_accepts_the_shipped_policy_and_an_empty_list(tmp_path):
 
 
 @pytest.mark.parametrize("value", [
-    None, "homelab0-intern[bot]", {"a": "b"}, [1], [None], ["*"], ["*[bot]"], ["homelab0-*[bot]"], ["/homelab0/"], ["homelab0-intern"],
-    ["homelab0 intern[bot]"], ["[bot]"], ["homelab0-intern[bot]", "homelab0-intern[bot]"],
-    ["homelab0-intern[bot]", "Homelab0-Intern[bot]"], ["renovate[bot]"], ["Renovate[bot]"], [""], ["a[bot]\n"],
+    None, "homelab0-agents[bot]", {"a": "b"}, [1], [None], ["*"], ["*[bot]"], ["homelab0-*[bot]"], ["/homelab0/"], ["homelab0-agents"],
+    ["homelab0 agents[bot]"], ["[bot]"], ["homelab0-agents[bot]", "homelab0-agents[bot]"],
+    ["homelab0-agents[bot]", "Homelab0-Agents[bot]"], ["renovate[bot]"], ["Renovate[bot]"], [""], ["a[bot]\n"],
 ])
 def test_the_loader_refuses_a_missing_wide_or_overlapping_entry(tmp_path, value):
     raw = policy_with()
@@ -138,7 +138,7 @@ def test_the_named_app_gets_success_and_a_stale_needs_human_label_and_comment_ar
     assert ("DELETE", "issues/comments/77", None) in app.writes
 
 
-@pytest.mark.parametrize("login", ["Homelab0-Intern[bot]", "dependabot[bot]"])
+@pytest.mark.parametrize("login", ["Homelab0-Agents[bot]", "dependabot[bot]"])
 def test_a_lookalike_or_other_bot_still_fails_the_check(login):
     pr = renovate_pr(login=login)
     gh, app = FakeGitHub(routes(pr)), FakeGitHub({})

@@ -305,6 +305,8 @@ def check(policy_dir, state):
     live = state.get("policies", {})
     repo = {path.stem: path.read_text() for path in sorted(pathlib.Path(policy_dir).glob("*.hcl"))}
     findings = check_accessors(state)
+    if not repo:
+        findings.append(f"no policies found in {policy_dir}, so there is nothing to check")
     for name, text in sorted(repo.items()):
         findings += check_policy(name, text)
     for name, text in sorted(live.items()):
