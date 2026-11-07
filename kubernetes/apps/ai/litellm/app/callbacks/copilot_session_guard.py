@@ -67,7 +67,7 @@ class CopilotSessionGuard(CustomLogger):
                         raise _deny()
                     if selected == ALIAS and bucket.get("deployment") != BACKEND:
                         raise _deny()
-                    if selected == ALIAS and bucket.get("api_base") is not None:
+                    if selected == ALIAS and (bucket.get("api_base") is not None or bucket.get("base_url") is not None):
                         raise _deny()
             if not any(
                 isinstance(bucket, Mapping) and bucket.get("deployment_model_name") == ALIAS
@@ -76,7 +76,7 @@ class CopilotSessionGuard(CustomLogger):
                 raise _deny()
             if kwargs.get("model") != BACKEND or kwargs.get("litellm_credential_name") != CREDENTIAL:
                 raise _deny()
-            if kwargs.get("api_base") is not None or kwargs.get("api_key") is not None:
+            if any(kwargs.get(key) is not None for key in ("api_base", "base_url", "api_key")):
                 raise _deny()
             if GITHUB_COPILOT_USER_SESSION_KWARG_KEY in kwargs:
                 raise _deny()

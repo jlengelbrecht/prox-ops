@@ -209,6 +209,16 @@ def main():
                 state['credential'] = good
                 expect_denied(hook.async_pre_call_deployment_hook(request('gpt-4'), 'aresponses'))
             check('protected_backend_alias_mismatch_denied', mismatched_alias)
+            def base_url_override():
+                state['credential'] = good
+                for placement in ('top', 'metadata', 'litellm_metadata'):
+                    req = request()
+                    if placement == 'top':
+                        req['base_url'] = 'https://attacker.invalid'
+                    else:
+                        req[placement] = dict(req['litellm_metadata'], base_url='https://attacker.invalid')
+                    expect_denied(hook.async_pre_call_deployment_hook(req, 'aresponses'))
+            check('base_url_override_denied', base_url_override)
             def no_shared_auth():
                 assert state['shared'] == 0
             check('shared_auth_never_invoked', no_shared_auth)

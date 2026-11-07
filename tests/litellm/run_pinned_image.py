@@ -22,7 +22,7 @@ EXPECTED = frozenset({
     'wrong_mode', 'missing_owner', 'spoofed_session', 'rejected_exchange',
     'mode_change_before_attach', 'change_during_exchange_keeps_session',
     'other_alias_unchanged', 'protected_backend_alias_mismatch_denied',
-    'shared_auth_never_invoked',
+    'shared_auth_never_invoked', 'base_url_override_denied',
 })
 IDENT = re.compile(r'^[A-Za-z_][A-Za-z_0-9]{0,79}$')
 
@@ -78,7 +78,9 @@ def run(result_dir):
         contract = json.loads(CONTRACT.read_text())
     except (OSError, UnicodeError, ValueError):
         return {'status': 'fail', 'reason': 'contract_schema', 'contract_sha256': contract_hash}
-    image = contract.get('image') if isinstance(contract, dict) else None
+    if not isinstance(contract, dict):
+        return {'status': 'fail', 'reason': 'contract_schema', 'contract_sha256': contract_hash}
+    image = contract.get('image')
     if (contract.get('schema') != 'litellm-copilot-image-contract/1'
             or not isinstance(image, str)
             or not re.fullmatch(r'ghcr\.io/berriai/litellm-database:v1\.108\.0@sha256:[0-9a-f]{64}', image)

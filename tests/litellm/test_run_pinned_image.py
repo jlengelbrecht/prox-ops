@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -17,6 +18,18 @@ class PinnedResultTests(unittest.TestCase):
         self.assertEqual(result['status'], 'fail')
         self.assertEqual(result['reason'], 'missing_input')
         self.assertNotIn('traceback', result)
+
+    def test_non_object_contract_returns_closed_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            contract = Path(directory) / 'image_contract.json'
+            for content in ('[]', 'null'):
+                with self.subTest(content=content):
+                    contract.write_text(content)
+                    with patch.object(runner, 'CONTRACT', contract):
+                        result = runner.run(Path(directory))
+                    self.assertEqual(result['status'], 'fail')
+                    self.assertEqual(result['reason'], 'contract_schema')
+                    self.assertEqual(result['contract_sha256'], runner.digest(contract))
 
     def test_closed_result_rejects_missing_and_duplicate_checks(self):
         valid = {'schema': 'litellm-copilot-image-result/1',

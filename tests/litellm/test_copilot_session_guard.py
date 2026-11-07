@@ -100,12 +100,13 @@ class GuardTests(unittest.TestCase):
                     self.run_hook(self.request())
                 self.assertEqual(self.native_calls, 0)
 
-    def test_change_between_check_and_attach_fails(self):
+    def test_change_during_attach_keeps_valid_session(self):
         async def changed(kwargs):
             self.__class__.credential.credential_values['github_copilot_auth_type'] = 'shared'
+            kwargs['github_copilot_user_session'] = Session()
         with patch.object(self.module, 'aattach_github_copilot_user_session', changed):
-            with self.assertRaises(AuthFailure):
-                self.run_hook(self.request())
+            result = self.run_hook(self.request())
+        self.assertIsInstance(result['github_copilot_user_session'], Session)
 
     def test_missing_owner_session_and_spoofed_fields_fail(self):
         cases = []
@@ -116,6 +117,7 @@ class GuardTests(unittest.TestCase):
         for key, value in (
             ('github_copilot_user_session', Session()),
             ('api_base', 'https://attacker.invalid'),
+            ('base_url', 'https://attacker.invalid'),
             ('api_key', 'synthetic-caller-key'),
             ('litellm_credential_name', 'wrong'),
             ('model', 'github_copilot/other'),
@@ -125,6 +127,14 @@ class GuardTests(unittest.TestCase):
             cases.append(request)
         for request in cases:
             with self.subTest(request=tuple(request)):
+                with self.assertRaises(AuthFailure):
+                    self.run_hook(request)
+
+    def test_metadata_base_url_override_fails(self):
+        for key in ('metadata', 'litellm_metadata'):
+            with self.subTest(key=key):
+                request = self.request()
+                request[key] = dict(request['litellm_metadata'], base_url='https://attacker.invalid')
                 with self.assertRaises(AuthFailure):
                     self.run_hook(request)
 
