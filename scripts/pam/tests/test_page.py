@@ -376,6 +376,17 @@ class Page(unittest.TestCase):
                 : real(url, init);
         }})()""")
 
+    def test_a_failed_action_stays_visible_after_the_refresh(self):
+        self.hold()
+        self.sign_in("document.querySelectorAll('article').length === 1")
+        self.fail_requests("sys/control-group/authorize", 500)
+        self.browser.evaluate("document.querySelector('article').dataset.before = 'yes'")
+        self.browser.click("Approve")
+        # The refresh redraws the cards; only then is the final status settled.
+        self.browser.wait_for("document.querySelectorAll('article').length === 1 && !document.querySelector('article').dataset.before")
+        status = self.browser.evaluate("document.getElementById('status').textContent")
+        self.assertTrue(status.startswith("That didn't work (500)."), status)
+
     def test_a_failed_listing_is_reported_not_shown_as_empty(self):
         self.hold()
         self.sign_in("document.querySelectorAll('article').length === 1")

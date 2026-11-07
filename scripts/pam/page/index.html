@@ -10,7 +10,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2p/2+8vmx3gIMHNaLcIQuTi2qi9gx63MJaNzFvUbvQA='; style-src 'sha256-/0/4mizv/5VV6mGVE7WCWx5uPFDBOtR8Ul3HCAWYdwU='; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-DMjx/AaC+kh4cNOhpbi+/BT121Rr0CNz38tFHtHQjGg='; style-src 'sha256-/0/4mizv/5VV6mGVE7WCWx5uPFDBOtR8Ul3HCAWYdwU='; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Agent PAM</title>
 <style>
 :root { color-scheme: light dark; --line: #8886; --muted: #777; --ok: #1a7f37; --no: #c0362c; }
@@ -134,9 +134,19 @@ function renderRequest(row) {
 }
 
 async function act(path, row) {
-  const { status } = await api("POST", path, { accessor: row.accessor });
-  if (status >= 300) setStatus("That didn't work (" + status + ").");
+  let failed = null;
+  try {
+    const { status } = await api("POST", path, { accessor: row.accessor });
+    if (status >= 300) failed = status;
+  } catch {
+    failed = "no answer";
+  }
   await refresh();
+  // The refresh writes its own status; a failed action must still show after it. If the refresh
+  // sent the person back to sign in, that message wins.
+  if (failed !== null && token !== null) {
+    setStatus(("That didn't work (" + failed + "). " + $("status").textContent).trim());
+  }
 }
 
 // OpenBao has no list of pending requests. Asking about each token finds them: only a held
