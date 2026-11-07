@@ -29,6 +29,8 @@
 #   scripts/openbao-configure.sh --token-stdin   configure with a token read from stdin
 #   scripts/openbao-configure.sh --revoke-root   revoke the initial root token, once an
 #                                                admin has logged in through OIDC
+#   scripts/openbao-configure.sh --check         show the policy diff and run the agent PAM
+#                                                guard, then stop; can follow --token-stdin
 set -euo pipefail
 umask 077
 
@@ -41,24 +43,28 @@ DB_REF=op://Automation/postgres-cluster/OPENBAO_PASSWORD
 # OpenBao's templates, filled in with the username and password it stores.
 DB_LOGIN='{{username}}:{{password}}'
 DB_URL="postgresql://$DB_LOGIN@postgres-rw.database.svc:5432/postgres?sslmode=require"
-POLICY_DIR=$(cd "$(dirname "$0")/.." && pwd)/kubernetes/apps/openbao/openbao/config
+REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
+POLICY_DIR=$REPO_DIR/kubernetes/apps/openbao/openbao/config
+POLICIES=(openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db openbao-gate openbao-warpgate openbao-warpgate-tokens)
 DISCOVERY_URL=https://authentik.homelab0.org/application/o/openbao/
 
 mode=configure
 token_source=root
-case "${1:-}" in
-  "") ;;
-  --token-stdin) token_source=stdin ;;
-  --revoke-root) mode=revoke ;;
-  -h | --help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
-  *) echo "unknown argument: $1" >&2; exit 2 ;;
-esac
+for arg in "$@"; do
+  case "$arg" in
+    --token-stdin) token_source=stdin ;;
+    --revoke-root) mode=revoke ;;
+    --check) mode=check ;;
+    -h | --help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
+    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
 
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 unset OP_SERVICE_ACCOUNT_TOKEN OP_CONNECT_HOST OP_CONNECT_TOKEN
-for tool in op kubectl jq shred; do
+for tool in op kubectl jq shred python3; do
   command -v "$tool" >/dev/null || die "$tool not found"
 done
 
@@ -132,8 +138,71 @@ if [[ $mode == revoke ]]; then
   exit 0
 fi
 
+# --- agent PAM gate ---------------------------------------------------------
+# Before anything is written: a plain grant that overlaps a gated path removes
+# the gate without an error, so refuse to run. See scripts/pam/policy_guard.py.
+bao_list() { # <path> <file>: an empty list is exit 2 with {}, anything else stops the run
+  local status=0
+  bao list -format=json "$1" >"$2" 2>"$work/list-error" || status=$?
+  if [[ $status != 0 ]]; then
+    [[ $status == 2 && $(<"$2") == "{}" && ! -s "$work/list-error" ]] || die "could not list $1"
+    echo '[]' >"$2"
+  fi
+}
+
+read_each() { # <path> <jq for each entry> <jq for the whole list> [name to leave out]
+  local name names
+  bao_list "$1" "$work/gate-names"
+  mapfile -t names < <(jq -r --arg skip "${4:-}" '.[] | select($skip == "" or . != $skip)' "$work/gate-names")
+  for name in "${names[@]}"; do
+    bao_json read "$1/$name" | jq --arg name "$name" "$2"
+  done | jq -s "$3"
+}
+
+read_gate_state() {
+  # The root policy has no text. Only this list may leave out a name: an entity, group or role
+  # can be called root too.
+  read_each sys/policies/acl '{($name): .data.policy}' 'add // {}' root >"$work/gate-policies.json"
+  read_each identity/entity/name .data . >"$work/gate-entities.json"
+  read_each identity/group/name .data . >"$work/gate-groups.json"
+  local jwt_accessor pam_oidc_accessor
+  bao_json auth list >"$work/gate-auth.json"
+  jwt_accessor=$(jq -r '."jwt/".accessor // empty' "$work/gate-auth.json")
+  pam_oidc_accessor=$(jq -r '."pam-oidc/".accessor // empty' "$work/gate-auth.json")
+  echo '{}' >"$work/gate-roles.json"
+  echo '{}' >"$work/gate-pam-oidc-roles.json"
+  if [[ -n $jwt_accessor ]]; then
+    read_each auth/jwt/role '{($name): .data}' 'add // {}' >"$work/gate-roles.json"
+  fi
+  if [[ -n $pam_oidc_accessor ]]; then
+    read_each auth/pam-oidc/role '{($name): .data}' 'add // {}' >"$work/gate-pam-oidc-roles.json"
+  fi
+  jq -n --arg accessor "$jwt_accessor" --arg pam_oidc "$pam_oidc_accessor" \
+    --slurpfile pam_oidc_roles "$work/gate-pam-oidc-roles.json" \
+    --slurpfile policies "$work/gate-policies.json" --slurpfile entities "$work/gate-entities.json" \
+    --slurpfile groups "$work/gate-groups.json" --slurpfile roles "$work/gate-roles.json" \
+    '{jwt_accessor: $accessor, pam_oidc_accessor: $pam_oidc, pam_oidc_roles: $pam_oidc_roles[0],
+      policies: $policies[0], entities: $entities[0], groups: $groups[0], roles: $roles[0]}' \
+    >"$work/gate-state.json"
+}
+
+log "Reading live policies and identities"
+read_gate_state
+for p in "${POLICIES[@]}"; do
+  log "Policy diff for $p (live, then repo)"
+  jq -r --arg p "$p" '.policies[$p] // ""' "$work/gate-state.json" |
+    diff -u --label "live/$p" --label "repo/$p" - "$POLICY_DIR/$p.hcl" || true
+done
+python3 -I "$REPO_DIR/scripts/pam/policy_guard.py" "$POLICY_DIR" --live "$work/gate-state.json" ||
+  die "the agent PAM guard refused this policy set; nothing was written"
+log "The agent PAM guard passed"
+if [[ $mode == check ]]; then
+  log "--check: nothing was written"
+  exit 0
+fi
+
 # --- policies -------------------------------------------------------------
-for p in openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db openbao-gate openbao-warpgate openbao-warpgate-tokens; do
+for p in "${POLICIES[@]}"; do
   log "Writing policy $p"
   payload=$POLICY_DIR/$p.hcl bao policy write "$p" - >/dev/null
 done
