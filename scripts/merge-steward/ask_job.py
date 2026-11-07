@@ -177,7 +177,10 @@ def agent(url, question_file, raw_file):
 
 _HEADING = re.compile(r"^\s*#+\s*")
 _RULE = re.compile(r"^\s*[=_*-]{3,}\s*$")
-_LIST =re.compile(r"^\s*(?:[-*+]|[0-9]{1,3}[.)])\s+")
+# Underscores that could open or close emphasis: any run of two, and any not between two letters or
+# digits. Single underscores inside names (snake_case) are left alone.
+_EMPHASIS = re.compile(r"_{2,}|(?<![A-Za-z0-9])_+|_+(?![A-Za-z0-9])")
+_LIST = re.compile(r"^\s*(?:[-*+]|[0-9]{1,3}[.)])\s+")
 
 
 def flat(line):
@@ -186,8 +189,8 @@ def flat(line):
     The comment is the steward app's own, so a heading planted by a prompt injection (a fake
     verdict heading, say) would read as the steward speaking. Headings, setext underlines and
     horizontal rules are dropped, and list markers become a plain bullet, so what is left
-    renders as an ordinary paragraph line. Asterisks go too, so bold text cannot imitate the
-    steward's "Verdict:" line either. Applying it twice gives the same line.
+    renders as an ordinary paragraph line. Asterisks and emphasis underscores go too, so bold text
+    cannot imitate the steward's "Verdict:" line either. Applying it twice gives the same line.
     """
     if _RULE.match(line):
         return ""
@@ -199,7 +202,7 @@ def flat(line):
         line = _HEADING.sub("", line, count=1)
         if line == before:
             break
-    line = line.replace("*", "").strip()
+    line = _EMPHASIS.sub("", line.replace("*", "")).strip()
     # A line with no letter or digit is only markup: a one or two character setext underline
     # ("=", "--"), an empty list item, a stray rule. None of it carries meaning.
     if not any(c.isalnum() for c in line):
