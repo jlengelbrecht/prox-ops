@@ -15,6 +15,7 @@ versions are logged.
 BAO_ADDR and BAO_CACERT name the server. BAO_TOKEN is used if set, otherwise the job logs in with
 its projected service account token (BAO_ROLE, BAO_JWT_PATH). OP_SERVICE_ACCOUNT_TOKEN reaches op.
 """
+import datetime
 import hashlib
 import json
 import os
@@ -208,6 +209,22 @@ def check_not_edited(bao, full, path, synced, recorded):
         raise Hold(f"{path}: can't confirm the item still matches version {held}; check it by hand")
 
 
+def already_past(stamp, path):
+    """KV v2 sets a future deletion_time when delete_version_after is configured; the version is
+    readable until then. OpenBao writes nanoseconds, which fromisoformat doesn't take."""
+    if not stamp:
+        return False
+    match = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:\d\d)", stamp)
+    if not match:
+        raise Hold(f"{path}: deletion_time isn't a timestamp")
+    fraction = (match[2] or ".0")[:7]
+    try:
+        when = datetime.datetime.fromisoformat(match[1] + fraction + match[3].replace("Z", "+00:00"))
+    except ValueError:
+        raise Hold(f"{path}: deletion_time isn't a timestamp") from None
+    return when <= datetime.datetime.now(datetime.timezone.utc)
+
+
 def sync_path(bao, path, item):
     """Returns the action taken, or None if there was nothing to do."""
     check_path(path)
@@ -218,7 +235,7 @@ def sync_path(bao, path, item):
     recorded = custom.get("pam_item_updated", "")
     recorded_hash = custom.get("pam_content_hash", "")
     latest = meta["versions"].get(str(current), {})
-    deleted = bool(latest.get("deletion_time") or latest.get("destroyed"))
+    deleted = bool(latest.get("destroyed")) or already_past(latest.get("deletion_time"), path)
     tagged = item is not None and DELETED_TAG in (item.get("tags") or [])
 
     if deleted:

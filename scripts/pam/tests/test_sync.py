@@ -262,6 +262,22 @@ class Sync(unittest.TestCase):
         self.assertClean(self.sync())
         self.assertEqual(len(self.writes()), before)
 
+    def test_a_scheduled_deletion_still_syncs_until_it_passes(self):
+        self.lab.ok("POST", "kv/metadata/pam/live/later", {"delete_version_after": "1h"})
+        self.lab.seed("pam/live/later", password=CANARY)
+        self.assertClean(self.sync())
+        self.assertEqual(self.fields("pam/live/later")["password"]["value"], CANARY)
+        self.assertNotIn("deleted-in-openbao", self.item("pam/live/later")["tags"])
+
+    def test_deletion_times_are_read_correctly(self):
+        sync, _ = self.load_sync()
+        self.assertTrue(sync.already_past("2020-01-01T00:00:00.123456789Z", "p"))
+        self.assertFalse(sync.already_past("2999-01-01T00:00:00Z", "p"))
+        self.assertFalse(sync.already_past("", "p"))
+        for bad in ("yesterday", "2026-13-01T00:00:00Z"):
+            with self.assertRaises(sync.Hold):
+                sync.already_past(bad, "p")
+
     def test_undelete_clears_the_tag(self):
         self.lab.seed("pam/live/one", password=CANARY)
         self.sync()
