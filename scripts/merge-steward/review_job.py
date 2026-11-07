@@ -11,6 +11,7 @@ Environment: GITHUB_REPOSITORY, GITHUB_TOKEN (read-only).
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -22,9 +23,46 @@ import steward
 from ghapi import GitHub, GitHubError
 
 
-def render_lines(gh, sha, render_dir, policy):
-    """Classifier output: this run's artifact, else the record from an earlier evaluation."""
+NO_RENDER = "render: not run, because the PR changes nothing under kubernetes/ or tests/flux-local/"
+# The classifier's allowlist was written for dependency bumps. On any other PR it still lists
+# what the change does to the rendered cluster, which is the point, but a flag is not a defect.
+ADVISORY_NOTE = ("note: this PR is not a dependency update. A 'flagged' line names a kind of cluster change "
+                 "(added or removed object, RBAC, network policy, Job template...) to weigh, not a defect.")
+
+
+def render_lines(gh, sha, render_dir, policy, advisory=False):
+    """Classifier output: this run's artifact, else the record from an earlier evaluation.
+
+    An artifact for another commit, or none at all, gives no lines. A render that was skipped
+    because the PR does not touch the cluster says so, so the model does not guess.
+    """
+    lines = [_plain(line) for line in _render_lines(gh, sha, render_dir, policy)]
+    return ([ADVISORY_NOTE] + lines if lines and advisory and lines != [NO_RENDER] else lines)
+
+
+# Object kinds and names come from the PR's manifests. Only plain characters reach the model as
+# classifier output, on one line each, so a name cannot pose as another line or as an instruction.
+_UNPLAIN = re.compile(r"[^A-Za-z0-9._:/ ()+,=-]")
+MAX_RENDER_BYTES = 20_000_000
+TOO_LARGE = "render: the output was too large to summarize"
+
+
+def _plain(line):
+    return " ".join(_UNPLAIN.sub("?", str(line)).split())[:200]
+
+
+def _render_lines(gh, sha, render_dir, policy):
     exceptions = policy["release_exceptions"]
+    if render_dir:
+        sizes = [(Path(render_dir) / f"{n}.json") for n in ("helmrelease", "kustomization")]
+        if any(f.is_file() and f.stat().st_size > MAX_RENDER_BYTES for f in sizes):
+            return [TOO_LARGE]
+        try:
+            meta = json.loads((Path(render_dir) / "meta.json").read_text())
+        except (OSError, ValueError):
+            meta = {}
+        if isinstance(meta, dict) and meta.get("head_sha") == sha and meta.get("skipped") is True:
+            return [NO_RENDER]
     stage = render.from_artifact(render_dir, sha, exceptions) if render_dir else steward.recorded_render(gh, sha, policy)
     if stage is None:
         return []
@@ -75,7 +113,7 @@ def prepare(gh, args, policy):
     if run:
         evidence = out / review.EVIDENCE_FILE
         text = evidence.read_text(errors="replace") if evidence.is_file() else ""
-        lines = render_lines(gh, sha, args.render_dir, policy)
+        lines = render_lines(gh, sha, args.render_dir, policy, review.mode(pr, policy) == review.ADVISORY)
         upstream = upstream_notes(gh, pr, policy)
         (out / review.CONTEXT_FILE).write_text(review.context(pr, lines, text, policy, upstream))
         print(json.dumps({"context": review.context_stats(pr, lines, text, upstream)}))
