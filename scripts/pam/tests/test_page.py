@@ -262,6 +262,34 @@ class Page(unittest.TestCase):
                                       " sessionStorage.length, document.cookie])")
         self.assertEqual(json.loads(state), ["/pam/", "", 0, 0, ""])
 
+    def count_callbacks(self):
+        """Counts the page's calls to the OpenBao callback, from before its own script runs."""
+        script = self.browser.command("Page.addScriptToEvaluateOnNewDocument", source="""
+            window.callbacks = 0;
+            const real = window.fetch;
+            window.fetch = (url, init) => {
+                if (String(url).includes("/callback?")) window.callbacks += 1;
+                return real(url, init);
+            };""")["identifier"]
+        self.addCleanup(self.browser.command, "Page.removeScriptToEvaluateOnNewDocument", identifier=script)
+
+    def test_a_callback_this_tab_didnt_start_is_refused(self):
+        self.count_callbacks()
+        self.browser.command("Page.navigate", url=f"{self.origin}/pam/callback?code=theirs&state=theirs")
+        self.browser.wait_for("document.getElementById('status').textContent.includes('Sign-in failed')")
+        self.assertEqual(self.browser.evaluate("window.callbacks"), 0)
+        self.assertEqual(self.browser.evaluate("location.search"), "")
+
+    def test_a_callback_for_another_state_is_refused(self):
+        self.count_callbacks()
+        self.browser.command("Page.navigate", url=f"{self.origin}/pam/")
+        self.browser.wait_for("document.readyState === 'complete'")
+        self.browser.evaluate("sessionStorage.setItem('pam-client-nonce', JSON.stringify({nonce: 'mine', state: 'mine'}))")
+        self.browser.command("Page.navigate", url=f"{self.origin}/pam/callback?code=theirs&state=theirs")
+        self.browser.wait_for("document.getElementById('status').textContent.includes('Sign-in failed')")
+        self.assertEqual(self.browser.evaluate("window.callbacks"), 0)
+        self.assertEqual(self.browser.evaluate("sessionStorage.length"), 0)
+
     def test_someone_outside_the_group_cant_sign_in(self):
         self.__class__.groups = ["openbao-readers"]
         self.browser.command("Page.navigate", url=f"{self.origin}/pam/")

@@ -10,7 +10,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-DMjx/AaC+kh4cNOhpbi+/BT121Rr0CNz38tFHtHQjGg='; style-src 'sha256-/0/4mizv/5VV6mGVE7WCWx5uPFDBOtR8Ul3HCAWYdwU='; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ec8xhJovF8QoYzjat6NeYQR6mqfPwTHc9JcPANytxes='; style-src 'sha256-/0/4mizv/5VV6mGVE7WCWx5uPFDBOtR8Ul3HCAWYdwU='; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Agent PAM</title>
 <style>
 :root { color-scheme: light dark; --line: #8886; --muted: #777; --ok: #1a7f37; --no: #c0362c; }
@@ -81,17 +81,28 @@ async function login() {
   const nonce = crypto.randomUUID();
   const { status, data } = await api("POST", AUTH + "auth_url",
     { role: ROLE, redirect_uri: REDIRECT_URI, client_nonce: nonce });
-  if (status !== 200 || !data.auth_url) return setStatus("Sign-in failed (" + status + ").");
-  sessionStorage.setItem(NONCE_KEY, nonce);
+  if (status !== 200 || !data?.auth_url) return setStatus("Sign-in failed (" + status + ").");
+  const state = new URL(data.auth_url).searchParams.get("state");
+  if (!state) return setStatus("Sign-in failed (no state).");
+  sessionStorage.setItem(NONCE_KEY, JSON.stringify({ nonce, state }));
   location.assign(data.auth_url);
 }
 
 async function finishLogin(params) {
-  const clientNonce = sessionStorage.getItem(NONCE_KEY) ?? "";
+  let saved = null;
+  try {
+    saved = JSON.parse(sessionStorage.getItem(NONCE_KEY) ?? "null");
+  } catch {
+    saved = null;
+  }
   sessionStorage.removeItem(NONCE_KEY);
   history.replaceState(null, "", "/pam/");
+  // Only a sign-in this tab started may finish here. OpenBao skips the nonce check for a state
+  // created without one, so a callback link from someone else's sign-in would hand this page their
+  // token, and every approval would be recorded as theirs.
+  if (!saved?.nonce || !saved?.state || saved.state !== params.get("state")) return false;
   const query = new URLSearchParams({
-    state: params.get("state") ?? "", code: params.get("code") ?? "", client_nonce: clientNonce,
+    state: saved.state, code: params.get("code") ?? "", client_nonce: saved.nonce,
   });
   const response = await fetch("/v1/" + AUTH + "callback?" + query, { cache: "no-store", credentials: "omit" });
   const reply = await response.json().catch(() => ({}));
