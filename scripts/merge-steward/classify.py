@@ -33,6 +33,7 @@ def load_policy(path):
                 "release_exceptions"):
         if not isinstance(policy.get(key), list):
             raise ValueError(f"policy key {key} must be a list")
+    _check_trusted_apps(policy)
     required = policy.get("required_checks")
     if not isinstance(required, list) or not required:
         raise ValueError("policy key required_checks must be a non-empty list")
@@ -60,6 +61,25 @@ def load_policy(path):
         if rule["update_types"] == "all":
             rule["update_types"] = list(ALL_TYPES)
     return policy
+
+
+def _check_trusted_apps(policy):
+    """trusted_apps names the in-repo apps whose PRs are treated like a person's (out of scope).
+
+    Each entry is one exact app login. It may not also be an author the steward judges, and a
+    pattern, a space or a missing [bot] suffix stops the steward rather than widening the list.
+    """
+    apps = policy.get("trusted_apps")
+    if not isinstance(apps, list) or not all(isinstance(a, str) for a in apps):
+        raise ValueError("policy key trusted_apps must be a list of app logins")
+    authors = {a.casefold() for a in policy.get("authors") or []}
+    for app in apps:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*\[bot\]", app):
+            raise ValueError("each trusted_apps entry must be one exact app login ending in [bot]")
+        if app.casefold() in authors:
+            raise ValueError("a trusted app cannot also be a steward author")
+    if len({a.casefold() for a in apps}) != len(apps):
+        raise ValueError("trusted_apps lists the same login twice")
 
 
 def _check_ai(ai):
@@ -157,14 +177,19 @@ def _parties(pr):
 
 
 def out_of_scope(pr, policy):
-    """True only for a readable, same-repo PR opened by a person.
+    """True only for a readable, same-repo PR opened by a person or by a named in-repo app.
 
-    Anything else goes to identity(): an unreadable author or head repo, every fork, every
-    Bot (a retired or other dependency app can hold auto-merge), and a login that differs
-    from Renovate's only by case.
+    A person is a User whose login is not Renovate's under any casing. A named app is a Bot
+    whose login is exactly one of policy trusted_apps. Anything else goes to identity(): an
+    unreadable author or head repo, every fork, every other Bot (a retired or other dependency
+    app can hold auto-merge), and a login that differs from a trusted app's only by case.
     """
     login, kind, head, base = _parties(pr)
-    if not (login and head and base) or kind != "User" or head != base:
+    if not (login and head and base) or head != base:
+        return False
+    if kind == "Bot":
+        return login in policy["trusted_apps"]
+    if kind != "User":
         return False
     return login.casefold() not in {a.casefold() for a in policy["authors"]}
 
