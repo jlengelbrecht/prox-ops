@@ -158,11 +158,14 @@ class Browser:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             while b"\0" not in self.buffer:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(method)
                 ready, _, _ = select.select([self.from_child], [], [], 1)
                 if ready:
-                    self.buffer += os.read(self.from_child, 1 << 16)
-                elif time.monotonic() > deadline:
-                    raise TimeoutError(method)
+                    chunk = os.read(self.from_child, 1 << 16)
+                    if not chunk:
+                        raise RuntimeError(f"Chromium exited during {method}")
+                    self.buffer += chunk
             raw, self.buffer = self.buffer.split(b"\0", 1)
             reply = json.loads(raw)
             # Every token but a held request answers the page's scan with a 400, so network
@@ -364,6 +367,31 @@ class Page(unittest.TestCase):
 
     def test_nothing_waiting(self):
         self.sign_in("document.getElementById('status').textContent === 'Nothing is waiting.'")
+
+    def fail_requests(self, fragment, status, body="<html>busy</html>"):
+        self.browser.evaluate(f"""(() => {{
+            const real = window.fetch;
+            window.fetch = (url, init) => String(url).includes({json.dumps(fragment)})
+                ? Promise.resolve(new Response({json.dumps(body)}, {{status: {status}}}))
+                : real(url, init);
+        }})()""")
+
+    def test_a_failed_listing_is_reported_not_shown_as_empty(self):
+        self.hold()
+        self.sign_in("document.querySelectorAll('article').length === 1")
+        self.fail_requests("auth/token/accessors", 500)
+        self.browser.click("Refresh")
+        self.browser.wait_for("document.getElementById('status').textContent.startsWith(\"Couldn't check\")")
+        self.assertIn("(500)", self.browser.evaluate("document.getElementById('status').textContent"))
+        self.assertEqual(self.browser.evaluate("document.querySelectorAll('article').length"), 0)
+
+    def test_a_failed_lookup_is_reported_not_skipped(self):
+        self.hold()
+        self.sign_in("document.querySelectorAll('article').length === 1")
+        self.fail_requests("sys/control-group/request", 429, '{"errors":["rate limited"]}')
+        self.browser.click("Refresh")
+        self.browser.wait_for("document.getElementById('status').textContent.startsWith(\"Couldn't check\")")
+        self.assertIn("(429)", self.browser.evaluate("document.getElementById('status').textContent"))
 
 
 class Source(unittest.TestCase):

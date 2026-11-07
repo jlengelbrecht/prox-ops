@@ -10,7 +10,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-wtYzcJRhTXr5zdSlYk+max++qydXq9ERno3bf18opsc='; style-src 'sha256-/0/4mizv/5VV6mGVE7WCWx5uPFDBOtR8Ul3HCAWYdwU='; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-2p/2+8vmx3gIMHNaLcIQuTi2qi9gx63MJaNzFvUbvQA='; style-src 'sha256-/0/4mizv/5VV6mGVE7WCWx5uPFDBOtR8Ul3HCAWYdwU='; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Agent PAM</title>
 <style>
 :root { color-scheme: light dark; --line: #8886; --muted: #777; --ok: #1a7f37; --no: #c0362c; }
@@ -68,7 +68,13 @@ async function api(method, path, body) {
     redirect: "error",
   });
   const text = await response.text();
-  return { status: response.status, data: text ? JSON.parse(text).data : null };
+  let data = null;
+  try {
+    data = text ? JSON.parse(text).data : null;
+  } catch {
+    // A proxy or an outage can answer with something that isn't JSON. The status says enough.
+  }
+  return { status: response.status, data };
 }
 
 async function login() {
@@ -134,27 +140,41 @@ async function act(path, row) {
 }
 
 // OpenBao has no list of pending requests. Asking about each token finds them: only a held
-// request answers 200.
+// request answers 200, and any other token answers 400. Anything else means the scan failed,
+// and an empty queue must never be shown for a scan that didn't finish.
 async function pendingRequests() {
   const list = await api("GET", "auth/token/accessors/?list=true");
   if (list.status === 403) return null;
-  const accessors = list.data?.keys ?? [];
+  if (list.status !== 200 || !Array.isArray(list.data?.keys)) return { failed: list.status };
+  const accessors = list.data.keys;
   const rows = [];
   for (let at = 0; at < accessors.length; at += SCAN_BATCH) {
     const replies = await Promise.all(accessors.slice(at, at + SCAN_BATCH).map(async (accessor) => {
       const { status, data } = await api("POST", "sys/control-group/request", { accessor });
-      return status === 200 ? summarize(accessor, data) : null;
+      if (status === 200) return summarize(accessor, data);
+      return status === 400 ? null : { failed: status };
     }));
+    const failed = replies.find((reply) => reply?.failed !== undefined);
+    if (failed) return failed;
     rows.push(...replies.filter(Boolean));
   }
   return rows;
 }
 
 async function refresh() {
-  const rows = await pendingRequests();
+  let rows;
+  try {
+    rows = await pendingRequests();
+  } catch {
+    rows = { failed: "no answer" };
+  }
   if (rows === null) {
     token = null;
     return showLogin("This sign-in can't approve requests. Sign in again.");
+  }
+  if (!Array.isArray(rows)) {
+    $("requests").replaceChildren();
+    return setStatus("Couldn't check what's waiting (" + rows.failed + "). Refresh to try again.");
   }
   $("requests").replaceChildren(...rows.slice(0, MAX_CARDS).map(renderRequest));
   const hidden = rows.length - MAX_CARDS;
