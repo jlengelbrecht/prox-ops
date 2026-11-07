@@ -121,11 +121,24 @@ class Session:
         revoke(self.token)
 
 
-def revoke(token):
+def revoke(token, what="token"):
+    """Retries twice. A failure is reported, not hidden: the token then lives until its TTL."""
+    for attempt in range(3):
+        try:
+            status, _ = api("POST", "auth/token/revoke-self", token, {})
+        except Stop:
+            status = None  # Network or server error: worth another try.
+        if status in (200, 204, 403):
+            return True  # 403 means the token is already invalid.
+        if status is not None:
+            break  # Any other client error will not change on retry.
+        if attempt < 2:
+            time.sleep(1)
     try:
-        api("POST", "auth/token/revoke-self", token, {})
-    except Stop:
-        pass  # Both tokens expire by themselves.
+        print(f"pam: could not revoke the {what}; it stays valid until it expires", file=sys.stderr)
+    except OSError:
+        pass  # After a hangup the terminal may be gone; the rest of the cleanup still runs.
+    return False
 
 
 def wait_for_approval(session, wrap, deadline):
@@ -170,7 +183,7 @@ def fetch(name, reason, delivery):
             reply = wait_for_approval(session, wrap, started + wrap["ttl"])
         finally:
             # The approval is a window, not one use: close it.
-            revoke(wrap["token"])
+            revoke(wrap["token"], "approval window")
     values = (reply.get("data") or {}).get("data")
     if not values:
         raise Stop(REFUSED, "the secret has no current value")
@@ -391,7 +404,17 @@ def parse(argv):
 
 
 def main():
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    # Exiting through SystemExit runs the cleanup that closes the approval and the login.
+    # Later signals are ignored so a second one can't cut that cleanup short.
+    stops = ((signal.SIGTERM, 143), (signal.SIGHUP, 129), (signal.SIGQUIT, 131))
+
+    def on_signal(code):
+        for sig, _ in stops:
+            signal.signal(sig, signal.SIG_IGN)
+        sys.exit(code)
+
+    for sig, code in stops:
+        signal.signal(sig, lambda *_, code=code: on_signal(code))
     args = parse(sys.argv[1:])
     try:
         args.run(args)

@@ -1,6 +1,7 @@
 """Runs the real pam client against the dev server, with the test playing the approver."""
 import os
 import pathlib
+import signal
 import stat
 import subprocess
 import sys
@@ -8,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 import lab
 
@@ -206,18 +208,22 @@ class Client(unittest.TestCase):
         self.assertFalse(os.path.exists(target))
 
     def test_interrupted_get_withdraws_the_request(self):
-        before = set(self.held())
-        process = self.start("get", "demo", "--reason", "testing", "--to", self.path("interrupted"))
-        for _ in range(100):
-            new = set(self.held()) - before
-            if new:
-                break
-            time.sleep(0.05)
-        self.assertTrue(new)
-        process.terminate()
-        process.communicate(timeout=10)
-        self.assertEqual(process.returncode, 143)
-        self.assertFalse(set(self.held()) - before)
+        for sig, code in ((signal.SIGTERM, 143), (signal.SIGHUP, 129), (signal.SIGQUIT, 131),
+                          (signal.SIGINT, 130)):
+            with self.subTest(signal=sig.name):
+                before = set(self.held())
+                process = self.start("get", "demo", "--reason", "testing", "--to", self.path("interrupted"))
+                new = set()
+                for _ in range(100):
+                    new = set(self.held()) - before
+                    if new:
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(new)
+                process.send_signal(sig)
+                process.communicate(timeout=10)
+                self.assertEqual(process.returncode, code)
+                self.assertFalse(set(self.held()) - before)
 
     def test_usage_errors_are_caught_before_asking(self):
         before = set(self.held())
@@ -294,14 +300,55 @@ class Client(unittest.TestCase):
 
 
 
+def load_client():
+    import importlib.machinery
+    import importlib.util
+    path = str(pathlib.Path(__file__).resolve().parent.parent / "pam")
+    spec = importlib.util.spec_from_loader("pam_client", importlib.machinery.SourceFileLoader("pam_client", path))
+    pam = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pam)
+    return pam
+
+
+class Revoke(unittest.TestCase):
+    def setUp(self):
+        self.pam = load_client()
+        patcher = unittest.mock.patch.object(self.pam.time, "sleep")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def outcome(self, *replies):
+        calls = []
+
+        def api(*_):
+            calls.append(1)
+            reply = replies[len(calls) - 1]
+            if isinstance(reply, Exception):
+                raise reply
+            return reply, {}
+
+        self.pam.api = api
+        with unittest.mock.patch("sys.stderr") as err:
+            ok = self.pam.revoke("t", "approval window")
+        return ok, len(calls), err.write.called
+
+    def test_success_and_already_invalid_count_as_closed(self):
+        self.assertEqual(self.outcome(204), (True, 1, False))
+        self.assertEqual(self.outcome(403), (True, 1, False))
+
+    def test_transient_errors_are_retried(self):
+        down = self.pam.Stop(self.pam.DOWN, "down")
+        self.assertEqual(self.outcome(down, down, 204), (True, 3, False))
+
+    def test_a_failure_is_reported_not_hidden(self):
+        down = self.pam.Stop(self.pam.DOWN, "down")
+        self.assertEqual(self.outcome(down, down, down), (False, 3, True))
+        self.assertEqual(self.outcome(400), (False, 1, True))
+
+
 class EnvNames(unittest.TestCase):
     def test_keys_that_map_to_the_same_name_are_refused(self):
-        import importlib.machinery
-        import importlib.util
-        path = str(pathlib.Path(__file__).resolve().parent.parent / "pam")
-        spec = importlib.util.spec_from_loader("pam_client", importlib.machinery.SourceFileLoader("pam_client", path))
-        pam = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(pam)
+        pam = load_client()
         with self.assertRaises(pam.Stop):
             pam.env_for({"api-key": "a", "api_key": "b"})
         self.assertEqual(pam.env_for({"api-key": "a"}), {pam.ENV_PREFIX + "API_KEY": "a"})
