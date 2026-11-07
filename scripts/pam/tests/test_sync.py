@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 import lab
 
@@ -156,6 +157,32 @@ class Sync(unittest.TestCase):
         self.assertIn("pam/live/one", result.stdout)
         self.assertIn("edited", result.stdout)
         self.assertEqual(self.fields("pam/live/one")["password"]["value"], CANARY)
+
+    def test_a_hand_edit_holds_a_soft_delete_and_survives_a_new_version(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.sync()
+        self.edit_item("pam/live/one", updated_at="2026-11-07T01:00:00Z")
+        self.lab.ok("DELETE", "kv/data/pam/live/one")
+        result = self.sync()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("edited", result.stdout)
+        self.assertNotIn("deleted-in-openbao", self.item("pam/live/one")["tags"])
+        self.lab.seed("pam/live/one", password="rotated")
+        self.assertEqual(self.sync().returncode, 1)
+        self.assertEqual(self.fields("pam/live/one")["password"]["value"], CANARY)
+
+    def test_values_come_from_the_version_asked_for(self):
+        import importlib.util
+        self.lab.seed("pam/live/one", password="first")
+        self.lab.seed("pam/live/one", password="second")
+        env = {"BAO_ADDR": self.lab.addr, "BAO_TOKEN": self.env["BAO_TOKEN"]}
+        with unittest.mock.patch.dict(os.environ, env):
+            spec = importlib.util.spec_from_file_location("pam_sync_under_test", SYNC)
+            sync = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(sync)
+            bao = sync.Bao()
+        self.assertEqual(bao.values("live/one", 1), {"password": "first"})
+        self.assertEqual(bao.values("live/one", 2), {"password": "second"})
 
     def test_an_item_ahead_of_openbao_holds_and_fails(self):
         self.lab.seed("pam/live/one", password=CANARY)

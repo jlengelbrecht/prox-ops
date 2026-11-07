@@ -86,9 +86,15 @@ class Bao:
     def metadata(self, path):
         return self.call("GET", f"kv/metadata/pam/{path}")[1]["data"]
 
-    def values(self, path):
-        status, reply = self.call("GET", f"kv/data/pam/{path}", missing_ok=True)
-        return None if status == 404 else reply["data"]["data"]
+    def values(self, path, version):
+        """The values of exactly that version, so they match the metadata already read."""
+        status, reply = self.call("GET", f"kv/data/pam/{path}?version={int(version)}", missing_ok=True)
+        if status == 404:
+            return None
+        got = (reply["data"].get("metadata") or {}).get("version")
+        if got != version:
+            raise Hold(f"{path}: asked OpenBao for version {version} and got {got}")
+        return reply["data"]["data"]
 
     def record(self, path, version, updated, content):
         self.call("PATCH", f"kv/metadata/pam/{path}",
@@ -181,6 +187,14 @@ def set_tags(item, tags):
     return op("item", "edit", item["id"], "--vault", VAULT, "--tags", ",".join(tags))
 
 
+def check_not_edited(full, item, path, synced, recorded):
+    # After a run that died between writing the item and recording it, held is ahead of synced
+    # and the timestamp can't be compared: only a matching version shows a hand edit.
+    held = version_number(field(full, "bao_version") or 0, path, "bao_version")
+    if held == synced and recorded and item["updated_at"] != recorded:
+        raise Hold(f"{path}: the item was edited in 1Password; OpenBao stays the source")
+
+
 def sync_path(bao, path, item):
     """Returns the action taken, or None if there was nothing to do."""
     check_path(path)
@@ -197,10 +211,11 @@ def sync_path(bao, path, item):
     if deleted:
         if item is None or tagged:
             return None
+        check_not_edited(op("item", "get", item["id"], "--vault", VAULT), item, path, synced, recorded)
         bao.record(path, synced, set_tags(item, tags_for(item, DELETED_TAG))["updated_at"], recorded_hash)
         return "marked deleted"
 
-    values = bao.values(path)
+    values = bao.values(path, current)
     if values is None:
         return None
     check_keys(path, values)
@@ -215,10 +230,7 @@ def sync_path(bao, path, item):
     held = version_number(field(full, "bao_version") or 0, path, "bao_version")
     if held > current:
         raise Hold(f"{path}: item is at version {held}, ahead of OpenBao at {current}; was OpenBao restored?")
-    # After a run that died between writing the item and recording it, held is ahead of synced
-    # and the timestamp can't be compared: only a matching version shows a hand edit.
-    if held == synced and recorded and item["updated_at"] != recorded:
-        raise Hold(f"{path}: the item was edited in 1Password; OpenBao stays the source")
+    check_not_edited(full, item, path, synced, recorded)
     if held == current:
         if field(full, "bao_hash") != content:
             raise Hold(f"{path}: same version as the item but different content; was OpenBao restored?")
