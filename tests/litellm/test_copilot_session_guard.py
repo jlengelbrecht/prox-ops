@@ -157,10 +157,10 @@ class GuardTests(unittest.TestCase):
     def test_config_and_source_contract(self):
         config = yaml.safe_load((APP / 'configmap.yaml').read_text().split('---', 1)[-1])
         inner = yaml.safe_load(config['data']['config.yaml'])
-        self.assertEqual(inner['litellm_settings']['callbacks'], ['copilot_session_guard.proxy_handler_instance'])
+        # Stage 1 installs the module before either the alias or callback is enabled.
+        self.assertNotIn('callbacks', inner['litellm_settings'])
         aliases = [m for m in inner['model_list'] if m['model_name'] == 'project-copilot-explicit']
-        self.assertEqual(len(aliases), 1)
-        self.assertEqual(aliases[0]['litellm_params']['num_retries'], 0)
+        self.assertEqual(aliases, [])
         helm = yaml.safe_load((APP / 'helmrelease.yaml').read_text().split('---', 1)[-1])
         self.assertEqual(helm['spec']['values']['replicaCount'], 1)
         self.assertIn('litellm-copilot-session-guard', helm['spec']['values']['podAnnotations']['configmap.reloader.stakater.com/reload'])
@@ -171,6 +171,6 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(kustomization['configMapGenerator'][0]['files'], ['copilot_session_guard.py=callbacks/copilot_session_guard.py'])
         contract = yaml.safe_load((ROOT / 'tests/litellm/image_contract.json').read_text())
         self.assertEqual(contract['schema'], 'litellm-copilot-image-contract/1')
-        self.assertEqual(contract['interfaces']['callback'], inner['litellm_settings']['callbacks'][0])
+        self.assertEqual(contract['interfaces']['callback'], 'copilot_session_guard.proxy_handler_instance')
         self.assertTrue(contract['image'].startswith('ghcr.io/berriai/litellm-database:v1.108.0@sha256:'))
         self.assertIsInstance(self.module.proxy_handler_instance, self.module.CopilotSessionGuard)

@@ -92,12 +92,6 @@ data:
         model_info:
           description: "ChatGPT Pro gpt-6.1-sol (smart-router REASONING tier)"
 
-      - model_name: "project-copilot-explicit"
-        litellm_params:
-          model: "github_copilot/gpt-6-luna"
-          litellm_credential_name: "project-github-copilot"
-          num_retries: 0
-
       # =====================================================
       # smart-router: complexity-based routing for callers that want it.
       # Heuristic scorer (no classifier model call), one model per tier, no
@@ -250,10 +244,6 @@ data:
           - "anthropic/*"
       # Enable logging for audit
       set_verbose: false
-      # Guard the selected project Copilot deployment before provider authentication.
-      callbacks:
-        - copilot_session_guard.proxy_handler_instance
-
       # =====================================================
       # STORY-060: Caching - Valkey (Redis-compatible) Integration
       # Caches LLM responses to reduce API costs and latency
