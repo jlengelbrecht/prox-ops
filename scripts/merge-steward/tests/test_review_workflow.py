@@ -189,8 +189,29 @@ def test_the_reuse_check_holds_no_secret_and_only_a_failure_free_output_skips_th
     assert "!cancelled()" in review["if"] and "needs.review-gate.outputs.reuse != 'true'" in review["if"]
 
 
+def test_the_advisory_reuse_check_holds_no_secret_and_only_its_answer_skips_the_advisory_review():
+    gate = STEWARD["advisory-gate"]
+    assert gate["runs-on"] == "ubuntu-latest" and "environment" not in gate
+    assert set(gate["permissions"].values()) == {"read"} and "secrets." not in yaml.safe_dump(gate)
+    condition = " ".join(gate["if"].split())
+    for part in ("github.event.action == 'synchronize'", "head.repo.fork == false",
+                 "head.repo.full_name == github.repository", "user.login != 'renovate[bot]'"):
+        assert part in condition
+    for step in gate["steps"]:
+        if "actions/checkout" in step.get("uses", ""):
+            assert "default_branch" in step["with"]["ref"] and step["with"]["persist-credentials"] is False
+    step = next(s for s in gate["steps"] if s.get("id") == "gate")
+    assert step["continue-on-error"] is True and "${{" not in step["run"] and "advisory-gate" in step["run"]
+    for name in ("advisory-render", "advisory-review"):
+        job = STEWARD[name]
+        assert "advisory-gate" in job["needs"]
+        assert job["if"].startswith("!cancelled()") and "needs.advisory-gate.outputs.reuse != 'true'" in job["if"]
+    assert STEWARD["advisory-publish"]["if"] == "needs.advisory-review.result == 'success'"
+
+
 def test_review_jobs_are_ignored_by_the_checks_stage():
-    names = {j["name"] for k, j in STEWARD.items() if k in REVIEW_JOBS + ("advisory-publish", "review-gate")}
+    names = {j["name"] for k, j in STEWARD.items()
+             if k in REVIEW_JOBS + ("advisory-publish", "review-gate", "advisory-gate", "advisory-render")}
     assert names <= set(POLICY["ignore_checks"])
 
 
