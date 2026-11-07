@@ -1,5 +1,7 @@
 """The rules of the policy guard, as unit tests."""
+import pathlib
 import sys
+import tempfile
 import unittest
 
 import lab
@@ -77,6 +79,13 @@ class Policy(unittest.TestCase):
     def test_a_live_policy_matching_the_repo_isnt_checked_twice(self):
         text = (lab.CONFIG / "pam-agent.hcl").read_text()
         self.assertEqual(guard.check(lab.CONFIG, {"policies": {"pam-agent": text}}), [])
+
+    def test_an_identity_is_judged_on_the_live_text(self):
+        with tempfile.TemporaryDirectory() as policy_dir:
+            pathlib.Path(policy_dir, "other.hcl").write_text('path "sys/health" {\n  capabilities = ["read"]\n}\n')
+            state = {"policies": {"other": 'path "kv/*" {\n  capabilities = ["read"]\n}\n'}, "groups": [], "roles": {},
+                     "entities": [{"name": "agent-claude", "policies": ["pam-agent", "other"]}]}
+            self.assertIn("identity agent-claude holds other: can remove the gate", " ".join(guard.check(policy_dir, state)))
 
     def test_a_live_policy_only_on_the_server_is_checked(self):
         findings = guard.check(lab.CONFIG, {"policies": {"extra": 'path "kv/*" {\n  capabilities = ["read"]\n}\n'}})
