@@ -583,3 +583,27 @@ def test_random_answers_end_with_no_block_markup_and_cleaning_is_a_fixed_point()
             assert not (stripped and not any(c.isalnum() for c in stripped) and stripped != "\u2022"), repr(answer)
             assert not (len(stripped) > 1 and stripped[0] in "-+" and stripped[1] == " "), repr(answer)
             assert "*" not in line and "![" not in line and "](" not in line, repr(answer)
+
+
+@pytest.mark.parametrize("digits", [4301, 5000, 100000])
+def test_a_comment_with_a_huge_number_in_a_marker_cannot_stop_the_answer(tmp_path, monkeypatch, digits):
+    huge = {"id": 3, "body": "<!-- merge-steward-ask comment=" + "9" * digits + " -->", "user": {"login": "someone"}}
+    posted, _, app = publish(tmp_path, monkeypatch, comments=[huge])
+    assert posted and len(app.writes) == 1
+
+
+def test_the_marker_pattern_is_bounded_and_an_app_comment_with_a_huge_marker_is_ignored(tmp_path, monkeypatch):
+    assert ask_job._MARKER.search("<!-- merge-steward-ask comment=" + "1" * 21 + " -->") is None
+    huge = {"id": 3, "body": "<!-- merge-steward-ask comment=" + "9" * 5000 + " -->",
+            "performed_via_github_app": {"id": APP}}
+    posted, _, _ = publish(tmp_path, monkeypatch, comments=[huge])
+    assert posted
+
+
+def test_only_the_apps_marker_for_this_comment_counts_even_when_others_copy_it(tmp_path, monkeypatch):
+    marker = ask_job.ASK_MARKER.format(comment=55)
+    others = [{"id": 1, "body": marker, "user": {"login": "someone"}},
+              {"id": 2, "body": marker, "performed_via_github_app": {"id": 1}},
+              {"id": 3, "body": ask_job.ASK_MARKER.format(comment=54), "performed_via_github_app": {"id": APP}}]
+    posted, _, app = publish(tmp_path, monkeypatch, comments=others)
+    assert posted and len(app.writes) == 1

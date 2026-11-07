@@ -30,7 +30,7 @@ import steward
 from ghapi import GitHub, GitHubError
 
 ASK_MARKER = "<!-- merge-steward-ask comment={comment} -->"
-_MARKER = re.compile(r"^<!-- merge-steward-ask comment=(?P<comment>[0-9]+) -->$", re.MULTILINE)
+_MARKER = re.compile(r"^<!-- merge-steward-ask comment=(?P<comment>[0-9]{1,20}) -->$", re.MULTILINE)
 _COMMAND = re.compile(r"/ask(?:[ \t]+|\r?\n)(?P<question>.+)", re.DOTALL)
 _PLAIN_QUOTES = str.maketrans({'"': "\u201d", "\'": "\u2019", "\\": "/", "`": "\u2019"})
 _OPTION = re.compile(r"(?:^|[\s\"'=(\[{,;:])-{2}", re.MULTILINE)
@@ -283,9 +283,12 @@ def publish(gh, app_gh, policy, answer_dir):
         return False
     body = reply(result)
     for existing in gh.paginate(f"issues/{number}/comments"):
+        # Anyone can comment, so the app is checked before the marker is looked at at all, and the
+        # id is compared as text: a comment of thousands of digits cannot raise or be parsed.
+        if (existing.get("performed_via_github_app") or {}).get("id") != policy["steward_app_id"]:
+            continue
         found = _MARKER.search(existing.get("body") or "")
-        if (found and int(found.group("comment")) == comment_id
-                and (existing.get("performed_via_github_app") or {}).get("id") == policy["steward_app_id"]):
+        if found and found.group("comment") == str(comment_id):
             print("ask already answered; not posting again")
             return False
     app_gh.post(f"issues/{number}/comments", {"body": body})
