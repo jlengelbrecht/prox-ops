@@ -202,7 +202,7 @@ def flat(line):
         line = _HEADING.sub("", line, count=1)
         if line == before:
             break
-    line = _EMPHASIS.sub("", line.replace("*", "")).strip()
+    line = _EMPHASIS.sub("", line.replace("*", "").replace("$", "")).strip()
     # A line with no letter or digit is only markup: a one or two character setext underline
     # ("=", "--"), an empty list item, a stray rule. None of it carries meaning.
     if not any(c.isalnum() for c in line):

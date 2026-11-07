@@ -621,3 +621,8 @@ def test_underscore_emphasis_cannot_dress_a_line_as_the_stewards_verdict(answer)
 
 def test_underscores_inside_names_survive():
     assert ask_job.clean_answer("Set cluster_name and max_unavailable_pods.") == "Set cluster_name and max_unavailable_pods."
+
+
+@pytest.mark.parametrize("answer", ["$Verdict: pass$", "$$Verdict$$", "$\\textbf{Verdict}$ pass", "a $x$ b", "$$\nV\n$$"])
+def test_math_delimiters_cannot_set_a_line_apart(answer):
+    assert "$" not in ask_job.clean_answer(answer)
