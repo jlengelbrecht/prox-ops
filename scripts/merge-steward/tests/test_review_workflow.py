@@ -17,6 +17,10 @@ ACTION_FILE = GITHUB / "actions" / "merge-steward-review" / "action.yaml"
 ACTION = yaml.safe_load(ACTION_FILE.read_text())
 STEWARD = yaml.safe_load((GITHUB / "workflows" / "merge-steward.yaml").read_text())["jobs"]
 REVIEW_JOBS = ("review", "advisory-review")
+LOCAL_ACTIONS = {
+    "./.github/actions/merge-steward-review": ACTION,
+    "./.github/actions/merge-steward-ask": yaml.safe_load((GITHUB / "actions" / "merge-steward-ask" / "action.yaml").read_text()),
+}
 AGENT = next(s for s in ACTION["runs"]["steps"] if s.get("name") == "Run PR-Agent")
 
 
@@ -42,8 +46,8 @@ def steward_runner_jobs():
 def all_steps(job):
     steps = list(job["steps"])
     local = [s["uses"] for s in steps if s.get("uses", "").startswith("./")]
-    assert set(local) <= {"./.github/actions/merge-steward-review"}, "add new local actions to this scan"
-    return steps + (ACTION["runs"]["steps"] if local else [])
+    assert set(local) <= set(LOCAL_ACTIONS), "add new local actions to this scan"
+    return steps + [step for name in local for step in LOCAL_ACTIONS[name]["runs"]["steps"]]
 
 
 JOBS = dict(steward_runner_jobs())
@@ -74,7 +78,7 @@ def test_a_steward_runner_job_cannot_write_or_touch_pr_code(name):
 def test_the_key_is_referenced_once_per_review_job_and_used_in_one_step():
     named = re.compile(r"""secrets\s*(?:\.|\[\s*['"])\s*merge_steward_llm_key""", re.IGNORECASE)
     counts = {p.name: len(named.findall(p.read_text())) for p in WORKFLOWS}
-    assert {k: v for k, v in counts.items() if v} == {"merge-steward.yaml": 2}
+    assert {k: v for k, v in counts.items() if v} == {"merge-steward.yaml": 2, "merge-steward-ask.yaml": 1}
     for name, job in JOBS.items():
         assert not re.search(r"toJSON\(\s*secrets|secrets:\s*inherit", yaml.safe_dump(job), re.IGNORECASE), name
     assert "secrets.MERGE_STEWARD_LLM_KEY" not in ACTION_FILE.read_text()
