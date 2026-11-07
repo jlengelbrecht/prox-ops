@@ -1,0 +1,439 @@
+#!/usr/bin/python3 -I
+"""pam: agent access to gated secrets.
+
+  pam get <name> --reason "<why>" --to <file>     wait for approval, write the value to a new file
+  pam get <name> --reason "<why>" --exec -- <cmd>  wait for approval, run cmd with the value in its env
+  pam put <name>                                   store a new value, read from stdin
+  pam status                                       check login and list the names available
+
+<name> is a shared secret, or inbox/<agent>/<name> for a value this agent stored. The approval
+request shows the approver the command or file path. An agent calling OpenBao directly can claim
+anything there, so the page labels it as the agent's claim.
+
+pam itself never prints a value. That doesn't keep a value out of the transcript: an approval
+hands the value over, and anything in a transcript goes to the model provider. --exec masks the
+value in the child's stdout and stderr, as is and in common encodings, but a child can transform
+it or write it somewhere else. Anything that can read a --to file can print it. Prefer a command
+that uses the value without showing it.
+
+--to writes the bare value if the secret has the single key "value", otherwise JSON. --exec sets
+one variable per key, upper-cased and prefixed, so "value" becomes PAM_SECRET_VALUE. The child's
+exit code is the result.
+
+Exit codes: 0 ok, 2 usage, 3 denied, 4 timed out, 5 refused, 6 OpenBao unreachable.
+
+PAM_HARNESS names the harness (claude, codex, opencode). PAM_JWT_CMD overrides the command that
+prints its ID token, either bare or as a Kubernetes ExecCredential. PAM_ADDR and PAM_POLL
+(seconds) override the server and the polling interval.
+"""
+import argparse
+import base64
+import json
+import os
+import re
+import selectors
+import shlex
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ADDR = os.environ.get("PAM_ADDR", "https://bao.homelab0.org").rstrip("/")
+POLL = float(os.environ.get("PAM_POLL", "3"))
+USAGE, DENIED, TIMED_OUT, REFUSED, DOWN = 2, 3, 4, 5, 6
+
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*")
+REASON_MAX = 200
+DELIVERY_MAX = 500
+ENV_PREFIX = "PAM_SECRET_"
+MASK = b"[pam: masked]"
+SECRET_SHAPED = re.compile(
+    r"gh[opsur]_|github_pat_|sk-[A-Za-z0-9]|hvs\.|s\.[A-Za-z0-9]{20}|AKIA[A-Z0-9]{12}|ops_|eyJ[A-Za-z0-9_-]{10}"
+    r"|-----BEGIN|[A-Za-z0-9+_=-]{32,}|(?i:password|passwd|secret|token|api[_-]?key)\s*[:=]"
+)
+
+
+class Stop(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def api(method, path, token=None, body=None):
+    req = urllib.request.Request(
+        f"{ADDR}/v1/{path}", method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **({"X-Vault-Token": token} if token else {})},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as f:
+            status, raw = f.status, f.read()
+    except urllib.error.HTTPError as e:
+        with e:
+            status, raw = e.code, e.read()
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        raise Stop(DOWN, f"OpenBao is unreachable: {type(e).__name__}")
+    if status >= 500:
+        raise Stop(DOWN, f"OpenBao answered {status}")
+    try:
+        return status, json.loads(raw) if raw else {}
+    except ValueError:
+        return status, {}
+
+
+def id_token(harness):
+    command = os.environ.get("PAM_JWT_CMD") or f"warpgate-kube-exec {harness}"
+    try:
+        result = subprocess.run(shlex.split(command), capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise Stop(REFUSED, f"could not run the token command: {type(e).__name__}")
+    if result.returncode != 0:
+        raise Stop(REFUSED, f"the token command failed with exit code {result.returncode}")
+    output = result.stdout.strip()
+    try:
+        return json.loads(output)["status"]["token"] if output.startswith("{") else output
+    except (ValueError, KeyError):
+        raise Stop(REFUSED, "the token command printed something unexpected")
+
+
+class Session:
+    """A fresh login, revoked on the way out."""
+
+    def __init__(self):
+        self.harness = os.environ.get("PAM_HARNESS", "")
+        if self.harness not in ("claude", "codex", "opencode"):
+            raise Stop(USAGE, "set PAM_HARNESS to claude, codex or opencode")
+        self.agent = f"agent-{self.harness}"
+
+    def __enter__(self):
+        status, reply = api("POST", "auth/jwt/login", body={"role": self.agent, "jwt": id_token(self.harness)})
+        if status != 200:
+            raise Stop(REFUSED, f"login refused ({status})")
+        self.auth = reply["auth"]
+        self.token = self.auth["client_token"]
+        return self
+
+    def __exit__(self, *_):
+        revoke(self.token)
+
+
+def revoke(token, what="token", gone=None):
+    """Retries twice. A failure is reported, not hidden: the token then lives until its TTL.
+    A 403 is the same for a token that is already invalid and one that may not revoke itself,
+    so it only counts as closed when gone() confirms it."""
+    for attempt in range(3):
+        try:
+            status, _ = api("POST", "auth/token/revoke-self", token, {})
+            if status == 403 and gone:
+                status = 204 if gone() else 403
+        except Stop:
+            status = None  # Network or server error: worth another try.
+        if status in (200, 204):
+            return True
+        if status is not None:
+            break  # A client error will not change on retry.
+        if attempt < 2:
+            time.sleep(1)
+    try:
+        print(f"pam: could not revoke the {what}; it stays valid until it expires", file=sys.stderr)
+    except OSError:
+        pass  # After a hangup the terminal may be gone; the rest of the cleanup still runs.
+    return False
+
+
+def window_gone(session, wrap):
+    """True when OpenBao no longer knows the wrapping token's accessor."""
+    status, _ = api("POST", "auth/token/lookup-accessor", session.token, {"accessor": wrap["accessor"]})
+    return status == 400
+
+
+def wait_for_approval(session, wrap, deadline):
+    """Unwrap gives the same 400 for pending and denied, so a 400 is followed by a look at
+    whether the wrapping token still exists. Returns the KV reply."""
+    while time.monotonic() < deadline:
+        status, reply = api("POST", "sys/wrapping/unwrap", wrap["token"], {})
+        if status == 200:
+            return reply
+        if status == 403:
+            raise Stop(DENIED, "denied: the request can no longer run under this identity")
+        if status in (204, 404):
+            raise Stop(REFUSED, "no such secret")
+        if status != 400:
+            raise Stop(DOWN, f"unexpected answer while waiting ({status})")
+        status, _ = api("POST", "auth/token/lookup-accessor", session.token, {"accessor": wrap["accessor"]})
+        if status == 200:
+            time.sleep(POLL)
+        elif time.monotonic() < deadline:
+            raise Stop(DENIED, "denied")
+    raise Stop(TIMED_OUT, "timed out waiting for approval")
+
+
+def fetch(name, reason, delivery):
+    with Session() as session:
+        path = f"kv/data/pam/{name if name.startswith('inbox/') else 'live/' + name}"
+        started = time.monotonic()
+        query = urllib.parse.urlencode({"reason": reason, "delivery": delivery})
+        status, reply = api("GET", f"{path}?{query}", session.token)
+        if status == 429:
+            raise Stop(REFUSED, "too many requests; try again in a minute")
+        if status == 403:
+            raise Stop(REFUSED, "not allowed")
+        if status == 404:
+            raise Stop(REFUSED, "no such secret")
+        wrap = reply.get("wrap_info")
+        if not wrap:
+            # Either the gate is gone or the policy is broken: never deliver.
+            raise Stop(REFUSED, "OpenBao answered without holding the request; report this to the owner")
+        print(f"waiting for approval: {name}", file=sys.stderr)
+        try:
+            reply = wait_for_approval(session, wrap, started + wrap["ttl"])
+        finally:
+            # The approval is a window, not one use: close it.
+            revoke(wrap["token"], "approval window", lambda: window_gone(session, wrap))
+    values = (reply.get("data") or {}).get("data")
+    if not values:
+        raise Stop(REFUSED, "the secret has no current value")
+    return values
+
+
+def to_file(path, values):
+    text = values["value"] if list(values) == ["value"] else json.dumps(values)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text if isinstance(text, str) else json.dumps(text))
+
+
+def env_for(values):
+    """The prefix keeps a stored key from setting PATH, LD_PRELOAD or PAM_JWT_CMD for the child."""
+    env = {}
+    for key, value in values.items():
+        name = ENV_PREFIX + key.upper().replace("-", "_")
+        if not re.fullmatch(r"[A-Z0-9_]+", name):
+            raise Stop(REFUSED, f"key {key!r} can't be an environment variable")
+        if name in env:
+            raise Stop(REFUSED, f"two keys both map to {name}")
+        env[name] = value if isinstance(value, str) else json.dumps(value)
+    return env
+
+
+def encoded_forms(secrets):
+    forms = set()
+    for secret in secrets:
+        raw = secret.encode()
+        forms.update((raw, base64.b64encode(raw), base64.urlsafe_b64encode(raw), base64.b64encode(raw).rstrip(b"="),
+                      raw.hex().encode(), urllib.parse.quote(secret, safe="").encode(), json.dumps(secret)[1:-1].encode()))
+        forms.update(line for line in raw.splitlines() if len(line) >= 8)
+    forms.discard(b"")
+    return sorted(forms, key=len, reverse=True)
+
+
+class Redactor:
+    """Masks secrets in a byte stream. A chunk ending in what could be the start of a secret is held
+    back until the next one settles it; nothing else waits, so interactive output isn't delayed."""
+
+    def __init__(self, secrets):
+        self.needles = encoded_forms(secrets)
+        self.longest = max(map(len, self.needles), default=0)
+        firsts = bytes(sorted({n[0] for n in self.needles}))
+        self.starts = re.compile(b"[" + b"".join(re.escape(bytes([c])) for c in firsts) + b"]") if firsts else None
+        self.held = b""
+
+    def feed(self, data, final=False):
+        if self.starts is None:
+            return data
+        buffer, out, at = self.held + data, [], 0
+        while True:
+            match = self.starts.search(buffer, at)
+            out.append(buffer[at:match.start() if match else len(buffer)])
+            at = match.start() if match else len(buffer)
+            if not match:
+                break
+            rest = buffer[at:at + self.longest]
+            if not final and any(len(n) > len(rest) and n.startswith(rest) for n in self.needles):
+                break
+            hit = next((n for n in self.needles if rest.startswith(n)), None)
+            out.append(MASK if hit else buffer[at:at + 1])
+            at += len(hit) if hit else 1
+        self.held = buffer[at:]
+        return b"".join(out)
+
+
+def run_filtered(command, env, secrets):
+    """Returns the child's exit code. The command gets its own process group, so
+    stopping pam stops everything it started, however pam is stopped."""
+    running = {}
+
+    def kill_group(sig):
+        child = running.get("child")
+        if child is not None:
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    def stop_group(*_):
+        # TERM now, KILL in 5 seconds even if pam is still waiting on the pipes.
+        kill_group(signal.SIGTERM)
+        if "timer" not in running:
+            running["timer"] = threading.Timer(5, kill_group, (signal.SIGKILL,))
+            running["timer"].daemon = True
+            running["timer"].start()
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, stop_group)
+    try:
+        running["child"] = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                            bufsize=0, start_new_session=True)
+    except OSError as e:
+        raise Stop(REFUSED, f"could not run {command[0]}: {type(e).__name__}")
+    child = running["child"]
+    try:
+        return pump(child, secrets, stop_group)
+    finally:
+        # Nothing the command started may outlive pam: its environment holds the value.
+        stop_group()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        kill_group(signal.SIGKILL)
+        child.wait()
+        running["timer"].cancel()
+
+
+def pump(child, secrets, stop_group):
+    """Copies the child's output through the redactor. Once the command itself
+    exits, anything it left running gets the same TERM then KILL, so a
+    background worker holding the pipes can't keep pam waiting."""
+    selector = selectors.DefaultSelector()
+    for source, target in ((child.stdout, sys.stdout.buffer), (child.stderr, sys.stderr.buffer)):
+        selector.register(source, selectors.EVENT_READ, (target, Redactor(secrets)))
+    stopping = False
+    while selector.get_map():
+        if not stopping and child.poll() is not None:
+            stop_group()
+            stopping = True
+        for key, _ in selector.select(timeout=0.5):
+            target, redactor = key.data
+            data = os.read(key.fd, 1 << 16)
+            if not data:
+                selector.unregister(key.fileobj)
+            target.write(redactor.feed(data, final=not data))
+            target.flush()
+    code = child.wait()
+    return 128 - code if code < 0 else code
+
+
+def delivery_of(args):
+    """What the approver is told will happen to the value."""
+    delivery = f"write {args.to}" if args.to else "run " + shlex.join(args.command)
+    if len(delivery) > DELIVERY_MAX:
+        raise Stop(USAGE, f"the command or path is over {DELIVERY_MAX} characters")
+    if SECRET_SHAPED.search(delivery):
+        raise Stop(USAGE, "the command or path looks like it contains a secret")
+    return delivery
+
+
+def cmd_get(args):
+    if not args.to and not args.command:
+        raise Stop(USAGE, "get needs --to <file> or --exec -- <command>: a value never goes to stdout")
+    if args.to and os.path.lexists(args.to):
+        raise Stop(USAGE, f"{args.to} already exists")
+    if len(args.reason) > REASON_MAX:
+        raise Stop(USAGE, f"the reason is over {REASON_MAX} characters")
+    if SECRET_SHAPED.search(args.reason):
+        raise Stop(USAGE, "the reason looks like it contains a secret")
+    values = fetch(args.name, args.reason, delivery_of(args))
+    if args.to:
+        try:
+            to_file(args.to, values)
+        except OSError as e:
+            raise Stop(REFUSED, f"could not write {args.to}: {type(e).__name__}")
+        print(f"wrote {args.to}", file=sys.stderr)
+        return
+    env = env_for(values)
+    sys.stdout.flush()
+    sys.exit(run_filtered(args.command, {**os.environ, **env}, list(env.values())))
+
+
+def cmd_put(args):
+    value = sys.stdin.read().removesuffix("\n")
+    if not value:
+        raise Stop(USAGE, "no value on stdin")
+    with Session() as session:
+        path = f"inbox/{session.agent}/{args.name}"
+        status, _ = api("POST", f"kv/data/pam/{path}", session.token, {"data": {"value": value}})
+        if status == 403:
+            raise Stop(REFUSED, f"{path} already exists or isn't yours; existing values need the owner")
+        if status == 429:
+            raise Stop(REFUSED, "too many requests; try again in a minute")
+        if status != 200:
+            raise Stop(REFUSED, f"OpenBao refused the write ({status})")
+    print(f"stored {path}")
+
+
+def cmd_status(_):
+    with Session() as session:
+        print(f"identity {session.agent}, policies {', '.join(session.auth['policies'])}")
+        status, reply = api("GET", "kv/metadata/pam/live/?list=true", session.token)
+        if status not in (200, 404):
+            raise Stop(REFUSED, f"could not list secrets ({status})")
+        for key in (reply.get("data") or {}).get("keys", []):
+            print(key)
+
+
+def parse(argv):
+    command = []
+    if "--" in argv:
+        split = argv.index("--")
+        argv, command = argv[:split], argv[split + 1:]
+    parser = argparse.ArgumentParser(prog="pam", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    get = verbs.add_parser("get")
+    get.add_argument("name")
+    get.add_argument("--reason", required=True)
+    target = get.add_mutually_exclusive_group()
+    target.add_argument("--to")
+    target.add_argument("--exec", action="store_true")
+    get.set_defaults(run=cmd_get)
+    put = verbs.add_parser("put")
+    put.add_argument("name")
+    put.set_defaults(run=cmd_put)
+    verbs.add_parser("status").set_defaults(run=cmd_status)
+    args = parser.parse_args(argv)
+    args.command = command if getattr(args, "exec", False) else []
+    if getattr(args, "exec", False) and not command:
+        parser.error("--exec needs a command after --")
+    if getattr(args, "name", None) and not NAME.fullmatch(args.name):
+        parser.error("names are letters, digits, '.', '_', '-' and '/'")
+    return args
+
+
+def main():
+    # Exiting through SystemExit runs the cleanup that closes the approval and the login.
+    # Later signals are ignored so a second one can't cut that cleanup short.
+    stops = ((signal.SIGTERM, 143), (signal.SIGHUP, 129), (signal.SIGQUIT, 131))
+
+    def on_signal(code):
+        for sig, _ in stops:
+            signal.signal(sig, signal.SIG_IGN)
+        sys.exit(code)
+
+    for sig, code in stops:
+        signal.signal(sig, lambda *_, code=code: on_signal(code))
+    args = parse(sys.argv[1:])
+    try:
+        args.run(args)
+    except Stop as stop:
+        print(f"pam: {stop}", file=sys.stderr)
+        sys.exit(stop.code)
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()
