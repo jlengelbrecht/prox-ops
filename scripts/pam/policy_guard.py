@@ -19,8 +19,15 @@ fail silently:
   default policy, or an approver's entity that holds a policy directly, sits in another group, or
   is merged with a login from another mount.
 
---live adds what's on the server: {"policies": {name: text}, "entities": [...], "groups": [...],
-"roles": {name: role}}, as read by openbao-configure.sh.
+--live adds what's on the server, as read by openbao-configure.sh:
+
+  {"jwt_accessor": "...", "pam_oidc_accessor": "...", "policies": {name: text}, "entities": [...],
+   "groups": [...], "roles": {name: role}, "pam_oidc_roles": {name: role}}
+
+An accessor key is the empty string when that mount doesn't exist. If a key is missing while
+aliases exist, the guard can't tell which mount they belong to, so it refuses. It also refuses a
+group id the state doesn't describe, and checks live policy text as well as the repo's: a wider
+policy on the server is what's in force, whatever the repo says.
 """
 import argparse
 import json
@@ -34,6 +41,13 @@ APPROVER_GROUP = "pam-approvers"
 GATED = "kv/data/pam/*"
 # Not agent policies, so they read kv/pam directly. On an agent identity, they're refused below.
 UNGATED_BY_DESIGN = {"openbao-admin", "pam-sync"}
+# The older form of capabilities: path "x" { policy = "read" }.
+LEGACY_POLICY = {
+    "deny": ["deny"],
+    "read": ["read", "list"],
+    "write": ["create", "read", "update", "patch", "delete", "list"],
+    "sudo": ["create", "read", "update", "patch", "delete", "list", "sudo"],
+}
 
 TOKEN = re.compile(r'''
     \s+ | \#[^\n]* | //[^\n]* | /\*.*?\*/
@@ -131,7 +145,12 @@ def parse_policy(text):
         if not key.startswith("path "):
             raise ValueError(f"unexpected {key!r}")
         attributes = dict(block)
-        paths.append((key.removeprefix("path "), attributes.get("capabilities", []), attributes.get("control_group")))
+        capabilities = list(attributes.get("capabilities", []))
+        if "policy" in attributes:
+            if attributes["policy"] not in LEGACY_POLICY:
+                raise ValueError(f"unknown policy value {attributes['policy']!r}")
+            capabilities += LEGACY_POLICY[attributes["policy"]]
+        paths.append((key.removeprefix("path "), capabilities, attributes.get("control_group")))
     return paths
 
 
@@ -217,6 +236,8 @@ def check_identities(state, texts):
         entity, role = entities.get(name, {}), roles.get(name)
         held = set(entity.get("policies") or [])
         for group_id in (entity.get("group_ids") or []) + (entity.get("inherited_group_ids") or []):
+            if group_id not in groups:
+                findings.append(f"identity {name} is in group {group_id}, which the live state doesn't describe")
             held.update(groups.get(group_id, {}).get("policies") or [])
         if role is not None:
             held.update(role.get("token_policies") or [])
@@ -271,15 +292,26 @@ def check_approvers(state):
     return findings
 
 
+def check_accessors(state):
+    aliases = [a for e in state.get("entities", []) for a in e.get("aliases") or []]
+    aliases += [g["alias"] for g in state.get("groups", []) if g.get("alias")]
+    if not aliases:
+        return []
+    return [f"the live state has aliases but no {key}, so their mounts can't be told apart"
+            for key in ("jwt_accessor", "pam_oidc_accessor") if state.get(key) is None]
+
+
 def check(policy_dir, state):
-    texts = dict(state.get("policies", {}))
-    for path in sorted(pathlib.Path(policy_dir).glob("*.hcl")):
-        texts[path.stem] = path.read_text()
-    findings = []
-    for name, text in sorted(texts.items()):
+    live = state.get("policies", {})
+    repo = {path.stem: path.read_text() for path in sorted(pathlib.Path(policy_dir).glob("*.hcl"))}
+    findings = check_accessors(state)
+    for name, text in sorted(repo.items()):
         findings += check_policy(name, text)
+    for name, text in sorted(live.items()):
+        if repo.get(name) != text:
+            findings += [f"live {finding}" for finding in check_policy(name, text)]
     try:
-        findings += check_identities(state, texts)
+        findings += check_identities(state, {**repo, **live})
     except ValueError as e:
         findings.append(str(e))
     return findings + check_approvers(state)
