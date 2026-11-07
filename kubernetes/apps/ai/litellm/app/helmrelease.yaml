@@ -49,6 +49,23 @@ spec:
                 value:
                   name: chatgpt-auth
                   mountPath: /var/lib/litellm/chatgpt
+              - op: add
+                path: /spec/template/spec/volumes/-
+                value:
+                  name: copilot-session-guard
+                  configMap:
+                    name: litellm-copilot-session-guard
+              - op: add
+                path: /spec/template/spec/containers/0/volumeMounts/-
+                value:
+                  name: copilot-session-guard
+                  mountPath: /opt/litellm-callbacks
+                  readOnly: true
+              - op: add
+                path: /spec/template/spec/containers/0/env/-
+                value:
+                  name: PYTHONPATH
+                  value: /opt/litellm-callbacks
   values:
     # Image configuration - uses the litellm-database image (bundles Prisma)
     image:
@@ -96,7 +113,7 @@ spec:
       # config.yaml is mounted via subPath (see proxyConfigMap below), so it does NOT
       # auto-propagate or auto-restart on ConfigMap changes by default. Reloader watches
       # the litellm-config ConfigMap and restarts the pod whenever it changes.
-      configmap.reloader.stakater.com/reload: "litellm-config"
+      configmap.reloader.stakater.com/reload: "litellm-config,litellm-copilot-session-guard"
 
     # Pod security context
     # Note: litellm-database image specifies USER as text "root" in Dockerfile,

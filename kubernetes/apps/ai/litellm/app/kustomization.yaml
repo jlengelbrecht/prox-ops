@@ -8,3 +8,11 @@ resources:
   - externalsecret.yaml
   - httproute.yaml
   - networkpolicy.yaml
+
+configMapGenerator:
+  - name: litellm-copilot-session-guard
+    namespace: ai
+    files:
+      - copilot_session_guard.py=callbacks/copilot_session_guard.py
+generatorOptions:
+  disableNameSuffixHash: true
