@@ -53,6 +53,35 @@ class Policy(unittest.TestCase):
         text = (lab.CONFIG / "pam-agent.hcl").read_text() + 'path "kv/data/pam/live/x" {\n  capabilities = ["read"]\n}\n'
         self.assertRefused("pam-agent", text, "plain grant")
 
+    def test_the_legacy_policy_attribute_is_a_grant(self):
+        for value in ("read", "write", "sudo"):
+            self.assertRefused("x", f'path "kv/data/pam/live/x" {{\n  policy = "{value}"\n}}\n', "plain grant")
+
+    def test_the_legacy_deny_isnt_a_grant(self):
+        self.assertEqual(guard.check_policy("x", 'path "kv/data/pam/*" {\n  policy = "deny"\n}\n'), [])
+
+    def test_an_unknown_legacy_value_is_refused(self):
+        self.assertRefused("x", 'path "kv/data/other" {\n  policy = "everything"\n}\n', "unknown policy value")
+
+    def test_a_legacy_grant_on_an_agent_identity_can_remove_the_gate(self):
+        text = 'path "kv/data/pam/live/*" {\n  policy = "read"\n}\n'
+        state = {"entities": [{"name": "agent-claude", "policies": ["pam-agent", "old"]}], "groups": [], "roles": {}}
+        self.assertIn("can remove the gate", " ".join(guard.check_identities(state, {"old": text})))
+
+    def test_a_wider_live_policy_is_caught_though_the_repo_copy_is_clean(self):
+        repo = (lab.CONFIG / "pam-agent.hcl").read_text()
+        wider = repo + 'path "kv/data/pam/live/x" {\n  capabilities = ["read"]\n}\n'
+        findings = guard.check(lab.CONFIG, {"policies": {"pam-agent": wider}})
+        self.assertIn("live pam-agent: plain grant", " ".join(findings))
+
+    def test_a_live_policy_matching_the_repo_isnt_checked_twice(self):
+        text = (lab.CONFIG / "pam-agent.hcl").read_text()
+        self.assertEqual(guard.check(lab.CONFIG, {"policies": {"pam-agent": text}}), [])
+
+    def test_a_live_policy_only_on_the_server_is_checked(self):
+        findings = guard.check(lab.CONFIG, {"policies": {"extra": 'path "kv/*" {\n  capabilities = ["read"]\n}\n'}})
+        self.assertIn("live extra: plain grant", " ".join(findings))
+
     def test_deny_isnt_a_grant(self):
         self.assertEqual(guard.check_policy("x", 'path "kv/data/pam/*" {\n  capabilities = ["deny"]\n}\n'), [])
 
@@ -132,10 +161,43 @@ class Identities(unittest.TestCase):
     def test_groups_claim_on_an_agent_role(self):
         self.assertIn("groups_claim", " ".join(self.findings(role={"groups_claim": "groups"})))
 
+    def test_a_group_the_state_doesnt_describe(self):
+        for field in ("group_ids", "inherited_group_ids"):
+            self.assertIn("doesn't describe", " ".join(self.findings({field: ["missing"]})))
+
     def test_entity_found_by_alias_not_name(self):
         state = {"jwt_accessor": "auth_jwt_1", "entities": [{"name": "sneaky", "policies": ["a-plain"],
                  "aliases": [{"mount_accessor": "auth_jwt_1"}]}], "groups": [], "roles": {}}
         self.assertTrue(guard.check_identities(state, self.TEXTS))
+
+
+class Accessors(unittest.TestCase):
+    ENTITY = {"name": "x", "aliases": [{"mount_accessor": "auth_jwt_1"}]}
+    GROUP = {"id": "g", "alias": {"mount_accessor": "auth_jwt_1"}}
+
+    def findings(self, **state):
+        return " ".join(guard.check_accessors(state))
+
+    def test_missing_keys_with_entity_aliases(self):
+        found = self.findings(entities=[self.ENTITY])
+        self.assertIn("no jwt_accessor", found)
+        self.assertIn("no pam_oidc_accessor", found)
+
+    def test_missing_keys_with_group_aliases(self):
+        self.assertIn("no jwt_accessor", self.findings(groups=[self.GROUP], pam_oidc_accessor=""))
+        self.assertIn("no pam_oidc_accessor", self.findings(groups=[self.GROUP], jwt_accessor=""))
+
+    def test_a_null_key_counts_as_missing(self):
+        self.assertIn("no jwt_accessor", self.findings(entities=[self.ENTITY], jwt_accessor=None, pam_oidc_accessor=""))
+
+    def test_empty_means_the_mount_doesnt_exist(self):
+        self.assertEqual(self.findings(entities=[self.ENTITY], jwt_accessor="", pam_oidc_accessor=""), "")
+
+    def test_no_aliases_needs_no_keys(self):
+        self.assertEqual(self.findings(entities=[{"name": "x"}], groups=[{"id": "g", "alias": {}}]), "")
+
+    def test_check_includes_this(self):
+        self.assertIn("no jwt_accessor", " ".join(guard.check(lab.CONFIG, {"entities": [self.ENTITY], "groups": [], "roles": {}})))
 
 
 class Approvers(unittest.TestCase):
