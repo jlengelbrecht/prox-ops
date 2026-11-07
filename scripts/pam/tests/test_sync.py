@@ -86,9 +86,9 @@ class Sync(unittest.TestCase):
     def item(self, title):
         return next(i for i in self.items().values() if i["title"] == title)
 
-    def edit_item(self, title, **changes):
+    def edit_item(self, which, /, **changes):
         state = json.loads(self.store.read_text())
-        item = next(i for i in state["items"].values() if i["title"] == title)
+        item = next(i for i in state["items"].values() if i["title"] == which)
         item.update(changes)
         self.store.write_text(json.dumps(state))
 
@@ -411,6 +411,48 @@ class Sync(unittest.TestCase):
         for item_id in (first["id"], "twin"):
             stored = json.loads(self.store.read_text())["items"][item_id]
             self.assertEqual(next(f for f in stored["fields"] if f["label"] == "password")["value"], CANARY)
+
+    def test_a_renamed_item_is_held_not_copied_or_marked_deleted(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.sync()
+        original = self.item("pam/live/one")
+        self.assertEqual(self.custom("live/one")["pam_item_id"], original["id"])
+        self.edit_item("pam/live/one", title="pam/live/renamed", updated_at="2026-11-07T01:00:00Z")
+        self.lab.seed("pam/live/one", password="rotated")
+        result = self.sync()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("rename it back to pam/live/one", result.stdout)
+        self.assertNotIn("marked deleted", result.stdout)
+        self.assertEqual(len(self.items()), 1)
+        renamed = self.item("pam/live/renamed")
+        self.assertEqual(renamed["tags"], ["openbao-sync"])
+        self.assertEqual(next(f for f in renamed["fields"] if f["label"] == "password")["value"], CANARY)
+        self.assertEqual(self.custom("live/one")["pam_synced_version"], "1")
+
+    def test_a_new_item_under_a_synced_title_is_held(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.sync()
+        state = json.loads(self.store.read_text())
+        state["items"]["other"] = {**state["items"].pop(self.item("pam/live/one")["id"]), "id": "other"}
+        self.store.write_text(json.dumps(state))
+        self.lab.seed("pam/live/one", password="rotated")
+        result = self.sync()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is not the one this path was synced to", result.stdout)
+        self.assertEqual(self.fields("pam/live/one")["password"]["value"], CANARY)
+
+    def test_an_unread_path_marks_nothing_deleted(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.lab.seed("pam/zz/gone", password=CANARY)
+        self.sync()
+        self.lab.ok("DELETE", "kv/metadata/pam/zz/gone")
+        self.lab.ok("PATCH", "kv/metadata/pam/live/one", {"custom_metadata": {"pam_synced_version": "not-a-number"}},
+                    headers={"Content-Type": "application/merge-patch+json"})
+        result = self.sync()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("nothing is marked deleted this run", result.stdout)
+        self.assertNotIn("pam/zz/gone: marked deleted", result.stdout)
+        self.assertEqual(self.item("pam/zz/gone")["tags"], ["openbao-sync"])
 
     def test_bad_version_metadata_holds_one_path(self):
         self.lab.seed("pam/live/one", password=CANARY)

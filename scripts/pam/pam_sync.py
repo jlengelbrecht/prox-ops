@@ -3,8 +3,9 @@
 
 One Secure Note per path, titled pam/<path> and tagged openbao-sync, with a concealed field per
 KV key plus bao_path, bao_version and bao_hash. What was copied is recorded in KV custom metadata
-as pam_synced_version, pam_item_updated and pam_content_hash. The hash is of the whole secret, so
-it stays where the value can already be read: agents have no read on kv/metadata/pam.
+as pam_synced_version, pam_item_updated, pam_content_hash and pam_item_id. An item renamed by hand
+is found by that ID and held, not copied again. The hash is of the whole secret, so it stays where
+the value can already be read: agents have no read on kv/metadata/pam.
 
 Nothing flows back from 1Password, and items are never deleted. An item edited by hand, one ahead
 of OpenBao after a restore from an older snapshot, or one at the same version with other content
@@ -97,10 +98,11 @@ class Bao:
             raise Hold(f"{path}: asked OpenBao for version {version} and got {got}")
         return reply["data"]["data"]
 
-    def record(self, path, version, updated, content):
+    def record(self, path, version, written, content):
+        """written is the item as 1Password returned it after the write."""
         self.call("PATCH", f"kv/metadata/pam/{path}",
-                  {"custom_metadata": {"pam_synced_version": str(version), "pam_item_updated": updated,
-                                       "pam_content_hash": content}},
+                  {"custom_metadata": {"pam_synced_version": str(version), "pam_item_updated": written["updated_at"],
+                                       "pam_content_hash": content, "pam_item_id": written["id"]}},
                   content_type="application/merge-patch+json")
 
     def close(self):
@@ -225,15 +227,28 @@ def already_past(stamp, path):
     return when <= datetime.datetime.now(datetime.timezone.utc)
 
 
-def sync_path(bao, path, item):
-    """Returns the action taken, or None if there was nothing to do."""
-    check_path(path)
+def sync_path(bao, path, item, listed, read):
+    """Returns the action taken, or None if there was nothing to do. Adds path to read once its
+    metadata, and so the item it was synced to, is known."""
+    try:
+        check_path(path)
+    except Hold:
+        read.add(path)  # a name outside the bounds was never synced, so it claims no item
+        raise
     meta = bao.metadata(path)
     current = meta["current_version"]
     custom = meta.get("custom_metadata") or {}
     synced = version_number(custom.get("pam_synced_version", 0), path, "pam_synced_version")
     recorded = custom.get("pam_item_updated", "")
     recorded_hash = custom.get("pam_content_hash", "")
+    known = custom.get("pam_item_id", "")
+    read.add(path)
+    if known and (item is None or item["id"] != known):
+        if known in listed:
+            listed[known]["held"] = True
+            raise Hold(f"{path}: its item is now titled {shown(listed[known]['title'])}; rename it back to pam/{path}")
+        if item is not None:
+            raise Hold(f"{path}: the item titled pam/{path} is not the one this path was synced to")
     latest = meta["versions"].get(str(current), {})
     deleted = bool(latest.get("destroyed")) or already_past(latest.get("deletion_time"), path)
     tagged = item is not None and DELETED_TAG in (item.get("tags") or [])
@@ -242,7 +257,7 @@ def sync_path(bao, path, item):
         if item is None or tagged:
             return None
         check_not_edited(bao, op("item", "get", item["id"], "--vault", VAULT), path, synced, recorded)
-        bao.record(path, synced, set_tags(item, tags_for(item, DELETED_TAG))["updated_at"], recorded_hash)
+        bao.record(path, synced, set_tags(item, tags_for(item, DELETED_TAG)), recorded_hash)
         return "marked deleted"
 
     values = bao.values(path, current)
@@ -253,7 +268,7 @@ def sync_path(bao, path, item):
     if item is not None and not tagged and synced == current and item["updated_at"] == recorded and content == recorded_hash:
         return None
     if item is None:
-        bao.record(path, current, create(path, current, content, values)["updated_at"], content)
+        bao.record(path, current, create(path, current, content, values), content)
         return f"created at version {current}"
 
     full = op("item", "get", item["id"], "--vault", VAULT)
@@ -264,23 +279,25 @@ def sync_path(bao, path, item):
     if held == current:
         if field(full, "bao_hash") != content:
             raise Hold(f"{path}: same version as the item but different content; was OpenBao restored?")
-        updated = set_tags(item, tags_for(item))["updated_at"] if tagged else full["updated_at"]
-        bao.record(path, current, updated, content)
+        bao.record(path, current, set_tags(item, tags_for(item)) if tagged else full, content)
         return f"recorded version {current}"
-    bao.record(path, current, update(full, path, current, content, values)["updated_at"], content)
+    bao.record(path, current, update(full, path, current, content, values), content)
     return f"updated to version {current}"
 
 
 def run(bao):
     items = {}
+    listed = {}
+    read = set()
     duplicates = set()
     failures = 0
     for item in op("item", "list", "--vault", VAULT, "--tags", TAG) or []:
+        listed[item["id"]] = item
         if item["title"] in items:
             duplicates.add(item["title"])
         items[item["title"]] = item
     for title in sorted(duplicates):
-        print(f"hold {title}: more than one item has this title")
+        print(f"hold {shown(title)}: more than one item has this title")
         failures += 1
 
     # A partial listing must stop here: below, an item with no path is marked deleted.
@@ -300,7 +317,7 @@ def run(bao):
         if title in duplicates:
             continue
         try:
-            action = sync_path(bao, path, items.pop(title, None))
+            action = sync_path(bao, path, items.pop(title, None), listed, read)
             if action:
                 print(f"{title}: {action}")
         except Hold as hold:
@@ -311,14 +328,20 @@ def run(bao):
                   else f"failed {shown(title)}: {type(error).__name__}")
             failures += 1
 
-    # What's left has no path in OpenBao at all.
+    # What's left has no path in OpenBao at all, as far as this run can tell. An item renamed by
+    # hand is still claimed by its path, which is only known once that path's metadata was read.
+    if len(read) < len(paths):
+        print(f"hold run: {len(paths) - len(read)} path(s) unread, so nothing is marked deleted this run")
+        return failures + 1
     for title, item in items.items():
+        if item.get("held"):
+            continue
         if title not in duplicates and DELETED_TAG not in (item.get("tags") or []):
             try:
                 set_tags(item, tags_for(item, DELETED_TAG))
-                print(f"{title}: marked deleted")
+                print(f"{shown(title)}: marked deleted")
             except RuntimeError as error:
-                print(f"failed {title}: {error}")
+                print(f"failed {shown(title)}: {error}")
                 failures += 1
     return failures
 
