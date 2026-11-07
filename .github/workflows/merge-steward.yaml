@@ -507,6 +507,13 @@ jobs:
     # Events that can change the verdict: new code, the override label, the soak status,
     # a check suite finishing on a PR head, the sweep, or a manual run. Check suites of the
     # steward app are skipped so a published verdict does not trigger another evaluation.
+    #
+    # Status and check suite events are narrowed to Renovate branches before a runner is
+    # queued. Only a Renovate PR's verdict depends on checks finishing: every other PR is
+    # out of scope and gets its pass from pull_request_target, with the missing-only sweep
+    # as the backstop. A status payload lists the branches that contain the commit (at most
+    # 10), so an empty list, or a list of non-Renovate branches shorter than 10, proves no
+    # Renovate branch holds it. A list of 10, or no list at all, is never filtered.
     needs: [render, review]
     # Runs when render or review is skipped (non-Renovate PRs, other events) or fails
     # (needs-human).
@@ -515,10 +522,13 @@ jobs:
       (github.event_name == 'pull_request_target' &&
         (contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) ||
          github.event.label.name == 'steward/human-approved')) ||
-      (github.event_name == 'status' && github.event.context == 'renovate/stability-days') ||
+      (github.event_name == 'status' && github.event.context == 'renovate/stability-days' &&
+        (github.event.branches == null || github.event.branches[9] != null ||
+         contains(join(github.event.branches.*.name, ' '), 'renovate/'))) ||
       (github.event_name == 'check_suite' &&
         github.event.check_suite.app.id != 5615799 &&
-        github.event.check_suite.pull_requests[0] != null) ||
+        github.event.check_suite.pull_requests[0] != null &&
+        contains(join(github.event.check_suite.pull_requests.*.head.ref, ' '), 'renovate/')) ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 30
