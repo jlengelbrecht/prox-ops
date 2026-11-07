@@ -113,7 +113,11 @@ def main():
             state['shared'] += 1
             raise AssertionError('shared auth used')
         with patch.object(CredentialAccessor, 'find_credential', staticmethod(find)), \
-             patch.object(per_user_auth, 'aexchange_github_token', exchange):
+             patch.object(per_user_auth, 'aexchange_github_token', exchange), \
+             tempfile.TemporaryDirectory(prefix='copilot-empty-', dir='/tmp') as token_dir, \
+             patch.dict('os.environ', {'GITHUB_COPILOT_TOKEN_DIR': token_dir}), \
+             patch('litellm.llms.github_copilot.authenticator.Authenticator.get_api_key', shared), \
+             patch('litellm.llms.github_copilot.authenticator.Authenticator.get_api_base', shared):
             hook = CopilotSessionGuard()
             def normal():
                 global CURRENT_PREDICATE
@@ -125,24 +129,18 @@ def main():
                 require(isinstance(session, per_user_auth.GithubCopilotUserSession), 'session_type')
                 require(session.token == 'synthetic-session-token', 'session_token')
                 require('Authorization' not in result['headers'], 'caller_header_removed')
-                # Real installed later native step must preserve the same object.
+                # The installed native step must preserve the same object.
                 CURRENT_PREDICATE = 'native_reattach'
                 asyncio.run(per_user_auth.aattach_github_copilot_user_session(result))
                 require(result['github_copilot_user_session'] is session, 'session_identity_preserved')
-                # The real constructor creates its token directory even when an
-                # attached session makes shared credentials unnecessary. Give it
-                # a fresh, empty directory on the container's /tmp tmpfs.
-                with tempfile.TemporaryDirectory(prefix='copilot-empty-', dir='/tmp') as token_dir, \
-                     patch.dict('os.environ', {'GITHUB_COPILOT_TOKEN_DIR': token_dir}), \
-                     patch('litellm.llms.github_copilot.authenticator.Authenticator.get_api_key', shared), \
-                     patch('litellm.llms.github_copilot.authenticator.Authenticator.get_api_base', shared):
-                    CURRENT_PREDICATE = 'responses_config_init'
-                    config = GithubCopilotResponsesAPIConfig()
-                    CURRENT_PREDICATE = 'responses_validate_environment'
-                    headers = config.validate_environment({}, 'gpt-6-luna', result)
-                    require(headers.get('Authorization') == 'Bearer synthetic-session-token', 'responses_header_session')
-                    CURRENT_PREDICATE = 'responses_get_complete_url'
-                    require(config.get_complete_url(None, result) == 'https://api.githubcopilot.com/responses', 'responses_url_session')
+                # Shared auth stays patched through all subsequent denial cases.
+                CURRENT_PREDICATE = 'responses_config_init'
+                config = GithubCopilotResponsesAPIConfig()
+                CURRENT_PREDICATE = 'responses_validate_environment'
+                headers = config.validate_environment({}, 'gpt-6-luna', result)
+                require(headers.get('Authorization') == 'Bearer synthetic-session-token', 'responses_header_session')
+                CURRENT_PREDICATE = 'responses_get_complete_url'
+                require(config.get_complete_url(None, result) == 'https://api.githubcopilot.com/responses', 'responses_url_session')
                 require(state['shared'] == 0, 'shared_auth_unused')
             check('session_precedence_responses', normal)
 
