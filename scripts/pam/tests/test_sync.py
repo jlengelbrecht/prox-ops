@@ -201,11 +201,39 @@ class Sync(unittest.TestCase):
         full = {"updated_at": "later", "fields": [{"label": "bao_version", "value": "1"}]}
         with self.assertRaises(sync.Hold):
             sync.check_not_edited(bao, full, "live/one", 1, "recorded", "")
-        sync.check_not_edited(bao, {**full, "updated_at": "recorded"}, "live/one", 1, "recorded", "")
+        with self.assertRaises(sync.Hold):
+            sync.check_not_edited(bao, {**full, "updated_at": "recorded"}, "live/one", 1, "recorded", "")
+        own_hash = {"label": "bao_hash", "value": sync.digest({})}
+        sync.check_not_edited(bao, {"updated_at": "recorded", "fields": full["fields"] + [own_hash]},
+                              "live/one", 1, "recorded", "")
         full["fields"].append({"label": "password", "value": "x"})
         sync.check_not_edited(bao, full, "live/one", 1, "recorded", sync.digest({"password": "x"}))
         with self.assertRaises(sync.Hold):
             sync.check_not_edited(bao, full, "live/one", 1, "recorded", sync.digest({"password": "y"}))
+
+    def test_an_edit_with_the_recorded_timestamp_is_still_held(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.sync()
+        stamp = self.item("pam/live/one")["updated_at"]
+        self.hand_edit("pam/live/one")
+        self.edit_item("pam/live/one", updated_at=stamp)
+        self.lab.seed("pam/live/one", password="rotated")
+        result = self.sync()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("edited", result.stdout)
+        self.assertEqual(self.fields("pam/live/one")["password"]["value"], "typed by hand")
+
+    def test_a_duplicate_label_counts_as_an_edit(self):
+        sync, bao = self.load_sync()
+        full = {"updated_at": "recorded", "fields": [{"label": "bao_version", "value": "1"},
+                                                     {"label": "password", "value": "y"},
+                                                     {"label": "password", "value": "x"}]}
+        self.assertFalse(sync.fields_match(full, {"password": "x"}))
+        with self.assertRaises(sync.Hold):
+            sync.check_not_edited(bao, full, "live/one", 1, "recorded", sync.digest({"password": "x"}))
+        full["fields"].insert(0, {"label": "bao_version", "value": "1"})
+        full["fields"].pop()
+        self.assertIsNone(sync.own_fields(full))
 
     def test_recovery_compares_the_fields_with_that_version(self):
         self.lab.seed("pam/live/one", password=CANARY)
@@ -391,7 +419,7 @@ class Sync(unittest.TestCase):
         self.edit_item("pam/live/one", fields=fields)
         result = self.sync()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("different content", result.stdout)
+        self.assertIn("hold pam/live/one", result.stdout)
         self.assertEqual(self.fields("pam/live/one")["password"]["value"], CANARY)
 
     def test_a_content_change_with_a_matching_version_is_noticed_without_a_write(self):

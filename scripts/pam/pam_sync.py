@@ -200,13 +200,23 @@ def set_tags(item, tags):
 
 
 def own_fields(full):
+    """The item's synced fields, or None when two share a label: a dict would keep only one."""
+    labels = [f.get("label") for f in full.get("fields", []) if not f.get("purpose")]
+    if len(labels) != len(set(labels)):
+        return None
     return {f.get("label"): f.get("value") for f in full.get("fields", [])
             if not f.get("purpose") and f.get("label") not in RESERVED}
 
 
 def fields_match(full, values):
     """True when the item's own fields hold exactly these values."""
-    return own_fields(full) == as_strings(values)
+    own = own_fields(full)
+    return own is not None and own == as_strings(values)
+
+
+def hashes_to(full, content):
+    own = own_fields(full)
+    return bool(content) and own is not None and digest(own) == content
 
 
 def check_owner(full, path):
@@ -219,13 +229,16 @@ def check_not_edited(bao, full, path, synced, recorded, recorded_hash):
     """Uses the freshly fetched item, so an edit made after the listing is still seen."""
     held = version_number(field(full, "bao_version") or 0, path, "bao_version")
     if held == synced:
-        # A newer timestamp alone can be the job's own tag write whose record step never ran.
-        # The recorded hash lives in OpenBao, out of agents' reach: fields that still hash to it
-        # haven't been edited.
-        if recorded and full.get("updated_at") != recorded and (
-                not recorded_hash or digest(own_fields(full)) != recorded_hash):
-            raise Hold(f"{path}: the item was edited in 1Password; OpenBao stays the source")
-        return
+        # Fields that hash to the record in OpenBao, out of agents' reach, haven't been edited: a
+        # newer timestamp alone can be the job's own tag write whose record step never ran. After
+        # a restore that record can be older than the item, so an item whose timestamp hasn't
+        # moved also passes if its fields still hash to its own bao_hash. A timestamp alone is
+        # never enough.
+        if not recorded or hashes_to(full, recorded_hash):
+            return
+        if full.get("updated_at") == recorded and hashes_to(full, field(full, "bao_hash")):
+            return
+        raise Hold(f"{path}: the item was edited in 1Password; OpenBao stays the source")
     # A run died between writing the item and recording it, so the timestamp can't be compared.
     # Compare the fields with the version the item claims to hold instead.
     source = bao.values(path, held) if held > 0 else None
@@ -367,7 +380,7 @@ def run(bao):
             try:
                 # The record in OpenBao is gone, so check the item against its own bao_hash.
                 full = op("item", "get", item["id"], "--vault", VAULT)
-                if digest(own_fields(full)) != field(full, "bao_hash"):
+                if not hashes_to(full, field(full, "bao_hash")):
                     print(f"hold {shown(title)}: edited in 1Password and gone from OpenBao; check it by hand")
                     failures += 1
                     continue
