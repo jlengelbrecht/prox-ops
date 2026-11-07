@@ -141,22 +141,58 @@ def upsert_advisory(gh, app_gh, number, body, policy):
     delete_comments(app_gh, mine[1:] + legacy)
 
 
+_THREADS = ("query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, "
+            "name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $after) { pageInfo { "
+            "hasNextPage endCursor } nodes { isResolved comments(first: 1) { nodes { databaseId } } } } } } }")
+
+
+def resolved_comment_ids(gh, number):
+    """Ids of the first comments of resolved review threads. Empty when GitHub cannot say.
+
+    The REST API does not report whether a thread was resolved, so this asks GraphQL. A failure
+    only means resolved threads count as open, which can hide a repeat but never post one.
+    """
+    owner, _, name = gh.repo.partition("/")
+    resolved, after = set(), None
+    try:
+        for _ in range(5):
+            data, _ = gh.request("POST", f"{gh.api}/graphql",
+                                 {"query": _THREADS, "variables": {"owner": owner, "name": name, "number": number, "after": after}})
+            threads = data["data"]["repository"]["pullRequest"]["reviewThreads"]
+            for node in threads["nodes"]:
+                if node["isResolved"]:
+                    resolved.update(c["databaseId"] for c in node["comments"]["nodes"])
+            if not threads["pageInfo"]["hasNextPage"]:
+                break
+            after = threads["pageInfo"]["endCursor"]
+    except Exception as err:  # the type only: the message can quote the response
+        print(f"PR #{number}: could not read review threads: {type(err).__name__}", file=sys.stderr)
+        return set()
+    return resolved
+
+
 def post_inline(gh, app_gh, number, sha, anchored, findings, policy):
     """Post each anchored finding on its line as the app. Returns the positions that are on the diff.
 
-    A finding whose key is already on the PR counts as posted and is not repeated, so a rerun or
-    a rebase adds nothing. GitHub refusing a line (the diff moved, the file is gone) leaves that
-    finding for the summary; nothing here raises on it.
+    A finding the steward already raised counts as posted and is not repeated: the same code under
+    the same key, or an unresolved comment of ours within a few lines whose text reads as the same
+    point (inline.is_repeat). The model rewords a finding and moves its range from push to push, so
+    neither the text nor the exact lines can be the test. GitHub refusing a line (the diff moved,
+    the file is gone) leaves that finding for the summary; nothing here raises on it.
     """
-    done = inline.posted_keys(gh.paginate(f"pulls/{number}/comments"), policy["steward_app_id"])
+    earlier = inline.steward_inline(gh.paginate(f"pulls/{number}/comments"), policy["steward_app_login"])
+    resolved = resolved_comment_ids(gh, number) if earlier else set()
     placed = set()
     for anchor in anchored:
-        if anchor["key"] in done:
+        text = findings[anchor["index"]]["text"]
+        if inline.is_repeat(anchor, text, earlier, resolved):
             placed.add(anchor["index"])
             continue
         try:
-            app_gh.post(f"pulls/{number}/comments", inline.payload(anchor, findings[anchor["index"]]["text"], sha))
+            app_gh.post(f"pulls/{number}/comments", inline.payload(anchor, text, sha))
             placed.add(anchor["index"])
+            earlier.append({"id": None, "path": anchor["path"], "line": anchor["end"], "start": anchor["start"],
+                            "key": anchor["key"], "text": text})
         except GitHubError as err:
             print(f"PR #{number}: inline comment on {anchor['path']} refused: {err.status}", file=sys.stderr)
     return placed

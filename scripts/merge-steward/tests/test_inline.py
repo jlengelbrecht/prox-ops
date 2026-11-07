@@ -14,6 +14,7 @@ from test_review import LOW, artifact
 from test_steward import POLICY, SHA, FakeGitHub, fresh_head, renovate_pr, routes  # noqa: F401
 
 APP = POLICY["steward_app_id"]
+BOT = {"login": POLICY["steward_app_login"], "type": "Bot"}
 PATCH = "\n".join([
     "@@ -10,4 +10,5 @@ spec:",
     "   replicas: 1",
@@ -110,11 +111,14 @@ def test_the_payload_targets_the_head_side_with_a_range_when_there_is_one():
 
 def test_only_the_apps_own_marker_counts_as_posted():
     marker = inline.INLINE_MARKER.format(key="a" * 24)
-    mine = {"body": f"text\n{marker}", "performed_via_github_app": {"id": APP}}
+    mine = {"body": f"text\n{marker}", "user": BOT, "path": "p", "line": 3}
     forged = {"body": f"text\n{marker}", "user": {"login": "someone"}}
-    other_app = {"body": f"text\n{marker}", "performed_via_github_app": {"id": 1}}
-    assert inline.posted_keys([mine], APP) == {"a" * 24}
-    assert inline.posted_keys([forged, other_app, {"body": None}, {"body": "no marker"}], APP) == set()
+    other_app = {"body": f"text\n{marker}", "user": {"login": "another-app[bot]", "type": "Bot"}}
+    reply = dict(mine, in_reply_to_id=5)
+    person = {"body": f"text\n{marker}", "user": {"login": BOT["login"], "type": "User"}}
+    assert [c["key"] for c in inline.steward_inline([mine], BOT["login"])] == ["a" * 24]
+    assert inline.steward_inline([forged, other_app, reply, person, {"body": None}, {"body": "no marker", "user": BOT}],
+                                 BOT["login"]) == []
 
 
 # The model's line numbers reach the stored result only as validated integers.
@@ -213,7 +217,7 @@ def test_a_finding_that_cannot_anchor_stays_in_the_summary(tmp_path):
 
 def test_a_rerun_with_the_same_findings_adds_nothing(tmp_path):
     first = publish(tmp_path, [ASSESSMENT, finding(11)])[1]
-    existing = [{"body": line_posts(first)[0]["body"], "performed_via_github_app": {"id": APP}}]
+    existing = [{"body": line_posts(first)[0]["body"], "user": BOT, "path": FILE["filename"], "line": 11}]
     _, again = publish(tmp_path, [ASSESSMENT, finding(11)], line_comments=existing)
     assert line_posts(again) == []
     assert "1 finding commented" in summary_of(again)  # still accounted for in the summary
@@ -221,7 +225,7 @@ def test_a_rerun_with_the_same_findings_adds_nothing(tmp_path):
 
 def test_a_reworded_finding_and_a_rebase_do_not_pile_up(tmp_path):
     first = publish(tmp_path, [ASSESSMENT, finding(11)])[1]
-    existing = [{"body": line_posts(first)[0]["body"], "performed_via_github_app": {"id": APP}}]
+    existing = [{"body": line_posts(first)[0]["body"], "user": BOT, "path": FILE["filename"], "line": 31}]
     shifted = dict(FILE, patch=PATCH.replace("@@ -10,4 +10,5 @@", "@@ -30,4 +30,5 @@"))
     _, again = publish(tmp_path, [ASSESSMENT, finding(31, text="Different words, same code.")], files=[shifted],
                        line_comments=existing)
