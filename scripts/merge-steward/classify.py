@@ -41,6 +41,8 @@ def load_policy(path):
             raise ValueError("each required check needs a name and an integer app_id")
     if not isinstance(policy.get("steward_app_id"), int):
         raise ValueError("policy key steward_app_id must be an integer")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*\[bot\]", str(policy.get("steward_app_login") or "")):
+        raise ValueError("policy key steward_app_login must be the app's bot login, ending in [bot]")
     if not isinstance(policy.get("commit_signer"), str) or not policy["commit_signer"]:
         raise ValueError("policy key commit_signer must be a login")
     deadline = policy.get("required_checks_deadline_minutes")

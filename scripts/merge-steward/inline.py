@@ -92,13 +92,77 @@ def payload(anchor, text, sha):
     return body
 
 
-def posted_keys(comments, app_id):
-    """Keys of the inline comments the steward app already left. Anyone else's marker is ignored."""
-    keys = set()
+# How close, in lines, an earlier steward comment must be for a new finding to count as the same one.
+NEAR = 5
+_FOOTER = "Advisory AI review. It does not affect any check."
+_STOP = frozenset("that this with from have will would should could there their which when then than into onto "
+                  "does doesn about also only each other such these those been being were what where while "
+                  "before after because still more most make made need needs must".split())
+
+
+def _words(text):
+    """The distinctive words of a finding: lower case, four letters or more, no filler."""
+    return {w for w in re.findall(r"[a-z0-9]{4,}", text.lower()) if w not in _STOP}
+
+
+def _header(text):
+    """The short label before the first colon ("Runner Prerequisite"), lower case, or ''."""
+    head, sep, _ = text.partition(":")
+    return " ".join(head.lower().split()) if sep and len(head) <= 40 else ""
+
+
+def similar(a, b):
+    """True when two findings read as the same point, without comparing their text exactly.
+
+    The model rewords a finding on every run, so the wording cannot be the test. The same label
+    before the colon counts, and so does sharing at least half of the shorter finding's distinctive
+    words. Two findings about different things near each other share neither.
+    """
+    wa, wb = _words(a), _words(b)
+    shared = len(wa & wb)
+    if _header(a) and _header(a) == _header(b) and shared >= 2:
+        return True  # a label alone is not enough: "Bug:" heads many unrelated findings
+    return len(min(wa, wb, key=len)) >= 3 and shared / len(min(wa, wb, key=len)) >= 0.5
+
+
+def steward_inline(comments, login):
+    """The root inline comments the steward app left, each with where it sits now and its text.
+
+    GitHub fills in performed_via_github_app on issue comments but not on review comments, so the
+    author is the bot user's login, which GitHub sets and nobody else can have (a person cannot
+    take a login ending in [bot]). A reply, or a comment without the marker, is not one of ours.
+    line is None once the code the comment sat on has changed.
+    """
+    found = []
     for comment in comments:
-        if (comment.get("performed_via_github_app") or {}).get("id") != app_id:
+        user = comment.get("user") or {}
+        marker = _MARKER.search(comment.get("body") or "")
+        if user.get("login") != login or user.get("type") != "Bot" or comment.get("in_reply_to_id") or not marker:
             continue
-        found = _MARKER.search(comment.get("body") or "")
-        if found:
-            keys.add(found.group("key"))
-    return keys
+        line = comment.get("line") if type(comment.get("line")) is int else None
+        start = comment.get("start_line") if type(comment.get("start_line")) is int else line
+        text = (comment.get("body") or "").split(_FOOTER)[0].strip()
+        found.append({"id": comment.get("id"), "path": comment.get("path"), "line": line, "start": start,
+                      "key": marker.group("key"), "text": text})
+    return found
+
+
+def is_repeat(anchor, text, earlier, resolved=frozenset()):
+    """True when a finding is one the steward has already raised on this PR.
+
+    Either the same code under the same key, or an unresolved comment of ours on the same file
+    within NEAR lines whose text reads as the same point. A comment on code that has since
+    changed (line None) or in a resolved thread does not count for nearness; a resolved thread
+    still counts for an identical key, so a settled point is not raised again on the same code.
+    """
+    for old in earlier:
+        if old["path"] != anchor["path"]:
+            continue
+        if old["key"] == anchor["key"]:
+            return True
+        if old["line"] is None or old.get("id") in resolved:
+            continue
+        gap = max(anchor["start"] - old["line"], old["start"] - anchor["end"], 0)
+        if gap <= NEAR and similar(text, old["text"]):
+            return True
+    return False
