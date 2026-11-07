@@ -36,6 +36,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -190,6 +191,8 @@ def env_for(values):
         name = ENV_PREFIX + key.upper().replace("-", "_")
         if not re.fullmatch(r"[A-Z0-9_]+", name):
             raise Stop(REFUSED, f"key {key!r} can't be an environment variable")
+        if name in env:
+            raise Stop(REFUSED, f"two keys both map to {name}")
         env[name] = value if isinstance(value, str) else json.dumps(value)
     return env
 
@@ -237,12 +240,49 @@ class Redactor:
 
 
 def run_filtered(command, env, secrets):
-    """Returns the child's exit code."""
+    """Returns the child's exit code. The command gets its own process group, so
+    stopping pam stops everything it started, however pam is stopped."""
+    running = {}
+
+    def kill_group(sig):
+        child = running.get("child")
+        if child is not None:
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    def stop_group(*_):
+        # TERM now, KILL in 5 seconds even if pam is still waiting on the pipes.
+        kill_group(signal.SIGTERM)
+        if "timer" not in running:
+            running["timer"] = threading.Timer(5, kill_group, (signal.SIGKILL,))
+            running["timer"].daemon = True
+            running["timer"].start()
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, stop_group)
     try:
-        child = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        running["child"] = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                            bufsize=0, start_new_session=True)
     except OSError as e:
         raise Stop(REFUSED, f"could not run {command[0]}: {type(e).__name__}")
-    signal.signal(signal.SIGTERM, lambda *_: child.terminate())
+    child = running["child"]
+    try:
+        return pump(child, secrets)
+    finally:
+        # Nothing the command started may outlive pam: its environment holds the value.
+        stop_group()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        kill_group(signal.SIGKILL)
+        child.wait()
+        running["timer"].cancel()
+
+
+def pump(child, secrets):
     selector = selectors.DefaultSelector()
     for source, target in ((child.stdout, sys.stdout.buffer), (child.stderr, sys.stderr.buffer)):
         selector.register(source, selectors.EVENT_READ, (target, Redactor(secrets)))

@@ -293,5 +293,20 @@ class Client(unittest.TestCase):
         self.assertEqual(result.returncode, DOWN)
 
 
+
+class EnvNames(unittest.TestCase):
+    def test_keys_that_map_to_the_same_name_are_refused(self):
+        import importlib.machinery
+        import importlib.util
+        path = str(pathlib.Path(__file__).resolve().parent.parent / "pam")
+        spec = importlib.util.spec_from_loader("pam_client", importlib.machinery.SourceFileLoader("pam_client", path))
+        pam = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pam)
+        with self.assertRaises(pam.Stop):
+            pam.env_for({"api-key": "a", "api_key": "b"})
+        self.assertEqual(pam.env_for({"api-key": "a"}), {pam.ENV_PREFIX + "API_KEY": "a"})
+
+
 if __name__ == "__main__":
     unittest.main()
+
