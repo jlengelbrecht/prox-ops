@@ -209,3 +209,36 @@ def test_the_advisory_comments_come_from_the_app_through_the_steward_environment
     for step in job["steps"]:
         if "actions/checkout" in step.get("uses", ""):
             assert "default_branch" in step["with"]["ref"] and step["with"]["persist-credentials"] is False
+
+
+def _evaluate_if():
+    return " ".join(STEWARD["evaluate"]["if"].split())
+
+
+def test_status_and_check_suite_events_are_narrowed_to_renovate_branches():
+    cond = _evaluate_if()
+    assert "github.event.context == 'renovate/stability-days'" in cond
+    # A status lists at most 10 branches. A full list cannot prove anything, so it still runs.
+    assert "github.event.branches == null" in cond  # no list in the payload: do not filter
+    assert "github.event.branches[9] != null" in cond
+    assert "contains(join(github.event.branches.*.name, ' '), 'renovate/')" in cond
+    assert "contains(join(github.event.check_suite.pull_requests.*.head.ref, ' '), 'renovate/')" in cond
+    assert "github.event.check_suite.app.id != 5615799" in cond  # the steward's own suites
+
+
+def test_the_events_that_post_the_required_check_are_not_narrowed():
+    cond = _evaluate_if()
+    assert "github.event_name == 'schedule'" in cond and "github.event_name == 'workflow_dispatch'" in cond
+    assert "github.event_name == 'pull_request_target'" in cond
+    for kind in ("opened", "synchronize", "reopened"):
+        assert kind in cond
+    # Neither filter applies to those: the renovate/ prefix appears only after a status or suite term.
+    before_status = cond.split("github.event_name == 'status'")[0]
+    assert "renovate/" not in before_status
+    assert cond.rstrip(")").endswith("github.event_name == 'workflow_dispatch'")
+    assert STEWARD["evaluate"]["concurrency"]["cancel-in-progress"] is False
+
+
+def test_the_branch_filter_matches_the_renovate_branch_prefix():
+    config = (GITHUB / "renovate.json5").read_text() + "".join(p.read_text() for p in (GITHUB / "renovate").glob("*.json5"))
+    assert "branchPrefix" not in config  # the default prefix is renovate/

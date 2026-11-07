@@ -180,6 +180,14 @@ class Identities(unittest.TestCase):
         self.assertTrue(guard.check_identities(state, self.TEXTS))
 
 
+class PolicyDir(unittest.TestCase):
+    def test_an_empty_or_missing_directory_fails(self):
+        with tempfile.TemporaryDirectory() as empty:
+            for path in (empty, empty + "/missing"):
+                findings = guard.check(path, {})
+                self.assertTrue(any("no policies found" in f for f in findings), findings)
+
+
 class Accessors(unittest.TestCase):
     ENTITY = {"name": "x", "aliases": [{"mount_accessor": "auth_jwt_1"}]}
     GROUP = {"id": "g", "alias": {"mount_accessor": "auth_jwt_1"}}

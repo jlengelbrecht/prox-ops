@@ -36,6 +36,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -120,11 +121,24 @@ class Session:
         revoke(self.token)
 
 
-def revoke(token):
+def revoke(token, what="token"):
+    """Retries twice. A failure is reported, not hidden: the token then lives until its TTL."""
+    for attempt in range(3):
+        try:
+            status, _ = api("POST", "auth/token/revoke-self", token, {})
+        except Stop:
+            status = None  # Network or server error: worth another try.
+        if status in (200, 204, 403):
+            return True  # 403 means the token is already invalid.
+        if status is not None:
+            break  # Any other client error will not change on retry.
+        if attempt < 2:
+            time.sleep(1)
     try:
-        api("POST", "auth/token/revoke-self", token, {})
-    except Stop:
-        pass  # Both tokens expire by themselves.
+        print(f"pam: could not revoke the {what}; it stays valid until it expires", file=sys.stderr)
+    except OSError:
+        pass  # After a hangup the terminal may be gone; the rest of the cleanup still runs.
+    return False
 
 
 def wait_for_approval(session, wrap, deadline):
@@ -169,7 +183,7 @@ def fetch(name, reason, delivery):
             reply = wait_for_approval(session, wrap, started + wrap["ttl"])
         finally:
             # The approval is a window, not one use: close it.
-            revoke(wrap["token"])
+            revoke(wrap["token"], "approval window")
     values = (reply.get("data") or {}).get("data")
     if not values:
         raise Stop(REFUSED, "the secret has no current value")
@@ -190,6 +204,8 @@ def env_for(values):
         name = ENV_PREFIX + key.upper().replace("-", "_")
         if not re.fullmatch(r"[A-Z0-9_]+", name):
             raise Stop(REFUSED, f"key {key!r} can't be an environment variable")
+        if name in env:
+            raise Stop(REFUSED, f"two keys both map to {name}")
         env[name] = value if isinstance(value, str) else json.dumps(value)
     return env
 
@@ -237,17 +253,61 @@ class Redactor:
 
 
 def run_filtered(command, env, secrets):
-    """Returns the child's exit code."""
+    """Returns the child's exit code. The command gets its own process group, so
+    stopping pam stops everything it started, however pam is stopped."""
+    running = {}
+
+    def kill_group(sig):
+        child = running.get("child")
+        if child is not None:
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    def stop_group(*_):
+        # TERM now, KILL in 5 seconds even if pam is still waiting on the pipes.
+        kill_group(signal.SIGTERM)
+        if "timer" not in running:
+            running["timer"] = threading.Timer(5, kill_group, (signal.SIGKILL,))
+            running["timer"].daemon = True
+            running["timer"].start()
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, stop_group)
     try:
-        child = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        running["child"] = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                            bufsize=0, start_new_session=True)
     except OSError as e:
         raise Stop(REFUSED, f"could not run {command[0]}: {type(e).__name__}")
-    signal.signal(signal.SIGTERM, lambda *_: child.terminate())
+    child = running["child"]
+    try:
+        return pump(child, secrets, stop_group)
+    finally:
+        # Nothing the command started may outlive pam: its environment holds the value.
+        stop_group()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        kill_group(signal.SIGKILL)
+        child.wait()
+        running["timer"].cancel()
+
+
+def pump(child, secrets, stop_group):
+    """Copies the child's output through the redactor. Once the command itself
+    exits, anything it left running gets the same TERM then KILL, so a
+    background worker holding the pipes can't keep pam waiting."""
     selector = selectors.DefaultSelector()
     for source, target in ((child.stdout, sys.stdout.buffer), (child.stderr, sys.stderr.buffer)):
         selector.register(source, selectors.EVENT_READ, (target, Redactor(secrets)))
+    stopping = False
     while selector.get_map():
-        for key, _ in selector.select():
+        if not stopping and child.poll() is not None:
+            stop_group()
+            stopping = True
+        for key, _ in selector.select(timeout=0.5):
             target, redactor = key.data
             data = os.read(key.fd, 1 << 16)
             if not data:
@@ -344,7 +404,17 @@ def parse(argv):
 
 
 def main():
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    # Exiting through SystemExit runs the cleanup that closes the approval and the login.
+    # Later signals are ignored so a second one can't cut that cleanup short.
+    stops = ((signal.SIGTERM, 143), (signal.SIGHUP, 129), (signal.SIGQUIT, 131))
+
+    def on_signal(code):
+        for sig, _ in stops:
+            signal.signal(sig, signal.SIG_IGN)
+        sys.exit(code)
+
+    for sig, code in stops:
+        signal.signal(sig, lambda *_, code=code: on_signal(code))
     args = parse(sys.argv[1:])
     try:
         args.run(args)
