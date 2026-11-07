@@ -38,7 +38,11 @@ action = args[1]
 if action == "list":
     print(json.dumps([summary(i) for i in store["items"].values() if flag("--tags") in i["tags"]]))
 elif action == "get":
-    print(json.dumps(store["items"][args[2]]))
+    item = store["items"][args[2]]
+    if os.environ.get("OP_TAG_ON_GET") and os.environ["OP_TAG_ON_GET"] not in item["tags"]:
+        item["tags"].append(os.environ["OP_TAG_ON_GET"])
+        item["updated_at"] = write()
+    print(json.dumps(item))
 elif action == "create":
     assert args[-3:] == ["--format", "json"] or "-" in args
     doc = json.load(sys.stdin)
@@ -286,6 +290,18 @@ class Sync(unittest.TestCase):
         self.lab.seed("pam/live/one", password="rotated")
         self.assertClean(self.sync())
         self.assertEqual(self.fields("pam/live/one")["password"]["value"], "rotated")
+
+    def test_a_tag_added_after_the_listing_survives_tag_writes(self):
+        self.lab.seed("pam/live/one", password=CANARY)
+        self.lab.seed("pam/live/two", password=CANARY)
+        self.sync()
+        self.lab.ok("DELETE", "kv/data/pam/live/one")
+        self.lab.ok("DELETE", "kv/metadata/pam/live/two")
+        self.assertClean(self.sync(OP_TAG_ON_GET="by-hand"))
+        self.assertIn("by-hand", self.item("pam/live/one")["tags"])
+        self.assertIn("deleted-in-openbao", self.item("pam/live/one")["tags"])
+        self.assertIn("by-hand", self.item("pam/live/two")["tags"])
+        self.assertIn("deleted-in-openbao", self.item("pam/live/two")["tags"])
 
     def test_a_scheduled_deletion_still_syncs_until_it_passes(self):
         self.lab.ok("POST", "kv/metadata/pam/live/later", {"delete_version_after": "1h"})

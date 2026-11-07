@@ -13,6 +13,9 @@ is left alone and fails the job, so a person decides. Agents choose inbox names,
 outside the bounds below holds that path. Values reach op through stdin only, and only names and
 versions are logged.
 
+Run one copy at a time; the CronJob sets concurrencyPolicy: Forbid. Two overlapping runs could both
+create a note for a new path, and the duplicate title then holds that path until a person removes one.
+
 BAO_ADDR and BAO_CACERT name the server. BAO_TOKEN is used if set, otherwise the job logs in with
 its projected service account token (BAO_ROLE, BAO_JWT_PATH). OP_SERVICE_ACCOUNT_TOKEN reaches op.
 """
@@ -280,7 +283,7 @@ def sync_path(bao, path, item, listed, read):
         full = op("item", "get", item["id"], "--vault", VAULT)
         check_owner({**full, "held": item.get("held")}, path)
         check_not_edited(bao, full, path, synced, recorded, recorded_hash)
-        bao.record(path, synced, set_tags(item, tags_for(item, DELETED_TAG)), recorded_hash)
+        bao.record(path, synced, set_tags(item, tags_for(full, DELETED_TAG)), recorded_hash)
         return "marked deleted"
 
     values = bao.values(path, current)
@@ -303,7 +306,7 @@ def sync_path(bao, path, item, listed, read):
     if held == current:
         if field(full, "bao_hash") != content:
             raise Hold(f"{path}: same version as the item but different content; was OpenBao restored?")
-        bao.record(path, current, set_tags(item, tags_for(item)) if tagged else full, content)
+        bao.record(path, current, set_tags(item, tags_for(full)) if tagged else full, content)
         return f"recorded version {current}"
     bao.record(path, current, update(full, path, current, content, values), content)
     return f"updated to version {current}"
@@ -368,7 +371,7 @@ def run(bao):
                     print(f"hold {shown(title)}: edited in 1Password and gone from OpenBao; check it by hand")
                     failures += 1
                     continue
-                set_tags(item, tags_for(item, DELETED_TAG))
+                set_tags(item, tags_for(full, DELETED_TAG))
                 print(f"{shown(title)}: marked deleted")
             except RuntimeError as error:
                 print(f"failed {shown(title)}: {error}")
