@@ -1,0 +1,16 @@
+# Paths that decide how the cluster is reached and how changes are gated. The
+# owner-review ruleset requires the owner's approval here. Warpgate's state.json
+# stays unowned on purpose: sync.py enforces its limits, so agents can change it.
+/.github/ @jlengelbrecht
+/.sops.yaml @jlengelbrecht
+/talos/ @jlengelbrecht
+/terraform/ @jlengelbrecht
+/scripts/merge-steward/ @jlengelbrecht
+/kubernetes/flux/ @jlengelbrecht
+/kubernetes/components/sops/ @jlengelbrecht
+/kubernetes/apps/steward/ @jlengelbrecht
+/kubernetes/apps/crossplane-system/ @jlengelbrecht
+/kubernetes/apps/identity-system/tenants/ks.yaml @jlengelbrecht
+/kubernetes/apps/access/ @jlengelbrecht
+# The last matching rule wins, so this one line leaves state.json unowned.
+/kubernetes/apps/access/warpgate/app/config-sync/state.json
