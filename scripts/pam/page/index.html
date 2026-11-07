@@ -1,0 +1,181 @@
+<!doctype html>
+<!-- Approves or denies agent PAM requests. It signs the approver in through OpenBao's pam-oidc mount,
+     so every approval is made with the approver's own token. That token can only see, approve and
+     revoke; it stays in this page's memory and is gone on reload. Served at /pam/ and /pam/callback,
+     same origin as the API. After editing the script or the style, update the two hashes in the CSP;
+     test_page.py checks them. frame-ancestors can't go in a meta tag, so the server has to send it
+     and X-Frame-Options as headers. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-wtYzcJRhTXr5zdSlYk+max++qydXq9ERno3bf18opsc='; style-src 'sha256-/0/4mizv/5VV6mGVE7WCWx5uPFDBOtR8Ul3HCAWYdwU='; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Agent PAM</title>
+<style>
+:root { color-scheme: light dark; --line: #8886; --muted: #777; --ok: #1a7f37; --no: #c0362c; }
+body { font: 16px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 40rem; padding: 16px; }
+h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+button { font: inherit; padding: .6rem 1rem; border: 1px solid var(--line); border-radius: .4rem; background: none; color: inherit; }
+button.approve { background: var(--ok); border-color: var(--ok); color: #fff; }
+button.deny { color: var(--no); border-color: var(--no); }
+article { border: 1px solid var(--line); border-radius: .4rem; padding: .75rem; margin-bottom: .75rem; overflow-wrap: anywhere; }
+.path { font-family: ui-monospace, monospace; }
+.claim, #status { color: var(--muted); }
+.actions { display: flex; gap: .5rem; margin-top: .5rem; }
+</style>
+</head>
+<body>
+<h1>Agent PAM</h1>
+<p id="status"></p>
+<div id="toolbar"></div>
+<main id="requests"></main>
+<script>
+"use strict";
+const REDIRECT_URI = location.origin + "/pam/callback";
+const AUTH = "auth/pam-oidc/oidc/";
+const ROLE = "pam-approver";
+const MAX_CARDS = 25;
+const NONCE_KEY = "pam-client-nonce";
+const SCAN_BATCH = 8;
+let token = null;
+
+const $ = (id) => document.getElementById(id);
+const setStatus = (text) => { $("status").textContent = text; };
+
+function element(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+function button(label, className, action) {
+  const node = element("button", label, className);
+  node.type = "button";
+  node.addEventListener("click", action);
+  return node;
+}
+
+// Errors report the status only: an OpenBao error can quote the request.
+async function api(method, path, body) {
+  const response = await fetch("/v1/" + path, {
+    method,
+    headers: { "Content-Type": "application/json", ...(token ? { "X-Vault-Token": token } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    cache: "no-store",
+    credentials: "omit",
+    redirect: "error",
+  });
+  const text = await response.text();
+  return { status: response.status, data: text ? JSON.parse(text).data : null };
+}
+
+async function login() {
+  const nonce = crypto.randomUUID();
+  const { status, data } = await api("POST", AUTH + "auth_url",
+    { role: ROLE, redirect_uri: REDIRECT_URI, client_nonce: nonce });
+  if (status !== 200 || !data.auth_url) return setStatus("Sign-in failed (" + status + ").");
+  sessionStorage.setItem(NONCE_KEY, nonce);
+  location.assign(data.auth_url);
+}
+
+async function finishLogin(params) {
+  const clientNonce = sessionStorage.getItem(NONCE_KEY) ?? "";
+  sessionStorage.removeItem(NONCE_KEY);
+  history.replaceState(null, "", "/pam/");
+  const query = new URLSearchParams({
+    state: params.get("state") ?? "", code: params.get("code") ?? "", client_nonce: clientNonce,
+  });
+  const response = await fetch("/v1/" + AUTH + "callback?" + query, { cache: "no-store", credentials: "omit" });
+  const reply = await response.json().catch(() => ({}));
+  token = reply.auth?.client_token ?? null;
+  return token !== null;
+}
+
+// The one place a request's data is read. A write's body holds the secret and comes back from
+// OpenBao in plain text, so nothing from it survives this function except the names of its keys.
+// A reason on a write is dropped too: it can't be told apart from a body key.
+function summarize(accessor, request) {
+  const data = request.request_data ?? {};
+  const isRead = request.request_operation === "read";
+  return {
+    accessor,
+    entity: request.request_entity?.name ?? "(no entity)",
+    operation: request.request_operation,
+    path: request.request_path,
+    approved: request.approved === true,
+    approvers: (request.authorizations ?? []).map((a) => a.entity_name),
+    reason: isRead ? String(data.reason ?? "").slice(0, 200) : null,
+    delivery: isRead ? String(data.delivery ?? "").slice(0, 500) : "",
+    keys: isRead ? [] : Object.keys(data.data ?? data).slice(0, 20).map((k) => k.slice(0, 60)),
+  };
+}
+
+function renderRequest(row) {
+  const card = element("article");
+  card.append(element("div", row.entity + " wants to " + row.operation));
+  card.append(element("div", row.path, "path"));
+  if (row.reason !== null) card.append(element("div", "agent says: " + (row.reason || "(nothing)"), "claim"));
+  else card.append(element("div", "writes keys: " + (row.keys.join(", ") || "(none)")));
+  if (row.delivery) card.append(element("div", "agent says it will " + row.delivery, "claim"));
+  if (row.approved) card.append(element("div", "approved by " + row.approvers.join(", ") + ", still open"));
+  const actions = element("div", undefined, "actions");
+  if (!row.approved) actions.append(button("Approve", "approve", () => act("sys/control-group/authorize", row)));
+  actions.append(button(row.approved ? "Revoke" : "Deny", "deny", () => act("auth/token/revoke-accessor", row)));
+  card.append(actions);
+  return card;
+}
+
+async function act(path, row) {
+  const { status } = await api("POST", path, { accessor: row.accessor });
+  if (status >= 300) setStatus("That didn't work (" + status + ").");
+  await refresh();
+}
+
+// OpenBao has no list of pending requests. Asking about each token finds them: only a held
+// request answers 200.
+async function pendingRequests() {
+  const list = await api("GET", "auth/token/accessors/?list=true");
+  if (list.status === 403) return null;
+  const accessors = list.data?.keys ?? [];
+  const rows = [];
+  for (let at = 0; at < accessors.length; at += SCAN_BATCH) {
+    const replies = await Promise.all(accessors.slice(at, at + SCAN_BATCH).map(async (accessor) => {
+      const { status, data } = await api("POST", "sys/control-group/request", { accessor });
+      return status === 200 ? summarize(accessor, data) : null;
+    }));
+    rows.push(...replies.filter(Boolean));
+  }
+  return rows;
+}
+
+async function refresh() {
+  const rows = await pendingRequests();
+  if (rows === null) {
+    token = null;
+    return showLogin("This sign-in can't approve requests. Sign in again.");
+  }
+  $("requests").replaceChildren(...rows.slice(0, MAX_CARDS).map(renderRequest));
+  const hidden = rows.length - MAX_CARDS;
+  setStatus(hidden > 0 ? hidden + " more waiting. Deal with these, then refresh." : rows.length ? "" : "Nothing is waiting.");
+}
+
+function showLogin(message) {
+  setStatus(message);
+  $("requests").replaceChildren();
+  $("toolbar").replaceChildren(button("Sign in", "approve", login));
+}
+
+async function start() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has("code")) return showLogin("Sign in to see what's waiting.");
+  if (!(await finishLogin(params))) return showLogin("Sign-in failed. Try again.");
+  $("toolbar").replaceChildren(button("Refresh", "", refresh));
+  await refresh();
+}
+
+start().catch(() => setStatus("Something went wrong. Reload to start again."));
+</script>
+</body>
+</html>
