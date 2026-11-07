@@ -335,6 +335,30 @@ class Page(unittest.TestCase):
         self.browser.wait_for("document.querySelectorAll('article').length === 25")
         self.assertEqual(self.browser.evaluate("document.getElementById('status').textContent"), "5 more waiting. Deal with these, then refresh.")
 
+    def test_open_approvals_cant_push_new_requests_past_the_cap(self):
+        self.sign_in()
+        # 30 approved and 5 pending, the pending ones listed last, served in place of OpenBao.
+        self.browser.evaluate("""(() => {
+            const real = window.fetch;
+            const keys = Array.from({length: 35}, (_, n) => "a" + n);
+            const reply = (data) => Promise.resolve(new Response(JSON.stringify({data}), {status: 200}));
+            window.fetch = (url, init) => {
+                if (String(url).includes("auth/token/accessors")) return reply({keys});
+                if (String(url).includes("sys/control-group/request")) {
+                    const n = Number(JSON.parse(init.body).accessor.slice(1));
+                    return reply({approved: n < 30, request_path: "kv/data/pam/live/x", request_operation: "read",
+                                  request_entity: {name: "agent"}, request_data: {reason: "r" + n},
+                                  authorizations: n < 30 ? [{entity_name: "owner"}] : []});
+                }
+                return real(url, init);
+            };
+        })()""")
+        self.browser.click("Refresh")
+        self.browser.wait_for("document.getElementById('status').textContent === '10 more waiting. Deal with these, then refresh.'")
+        buttons = self.browser.evaluate(
+            "[...document.querySelectorAll('article')].map(a => a.querySelector('button').textContent)")
+        self.assertEqual(buttons, ["Approve"] * 5 + ["Revoke"] * 20)
+
     def test_a_gated_write_body_is_never_rendered(self):
         self.lab.seed("pam/live/body", value="x")
         self.hold("POST", "kv/data/pam/live/body", token=self.lab.writer(), body=

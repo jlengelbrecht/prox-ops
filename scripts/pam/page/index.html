@@ -10,7 +10,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ec8xhJovF8QoYzjat6NeYQR6mqfPwTHc9JcPANytxes='; style-src 'sha256-/0/4mizv/5VV6mGVE7WCWx5uPFDBOtR8Ul3HCAWYdwU='; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-V4hj7gDNBggpczESLcMeZwhNlYAXkU5Qjt/yMYrTWsk='; style-src 'sha256-/0/4mizv/5VV6mGVE7WCWx5uPFDBOtR8Ul3HCAWYdwU='; connect-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Agent PAM</title>
 <style>
 :root { color-scheme: light dark; --line: #8886; --muted: #777; --ok: #1a7f37; --no: #c0362c; }
@@ -197,6 +197,9 @@ async function refresh() {
     $("requests").replaceChildren();
     return setStatus("Couldn't check what's waiting (" + rows.failed + "). Refresh to try again.");
   }
+  // Requests still waiting for a decision come first. An approval stays open until the agent uses
+  // it, so a pile of those must never push a new request past the cap.
+  rows.sort((a, b) => Number(a.approved) - Number(b.approved));
   $("requests").replaceChildren(...rows.slice(0, MAX_CARDS).map(renderRequest));
   const hidden = rows.length - MAX_CARDS;
   setStatus(hidden > 0 ? hidden + " more waiting. Deal with these, then refresh." : rows.length ? "" : "Nothing is waiting.");
