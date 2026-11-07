@@ -61,9 +61,11 @@ PRIORITY = ["render", "CRD", "webhook", "removed", "added", "privileged pod spec
             "StatefulSet", "major", "version", "version skew", "image", "replicas", "routing", "namespace", "values",
             "changed"]
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-_SEMVER = re.compile(r"^v?(\d+)\.(\d+)")
+# Each number is at most nine digits: int() refuses a longer one (a PR can put any text in a tag), and a
+# version that long is not one we can compare, which already means needs-human.
+_SEMVER = re.compile(r"^v?(\d{1,9})\.(\d{1,9})(?!\d)")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-_RELEASE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(-)?")
+_RELEASE = re.compile(r"^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?!\d)(-)?")
 _RELEASE_FIELDS = (("spec", "ref", "tag"), ("spec", "ref", "digest"))
 _MISSING = object()
 STALE = "the PR merge ref was stale; re-run the render (pull_request_target run)"
