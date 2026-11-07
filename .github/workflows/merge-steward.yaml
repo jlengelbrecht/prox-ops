@@ -270,6 +270,48 @@ jobs:
           rendered: ${{ needs.render.result == 'success' }}
           llm-key: ${{ secrets.MERGE_STEWARD_LLM_KEY }}
 
+  # The reuse check for the advisory review. A rebase or an update-branch merge usually leaves
+  # the PR's diff as the advisory comment last saw it; then the render, review and comment are
+  # skipped and that comment stands. The comment records the diff fingerprint the Renovate reuse
+  # uses, and only the steward app's own comment counts. Only a push is compared, so a reopen
+  # always gets a new review. A failure leaves the output empty, which also means a new review.
+  advisory-gate:
+    name: merge-steward advisory reuse check
+    if: >-
+      vars.MERGE_STEWARD_AI == 'true' &&
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'synchronize' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'renovate[bot]' &&
+      github.event.pull_request.head.repo.fork == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read   # the changed files and the PR's comments
+    outputs:
+      reuse: ${{ steps.gate.outputs.reuse }}
+    steps:
+      - name: Checkout steward code from the default branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/merge-steward
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.15'
+      - run: python -m pip install "PyYAML==${PYYAML_VERSION}"
+      - name: Look for an advisory review of this diff
+        id: gate
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: python scripts/merge-steward/review_job.py advisory-gate --pr "$PR_NUMBER" --sha "$SHA"
+
   # Renders a same-repo PR from a person for its advisory review, so the model sees what a
   # change does to the cluster. Same container, same read-only token, same nothing-from-the-PR-runs
   # rules as the render job above, and no secrets. It is a separate job on purpose: evaluate
@@ -277,7 +319,9 @@ jobs:
   # Its result goes to its own artifact, which only the advisory review reads.
   advisory-render:
     name: merge-steward advisory render
+    needs: advisory-gate
     if: >-
+      !cancelled() && needs.advisory-gate.outputs.reuse != 'true' &&
       vars.MERGE_STEWARD_AI == 'true' &&
       github.event_name == 'pull_request_target' &&
       contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
@@ -417,11 +461,12 @@ jobs:
   # one runner with verdict reviews, so each one delays them.
   advisory-review:
     name: merge-steward advisory review
-    needs: advisory-render
+    needs: [advisory-gate, advisory-render]
     # A skipped, failed or stale render only means the review goes without it; a cancelled one
-    # means a newer push replaced this run.
+    # means a newer push replaced this run. A reuse skips the render and this review.
     if: >-
       !cancelled() && needs.advisory-render.result != 'cancelled' &&
+      needs.advisory-gate.outputs.reuse != 'true' &&
       vars.MERGE_STEWARD_AI == 'true' &&
       github.event_name == 'pull_request_target' &&
       contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
