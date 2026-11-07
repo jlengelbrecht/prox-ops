@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -51,3 +52,29 @@ class PinnedResultTests(unittest.TestCase):
         valid['failures']['session_precedence_responses']['class'] = 'secret value'
         self.assertEqual(runner.closed_result(json.dumps(valid).encode(), 1)[1], 'failure_value')
         self.assertEqual(runner.closed_result(b'x' * 65537, 1)[1], 'output_limit')
+
+    def test_import_failure_reports_cause_without_child_output(self):
+        result = {'schema': 'litellm-copilot-image-result/1',
+                  'checks': {'installed_import': 'fail'}}
+        parsed, status = runner.closed_result(json.dumps(result).encode(), 1)
+        self.assertEqual(status, 'installed_import_failed')
+        self.assertEqual(parsed, {'checks': {'installed_import': 'fail'}, 'failures': {}})
+        child = subprocess.CompletedProcess(['docker', 'run'], 1, json.dumps(result).encode(), b'private error')
+        with patch.object(runner.subprocess, 'run', return_value=child):
+            report = runner.run(Path('/tmp'))
+        self.assertEqual((report['status'], report['reason']), ('fail', 'installed_import_failed'))
+        self.assertEqual(runner.closed_result(json.dumps(result).encode(), 0)[1], 'check_schema')
+        result['extra'] = 'untrusted'
+        self.assertEqual(runner.closed_result(json.dumps(result).encode(), 1)[1], 'check_schema')
+
+    def test_timeout_removes_named_container(self):
+        with patch.object(runner.subprocess, 'run', side_effect=[
+            subprocess.TimeoutExpired(['docker', 'run'], 180),
+            subprocess.CompletedProcess(['docker', 'rm'], 0),
+        ]) as called:
+            report = runner.run(Path('/tmp'))
+        self.assertEqual((report['status'], report['reason']), ('fail', 'timeout'))
+        run_args = called.call_args_list[0].args[0]
+        name = run_args[run_args.index('--name') + 1]
+        self.assertEqual(called.call_args_list[1].args[0], ['docker', 'rm', '-f', name])
+        self.assertEqual(called.call_args_list[1].kwargs['timeout'], 15)

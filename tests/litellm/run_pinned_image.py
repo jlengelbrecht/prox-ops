@@ -48,6 +48,9 @@ def closed_result(output, exit_code):
     obj = found[0]
     checks = obj.get('checks')
     failures = obj.get('failures', {})
+    if (set(obj) == {'schema', 'checks'} and checks == {'installed_import': 'fail'}
+            and exit_code != 0):
+        return {'checks': checks, 'failures': {}}, 'installed_import_failed'
     if not isinstance(checks, dict) or set(checks) != EXPECTED:
         return None, 'check_schema'
     if not isinstance(failures, dict) or set(failures) != {k for k, v in checks.items() if v == 'fail'}:
@@ -97,8 +100,9 @@ def run(result_dir):
         guard.mkdir()
         shutil.copyfile(ROOT / CALLBACK, guard / 'copilot_session_guard.py')
         shutil.copyfile(ROOT / FIXTURE, snap / 'pinned_image_integration.py')
+        name = f'litellm-copilot-image-{uuid.uuid4().hex}'
         cmd = [
-            'docker', 'run', '--rm', '--network', 'none', '--read-only',
+            'docker', 'run', '--rm', '--name', name, '--network', 'none', '--read-only',
             '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
             '--tmpfs', '/tmp:rw,nosuid,size=16m',
             '--env', 'PYTHONDONTWRITEBYTECODE=1', '--env', 'PYTHONPATH=/opt/guard',
@@ -109,13 +113,19 @@ def run(result_dir):
         try:
             process = subprocess.run(cmd, capture_output=True, timeout=180, check=False)
         except subprocess.TimeoutExpired:
+            try:
+                subprocess.run(['docker', 'rm', '-f', name], capture_output=True,
+                               timeout=15, check=False)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
             return {'status': 'fail', 'reason': 'timeout', 'contract_sha256': contract_hash,
                     'image': image, 'source_sha256': sources}
         except OSError:
             return {'status': 'fail', 'reason': 'runtime_unavailable', 'contract_sha256': contract_hash,
                     'image': image, 'source_sha256': sources}
     result, status = closed_result(process.stdout, process.returncode)
-    report = {'status': status if result else 'fail', 'reason': None if result else status,
+    report = {'status': status if status in ('pass', 'fail') else 'fail',
+              'reason': status if status == 'installed_import_failed' or not result else None,
               'contract_sha256': contract_hash, 'image': image, 'source_sha256': sources,
               'child_exit': process.returncode, 'stderr_present': bool(process.stderr)}
     if result:
