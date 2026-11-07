@@ -179,7 +179,9 @@ class Client(unittest.TestCase):
             self.lab.approve(accessor, self.approver)
 
         self.decide(approve)
-        self.assertEqual(self.run_pam("get", "demo", "--reason", "testing", "--to", self.path("closed")).returncode, 0)
+        result = self.run_pam("get", "demo", "--reason", "testing", "--to", self.path("closed"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("could not revoke", result.stderr)
         self.assertEqual(self.lab.request(accessors[0], self.approver)[0], 400)
 
     def test_denied(self):
@@ -189,6 +191,7 @@ class Client(unittest.TestCase):
         result = self.run_pam("get", "demo", "--reason", "testing", "--to", target)
         self.assertEqual(result.returncode, DENIED, result.stderr)
         self.assertFalse(os.path.exists(target))
+        self.assertNotIn("could not revoke", result.stderr)
 
     def test_timed_out(self):
         short = lab.AGENT_POLICY.replace('ttl = "15m"', 'ttl = "2s"')
@@ -317,7 +320,7 @@ class Revoke(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def outcome(self, *replies):
+    def outcome(self, *replies, gone=None):
         calls = []
 
         def api(*_):
@@ -329,12 +332,16 @@ class Revoke(unittest.TestCase):
 
         self.pam.api = api
         with unittest.mock.patch("sys.stderr") as err:
-            ok = self.pam.revoke("t", "approval window")
+            ok = self.pam.revoke("t", "approval window", gone)
         return ok, len(calls), err.write.called
 
-    def test_success_and_already_invalid_count_as_closed(self):
+    def test_success_counts_as_closed(self):
         self.assertEqual(self.outcome(204), (True, 1, False))
-        self.assertEqual(self.outcome(403), (True, 1, False))
+
+    def test_a_403_counts_only_when_confirmed(self):
+        self.assertEqual(self.outcome(403, gone=lambda: True), (True, 1, False))
+        self.assertEqual(self.outcome(403, gone=lambda: False), (False, 1, True))
+        self.assertEqual(self.outcome(403), (False, 1, True))
 
     def test_transient_errors_are_retried(self):
         down = self.pam.Stop(self.pam.DOWN, "down")
