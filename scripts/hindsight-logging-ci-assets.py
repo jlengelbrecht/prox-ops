@@ -12,14 +12,14 @@ HELM_BINARY = 'e4722a77de9df824214aaf19d43687c49f7cbcf3b107905acea002173777d486'
 # Renovate bumps the tag and the official alloy-linux-amd64.zip digest together,
 # grouped with the image tag; the archive digest alone pins the member bytes.
 # renovate: datasource=github-release-attachments depName=grafana/alloy
-ALLOY_VERSION = 'v1.20.1'
-ALLOY_ARCHIVE = '451fe650e8277d22d69cb8db50bba809f581fe78decba7fce4027ef185457be9'
+ALLOY_VERSION = 'v1.21.3'
+ALLOY_ARCHIVE = '50d23af2d0f98c00beac6ce9a365693e60f87fb76b6cad6fe1d161e80588af6d'
 ALLOY_URL = f'https://github.com/grafana/alloy/releases/download/{ALLOY_VERSION}/alloy-linux-amd64.zip'
 # The chart the workflow pulls, pinned by its grafana/helm-charts release tag and
 # alloy-<version>.tgz digest; grouped with the HelmRelease chart version.
 # renovate: datasource=github-release-attachments depName=alloy packageName=grafana/helm-charts
-ALLOY_CHART_TAG = 'alloy-1.13.1'
-ALLOY_CHART_ARCHIVE = '6c2b7df23e39438bb11f1e1fcf19eb9eb7c8bfeab7d49b7c975b6212abd0f99a'
+ALLOY_CHART_TAG = 'alloy-1.15.0'
+ALLOY_CHART_ARCHIVE = '2ecc96c05004cc01a45ab23cb390194ad5259ec9d02b42bf148d4468d013aaa3'
 ALLOY_CHART_VERSION = ALLOY_CHART_TAG.removeprefix('alloy-')
 MAX_MEMBER = 200_000_000
 # Alloy bundles every component into one binary, several times Helm's size.
