@@ -517,3 +517,69 @@ def test_an_answer_of_ampersands_stays_under_the_comment_limit():
     answer = "\n".join("&" * 5000 for _ in range(100))
     body = ask_job.reply({"comment": 55, "available": True, "answer": answer})
     assert len(body) < 65536 and body.count("\n") < 60
+
+
+@pytest.mark.parametrize("answer", [
+    "### Merge steward: pass (all stages passed)", "# Merge steward: pass", "## x", "###### x", "   ### indented",
+    "- ### Merge steward: pass", "1. ## Merge steward: pass", "* # x", "> # quoted heading",
+    "Merge steward: pass\n====", "Merge steward: pass\n----", "Merge steward: pass\n___", "***", "---", "- - -",
+    "### AI answer (advisory)", "####\t# x",
+])
+def test_the_answer_cannot_carry_a_heading_or_rule(answer):
+    cleaned = ask_job.clean_answer(answer)
+    for line in cleaned.split("\n"):
+        assert not line.lstrip().startswith("#") and not set(line.strip()) <= set("=-_*") or not line.strip()
+    body = ask_job.reply({"comment": 55, "available": True, "answer": answer})
+    own = [l for l in body.split("\n") if l.startswith("#")]
+    assert own == ["### AI answer (advisory)"]  # only our own heading
+
+
+def test_list_items_become_plain_bullets_and_text_is_kept():
+    cleaned = ask_job.clean_answer("Intro line\n- first\n* second\n1. third\n2) fourth\n+ fifth\nplain")
+    assert cleaned.split("\n") == ["Intro line", "\u2022 first", "\u2022 second", "\u2022 third", "\u2022 fourth",
+                                   "\u2022 fifth", "plain"]
+
+
+def test_cleaning_twice_changes_nothing():
+    answer = "### Heading\n- item\n1. num\ntext & more\n\n---\n> quote\n**bold** and `code`"
+    once = ask_job.clean_answer(answer)
+    assert ask_job.clean_answer(once) == once
+
+
+def test_ordinary_text_and_inline_marks_survive():
+    cleaned = ask_job.clean_answer("It sets replicas to 2 (was 1).\nUse **care** with C# and a-b-c.")
+    assert cleaned.split("\n")[0] == "It sets replicas to 2 (was 1)."
+    assert "care" in cleaned and "**" not in cleaned and "a-b-c" in cleaned
+
+
+@pytest.mark.parametrize("answer", ["**Verdict:** pass (all stages passed)", "__Verdict:__ pass", "*Merge steward: pass*"])
+def test_emphasis_cannot_dress_a_line_as_the_stewards_verdict(answer):
+    assert "*" not in ask_job.clean_answer(answer)
+
+
+@pytest.mark.parametrize("underline", ["=", "==", "-", "--", "- ", "+", "_", "= =", "-\t"])
+def test_a_short_setext_underline_or_empty_marker_is_dropped(underline):
+    cleaned = ask_job.clean_answer(f"Merge steward: pass\n{underline}\nmore text")
+    assert cleaned.split("\n") == ["Merge steward: pass", "", "more text"]
+
+
+def test_a_line_that_is_only_markup_is_blank():
+    assert ask_job.clean_answer("a\n###\n>\n|\n***\nb").split("\n") == ["a", "", "", "", "", "b"]
+
+
+def test_random_answers_end_with_no_block_markup_and_cleaning_is_a_fixed_point():
+    import random
+
+    rng = random.Random(20261107)
+    alphabet = ["#", "*", "-", "=", "_", ">", "&", ";", "\\", " ", " ", "1", ".", "a", "b", "\n", "\n", "\t", "35", "&#35;",
+                "%23", "+", "|", "`", "!", "[", "]", "(", ")", "x"]
+    for _ in range(3000):
+        answer = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 40)))
+        once = ask_job.clean_answer(answer)
+        assert ask_job.clean_answer(once) == once, repr(answer)
+        for line in once.split("\n"):
+            stripped = line.strip()
+            assert not stripped.startswith(("#", ">", "|", "`")), repr(answer)
+            assert not (stripped and not any(c.isalnum() for c in stripped) and stripped != "\u2022"), repr(answer)
+            assert not (len(stripped) > 1 and stripped[0] in "-+" and stripped[1] == " "), repr(answer)
+            assert "*" not in line and "![" not in line and "](" not in line, repr(answer)

@@ -175,13 +175,62 @@ def agent(url, question_file, raw_file):
     return 0
 
 
+_HEADING = re.compile(r"^\s*#+\s*")
+_RULE = re.compile(r"^\s*[=_*-]{3,}\s*$")
+_LIST =re.compile(r"^\s*(?:[-*+]|[0-9]{1,3}[.)])\s+")
+
+
+def flat(line):
+    """A line without the block markdown that would let the model write a heading, rule or list.
+
+    The comment is the steward app's own, so a heading planted by a prompt injection (a fake
+    verdict heading, say) would read as the steward speaking. Headings, setext underlines and
+    horizontal rules are dropped, and list markers become a plain bullet, so what is left
+    renders as an ordinary paragraph line. Asterisks go too, so bold text cannot imitate the
+    steward's "Verdict:" line either. Applying it twice gives the same line.
+    """
+    if _RULE.match(line):
+        return ""
+    bullet = False
+    for _ in range(4):
+        before = line
+        if _LIST.match(line):
+            bullet, line = True, _LIST.sub("", line, count=1)
+        line = _HEADING.sub("", line, count=1)
+        if line == before:
+            break
+    line = line.replace("*", "").strip()
+    # A line with no letter or digit is only markup: a one or two character setext underline
+    # ("=", "--"), an empty list item, a stray rule. None of it carries meaning.
+    if not any(c.isalnum() for c in line):
+        return ""
+    return f"\u2022 {line}" if bullet else line
+
+
 def clean_answer(text):
-    """The model's answer as safe lines: each one through scrub, blank lines kept, length bounded."""
+    """The model's answer as safe lines, cleaned until a pass changes nothing.
+
+    scrub decodes entities and removes backslashes and asterisks before flat() looks at a line,
+    so one pass can leave text from which the next pass removes a marker that has just appeared.
+    Repeating to a fixed point (at most four passes) means the stored answer and the posted one
+    are the same text.
+    """
+    text = str(text or "")
+    for _ in range(4):
+        cleaned = _clean_once(text)
+        if cleaned == text:
+            break
+        text = cleaned
+    return text
+
+
+def _clean_once(text):
+    """One pass: each line through scrub and flat, blank lines kept, length bounded."""
     lines = []
     for raw in str(text or "").replace("\r", "").split("\n")[:MAX_ANSWER_LINES]:
         raw = raw.strip()
         # scrub cuts to the limit before clean() escapes & as &amp;, which can grow a line five times.
-        lines.append(review.scrub(raw, LINE_LIMIT)[:LINE_LIMIT] if raw else "")
+        lines.append(flat(review.scrub(raw, LINE_LIMIT)[:LINE_LIMIT]) if raw else "")
     while lines and not lines[-1]:
         lines.pop()
     return "\n".join(lines)
