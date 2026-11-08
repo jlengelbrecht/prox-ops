@@ -319,6 +319,24 @@
       "datasourceTemplate": "terraform-provider",
       "depNameTemplate": "bpg/proxmox",
       "packageNameTemplate": "bpg/proxmox"
+    },
+    {
+      "customType": "regex",
+      // Kustomize resources fetched from a GitHub release asset URL. The
+      // kubernetes manager doesn't look at remote URLs, so without this the
+      // "# renovate:" comments on KServe and Knative did nothing and both stayed
+      // on 2024 releases. Comment lines between the annotation and the URL are
+      // allowed. Pass versioning= for tags that aren't plain semver (Knative's
+      // knative-vX.Y.Z).
+      "description": "Track GitHub release asset URLs in Kustomization resources",
+      "managerFilePatterns": [
+        "/(^|/)kubernetes/.+/kustomization\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>github-releases) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n(?:\\s*#[^\\n]*\\n)*\\s*-\\s*https://github\\.com/[^/\\s]+/[^/\\s]+/releases/download/(?<currentValue>[^/\\s]+)/"
+      ],
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
     }
   ],
   "packageRules": [
@@ -337,6 +355,40 @@
       "automerge": false,
       "prBodyNotes": [
         "**Prometheus CI archive**: manual merge. Version and archive SHA-256 move together; the Hindsight metrics fixtures workflow must pass against the new promtool."
+      ]
+    },
+    {
+      // Knative supports upgrading one minor at a time, and Serving and Kourier
+      // ship together, so: one PR per minor, both components in it, never merged
+      // by Renovate.
+      "description": "FULLY MANUAL: Knative Serving and Kourier, one minor at a time",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["knative/serving", "knative-extensions/net-kourier"],
+      "groupName": "knative serving",
+      "separateMultipleMinor": true,
+      // One PR per minor would open eight or nine at once and fill prConcurrentLimit,
+      // the way manual PRs once stalled the Talos auto-update. Each minor waits for
+      // approval on the dependency dashboard instead.
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "prBodyNotes": [
+        "**Knative**: manual merge, one minor at a time. Serving and Kourier move together. After Flux applies, check that every Knative Service (qwen36-27b, voicestudio, the other KServe predictors) is Ready."
+      ]
+    },
+    {
+      // KServe minors change CRDs and the controller config. The storage-initializer
+      // image must match the controller version, so it rides in the same PR.
+      "description": "FULLY MANUAL: KServe controller and storage-initializer, one minor at a time",
+      "matchPackageNames": ["kserve/kserve", "kserve/storage-initializer"],
+      "groupName": "kserve",
+      "separateMultipleMinor": true,
+      // One PR per minor would open eight or nine at once and fill prConcurrentLimit,
+      // the way manual PRs once stalled the Talos auto-update. Each minor waits for
+      // approval on the dependency dashboard instead.
+      "dependencyDashboardApproval": true,
+      "automerge": false,
+      "prBodyNotes": [
+        "**KServe**: manual merge, one minor at a time. Read the release notes for CRD and inferenceservice-config changes, and keep storage-initializer on the same version as the controller."
       ]
     }
   ]
