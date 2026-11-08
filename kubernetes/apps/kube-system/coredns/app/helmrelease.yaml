@@ -19,6 +19,13 @@ spec:
       name: kube-dns
       clusterIP: "10.43.0.10"
     replicaCount: 2
+    # Cluster DNS must win scheduling and node-pressure eviction over app pods,
+    # like the other kube-system add-ons. Without it CoreDNS ran at priority 0.
+    priorityClassName: system-cluster-critical
+    # Keep both replicas serving during a rollout: bring the new pod up first.
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
     servers:
       # Split-horizon DNS for internal homelab0.org resolution
       # Routes queries for homelab0.org to k8s-gateway for internal IPs
