@@ -3,10 +3,10 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  # renovate: datasource=github-releases depName=knative/serving
+  # renovate: datasource=github-releases depName=knative/serving versioning=regex:^knative-v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
   # Knative Serving Core (includes CRDs, namespace, and deployments)
   - https://github.com/knative/serving/releases/download/knative-v1.15.2/serving-core.yaml
-  # renovate: datasource=github-releases depName=knative/net-kourier
+  # renovate: datasource=github-releases depName=knative-extensions/net-kourier versioning=regex:^knative-v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
   # Kourier networking layer (lightweight alternative to Istio)
   - https://github.com/knative/net-kourier/releases/download/knative-v1.15.1/kourier.yaml
   # Lets the ai/voicestudio HTTPRoute send traffic to kourier-internal
