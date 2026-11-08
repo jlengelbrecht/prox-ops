@@ -47,12 +47,12 @@ nodes:
     data:
       macAddr: "aa:54:cd:f6:a1:d0"
       zone: heimdall
-  - host: k8s-ctrl-3 # Odin
+  - host: k8s-ctrl-3 # Thor (moved from Odin 2026-11-08)
     ip: 10.20.67.3
     role: control-plane
     data:
       macAddr: "be:9c:fd:2c:54:85"
-      zone: odin
+      zone: thor
 
   # --- Workers ----------------------------------------------------------------
   # iotAddr: IoT VLAN 62 interface (eth1), dmzAddr: DMZ VLAN 81 interface (eth2)
@@ -106,35 +106,19 @@ nodes:
       zone: heimdall
       iotAddr: 10.20.62.9/23
       dmzAddr: 10.20.81.9/24
-  - host: k8s-work-7 # Odin
+  - host: k8s-work-7 # Odin, RTX A5000, the host's only worker
     ip: 10.20.67.10
     role: worker
+    # GPU schematic: QEMU guest agent + NVIDIA drivers + container toolkit + net.ifnames=0
+    schematicId: 26a847a67a3a6575fdcb3a9a45d6f1add29827e0f549955806b532d590004982
     data:
       macAddr: "bc:24:11:6b:75:fe"
       zone: odin
       iotAddr: 10.20.62.10/23
       dmzAddr: 10.20.81.10/24
-  - host: k8s-work-8 # Odin
-    ip: 10.20.67.11
-    role: worker
-    data:
-      macAddr: "bc:24:11:16:f6:dd"
-      zone: odin
-      iotAddr: 10.20.62.11/23
-      dmzAddr: 10.20.81.11/24
-  - host: k8s-work-9 # Odin
-    ip: 10.20.67.12
-    role: worker
-    data:
-      macAddr: "bc:24:11:27:e7:a3"
-      zone: odin
-      iotAddr: 10.20.62.12/23
-      dmzAddr: 10.20.81.12/24
-  - host: k8s-work-10 # Thor, RTX A5000
+  - host: k8s-work-10 # Thor
     ip: 10.20.67.13
     role: worker
-    # GPU schematic: QEMU guest agent + NVIDIA drivers + container toolkit + net.ifnames=0
-    schematicId: 26a847a67a3a6575fdcb3a9a45d6f1add29827e0f549955806b532d590004982
     data:
       macAddr: "bc:24:11:57:87:b2"
       zone: thor

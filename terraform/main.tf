@@ -455,7 +455,7 @@ module "worker_nodes" {
   additional_network_devices = lookup(each.value, "additional_network_devices", [])
 
   # Use GPU resources for GPU nodes, regular worker resources otherwise
-  cpu_cores    = each.value.is_gpu ? var.gpu_worker_cpu_cores : var.worker_cpu_cores
+  cpu_cores    = coalesce(each.value.cpu_cores, each.value.is_gpu ? var.gpu_worker_cpu_cores : var.worker_cpu_cores)
   cpu_sockets  = each.value.is_gpu ? var.gpu_worker_cpu_sockets : var.worker_cpu_sockets
   cpu_type     = var.cpu_type
   memory_mb    = coalesce(each.value.memory_mb, each.value.is_gpu ? var.gpu_worker_memory_mb : var.worker_memory_mb)

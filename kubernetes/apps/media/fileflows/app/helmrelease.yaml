@@ -90,14 +90,14 @@ spec:
                     operator: In
                     values:
                       - k8s-work-4
-            # Failover: RTX A5000 on k8s-work-10
+            # Failover: the RTX A5000, wherever it is (k8s-work-7 since 2026-11-08)
             - weight: 50
               preference:
                 matchExpressions:
-                  - key: kubernetes.io/hostname
+                  - key: gpu.nvidia.com/model
                     operator: In
                     values:
-                      - k8s-work-10
+                      - rtx-a5000
       annotations:
         security.homelab/gpu-required: "NVIDIA GPU for hardware transcoding"
         security.homelab/root-exception: "FileFlows requires root for user creation and GPU setup, drops to PUID after init"

@@ -183,18 +183,23 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
     }
   }
 
-  # Tags for organization
-  tags = concat(
+  # Tags for organization. Proxmox stores tags sorted, so sort them here or every
+  # plan shows a reorder.
+  tags = sort(distinct(concat(
     [var.is_controlplane ? "controlplane" : "worker"],
     var.is_gpu ? ["gpu"] : [],
     var.additional_tags
-  )
+  )))
 
   # Lifecycle
   # Note: Removed network_device from ignore_changes to allow Terraform to manage
-  # additional NICs (VLAN 62, 81) for network segmentation
+  # additional NICs (VLAN 62, 81) for network segmentation.
+  # clone is ignored because it only matters when the VM is created. A VM moved to
+  # another host (qm migrate on shared Ceph) would otherwise be rebuilt just
+  # because that host's template has a different ID. Rebuild a node on purpose
+  # with -replace.
   lifecycle {
-    ignore_changes = []
+    ignore_changes = [clone]
   }
 
   # Startup configuration

@@ -146,6 +146,21 @@ spec:
             summary: "An agent is waiting for approval in Warpgate"
             description: "Approve or deny the session in the Warpgate admin UI at https://access.homelab0.org. It fails by itself after about 10 minutes."
 
+        # A gated request creates one audit response. The first-sample clause
+        # catches a new counter series before increase() has two samples.
+        - alert: PamApprovalPending
+          expr: |
+            sum(increase(loki_process_custom_pam_approval_requests_total[15m])) > 0
+            or
+            sum(loki_process_custom_pam_approval_requests_total unless loki_process_custom_pam_approval_requests_total offset 15m) > 0
+          labels:
+            severity: warning
+            component: openbao
+            pager: "true"
+          annotations:
+            summary: "An agent requested access in OpenBao"
+            description: "Review and approve or deny the request at https://bao.homelab0.org/pam/"
+
         # Runs every 15 minutes. It also fails if the agent write path has been
         # weakened, so this is a security signal as well as a health one.
         - alert: WarpgateConfigSyncFailing

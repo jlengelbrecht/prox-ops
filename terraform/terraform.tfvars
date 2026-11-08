@@ -165,24 +165,24 @@ control_nodes = [
     ip_address   = "10.20.67.3"
     mac_addr     = "be:9c:fd:2c:54:85"
     vm_id        = 903
-    proxmox_node = "Odin"
+    proxmox_node = "Thor"
   }
 ]
 
 # -----------------------------------------------------------------------------
-# Worker Node Definitions (12 nodes total: 10 regular + 2 GPU)
+# Worker Node Definitions (10 nodes total: 8 regular + 2 GPU)
 # -----------------------------------------------------------------------------
 # VM IDs: 904-915
 #
 # GPU Workers:
 #   - k8s-work-4 (VM 907): Heimdall with RTX A2000 (heimdall-gpu mapping)
-#   - k8s-work-14 (VM 913): Thor with RTX A5000 (thor-gpu mapping)
+#   - k8s-work-7 (VM 910): Odin with RTX A5000 (odin-gpu mapping)
 #
 # Distribution strategy:
 #   - Baldar: 3 workers (work-1, work-2, work-3)
 #   - Heimdall: 3 workers (work-4 GPU, work-5, work-6)
-#   - Odin: 3 workers (work-11, work-12, work-13)
-#   - Thor: 3 workers (work-14 GPU, work-15, work-16)
+#   - Odin: 1 large worker (work-7 GPU)
+#   - Thor: 3 workers (work-10, work-11, work-12) and ctrl-3
 
 worker_nodes = [
   # Baldar workers (3)
@@ -336,7 +336,7 @@ worker_nodes = [
     ]
   },
 
-  # Odin workers (3)
+  # Odin worker (1) - GPU worker with the RTX A5000, sized to the host
   {
     name         = "k8s-work-7"
     hostname     = "k8s-work-7"
@@ -344,55 +344,17 @@ worker_nodes = [
     mac_addr     = "bc:24:11:6b:75:fe"
     vm_id        = 910
     proxmox_node = "Odin"
-    is_gpu       = false
-    gpu_model    = ""
-    gpu_mapping  = ""
-    additional_network_devices = [
-      {
-        bridge  = "vmbr1"
-        vlan_id = 62
-        model   = "virtio"
-      },
-      {
-        bridge  = "vmbr1"
-        vlan_id = 81
-        model   = "virtio"
-      }
-    ]
-  },
-  {
-    name         = "k8s-work-8"
-    hostname     = "k8s-work-8"
-    ip_address   = "10.20.67.11"
-    mac_addr     = "bc:24:11:16:f6:dd"
-    vm_id        = 911
-    proxmox_node = "Odin"
-    is_gpu       = false
-    gpu_model    = ""
-    gpu_mapping  = ""
-    additional_network_devices = [
-      {
-        bridge  = "vmbr1"
-        vlan_id = 62
-        model   = "virtio"
-      },
-      {
-        bridge  = "vmbr1"
-        vlan_id = 81
-        model   = "virtio"
-      }
-    ]
-  },
-  {
-    name         = "k8s-work-9"
-    hostname     = "k8s-work-9"
-    ip_address   = "10.20.67.12"
-    mac_addr     = "bc:24:11:27:e7:a3"
-    vm_id        = 912
-    proxmox_node = "Odin"
-    is_gpu       = false
-    gpu_model    = ""
-    gpu_mapping  = ""
+    is_gpu       = true
+    gpu_model    = "rtx-a5000"
+    gpu_mapping  = "odin-gpu"
+    # Odin's only worker: 72 vCPU (2 x 36) and 304 GiB. GPU passthrough pins all
+    # of the VM's RAM, so the host keeps a fixed 72.5 GiB: about 31 GiB measured
+    # (Proxmox services, Ceph mon, 2 OSDs at osd_memory_target 4 GiB, kernel and
+    # disk buffers, ZFS ARC capped at 1 GiB, QEMU and IOMMU overhead) plus a 38 GiB
+    # (10%) margin. At 344 GiB the host ran out of memory and hung (2026-11-08).
+    # 8 threads stay free for Proxmox and the Ceph OSDs.
+    cpu_cores    = 36
+    memory_mb    = 311296
     additional_network_devices = [
       {
         bridge  = "vmbr1"
@@ -407,7 +369,7 @@ worker_nodes = [
     ]
   },
 
-  # Thor workers (3) - GPU Worker on Thor (RTX A5000)
+  # Thor workers (3)
   {
     name         = "k8s-work-10"
     hostname     = "k8s-work-10"
@@ -415,9 +377,9 @@ worker_nodes = [
     mac_addr     = "BC:24:11:57:87:B2"
     vm_id        = 913
     proxmox_node = "Thor"
-    is_gpu       = true
-    gpu_model    = "rtx-a5000"
-    gpu_mapping  = "thor-gpu"
+    is_gpu       = false
+    gpu_model    = ""
+    gpu_mapping  = ""
     additional_network_devices = [
       {
         bridge  = "vmbr1"
@@ -492,12 +454,12 @@ worker_nodes = [
 # Node Distribution:
 #   Baldar:   k8s-ctrl-1, k8s-work-1, k8s-work-2, k8s-work-3 (4 VMs)
 #   Heimdall: k8s-ctrl-2, k8s-work-4 (GPU-RTX A2000), k8s-work-5, k8s-work-6 (4 VMs)
-#   Odin:     k8s-ctrl-3, k8s-work-11, k8s-work-12, k8s-work-13 (4 VMs)
-#   Thor:     k8s-work-14 (GPU-RTX A5000), k8s-work-15, k8s-work-16 (3 VMs)
+#   Odin:     k8s-work-7 (GPU-RTX A5000) (1 VM)
+#   Thor:     k8s-ctrl-3, k8s-work-10, k8s-work-11, k8s-work-12 (4 VMs)
 #
 # GPU Configuration:
 #   - k8s-work-4 (907): Heimdall, RTX A2000, PCI mapping "heimdall-gpu"
-#   - k8s-work-14 (913): Thor, RTX A5000, PCI mapping "thor-gpu"
+#   - k8s-work-7 (910): Odin, RTX A5000, PCI mapping "odin-gpu"
 #
 # BEFORE DEPLOYING:
 # [ ] 1. Set environment variables (see setup-credentials.sh)

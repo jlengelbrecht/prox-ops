@@ -2,7 +2,7 @@
 # KServe InferenceService: Qwen3.6-27B (llama.cpp + MTP)
 # Model: unsloth/Qwen3.6-27B-MTP-GGUF, UD-Q4_K_XL quant (~17.9GB file)
 # Framework: llama.cpp llama-server (OpenAI-compatible), first llama.cpp ISVC in cluster
-# GPU: RTX A5000 24GB (k8s-work-10 ONLY, NOT Plex rtx-a2000 node)
+# GPU: RTX A5000 24GB (the rtx-a5000 node, NOT the Plex rtx-a2000 node)
 #
 # Why llama.cpp here instead of vLLM:
 # - GGUF Q4_K_XL is the only 4-bit format that fits this 27B dense model in 24GB
@@ -73,10 +73,9 @@ spec:
       autoscaling.knative.dev/scale-to-zero-pod-retention-period: "30m"
 
     # CRITICAL: GPU and Node Targeting
-    # Target ONLY k8s-work-10 (RTX A5000 24GB)
-    # Do NOT schedule on Plex node (rtx-a2000 reserved for transcoding)
+    # Target ONLY the RTX A5000 24GB, by its model label so it follows the card
+    # (k8s-work-7 on Odin since 2026-11-08). Never the Plex rtx-a2000 node.
     nodeSelector:
-      kubernetes.io/hostname: k8s-work-10
       gpu.nvidia.com/model: rtx-a5000
 
     # Custom container approach (no ClusterServingRuntime needed)
