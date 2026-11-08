@@ -48,7 +48,7 @@ talos/
 ├── all/                 # every node: install disk, hostname, cluster network, links, DNS, NTP, kubelet, sysctls
 ├── control-plane/       # control plane: cluster components, admission, Talos API access, taint, API VIP
 ├── worker/              # workers: IoT (VLAN 62) and DMZ (VLAN 81) interfaces
-└── node/<host>/         # single node: GPU modules/labels (k8s-work-4, k8s-work-10), YubiHSM udev rule (k8s-work-12)
+└── node/<host>/         # single node: GPU modules/labels (k8s-work-4, k8s-work-7), YubiHSM udev rule (k8s-work-12)
 ```
 
 Patches are strategic merges, applied `all/` -> role -> `node/<host>/`, in
