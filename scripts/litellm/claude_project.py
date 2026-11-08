@@ -139,7 +139,7 @@ def _command(cli, smoke=False, prompt=None):
     args = [cli, "--model", ALIAS, "--settings", SAFE_SETTINGS,
             "--no-chrome", "--strict-mcp-config"]
     if smoke:
-        args += ["--print", "--output-format", "stream-json", "--include-partial-messages",
+        args += ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages",
                  "--tools", "Read",
                  "--permission-mode", "dontAsk", "--permission-prompts", "none",
                  "--safe-mode", "--no-session-persistence", "--max-turns", "2"]
