@@ -209,7 +209,8 @@ spec:
 ---
 # The agent PAM approval page (app.kubernetes.io/name: openbao-pam-page): a
 # static file for envoy-internal and nothing else. The page talks to OpenBao
-# from the browser, through Envoy, so the pod needs no egress at all.
+# from the browser, through Envoy, so the pod needs no egress at all: there are
+# no egress rules, and enableDefaultDeny drops everything.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -230,8 +231,6 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-  egress:
-    - {}
 ---
 # The daily snapshot job (app.kubernetes.io/name: openbao-snapshots):
 # nothing reaches it; it reaches only DNS and the OpenBao servers. The NFS
