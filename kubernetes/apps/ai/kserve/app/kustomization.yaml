@@ -109,3 +109,30 @@ patches:
     patch: |-
       - op: remove
         path: /metadata/namespace
+
+  # From 0.17 the LLMInferenceService CRDs serve v1alpha1 and v1alpha2 and convert
+  # between them through a webhook run by the llmisvc controller. That controller is
+  # kept at zero replicas, so any read of an object stored at the other version fails
+  # and Flux cannot apply the default configs. Nothing here uses these objects, so
+  # switch the conversion to None (the API server only rewrites apiVersion). Restore
+  # the webhook if the llmisvc controller is ever turned on.
+  - target:
+      kind: CustomResourceDefinition
+      name: llminferenceserviceconfigs.serving.kserve.io
+    patch: |-
+      - op: replace
+        path: /spec/conversion
+        value:
+          strategy: None
+      - op: remove
+        path: /metadata/annotations/cert-manager.io~1inject-ca-from
+  - target:
+      kind: CustomResourceDefinition
+      name: llminferenceservices.serving.kserve.io
+    patch: |-
+      - op: replace
+        path: /spec/conversion
+        value:
+          strategy: None
+      - op: remove
+        path: /metadata/annotations/cert-manager.io~1inject-ca-from
