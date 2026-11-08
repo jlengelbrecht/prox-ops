@@ -5,10 +5,10 @@ kind: Kustomization
 resources:
   # renovate: datasource=github-releases depName=knative/serving versioning=regex:^knative-v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
   # Knative Serving Core (includes CRDs, namespace, and deployments)
-  - https://github.com/knative/serving/releases/download/knative-v1.20.3/serving-core.yaml
+  - https://github.com/knative/serving/releases/download/knative-v1.21.3/serving-core.yaml
   # renovate: datasource=github-releases depName=knative-extensions/net-kourier versioning=regex:^knative-v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
   # Kourier networking layer (lightweight alternative to Istio)
-  - https://github.com/knative/net-kourier/releases/download/knative-v1.20.1/kourier.yaml
+  - https://github.com/knative/net-kourier/releases/download/knative-v1.21.1/kourier.yaml
   # Lets the ai/voicestudio HTTPRoute send traffic to kourier-internal
   - ./referencegrant-voicestudio.yaml
 
@@ -68,6 +68,10 @@ configMapGenerator:
       # Enable capabilities.add in container security context (for runtime-install workloads; none currently use it)
       # Required for CAP_FOWNER to chmod apt cache during runtime dependency installation
       - kubernetes.containerspec-addcapabilities=enabled
+      # Keep Knative from injecting its own security defaults (seccomp, dropped capabilities,
+      # runAsNonRoot). The GPU and model-cache workloads set their own security contexts, and
+      # turning this on is a separate, tested change rather than a side effect of an upgrade.
+      - secure-pod-defaults=disabled
 
 patches:
   # Make the upstream PDBs drainable.
