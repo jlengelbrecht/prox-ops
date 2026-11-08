@@ -7,10 +7,10 @@ resources:
   # KServe CRDs and core components (controller, webhook)
   # Upgraded one minor at a time; KServe <=0.16 is tested with Knative 1.15.
   # Note: Installing in serverless mode with Knative Serving integration
-  - https://github.com/kserve/kserve/releases/download/v0.15.2/kserve.yaml
-  # renovate: datasource=github-releases depName=kserve/kserve
-  # KServe cluster resources (ClusterServingRuntimes for various frameworks)
-  - https://github.com/kserve/kserve/releases/download/v0.15.2/kserve-cluster-resources.yaml
+  - https://github.com/kserve/kserve/releases/download/v0.16.0/kserve.yaml
+  # KServe cluster resources (ClusterServingRuntimes for various frameworks).
+  # Wrapped in ./cluster-resources only while v0.16.0 ships some objects in both files.
+  - ./cluster-resources
   # Production InferenceServices
   - ./qwen36-27b-inferenceservice.yaml  # Qwen3.6-27B via llama.cpp with MTP speculative decoding
   - ./qwen36-27b-networkpolicy.yaml  # Zero-trust network segmentation
@@ -58,3 +58,35 @@ patches:
           limits:
             cpu: 500m
             memory: 512Mi
+
+  # The LLMInferenceService controller (llmisvc, added in KServe 0.16) is bound to
+  # a ClusterRole with create/delete/update on Secrets, ServiceAccounts, Services
+  # and RBAC across the cluster. Nothing here uses LLMInferenceService, so keep it
+  # inert: no cluster binding, no replicas, and no webhooks pointing at a service
+  # with no pods (they would block Flux from applying the default configs).
+  - patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: llmisvc-manager-rolebinding
+  - patch: |-
+      $patch: delete
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingWebhookConfiguration
+      metadata:
+        name: llminferenceservice.serving.kserve.io
+  - patch: |-
+      $patch: delete
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingWebhookConfiguration
+      metadata:
+        name: llminferenceserviceconfig.serving.kserve.io
+  - target:
+      kind: Deployment
+      name: llmisvc-controller-manager
+      namespace: kserve
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 0
