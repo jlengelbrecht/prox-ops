@@ -1,6 +1,6 @@
 ---
 # VoiceStudio as a scale-to-zero Knative Service on the RTX A5000
-# (k8s-work-10). The GPU is held only while the service is in use.
+# (k8s-work-7 on Odin). The GPU is held only while the service is in use.
 #
 # Exposure: Knative keeps this service cluster-local. The voicestudio
 # HTTPRoute sends traffic to kourier-internal with the Host rewritten to
@@ -80,7 +80,6 @@ spec:
       automountServiceAccountToken: false
       runtimeClassName: nvidia
       nodeSelector:
-        kubernetes.io/hostname: k8s-work-10
         gpu.nvidia.com/model: rtx-a5000
       securityContext:
         seccompProfile:
