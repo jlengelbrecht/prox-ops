@@ -2,9 +2,11 @@
 # Sets up OpenBao after init: the admin and reader policies, OIDC login
 # through authentik (groups openbao-admins / openbao-readers), the
 # Kubernetes auth method, the snapshot job's role, the database engine with the
-# Zabbix login, the Kubernetes secrets engine for the merge gate, and KV and a
-# login for Warpgate's secret backend. Safe to run again: every step is an
-# upsert. Only the first run writes the Zabbix static role, and that rotates
+# Zabbix login, the Kubernetes secrets engine for the merge gate, KV and a
+# login for Warpgate's secret backend, and agent PAM (scripts/pam): the agent
+# login on jwt/, the approver login on pam-oidc/, the audit tune and rate limit
+# on kv/pam, and the throwaway secret kv/pam/live/poc-canary. Safe to run
+# again: every step is an upsert. Only the first run writes the Zabbix static role, and that rotates
 # Zabbix's password at once.
 #
 # Needs the 1Password item Automation/openbao-oidc (field oidc-client-secret,
@@ -45,8 +47,19 @@ DB_LOGIN='{{username}}:{{password}}'
 DB_URL="postgresql://$DB_LOGIN@postgres-rw.database.svc:5432/postgres?sslmode=require"
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
 POLICY_DIR=$REPO_DIR/kubernetes/apps/openbao/openbao/config
-POLICIES=(openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db openbao-gate openbao-warpgate openbao-warpgate-tokens)
-DISCOVERY_URL=https://authentik.homelab0.org/application/o/openbao/
+POLICIES=(openbao-admin openbao-reader openbao-snapshot openbao-zabbix-db openbao-gate openbao-warpgate openbao-warpgate-tokens
+  pam-agent pam-sync pam-approver)
+AUTHENTIK=https://authentik.homelab0.org
+DISCOVERY_URL=$AUTHENTIK/application/o/openbao/
+# The harness tokens warpgate-kube-exec already gets: client_credentials on this
+# provider, audience warpgate-agents, five minutes.
+AGENT_DISCOVERY_URL=$AUTHENTIK/application/o/warpgate-agents/
+# One harness for the proof of concept. codex and opencode join once it passes.
+PAM_HARNESSES=(claude)
+# The bao CLI's login callback. Only for approving by CLI during the proof of
+# concept; it goes when the approval page is served, and
+# scripts/pam/pam-approver-role.json never lists it.
+PAM_CLI_REDIRECT=http://localhost:8250/oidc/callback
 
 mode=configure
 token_source=root
@@ -259,6 +272,124 @@ for pair in openbao-admins:openbao-admin openbao-readers:openbao-reader; do
   fi
 done
 
+# --- KV ------------------------------------------------------------------------
+# Static credentials, read per path: Warpgate's target credentials and agent PAM.
+kv_mount=$(bao_json secrets list | jq -c '."kv/" // empty')
+if [[ -z $kv_mount ]]; then
+  log "Enabling the KV v2 secrets engine at kv/"
+  bao secrets enable -path=kv -version=2 -description="static credentials, read per path" kv >/dev/null
+elif [[ $(jq -r '"\(.type) \(.options.version // "1")"' <<<"$kv_mount") != "kv 2" ]]; then
+  die "kv/ is mounted, but it is not KV version 2; Warpgate can't read it"
+fi
+
+# --- agent PAM ----------------------------------------------------------------
+# The policies are in kubernetes/apps/openbao/openbao/config/pam-*.hcl. The
+# order matters because the guard above runs before anything is written: an
+# agent identity must never exist without its role, and pam-oidc must never
+# exist without the pam-approvers alias. If a run stops between enabling
+# pam-oidc and writing that alias, the next run is refused; disable pam-oidc
+# (bao auth disable pam-oidc) and run again.
+mount_type() { # <auth|secrets> <path/>
+  bao_json "$1" list | jq -r --arg p "$2" '.[$p].type // empty'
+}
+accessor_of() { # <path/>
+  bao_json auth list | jq -r --arg p "$1" '.[$p].accessor // empty'
+}
+
+# reason and delivery reach the audit log in clear, so a request shows why an
+# agent asked. Nested keys too: never name a secret's field reason or delivery.
+log "Logging reason and delivery in clear on kv/"
+jq -n '{audit_non_hmac_request_keys: ["reason", "delivery"]}' >"$work/kv-tune.json"
+bao_write_json sys/mounts/kv/tune "$work/kv-tune.json"
+
+log "Writing the rate limit pam-requests"
+bao_write_json sys/quotas/rate-limit/pam-requests "$REPO_DIR/scripts/pam/pam-quota.json"
+
+# Agent logins: the harness's Authentik ID token, one role per harness, bound
+# on the username Authentik sends. No groups_claim and no default policy, so a
+# claim can never add a policy; the guard refuses either.
+case $(mount_type auth jwt/) in
+  "")
+    log "Enabling the JWT auth method at jwt/"
+    bao auth enable -path=jwt -description="agent harnesses (authentik warpgate-agents)" jwt >/dev/null ;;
+  jwt) ;;
+  *) die "jwt/ is mounted, but it is not a JWT auth method" ;;
+esac
+jwt_acc=$(accessor_of jwt/)
+log "Configuring JWT auth against authentik's warpgate-agents provider"
+jq -n --arg url "$AGENT_DISCOVERY_URL" '{oidc_discovery_url: $url, bound_issuer: $url}' >"$work/jwt-config.json"
+bao_write_json auth/jwt/config "$work/jwt-config.json" ||
+  die "OpenBao refused the JWT config. Check that authentik's Warpgate Agents provider exists ($AGENT_DISCOVERY_URL)"
+
+for harness in "${PAM_HARNESSES[@]}"; do
+  name=agent-$harness
+  log "Writing the JWT role $name"
+  jq -n --arg name "$name" '{
+      role_type: "jwt",
+      user_claim: "preferred_username",
+      bound_audiences: ["warpgate-agents"],
+      bound_claims: {preferred_username: $name},
+      token_policies: ["pam-agent"],
+      token_no_default_policy: true,
+      token_ttl: "20m",
+      token_max_ttl: "20m"}' >"$work/agent-role.json"
+  bao_write_json "auth/jwt/role/$name" "$work/agent-role.json"
+  # Created ahead of the first login, so the page shows the name and
+  # {{identity.entity.name}} in pam-agent matches the inbox path.
+  log "Writing the entity $name"
+  echo '{}' >"$work/entity.json"
+  bao_write_json "identity/entity/name/$name" "$work/entity.json"
+  bao_json read "identity/entity/name/$name" >"$work/entity-read.json"
+  if ! jq -e --arg a "$jwt_acc" '.data.aliases // [] | any(.mount_accessor == $a)' "$work/entity-read.json" >/dev/null; then
+    jq -n --arg n "$name" --arg a "$jwt_acc" --arg id "$(jq -r '.data.id' "$work/entity-read.json")" \
+      '{name: $n, mount_accessor: $a, canonical_id: $id}' >"$work/entity-alias.json"
+    bao_write_json identity/entity-alias "$work/entity-alias.json" ||
+      die "could not alias $name on jwt/; a login before this run may own the alias. Merge or delete that entity, then run again"
+  fi
+done
+
+# The approver login. It has to be its own mount: identity policies follow the
+# entity, so any login on oidc/ also carries openbao-admin. Same authentik
+# client and group as oidc/; the group's alias on this mount gives pam-approver
+# only.
+log "Writing the group pam-approvers"
+jq -n '{type: "external", policies: ["pam-approver"]}' >"$work/approvers.json"
+bao_write_json identity/group/name/pam-approvers "$work/approvers.json"
+case $(mount_type auth pam-oidc/) in
+  "")
+    log "Enabling the OIDC auth method at pam-oidc/"
+    bao auth enable -path=pam-oidc -description="approval page (pam-approvers)" oidc >/dev/null ;;
+  oidc) ;;
+  *) die "pam-oidc/ is mounted, but it is not an OIDC auth method" ;;
+esac
+pam_acc=$(accessor_of pam-oidc/)
+bao_json read identity/group/name/pam-approvers >"$work/approvers-read.json"
+if [[ $(jq -r '"\(.data.alias.name // "") \(.data.alias.mount_accessor // "")"' "$work/approvers-read.json") != "openbao-admins $pam_acc" ]]; then
+  log "Aliasing authentik group openbao-admins to pam-approvers on pam-oidc/"
+  jq -n --arg a "$pam_acc" --arg id "$(jq -r '.data.id' "$work/approvers-read.json")" \
+    '{name: "openbao-admins", mount_accessor: $a, canonical_id: $id}' >"$work/approvers-alias.json"
+  bao_write_json identity/group-alias "$work/approvers-alias.json"
+fi
+
+log "Configuring pam-oidc against authentik"
+jq '.default_role = "pam-approver"' "$work/oidc-config.json" >"$work/pam-oidc-config.json"
+bao_write_json auth/pam-oidc/config "$work/pam-oidc-config.json" ||
+  die "OpenBao refused the pam-oidc config. Check that authentik's OpenBao provider exists ($DISCOVERY_URL)"
+log "Writing the pam-oidc role pam-approver (with the CLI callback, for the proof of concept)"
+jq --arg cli "$PAM_CLI_REDIRECT" '.allowed_redirect_uris += [$cli]' \
+  "$REPO_DIR/scripts/pam/pam-approver-role.json" >"$work/approver-role.json"
+bao_write_json auth/pam-oidc/role/pam-approver "$work/approver-role.json"
+
+# A random value that protects nothing, for proving the gate on the live
+# cluster. Created once; made here and sent to OpenBao without being printed.
+if ! bao read -format=json kv/metadata/pam/live/poc-canary >/dev/null 2>&1; then
+  log "Creating kv/pam/live/poc-canary"
+  python3 -I -c 'import json, secrets; print(json.dumps({"options": {"cas": 0}, "data": {"value": secrets.token_urlsafe(32)}}))' \
+    >"$work/canary.json"
+  bao_write_json kv/data/pam/live/poc-canary "$work/canary.json" || die "could not create kv/pam/live/poc-canary"
+fi
+
+
 # --- Kubernetes auth --------------------------------------------------------
 # Roles are added with the workloads that use them. OpenBao reviews tokens
 # with its own service account (system:auth-delegator, from the chart).
@@ -336,13 +467,6 @@ jq -n '{
     token_no_default_policy: true}' >"$work/warpgate-tokens-role.json"
 bao_write_json auth/kubernetes/role/warpgate-tokens "$work/warpgate-tokens-role.json"
 
-kv_mount=$(bao_json secrets list | jq -c '."kv/" // empty')
-if [[ -z $kv_mount ]]; then
-  log "Enabling the KV v2 secrets engine at kv/"
-  bao secrets enable -path=kv -version=2 -description="static credentials, read per path" kv >/dev/null
-elif [[ $(jq -r '"\(.type) \(.options.version // "1")"' <<<"$kv_mount") != "kv 2" ]]; then
-  die "kv/ is mounted, but it is not KV version 2; Warpgate can't read it"
-fi
 
 # --- Kubernetes secrets engine ----------------------------------------------
 # Short gate-reader tokens, one namespace per request. service_account_name mode
@@ -431,6 +555,7 @@ jq -n '{db_name: "cnpg", username: "zabbix", rotation_period: "720h"}' >"$work/z
 bao_write_json database/static-roles/zabbix "$work/zabbix-static.json"
 
 log "Done. Log in at https://bao.homelab0.org: method OIDC, role default (leave blank)."
+log "Approve agent PAM requests by CLI for now: bao login -method=oidc -path=pam-oidc role=pam-approver"
 if [[ $policies == root ]]; then
   log "Once that works as an admin, revoke the root token: scripts/openbao-configure.sh --revoke-root"
 fi
