@@ -59,6 +59,7 @@ def _authenticated_owner(user_api_key_dict):
 
 
 def _clean_input(data, carrier):
+    """Validate the proxy snapshot, separating its headers from caller metadata."""
     body = carrier["body"]
     if body.get("model") != ALIAS:
         raise _deny()
@@ -76,8 +77,19 @@ def _clean_input(data, carrier):
         raise _deny()
     for metadata_name in ("metadata", "litellm_metadata"):
         metadata = body.get(metadata_name)
-        if isinstance(metadata, Mapping) and any(name in metadata for name in FORBIDDEN_METADATA_FIELDS):
-            raise _deny()
+        if isinstance(metadata, Mapping):
+            forbidden = FORBIDDEN_METADATA_FIELDS
+            if metadata_name == "litellm_metadata" and "headers" in metadata:
+                # LiteLLM 1.108.0 overwrites this slot with its cleaned,
+                # redacted headers before taking proxy_server_request.body.
+                proxy_headers = carrier.get("headers")
+                if (not isinstance(proxy_headers, Mapping)
+                        or not isinstance(metadata["headers"], Mapping)
+                        or metadata["headers"] != proxy_headers):
+                    raise _deny()
+                forbidden = forbidden - {"headers"}
+            if any(name in metadata for name in forbidden):
+                raise _deny()
     if data.get("model") != ALIAS:
         raise _deny()
     secret_fields = data.get("secret_fields")
@@ -95,6 +107,7 @@ def _clean_input(data, carrier):
 
 class ProjectRouterGuard(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
+        """Enforce the single-model owner and clean request boundary before routing."""
         if not isinstance(data, dict) or data.get("model") != ALIAS:
             return data
         if not _authenticated_owner(user_api_key_dict):
@@ -103,6 +116,7 @@ class ProjectRouterGuard(CustomLogger):
         return data
 
     async def async_pre_call_deployment_hook(self, kwargs, call_type):
+        """Bind the selected backend to the router's original authorized request."""
         if not isinstance(kwargs, dict):
             return kwargs
         carrier = kwargs.get("proxy_server_request")

@@ -59,17 +59,12 @@ class ConfigTests(unittest.TestCase):
                          ["forward_client_headers_to_llm_api"], ["anthropic/*"])
 
     def test_existing_review_and_smart_route_are_unchanged(self):
-        # Compare only the exact pre-existing entries against the baseline
-        # source in git; unrelated dirty Copilot work never enters this check.
-        import subprocess
-        baseline = subprocess.check_output(
-            ["git", "show", "HEAD:kubernetes/apps/ai/litellm/app/configmap.yaml"],
-            cwd=ROOT, text=True)
-        previous = yaml.safe_load(yaml.safe_load(baseline)["data"]["config.yaml"])
-        old_models = {model["model_name"]: model for model in previous["model_list"]}
-        for name in ("merge-steward-review", "smart-router", "chatgpt-gpt-6-luna",
-                     "chatgpt-gpt-6-sol", "chatgpt-gpt-6.1-sol", "anthropic/*"):
-            self.assertEqual(self.models[name], old_models[name])
+        golden = json.loads((Path(__file__).parent / "protected-models-base.json").read_text())
+        self.assertEqual(set(golden), {"merge-steward-review", "smart-router",
+                                       "chatgpt-gpt-6-luna", "chatgpt-gpt-6-sol",
+                                       "chatgpt-gpt-6.1-sol", "anthropic/*"})
+        for name, expected in golden.items():
+            self.assertEqual(self.models[name], expected)
 
     def test_rendered_guard_wiring(self):
         self.assertEqual(self.config["litellm_settings"]["callbacks"],
@@ -167,6 +162,31 @@ class GuardTests(unittest.TestCase):
         req = self.request()
         req["proxy_server_request"]["body"]["extra_headers"] = {"traceparent": "00-synthetic"}
         self.assertIs(self.pre(req), req)
+
+    def test_messages_proxy_metadata_headers_are_not_caller_overrides(self):
+        req = self.request()
+        cleaned = {"user-agent": "synthetic-client", "anthropic-version": "2023-06-01"}
+        req["proxy_server_request"]["headers"] = cleaned
+        req["proxy_server_request"]["body"]["litellm_metadata"] = {
+            "headers": cleaned.copy(), "used_client_oauth_token": True}
+        req["litellm_metadata"] = req["proxy_server_request"]["body"]["litellm_metadata"]
+        self.assertIs(self.pre(req), req)
+
+        for field, value in (("headers", {"authorization": "Bearer synthetic-override"}),
+                             ("api_base", "https://wrong.invalid"),
+                             ("extra_headers", {"Authorization": "Bearer synthetic-override"})):
+            with self.subTest(field=field):
+                altered = self.request()
+                altered["proxy_server_request"]["headers"] = cleaned
+                altered["proxy_server_request"]["body"]["litellm_metadata"] = {
+                    "headers": cleaned.copy(), field: value}
+                with self.assertRaises(self.AuthError):
+                    self.pre(altered)
+        req = self.request(metadata={"headers": cleaned})
+        req["proxy_server_request"]["headers"] = cleaned
+        req["proxy_server_request"]["body"]["litellm_metadata"] = {"headers": cleaned.copy()}
+        with self.assertRaises(self.AuthError):
+            self.pre(req)
 
     def test_nested_selected_credentials_and_model_binding(self):
         for alias in (self.guard.CHATGPT_ALIAS, self.guard.CLAUDE_ALIAS):
@@ -371,6 +391,43 @@ class ClientTests(unittest.TestCase):
                     time.sleep(0.05)
                 else:
                     self.fail("smoke descendant survived bounded failure")
+
+    def test_bounded_smoke_interrupt_reaps_child_and_stops_descendant(self):
+        fixture = ROOT / "tests/litellm/project_router/smoke-fixture.txt"
+        for interruption in (KeyboardInterrupt, RuntimeError):
+            with self.subTest(interruption=interruption.__name__), tempfile.TemporaryDirectory(dir=ROOT) as temp:
+                parent_pid = Path(temp) / "parent.pid"
+                grandchild_pid = Path(temp) / "grandchild.pid"
+                code = ("import os,subprocess,sys,time\n"
+                        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\n"
+                        f"open({str(parent_pid)!r},'w').write(str(os.getpid()))\n"
+                        f"open({str(grandchild_pid)!r},'w').write(str(child.pid))\n"
+                        "time.sleep(60)\n")
+                selector_type = self.client.selectors.DefaultSelector
+
+                def interrupt_select(selector, timeout=None):
+                    deadline = time.monotonic() + 2
+                    while not (parent_pid.exists() and grandchild_pid.exists()):
+                        if time.monotonic() > deadline:
+                            self.fail("smoke process did not start")
+                        time.sleep(0.01)
+                    raise interruption("synthetic interruption")
+
+                with patch.object(selector_type, "select", interrupt_select):
+                    with self.assertRaises(interruption):
+                        self.client._bounded_smoke([sys.executable, "-c", code],
+                                                   self.env(), ROOT, fixture=fixture)
+                pid = int(parent_pid.read_text())
+                descendant = int(grandchild_pid.read_text())
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(pid, os.WNOHANG)
+                for _ in range(20):
+                    stat = Path(f"/proc/{descendant}/stat")
+                    if not stat.exists() or stat.read_text().split()[2] in ("Z", "X"):
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("smoke descendant survived interruption")
 
 
 if __name__ == "__main__":

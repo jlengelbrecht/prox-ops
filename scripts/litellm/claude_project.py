@@ -93,6 +93,7 @@ def _login_env(env, key_env):
 
 
 def preflight(env, cwd, home, cli=None, login_check=None, key_env=DEFAULT_KEY_ENV):
+    """Check local launch constraints without treating the login record as live auth."""
     failures = []
     if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key_env):
         failures.append("invalid_key_reference")
@@ -174,6 +175,7 @@ def _stop_smoke_group(process):
 
 
 def _bounded_smoke(command, env, cwd, timeout_s=120, output_cap=65536, fixture=None):
+    """Run one isolated smoke child within time and output limits, then reap it."""
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True)
     selector = selectors.DefaultSelector()
@@ -206,6 +208,9 @@ def _bounded_smoke(command, env, cwd, timeout_s=120, output_cap=65536, fixture=N
                 _stop_smoke_group(process)
         code = process.returncode
     finally:
+        # poll() would reap an exited child before the group is signaled.
+        if process.returncode is None:
+            _stop_smoke_group(process)
         selector.close()
         process.stdout.close()
         process.stderr.close()
@@ -216,7 +221,7 @@ def _bounded_smoke(command, env, cwd, timeout_s=120, output_cap=65536, fixture=N
 
 
 def _smoke_evidence(lines, fixture, cwd):
-    """Reduce Claude's stream to nonsecret tool/stream completion evidence."""
+    """Require a linked successful Read and matching terminal answer in the stream."""
     event_types = []
     tool_uses = []
     tool_results = []
