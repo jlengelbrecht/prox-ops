@@ -3,14 +3,17 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
+  # The kserve namespace. kserve.yaml stopped shipping it in 0.17, so it is declared
+  # here; without it Flux would prune the namespace and everything in it.
+  - ./namespace.yaml
   # renovate: datasource=github-releases depName=kserve/kserve
   # KServe CRDs and core components (controller, webhook)
-  # Upgraded one minor at a time; KServe <=0.16 is tested with Knative 1.15.
+  # Upgraded one minor at a time; KServe 0.17 to 0.21 are tested with Knative 1.21.
   # Note: Installing in serverless mode with Knative Serving integration
-  - https://github.com/kserve/kserve/releases/download/v0.16.0/kserve.yaml
-  # KServe cluster resources (ClusterServingRuntimes for various frameworks).
-  # Wrapped in ./cluster-resources only while v0.16.0 ships some objects in both files.
-  - ./cluster-resources
+  - https://github.com/kserve/kserve/releases/download/v0.17.0/kserve.yaml
+  # renovate: datasource=github-releases depName=kserve/kserve
+  # KServe cluster resources (ClusterServingRuntimes for various frameworks)
+  - https://github.com/kserve/kserve/releases/download/v0.17.0/kserve-cluster-resources.yaml
   # Production InferenceServices
   - ./qwen36-27b-inferenceservice.yaml  # Qwen3.6-27B via llama.cpp with MTP speculative decoding
   - ./qwen36-27b-networkpolicy.yaml  # Zero-trust network segmentation
@@ -34,9 +37,9 @@ configMapGenerator:
       - deploy={"defaultDeploymentMode":"Serverless"}
       # renovate: datasource=docker depName=kserve/storage-initializer
       # Configure storage initializer for model downloads
-      # The storage-initializer stays on v0.21.0 while the controller catches up: releases
-      # before 0.17.0 have a path-traversal flaw in tar extraction (fixed in 0.17.0), and
-      # v0.21.0 has run cleanly against the 0.13 to 0.16 controllers.
+      # The storage-initializer stays on v0.21.0 while the controller catches up to it:
+      # releases before 0.17.0 have a path-traversal flaw in tar extraction, and v0.21.0
+      # has run cleanly against the 0.13 to 0.16 controllers.
       # This literal replaces the whole value, so it must carry every key the controller
       # parses: from 0.16 the controller fails every reconcile if cpuModelcar or
       # memoryModelcar is missing. Values are upstream's defaults for this release.
@@ -95,3 +98,14 @@ patches:
       - op: replace
         path: /spec/replicas
         value: 0
+
+  # ClusterStorageContainer is cluster-scoped, but kserve.yaml 0.17 gives the default
+  # one a namespace. Flux tracks objects by namespace and name, so leaving it would
+  # make the existing object look stale and get pruned. Drop the namespace so it stays
+  # the same object.
+  - target:
+      kind: ClusterStorageContainer
+      name: default
+    patch: |-
+      - op: remove
+        path: /metadata/namespace
