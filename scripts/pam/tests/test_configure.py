@@ -16,17 +16,52 @@ import lab
 
 KUBECTL = '''#!/bin/sh
 # Stands in for: kubectl -n openbao exec -i openbao-0 -c openbao -- sh -c ... bao <args>
+printf '%s\\n' "$*" >> "$KUBECTL_LOG"
+case "$KUBECTL_FAIL" in
+  always) echo 'cluster unavailable' >&2; exit 1 ;;
+  after-preflight)
+    if [ -f "$KUBECTL_PREFLIGHT_DONE" ]; then
+      echo 'cluster unavailable' >&2
+      exit 1
+    fi
+    touch "$KUBECTL_PREFLIGHT_DONE" ;;
+esac
 while [ "$1" != "--" ]; do shift; done
 shift
 exec "$@"
 '''
 OP = '''#!/bin/sh
+printf '%s\\n' "$*" >> "$OP_LOG"
 case "$1" in
   whoami) echo '{"user_type":"MEMBER"}' ;;
   read) printf %s "$LAB_ROOT_TOKEN" ;;
   *) exit 1 ;;
 esac
 '''
+GIT = '''#!/bin/sh
+[ "$1" != -C ] || shift 2
+printf '%s\\n' "$*" >> "$GIT_LOG"
+case "$1" in
+  fetch)
+    case " $* " in
+      *' +refs/heads/main:refs/remotes/origin/main '*) ;;
+      *) exit 2 ;;
+    esac
+    [ "$GIT_FETCH_FAIL" != 1 ] || exit 1
+    touch "$GIT_FETCH_DONE" ;;
+  rev-parse)
+    [ "$GIT_MAIN_MISSING" != 1 ] || exit 1
+    printf '%s\\n' '0123456789012345678901234567890123456789' ;;
+  merge-base)
+    [ -f "$GIT_FETCH_DONE" ] || exit 1
+    [ "$GIT_BEHIND" != 1 ] || exit 1 ;;
+  *) exit 2 ;;
+esac
+'''
+
+RUNTIME_DIR = os.environ.get("XDG_RUNTIME_DIR", "/dev/shm")
+if not os.access(RUNTIME_DIR, os.W_OK):
+    RUNTIME_DIR = "/dev/shm"
 
 
 class FakeAuthentik:
@@ -85,7 +120,7 @@ class FullRun(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tree)
         shims = pathlib.Path(self.tree, "shims")
         shims.mkdir()
-        for name, text in (("kubectl", KUBECTL), ("op", OP)):
+        for name, text in (("kubectl", KUBECTL), ("op", OP), ("git", GIT)):
             (shims / name).write_text(text)
             (shims / name).chmod(stat.S_IRWXU)
         os.symlink(os.environ["BAO_BIN"], shims / "bao")
@@ -97,7 +132,11 @@ class FullRun(unittest.TestCase):
         self.script.write_text(script.replace("AUTHENTIK=https://authentik.homelab0.org\n", f"AUTHENTIK={self.idp.base}\n", 1))
         self.script.chmod(stat.S_IRWXU)
         self.env = {"PATH": f"{shims}:{os.environ['PATH']}", "BAO_ADDR": self.bao.addr, "LAB_ROOT_TOKEN": self.bao.root,
-                    "HOME": self.tree, "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", "/dev/shm")}
+                    "HOME": self.tree, "XDG_RUNTIME_DIR": RUNTIME_DIR,
+                    "GIT_LOG": f"{self.tree}/git.log", "GIT_FETCH_DONE": f"{self.tree}/git-fetched",
+                    "GIT_FETCH_FAIL": "0", "GIT_MAIN_MISSING": "0", "GIT_BEHIND": "0",
+                    "KUBECTL_LOG": f"{self.tree}/kubectl.log", "KUBECTL_FAIL": "none",
+                    "KUBECTL_PREFLIGHT_DONE": f"{self.tree}/kubectl-preflight", "OP_LOG": f"{self.tree}/op.log"}
 
     def run_configure(self):
         result = subprocess.run([str(self.script)], env=self.env, capture_output=True, text=True, timeout=120)
@@ -119,7 +158,7 @@ class FullRun(unittest.TestCase):
         bao = self.bao
         role = bao.ok("GET", "auth/pam-oidc/role/pam-approver")["data"]
         shipped = json.loads(lab.ROLE_FILE.read_text())
-        self.assertEqual(role["allowed_redirect_uris"], shipped["allowed_redirect_uris"] + ["http://localhost:8250/oidc/callback"])
+        self.assertEqual(role["allowed_redirect_uris"], shipped["allowed_redirect_uris"])
         self.assertEqual(role["token_policies"], ["pam-approver"])
         self.assertTrue(role["token_no_default_policy"])
         self.assertEqual(role["bound_claims"], {"groups": ["openbao-admins"]})
@@ -173,6 +212,90 @@ class FullRun(unittest.TestCase):
         self.assertEqual(self.bao.ok("GET", "kv/metadata/pam/live/poc-canary")["data"]["current_version"], 1)
 
 
+class NoLivePreflight(unittest.TestCase):
+    """Early failure paths use only executable shims, with no server or cluster socket."""
+
+    def setUp(self):
+        self.tree = tempfile.mkdtemp(prefix="pam-preflight-")
+        self.addCleanup(shutil.rmtree, self.tree)
+        shims = pathlib.Path(self.tree, "shims")
+        shims.mkdir()
+        for name, source in (("kubectl", KUBECTL), ("op", OP), ("git", GIT)):
+            (shims / name).write_text(source)
+            (shims / name).chmod(stat.S_IRWXU)
+        (shims / "bao").write_text('''#!/bin/sh
+echo 'Error looking up token: Error making API request.' >&2
+echo "URL: GET https://example.invalid/$LAB_ROOT_TOKEN" >&2
+echo 'Code: 403. Errors:' >&2
+echo "* permission denied for $LAB_ROOT_TOKEN" >&2
+echo '{"secret":"response-data"}'
+exit 2
+''')
+        (shims / "bao").chmod(stat.S_IRWXU)
+        shutil.copytree(lab.CONFIG, pathlib.Path(self.tree, "kubernetes/apps/openbao/openbao/config"))
+        shutil.copytree(lab.ROOT / "scripts/pam", pathlib.Path(self.tree, "scripts/pam"),
+                        ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        shutil.copy(lab.ROOT / "scripts/openbao-configure.sh", pathlib.Path(self.tree, "scripts"))
+        self.env = {"PATH": f"{shims}:{os.environ['PATH']}", "LAB_ROOT_TOKEN": "test-rejected-token-value",
+                    "HOME": self.tree, "XDG_RUNTIME_DIR": RUNTIME_DIR,
+                    "GIT_LOG": f"{self.tree}/git.log", "GIT_FETCH_DONE": f"{self.tree}/git-fetched",
+                    "GIT_FETCH_FAIL": "0", "GIT_MAIN_MISSING": "0", "GIT_BEHIND": "0",
+                    "KUBECTL_LOG": f"{self.tree}/kubectl.log", "KUBECTL_FAIL": "none",
+                    "KUBECTL_PREFLIGHT_DONE": f"{self.tree}/kubectl-preflight", "OP_LOG": f"{self.tree}/op.log"}
+
+    def configure(self):
+        return subprocess.run([f"{self.tree}/scripts/openbao-configure.sh", "--check"], env=self.env,
+                              capture_output=True, text=True, timeout=45)
+
+    def calls(self, name):
+        path = pathlib.Path(self.tree, f"{name}.log")
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_fetch_failure_stops_before_credentials(self):
+        self.env["GIT_FETCH_FAIL"] = "1"
+        result = self.configure()
+        self.assertIn("origin/main", result.stderr)
+        self.assertEqual(self.calls("op"), [])
+        self.assertEqual(self.calls("kubectl"), [])
+
+    def test_missing_remote_main_stops_before_credentials(self):
+        self.env["GIT_MAIN_MISSING"] = "1"
+        result = self.configure()
+        self.assertIn("origin/main", result.stderr)
+        self.assertTrue(any(call.startswith("fetch ") for call in self.calls("git")))
+        self.assertEqual(self.calls("op"), [])
+
+    def test_fetched_main_must_be_an_ancestor(self):
+        self.env["GIT_BEHIND"] = "1"
+        result = self.configure()
+        self.assertIn("origin/main", result.stderr)
+        self.assertTrue(any(call.startswith("fetch ") for call in self.calls("git")))
+        self.assertTrue(any(call.startswith("merge-base ") for call in self.calls("git")))
+        self.assertEqual(self.calls("op"), [])
+
+    def test_unreachable_pod_stops_before_credentials(self):
+        self.env["KUBECTL_FAIL"] = "always"
+        result = self.configure()
+        self.assertIn("can't reach the cluster", result.stderr)
+        self.assertEqual(self.calls("op"), [])
+        self.assertTrue(any("--request-timeout=" in call for call in self.calls("kubectl")))
+
+    def test_reach_lost_after_preflight_is_reported_as_reach_failure(self):
+        self.env["KUBECTL_FAIL"] = "after-preflight"
+        result = self.configure()
+        self.assertIn("can't reach the cluster", result.stderr)
+        self.assertNotIn("token was rejected", result.stderr)
+        self.assertTrue(any(call.startswith("read ") for call in self.calls("op")))
+
+    def test_openbao_error_is_preserved_without_token_or_response_body(self):
+        result = self.configure()
+        self.assertIn("permission denied", result.stderr)
+        self.assertNotIn(self.env["LAB_ROOT_TOKEN"], result.stdout + result.stderr)
+        self.assertNotIn("response-data", result.stdout + result.stderr)
+        self.assertNotIn("example.invalid", result.stdout + result.stderr)
+        self.assertNotIn("Error looking up token", result.stderr)
+
+
 class Configure(unittest.TestCase):
     """The first agent identity, then a plain grant on it. A separate dev server per test keeps
     each one's live state to itself."""
@@ -184,7 +307,7 @@ class Configure(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tree)
         shims = pathlib.Path(self.tree, "shims")
         shims.mkdir()
-        for name, text in (("kubectl", KUBECTL), ("op", OP)):
+        for name, text in (("kubectl", KUBECTL), ("op", OP), ("git", GIT)):
             (shims / name).write_text(text)
             (shims / name).chmod(stat.S_IRWXU)
         os.symlink(os.environ["BAO_BIN"], shims / "bao")
@@ -193,7 +316,11 @@ class Configure(unittest.TestCase):
         shutil.copytree(lab.ROOT / "scripts/pam", pathlib.Path(self.tree, "scripts/pam"), ignore=shutil.ignore_patterns("tests", "__pycache__"))
         shutil.copy(lab.ROOT / "scripts/openbao-configure.sh", pathlib.Path(self.tree, "scripts"))
         self.env = {"PATH": f"{shims}:{os.environ['PATH']}", "BAO_ADDR": self.lab.addr, "LAB_ROOT_TOKEN": self.lab.root,
-                    "HOME": self.tree, "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", "/dev/shm")}
+                    "HOME": self.tree, "XDG_RUNTIME_DIR": RUNTIME_DIR,
+                    "GIT_LOG": f"{self.tree}/git.log", "GIT_FETCH_DONE": f"{self.tree}/git-fetched",
+                    "GIT_FETCH_FAIL": "0", "GIT_MAIN_MISSING": "0", "GIT_BEHIND": "0",
+                    "KUBECTL_LOG": f"{self.tree}/kubectl.log", "KUBECTL_FAIL": "none",
+                    "KUBECTL_PREFLIGHT_DONE": f"{self.tree}/kubectl-preflight", "OP_LOG": f"{self.tree}/op.log"}
 
     def configure(self, *args):
         return subprocess.run([os.path.join(self.tree, "scripts/openbao-configure.sh"), *args], env=self.env,
@@ -201,6 +328,69 @@ class Configure(unittest.TestCase):
 
     def policy_written(self, name):
         return self.lab.api("GET", f"sys/policies/acl/{name}")[0] == 200
+
+    def calls(self, name):
+        path = pathlib.Path(self.tree, f"{name}.log")
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_refuses_when_fetch_fails_before_token_input(self):
+        self.env["GIT_FETCH_FAIL"] = "1"
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("origin/main", result.stderr)
+        self.assertEqual(self.calls("op"), [])
+        self.assertEqual(self.calls("kubectl"), [])
+        self.assertFalse(self.policy_written("openbao-reader"))
+
+    def test_refuses_when_remote_main_is_missing(self):
+        self.env["GIT_MAIN_MISSING"] = "1"
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("origin/main", result.stderr)
+        self.assertTrue(any(call.startswith("fetch ") for call in self.calls("git")))
+        self.assertEqual(self.calls("op"), [])
+
+    def test_refuses_a_stale_checkout_using_fetched_main(self):
+        self.env["GIT_BEHIND"] = "1"
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("origin/main", result.stderr)
+        self.assertTrue(any(call.startswith("fetch ") for call in self.calls("git")))
+        self.assertTrue(any(call.startswith("merge-base ") for call in self.calls("git")))
+        self.assertEqual(self.calls("op"), [])
+
+    def test_current_feature_branch_passes_fresh_ancestry_check(self):
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any(call.startswith("fetch ") for call in self.calls("git")))
+        self.assertTrue(any(call.startswith("merge-base ") for call in self.calls("git")))
+
+    def test_unreachable_pod_fails_before_1password_or_token(self):
+        self.env["KUBECTL_FAIL"] = "always"
+        result = self.configure("--token-stdin", "--check")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("can't reach the cluster", result.stderr)
+        self.assertNotIn("token was rejected", result.stderr)
+        self.assertEqual(self.calls("op"), [])
+        self.assertTrue(any("--request-timeout=" in call and "exec" in call for call in self.calls("kubectl")))
+
+    def test_reach_lost_after_preflight_is_not_called_a_token_rejection(self):
+        self.env["KUBECTL_FAIL"] = "after-preflight"
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("can't reach the cluster", result.stderr)
+        self.assertNotIn("token was rejected", result.stderr)
+        self.assertTrue(any(call.startswith("read ") for call in self.calls("op")))
+
+    def test_rejected_token_shows_openbao_error_without_echoing_token(self):
+        bad = "test-rejected-token-value"
+        self.env["LAB_ROOT_TOKEN"] = bad
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("permission denied", result.stderr)
+        self.assertNotIn(bad, result.stdout + result.stderr)
+        self.assertNotIn("can't reach the cluster", result.stderr)
+        self.assertNotIn("token was rejected by OpenBao", result.stderr)
 
     def test_check_passes_on_a_clean_server_and_writes_nothing(self):
         result = self.configure("--check")
@@ -394,6 +584,23 @@ class Configure(unittest.TestCase):
         result = self.configure("--check")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('-path "sys/health"', result.stdout)
+
+    def test_policy_diff_ignores_only_trailing_newlines(self):
+        name = "openbao-reader"
+        policy = (self.config / f"{name}.hcl").read_text()
+        self.assertTrue(policy.endswith("\n"))
+        # OpenBao returns the file's final newline; jq -r adds another one.
+        # The preview must not show that serialization difference as a change.
+        self.lab.policy(name, policy)
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(f"--- live/{name}", result.stdout)
+
+        self.lab.policy(name, policy + "# changed policy content\n")
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"--- live/{name}", result.stdout)
+        self.assertIn("-# changed policy content", result.stdout)
 
     def test_a_listing_failure_stops_the_run(self):
         token = self.lab.ok("POST", "auth/token/create", {"policies": ["limited"], "ttl": "10m"})["auth"]["client_token"]

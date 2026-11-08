@@ -56,10 +56,6 @@ DISCOVERY_URL=$AUTHENTIK/application/o/openbao/
 AGENT_DISCOVERY_URL=$AUTHENTIK/application/o/warpgate-agents/
 # One harness for the proof of concept. codex and opencode join once it passes.
 PAM_HARNESSES=(claude)
-# The bao CLI's login callback. Only for approving by CLI during the proof of
-# concept; it goes when the approval page is served, and
-# scripts/pam/pam-approver-role.json never lists it.
-PAM_CLI_REDIRECT=http://localhost:8250/oidc/callback
 
 mode=configure
 token_source=root
@@ -77,9 +73,25 @@ log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 unset OP_SERVICE_ACCOUNT_TOKEN OP_CONNECT_HOST OP_CONNECT_TOKEN
-for tool in op kubectl jq shred python3; do
+for tool in op kubectl jq shred python3 git timeout; do
   command -v "$tool" >/dev/null || die "$tool not found"
 done
+
+# Fetch main into its tracking ref explicitly; FETCH_HEAD or a stale cached ref
+# is not enough to establish that this checkout includes the current main.
+GIT_TERMINAL_PROMPT=0 timeout --kill-after=2s 30s git -C "$REPO_DIR" fetch --quiet --no-tags \
+  origin +refs/heads/main:refs/remotes/origin/main >/dev/null 2>&1 ||
+  die "could not refresh origin/main; nothing was changed"
+git -C "$REPO_DIR" rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' >/dev/null 2>&1 ||
+  die "origin/main is missing; nothing was changed"
+git -C "$REPO_DIR" merge-base --is-ancestor refs/remotes/origin/main HEAD >/dev/null 2>&1 ||
+  die "this checkout is behind origin/main; update it before configuring"
+
+cluster_reachable() {
+  timeout --kill-after=2s 20s kubectl --request-timeout=15s -n "$NS" \
+    exec "$POD" -c "$CONTAINER" -- true >/dev/null 2>&1
+}
+cluster_reachable || die "can't reach the cluster pod $NS/$POD; nothing was changed"
 
 work=$(mktemp -d -p "${XDG_RUNTIME_DIR:-/dev/shm}")
 cleanup() {
@@ -102,7 +114,8 @@ bao() { # <args...>
     cat "$work/token"
     printf '\n'
     if [[ -n $payload ]]; then cat "$payload"; fi
-  } | kubectl -n "$NS" exec -i "$POD" -c "$CONTAINER" -- \
+  } | timeout --kill-after=2s 20s kubectl --request-timeout=15s -n "$NS" \
+    exec -i "$POD" -c "$CONTAINER" -- \
     sh -c 'read -r t; BAO_TOKEN=$t exec bao "$@"' bao "$@"
 }
 bao_json() { bao "$@" -format=json; }
@@ -131,7 +144,35 @@ else
   op read -n "$ROOT_REF" >"$work/token" 2>/dev/null || die "could not read $ROOT_REF"
 fi
 
-bao_json token lookup >"$work/self" 2>/dev/null || die "the token was rejected by OpenBao"
+if ! bao_json token lookup >"$work/self" 2>"$work/token-error"; then
+  cluster_reachable || die "can't reach the cluster pod $NS/$POD; token lookup did not complete"
+  # Only the API status and its error messages are shown. The CLI's full stderr
+  # can include request details; keep it in tmpfs and redact the token itself.
+  python3 -I - "$work/token-error" "$work/token" <<'PY' >&2
+import pathlib
+import re
+import sys
+
+raw = pathlib.Path(sys.argv[1]).read_text(errors="replace")[:16384]
+token = pathlib.Path(sys.argv[2]).read_text(errors="replace")
+status = re.search(r"(?m)^Code: ([0-9]{3})\. Errors:", raw)
+section = raw[status.end():] if status else ""
+messages = []
+for line in section.splitlines():
+    if not line.startswith("* "):
+        continue
+    message = line[2:].replace(token, "[redacted]") if token else line[2:]
+    message = re.sub(r"[\x00-\x1f\x7f]", "", message)
+    message = re.sub(r"\S{64,}", "[redacted]", message)[:300]
+    messages.append(message)
+    if len(messages) == 3:
+        break
+detail = "; ".join(messages) if messages else "no API error text returned"
+code = f" (HTTP {status.group(1)})" if status else ""
+print(f"error: OpenBao token lookup failed{code}: {detail}")
+PY
+  exit 1
+fi
 policies=$(jq -r '.data.policies | join(",")' "$work/self")
 log "Token accepted (policies: $policies)"
 
@@ -203,8 +244,18 @@ log "Reading live policies and identities"
 read_gate_state
 for p in "${POLICIES[@]}"; do
   log "Policy diff for $p (live, then repo)"
-  jq -r --arg p "$p" '.policies[$p] // ""' "$work/gate-state.json" |
-    diff -u --label "live/$p" --label "repo/$p" - "$POLICY_DIR/$p.hcl" || true
+  jq -rj --arg p "$p" '.policies[$p] // ""' "$work/gate-state.json" >"$work/live-policy"
+  python3 -I - "$work/live-policy" "$work/live-policy-normalized" \
+    "$POLICY_DIR/$p.hcl" "$work/repo-policy-normalized" <<'PY'
+import pathlib
+import sys
+
+for source, target in zip(sys.argv[1::2], sys.argv[2::2]):
+    content = pathlib.Path(source).read_bytes()
+    pathlib.Path(target).write_bytes(content.rstrip(b"\n") + b"\n" if content else b"")
+PY
+  diff -u --label "live/$p" --label "repo/$p" \
+    "$work/live-policy-normalized" "$work/repo-policy-normalized" || true
 done
 python3 -I "$REPO_DIR/scripts/pam/policy_guard.py" "$POLICY_DIR" --live "$work/gate-state.json" ||
   die "the agent PAM guard refused this policy set; nothing was written"
@@ -374,10 +425,8 @@ log "Configuring pam-oidc against authentik"
 jq '.default_role = "pam-approver"' "$work/oidc-config.json" >"$work/pam-oidc-config.json"
 bao_write_json auth/pam-oidc/config "$work/pam-oidc-config.json" ||
   die "OpenBao refused the pam-oidc config. Check that authentik's OpenBao provider exists ($DISCOVERY_URL)"
-log "Writing the pam-oidc role pam-approver (with the CLI callback, for the proof of concept)"
-jq --arg cli "$PAM_CLI_REDIRECT" '.allowed_redirect_uris += [$cli]' \
-  "$REPO_DIR/scripts/pam/pam-approver-role.json" >"$work/approver-role.json"
-bao_write_json auth/pam-oidc/role/pam-approver "$work/approver-role.json"
+log "Writing the pam-oidc role pam-approver"
+bao_write_json auth/pam-oidc/role/pam-approver "$REPO_DIR/scripts/pam/pam-approver-role.json"
 
 # A random value that protects nothing, for proving the gate on the live
 # cluster. Created once; made here and sent to OpenBao without being printed.
