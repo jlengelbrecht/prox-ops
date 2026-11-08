@@ -7,4 +7,14 @@ resources:
   - ./configmap-yubihsm.yaml
   - ./helmrelease.yaml
   - ./httproute.yaml
+  - ./pam-page.yaml
   - ./podmonitor.yaml
+# The agent PAM approval page. Envoy serves it straight from this ConfigMap
+# (pam-page.yaml), so there's no pod. The name has no hash suffix because the
+# HTTPRouteFilter refers to it by name; Envoy Gateway picks up a change itself.
+configMapGenerator:
+  - name: pam-page
+    files:
+      - response.body=pam/index.html
+    options:
+      disableNameSuffixHash: true
