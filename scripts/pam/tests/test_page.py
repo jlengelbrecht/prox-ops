@@ -21,7 +21,7 @@ import urllib.request
 
 import lab
 
-PAGE = pathlib.Path(lab.ROOT, "scripts/pam/page/index.html").read_text()
+PAGE = pathlib.Path(lab.ROOT, "kubernetes/apps/openbao/pam-page/app/index.html").read_text()
 CHROMIUM = os.environ.get("CHROMIUM") or shutil.which("chromium") or shutil.which("chromium-browser")
 BODY_CANARY = "S3cretBodyCanary"
 REASON_CANARY = "S3cretReasonCanary"
