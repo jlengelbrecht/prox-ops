@@ -232,6 +232,10 @@ class Approvers(unittest.TestCase):
             "pam_oidc_accessor": accessor, "groups": [self.group()] if groups is None else groups,
             "pam_oidc_roles": {"pam-approver": self.role()} if roles is None else roles, "entities": list(entities)}))
 
+    def test_a_state_without_the_role_listing_is_refused(self):
+        found = " ".join(guard.check_approvers({"pam_oidc_accessor": self.ACCESSOR, "groups": [], "entities": []}))
+        self.assertIn("no pam_oidc_roles", found)
+
     def test_clean(self):
         self.assertEqual(self.findings(), "")
 

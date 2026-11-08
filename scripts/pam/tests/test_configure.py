@@ -153,6 +153,15 @@ class FullRun(unittest.TestCase):
         self.assertEqual(self.agent_login(name="agent-codex")[0], 400)
         self.assertEqual(self.agent_login(aud="something-else")[0], 400)
 
+    def test_a_run_that_stopped_before_the_alias_is_finished_by_the_next(self):
+        self.bao.ok("POST", "identity/group/name/pam-approvers", {"type": "external", "policies": ["pam-approver"]})
+        self.bao.ok("POST", "sys/auth/pam-oidc", {"type": "oidc"})
+        self.run_configure()
+        group = self.bao.ok("GET", "identity/group/name/pam-approvers")["data"]
+        accessor = self.bao.ok("GET", "sys/auth")["data"]["pam-oidc/"]["accessor"]
+        self.assertEqual((group["alias"]["name"], group["alias"]["mount_accessor"]), ("openbao-admins", accessor))
+        self.assertEqual(self.bao.api("GET", "auth/pam-oidc/role/pam-approver")[0], 200)
+
     def test_a_second_run_changes_nothing(self):
         self.run_configure()
         before = self.bao.ok("GET", "identity/entity/name/agent-claude")["data"]
@@ -257,6 +266,25 @@ class Configure(unittest.TestCase):
         self.lab.ok("DELETE", f"identity/group/name/{lab.GROUP}")
         self.lab.ok("POST", "identity/group", {"name": lab.GROUP, "type": "internal", "policies": ["pam-approver"]})
         self.assertRefused("must be external")
+
+    def test_refuses_an_approver_role_with_no_alias(self):
+        self.pam_oidc()
+        group = self.lab.ok("GET", f"identity/group/name/{lab.GROUP}")["data"]
+        self.lab.ok("DELETE", f"identity/group-alias/id/{group['alias']['id']}")
+        self.assertRefused("isn't aliased on pam-oidc")
+
+    def test_refuses_an_approver_role_with_no_group(self):
+        self.pam_oidc()
+        self.lab.ok("DELETE", f"identity/group/name/{lab.GROUP}")
+        self.assertRefused(f"group {lab.GROUP} doesn't exist")
+
+    def test_an_approver_mount_with_no_role_passes(self):
+        self.pam_oidc()
+        self.lab.ok("DELETE", "auth/pam-oidc/role/pam-approver")
+        group = self.lab.ok("GET", f"identity/group/name/{lab.GROUP}")["data"]
+        self.lab.ok("DELETE", f"identity/group-alias/id/{group['alias']['id']}")
+        result = self.configure("--check")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_refuses_an_approver_role_with_other_policies(self):
         self.pam_oidc()

@@ -285,10 +285,9 @@ fi
 # --- agent PAM ----------------------------------------------------------------
 # The policies are in kubernetes/apps/openbao/openbao/config/pam-*.hcl. The
 # order matters because the guard above runs before anything is written: an
-# agent identity must never exist without its role, and pam-oidc must never
-# exist without the pam-approvers alias. If a run stops between enabling
-# pam-oidc and writing that alias, the next run is refused; disable pam-oidc
-# (bao auth disable pam-oidc) and run again.
+# agent identity must never exist without its role, and pam-oidc gets its role
+# only after the pam-approvers group and alias exist. A run that stops before
+# the role leaves nothing anyone can log in with, and the next run finishes it.
 mount_type() { # <auth|secrets> <path/>
   bao_json "$1" list | jq -r --arg p "$2" '.[$p].type // empty'
 }

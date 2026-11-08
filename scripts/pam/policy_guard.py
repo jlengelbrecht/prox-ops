@@ -261,9 +261,14 @@ def check_approvers(state):
         if accessor and group.get("name") != APPROVER_GROUP and (group.get("alias") or {}).get("mount_accessor") == accessor:
             findings.append(f"group {group.get('name')} is aliased on pam-oidc; only {APPROVER_GROUP} may be")
     approvers = next((g for g in groups if g.get("name") == APPROVER_GROUP), None)
+    # With no role on pam-oidc nobody can log in through it, so a missing group or alias is a
+    # run that stopped partway, which the next run finishes. Once a role exists, both must be there.
+    can_log_in = bool(accessor and state.get("pam_oidc_roles"))
+    if accessor and "pam_oidc_roles" not in state:
+        findings.append("the live state has pam-oidc but no pam_oidc_roles, so its roles can't be checked")
     if approvers is None:
-        if accessor:
-            findings.append(f"pam-oidc exists but group {APPROVER_GROUP} doesn't")
+        if can_log_in:
+            findings.append(f"pam-oidc has a role but group {APPROVER_GROUP} doesn't exist")
     else:
         if approvers.get("type") != "external":
             findings.append(f"group {APPROVER_GROUP} must be external")
@@ -271,7 +276,7 @@ def check_approvers(state):
             findings.append(f"group {APPROVER_GROUP} must hold only {APPROVER_POLICY}")
         if approvers.get("parent_group_ids"):
             findings.append(f"group {APPROVER_GROUP} has a parent group, which adds its policies")
-        if accessor and (approvers.get("alias") or {}).get("mount_accessor") != accessor:
+        if can_log_in and (approvers.get("alias") or {}).get("mount_accessor") != accessor:
             findings.append(f"group {APPROVER_GROUP} isn't aliased on pam-oidc")
     for name, role in sorted(state.get("pam_oidc_roles", {}).items()):
         if set(role.get("token_policies") or []) != {APPROVER_POLICY}:
