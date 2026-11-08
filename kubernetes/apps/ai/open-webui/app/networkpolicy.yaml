@@ -27,15 +27,6 @@ spec:
         - ports:
             - port: "4000"
               protocol: TCP
-    # Allow egress to Qdrant for vector database (RAG) - in database namespace
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: database
-            app.kubernetes.io/name: qdrant
-      toPorts:
-        - ports:
-            - port: "6333"
-              protocol: TCP
     # Allow egress to SearXNG for web search
     - toEndpoints:
         - matchLabels:
