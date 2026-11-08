@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import time
@@ -261,6 +262,10 @@ class ClientTests(unittest.TestCase):
         self.assertNotIn("sk-synthetic-owner-key", json.dumps(command))
         self.assertIn("--print", command)
         self.assertIn("--verbose", command)
+        self.assertIn("--safe-mode", command)
+        self.assertEqual(command[command.index("--setting-sources") + 1], "user")
+        self.assertNotIn("--setting-sources", self.client._command("claude"))
+        self.assertNotIn("--restricted", command)
         self.assertEqual(command[command.index("--output-format") + 1], "stream-json")
         self.assertIn("--tools", command)
         self.assertIn("Read", command)
@@ -313,17 +318,74 @@ class ClientTests(unittest.TestCase):
                         self.assertEqual(self.client.main([]), 2)
                     self.assertIn(expected, json.loads(output.getvalue())["failures"])
 
+    def test_project_settings_env_fail_closed_without_blocking_user_settings(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            home = Path(temp)
+            project = home / "project"
+            (home / ".claude").mkdir()
+            (project / ".claude").mkdir(parents=True)
+            (home / ".claude" / "settings.json").write_text(
+                json.dumps({"env": {"KUBECONFIG": "synthetic"}}))
+            settings = project / ".claude" / "settings.json"
+            self.assertEqual(self.client._settings_issues(project, home), [])
+            for name in ("HTTPS_PROXY", "LD_PRELOAD", "BASH_ENV", "NODE_OPTIONS",
+                         "PATH", "FUTURE_UNRECOGNIZED_KEY"):
+                with self.subTest(name=name):
+                    settings.write_text(json.dumps({"env": {name: "synthetic"}}))
+                    self.assertIn("settings_credential_or_provider_env",
+                                  self.client._settings_issues(project, home))
+            settings.write_text(json.dumps({"env": {}}))
+            self.assertEqual(self.client._settings_issues(project, home), [])
+
+    def test_interactive_launch_requires_tty_for_native_trust(self):
+        with (patch.object(self.client.os, "environ", self.env()),
+              patch.object(self.client.shutil, "which", return_value="/synthetic/claude"),
+              patch.object(self.client.Path, "cwd", return_value=ROOT),
+              patch.object(self.client.Path, "home", return_value=ROOT),
+              patch.object(self.client, "_native_login_record", return_value=True),
+              patch.object(self.client.os, "execvpe", side_effect=AssertionError("launch")),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            self.assertEqual(self.client.main([]), 2)
+        self.assertEqual(json.loads(output.getvalue())["failure"],
+                         "interactive_tty_required_for_workspace_trust")
+
     def test_smoke_fixture_is_bounded(self):
-        import tempfile
+        fixture = ROOT / "tests/litellm/project_router/smoke-fixture.txt"
+        self.assertIn("Read once", self.client._smoke_prompt(fixture, ROOT))
         with tempfile.TemporaryDirectory(dir=ROOT) as temp:
             fixture = Path(temp) / "fact.txt"
             fixture.write_text("synthetic fact")
-            self.assertIn("Read once", self.client._smoke_prompt(fixture, ROOT))
+            with self.assertRaises(ValueError):
+                self.client._smoke_prompt(fixture, ROOT)
             with self.assertRaises(ValueError):
                 self.client._smoke_prompt(Path(temp), ROOT)
             fixture.write_bytes(b"x" * 1025)
             with self.assertRaises(ValueError):
                 self.client._smoke_prompt(fixture, ROOT)
+
+    def test_settings_preflight_rejects_special_and_oversized_files(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            project = Path(temp)
+            settings = project / ".claude" / "settings.json"
+            settings.parent.mkdir()
+            for kind in ("fifo", "device", "oversize", "symlink_oversize"):
+                with self.subTest(kind=kind):
+                    settings.unlink(missing_ok=True)
+                    if kind == "fifo":
+                        os.mkfifo(settings)
+                    elif kind == "device":
+                        settings.symlink_to("/dev/zero")
+                    elif kind == "oversize":
+                        settings.write_bytes(b" " * (self.client.SETTINGS_MAX_BYTES + 1))
+                    else:
+                        target = project / "large.json"
+                        target.write_bytes(b" " * (self.client.SETTINGS_MAX_BYTES + 1))
+                        settings.symlink_to(target)
+                    result = self.client._settings_issues(project, project)
+                    self.assertIn("settings_unreadable_or_invalid", result)
+            settings.unlink()
+            settings.write_text('{"hooks":{"SessionStart":[]}}')
+            self.assertEqual(self.client._settings_issues(project, project), [])
 
     def test_smoke_evidence_requires_stream_linked_read_and_final_answer(self):
         fixture = ROOT / "tests/litellm/project_router/smoke-fixture.txt"
@@ -431,6 +493,38 @@ class ClientTests(unittest.TestCase):
                     time.sleep(0.05)
                 else:
                     self.fail("smoke descendant survived interruption")
+
+    def test_sigterm_stops_smoke_descendant(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            descendant_pid = Path(temp) / "descendant.pid"
+            child_code = ("import subprocess,sys,time\n"
+                          "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'])\n"
+                          f"open({str(descendant_pid)!r},'w').write(str(p.pid))\n"
+                          "time.sleep(60)\n")
+            launcher_code = ("from scripts.litellm.claude_project import _bounded_smoke\n"
+                             "import sys\n"
+                             f"_bounded_smoke([sys.executable,'-c',{child_code!r}],{{}},'.')\n")
+            launcher = subprocess.Popen([sys.executable, "-c", launcher_code], cwd=ROOT,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 3
+                while not descendant_pid.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(descendant_pid.exists(), "smoke child did not start")
+                launcher.terminate()
+                self.assertEqual(launcher.wait(timeout=3), 128 + 15)
+                descendant = int(descendant_pid.read_text())
+                for _ in range(20):
+                    status = Path(f"/proc/{descendant}/stat")
+                    if not status.exists() or status.read_text().split()[2] in ("Z", "X"):
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("smoke descendant survived SIGTERM")
+            finally:
+                if launcher.poll() is None:
+                    launcher.kill()
+                    launcher.wait()
 
 
 if __name__ == "__main__":

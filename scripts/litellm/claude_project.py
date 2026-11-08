@@ -15,6 +15,7 @@ import re
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -35,10 +36,14 @@ FORBIDDEN_SETTINGS = frozenset({
 })
 FORBIDDEN_SETTINGS_ENV = FORBIDDEN_ENV | frozenset({"ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL"})
+ALLOWED_PROJECT_SETTINGS_ENV = frozenset()
 SAFE_SETTINGS = json.dumps({"fallbackModel": None}, separators=(",", ":"))
 LOGIN_ENV = frozenset({"HOME", "PATH", "USER", "LOGNAME", "LANG", "LC_ALL",
                        "LC_CTYPE", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
                        "XDG_STATE_HOME"})
+SETTINGS_MAX_BYTES = 65536
+SMOKE_FIXTURE = Path(__file__).resolve().parents[2] / "tests/litellm/project_router/smoke-fixture.txt"
+SMOKE_CONTENT = b"The project router pilot fact is cedar.\n"
 
 
 def _settings_paths(cwd, home):
@@ -53,21 +58,37 @@ def _settings_paths(cwd, home):
 
 def _settings_issues(cwd, home):
     issues = []
+    user_settings = home / ".claude" / "settings.json"
     for path in _settings_paths(cwd, home):
-        if not path.exists():
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError:
+            issues.append("settings_unreadable_or_invalid")
             continue
         try:
-            settings = json.loads(path.read_text())
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > SETTINGS_MAX_BYTES:
+                raise ValueError("settings_not_bounded_regular_file")
+            raw = os.read(fd, SETTINGS_MAX_BYTES + 1)
+            if len(raw) > SETTINGS_MAX_BYTES:
+                raise ValueError("settings_too_large")
+            settings = json.loads(raw.decode("utf-8"))
         except (OSError, UnicodeError, ValueError):
             issues.append("settings_unreadable_or_invalid")
             continue
+        finally:
+            os.close(fd)
         if not isinstance(settings, dict):
             issues.append("settings_invalid_shape")
             continue
         if FORBIDDEN_SETTINGS.intersection(settings):
             issues.append("settings_provider_or_model_override")
         values = settings.get("env", {})
-        if not isinstance(values, dict) or FORBIDDEN_SETTINGS_ENV.intersection(values):
+        if (not isinstance(values, dict)
+                or (FORBIDDEN_SETTINGS_ENV.intersection(values) if path == user_settings
+                    else set(values) - ALLOWED_PROJECT_SETTINGS_ENV)):
             issues.append("settings_credential_or_provider_env")
     return sorted(set(issues))
 
@@ -140,6 +161,7 @@ def _command(cli, smoke=False, prompt=None):
             "--no-chrome", "--strict-mcp-config"]
     if smoke:
         args += ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages",
+                 "--setting-sources", "user",
                  "--tools", "Read",
                  "--permission-mode", "dontAsk", "--permission-prompts", "none",
                  "--safe-mode", "--no-session-persistence", "--max-turns", "2"]
@@ -150,8 +172,10 @@ def _command(cli, smoke=False, prompt=None):
 
 def _smoke_prompt(fixture, cwd):
     path = fixture.resolve(strict=True)
-    if not path.is_file() or not path.is_relative_to(cwd.resolve()) or path.stat().st_size > 1024:
-        raise ValueError("fixture_must_be_small_file_inside_project")
+    if (path != SMOKE_FIXTURE or not path.is_relative_to(cwd.resolve())
+            or path.stat().st_size != len(SMOKE_CONTENT)
+            or path.read_bytes() != SMOKE_CONTENT):
+        raise ValueError("fixture_must_be_committed_proof")
     return ("Use Read once on " + str(path.relative_to(cwd.resolve()))
             + ". Return PROJECT_ROUTER_SMOKE and one fact from the file. "
               "Do not use any other tool.")
@@ -176,6 +200,18 @@ def _stop_smoke_group(process):
 
 def _bounded_smoke(command, env, cwd, timeout_s=120, output_cap=65536, fixture=None):
     """Run one isolated smoke child within time and output limits, then reap it."""
+    def on_sigterm(_signum, _frame):
+        raise SystemExit(128 + signal.SIGTERM)
+
+    previous_sigterm = signal.signal(signal.SIGTERM, on_sigterm)
+    try:
+        return _bounded_smoke_inner(command, env, cwd, timeout_s, output_cap, fixture)
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+
+
+def _bounded_smoke_inner(command, env, cwd, timeout_s, output_cap, fixture):
+    """Keep SIGTERM inside the cleanup path while the smoke child runs."""
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, start_new_session=True)
     selector = selectors.DefaultSelector()
@@ -296,6 +332,9 @@ def main(argv=None):
     if not report["ready"] or args.dry_run:
         print(json.dumps(report, sort_keys=True))
         return 0 if report["ready"] else 2
+    if not args.smoke_test and not sys.stdout.isatty():
+        print(json.dumps({"ready": False, "failure": "interactive_tty_required_for_workspace_trust"}))
+        return 2
     child = _child_env(env, args.gateway_key_env)
     if args.smoke_test:
         try:
