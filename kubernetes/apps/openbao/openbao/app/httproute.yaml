@@ -18,6 +18,36 @@ spec:
   hostnames:
     - bao.homelab0.org
   rules:
+    # The agent PAM approval page, answered by Envoy from the pam-page ConfigMap.
+    # Only these two exact paths; everything else still goes to OpenBao. The
+    # headers stop other sites framing Approve: a meta tag can't set
+    # frame-ancestors.
+    - matches:
+        - path:
+            type: Exact
+            value: /pam/
+        - path:
+            type: Exact
+            value: /pam/callback
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: pam-page
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Content-Security-Policy
+                value: "frame-ancestors 'none'"
+              - name: X-Frame-Options
+                value: DENY
+              - name: Cache-Control
+                value: no-store
+              - name: Referrer-Policy
+                value: no-referrer
+              - name: X-Content-Type-Options
+                value: nosniff
     - matches:
         - path:
             type: PathPrefix

@@ -1617,7 +1617,8 @@ data:
       # Confidential client. The client id is a public identifier, declared
       # literally here and in OpenBao's OIDC config; the secret comes from the
       # authentik-openbao Secret (1Password item "openbao-oidc"). Redirects:
-      # the web UI, and the CLI's local listener for `bao login -method=oidc`.
+      # the web UI, the agent PAM approval page (OpenBao's pam-oidc mount), and
+      # the CLI's local listener for `bao login -method=oidc`.
       - model: authentik_providers_oauth2.oauth2provider
         id: provider-openbao
         identifiers:
@@ -1639,6 +1640,8 @@ data:
           redirect_uris:
             - matching_mode: strict
               url: https://bao.homelab0.org/ui/vault/auth/oidc/oidc/callback
+            - matching_mode: strict
+              url: https://bao.homelab0.org/pam/callback
             - matching_mode: strict
               url: http://localhost:8250/oidc/callback
           access_code_validity: minutes=1
