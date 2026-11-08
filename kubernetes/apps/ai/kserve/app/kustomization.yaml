@@ -34,8 +34,11 @@ configMapGenerator:
       - deploy={"defaultDeploymentMode":"Serverless"}
       # renovate: datasource=docker depName=kserve/storage-initializer
       # Configure storage initializer for model downloads
-      # NOTE: storage-initializer image version should match KServe release version above
-      - storageInitializer={"image":"kserve/storage-initializer:v0.21.0","memoryRequest":"100Mi","memoryLimit":"1Gi","cpuRequest":"100m","cpuLimit":"1"}
+      # The storage-initializer image must match the KServe release above.
+      # This literal replaces the whole value, so it must carry every key the controller
+      # parses: from 0.16 the controller fails every reconcile if cpuModelcar or
+      # memoryModelcar is missing. Values are upstream's defaults for this release.
+      - storageInitializer={"image":"kserve/storage-initializer:v0.16.0","memoryRequest":"100Mi","memoryLimit":"1Gi","cpuRequest":"100m","cpuLimit":"1","caBundleConfigMapName":"","caBundleVolumeMountPath":"/etc/ssl/custom-certs","enableModelcar":true,"cpuModelcar":"10m","memoryModelcar":"15Mi","uidModelcar":1010}
       # Configure ingress (uses Kourier from Knative, not Istio)
       # Note: ingressGateway is required by KServe validation even with disableIstioVirtualHost=true.
       # It points at Kourier but isn't used when disableIstioVirtualHost is enabled. (ingressService
