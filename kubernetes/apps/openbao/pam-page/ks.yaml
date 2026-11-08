@@ -1,0 +1,28 @@
+---
+# The agent PAM approval page at bao.homelab0.org/pam/: one unprivileged nginx
+# serving a single static file. The route rule is in openbao/app/httproute.yaml,
+# the network policy in policies/app/networkpolicy.yaml. dependsOn namespaces
+# are the dependency's own CR namespace.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app openbao-pam-page
+  namespace: flux-system
+spec:
+  targetNamespace: openbao
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: openbao-policies
+      namespace: openbao
+  interval: 1h
+  retryInterval: 2m
+  timeout: 5m
+  path: ./kubernetes/apps/openbao/pam-page/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true

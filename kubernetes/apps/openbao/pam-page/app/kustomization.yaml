@@ -1,0 +1,12 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ./deployment.yaml
+  - ./service.yaml
+# The hash suffix rolls the pod when the page or the config changes.
+configMapGenerator:
+  - name: pam-page
+    files:
+      - index.html
+      - nginx.conf

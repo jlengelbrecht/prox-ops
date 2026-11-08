@@ -18,6 +18,19 @@ spec:
   hostnames:
     - bao.homelab0.org
   rules:
+    # The agent PAM approval page (kubernetes/apps/openbao/pam-page). Only these
+    # two exact paths; everything else still goes to OpenBao. nginx sets the
+    # page's security headers, so they're tested with the config that sends them.
+    - matches:
+        - path:
+            type: Exact
+            value: /pam/
+        - path:
+            type: Exact
+            value: /pam/callback
+      backendRefs:
+        - name: pam-page
+          port: 8080
     - matches:
         - path:
             type: PathPrefix
