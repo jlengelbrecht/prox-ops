@@ -10,10 +10,10 @@ resources:
   # KServe CRDs and core components (controller, webhook)
   # Upgraded one minor at a time; KServe 0.17 to 0.21 are tested with Knative 1.21.
   # Note: Installing in serverless mode with Knative Serving integration
-  - https://github.com/kserve/kserve/releases/download/v0.20.0/kserve.yaml
+  - https://github.com/kserve/kserve/releases/download/v0.21.0/kserve.yaml
   # renovate: datasource=github-releases depName=kserve/kserve
   # KServe cluster resources (ClusterServingRuntimes for various frameworks)
-  - https://github.com/kserve/kserve/releases/download/v0.20.0/kserve-cluster-resources.yaml
+  - https://github.com/kserve/kserve/releases/download/v0.21.0/kserve-cluster-resources.yaml
   # Production InferenceServices
   - ./qwen36-27b-inferenceservice.yaml  # Qwen3.6-27B via llama.cpp with MTP speculative decoding
   - ./qwen36-27b-networkpolicy.yaml  # Zero-trust network segmentation
@@ -37,9 +37,8 @@ configMapGenerator:
       - deploy={"defaultDeploymentMode":"Serverless"}
       # renovate: datasource=docker depName=kserve/storage-initializer
       # Configure storage initializer for model downloads
-      # The storage-initializer stays on v0.21.0 while the controller catches up to it:
-      # releases before 0.17.0 have a path-traversal flaw in tar extraction, and v0.21.0
-      # has run cleanly against the 0.13 to 0.16 controllers.
+      # The storage-initializer matches the controller release. Keep it at 0.17.0 or
+      # later: earlier releases have a path-traversal flaw in tar extraction.
       # This literal replaces the whole value, so it must carry every key the controller
       # parses: from 0.16 the controller fails every reconcile if cpuModelcar or
       # memoryModelcar is missing. Values are upstream's defaults for this release.
@@ -117,24 +116,53 @@ patches:
       - op: remove
         path: /metadata/namespace
 
-  # From 0.20 the localmodel controller can delete any PersistentVolume or claim in the
-  # cluster. Local model caching isn't used here (no LocalModel objects, no nodes
-  # labelled kserve/localmodel=worker), so keep the 0.19 verbs, without delete. The test
-  # ops fail the build if upstream reorders the rules, rather than patching the wrong one.
-  # Cache cleanup would need delete back if local model caching is turned on.
+  # The localmodel controller (local model caching, plus the kernel cache from 0.21) gains
+  # cluster-wide rights with each release: delete on PersistentVolumes in 0.20, read on
+  # every Secret and Job CRUD in 0.21. Neither feature is used here (no LocalModel or
+  # KernelCache objects, no nodes labelled for the node agents, kernelcache disabled in
+  # inferenceservice-config), so keep it off: no cluster bindings, no replicas, and no
+  # webhook pointing at its podless service. Remove these patches together to turn it on.
+  - patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: kserve-localmodel-manager-rolebinding
+  - patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: kserve-kernelcache-nodegroup-manager
+  # The node agents' DaemonSets schedule on no node, but their bindings would still let
+  # any pod in kserve run as those service accounts (the localmodel agent's role reads
+  # every Secret), so drop them too.
+  - patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: kserve-localmodelnode-agent-rolebinding
+  - patch: |-
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: kserve-kernelcachenode-agent-rolebinding
+  - patch: |-
+      $patch: delete
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingWebhookConfiguration
+      metadata:
+        name: localmodelcache.serving.kserve.io
   - target:
-      kind: ClusterRole
-      name: kserve-localmodel-manager-role
+      kind: Deployment
+      name: kserve-localmodel-controller-manager
+      namespace: kserve
     patch: |-
-      - op: test
-        path: /rules/3/resources
-        value: ["persistentvolumeclaims", "persistentvolumes"]
-      - op: test
-        path: /rules/3/verbs
-        value: ["create", "delete", "get", "list", "patch", "update", "watch"]
       - op: replace
-        path: /rules/3/verbs
-        value: ["create", "get", "list", "patch", "update", "watch"]
+        path: /spec/replicas
+        value: 0
 
   # From 0.17 the LLMInferenceService CRDs serve v1alpha1 and v1alpha2 and convert
   # between them through a webhook run by the llmisvc controller. That controller is
