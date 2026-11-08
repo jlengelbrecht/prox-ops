@@ -204,6 +204,19 @@ spec:
                 }
               }
             }
+            // One compact OpenBao audit response with a gated PAM path
+            // increments this request counter. It does not measure pending requests.
+            stage.match {
+              selector = "{namespace=\"openbao\"} |= \"\\\"creation_path\\\":\\\"kv/data/pam/\""
+              stage.metrics {
+                metric.counter {
+                  name              = "pam_approval_requests_total"
+                  match_all         = true
+                  action            = "inc"
+                  max_idle_duration = "168h"
+                }
+              }
+            }
           }
           discovery.relabel "hindsight_safe" {
             targets = discovery.kubernetes.pods.targets
