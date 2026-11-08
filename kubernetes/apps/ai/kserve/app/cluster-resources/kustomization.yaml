@@ -1,0 +1,68 @@
+---
+# KServe v0.16.0 ships the same eight LLMInferenceServiceConfig objects in both
+# kserve.yaml and kserve-cluster-resources.yaml (byte-for-byte identical), and
+# Kustomize refuses duplicate IDs. This wrapper drops the copies from the
+# cluster-resources file so the ones in kserve.yaml are applied once. v0.18 and
+# later ship no duplicates, so the wrapper goes away with the next KServe step.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # renovate: datasource=github-releases depName=kserve/kserve
+  - https://github.com/kserve/kserve/releases/download/v0.16.0/kserve-cluster-resources.yaml
+patches:
+  - patch: |-
+      $patch: delete
+      apiVersion: serving.kserve.io/v1alpha1
+      kind: LLMInferenceServiceConfig
+      metadata:
+        name: kserve-config-llm-decode-template
+        namespace: kserve
+  - patch: |-
+      $patch: delete
+      apiVersion: serving.kserve.io/v1alpha1
+      kind: LLMInferenceServiceConfig
+      metadata:
+        name: kserve-config-llm-decode-worker-data-parallel
+        namespace: kserve
+  - patch: |-
+      $patch: delete
+      apiVersion: serving.kserve.io/v1alpha1
+      kind: LLMInferenceServiceConfig
+      metadata:
+        name: kserve-config-llm-prefill-template
+        namespace: kserve
+  - patch: |-
+      $patch: delete
+      apiVersion: serving.kserve.io/v1alpha1
+      kind: LLMInferenceServiceConfig
+      metadata:
+        name: kserve-config-llm-prefill-worker-data-parallel
+        namespace: kserve
+  - patch: |-
+      $patch: delete
+      apiVersion: serving.kserve.io/v1alpha1
+      kind: LLMInferenceServiceConfig
+      metadata:
+        name: kserve-config-llm-router-route
+        namespace: kserve
+  - patch: |-
+      $patch: delete
+      apiVersion: serving.kserve.io/v1alpha1
+      kind: LLMInferenceServiceConfig
+      metadata:
+        name: kserve-config-llm-scheduler
+        namespace: kserve
+  - patch: |-
+      $patch: delete
+      apiVersion: serving.kserve.io/v1alpha1
+      kind: LLMInferenceServiceConfig
+      metadata:
+        name: kserve-config-llm-template
+        namespace: kserve
+  - patch: |-
+      $patch: delete
+      apiVersion: serving.kserve.io/v1alpha1
+      kind: LLMInferenceServiceConfig
+      metadata:
+        name: kserve-config-llm-worker-data-parallel
+        namespace: kserve
