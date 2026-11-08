@@ -64,6 +64,21 @@ if not os.access(RUNTIME_DIR, os.W_OK):
     RUNTIME_DIR = "/dev/shm"
 
 
+class OperatorGuidance(unittest.TestCase):
+    def test_approval_instructions_match_page_only_callback(self):
+        role = json.loads(lab.ROLE_FILE.read_text())
+        callbacks = role["allowed_redirect_uris"]
+        self.assertEqual(len(callbacks), 1)
+        self.assertTrue(callbacks[0].endswith("/callback"))
+        page = callbacks[0].removesuffix("callback")
+        script = (lab.ROOT / "scripts/openbao-configure.sh").read_text()
+        guidance = [line for line in script.splitlines()
+                    if line.startswith('log "Approve agent PAM requests')]
+        self.assertEqual(len(guidance), 1)
+        self.assertIn(page, guidance[0])
+        self.assertNotIn("bao login", guidance[0])
+
+
 class FakeAuthentik:
     """Discovery and keys for authentik's per-provider issuers, on loopback."""
 

@@ -603,7 +603,7 @@ jq -n '{db_name: "cnpg", username: "zabbix", rotation_period: "720h"}' >"$work/z
 bao_write_json database/static-roles/zabbix "$work/zabbix-static.json"
 
 log "Done. Log in at https://bao.homelab0.org: method OIDC, role default (leave blank)."
-log "Approve agent PAM requests by CLI for now: bao login -method=oidc -path=pam-oidc role=pam-approver"
+log "Approve agent PAM requests at https://bao.homelab0.org/pam/"
 if [[ $policies == root ]]; then
   log "Once that works as an admin, revoke the root token: scripts/openbao-configure.sh --revoke-root"
 fi
