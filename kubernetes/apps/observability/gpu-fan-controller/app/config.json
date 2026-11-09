@@ -1,0 +1,36 @@
+{
+  "prometheus_url": "http://kube-prometheus-stack-prometheus.observability.svc:9090",
+  "temperature_query": "max by (Hostname) (DCGM_FI_DEV_GPU_TEMP)",
+  "timestamp_query": "max by (Hostname) (timestamp(DCGM_FI_DEV_GPU_TEMP))",
+  "max_sample_age_s": 180,
+  "interval_s": 30,
+  "thresholds_c": [
+    70,
+    78
+  ],
+  "hysteresis_c": 5,
+  "calm_cycles": 4,
+  "failsafe_level": 1,
+  "levels_lfm": [
+    300,
+    390
+  ],
+  "levels_offset": [
+    "Low",
+    "High"
+  ],
+  "hosts": [
+    {
+      "name": "odin",
+      "zone": "odin",
+      "idrac": "10.20.66.101",
+      "tls_sha256": "4bf1b67070d0917c1cc781be5436d70aee86fd216616aa89d1e2c5b66d03d0c9"
+    },
+    {
+      "name": "thor",
+      "zone": "thor",
+      "idrac": "10.20.66.102",
+      "tls_sha256": "42deac7e9daf237f918201805dd54471e4ede987fc6425a1f690788d6bd12d77"
+    }
+  ]
+}

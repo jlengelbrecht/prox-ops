@@ -1,0 +1,20 @@
+---
+# GPU-aware airflow for the Dell servers: raises a server's airflow through iDRAC when
+# one of its GPUs runs hot, because iDRAC cannot read third-party GPU temperatures.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: gpu-fan-controller
+  namespace: flux-system
+spec:
+  dependsOn:
+    - name: kube-prometheus-stack
+  interval: 1h
+  path: ./kubernetes/apps/observability/gpu-fan-controller/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  targetNamespace: observability
+  wait: false

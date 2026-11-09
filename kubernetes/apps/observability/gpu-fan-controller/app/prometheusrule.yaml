@@ -1,0 +1,33 @@
+---
+# GPU temperature alerts from DCGM. They work without the fan controller: iDRAC cannot
+# see these GPUs, so nothing else would notice one running hot.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gpu-temperature-alerts
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: gpu-temperature
+      rules:
+        - alert: GpuTemperatureHigh
+          expr: max by (Hostname, modelName) (DCGM_FI_DEV_GPU_TEMP) >= 80
+          for: 5m
+          labels:
+            severity: warning
+            component: gpu
+          annotations:
+            summary: "GPU on {{ $labels.Hostname }} at {{ $value }} C for 5 minutes"
+            description: "{{ $labels.modelName }} on {{ $labels.Hostname }} has stayed at or above 80 C. iDRAC cannot read this GPU, so the server fans do not respond to it."
+        - alert: GpuTemperatureCritical
+          expr: max by (Hostname, modelName) (DCGM_FI_DEV_GPU_TEMP) >= 87
+          for: 2m
+          labels:
+            severity: critical
+            component: gpu
+            pager: "true"
+          annotations:
+            summary: "GPU on {{ $labels.Hostname }} at {{ $value }} C"
+            description: "{{ $labels.modelName }} on {{ $labels.Hostname }} is close to its slowdown temperature. Stop the GPU workload or raise the server's airflow."
