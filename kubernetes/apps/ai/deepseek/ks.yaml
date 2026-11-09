@@ -1,0 +1,30 @@
+---
+# DeepSeek V4.1 Flash on the RTX A5000 (k8s-work-7), served by Strata as a
+# cluster-local, scale-to-zero Knative Service. Pilot: no ingress, no tunnel.
+# The Knative Service is added only after the prepare Job has succeeded, so no
+# request can ever start the server against an incomplete volume.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app deepseek
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  dependsOn:
+    - name: deepseek-storage
+      namespace: flux-system
+    - name: external-secrets-operator
+      namespace: flux-system
+    - name: knative-serving
+      namespace: flux-system
+  interval: 1h
+  path: ./kubernetes/apps/ai/deepseek/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false

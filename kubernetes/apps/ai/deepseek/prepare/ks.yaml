@@ -1,0 +1,22 @@
+---
+# One-off preparation for the DeepSeek pilot: downloads Strata's DeepSeek engine
+# and model into deepseek-data, builds the pack and checks one load. Remove this
+# Kustomization once the Job has succeeded; Flux then prunes the Job.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: deepseek-prepare
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  dependsOn:
+    - name: deepseek
+      namespace: flux-system
+  interval: 1h
+  path: ./kubernetes/apps/ai/deepseek/prepare
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
