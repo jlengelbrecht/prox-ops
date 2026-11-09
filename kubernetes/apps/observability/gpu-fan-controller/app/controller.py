@@ -507,6 +507,7 @@ def run(cfg: dict) -> None:
             temp, missing = hottest(results, stamps, nodes, cfg["max_sample_age_s"], now, known_gpus,
                                     cfg.get("expected_gpus"))
             state = states.setdefault(host, HostState())
+            before = state.level
             level = next_level(state, temp, policy, missing)
             try:
                 what = actuators[host].apply(level, dry_run)
@@ -521,8 +522,11 @@ def run(cfg: dict) -> None:
                 what = "error"
             METRICS.set("gpu_fan_controller_level", level, host=host)
             METRICS.set("gpu_fan_controller_gpu_temp_celsius", temp if temp is not None else -1, host=host)
-            if what != "unchanged":
-                log.info("%s: gpu=%s level=%s %s%s", host, temp, level, what, " (dry run)" if dry_run else "")
+            # Log every change of level too, not only a change on the iDRAC: a level that already
+            # matches the iDRAC (for example a slot set by hand) is still a decision worth seeing.
+            if what != "unchanged" or level != before:
+                log.info("%s: gpu=%s level=%s->%s %s%s", host, temp, before, level, what,
+                         " (dry run)" if dry_run else "")
         METRICS.set("gpu_fan_controller_last_cycle_timestamp_seconds", now)
         stop.wait(cfg["interval_s"])
     log.info("stopping; iDRAC settings are left as they are")
