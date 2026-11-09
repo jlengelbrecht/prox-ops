@@ -434,6 +434,7 @@ def run(cfg: dict) -> None:
     failures: dict[str, int] = {}
     known_gpus: dict[str, set[str]] = {}
     retry_at: dict[str, float] = {}
+    gpu_hosts: dict[str, list[str]] | None = None  # last good server -> GPU node mapping
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     log.info("starting: dry_run=%s thresholds=%s hosts=%s", dry_run, policy.up, list(hosts))
@@ -443,11 +444,15 @@ def run(cfg: dict) -> None:
         try:
             gpu_hosts = gpu_nodes_by_host(kube.nodes(), zone_to_host)
             METRICS.set("gpu_fan_controller_up", 1)
-        except Exception as e:  # without node data we cannot map GPUs; keep the last levels
-            log.error("node list failed: %s", type(e).__name__)
+        except Exception as e:
             METRICS.set("gpu_fan_controller_up", 0)
-            stop.wait(cfg["interval_s"])
-            continue
+            if gpu_hosts is None:  # nothing mapped yet: nothing has been boosted either
+                log.error("node list failed: %s (no mapping yet, waiting)", type(e).__name__)
+                stop.wait(cfg["interval_s"])
+                continue
+            # GPUs rarely move between servers, so keep controlling with the last mapping
+            # rather than freezing levels while the API is down.
+            log.error("node list failed: %s (using the last node mapping)", type(e).__name__)
         try:
             results = prom.query(cfg["temperature_query"])
             stamps = prom.query(cfg["timestamp_query"])
