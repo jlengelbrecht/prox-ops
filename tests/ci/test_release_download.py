@@ -25,11 +25,14 @@ SPEC.loader.exec_module(module)
 
 
 def metadata(name, body):
+    """Build release metadata with a digest for fixture bytes."""
     return {"name": name, "id": 123, "size": len(body), "digest": "sha256:" + hashlib.sha256(body).hexdigest()}
 
 
 class ReleaseDownloadTests(unittest.TestCase):
+    """Exercise CI release handling without network or cluster access."""
     def flux_fixture(self, root):
+        """Write both pinned Kustomizations beneath a temporary root."""
         paths = {}
         for relative, assets in module.FLUX_ASSETS.items():
             path = root / relative
@@ -42,6 +45,7 @@ class ReleaseDownloadTests(unittest.TestCase):
         return paths
 
     def test_asset_redirect_does_not_forward_token(self):
+        """Keep API authorization off a release asset redirect."""
         seen = []
 
         class Response:
@@ -73,12 +77,14 @@ class ReleaseDownloadTests(unittest.TestCase):
         self.assertIsNone(seen[1].get_header("Authorization"))
 
     def test_rejects_missing_or_duplicate_asset_names(self):
+        """Require one exact asset-name match."""
         for assets in ([], [metadata("a.yaml", b"a"), metadata("a.yaml", b"b")]):
             with self.subTest(assets=assets), patch.object(module, "release_assets", return_value=assets):
                 with self.assertRaises(module.DownloadError):
                     module.fetch_asset("example/repo", "v1", "a.yaml")
 
     def test_rejects_malformed_metadata_and_entries(self):
+        """Reject malformed release metadata before asset transfer."""
         for data in ([], {"tag_name": "v1", "assets": ["bad"]}):
             with self.subTest(data=data), patch.object(module, "request_bytes", return_value=(
                 __import__("json").dumps(data).encode(), "application/json"
@@ -90,6 +96,7 @@ class ReleaseDownloadTests(unittest.TestCase):
                 module.fetch_asset("example/repo", "v1", "a.yaml")
 
     def test_bounds_download_bytes_and_deadline(self):
+        """Enforce size and wall-clock limits on the response body."""
         class Response:
             headers = {"Content-Type": "application/octet-stream"}
             def __enter__(self): return self
@@ -105,6 +112,7 @@ class ReleaseDownloadTests(unittest.TestCase):
                 module.request_bytes("https://api.github.com/repos/a/b/releases/assets/1", asset=True, max_bytes=20)
 
     def test_truncated_http_body_retries_and_reports_clean_error(self):
+        """Retry truncated reads without leaking partial body text."""
         class Truncated:
             headers = {"Content-Type": "application/octet-stream"}
             def __enter__(self): return self
@@ -118,7 +126,39 @@ class ReleaseDownloadTests(unittest.TestCase):
         self.assertEqual(opened.call_count, 3)
         self.assertNotIn("partial body", str(caught.exception))
 
+    def test_http_status_retries_only_transient_failures(self):
+        """Fail fast on permanent HTTP errors and diagnose exhausted retries."""
+        url = "https://api.github.com/repos/a/b/releases/assets/1"
+        for status, attempts in ((401, 1), (403, 1), (404, 1), (408, 3), (429, 3), (503, 3)):
+            with self.subTest(status=status), patch.object(
+                module.OPENER, "open", side_effect=HTTPError(url, status, "private body", Message(), None)
+            ) as opened, patch.object(module.time, "sleep") as sleep:
+                with self.assertRaises(module.DownloadError) as caught:
+                    module.request_bytes(url, token="secret", asset=True)
+                self.assertEqual(opened.call_count, attempts)
+                self.assertEqual(sleep.call_count, attempts - 1)
+                self.assertIn(f"HTTP {status}", str(caught.exception))
+                self.assertEqual("bounded retries" in str(caught.exception), attempts == 3)
+                self.assertNotIn("private body", str(caught.exception))
+                self.assertNotIn("secret", str(caught.exception))
+
+    def test_mid_body_connection_reset_retries(self):
+        """Retry a mid-body socket reset without returning partial bytes."""
+        class ResetResponse:
+            headers = {"Content-Type": "application/octet-stream"}
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, size): raise ConnectionResetError("private connection detail")
+        with patch.object(module.OPENER, "open", return_value=ResetResponse()) as opened, patch.object(
+            module.time, "sleep"
+        ):
+            with self.assertRaisesRegex(module.DownloadError, "bounded retries .*ConnectionResetError") as caught:
+                module.request_bytes("https://api.github.com/repos/a/b/releases/assets/1", asset=True)
+        self.assertEqual(opened.call_count, 3)
+        self.assertNotIn("private connection detail", str(caught.exception))
+
     def test_slow_eof_cannot_succeed_after_wall_deadline(self):
+        """Reject an EOF that arrives after the shared request deadline."""
         class SlowEOF:
             headers = {"Content-Type": "application/octet-stream"}
             def __enter__(self): return self
@@ -133,6 +173,7 @@ class ReleaseDownloadTests(unittest.TestCase):
                 module.request_bytes("https://api.github.com/repos/a/b/releases/assets/1", asset=True)
 
     def test_canonical_metadata_redirect_is_narrow(self):
+        """Allow only the matching canonical metadata redirect."""
         source = "https://api.github.com/repos/knative/net-kourier/releases/tags/knative-v1.21.1"
         target = "https://api.github.com/repositories/244394642/releases/tags/knative-v1.21.1"
         seen = []
@@ -166,6 +207,7 @@ class ReleaseDownloadTests(unittest.TestCase):
                         module.request_bytes(source, "secret")
 
     def test_chained_canonical_redirects_preserve_asset_identity_and_token_boundary(self):
+        """Preserve asset identity across GitHub's canonical redirect chain."""
         tag = "knative-v1.21.1"
         body = b"apiVersion: v1\nkind: List\n"
         meta = json.dumps({"tag_name": tag, "assets": [metadata("kourier.yaml", body)]}).encode()
@@ -211,6 +253,7 @@ class ReleaseDownloadTests(unittest.TestCase):
         self.assertIsNone(seen[-1].get_header("Authorization"))
 
     def test_canonical_asset_redirect_is_narrow(self):
+        """Reject canonical asset redirects that alter identity or endpoint."""
         source = "https://api.github.com/repos/knative/net-kourier/releases/assets/436092261"
         target = "https://api.github.com/repositories/244394642/releases/assets/436092261"
         for bad in (target.replace("api.github.com", "evil.example"),
@@ -227,6 +270,7 @@ class ReleaseDownloadTests(unittest.TestCase):
                         module.request_bytes(source, "secret", asset=True)
 
     def test_rejects_missing_digest_json_and_partial_bytes(self):
+        """Reject assets with missing integrity data or mismatched bytes."""
         good = metadata("a.yaml", b"some YAML")
         for item, body, kind in (
             ({**good, "digest": None}, b"some YAML", "application/octet-stream"),
@@ -241,6 +285,7 @@ class ReleaseDownloadTests(unittest.TestCase):
                     module.fetch_asset("example/repo", "v1", "a.yaml")
 
     def test_gitleaks_requires_exact_single_checksum_before_extraction(self):
+        """Verify the exact checksum line before extracting Gitleaks."""
         version = "8.30.1"
         archive_name = f"gitleaks_{version}_linux_x64.tar.gz"
         with tempfile.TemporaryDirectory() as folder:
@@ -265,6 +310,7 @@ class ReleaseDownloadTests(unittest.TestCase):
             self.assertEqual(output.read_bytes(), payload)
 
     def test_flux_rewrites_only_exact_pinned_urls(self):
+        """Materialize only the four pinned remote references."""
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             for relative, assets in module.FLUX_ASSETS.items():
@@ -280,6 +326,7 @@ class ReleaseDownloadTests(unittest.TestCase):
                 self.assertEqual(len(list((root / relative).parent.glob(".ci-release-*.yaml"))), 2)
 
     def test_flux_rejects_unexpected_version_without_fetching(self):
+        """Reject unpinned remote versions before making requests."""
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             relative = next(iter(module.FLUX_ASSETS))
@@ -291,6 +338,7 @@ class ReleaseDownloadTests(unittest.TestCase):
             fetch.assert_not_called()
 
     def test_flux_failed_later_fetch_leaves_tree_unchanged(self):
+        """Leave the source tree untouched when a later fetch fails."""
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             before = {}
@@ -307,6 +355,7 @@ class ReleaseDownloadTests(unittest.TestCase):
             self.assertEqual(list(root.rglob(".ci-release-*.yaml")), [])
 
     def test_flux_requires_resources_not_comment_or_duplicate(self):
+        """Require exact plain resources rather than comments or aliases."""
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             paths = self.flux_fixture(root)
@@ -327,6 +376,7 @@ class ReleaseDownloadTests(unittest.TestCase):
                     self.assertEqual(path.read_text(), bad)
 
     def test_flux_replacement_preserves_comments_and_resource_semantics(self):
+        """Preserve comments and local resource entries during rewrite."""
         with tempfile.TemporaryDirectory() as folder:
             paths = self.flux_fixture(Path(folder))
             path, urls = next(iter(paths.items()))
@@ -339,6 +389,7 @@ class ReleaseDownloadTests(unittest.TestCase):
             self.assertEqual(len([resource for resource in resources if resource.startswith("./.ci-release-")]), 2)
 
     def test_flux_required_status_rejects_failed_or_missing_build(self):
+        """Require explicit successful build outcomes for changed PRs."""
         workflow = yaml.load(Path(".github/workflows/flux-local.yaml").read_text(), Loader=yaml.BaseLoader)
         status = workflow["jobs"]["flux-local-status"]
         self.assertIn("pre-job", status["needs"])

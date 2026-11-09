@@ -36,11 +36,14 @@ FLUX_ASSETS = {
 
 
 class DownloadError(Exception):
+    """Report a verified-download failure without exposing response data."""
     pass
 
 
 class NoRedirect(HTTPRedirectHandler):
+    """Leave redirects to the caller's explicit endpoint checks."""
     def redirect_request(self, request, fp, code, msg, headers, newurl):
+        """Prevent urllib from following a redirect automatically."""
         return None
 
 
@@ -56,6 +59,7 @@ def read_before_deadline(response, size, deadline):
     previous_timer = signal.getitimer(signal.ITIMER_REAL)
 
     def expired(_signum, _frame):
+        """Interrupt a body read that outlives the shared deadline."""
         raise DownloadError("GitHub download deadline exceeded")
 
     try:
@@ -140,9 +144,16 @@ def request_bytes(url, token="", asset=False, max_bytes=None):
                         raise DownloadError("Unexpected release redirect") from exc
                     current = location
             raise DownloadError("Too many release redirects")
-        except (HTTPError, URLError, TimeoutError, http.client.HTTPException) as exc:
+        except (HTTPError, URLError, OSError, http.client.HTTPException) as exc:
+            if isinstance(exc, HTTPError):
+                status = exc.code if type(exc.code) is int else None
+                if status not in (408, 429, 500, 502, 503, 504):
+                    raise DownloadError(f"GitHub download failed: HTTP {status or 'unknown'}") from exc
+                detail = f"HTTP {status}"
+            else:
+                detail = type(exc).__name__
             if attempt == 2:
-                raise DownloadError("GitHub download failed after bounded retries") from exc
+                raise DownloadError(f"GitHub download failed after bounded retries ({detail})") from exc
             if time.monotonic() + attempt + 1 >= deadline:
                 raise DownloadError("GitHub download deadline exceeded") from exc
             time.sleep(attempt + 1)
@@ -150,6 +161,7 @@ def request_bytes(url, token="", asset=False, max_bytes=None):
 
 
 def release_assets(repo, tag, token=""):
+    """Read one exact release's asset metadata from GitHub."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not re.fullmatch(r"[A-Za-z0-9_.-]+", tag):
         raise DownloadError("Invalid release identity")
     body, kind = request_bytes(f"{API}/repos/{repo}/releases/tags/{quote(tag)}", token)
@@ -167,6 +179,7 @@ def release_assets(repo, tag, token=""):
 
 
 def fetch_asset(repo, tag, name, token=""):
+    """Return an asset only after matching its declared size and digest."""
     assets = release_assets(repo, tag, token)
     if not isinstance(assets, list) or not all(isinstance(item, dict) for item in assets):
         raise DownloadError("Invalid release asset entries")
@@ -191,6 +204,7 @@ def fetch_asset(repo, tag, name, token=""):
 
 
 def gitleaks(version, output, token=""):
+    """Verify and extract the single Gitleaks executable from its release."""
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         raise DownloadError("Invalid Gitleaks version")
     repo, tag = "gitleaks/gitleaks", "v" + version
@@ -223,10 +237,12 @@ def gitleaks(version, output, token=""):
 
 
 def resource_nodes(content):
+    """Locate plain scalar resources without YAML aliases."""
     import yaml  # Flux jobs install the repository's existing pinned PyYAML version.
 
     class ResourceLoader(yaml.SafeLoader):
         def compose_node(self, parent, index):
+            """Reject aliases before they can change resource semantics."""
             if self.check_event(yaml.AliasEvent):
                 raise DownloadError("YAML aliases are not supported in release resources")
             return super().compose_node(parent, index)
@@ -249,6 +265,7 @@ def resource_nodes(content):
 
 
 def materialize_flux(root, token=""):
+    """Stage verified manifests and rewrite only their pinned resource URLs."""
     root = Path(root).resolve()
     planned = []
     for relative, assets in FLUX_ASSETS.items():
@@ -306,6 +323,7 @@ def materialize_flux(root, token=""):
 
 
 def main():
+    """Run the requested CI download operation with sanitized failures."""
     parser = argparse.ArgumentParser(description=__doc__)
     command = parser.add_subparsers(dest="command", required=True)
     leak = command.add_parser("gitleaks")
