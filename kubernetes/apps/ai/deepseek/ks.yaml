@@ -14,8 +14,9 @@ spec:
     labels:
       app.kubernetes.io/name: *app
   dependsOn:
+    # Kustomizations under kubernetes/apps/ai land in the ai namespace.
     - name: deepseek-storage
-      namespace: flux-system
+      namespace: ai
     - name: external-secrets-operator
       namespace: flux-system
     - name: knative-serving
