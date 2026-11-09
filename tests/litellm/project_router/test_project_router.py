@@ -300,6 +300,7 @@ class GuardTests(unittest.TestCase):
                          "Bearer sk-ant-oat-synthetic")
 
     def test_unsupported_system_block_fails_closed(self):
+        """Reject unsupported leading system blocks without changing captured input."""
         invalid = ([], {}, None, [{"type": "image", "source": "synthetic"}],
                    [{"type": "text", "text": 7}], [{"type": "text"}],
                    [{"type": "text", "text": "ok", "extra": "unexpected"}])
