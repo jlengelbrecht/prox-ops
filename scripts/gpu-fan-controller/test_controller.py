@@ -140,6 +140,12 @@ class Mapping(unittest.TestCase):
         self.assertTrue(c.hottest([], [], ["k8s-work-9"], 120, now, {}, {"k8s-work-9": 0})[1])
 
 
+    def test_stall_detection(self):
+        c.HEARTBEAT["t"], c.HEARTBEAT["stall_after_s"] = 1000.0, 150.0
+        self.assertFalse(c.stalled(now=1100.0))
+        self.assertTrue(c.stalled(now=1151.0))
+
+
 class FakeRedfish:
     def __init__(self, attrs):
         self.attrs = attrs

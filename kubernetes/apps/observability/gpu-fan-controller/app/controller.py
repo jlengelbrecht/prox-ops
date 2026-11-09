@@ -23,6 +23,7 @@ Standard library only. Configuration comes from a JSON file (CONFIG_FILE).
 from __future__ import annotations
 
 import base64
+import faulthandler
 import hashlib
 import http.client
 import json
@@ -335,11 +336,33 @@ class Metrics:
 
 METRICS = Metrics()
 
+# Liveness: the main loop stamps this at the start of every cycle. /healthz fails once a
+# cycle has been stuck longer than `stall_after_s`, so the kubelet restarts a frozen
+# controller instead of leaving the fans wherever they were.
+HEARTBEAT = {"t": time.monotonic(), "stall_after_s": 150.0}
+
+
+def beat(stall_after_s: float) -> None:
+    """Mark the start of a cycle, and re-arm the stall dump: if this cycle is still running
+    after `stall_after_s`, every thread's stack goes to stderr, which shows the call that hung."""
+    HEARTBEAT["t"], HEARTBEAT["stall_after_s"] = time.monotonic(), stall_after_s
+    faulthandler.dump_traceback_later(stall_after_s, repeat=False, exit=False)
+
+
+def stalled(now: float | None = None) -> bool:
+    now = time.monotonic() if now is None else now
+    return now - HEARTBEAT["t"] > HEARTBEAT["stall_after_s"]
+
 
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        body = METRICS.render().encode() if self.path == "/metrics" else b"ok\n"
-        self.send_response(200)
+        if self.path == "/metrics":
+            status, body = 200, METRICS.render().encode()
+        elif stalled():
+            status, body = 503, b"control loop stalled\n"
+        else:
+            status, body = 200, b"ok\n"
+        self.send_response(status)
         self.send_header("Content-Type", "text/plain; version=0.0.4")
         self.end_headers()
         self.wfile.write(body)
@@ -439,7 +462,9 @@ def run(cfg: dict) -> None:
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     log.info("starting: dry_run=%s thresholds=%s hosts=%s", dry_run, policy.up, list(hosts))
 
+    stall_after_s = float(cfg.get("stall_after_s", 150))
     while not stop.is_set():
+        beat(stall_after_s)
         now = time.time()
         try:
             gpu_hosts = gpu_nodes_by_host(kube.nodes(), zone_to_host)
