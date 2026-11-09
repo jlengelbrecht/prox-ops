@@ -1,0 +1,29 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-fan-controller
+---
+# Read-only: Node labels map each GPU node to its physical server (zone) and say
+# which nodes have a GPU.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-fan-controller
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-fan-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gpu-fan-controller
+subjects:
+  - kind: ServiceAccount
+    name: gpu-fan-controller
+    namespace: observability

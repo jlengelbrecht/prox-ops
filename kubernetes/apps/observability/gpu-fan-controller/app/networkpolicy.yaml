@@ -1,0 +1,49 @@
+---
+# Ingress: Prometheus scrapes 9100. Egress: DNS, the API server (Node reads),
+# Prometheus (GPU temperatures) and HTTPS to the iDRACs it may change.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: gpu-fan-controller
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: gpu-fan-controller
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9100"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEntities:
+        - kube-apiserver
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+    # iDRACs listed in config.json (odin, thor).
+    - toCIDR:
+        - 10.20.66.101/32
+        - 10.20.66.102/32
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

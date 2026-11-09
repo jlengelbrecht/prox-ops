@@ -1,0 +1,79 @@
+---
+# Replicas stay at 0 until each server has a least-privilege iDRAC account and its
+# credentials are in the cluster (idrac-fan-credentials). Then: replicas 1 with
+# DRY_RUN=1 to watch its decisions, and finally DRY_RUN=0.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-fan-controller
+  labels:
+    app.kubernetes.io/name: gpu-fan-controller
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gpu-fan-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gpu-fan-controller
+    spec:
+      serviceAccountName: gpu-fan-controller
+      # Cooling must survive a large-model wake (kubernetes/apps/kube-system/priorityclasses).
+      priorityClassName: homelab-critical
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534  # lets the non-root user read the credential files (mode 0440)
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: mirror.gcr.io/library/python:3.12-alpine@sha256:e064671ca452259bab50e8e2c7bd896e39e9a343bb06ca25234adf6fe18d0fc7
+          command: ["python", "-I", "/app/controller.py"]
+          env:
+            - name: DRY_RUN
+              value: "1"
+            - name: CONFIG_FILE
+              value: /app/config.json
+            - name: CREDENTIALS_DIR
+              value: /run/secrets/idrac
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          ports:
+            - name: metrics
+              containerPort: 9100
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: app
+              mountPath: /app
+              readOnly: true
+            - name: idrac
+              mountPath: /run/secrets/idrac
+              readOnly: true
+      volumes:
+        - name: app
+          configMap:
+            name: gpu-fan-controller
+        - name: idrac
+          secret:
+            secretName: idrac-fan-credentials
+            defaultMode: 0440
