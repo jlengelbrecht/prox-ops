@@ -17,3 +17,13 @@ The launcher supports the native Claude installation at `~/.local/bin/claude` po
 The launcher smoke test accepts only the committed `smoke-fixture.txt` and its exact cedar proof content, from a working directory containing that file. Claude Code 2.1.319 documents that `--print` skips the workspace trust dialog. The smoke command uses `--safe-mode`, `--setting-sources user`, and `--strict-mcp-config` to exclude project startup customization while preserving native authentication. Its `Read` proof and terminal result are checked in the bounded stream. Normal interactive use keeps native settings, hooks, plugins, MCP, and login behavior. Launch it from a real terminal so Claude Code can show its native workspace trust dialog. The launcher refuses an interactive start when stdout is not a TTY because Claude Code also skips the dialog in that case. Trusting a workspace authorizes its project configuration to run with the launcher child environment, including the gateway header. Project settings `env` entries fail preflight unless explicitly allowed; the current allowlist is empty. User-global settings retain the existing provider and credential override checks.
 
 The child sets the primary model, Haiku/background default, Sonnet, Opus, Fable, and default subagent model to `project-router`. Explicit secondary model environment overrides fail preflight; remove them before launching. A subagent definition or per-invocation model can still take precedence over the default, so use the router alias for those explicit choices. Interactive mode loads configured MCP servers; strict MCP isolation applies only to smoke mode.
+
+SUB184 adds focused regressions for block-form Claude system text at the
+`project-chatgpt-responses` completion hook. They check multiple leading
+system messages, text order, an unchanged captured request through every hook
+phase, native Claude passthrough, and fail-closed handling of malformed blocks.
+The Anthropic Messages `system` field is the supported instruction input;
+a caller-supplied `instructions` field is denied because the pinned Responses
+bridge can overwrite it. The pinned-image wire probe and its hash manifest
+are in `_bmad-output/implementation-artifacts/litellm-project-pilot/`;
+that probe uses only synthetic authentication and `--network none`.
