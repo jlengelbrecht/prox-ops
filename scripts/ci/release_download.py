@@ -264,17 +264,28 @@ def resource_nodes(content):
     return resources
 
 
-def materialize_flux(root, token=""):
-    """Stage verified manifests and rewrite only their pinned resource URLs."""
+def materialize_flux(root, token="", baseline=False):
+    """Stage verified manifests; read baseline tags from its own exact URLs."""
     root = Path(root).resolve()
     planned = []
     for relative, assets in FLUX_ASSETS.items():
         path = root / relative
         content = path.read_text()
         nodes = resource_nodes(content)
+        values = [node.value for node in nodes]
+        if baseline:
+            tree_assets = []
+            for repo, _tag, name in assets:
+                pattern = (r"https://github\.com/" + re.escape(repo) +
+                           r"/releases/download/([A-Za-z0-9_.-]+)/" + re.escape(name))
+                tags = [match.group(1) for value in values
+                        if (match := re.fullmatch(pattern, value))]
+                if len(tags) != 1:
+                    raise DownloadError("Expected exactly one pinned baseline resource in " + relative)
+                tree_assets.append((repo, tags[0], name))
+            assets = tree_assets
         expected = {f"https://github.com/{repo}/releases/download/{tag}/{name}"
                     for repo, tag, name in assets}
-        values = [node.value for node in nodes]
         if any("://" in value and value not in expected for value in values):
             raise DownloadError("Unexpected remote resource in " + relative)
         if any(values.count(url) != 1 for url in expected):
@@ -331,12 +342,13 @@ def main():
     leak.add_argument("--output", required=True)
     flux = command.add_parser("flux")
     flux.add_argument("--root", required=True)
+    flux.add_argument("--baseline", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "gitleaks":
             gitleaks(args.version, args.output, os.environ.get("GITHUB_TOKEN", ""))
         else:
-            materialize_flux(args.root, os.environ.get("GITHUB_TOKEN", ""))
+            materialize_flux(args.root, os.environ.get("GITHUB_TOKEN", ""), args.baseline)
     except (DownloadError, OSError, UnicodeError, ValueError, tarfile.TarError) as exc:
         print("release_download: " + str(exc), file=sys.stderr)
         return 1

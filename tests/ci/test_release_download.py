@@ -22,6 +22,7 @@ SPEC = importlib.util.spec_from_file_location(
 )
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/flux-local.yaml"
 
 
 def metadata(name, body):
@@ -337,6 +338,40 @@ class ReleaseDownloadTests(unittest.TestCase):
                 module.materialize_flux(root)
             fetch.assert_not_called()
 
+    def test_flux_diff_trees_verify_their_own_release_tags(self):
+        """Materialize an older baseline without relaxing PR asset identities."""
+        workflow = WORKFLOW.read_text()
+        self.assertIn("flux --root default --baseline", workflow)
+        with tempfile.TemporaryDirectory() as folder:
+            parent = Path(folder)
+            pull = parent / "pull"
+            baseline = parent / "default"
+            self.flux_fixture(pull)
+            base_paths = self.flux_fixture(baseline)
+            path = baseline / "kubernetes/apps/ai/kserve/app/kustomization.yaml"
+            original = path.read_text().replace("v0.21.0", "v0.20.0")
+            path.write_text(original)
+            with patch.object(module, "fetch_asset", return_value=b"apiVersion: v1\nkind: List\n") as fetch:
+                module.materialize_flux(pull)
+                module.materialize_flux(baseline, baseline=True)
+            requested = [call.args[:3] for call in fetch.call_args_list]
+            self.assertEqual(requested[:4], [asset for assets in module.FLUX_ASSETS.values() for asset in assets])
+            self.assertEqual(requested[4:6], [("kserve/kserve", "v0.20.0", "kserve.yaml"),
+                                             ("kserve/kserve", "v0.20.0", "kserve-cluster-resources.yaml")])
+            self.assertEqual(requested[6:], list(list(module.FLUX_ASSETS.values())[1]))
+            for base_path in base_paths:
+                self.assertNotIn("https://github.com/", base_path.read_text())
+            self.assertNotEqual((pull / "kubernetes/apps/ai/kserve/app/kustomization.yaml").read_text(),
+                                path.read_text())
+
+            bad = original.replace("https://github.com/kserve/kserve/",
+                                   "https://github.com/other/kserve/", 1)
+            path.write_text(bad)
+            with patch.object(module, "fetch_asset") as fetch:
+                with self.assertRaises(module.DownloadError):
+                    module.materialize_flux(baseline, baseline=True)
+                fetch.assert_not_called()
+
     def test_flux_failed_later_fetch_leaves_tree_unchanged(self):
         """Leave the source tree untouched when a later fetch fails."""
         with tempfile.TemporaryDirectory() as folder:
@@ -390,7 +425,7 @@ class ReleaseDownloadTests(unittest.TestCase):
 
     def test_flux_required_status_rejects_failed_or_missing_build(self):
         """Require explicit successful build outcomes for changed PRs."""
-        workflow = yaml.load(Path(".github/workflows/flux-local.yaml").read_text(), Loader=yaml.BaseLoader)
+        workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
         status = workflow["jobs"]["flux-local-status"]
         self.assertIn("pre-job", status["needs"])
         step = status["steps"][0]
