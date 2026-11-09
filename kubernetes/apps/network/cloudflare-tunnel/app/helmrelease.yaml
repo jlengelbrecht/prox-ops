@@ -52,6 +52,8 @@ spec:
               limits:
                 memory: 256Mi
     defaultPodOptions:
+      # Never evicted when a large model wakes (kubernetes/apps/kube-system/priorityclasses).
+      priorityClassName: homelab-critical
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534

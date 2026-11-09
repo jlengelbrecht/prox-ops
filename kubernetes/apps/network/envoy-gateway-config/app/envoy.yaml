@@ -13,6 +13,8 @@ spec:
       envoyDeployment:
         replicas: 4
         pod:
+          # Never evicted when a large model wakes (kubernetes/apps/kube-system/priorityclasses).
+          priorityClassName: homelab-critical
           affinity:
             podAntiAffinity:
               requiredDuringSchedulingIgnoredDuringExecution:
