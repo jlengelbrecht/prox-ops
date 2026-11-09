@@ -1,6 +1,6 @@
 ---
-# Running in dry run: it reads temperatures and iDRAC settings and logs the changes it
-# would make, without writing anything. Next step: DRY_RUN=0.
+# Live: it writes the GPU slot's airflow on each server's iDRAC (DRY_RUN=0). While it runs it
+# owns that setting; to set airflow by hand, scale it to 0 first. DRY_RUN=1 only logs.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,7 +35,7 @@ spec:
           command: ["python", "-I", "/app/controller.py"]
           env:
             - name: DRY_RUN
-              value: "1"
+              value: "0"
             - name: CONFIG_FILE
               value: /app/config.json
             - name: CREDENTIALS_DIR
@@ -50,7 +50,7 @@ spec:
               path: /healthz
               port: metrics
             periodSeconds: 30
-          # /healthz fails once a control cycle has run longer than stall_after_s (150 s).
+          # /healthz fails once a control cycle has run longer than stall_after_s (300 s).
           livenessProbe:
             httpGet:
               path: /healthz

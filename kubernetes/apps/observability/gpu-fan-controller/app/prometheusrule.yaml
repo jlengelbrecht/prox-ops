@@ -31,3 +31,33 @@ spec:
           annotations:
             summary: "GPU on {{ $labels.Hostname }} at {{ $value }} C"
             description: "{{ $labels.modelName }} on {{ $labels.Hostname }} is close to its slowdown temperature. Stop the GPU workload or raise the server's airflow."
+    # The controller itself: without it, nothing raises the GPU slot's airflow.
+    - name: gpu-fan-controller
+      rules:
+        - alert: GpuFanControllerDown
+          expr: absent(up{job="gpu-fan-controller"} == 1)
+          for: 5m
+          labels:
+            severity: warning
+            component: gpu
+          annotations:
+            summary: "GPU fan controller is not running or not scraped"
+            description: "No healthy gpu-fan-controller target for 5 minutes. GPU slot airflow stays wherever it was last set; the GPU temperature alerts still work."
+        - alert: GpuFanControllerStalled
+          expr: time() - max(gpu_fan_controller_last_cycle_timestamp_seconds) > 300
+          for: 2m
+          labels:
+            severity: warning
+            component: gpu
+          annotations:
+            summary: "GPU fan controller has not finished a cycle in over 5 minutes"
+            description: "The control loop is not cycling (it normally runs every 30 s). The liveness probe should restart it; check its logs for a stack dump."
+        - alert: GpuFanControllerErrors
+          expr: max by (host) (gpu_fan_controller_errors) == 1
+          for: 10m
+          labels:
+            severity: warning
+            component: gpu
+          annotations:
+            summary: "GPU fan controller cannot manage {{ $labels.host }}"
+            description: "Discovery or writes to the iDRAC on {{ $labels.host }} have failed for 10 minutes (wrong credentials, a missing privilege, or a changed TLS certificate). Its airflow is not being managed."
