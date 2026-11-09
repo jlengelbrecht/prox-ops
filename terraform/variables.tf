@@ -290,6 +290,13 @@ variable "worker_nodes" {
     usb_mapping  = optional(string, "")  # USB resource mapping ID (e.g., "yubihsm")
     memory_mb    = optional(number)  # Per-node override of worker_memory_mb / gpu_worker_memory_mb
     cpu_cores    = optional(number)  # Per-node override of worker_cpu_cores / gpu_worker_cpu_cores (cores per socket)
+    numa_nodes = optional(list(object({
+      device    = string            # guest NUMA device, e.g. "numa0"
+      cpus      = string            # guest vCPU range, e.g. "0-35"
+      memory    = number            # MB provided by this guest node
+      hostnodes = string            # host NUMA node(s), e.g. "0"
+      policy    = optional(string, "bind")
+    })), [])                        # Optional guest-to-host NUMA binding (default: none)
     additional_network_devices = optional(list(object({
       bridge  = string
       vlan_id = number

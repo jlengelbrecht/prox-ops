@@ -355,6 +355,12 @@ worker_nodes = [
     # 8 threads stay free for Proxmox and the Ceph OSDs.
     cpu_cores    = 36
     memory_mb    = 311296
+    # Bind guest NUMA nodes to Odin's two host NUMA nodes (node 1 also hosts the
+    # A5000). Halves sum to memory_mb; vCPUs 0-35 and 36-71 map to host nodes 0 and 1.
+    numa_nodes = [
+      { device = "numa0", cpus = "0-35", memory = 155648, hostnodes = "0", policy = "bind" },
+      { device = "numa1", cpus = "36-71", memory = 155648, hostnodes = "1", policy = "bind" },
+    ]
     additional_network_devices = [
       {
         bridge  = "vmbr1"
