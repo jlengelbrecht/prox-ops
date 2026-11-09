@@ -1,0 +1,70 @@
+{
+  "anthropic/*": {
+    "litellm_params": {
+      "model": "anthropic/*"
+    },
+    "model_name": "anthropic/*"
+  },
+  "chatgpt-gpt-6-luna": {
+    "litellm_params": {
+      "model": "chatgpt/gpt-6-luna",
+      "timeout": 180
+    },
+    "model_info": {
+      "description": "ChatGPT Pro gpt-6-luna (smart-router SIMPLE and MEDIUM tiers)"
+    },
+    "model_name": "chatgpt-gpt-6-luna"
+  },
+  "chatgpt-gpt-6-sol": {
+    "litellm_params": {
+      "model": "chatgpt/gpt-6-sol",
+      "timeout": 300
+    },
+    "model_info": {
+      "description": "ChatGPT Pro gpt-6-sol (smart-router COMPLEX tier)"
+    },
+    "model_name": "chatgpt-gpt-6-sol"
+  },
+  "chatgpt-gpt-6.1-sol": {
+    "litellm_params": {
+      "model": "chatgpt/gpt-6.1-sol",
+      "reasoning_effort": "high",
+      "timeout": 300
+    },
+    "model_info": {
+      "description": "ChatGPT Pro gpt-6.1-sol (smart-router REASONING tier)"
+    },
+    "model_name": "chatgpt-gpt-6.1-sol"
+  },
+  "merge-steward-review": {
+    "litellm_params": {
+      "max_retries": 0,
+      "model": "chatgpt/gpt-6.1-sol",
+      "reasoning_effort": "high",
+      "timeout": 300
+    },
+    "model_info": {
+      "description": "Merge steward review on ChatGPT Pro. Pinned, no fallbacks."
+    },
+    "model_name": "merge-steward-review"
+  },
+  "smart-router": {
+    "litellm_params": {
+      "complexity_router_config": {
+        "adaptive": false,
+        "classifier_type": "heuristic",
+        "tiers": {
+          "COMPLEX": "chatgpt-gpt-6-sol",
+          "MEDIUM": "chatgpt-gpt-6-luna",
+          "REASONING": "chatgpt-gpt-6.1-sol",
+          "SIMPLE": "chatgpt-gpt-6-luna"
+        }
+      },
+      "model": "auto_router/complexity_router"
+    },
+    "model_info": {
+      "description": "Complexity router: ChatGPT Pro models by tier"
+    },
+    "model_name": "smart-router"
+  }
+}
