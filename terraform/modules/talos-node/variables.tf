@@ -80,6 +80,18 @@ variable "memory_mb" {
   type        = number
 }
 
+variable "numa_nodes" {
+  description = "Optional guest NUMA nodes bound to host NUMA nodes. Memory per node is in MB and must sum to memory_mb; cpus is a vCPU range such as 0-35."
+  type = list(object({
+    device    = string
+    cpus      = string
+    memory    = number
+    hostnodes = string
+    policy    = optional(string, "bind")
+  }))
+  default = []
+}
+
 variable "disk_size_gb" {
   description = "Disk size in GB"
   type        = number
