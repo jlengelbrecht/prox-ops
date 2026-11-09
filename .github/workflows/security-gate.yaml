@@ -47,18 +47,12 @@ jobs:
           fetch-depth: 0
 
       - name: Install Gitleaks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          # Fetch SHA256 checksum dynamically from official release
-          EXPECTED_SHA=$(curl -sL https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_checksums.txt | grep linux_x64 | awk '{print $1}')
-          if [ -z "$EXPECTED_SHA" ]; then
-            echo "::error::Failed to fetch checksum for Gitleaks v${{ env.GITLEAKS_VERSION }}"
-            exit 1
-          fi
-          curl -sSfL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz
-          echo "$EXPECTED_SHA  gitleaks.tar.gz" | sha256sum -c -
-          tar -xzf gitleaks.tar.gz
-          sudo mv gitleaks /usr/local/bin/
-          rm gitleaks.tar.gz
+          python3 scripts/ci/release_download.py gitleaks --version "${{ env.GITLEAKS_VERSION }}" --output gitleaks
+          sudo install -m 755 gitleaks /usr/local/bin/gitleaks
+          rm gitleaks
           gitleaks version
 
       - name: Run Gitleaks (PR - Scan commits in PR)

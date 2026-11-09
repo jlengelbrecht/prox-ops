@@ -23,16 +23,33 @@ jobs:
         id: changed-files
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
-          files: kubernetes/**
+          files: |
+            kubernetes/**
+            .github/workflows/flux-local.yaml
+            scripts/ci/**
+            tests/ci/**
 
   test:
     name: Flux Local Test
     needs: pre-job
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     if: ${{ needs.pre-job.outputs.any_changed == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install YAML parser
+        run: python3 -m pip install --user PyYAML==6.0.3
+
+      - name: Test release download helper
+        run: python3 -m unittest discover -s tests/ci -p 'test_release_download*.py' -q
+
+      - name: Materialize pinned release manifests
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/release_download.py flux --root .
 
       - name: Run flux-local test
         uses: docker://ghcr.io/allenporter/flux-local:v8.4.0
@@ -69,6 +86,16 @@ jobs:
         with:
           ref: "${{ github.event.repository.default_branch }}"
           path: default
+
+      - name: Install YAML parser
+        run: python3 -m pip install --user PyYAML==6.0.3
+
+      - name: Materialize pinned release manifests in both trees
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 pull/scripts/ci/release_download.py flux --root pull
+          python3 pull/scripts/ci/release_download.py flux --root default
 
       - name: Run flux-local diff
         # continue-on-error due to flux-local bug #986 with spec.template string fields
@@ -131,15 +158,21 @@ jobs:
 
   flux-local-status:
     name: Flux Local Success
-    needs: ["test", "diff"]
+    needs: ["pre-job", "test", "diff"]
     runs-on: ubuntu-latest
     if: ${{ always() }}
     steps:
-      # Check the test job - diff jobs are informational
-      - name: Test job failed?
-        if: ${{ needs.test.result == 'failure' }}
-        run: exit 1
-
-      - name: All critical jobs passed or skipped?
-        if: ${{ needs.test.result != 'failure' }}
-        run: echo "All jobs passed or skipped" && echo "test=${{ needs.test.result }}, diff=${{ needs.diff.result }}"
+      # The diff job is informational. Only a successful pre-job may skip test
+      # when changed-files explicitly reports no relevant changes.
+      - name: Require expected test outcome
+        env:
+          PRE_JOB_RESULT: ${{ needs.pre-job.result }}
+          ANY_CHANGED: ${{ needs.pre-job.outputs.any_changed }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          test "$PRE_JOB_RESULT" = success || exit 1
+          case "$ANY_CHANGED" in
+            true) test "$TEST_RESULT" = success ;;
+            false) test "$TEST_RESULT" = skipped ;;
+            *) exit 1 ;;
+          esac
