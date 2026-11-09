@@ -10,7 +10,9 @@ data:
     # Provides OpenAI-compatible API gateway for OpenAI and KServe models
     #
     # AUTHENTICATION: Required via LITELLM_MASTER_KEY environment variable
-    # All API requests must include: Authorization: Bearer <master-key>
+    # Most admin/API calls use Authorization: Bearer <key>. Native Claude Code
+    # project calls keep their OAuth Authorization and authenticate the proxy
+    # separately with an owner-scoped x-litellm-api-key virtual key.
     # Master key stored in 1Password and injected via ExternalSecret
     #
     # Reference: https://docs.litellm.ai/docs/routing
@@ -114,6 +116,44 @@ data:
               REASONING: "chatgpt-gpt-6.1-sol"
         model_info:
           description: "Complexity router: ChatGPT Pro models by tier"
+
+      # Project pilot is isolated from smart-router and merge-steward-review.
+      # A virtual key must permit only project-router. Selected ChatGPT calls
+      # use its separate subscription session and the Responses bridge.
+      - model_name: "project-chatgpt-responses"
+        litellm_params:
+          model: "chatgpt/gpt-6.1-sol"
+          timeout: 90
+          max_retries: 0
+        model_info:
+          mode: responses
+          description: "Project pilot ChatGPT subscription; Anthropic Messages via Responses"
+
+      # Native Claude Code owns its OAuth login. There is deliberately no
+      # api_key, api_base or shared token on this deployment.
+      - model_name: "project-claude-native"
+        litellm_params:
+          model: "anthropic/claude-sonnet-5-5"
+          timeout: 90
+          max_retries: 0
+        model_info:
+          description: "Project pilot native Claude subscription bearer passthrough"
+
+      - model_name: "project-router"
+        litellm_params:
+          model: "auto_router/complexity_router"
+          complexity_router_config:
+            classifier_type: heuristic
+            adaptive: false
+            session_affinity: true
+            classification_mode: user_turn
+            tiers:
+              SIMPLE: "project-chatgpt-responses"
+              MEDIUM: "project-chatgpt-responses"
+              COMPLEX: "project-claude-native"
+              REASONING: "project-claude-native"
+        model_info:
+          description: "Project pilot heuristic router; selected deployment logged"
 
       # =====================================================
       # STORY-150: Timeout optimization for cold starts
@@ -236,6 +276,8 @@ data:
       disable_password_login_when_sso_enabled: true
 
     litellm_settings:
+      callbacks:
+        - project_router_guard.proxy_handler_instance
       # Drop unsupported params instead of erroring
       drop_params: true
       # Forward client headers (the Claude Code login) to the anthropic/* models only
