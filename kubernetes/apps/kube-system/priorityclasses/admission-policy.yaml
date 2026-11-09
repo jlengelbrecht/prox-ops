@@ -1,0 +1,53 @@
+---
+# Restricts who may run at the homelab-critical and large-model priorities.
+# A pod at either level can preempt default-tier pods, so any workload that could
+# set the class freely could evict others. Only the platform namespaces below may
+# use homelab-critical, and only the model namespace may use large-model.
+# Add a namespace here in the same change that moves its workloads into a tier.
+#
+# matchConditions limit evaluation to pods that ask for one of these classes, so an
+# error in this policy can only affect those pods, never ordinary scheduling.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: priority-tier-namespaces
+  annotations:
+    # Never pruned by a mistaken file removal; delete deliberately if retiring the tiers.
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        operations: ["CREATE"]
+  matchConditions:
+    - name: uses-homelab-tier
+      expression: >-
+        has(object.spec.priorityClassName) &&
+        object.spec.priorityClassName in ['homelab-critical', 'large-model']
+  validations:
+    - expression: >-
+        object.spec.priorityClassName != 'homelab-critical' ||
+        request.namespace in [
+          'access', 'cert-manager', 'database', 'external-secrets', 'flux-system',
+          'health', 'hsm-system', 'identity-system', 'knative-serving', 'kourier-system',
+          'kserve', 'kube-system', 'network', 'observability', 'openbao', 'rook-ceph',
+          'security', 'volsync-system'
+        ]
+      message: "priorityClassName homelab-critical is limited to platform namespaces."
+    - expression: >-
+        object.spec.priorityClassName != 'large-model' || request.namespace == 'ai'
+      message: "priorityClassName large-model is limited to the ai namespace."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: priority-tier-namespaces
+  annotations:
+    # Never pruned by a mistaken file removal; delete deliberately if retiring the tiers.
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: priority-tier-namespaces
+  validationActions: ["Deny"]
