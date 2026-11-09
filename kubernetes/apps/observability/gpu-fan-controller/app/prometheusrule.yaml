@@ -51,7 +51,7 @@ spec:
             component: gpu
           annotations:
             summary: "GPU fan controller has not finished a cycle in over 5 minutes"
-            description: "The control loop is not cycling (it normally runs every 30 s). The liveness probe should restart it; check its logs for a stack dump."
+            description: "The control loop is not cycling (it normally runs every 15 s). The liveness probe should restart it; check its logs for a stack dump."
         - alert: GpuFanControllerErrors
           expr: max by (host) (gpu_fan_controller_errors) == 1
           for: 10m
