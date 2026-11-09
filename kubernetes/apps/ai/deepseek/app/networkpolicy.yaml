@@ -1,0 +1,81 @@
+---
+# DeepSeek server pods (the Knative revision). Same data path as VoiceStudio:
+# requests arrive from the Kourier gateway or the activator on queue-proxy 8012,
+# and the autoscaler scrapes queue-proxy on 9090. Egress is DNS only: the engine
+# and model files are already on the volume (the prepare Job downloads them), so
+# the serving pod never needs the internet.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: deepseek-server
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: deepseek
+      app.kubernetes.io/component: server
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kourier-system
+            app: 3scale-kourier-gateway
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: activator
+      toPorts:
+        - ports:
+            - port: "8012"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: knative-serving
+            app: autoscaler
+      toPorts:
+        - ports:
+            - port: "9090"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+---
+# The one-off prepare Job: no ingress; egress DNS and HTTPS for the engine
+# (GitHub releases) and the model files (Hugging Face and its CDN).
+# toEntities:world rather than toFQDNs, as for VoiceStudio: the Cilium DNS proxy
+# redirect is not applied with external-envoy-proxy and transparent DNS mode.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: deepseek-prepare
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: deepseek
+      app.kubernetes.io/component: prepare
+  # No ingress rules: deny everything that arrives at the pod.
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP

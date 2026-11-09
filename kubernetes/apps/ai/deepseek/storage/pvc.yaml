@@ -1,0 +1,22 @@
+---
+# Strata's /data volume for DeepSeek V4.1 Flash (ISTA-DAS 2.00 bpw): the engine,
+# the model shards (~138 GB), the shared Engram table (~111 GB), the drafter
+# (~8 GB) and the prepared pack and state. Strata's own sizing for this set is
+# about 265 GB free disk; 450Gi leaves room for the pack and one engine update.
+# CephFS (3 replicas): about 1.35 TiB raw, which keeps the pool well over 25% free.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deepseek-data
+  labels:
+    app.kubernetes.io/name: deepseek
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ceph-filesystem
+  resources:
+    requests:
+      storage: 450Gi

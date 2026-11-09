@@ -1083,9 +1083,21 @@
       dependencyDashboardApproval: false,
       addLabels: ['spektr'],
     },
+    {
+      // Strata runs as root with IPC_LOCK and the GPU, from a third-party registry,
+      // and downloads its engine at start. Every update needs a human: no automerge,
+      // and no PR until it is approved on the dependency dashboard. Last, so it wins.
+      description: 'Strata (DeepSeek server image) updates need review',
+      matchPackageNames: ['ghcr.io/niko1221/strata'],
+      automerge: false,
+      dependencyDashboardApproval: true,
+    },
   ],
   ignorePaths: [
     '**/*.sops.*',
     '**/resources/**',
+    // One-off Job, removed after it succeeds. A Job is immutable once it has run,
+    // so a bumped image would break its Kustomization rather than update it.
+    'kubernetes/apps/ai/deepseek/prepare/**',
   ],
 }
