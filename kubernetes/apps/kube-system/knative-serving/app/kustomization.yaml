@@ -61,6 +61,9 @@ configMapGenerator:
       - kubernetes.podspec-nodeselector=enabled
       # Enable NVIDIA container runtime for GPU access
       - kubernetes.podspec-runtimeclassname=enabled
+      # Allow pod affinity on Knative Services. GPU services use required pod
+      # anti-affinity so only one heavy model holds the A5000's VRAM at a time.
+      - kubernetes.podspec-affinity=enabled
       # Enable pod security context for non-root execution
       - kubernetes.podspec-securitycontext=enabled
       # Enable volume support for EmptyDir (default enabled, explicit for clarity)
