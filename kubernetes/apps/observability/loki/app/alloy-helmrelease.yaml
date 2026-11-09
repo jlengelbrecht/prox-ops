@@ -328,6 +328,8 @@ spec:
             - ALL
     controller:
       type: daemonset
+      # Never evicted when a large model wakes (kubernetes/apps/kube-system/priorityclasses).
+      priorityClassName: homelab-critical
       tolerations:
         - effect: NoSchedule
           operator: Exists

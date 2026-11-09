@@ -37,6 +37,9 @@ spec:
     disableWait: true
     disableHooks: true
   values:
+    # Never evicted when a large model wakes (kubernetes/apps/kube-system/priorityclasses).
+    prometheus-node-exporter:
+      priorityClassName: homelab-critical
     # Prometheus configuration
     prometheus:
       enabled: true
