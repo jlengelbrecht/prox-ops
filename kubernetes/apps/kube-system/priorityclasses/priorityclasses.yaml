@@ -1,0 +1,33 @@
+---
+# Scheduling tiers for workloads that share nodes with large, scale-to-zero models.
+#
+#   system-node-critical / system-cluster-critical  built in, kube add-ons
+#   homelab-critical (100000000)  platform that must never be evicted for a model:
+#                                 secrets, identity, ingress, storage, GitOps, alerting,
+#                                 node agents and the Knative/KServe serving path
+#   large-model (1000000)         big models that need most of a node when they wake;
+#                                 the scheduler preempts default-tier pods to make room
+#   default (0, no class)         everything else; may be evicted from a node a
+#                                 large model needs and rescheduled on other workers
+#
+# Neither class is the global default. Pods only change tier when a workload sets
+# priorityClassName, which restarts its pods.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: homelab-critical
+value: 100000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  Homelab platform workloads that a large-model wake must never evict.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: large-model
+value: 1000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  Large scale-to-zero models that preempt default-tier pods for room when they wake.
