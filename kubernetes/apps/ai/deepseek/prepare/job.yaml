@@ -55,7 +55,18 @@ spec:
             - |
               # A throwaway key for this run: the real key is never present while
               # the pod downloads from the internet. Each start writes its own key.
-              head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /tmp/prepare-key
+              # The image copies the key it is given onto /data (state/api-key, the
+              # saved preset and run configs). Clear those copies before this pod
+              # reaches the internet (a server may have run on this volume) and again
+              # at the end (this run's throwaway key), so the volume keeps no key.
+              scrub() {
+                rm -f /data/state/api-key
+                for c in /data/config/strata/launch-presets/*.json /data/state/strata/launch/*.json; do
+                  [ -f "$c" ] && sed -i 's/"api_key"[[:space:]]*:[[:space:]]*"[^"]*"/"api_key": ""/' "$c"
+                done
+              }
+              scrub
+              ( umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /tmp/prepare-key )
               /opt/strata/entrypoint.sh run &
               pid=$!
               while ! /opt/strata/healthcheck.sh 2>/dev/null; do
@@ -65,6 +76,7 @@ spec:
               echo "prepare: model loaded and answering; stopping the server"
               kill -TERM "$pid"
               wait "$pid"
+              scrub
               echo "prepare: done"
           env:
             - name: FAMILY
