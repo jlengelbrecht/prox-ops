@@ -1,7 +1,6 @@
 ---
-# Replicas stay at 0 until each server has a least-privilege iDRAC account and its
-# credentials are in the cluster (idrac-fan-credentials). Then: replicas 1 with
-# DRY_RUN=1 to watch its decisions, and finally DRY_RUN=0.
+# Running in dry run: it reads temperatures and iDRAC settings and logs the changes it
+# would make, without writing anything. Next step: DRY_RUN=0.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,7 +8,7 @@ metadata:
   labels:
     app.kubernetes.io/name: gpu-fan-controller
 spec:
-  replicas: 0
+  replicas: 1
   strategy:
     type: Recreate
   selector:
