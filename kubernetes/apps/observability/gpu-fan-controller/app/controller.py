@@ -77,14 +77,19 @@ def raw_level(temp: float, policy: Policy) -> int:
     return level
 
 
-def next_level(state: HostState, temp: float | None, policy: Policy) -> int:
+def next_level(state: HostState, temp: float | None, policy: Policy, missing: bool = False) -> int:
     """Decide the next level for one server and update `state`.
 
-    `temp` is the hottest fresh GPU temperature on that server, or None when a GPU is
-    known to be there but no fresh reading exists (fail-safe)."""
-    if temp is None:
+    `temp` is the hottest fresh GPU temperature on that server (None if there is none).
+    `missing` means at least one known GPU there has no fresh reading. Then the level is
+    at least the fail-safe level, still rises for a hot GPU that is reporting, and never
+    steps down until every GPU reports again."""
+    if temp is None or missing:
+        wanted = policy.failsafe_level
+        if temp is not None:
+            wanted = max(wanted, raw_level(temp, policy))
         state.calm = 0
-        state.level = max(state.level, policy.failsafe_level)
+        state.level = max(state.level, wanted)
         return state.level
     wanted = raw_level(temp, policy)
     if wanted >= state.level:
@@ -374,32 +379,34 @@ def _by_gpu(results: list[dict]) -> dict[tuple[str, str], float]:
 
 
 def hottest(temps: list[dict], stamps: list[dict], nodes: list[str], max_age: float, now: float,
-            known: dict[str, set[str]]) -> float | None:
-    """Hottest GPU temperature across `nodes`, or None (fail-safe) when any GPU lacks a
-    fresh sample.
+            known: dict[str, set[str]]) -> tuple[float | None, bool]:
+    """(hottest fresh GPU temperature across `nodes`, whether any GPU lacks a fresh sample).
 
     Freshness is checked per GPU, not per node: every GPU ever seen on a node (`known`,
     updated here) must still have a sample younger than `max_age`, so one GPU going
-    silent cannot be hidden by a cool neighbour. `stamps` is the result of
-    timestamp(<metric>): an instant query's own value time is the evaluation time,
-    not the sample time."""
+    silent cannot be hidden by a cool neighbour. A silent GPU does not hide a hot one
+    either: the fresh readings are still returned alongside the missing flag. `stamps`
+    is the result of timestamp(<metric>): an instant query's own value time is the
+    evaluation time, not the sample time."""
     t, ts = _by_gpu(temps), _by_gpu(stamps)
     for r in temps:  # every GPU that reports at all, even with a NaN, must keep reporting
         m = r["metric"]
         node, uuid = m.get("Hostname") or m.get("node") or "", m.get("UUID") or m.get("gpu") or ""
         if node in nodes:
             known.setdefault(node, set()).add(uuid)
-    hot = None
+    hot, missing = None, False
     for node in nodes:
         gpus = known.get(node, set())
         if not gpus:
-            return None  # a GPU node with no temperature ever seen
+            missing = True  # a GPU node with no temperature ever seen
+            continue
         for uuid in gpus:
             key = (node, uuid)
             if key not in t or key not in ts or now - ts[key] > max_age:
-                return None
+                missing = True
+                continue
             hot = t[key] if hot is None else max(hot, t[key])
-    return hot
+    return hot, missing
 
 
 def load_credentials(host: str) -> tuple[str, str]:
@@ -462,9 +469,9 @@ def run(cfg: dict) -> None:
                               int(retry_at[host] - now))
                     METRICS.set("gpu_fan_controller_errors", 1, host=host)
                     continue
-            temp = hottest(results, stamps, nodes, cfg["max_sample_age_s"], now, known_gpus)
+            temp, missing = hottest(results, stamps, nodes, cfg["max_sample_age_s"], now, known_gpus)
             state = states.setdefault(host, HostState())
-            level = next_level(state, temp, policy)
+            level = next_level(state, temp, policy, missing)
             try:
                 what = actuators[host].apply(level, dry_run)
                 METRICS.set("gpu_fan_controller_errors", 0, host=host)

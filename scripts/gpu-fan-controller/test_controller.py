@@ -80,20 +80,20 @@ class Mapping(unittest.TestCase):
         now, known = 1000.0, {}
         temps = [self.g("k8s-work-7", "GPU-a", 71), self.g("k8s-work-7", "GPU-b", 64)]
         fresh = [self.g("k8s-work-7", "GPU-a", 990), self.g("k8s-work-7", "GPU-b", 990)]
-        self.assertEqual(c.hottest(temps, fresh, ["k8s-work-7"], 120, now, known), 71.0)
+        self.assertEqual(c.hottest(temps, fresh, ["k8s-work-7"], 120, now, known), (71.0, False))
         old = [self.g("k8s-work-7", "GPU-a", 700), self.g("k8s-work-7", "GPU-b", 990)]
-        self.assertIsNone(c.hottest(temps, old, ["k8s-work-7"], 120, now, known))   # one stale GPU
-        self.assertIsNone(c.hottest(temps, [], ["k8s-work-7"], 120, now, known))    # no timestamps
-        self.assertIsNone(c.hottest([], fresh, ["k8s-work-7"], 120, now, {}))       # nothing ever seen
+        self.assertTrue(c.hottest(temps, old, ["k8s-work-7"], 120, now, known)[1])   # one stale GPU
+        self.assertTrue(c.hottest(temps, [], ["k8s-work-7"], 120, now, known)[1])    # no timestamps
+        self.assertTrue(c.hottest([], fresh, ["k8s-work-7"], 120, now, {})[1])       # nothing ever seen
 
     def test_non_finite_readings_count_as_missing(self):
         now, known = 1000.0, {}
         t = [self.g("k8s-work-7", "GPU-a", 50)]
         s = [self.g("k8s-work-7", "GPU-a", 995)]
-        self.assertEqual(c.hottest(t, s, ["k8s-work-7"], 120, now, known), 50.0)
+        self.assertEqual(c.hottest(t, s, ["k8s-work-7"], 120, now, known), (50.0, False))
         for bad in ("NaN", "+Inf", "-Inf"):
-            self.assertIsNone(c.hottest([self.g("k8s-work-7", "GPU-a", bad)], s, ["k8s-work-7"], 120, now, known))
-            self.assertIsNone(c.hottest(t, [self.g("k8s-work-7", "GPU-a", bad)], ["k8s-work-7"], 120, now, known))
+            self.assertTrue(c.hottest([self.g("k8s-work-7", "GPU-a", bad)], s, ["k8s-work-7"], 120, now, known)[1])
+            self.assertTrue(c.hottest(t, [self.g("k8s-work-7", "GPU-a", bad)], ["k8s-work-7"], 120, now, known)[1])
         state = c.HostState()
         self.assertEqual(c.next_level(state, None, POLICY), 1)  # missing -> fail-safe, never Automatic
         # A GPU that has only ever reported NaN is still tracked, so a healthy neighbour
@@ -101,16 +101,33 @@ class Mapping(unittest.TestCase):
         known = {}
         t2 = [self.g("k8s-work-8", "GPU-x", "NaN"), self.g("k8s-work-8", "GPU-y", 40)]
         s2 = [self.g("k8s-work-8", "GPU-x", 995), self.g("k8s-work-8", "GPU-y", 995)]
-        self.assertIsNone(c.hottest(t2, s2, ["k8s-work-8"], 120, now, known))
+        self.assertTrue(c.hottest(t2, s2, ["k8s-work-8"], 120, now, known)[1])
 
     def test_silent_gpu_is_not_masked_by_a_cool_neighbour(self):
         now, known = 1000.0, {}
         both_t = [self.g("k8s-work-7", "GPU-a", 85), self.g("k8s-work-7", "GPU-b", 40)]
         both_s = [self.g("k8s-work-7", "GPU-a", 990), self.g("k8s-work-7", "GPU-b", 990)]
-        self.assertEqual(c.hottest(both_t, both_s, ["k8s-work-7"], 120, now, known), 85.0)
+        self.assertEqual(c.hottest(both_t, both_s, ["k8s-work-7"], 120, now, known), (85.0, False))
         # GPU-a's series disappears; GPU-b stays cool and fresh.
         only_b_t, only_b_s = [self.g("k8s-work-7", "GPU-b", 40)], [self.g("k8s-work-7", "GPU-b", 995)]
-        self.assertIsNone(c.hottest(only_b_t, only_b_s, ["k8s-work-7"], 120, now, known))
+        self.assertTrue(c.hottest(only_b_t, only_b_s, ["k8s-work-7"], 120, now, known)[1])
+
+
+    def test_silent_gpu_does_not_hide_a_hot_one(self):
+        now, known = 1000.0, {}
+        t = [self.g("k8s-work-7", "GPU-a", 50), self.g("k8s-work-7", "GPU-b", 50)]
+        s = [self.g("k8s-work-7", "GPU-a", 990), self.g("k8s-work-7", "GPU-b", 990)]
+        c.hottest(t, s, ["k8s-work-7"], 120, now, known)
+        # GPU-a goes silent while GPU-b is fresh and hot.
+        hot_t, hot_s = [self.g("k8s-work-7", "GPU-b", 80)], [self.g("k8s-work-7", "GPU-b", 995)]
+        temp, missing = c.hottest(hot_t, hot_s, ["k8s-work-7"], 120, now, known)
+        self.assertEqual((temp, missing), (80.0, True))
+        state = c.HostState()
+        self.assertEqual(c.next_level(state, temp, POLICY, missing), 2)  # hot GPU still drives level 2
+        # Cool but still missing: fail-safe floor, and no stepping down while a GPU is silent.
+        for _ in range(10):
+            self.assertEqual(c.next_level(state, 40.0, POLICY, True), 2)
+        self.assertEqual(c.next_level(c.HostState(), 40.0, POLICY, True), 1)
 
 
 class FakeRedfish:
