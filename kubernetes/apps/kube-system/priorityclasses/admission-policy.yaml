@@ -1,8 +1,11 @@
 ---
-# Restricts who may run at the homelab-critical and large-model priorities.
-# A pod at either level can preempt default-tier pods, so any workload that could
-# set the class freely could evict others. Only the platform namespaces below may
-# use homelab-critical, and only the model namespace may use large-model.
+# Restricts who may run at the homelab-critical and large-model priorities, and at
+# the built-in system-node-critical and system-cluster-critical ones, which outrank
+# both. A pod at any of these levels can preempt default-tier pods, so any workload
+# that could set the class freely could evict others. Only the platform namespaces
+# below may use homelab-critical, only the model namespace may use large-model, and
+# the system-* classes stay with the namespaces that run them today (kube-system,
+# rook-ceph, flux-system and system-upgrade for the Talos upgrade controller).
 # Add a namespace here in the same change that moves its workloads into a tier.
 #
 # matchConditions limit evaluation to pods that ask for one of these classes, so an
@@ -23,10 +26,11 @@ spec:
         resources: ["pods"]
         operations: ["CREATE"]
   matchConditions:
-    - name: uses-homelab-tier
+    - name: uses-elevated-priority
       expression: >-
         has(object.spec.priorityClassName) &&
-        object.spec.priorityClassName in ['homelab-critical', 'large-model']
+        object.spec.priorityClassName in ['homelab-critical', 'large-model',
+          'system-node-critical', 'system-cluster-critical']
   validations:
     - expression: >-
         object.spec.priorityClassName != 'homelab-critical' ||
@@ -40,6 +44,10 @@ spec:
     - expression: >-
         object.spec.priorityClassName != 'large-model' || request.namespace == 'ai'
       message: "priorityClassName large-model is limited to the ai namespace."
+    - expression: >-
+        !(object.spec.priorityClassName in ['system-node-critical', 'system-cluster-critical']) ||
+        request.namespace in ['kube-system', 'rook-ceph', 'flux-system', 'system-upgrade']
+      message: "system-node-critical and system-cluster-critical are limited to kube-system, rook-ceph, flux-system and system-upgrade."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
