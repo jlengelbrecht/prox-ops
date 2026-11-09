@@ -10,6 +10,7 @@ from collections.abc import Mapping
 
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.exceptions import CallerCredentialAuthenticationError
+from litellm.llms.chatgpt.common_utils import CHATGPT_API_BASE
 
 ALIAS = "project-router"
 CHATGPT_ALIAS = "project-chatgpt-responses"
@@ -26,6 +27,23 @@ FORBIDDEN_BODY_FIELDS = frozenset({
 FORBIDDEN_METADATA_FIELDS = FORBIDDEN_BODY_FIELDS | frozenset({
     "headers", "extra_headers", "provider_specific_header",
 })
+
+
+class _ApprovedRequest:
+    """In-process proof that the original proxy request passed the pre-call hook.
+
+    LiteLLM copies request kwargs between Messages, completion, and Responses;
+    JSON input cannot create this object, and deepcopy must retain its identity.
+    """
+
+    def __init__(self):
+        self.phases = set()
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+_PROVENANCE = "_project_router_approved_request"
 
 
 def _deny():
@@ -117,7 +135,9 @@ class ProjectRouterGuard(CustomLogger):
             return data
         if not _authenticated_owner(user_api_key_dict):
             raise _deny()
-        _clean_input(data, _request(data))
+        carrier = _request(data)
+        _clean_input(data, carrier)
+        carrier[_PROVENANCE] = _ApprovedRequest()
         return data
 
     async def async_pre_call_deployment_hook(self, kwargs, call_type):
@@ -130,6 +150,11 @@ class ProjectRouterGuard(CustomLogger):
         if carrier["body"].get("model") != ALIAS:
             return kwargs
         if carrier.get("credential_fields") != ():
+            raise _deny()
+        if any(carrier["body"].get(name) is not None for name in FORBIDDEN_BODY_FIELDS):
+            raise _deny()
+        approved = carrier.get(_PROVENANCE)
+        if not isinstance(approved, _ApprovedRequest):
             raise _deny()
         buckets = [item for item in (kwargs.get("metadata"), kwargs.get("litellm_metadata"))
                    if isinstance(item, Mapping)]
@@ -147,9 +172,16 @@ class ProjectRouterGuard(CustomLogger):
         if not any(isinstance(item.get("user_api_key_user_id"), str)
                    and item["user_api_key_user_id"].strip() for item in buckets):
             raise _deny()
+        phase = getattr(call_type, "value", call_type)
+        generated_chatgpt = (phase == "aresponses" and target == CHATGPT_ALIAS
+                             and {"anthropic_messages", "acompletion"} <= approved.phases
+                             and kwargs.get("api_base") == CHATGPT_API_BASE
+                             and isinstance(kwargs.get("api_key"), str)
+                             and bool(kwargs["api_key"]))
+        allowed_generated = {"api_base", "api_key"} if generated_chatgpt else set()
         if (kwargs.get("custom_llm_provider") not in (None, PROVIDERS[target])
-                or any(kwargs.get(name) is not None
-                       for name in FORBIDDEN_BODY_FIELDS - {"custom_llm_provider"})):
+                or any(kwargs.get(name) is not None for name in
+                       FORBIDDEN_BODY_FIELDS - {"custom_llm_provider"} - allowed_generated)):
             raise _deny()
         extra = kwargs.get("extra_headers")
         if extra is not None and (not isinstance(extra, Mapping)
@@ -160,6 +192,8 @@ class ProjectRouterGuard(CustomLogger):
             # The pinned proxy creates this only for Anthropic OAuth, but
             # removing it here also prevents accidental future adapter reuse.
             kwargs.pop("provider_specific_header", None)
+        if phase in ("anthropic_messages", "acompletion"):
+            approved.phases.add(phase)
         return kwargs
 
 

@@ -91,7 +91,8 @@ class GuardTests(unittest.TestCase):
     def setUpClass(cls):
         """Load shared configuration or module fixtures for this test class."""
         names = ("litellm", "litellm.integrations", "litellm.integrations.custom_logger",
-                 "litellm.exceptions")
+                 "litellm.exceptions", "litellm.llms", "litellm.llms.chatgpt",
+                 "litellm.llms.chatgpt.common_utils")
         cls.old = {name: sys.modules.get(name) for name in names}
         for name in names:
             sys.modules[name] = types.ModuleType(name)
@@ -99,6 +100,8 @@ class GuardTests(unittest.TestCase):
         cls.AuthError = type("AuthError", (Exception,), {
             "__init__": lambda self, **kw: Exception.__init__(self, kw["message"])})
         sys.modules["litellm.exceptions"].CallerCredentialAuthenticationError = cls.AuthError
+        sys.modules["litellm.llms.chatgpt.common_utils"].CHATGPT_API_BASE = (
+            "https://chatgpt.com/backend-api/codex")
         cls.guard = load_module("project_router_guard_test", APP / "callbacks/project_router_guard.py")
 
     @classmethod
@@ -133,6 +136,7 @@ class GuardTests(unittest.TestCase):
 
     def post(self, request, alias):
         """Add selected deployment fields and run its hook."""
+        self.pre(request)
         request["model"] = self.guard.BACKENDS[alias]
         request["custom_llm_provider"] = self.guard.PROVIDERS[alias]
         request["metadata"] = {"deployment_model_name": alias,
@@ -223,6 +227,37 @@ class GuardTests(unittest.TestCase):
             with self.assertRaises(self.AuthError):
                 asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
                     req, "anthropic_messages"))
+
+    def test_generated_chatgpt_responses_fields_need_approved_hook_sequence(self):
+        """Accept SDK-resolved ChatGPT fields only after clean outer hooks."""
+        req = self.request()
+        self.post(req, self.guard.CHATGPT_ALIAS)
+        asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
+            req, "acompletion"))
+        req.update(api_base=self.guard.CHATGPT_API_BASE, api_key="synthetic-chatgpt-access")
+        result = asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
+            req, "aresponses"))
+        self.assertEqual(result["api_key"], "synthetic-chatgpt-access")
+        self.assertNotIn("provider_specific_header", result)
+
+        for change in (lambda r: r.update(api_base="https://wrong.invalid"),
+                       lambda r: r.update(custom_llm_provider="anthropic"),
+                       lambda r: r.update(provider="chatgpt"),
+                       lambda r: r["proxy_server_request"].pop(
+                           self.guard._PROVENANCE),
+                       lambda r: r["proxy_server_request"]["body"].update(
+                           api_key="synthetic-caller")):
+            with self.subTest(change=change):
+                bad = self.request()
+                self.post(bad, self.guard.CHATGPT_ALIAS)
+                asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
+                    bad, "acompletion"))
+                bad.update(api_base=self.guard.CHATGPT_API_BASE,
+                           api_key="synthetic-chatgpt-access")
+                change(bad)
+                with self.assertRaises(self.AuthError):
+                    asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
+                        bad, "aresponses"))
 
     def test_selected_provider_does_not_authorize_caller_override(self):
         """Permit the selected provider only when the original request is clean."""
