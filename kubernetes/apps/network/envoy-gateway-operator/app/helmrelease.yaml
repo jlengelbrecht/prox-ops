@@ -9,6 +9,9 @@ spec:
     name: envoy-gateway
   interval: 1h
   values:
+    deployment:
+      # Never evicted when a large model wakes (kubernetes/apps/kube-system/priorityclasses).
+      priorityClassName: homelab-critical
     global:
       imageRegistry: mirror.gcr.io
     config:

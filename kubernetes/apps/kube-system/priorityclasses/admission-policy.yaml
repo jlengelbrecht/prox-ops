@@ -1,0 +1,61 @@
+---
+# Restricts who may run at the homelab-critical and large-model priorities, and at
+# the built-in system-node-critical and system-cluster-critical ones, which outrank
+# both. A pod at any of these levels can preempt default-tier pods, so any workload
+# that could set the class freely could evict others. Only the platform namespaces
+# below may use homelab-critical, only the model namespace may use large-model, and
+# the system-* classes stay with the namespaces that run them today (kube-system,
+# rook-ceph, flux-system and system-upgrade for the Talos upgrade controller).
+# Add a namespace here in the same change that moves its workloads into a tier.
+#
+# matchConditions limit evaluation to pods that ask for one of these classes, so an
+# error in this policy can only affect those pods, never ordinary scheduling.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: priority-tier-namespaces
+  annotations:
+    # Never pruned by a mistaken file removal; delete deliberately if retiring the tiers.
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        operations: ["CREATE"]
+  matchConditions:
+    - name: uses-elevated-priority
+      expression: >-
+        has(object.spec.priorityClassName) &&
+        object.spec.priorityClassName in ['homelab-critical', 'large-model',
+          'system-node-critical', 'system-cluster-critical']
+  validations:
+    - expression: >-
+        object.spec.priorityClassName != 'homelab-critical' ||
+        request.namespace in [
+          'access', 'cert-manager', 'database', 'external-secrets', 'flux-system',
+          'health', 'hsm-system', 'identity-system', 'knative-serving', 'kourier-system',
+          'kserve', 'kube-system', 'network', 'observability', 'openbao', 'rook-ceph',
+          'security', 'volsync-system'
+        ]
+      message: "priorityClassName homelab-critical is limited to platform namespaces."
+    - expression: >-
+        object.spec.priorityClassName != 'large-model' || request.namespace == 'ai'
+      message: "priorityClassName large-model is limited to the ai namespace."
+    - expression: >-
+        !(object.spec.priorityClassName in ['system-node-critical', 'system-cluster-critical']) ||
+        request.namespace in ['kube-system', 'rook-ceph', 'flux-system', 'system-upgrade']
+      message: "system-node-critical and system-cluster-critical are limited to kube-system, rook-ceph, flux-system and system-upgrade."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: priority-tier-namespaces
+  annotations:
+    # Never pruned by a mistaken file removal; delete deliberately if retiring the tiers.
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  policyName: priority-tier-namespaces
+  validationActions: ["Deny"]

@@ -65,6 +65,11 @@ patches:
           limits:
             cpu: 500m
             memory: 512Mi
+      # The controller and its webhooks stay up when a large model wakes
+      # (kubernetes/apps/kube-system/priorityclasses).
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: homelab-critical
 
   # The LLMInferenceService controller (llmisvc, added in KServe 0.16) is bound to
   # a ClusterRole with create/delete/update on Secrets, ServiceAccounts, Services
