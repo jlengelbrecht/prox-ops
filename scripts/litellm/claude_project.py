@@ -47,6 +47,7 @@ SMOKE_CONTENT = b"The project router pilot fact is cedar.\n"
 
 
 def _settings_paths(cwd, home):
+    """List user and ancestor project settings consulted by native Claude."""
     paths = [home / ".claude" / "settings.json"]
     for parent in (cwd, *cwd.parents):
         paths.extend((parent / ".claude" / "settings.json",
@@ -57,6 +58,7 @@ def _settings_paths(cwd, home):
 
 
 def _settings_issues(cwd, home):
+    """Reject unsafe or unbounded settings before passing the gateway key."""
     issues = []
     user_settings = home / ".claude" / "settings.json"
     for path in _settings_paths(cwd, home):
@@ -113,6 +115,36 @@ def _login_env(env, key_env):
             if name in LOGIN_ENV and name != key_env}
 
 
+def _trusted_cli(cli, home):
+    """Resolve the native Claude install and reject project-controlled executables."""
+    if not cli or not os.path.isabs(cli):
+        return None
+    try:
+        entry = Path(cli)
+        canonical = entry.resolve(strict=True)
+        install = home.resolve(strict=True) / ".local" / "share" / "claude" / "versions"
+        if (entry != home / ".local" / "bin" / "claude" and entry != canonical):
+            return None
+        if canonical.parent != install or not canonical.name or canonical.name.startswith("."):
+            return None
+        # The native installer uses ~/.local/bin/claude -> ~/.local/share/claude/versions/<version>.
+        # Restrict every writable component of that install, including HOME itself.
+        paths = [home, home / ".local", home / ".local" / "share",
+                 home / ".local" / "share" / "claude", install, canonical]
+        if entry != canonical:
+            paths.append(home / ".local" / "bin")
+        for path in paths:
+            info = path.stat()
+            if info.st_uid != os.getuid() or info.st_mode & 0o022:
+                return None
+        target = canonical.stat()
+        if not stat.S_ISREG(target.st_mode) or not os.access(canonical, os.X_OK):
+            return None
+        return str(canonical)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def preflight(env, cwd, home, cli=None, login_check=None, key_env=DEFAULT_KEY_ENV):
     """Check local launch constraints without treating the login record as live auth."""
     failures = []
@@ -130,8 +162,8 @@ def preflight(env, cwd, home, cli=None, login_check=None, key_env=DEFAULT_KEY_EN
     if any(env.get(name) for name in ("AFK_DISPATCH_ID", "AFK_WORKER_IDENTITY")):
         failures.append("worker_dispatch_context")
     failures.extend(_settings_issues(cwd, home))
-    cli = cli or shutil.which("claude")
-    if not cli:
+    cli = _trusted_cli(shutil.which("claude") if cli is None else cli, home)
+    if cli is None:
         failures.append("native_claude_cli_missing")
     login = False
     if cli:
@@ -148,6 +180,7 @@ def preflight(env, cwd, home, cli=None, login_check=None, key_env=DEFAULT_KEY_EN
 
 
 def _child_env(env, key_env):
+    """Construct the native child environment without retaining the key alias."""
     child = dict(env)
     key = child.pop(key_env)
     child["ANTHROPIC_BASE_URL"] = GATEWAY
@@ -157,6 +190,7 @@ def _child_env(env, key_env):
 
 
 def _command(cli, smoke=False, prompt=None):
+    """Build a native command, restricting headless smoke to a single Read."""
     args = [cli, "--model", ALIAS, "--settings", SAFE_SETTINGS,
             "--no-chrome", "--strict-mcp-config"]
     if smoke:
@@ -171,6 +205,7 @@ def _command(cli, smoke=False, prompt=None):
 
 
 def _smoke_prompt(fixture, cwd):
+    """Accept only the committed fixture before constructing the Read prompt."""
     path = fixture.resolve(strict=True)
     if (path != SMOKE_FIXTURE or not path.is_relative_to(cwd.resolve())
             or path.stat().st_size != len(SMOKE_CONTENT)
@@ -201,6 +236,7 @@ def _stop_smoke_group(process):
 def _bounded_smoke(command, env, cwd, timeout_s=120, output_cap=65536, fixture=None):
     """Run one isolated smoke child within time and output limits, then reap it."""
     def on_sigterm(_signum, _frame):
+        """Convert SIGTERM into an exception that reaches child cleanup."""
         raise SystemExit(128 + signal.SIGTERM)
 
     previous_sigterm = signal.signal(signal.SIGTERM, on_sigterm)
@@ -212,12 +248,13 @@ def _bounded_smoke(command, env, cwd, timeout_s=120, output_cap=65536, fixture=N
 
 def _bounded_smoke_inner(command, env, cwd, timeout_s, output_cap, fixture):
     """Keep SIGTERM inside the cleanup path while the smoke child runs."""
-    process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, start_new_session=True)
-    selector = selectors.DefaultSelector()
+    selector = None
     streams = {"stdout": bytearray(), "stderr": bytearray()}
     reason = None
+    process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, start_new_session=True)
     try:
+        selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ, "stdout")
         selector.register(process.stderr, selectors.EVENT_READ, "stderr")
         deadline = time.monotonic() + timeout_s
@@ -247,7 +284,8 @@ def _bounded_smoke_inner(command, env, cwd, timeout_s, output_cap, fixture):
         # poll() would reap an exited child before the group is signaled.
         if process.returncode is None:
             _stop_smoke_group(process)
-        selector.close()
+        if selector is not None:
+            selector.close()
         process.stdout.close()
         process.stderr.close()
     # No raw response, error, prompt or header is persisted or printed.
@@ -317,6 +355,7 @@ def _smoke_evidence(lines, fixture, cwd):
 
 
 def main(argv=None):
+    """Preflight, then launch native Claude or one bounded smoke session."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gateway-key-env", default=DEFAULT_KEY_ENV,
                         help="name of an already populated owner-scoped virtual-key variable")
@@ -327,8 +366,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     cwd = Path.cwd()
     env = dict(os.environ)
-    cli = shutil.which("claude")
-    report = preflight(env, cwd, Path.home(), cli=cli, key_env=args.gateway_key_env)
+    home = Path.home()
+    cli = _trusted_cli(shutil.which("claude"), home)
+    report = preflight(env, cwd, home, cli=cli or "", key_env=args.gateway_key_env)
     if not report["ready"] or args.dry_run:
         print(json.dumps(report, sort_keys=True))
         return 0 if report["ready"] else 2

@@ -18,6 +18,7 @@ BACKENDS = {
     CHATGPT_ALIAS: "chatgpt/gpt-6.1-sol",
     CLAUDE_ALIAS: "anthropic/claude-sonnet-5-5",
 }
+PROVIDERS = {CHATGPT_ALIAS: "chatgpt", CLAUDE_ALIAS: "anthropic"}
 FORBIDDEN_BODY_FIELDS = frozenset({
     "api_base", "base_url", "api_key", "litellm_credential_name",
     "custom_llm_provider", "provider", "provider_override", "api_type",
@@ -28,6 +29,7 @@ FORBIDDEN_METADATA_FIELDS = FORBIDDEN_BODY_FIELDS | frozenset({
 
 
 def _deny():
+    """Return a fixed denial that cannot leak request or credential values."""
     # Never interpolate request data, key IDs, headers, or exception text.
     return CallerCredentialAuthenticationError(
         message="Project router request rejected",
@@ -37,12 +39,14 @@ def _deny():
 
 
 def _header(headers, name):
+    """Read a unique case-insensitive header from the captured request."""
     matches = [value for key, value in headers.items()
                if isinstance(key, str) and key.lower() == name]
     return matches[0] if len(matches) == 1 else None
 
 
 def _request(data):
+    """Require the proxy's captured original request body."""
     carrier = data.get("proxy_server_request")
     if not isinstance(carrier, Mapping) or not isinstance(carrier.get("body"), Mapping):
         raise _deny()
@@ -50,6 +54,7 @@ def _request(data):
 
 
 def _authenticated_owner(user_api_key_dict):
+    """Check the exact owner-scoped virtual-key model grant."""
     owner = getattr(user_api_key_dict, "user_id", None)
     models = getattr(user_api_key_dict, "models", None)
     return (getattr(user_api_key_dict, "via_virtual_key", False) is True
@@ -142,7 +147,9 @@ class ProjectRouterGuard(CustomLogger):
         if not any(isinstance(item.get("user_api_key_user_id"), str)
                    and item["user_api_key_user_id"].strip() for item in buckets):
             raise _deny()
-        if any(kwargs.get(name) is not None for name in FORBIDDEN_BODY_FIELDS):
+        if (kwargs.get("custom_llm_provider") not in (None, PROVIDERS[target])
+                or any(kwargs.get(name) is not None
+                       for name in FORBIDDEN_BODY_FIELDS - {"custom_llm_provider"})):
             raise _deny()
         extra = kwargs.get("extra_headers")
         if extra is not None and (not isinstance(extra, Mapping)
