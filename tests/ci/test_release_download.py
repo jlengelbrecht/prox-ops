@@ -8,7 +8,9 @@ import json
 from email.message import Message
 from pathlib import Path
 import os
+import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -23,6 +25,8 @@ SPEC = importlib.util.spec_from_file_location(
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/flux-local.yaml"
+SECURITY_WORKFLOW = WORKFLOW.with_name("security-gate.yaml")
+HELPER = Path(__file__).resolve().parents[2] / "scripts/ci/release_download.py"
 
 
 def metadata(name, body):
@@ -32,6 +36,48 @@ def metadata(name, body):
 
 class ReleaseDownloadTests(unittest.TestCase):
     """Exercise CI release handling without network or cluster access."""
+    def test_isolated_cli_excludes_sibling_import_before_verification(self):
+        """Show ordinary script launch runs a sibling module and isolated launch does not."""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            helper = root / "release_download.py"
+            marker = root / "imported"
+            shutil.copyfile(HELPER, helper)
+            (root / "hashlib.py").write_text(
+                "open(" + repr(str(marker)) + ", 'w').write('sibling executed')\n"
+            )
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("PYTHONPATH", "PYTHONHOME")}
+            for flags, shadowed in (([], True), (["-I"], False)):
+                with self.subTest(flags=flags):
+                    marker.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        [sys.executable, *flags, str(helper), "--help"],
+                        cwd=root, env=env, capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("usage:", result.stdout)
+                    self.assertEqual(marker.exists(), shadowed)
+
+    def test_live_workflows_use_isolated_helper_launch(self):
+        """Bind the import-shadowing regression to every live helper call."""
+        calls = []
+        for workflow in (WORKFLOW, SECURITY_WORKFLOW):
+            jobs = yaml.load(workflow.read_text(), Loader=yaml.BaseLoader)["jobs"]
+            for job in jobs.values():
+                for step in job.get("steps", []):
+                    for line in step.get("run", "").splitlines():
+                        if "release_download.py" in line:
+                            calls.append(line.strip())
+        self.assertEqual(len(calls), 4)
+        for call in calls:
+            with self.subTest(call=call):
+                self.assertRegex(
+                    call,
+                    r'^(?:python3|"\$RUNNER_TEMP/release-download-venv/bin/python") -I '
+                    r'(?:pull/)?scripts/ci/release_download\.py ',
+                )
+
     def flux_fixture(self, root):
         """Write both pinned Kustomizations beneath a temporary root."""
         paths = {}

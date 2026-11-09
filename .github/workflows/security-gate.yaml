@@ -50,7 +50,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/ci/release_download.py gitleaks --version "${{ env.GITLEAKS_VERSION }}" --output gitleaks
+          python3 -I scripts/ci/release_download.py gitleaks --version "${{ env.GITLEAKS_VERSION }}" --output gitleaks
           sudo install -m 755 gitleaks /usr/local/bin/gitleaks
           rm gitleaks
           gitleaks version

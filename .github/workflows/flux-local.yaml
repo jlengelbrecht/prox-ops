@@ -41,15 +41,19 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Install YAML parser
-        run: python3 -m pip install --user PyYAML==6.0.3
+        run: |
+          python3 -m venv "$RUNNER_TEMP/release-download-venv"
+          "$RUNNER_TEMP/release-download-venv/bin/python" -m pip install PyYAML==6.0.3
 
       - name: Test release download helper
-        run: python3 -m unittest discover -s tests/ci -p 'test_release_download*.py' -q
+        run: |
+          "$RUNNER_TEMP/release-download-venv/bin/python" -m unittest discover -s tests/ci -p 'test_release_download*.py' -q
 
       - name: Materialize pinned release manifests
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/ci/release_download.py flux --root .
+        run: |
+          "$RUNNER_TEMP/release-download-venv/bin/python" -I scripts/ci/release_download.py flux --root .
 
       - name: Run flux-local test
         uses: docker://ghcr.io/allenporter/flux-local:v8.4.0
@@ -88,14 +92,16 @@ jobs:
           path: default
 
       - name: Install YAML parser
-        run: python3 -m pip install --user PyYAML==6.0.3
+        run: |
+          python3 -m venv "$RUNNER_TEMP/release-download-venv"
+          "$RUNNER_TEMP/release-download-venv/bin/python" -m pip install PyYAML==6.0.3
 
       - name: Materialize pinned release manifests in both trees
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python3 pull/scripts/ci/release_download.py flux --root pull
-          python3 pull/scripts/ci/release_download.py flux --root default --baseline
+          "$RUNNER_TEMP/release-download-venv/bin/python" -I pull/scripts/ci/release_download.py flux --root pull
+          "$RUNNER_TEMP/release-download-venv/bin/python" -I pull/scripts/ci/release_download.py flux --root default --baseline
 
       - name: Run flux-local diff
         # continue-on-error due to flux-local bug #986 with spec.template string fields
