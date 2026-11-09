@@ -9,6 +9,8 @@ spec:
     name: k8s-gateway
   interval: 1h
   values:
+    # Never evicted when a large model wakes (kubernetes/apps/kube-system/priorityclasses).
+    priorityClassName: homelab-critical
     fullnameOverride: k8s-gateway
     domain: "${SECRET_DOMAIN}"
     ttl: 1
