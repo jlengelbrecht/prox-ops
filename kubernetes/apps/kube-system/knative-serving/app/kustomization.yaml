@@ -121,6 +121,25 @@ patches:
         path: /spec/maxUnavailable
         value: 1
 
+  # The serving path stays up when a large model wakes: every scale-from-zero request,
+  # including the model's own, goes through the activator, autoscaler and Kourier.
+  # See kubernetes/apps/kube-system/priorityclasses.
+  - target:
+      kind: Deployment
+      namespace: knative-serving
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: homelab-critical
+  - target:
+      kind: Deployment
+      name: 3scale-kourier-gateway
+      namespace: kourier-system
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: homelab-critical
+
   # Patch Kourier service to use Cilium LoadBalancer with specific IP
   # IP must be within default pool range: 10.20.66.0/23
   - target:
