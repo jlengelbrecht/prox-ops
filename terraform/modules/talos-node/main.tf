@@ -58,6 +58,19 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
     numa    = true  # Enable NUMA for better CPU pinning
   }
 
+  # Optional explicit guest NUMA topology bound to host NUMA nodes.
+  # Empty by default: no numaN entries are emitted and behaviour is unchanged.
+  dynamic "numa" {
+    for_each = var.numa_nodes
+    content {
+      device    = numa.value.device
+      cpus      = numa.value.cpus
+      memory    = numa.value.memory
+      hostnodes = numa.value.hostnodes
+      policy    = numa.value.policy
+    }
+  }
+
   # Memory Configuration - Consolidated dynamic block
   # Controls memory ballooning for Kubernetes (disabled by default)
   memory {
