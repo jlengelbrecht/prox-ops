@@ -94,6 +94,14 @@ spec:
               value: 128k
             - name: PARALLEL
               value: "1"
+            # Copy the experts the A5000 cannot hold (~116 GB) into RAM at load instead
+            # of reading them in place from the model files on CephFS. The first
+            # benchmark (2026-11-09) decoded at ~15 tok/s short and 9.7 tok/s on a
+            # 700-token answer with the experts read in place. This trades a longer
+            # wake (about 2 more minutes of reading at ~1 GB/s) for steadier decode.
+            # The pod's 272Gi limit holds them with room to spare.
+            - name: STRATA_SET
+              value: "mmap-experts=off"
             - name: API_KEY_FILE
               value: /run/secrets/deepseek/API_KEY
             - name: STRATA_KEY_FILE
