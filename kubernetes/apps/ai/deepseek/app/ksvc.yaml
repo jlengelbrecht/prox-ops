@@ -98,6 +98,14 @@ spec:
             # default). Copying them into RAM (STRATA_SET=mmap-experts=off) was tested on
             # 2026-11-09: wake 171 s -> 301 s, pod memory 116 -> 219 GiB, and no gain in
             # prefill or decode, because the files were already in the page cache.
+            # Test (2026-11-09): turn off the engine's NVIDIA-only "one-GPU decode path",
+            # which streams the experts the A5000 cannot hold from RAM over PCIe (3.0 on
+            # this server, through the VM) instead of computing them on the CPU. A devbox
+            # with the path off decodes short prompts at 30-33 tok/s against 7-16 here,
+            # and its CPU lane takes ~30% of the experts against 1-18% here. The engine log
+            # line "one-GPU decode path ... DS4_STREAM=0" confirms it took effect.
+            - name: DS4_STREAM
+              value: "0"
             - name: API_KEY_FILE
               value: /run/secrets/deepseek/API_KEY
             - name: STRATA_KEY_FILE
