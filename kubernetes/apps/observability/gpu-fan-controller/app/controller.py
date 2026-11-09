@@ -27,6 +27,7 @@ import hashlib
 import http.client
 import json
 import logging
+import math
 import os
 import signal
 import ssl
@@ -363,7 +364,12 @@ def _by_gpu(results: list[dict]) -> dict[tuple[str, str], float]:
     for r in results:
         m = r["metric"]
         key = (m.get("Hostname") or m.get("node") or "", m.get("UUID") or m.get("gpu") or "")
-        out[key] = float(r["value"][1])
+        try:
+            v = float(r["value"][1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isfinite(v):  # NaN/Inf are dropped, so that GPU counts as missing (fail-safe)
+            out[key] = v
     return out
 
 
@@ -378,7 +384,9 @@ def hottest(temps: list[dict], stamps: list[dict], nodes: list[str], max_age: fl
     timestamp(<metric>): an instant query's own value time is the evaluation time,
     not the sample time."""
     t, ts = _by_gpu(temps), _by_gpu(stamps)
-    for node, uuid in t:
+    for r in temps:  # every GPU that reports at all, even with a NaN, must keep reporting
+        m = r["metric"]
+        node, uuid = m.get("Hostname") or m.get("node") or "", m.get("UUID") or m.get("gpu") or ""
         if node in nodes:
             known.setdefault(node, set()).add(uuid)
     hot = None

@@ -86,6 +86,23 @@ class Mapping(unittest.TestCase):
         self.assertIsNone(c.hottest(temps, [], ["k8s-work-7"], 120, now, known))    # no timestamps
         self.assertIsNone(c.hottest([], fresh, ["k8s-work-7"], 120, now, {}))       # nothing ever seen
 
+    def test_non_finite_readings_count_as_missing(self):
+        now, known = 1000.0, {}
+        t = [self.g("k8s-work-7", "GPU-a", 50)]
+        s = [self.g("k8s-work-7", "GPU-a", 995)]
+        self.assertEqual(c.hottest(t, s, ["k8s-work-7"], 120, now, known), 50.0)
+        for bad in ("NaN", "+Inf", "-Inf"):
+            self.assertIsNone(c.hottest([self.g("k8s-work-7", "GPU-a", bad)], s, ["k8s-work-7"], 120, now, known))
+            self.assertIsNone(c.hottest(t, [self.g("k8s-work-7", "GPU-a", bad)], ["k8s-work-7"], 120, now, known))
+        state = c.HostState()
+        self.assertEqual(c.next_level(state, None, POLICY), 1)  # missing -> fail-safe, never Automatic
+        # A GPU that has only ever reported NaN is still tracked, so a healthy neighbour
+        # on the same node cannot mask it.
+        known = {}
+        t2 = [self.g("k8s-work-8", "GPU-x", "NaN"), self.g("k8s-work-8", "GPU-y", 40)]
+        s2 = [self.g("k8s-work-8", "GPU-x", 995), self.g("k8s-work-8", "GPU-y", 995)]
+        self.assertIsNone(c.hottest(t2, s2, ["k8s-work-8"], 120, now, known))
+
     def test_silent_gpu_is_not_masked_by_a_cool_neighbour(self):
         now, known = 1000.0, {}
         both_t = [self.g("k8s-work-7", "GPU-a", 85), self.g("k8s-work-7", "GPU-b", 40)]
