@@ -379,7 +379,7 @@ def _by_gpu(results: list[dict]) -> dict[tuple[str, str], float]:
 
 
 def hottest(temps: list[dict], stamps: list[dict], nodes: list[str], max_age: float, now: float,
-            known: dict[str, set[str]]) -> tuple[float | None, bool]:
+            known: dict[str, set[str]], expected: dict[str, int] | None = None) -> tuple[float | None, bool]:
     """(hottest fresh GPU temperature across `nodes`, whether any GPU lacks a fresh sample).
 
     Freshness is checked per GPU, not per node: every GPU ever seen on a node (`known`,
@@ -387,7 +387,11 @@ def hottest(temps: list[dict], stamps: list[dict], nodes: list[str], max_age: fl
     silent cannot be hidden by a cool neighbour. A silent GPU does not hide a hot one
     either: the fresh readings are still returned alongside the missing flag. `stamps`
     is the result of timestamp(<metric>): an instant query's own value time is the
-    evaluation time, not the sample time."""
+    evaluation time, not the sample time.
+
+    `known` lives in memory, so after a restart a GPU that is already silent is never
+    learned. `expected` (node -> GPU count, default 1) is the inventory that does not
+    depend on what this process has seen: a node with fewer known GPUs counts as missing."""
     t, ts = _by_gpu(temps), _by_gpu(stamps)
     for r in temps:  # every GPU that reports at all, even with a NaN, must keep reporting
         m = r["metric"]
@@ -397,8 +401,9 @@ def hottest(temps: list[dict], stamps: list[dict], nodes: list[str], max_age: fl
     hot, missing = None, False
     for node in nodes:
         gpus = known.get(node, set())
+        if len(gpus) < max(1, int((expected or {}).get(node, 1))):  # never below 1
+            missing = True  # fewer GPUs reporting than the node is known to have
         if not gpus:
-            missing = True  # a GPU node with no temperature ever seen
             continue
         for uuid in gpus:
             key = (node, uuid)
@@ -469,7 +474,8 @@ def run(cfg: dict) -> None:
                               int(retry_at[host] - now))
                     METRICS.set("gpu_fan_controller_errors", 1, host=host)
                     continue
-            temp, missing = hottest(results, stamps, nodes, cfg["max_sample_age_s"], now, known_gpus)
+            temp, missing = hottest(results, stamps, nodes, cfg["max_sample_age_s"], now, known_gpus,
+                                    cfg.get("expected_gpus"))
             state = states.setdefault(host, HostState())
             level = next_level(state, temp, policy, missing)
             try:

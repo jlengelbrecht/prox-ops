@@ -129,6 +129,16 @@ class Mapping(unittest.TestCase):
             self.assertEqual(c.next_level(state, 40.0, POLICY, True), 2)
         self.assertEqual(c.next_level(c.HostState(), 40.0, POLICY, True), 1)
 
+    def test_expected_inventory_survives_a_restart(self):
+        # Fresh process (empty `known`): a two-GPU node where one GPU is already silent.
+        now = 1000.0
+        t, s = [self.g("k8s-work-9", "GPU-b", 40)], [self.g("k8s-work-9", "GPU-b", 995)]
+        self.assertEqual(c.hottest(t, s, ["k8s-work-9"], 120, now, {}), (40.0, False))  # blind without inventory
+        self.assertEqual(c.hottest(t, s, ["k8s-work-9"], 120, now, {}, {"k8s-work-9": 2}), (40.0, True))
+        self.assertEqual(c.next_level(c.HostState(), 40.0, POLICY, True), 1)  # fail-safe, not Automatic
+        # A count below 1 in the config cannot switch off the "nothing ever reported" check.
+        self.assertTrue(c.hottest([], [], ["k8s-work-9"], 120, now, {}, {"k8s-work-9": 0})[1])
+
 
 class FakeRedfish:
     def __init__(self, attrs):
