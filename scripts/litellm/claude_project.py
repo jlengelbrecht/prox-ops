@@ -29,13 +29,16 @@ FORBIDDEN_ENV = frozenset({
     "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST", "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+    "ANTHROPIC_SMALL_FAST_MODEL",
 })
 FORBIDDEN_SETTINGS = frozenset({
     "apiKeyHelper", "fallbackModel", "modelOverrides", "modelPicker",
     "availableModels", "deniedModels", "provider",
 })
 FORBIDDEN_SETTINGS_ENV = FORBIDDEN_ENV | frozenset({"ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL"})
+    "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL"})
 ALLOWED_PROJECT_SETTINGS_ENV = frozenset()
 SAFE_SETTINGS = json.dumps({"fallbackModel": None}, separators=(",", ":"))
 LOGIN_ENV = frozenset({"HOME", "PATH", "USER", "LOGNAME", "LANG", "LC_ALL",
@@ -180,11 +183,15 @@ def preflight(env, cwd, home, cli=None, login_check=None, key_env=DEFAULT_KEY_EN
 
 
 def _child_env(env, key_env):
-    """Construct the native child environment without retaining the key alias."""
+    """Route native primary, background, and default subagent models through the alias."""
     child = dict(env)
     key = child.pop(key_env)
     child["ANTHROPIC_BASE_URL"] = GATEWAY
     child["ANTHROPIC_MODEL"] = ALIAS
+    for name in ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                 "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                 "CLAUDE_CODE_SUBAGENT_MODEL"):
+        child[name] = ALIAS
     child["ANTHROPIC_CUSTOM_HEADERS"] = "x-litellm-api-key: Bearer " + key
     return child
 
@@ -192,9 +199,9 @@ def _child_env(env, key_env):
 def _command(cli, smoke=False, prompt=None):
     """Build a native command, restricting headless smoke to a single Read."""
     args = [cli, "--model", ALIAS, "--settings", SAFE_SETTINGS,
-            "--no-chrome", "--strict-mcp-config"]
+            "--no-chrome"]
     if smoke:
-        args += ["--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages",
+        args += ["--strict-mcp-config", "--print", "--verbose", "--output-format", "stream-json", "--include-partial-messages",
                  "--setting-sources", "user",
                  "--tools", "Read",
                  "--permission-mode", "dontAsk", "--permission-prompts", "none",

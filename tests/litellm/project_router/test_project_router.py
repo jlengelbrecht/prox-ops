@@ -393,6 +393,10 @@ class ClientTests(unittest.TestCase):
         child = self.client._child_env(env, "LITELLM_PROJECT_KEY")
         command = self.client._command("claude", smoke=True, prompt="synthetic prompt")
         self.assertEqual(child["ANTHROPIC_MODEL"], "project-router")
+        for name in ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                     "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                     "CLAUDE_CODE_SUBAGENT_MODEL"):
+            self.assertEqual(child[name], "project-router")
         self.assertEqual(child["ANTHROPIC_BASE_URL"], self.client.GATEWAY)
         self.assertIn("x-litellm-api-key: Bearer sk-synthetic-owner-key",
                       child["ANTHROPIC_CUSTOM_HEADERS"])
@@ -401,6 +405,8 @@ class ClientTests(unittest.TestCase):
         self.assertIn("--print", command)
         self.assertIn("--verbose", command)
         self.assertIn("--safe-mode", command)
+        self.assertIn("--strict-mcp-config", command)
+        self.assertNotIn("--strict-mcp-config", self.client._command("claude"))
         self.assertEqual(command[command.index("--setting-sources") + 1], "user")
         self.assertNotIn("--setting-sources", self.client._command("claude"))
         self.assertNotIn("--restricted", command)
@@ -410,6 +416,26 @@ class ClientTests(unittest.TestCase):
         self.assertIn("--no-session-persistence", command)
         self.assertNotIn("--bare", command)
         self.assertNotIn("--dangerously-skip-permissions", command)
+
+    def test_explicit_secondary_model_overrides_fail_preflight(self):
+        """Reject model overrides before constructing the gateway child environment."""
+        for name in ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                     "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                     "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE",
+                     "ANTHROPIC_SMALL_FAST_MODEL"):
+            with self.subTest(name=name):
+                report = self.pre(self.env(**{name: "synthetic-other-model"}))
+                self.assertFalse(report["ready"])
+        with tempfile.TemporaryDirectory(dir=ROOT) as temp:
+            home = Path(temp)
+            settings = home / ".claude/settings.json"
+            settings.parent.mkdir()
+            for name in ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL",
+                         "ANTHROPIC_SMALL_FAST_MODEL"):
+                with self.subTest(setting=name):
+                    settings.write_text(json.dumps({"env": {name: "synthetic-other-model"}}))
+                    self.assertIn("settings_credential_or_provider_env",
+                                  self.client._settings_issues(home, home))
 
     def test_login_record_receives_no_project_credentials_and_dry_run_is_secret_free(self):
         """Verify login record receives no project credentials and dry run is secret free."""
