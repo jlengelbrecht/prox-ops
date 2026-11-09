@@ -295,12 +295,14 @@ class Kube:
 
     def __init__(self):
         root = "/var/run/secrets/kubernetes.io/serviceaccount"
-        self.token = open(f"{root}/token").read().strip()
+        self.token_file = f"{root}/token"
         self.ctx = ssl.create_default_context(cafile=f"{root}/ca.crt")
         self.base = f"https://{os.environ['KUBERNETES_SERVICE_HOST']}:{os.environ.get('KUBERNETES_SERVICE_PORT', '443')}"
 
     def nodes(self) -> list[dict]:
-        req = urllib.request.Request(self.base + "/api/v1/nodes", headers={"Authorization": "Bearer " + self.token})
+        # Read the projected token on every request: the kubelet rotates it on disk.
+        token = open(self.token_file).read().strip()
+        req = urllib.request.Request(self.base + "/api/v1/nodes", headers={"Authorization": "Bearer " + token})
         with urllib.request.urlopen(req, context=self.ctx, timeout=20) as r:
             return json.load(r)["items"]
 
@@ -355,23 +357,41 @@ def gpu_nodes_by_host(nodes: list[dict], zone_to_host: dict[str, str]) -> dict[s
     return out
 
 
-def _by_node(results: list[dict]) -> dict[str, float]:
-    out: dict[str, float] = {}
+def _by_gpu(results: list[dict]) -> dict[tuple[str, str], float]:
+    """(node, GPU UUID) -> value."""
+    out: dict[tuple[str, str], float] = {}
     for r in results:
-        node = r["metric"].get("Hostname") or r["metric"].get("node") or ""
-        out[node] = max(out.get(node, float("-inf")), float(r["value"][1]))
+        m = r["metric"]
+        key = (m.get("Hostname") or m.get("node") or "", m.get("UUID") or m.get("gpu") or "")
+        out[key] = float(r["value"][1])
     return out
 
 
-def hottest(temps: list[dict], stamps: list[dict], nodes: list[str], max_age: float, now: float) -> float | None:
-    """Hottest GPU temperature across `nodes`; None if any node has no reading whose sample
-    is younger than `max_age`. `stamps` is the result of timestamp(<metric>): an instant
-    query's own value time is the evaluation time, not the sample time."""
-    t, ts = _by_node(temps), _by_node(stamps)
-    for n in nodes:
-        if n not in t or n not in ts or now - ts[n] > max_age:
-            return None
-    return max(t[n] for n in nodes) if nodes else None
+def hottest(temps: list[dict], stamps: list[dict], nodes: list[str], max_age: float, now: float,
+            known: dict[str, set[str]]) -> float | None:
+    """Hottest GPU temperature across `nodes`, or None (fail-safe) when any GPU lacks a
+    fresh sample.
+
+    Freshness is checked per GPU, not per node: every GPU ever seen on a node (`known`,
+    updated here) must still have a sample younger than `max_age`, so one GPU going
+    silent cannot be hidden by a cool neighbour. `stamps` is the result of
+    timestamp(<metric>): an instant query's own value time is the evaluation time,
+    not the sample time."""
+    t, ts = _by_gpu(temps), _by_gpu(stamps)
+    for node, uuid in t:
+        if node in nodes:
+            known.setdefault(node, set()).add(uuid)
+    hot = None
+    for node in nodes:
+        gpus = known.get(node, set())
+        if not gpus:
+            return None  # a GPU node with no temperature ever seen
+        for uuid in gpus:
+            key = (node, uuid)
+            if key not in t or key not in ts or now - ts[key] > max_age:
+                return None
+            hot = t[key] if hot is None else max(hot, t[key])
+    return hot
 
 
 def load_credentials(host: str) -> tuple[str, str]:
@@ -392,6 +412,7 @@ def run(cfg: dict) -> None:
     actuators: dict[str, object] = {}
     states: dict[str, HostState] = {}
     failures: dict[str, int] = {}
+    known_gpus: dict[str, set[str]] = {}
     retry_at: dict[str, float] = {}
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
@@ -433,7 +454,7 @@ def run(cfg: dict) -> None:
                               int(retry_at[host] - now))
                     METRICS.set("gpu_fan_controller_errors", 1, host=host)
                     continue
-            temp = hottest(results, stamps, nodes, cfg["max_sample_age_s"], now)
+            temp = hottest(results, stamps, nodes, cfg["max_sample_age_s"], now, known_gpus)
             state = states.setdefault(host, HostState())
             level = next_level(state, temp, policy)
             try:

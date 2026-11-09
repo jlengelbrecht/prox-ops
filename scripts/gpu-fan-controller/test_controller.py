@@ -73,18 +73,27 @@ class Mapping(unittest.TestCase):
         got = c.gpu_nodes_by_host(nodes, {"odin": "odin", "heimdall": "heimdall"})
         self.assertEqual(got, {"odin": ["k8s-work-7"], "heimdall": ["k8s-work-4"]})
 
+    def g(self, node, uuid, value, at=1000.0):
+        return {"metric": {"Hostname": node, "UUID": uuid}, "value": [at, str(value)]}
+
     def test_hottest_and_staleness(self):
-        now = 1000.0
-        # An instant query's value time is the evaluation time (always "now"); the
-        # sample time comes from the separate timestamp() query.
-        temps = [{"metric": {"Hostname": "k8s-work-7"}, "value": [now, "71"]},
-                 {"metric": {"Hostname": "k8s-work-7"}, "value": [now, "64"]}]
-        fresh = [{"metric": {"Hostname": "k8s-work-7"}, "value": [now, "990"]}]
-        old = [{"metric": {"Hostname": "k8s-work-7"}, "value": [now, "700"]}]
-        self.assertEqual(c.hottest(temps, fresh, ["k8s-work-7"], 120, now), 71.0)
-        self.assertIsNone(c.hottest(temps, old, ["k8s-work-7"], 120, now))   # stale sample
-        self.assertIsNone(c.hottest(temps, [], ["k8s-work-7"], 120, now))    # no timestamp
-        self.assertIsNone(c.hottest([], fresh, ["k8s-work-7"], 120, now))    # no reading
+        now, known = 1000.0, {}
+        temps = [self.g("k8s-work-7", "GPU-a", 71), self.g("k8s-work-7", "GPU-b", 64)]
+        fresh = [self.g("k8s-work-7", "GPU-a", 990), self.g("k8s-work-7", "GPU-b", 990)]
+        self.assertEqual(c.hottest(temps, fresh, ["k8s-work-7"], 120, now, known), 71.0)
+        old = [self.g("k8s-work-7", "GPU-a", 700), self.g("k8s-work-7", "GPU-b", 990)]
+        self.assertIsNone(c.hottest(temps, old, ["k8s-work-7"], 120, now, known))   # one stale GPU
+        self.assertIsNone(c.hottest(temps, [], ["k8s-work-7"], 120, now, known))    # no timestamps
+        self.assertIsNone(c.hottest([], fresh, ["k8s-work-7"], 120, now, {}))       # nothing ever seen
+
+    def test_silent_gpu_is_not_masked_by_a_cool_neighbour(self):
+        now, known = 1000.0, {}
+        both_t = [self.g("k8s-work-7", "GPU-a", 85), self.g("k8s-work-7", "GPU-b", 40)]
+        both_s = [self.g("k8s-work-7", "GPU-a", 990), self.g("k8s-work-7", "GPU-b", 990)]
+        self.assertEqual(c.hottest(both_t, both_s, ["k8s-work-7"], 120, now, known), 85.0)
+        # GPU-a's series disappears; GPU-b stays cool and fresh.
+        only_b_t, only_b_s = [self.g("k8s-work-7", "GPU-b", 40)], [self.g("k8s-work-7", "GPU-b", 995)]
+        self.assertIsNone(c.hottest(only_b_t, only_b_s, ["k8s-work-7"], 120, now, known))
 
 
 class FakeRedfish:
