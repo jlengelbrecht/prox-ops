@@ -91,6 +91,11 @@ def _clean_input(data, carrier):
         raise _deny()
     if any(body.get(name) is not None for name in FORBIDDEN_BODY_FIELDS):
         raise _deny()
+    # Anthropic Messages has a top-level system field, not instructions. The
+    # pinned completion-to-Responses bridge can overwrite an instructions
+    # kwarg when it extracts a leading system message.
+    if "instructions" in body:
+        raise _deny()
     # A proxy traceparent may be added internally. It cannot carry an upstream
     # credential or destination; all other extra_headers are refused.
     extra = body.get("extra_headers")
@@ -128,6 +133,36 @@ def _clean_input(data, carrier):
         raise _deny()
 
 
+def _normalize_chatgpt_system(messages):
+    """Make Claude text blocks usable by the pinned Responses instruction bridge.
+
+    That bridge extracts leading string system content into ``instructions`` but
+    leaves list content as a system-role input, which ChatGPT rejects.
+    """
+    if not isinstance(messages, list):
+        raise _deny()
+    normalized = list(messages)
+    for index, message in enumerate(messages):
+        if not isinstance(message, Mapping):
+            raise _deny()
+        if message.get("role") != "system":
+            break
+        content = message.get("content")
+        if isinstance(content, str):
+            continue
+        if not isinstance(content, list) or not content:
+            raise _deny()
+        texts = []
+        for block in content:
+            if (not isinstance(block, Mapping) or block.get("type") != "text"
+                    or not isinstance(block.get("text"), str)
+                    or set(block) - {"type", "text", "cache_control"}):
+                raise _deny()
+            texts.append(block["text"])
+        normalized[index] = {**message, "content": "\n".join(texts)}
+    return normalized
+
+
 class ProjectRouterGuard(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         """Enforce the single-model owner and clean request boundary before routing."""
@@ -152,6 +187,8 @@ class ProjectRouterGuard(CustomLogger):
         if carrier.get("credential_fields") != ():
             raise _deny()
         if any(carrier["body"].get(name) is not None for name in FORBIDDEN_BODY_FIELDS):
+            raise _deny()
+        if "instructions" in carrier["body"]:
             raise _deny()
         approved = carrier.get(_PROVENANCE)
         if not isinstance(approved, _ApprovedRequest):
@@ -192,6 +229,8 @@ class ProjectRouterGuard(CustomLogger):
             # The pinned proxy creates this only for Anthropic OAuth, but
             # removing it here also prevents accidental future adapter reuse.
             kwargs.pop("provider_specific_header", None)
+            if phase == "acompletion" and "messages" in kwargs:
+                kwargs["messages"] = _normalize_chatgpt_system(kwargs["messages"])
         if phase in ("anthropic_messages", "acompletion"):
             approved.phases.add(phase)
         return kwargs

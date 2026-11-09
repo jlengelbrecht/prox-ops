@@ -1,6 +1,7 @@
 """Focused synthetic checks for SUB164; no provider or cluster calls."""
 
 import asyncio
+import copy
 import contextlib
 import importlib.util
 import io
@@ -258,6 +259,71 @@ class GuardTests(unittest.TestCase):
                 with self.assertRaises(self.AuthError):
                     asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
                         bad, "aresponses"))
+
+    def test_system_text_blocks_become_chatgpt_completion_instructions(self):
+        """Keep system text ahead of tools without altering captured Claude input."""
+        original = [{"role": "system", "content": [
+            {"type": "text", "text": "First instruction"},
+            {"type": "text", "text": "Second instruction"}]},
+            {"role": "system", "content": [
+                {"type": "text", "text": "Third instruction"}]},
+            {"role": "user", "content": "Do the work"},
+            {"role": "assistant", "tool_calls": [{"id": "toolu_1"}]},
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "result"}]
+        req = self.request(messages=copy.deepcopy(original))
+        req["messages"] = copy.deepcopy(original)
+        captured = copy.deepcopy(req["proxy_server_request"]["body"])
+        self.post(req, self.guard.CHATGPT_ALIAS)
+        self.assertEqual(req["proxy_server_request"]["body"], captured)
+        result = asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
+            req, "acompletion"))
+        self.assertEqual(result["messages"][0]["content"],
+                         "First instruction\nSecond instruction")
+        self.assertEqual(result["messages"][1]["content"], "Third instruction")
+        self.assertEqual(result["messages"][2:], original[2:])
+        self.assertEqual(req["proxy_server_request"]["body"], captured)
+        self.assertIsNot(result["messages"][0], req["proxy_server_request"]["body"]["messages"][0])
+        result.update(api_base=self.guard.CHATGPT_API_BASE, api_key="synthetic-chatgpt-access")
+        asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
+            result, "aresponses"))
+        self.assertEqual(req["proxy_server_request"]["body"], captured)
+
+        native = self.request(messages=copy.deepcopy(original))
+        native["messages"] = copy.deepcopy(original)
+        native_captured = copy.deepcopy(native["proxy_server_request"]["body"])
+        self.post(native, self.guard.CLAUDE_ALIAS)
+        asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
+            native, "acompletion"))
+        self.assertEqual(native["messages"], original)
+        self.assertEqual(native["proxy_server_request"]["body"], native_captured)
+        self.assertEqual(native["provider_specific_header"]["extra_headers"]["Authorization"],
+                         "Bearer sk-ant-oat-synthetic")
+
+    def test_unsupported_system_block_fails_closed(self):
+        """Reject unsupported leading system blocks without changing captured input."""
+        invalid = ([], {}, None, [{"type": "image", "source": "synthetic"}],
+                   [{"type": "text", "text": 7}], [{"type": "text"}],
+                   [{"type": "text", "text": "ok", "extra": "unexpected"}])
+        for content in invalid:
+            with self.subTest(content=content):
+                messages = [{"role": "system", "content": content},
+                            {"role": "user", "content": "Hi"}]
+                req = self.request(messages=copy.deepcopy(messages))
+                req["messages"] = copy.deepcopy(messages)
+                captured = copy.deepcopy(req["proxy_server_request"]["body"])
+                self.post(req, self.guard.CHATGPT_ALIAS)
+                with self.assertRaises(self.AuthError):
+                    asyncio.run(self.guard.proxy_handler_instance.async_pre_call_deployment_hook(
+                        req, "acompletion"))
+                self.assertEqual(req["proxy_server_request"]["body"], captured)
+
+    def test_nonstandard_messages_instructions_are_denied(self):
+        """Do not silently lose a caller field the Messages API cannot carry."""
+        req = self.request(instructions="Separate synthetic instruction")
+        with self.assertRaises(self.AuthError):
+            self.pre(req)
+        self.assertEqual(req["proxy_server_request"]["body"]["instructions"],
+                         "Separate synthetic instruction")
 
     def test_selected_provider_does_not_authorize_caller_override(self):
         """Permit the selected provider only when the original request is clean."""
