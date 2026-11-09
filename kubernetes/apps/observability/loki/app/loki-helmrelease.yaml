@@ -27,6 +27,9 @@ spec:
       # Roll back rather than uninstall so a failed upgrade cannot tear down Loki storage
       strategy: rollback
   values:
+    # Never evicted when a large model wakes (kubernetes/apps/kube-system/priorityclasses).
+    lokiCanary:
+      priorityClassName: homelab-critical
     # Deployment mode - single binary for homelab simplicity
     deploymentMode: Monolithic
 
