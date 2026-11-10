@@ -16,12 +16,16 @@ APP = ROOT / "kubernetes/apps/ai/litellm/app"
 class GrokTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        names = ("litellm", "litellm.exceptions", "litellm.integrations",
+        names = ("httpx", "litellm", "litellm.exceptions", "litellm.integrations",
                  "litellm.integrations.custom_logger", "litellm.llms", "litellm.llms.xai",
                  "litellm.llms.xai.oauth")
         cls.old = {name: sys.modules.get(name) for name in names}
         for name in names:
             sys.modules[name] = types.ModuleType(name)
+        # Only the HTTP client shape is needed: network calls are replaced by
+        # synthetic clients in the tests that exercise identity resolution.
+        sys.modules["httpx"].Timeout = lambda *_args, **_kwargs: None
+        sys.modules["httpx"].AsyncClient = type("UnusedHTTPClient", (), {})
         sys.modules["litellm.integrations.custom_logger"].CustomLogger = type("CustomLogger", (), {})
         cls.AuthError = type("AuthError", (Exception,), {
             "__init__": lambda self, **kw: Exception.__init__(self, kw["message"])})

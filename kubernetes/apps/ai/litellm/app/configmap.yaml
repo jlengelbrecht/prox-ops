@@ -155,6 +155,55 @@ data:
         model_info:
           description: "Project pilot heuristic router; selected deployment logged"
 
+      # Hindsight operation aliases are prepared for a separate scoped-key
+      # canary. Each operation keeps its predefined model at every heuristic
+      # tier. No Hindsight consumer traffic changes here.
+      - model_name: "automation-chatgpt-luna-responses"
+        litellm_params:
+          model: "chatgpt/gpt-5.6-luna"
+          timeout: 300
+          max_retries: 0
+        model_info:
+          mode: responses
+          description: "Hindsight default and retain on ChatGPT subscription"
+
+      - model_name: "automation-chatgpt-terra-responses"
+        litellm_params:
+          model: "chatgpt/gpt-5.6-terra"
+          timeout: 300
+          max_retries: 0
+        model_info:
+          mode: responses
+          description: "Hindsight reflect and consolidation on ChatGPT subscription"
+
+      - model_name: "hindsight-retain"
+        litellm_params:
+          model: "auto_router/complexity_router"
+          complexity_router_config:
+            classifier_type: heuristic
+            adaptive: false
+            tiers:
+              SIMPLE: "automation-chatgpt-luna-responses"
+              MEDIUM: "automation-chatgpt-luna-responses"
+              COMPLEX: "automation-chatgpt-luna-responses"
+              REASONING: "automation-chatgpt-luna-responses"
+        model_info:
+          description: "Hindsight retain operation; predefined Luna model at every tier"
+
+      - model_name: "hindsight-reflect"
+        litellm_params:
+          model: "auto_router/complexity_router"
+          complexity_router_config:
+            classifier_type: heuristic
+            adaptive: false
+            tiers:
+              SIMPLE: "automation-chatgpt-terra-responses"
+              MEDIUM: "automation-chatgpt-terra-responses"
+              COMPLEX: "automation-chatgpt-terra-responses"
+              REASONING: "automation-chatgpt-terra-responses"
+        model_info:
+          description: "Hindsight reflect operation; predefined Terra model at every tier"
+
       # =====================================================
       # STORY-150: Timeout optimization for cold starts
       # Extended per-model timeouts to accommodate cold start delays
