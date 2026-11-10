@@ -1,8 +1,7 @@
 ---
 # Nyctr network console (github.com/homelab-0/nyctr). One stateless pod; its
-# state is a role + Database CR on the shared CloudNativePG cluster
-# (kubernetes/apps/database/cluster) and its sign-in is the Authentik blueprint
-# nyctr.yaml (kubernetes/apps/security/authentik).
+# state is its own CloudNativePG cluster (../nyctr-db) and its sign-in is the
+# Authentik blueprint nyctr.yaml (kubernetes/apps/security/authentik).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -13,14 +12,12 @@ spec:
   commonMetadata:
     labels:
       app.kubernetes.io/name: *app
-  # The database root applies `namespace: database`, so postgres-cluster's CR
-  # lands there (same as ai/paperclip/ks.yaml). Authentik is not listed: Nyctr
-  # starts without it and only sign-in waits for the blueprint.
+  # Authentik is not listed: Nyctr starts without it and only sign-in waits
+  # for the blueprint.
   dependsOn:
     - name: external-secrets-operator
       namespace: flux-system
-    - name: postgres-cluster
-      namespace: database
+    - name: nyctr-db
   interval: 1h
   retryInterval: 2m
   timeout: 10m

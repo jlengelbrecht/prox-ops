@@ -110,11 +110,6 @@ spec:
           # PUBLIC CONNECT on the other databases remains untouched.
           - host groschen groschen all scram-sha-256
           - host all groschen all reject
-          # Nyctr can authenticate only to its own database, and only over
-          # TLS (libpq's default sslmode=prefer negotiates it). Same two-line
-          # shape as above; both lines name the role.
-          - hostssl nyctr nyctr all scram-sha-256
-          - host all nyctr all reject
 
       # Declarative role management - each app gets a dedicated user
       # Passwords managed via ExternalSecrets from 1Password
@@ -212,19 +207,6 @@ spec:
           connectionLimit: 24
           passwordSecret:
             name: groschen-db-credentials
-        # Nyctr network console (security/nyctr). Plain login role: owner of
-        # the `nyctr` database only. One application pod with a small pool.
-        - name: nyctr
-          ensure: present
-          login: true
-          superuser: false
-          createdb: false
-          createrole: false
-          replication: false
-          bypassrls: false
-          connectionLimit: 20
-          passwordSecret:
-            name: nyctr-db-credentials
 
     # Backups - disabled until S3 storage is available
     # When MinIO/S3 is ready, enable and configure:

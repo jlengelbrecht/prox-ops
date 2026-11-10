@@ -1,0 +1,44 @@
+---
+# Only Nyctr and the cluster's own pods reach this Postgres. The operator
+# needs the instance manager port and Postgres. Same shape as authentik-db.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nyctr-db
+  namespace: security
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: nyctr-db
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: 5432
+          protocol: TCP
+      from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: nyctr
+              app.kubernetes.io/name: nyctr
+    - ports:
+        - port: 5432
+          protocol: TCP
+        - port: 8000
+          protocol: TCP
+      from:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: nyctr-db
+    - ports:
+        - port: 5432
+          protocol: TCP
+        - port: 8000
+          protocol: TCP
+      from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudnative-pg

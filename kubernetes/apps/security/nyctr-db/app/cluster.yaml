@@ -1,0 +1,49 @@
+---
+# Nyctr's own Postgres: sessions, integration settings, requests, leases and
+# the audit trail. One instance: Nyctr is a single pod and is not on the login
+# path of anything else. Prune is disabled so removing this file from Git
+# never deletes the data. There is no backup or dump of this database yet.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: nyctr-db
+  namespace: security
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  instances: 1
+  # A single-instance cluster with a PDB can never be evicted, which stalls
+  # node drains and Talos upgrades (see database/cluster/app/helmrelease.yaml).
+  enablePDB: false
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.6-202611030838-standard-trixie@sha256:5bf4a23aa13fb560903fba932676773ba4ba2729c162e587b09bf539a2e3df56
+
+  bootstrap:
+    initdb:
+      database: nyctr
+      owner: nyctr
+      secret:
+        name: nyctr-db-credentials
+      # Not tied to the image's glibc, so a base image change cannot leave
+      # text indexes stale.
+      localeProvider: builtin
+      builtinLocale: C.UTF-8
+
+  # Keeps the role's password in step with 1Password after a rotation.
+  managed:
+    roles:
+      - name: nyctr
+        ensure: present
+        login: true
+        passwordSecret:
+          name: nyctr-db-credentials
+
+  storage:
+    size: 5Gi
+    storageClass: ceph-block-retain
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
