@@ -92,6 +92,17 @@ variable "numa_nodes" {
   default = []
 }
 
+variable "additional_disks" {
+  description = "Optional extra data disks. interface is a free bus slot such as scsi1; backup defaults to false because these hold data that can be fetched again."
+  type = list(object({
+    interface    = string
+    datastore_id = string
+    size_gb      = number
+    backup       = optional(bool, false)
+  }))
+  default = []
+}
+
 variable "disk_size_gb" {
   description = "Disk size in GB"
   type        = number

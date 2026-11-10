@@ -297,6 +297,12 @@ variable "worker_nodes" {
       hostnodes = string            # host NUMA node(s), e.g. "0"
       policy    = optional(string, "bind")
     })), [])                        # Optional guest-to-host NUMA binding (default: none)
+    additional_disks = optional(list(object({
+      interface    = string         # free bus slot, e.g. "scsi1"
+      datastore_id = string         # Proxmox datastore, e.g. a host-local LVM store
+      size_gb      = number
+      backup       = optional(bool, false)
+    })), [])                        # Optional extra data disks (default: none)
     additional_network_devices = optional(list(object({
       bridge  = string
       vlan_id = number
