@@ -80,6 +80,11 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(flat['expires_at'], NOW + 3600)
         self.assertEqual(set(flat), {'access_token', 'refresh_token', 'id_token', 'account_id', 'expires_at'})
 
+    def test_valid_expiry_has_no_invented_lifetime_limit(self):
+        self.assertEqual(auth.convert_record(record(exp=NOW + 2 * 86400), now=NOW)['expires_at'], NOW + 2 * 86400)
+        with self.assertRaisesRegex(auth.ClosedFailure, 'invalid_expiry'):
+            auth.convert_record(record(exp=NOW + 60), now=NOW)
+
     def test_claim_derived_account_and_ambiguity(self):
         original = record()
         del original['tokens']['account_id']
@@ -103,7 +108,7 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(self.target.read_bytes(), before)
 
     def test_invalid_records_and_failures_never_create_target_or_print_secret(self):
-        variants = [record(exp=NOW - 1), record(exp=NOW + 90000),
+        variants = [record(exp=NOW - 1),
                     {'auth_mode': 'chatgpt', 'tokens': {'refresh_token': MARKER}},
                     {'auth_mode': 'api_key', 'tokens': record()['tokens']},
                     {**record(), 'tokens': {**record()['tokens'], 'account_id': 'other'}}]
@@ -318,9 +323,7 @@ class AuthTests(unittest.TestCase):
                     expected = b'AUTH_PREP_LOGIN_FAILED_OR_CANCELLED\n' if termination is None else b'AUTH_PREP_CANCELLED\n'
                     self.assertEqual((runner.returncode, out, err), (1, b'', expected))
                     self.assertFalse(self.task.exists())
-                    status = Path(f'/proc/{descendant}/stat')
-                    if status.exists():
-                        self.assertEqual(status.read_text().split()[2], 'Z')
+                    self.assert_descendant_stopped(descendant)
                 finally:
                     if runner.poll() is None:
                         runner.kill()
@@ -348,9 +351,7 @@ class AuthTests(unittest.TestCase):
             descendant = int(marker.read_text())
             auth._stop_child(parent)
             self.assertIsNotNone(parent.returncode)
-            status = Path(f'/proc/{descendant}/stat')
-            if status.exists():
-                self.assertEqual(status.read_text().split()[2], 'Z')
+            self.assert_descendant_stopped(descendant)
         finally:
             if parent.poll() is None:
                 os.killpg(parent.pid, auth.signal.SIGKILL)
@@ -413,6 +414,7 @@ class AuthTests(unittest.TestCase):
         original = record(exp=int(__import__('time').time()) + 3600)
         runtime_dir = self.task
         class Success:
+            pid = os.getpid()
             def __init__(self, args, **kwargs):
                 self.env = kwargs['env']
                 assert args == [str(cli), 'login']
@@ -425,12 +427,48 @@ class AuthTests(unittest.TestCase):
                 native.write_text(json.dumps(original))
                 os.chmod(native, 0o600)
                 return 0
-        with patch.object(auth, '_trusted_cli', return_value=str(cli)), patch.object(auth.subprocess, 'Popen', Success):
+        with patch.object(auth, '_trusted_cli', return_value=str(cli)), patch.object(auth.subprocess, 'Popen', Success), patch.object(auth.os, 'killpg') as killed:
             result, out, err = self.call('login', '--runtime-dir', str(self.task), '--output', str(self.target), '--cli', str(cli))
         self.assertEqual((result, out, err), (0, 'AUTH_PREP_READY\n', ''))
+        killed.assert_called_once_with(Success.pid, signal.SIGKILL)
         self.assertEqual(stat.S_IMODE(self.target.stat().st_mode), 0o600)
         self.assertEqual(json.loads(self.target.read_text())['refresh_token'], MARKER)
         self.assertFalse((self.task / 'native.json').exists())
+
+    def test_successful_login_stops_surviving_session_descendant(self):
+        shutil.rmtree(self.task)
+        fake = Path('/dev/shm') / f'auth-success-cli-{os.getpid()}'
+        marker = Path('/dev/shm') / f'auth-success-child-{os.getpid()}'
+        payload = json.dumps(record(exp=int(time.time()) + 3600))
+        child_code = 'import os,sys,time;open(sys.argv[1],"w").write(str(os.getpid()));time.sleep(30)'
+        writer = 'import os,pathlib,sys;pathlib.Path(os.environ["CODEX_HOME"],"auth.json").write_text(sys.argv[1]);os.chmod(pathlib.Path(os.environ["CODEX_HOME"],"auth.json"),0o600)'
+        fake.write_text('#!/bin/sh\n' + shlex.quote(sys.executable) + ' -c ' + shlex.quote(child_code) + ' ' + shlex.quote(str(marker)) + ' &\n' + shlex.quote(sys.executable) + ' -c ' + shlex.quote(writer) + ' ' + shlex.quote(payload) + '\nsleep 0.2\n')
+        fake.chmod(0o700)
+        descendant = None
+        try:
+            with patch.object(auth, '_trusted_cli', return_value=str(fake)):
+                result, out, err = self.call('login', '--runtime-dir', str(self.task), '--output', str(self.target), '--cli', str(fake))
+            self.assertEqual((result, out, err), (0, 'AUTH_PREP_READY\n', ''))
+            descendant = int(marker.read_text())
+            self.assert_descendant_stopped(descendant)
+            self.assertEqual(json.loads(self.target.read_text())['refresh_token'], MARKER)
+        finally:
+            if descendant is not None:
+                status = Path(f'/proc/{descendant}/stat')
+                if status.exists() and status.read_text().split()[2] != 'Z':
+                    os.kill(descendant, signal.SIGKILL)
+            fake.unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+
+    def assert_descendant_stopped(self, pid):
+        status = Path(f'/proc/{pid}/stat')
+        deadline = time.monotonic() + 3
+        while status.exists() and time.monotonic() < deadline:
+            if status.read_text().split()[2] == 'Z':
+                return
+            time.sleep(0.02)
+        if status.exists():
+            self.assertEqual(status.read_text().split()[2], 'Z')
 
 
 if __name__ == '__main__':

@@ -21,7 +21,6 @@ import time
 MAX_RECORD = 65536
 MAX_TOKEN = 32768
 MAX_CLAIMS = 16384
-MAX_LIFETIME = 86400
 
 
 class ClosedFailure(Exception):
@@ -67,7 +66,7 @@ def convert_record(record, now=None):
     identity = _claims(values['id_token'])
     clock = time.time() if now is None else now
     expiry = access.get('exp')
-    if type(expiry) is not int or not clock + 60 < expiry <= clock + MAX_LIFETIME:
+    if type(expiry) is not int or not clock + 60 < expiry:
         raise ClosedFailure('invalid_expiry')
     def account(claims):
         section = claims.get('https://api.openai.com/auth')
@@ -283,6 +282,9 @@ def login(task, target, cli, timeout, ambient=None):
             raise ClosedFailure('login_timeout') from None
         if code is None or code != 0:
             raise ClosedFailure('login_failed_or_cancelled')
+        # A successful CLI leader may leave children in its login session.
+        # Stop them before reading credentials or handing off the output.
+        _stop_child(proc)
         codex_dir = task / 'codex'
         directory = codex_dir.lstat()
         if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) != 0o700:
