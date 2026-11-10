@@ -123,6 +123,15 @@ spec:
               name: authentik-discord
               key: AUTHENTIK_DISCORD_WEBHOOK_URL
               optional: true
+        # Nyctr (client id is the literal "nyctr" in the blueprint; the
+        # secret is 1Password-backed). optional, as for Warpgate: only
+        # nyctr.yaml fails while the item doesn't exist.
+        - name: AUTHENTIK_NYCTR_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: authentik-nyctr
+              key: AUTHENTIK_NYCTR_CLIENT_SECRET
+              optional: true
 
         # =============================================================
         # SOURCE CREDENTIALS
@@ -175,7 +184,7 @@ spec:
     server:
       replicas: 1
       podAnnotations:
-        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao,authentik-discord"
+        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao,authentik-discord,authentik-nyctr"
       resources:
         requests:
           cpu: 100m
@@ -200,7 +209,7 @@ spec:
     worker:
       replicas: 1
       podAnnotations:
-        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao,authentik-discord"
+        secret.reloader.stakater.com/reload: "authentik-secret,authentik-entra,authentik-warpgate,authentik-grafana-oauth,authentik-openbao,authentik-discord,authentik-nyctr"
         configmap.reloader.stakater.com/reload: "authentik-blueprints"
       # No CPU limit: startup blueprint and outpost work was throttled hard enough
       # under a 500m limit that `ak healthcheck` missed its 3s timeout and the

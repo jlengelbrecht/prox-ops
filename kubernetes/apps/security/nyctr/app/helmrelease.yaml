@@ -1,0 +1,126 @@
+---
+# Nyctr network console: what the network blocked, who asked for access, and
+# guest Wi-Fi. Read-only as deployed here: collection only reads, and Nyctr may
+# change a source only when its integration is named in providerWrites.
+#
+# The chart is Nyctr's own (ocirepository.yaml). It refuses to render unless
+# the image, public URL, trusted proxies, database, sign-in and ingress policy
+# are all explicit, so every value below is one it requires.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: nyctr
+spec:
+  chartRef:
+    kind: OCIRepository
+    name: nyctr
+  interval: 1h
+  # The source egress rules in networkpolicy.yaml are toFQDNs, which only
+  # enforce correctly when the pod asks cluster DNS for the exact policed
+  # name; the default ndots:5 search path would try
+  # <name>.security.svc.cluster.local first and the connection would be
+  # dropped (same patch as ai/hermes-hindsight). Drop when the chart grows a
+  # dnsConfig value.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              kind: Deployment
+              name: nyctr
+            patch: |
+              - op: add
+                path: /spec/template/spec/dnsConfig
+                value:
+                  options:
+                    - name: ndots
+                      value: "1"
+  values:
+    image:
+      repository: ghcr.io/homelab-0/nyctr
+      # v0.1.0-alpha.1 (amd64 and arm64), until v0.1.0-alpha.2 is published;
+      # the chart tag in ocirepository.yaml and this digest then move
+      # together. The chart takes a digest or a tag, never both.
+      digest: sha256:e0095dd4a3474acd289973651f27c40d3541e1718ba30f8025151975486769c1
+
+    # Origin people open, and the origin of the OIDC callback
+    # (<publicUrl>/api/auth/oidc/callback, declared in the Authentik blueprint).
+    publicUrl: https://nyctr.homelab0.org
+
+    # Peers allowed to supply X-Forwarded-*: the pod CIDR the envoy-internal
+    # gateway pods live in (talos/talconfig.yaml clusterPodNets), same range
+    # Paperclip trusts. The chart accepts a range only while its network
+    # policy is on, because the policy below is what guarantees that only
+    # those gateway pods can connect at all. Nyctr recognises a member's
+    # device by the client address the gateway reports, so this must be right.
+    forwardedAllowIps:
+      - 10.42.0.0/16
+    networkPolicy:
+      enabled: true
+      ingressFrom:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: network
+          podSelector:
+            matchLabels:
+              gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+
+    httpRoute:
+      enabled: true
+      # The record nyctr.homelab0.org is created from this route by the
+      # existing DNS automation (k8s-gateway, unifi external-dns).
+      annotations:
+        external-dns.alpha.kubernetes.io/hostname: nyctr.homelab0.org
+      parentRefs:
+        - name: envoy-internal
+          namespace: network
+          sectionName: https
+
+    database:
+      existingSecret: nyctr-db
+      urlKey: database-url
+
+    # Sign-in is Authentik only. No local accounts, so there is no bootstrap
+    # password to store. The role comes from the "groups" claim on every
+    # sign-in: nyctr-admins get the console, nyctr-members the portal, anyone
+    # else is refused. The client id is a public identifier, declared once in
+    # the Authentik blueprint and once here. The issuer must match the
+    # provider's discovery document exactly, trailing slash included.
+    auth:
+      local:
+        enabled: false
+      oidc:
+        enabled: true
+        issuer: https://authentik.homelab0.org/application/o/nyctr/
+        clientId: nyctr
+        existingSecret: nyctr-oidc
+        clientSecretKey: client-secret
+        adminGroups:
+          - nyctr-admins
+        allowedGroups:
+          - nyctr-members
+
+    # Sources. In the console a source is connected by the environment name,
+    # never the key. NextDNS uses its own fixed origin, so it needs no entry
+    # under connectors.hosts; every other source does, because a key is sent
+    # only to a host listed there. Certificates are always verified and no CA
+    # bundle is mounted, so a host must present a publicly trusted
+    # certificate for its name. The UniFi console and Proxmox follow once
+    # their hostnames, as resolved from inside the cluster, are settled.
+    connectors:
+      secrets:
+        - envName: NYCTR_CONNECTOR_SECRET_NEXTDNS
+          existingSecret: nyctr-connectors
+          key: nextdns-api-key
+
+    # Read-only: Nyctr changes nothing at any source. Later, one integration
+    # at a time: [nextdns] first, then [nextdns, unifi_network].
+    providerWrites: []
+    # No schedule yet: collect from the console while the adapters are being
+    # checked against the real sources. 60 to 86400 seconds once trusted.
+    collection:
+      intervalSeconds: 0
+
+    # The process reads its secrets only at start: roll the pod when
+    # nyctr-db, nyctr-oidc or nyctr-connectors change.
+    podAnnotations:
+      reloader.stakater.com/auto: "true"

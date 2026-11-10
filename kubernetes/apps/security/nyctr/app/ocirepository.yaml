@@ -1,0 +1,16 @@
+---
+# Nyctr's own Helm chart, published by its release workflow from
+# v0.1.0-alpha.2 onwards. The chart never chooses an image; the digest is set
+# in helmrelease.yaml and comes from the same release.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: nyctr
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: 0.1.0-alpha.2
+  url: oci://ghcr.io/homelab-0/charts/nyctr
