@@ -11,6 +11,10 @@ spec:
   dependsOn:
     - name: deepseek-storage
       namespace: ai
+    # The deepseek Kustomization carries the deepseek-prepare network policy this
+    # Job runs under; it must be applied first.
+    - name: deepseek
+      namespace: ai
   interval: 1h
   path: ./kubernetes/apps/ai/deepseek/prepare-2-25
   prune: true
