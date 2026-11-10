@@ -142,6 +142,17 @@ class HandoffTest(unittest.TestCase):
             p = Path(d) / "auth.json"; p.write_bytes(record()); p.chmod(0o600)
             with self.assertRaises(ValueError): h.source_bytes(p)
 
+    def test_source_rejects_tmpfs_prefix_traversal_before_read(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as d:
+            target = Path(d) / "auth.json"
+            target.write_bytes(record())
+            target.chmod(0o600)
+            traversing = Path("/dev/shm/../..") / target.relative_to("/")
+            self.assertEqual(traversing.resolve(), target)
+            with mock.patch.object(h.os, "read", side_effect=AssertionError("source was read")):
+                with self.assertRaisesRegex(ValueError, "^SOURCE_UNSAFE$"):
+                    h.source_bytes(traversing)
+
     def run_receiver(self, root, stage, raw=b""):
         code = h.remote_program(stage).replace(h.ROOT, str(root))
         return subprocess.run([sys.executable, "-u", "-c", code], input=raw,

@@ -115,7 +115,10 @@ def parse_record(raw):
 
 def source_bytes(path):
     """Read a private, task-owned regular file on tmpfs without following links."""
-    p = Path(path).absolute()
+    p = Path(path)
+    if ".." in p.parts:
+        raise ValueError("SOURCE_UNSAFE")
+    p = p.absolute()
     if p == Path("/") or any(stat.S_ISLNK(os.lstat(a).st_mode) for a in [p, *p.parents]):
         raise ValueError("SOURCE_UNSAFE")
     parent = os.lstat(p.parent)
