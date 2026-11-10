@@ -31,6 +31,17 @@ def record(**changes):
 
 
 class HandoffTest(unittest.TestCase):
+    def test_optimized_metadata_refuses_before_kubectl(self):
+        code = ("import importlib.util,sys,unittest.mock as mock;"
+                "s=importlib.util.spec_from_file_location('handoff',sys.argv[1]);"
+                "h=importlib.util.module_from_spec(s);s.loader.exec_module(h);"
+                "p=mock.patch.object(h,'call',side_effect=RuntimeError('kubectl called'));p.start();"
+                "\ntry: h.metadata()\nexcept ValueError as e:"
+                " sys.exit(0 if str(e)=='PREFLIGHT_FAILED' else 2)\nsys.exit(3)")
+        result = subprocess.run([sys.executable, "-O", "-c", code, str(SCRIPT)],
+                                capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
     def test_schema_and_size(self):
         self.assertTrue(h.parse_record(record()))
         for raw in (b"", b"x", b" " * (h.MAX + 1), record(expires_at=0),

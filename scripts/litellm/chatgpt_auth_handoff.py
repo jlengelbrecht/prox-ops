@@ -255,6 +255,8 @@ def call(args, timeout):
 
 
 def metadata():
+    if not __debug__:
+        raise ValueError("PREFLIGHT_FAILED")
     dep = call(BASE + ["get", "deployment", "litellm", "-o", "json"], 10)
     pods = call(BASE + ["get", "pods", "-o", "json"], 10)["items"]
     sets = call(BASE + ["get", "replicaset", "-o", "json"], 10)["items"]
