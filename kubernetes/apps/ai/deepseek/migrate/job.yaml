@@ -1,0 +1,82 @@
+---
+# Copies everything on deepseek-data (CephFS, read-only here) to deepseek-local
+# and checks that every file arrived with the same size. It carries the prepare
+# labels on purpose: the Service's anti-affinity then keeps the server off the
+# node while the copy runs (and the copy waits while the server is up), and the
+# deepseek-prepare network policy applies (DNS only).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: deepseek-migrate-local
+  labels:
+    app.kubernetes.io/name: deepseek
+    app.kubernetes.io/component: prepare
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: deepseek
+        app.kubernetes.io/component: prepare
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      nodeSelector:
+        gpu.nvidia.com/model: rtx-a5000
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: deepseek
+                  app.kubernetes.io/component: server
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: copy
+          # The Strata image is already on the node and has the tools needed; nothing of Strata runs.
+          image: ghcr.io/niko1221/strata:0.2.12-cuda13@sha256:c3a853420670f4c0f5a948c2d9e9904af4cedf52b11bc8cf167602dc5c578bcc
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              fs=$(stat -f -c %T /dst)
+              [ "$fs" = xfs ] || { echo "refusing: /dst is $fs, expected the xfs user volume"; exit 1; }
+              s=$(date +%s)
+              cp -a /src/. /dst/
+              list() { ( cd "$1" && find . -type f -printf '%s %p\n' | sort ); }
+              a=$(list /src | sha256sum); b=$(list /dst | sha256sum)
+              echo "copied $(list /dst | wc -l) files, $(du -sh /dst | cut -f1), in $(( $(date +%s) - s )) s"
+              [ "$a" = "$b" ] || { echo "file list or sizes differ between source and copy"; exit 1; }
+              echo "source and copy match (names and sizes)"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              # Root in the image; these let the copy keep owners and modes.
+              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+          resources:
+            requests:
+              cpu: "2"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+          volumeMounts:
+            - name: src
+              mountPath: /src
+              readOnly: true
+            - name: dst
+              mountPath: /dst
+      volumes:
+        - name: src
+          persistentVolumeClaim:
+            claimName: deepseek-data
+            readOnly: true
+        - name: dst
+          persistentVolumeClaim:
+            claimName: deepseek-local
