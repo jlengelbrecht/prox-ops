@@ -155,6 +155,48 @@ data:
         model_info:
           description: "Project pilot heuristic router; selected deployment logged"
 
+      # Hindsight operation aliases are prepared for a separate scoped-key
+      # canary. Every heuristic tier deliberately keeps the same strong
+      # Responses backend until retain and reflect quality canaries qualify
+      # any other subscription model. No consumer traffic changes here.
+      - model_name: "automation-chatgpt-responses"
+        litellm_params:
+          model: "chatgpt/gpt-6.1-sol"
+          reasoning_effort: "high"
+          timeout: 300
+          max_retries: 0
+        model_info:
+          mode: responses
+          description: "Hindsight operation backend on ChatGPT subscription"
+
+      - model_name: "hindsight-retain"
+        litellm_params:
+          model: "auto_router/complexity_router"
+          complexity_router_config:
+            classifier_type: heuristic
+            adaptive: false
+            tiers:
+              SIMPLE: "automation-chatgpt-responses"
+              MEDIUM: "automation-chatgpt-responses"
+              COMPLEX: "automation-chatgpt-responses"
+              REASONING: "automation-chatgpt-responses"
+        model_info:
+          description: "Hindsight retain operation; strong Responses floor at every tier"
+
+      - model_name: "hindsight-reflect"
+        litellm_params:
+          model: "auto_router/complexity_router"
+          complexity_router_config:
+            classifier_type: heuristic
+            adaptive: false
+            tiers:
+              SIMPLE: "automation-chatgpt-responses"
+              MEDIUM: "automation-chatgpt-responses"
+              COMPLEX: "automation-chatgpt-responses"
+              REASONING: "automation-chatgpt-responses"
+        model_info:
+          description: "Hindsight reflect operation; strong Responses floor at every tier"
+
       # =====================================================
       # STORY-150: Timeout optimization for cold starts
       # Extended per-model timeouts to accommodate cold start delays
