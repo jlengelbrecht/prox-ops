@@ -25,6 +25,14 @@
 # pin memory (the Docker image's --ulimit memlock=-1); it runs as root, as the
 # image requires.
 #
+# Engram tables: the model looks up a few rows of a 103 GiB table file for every
+# token. Read in place from CephFS, a cold 4 KiB read took about 12 ms and the
+# lookups cost 87 ms of a 123 ms token (DS4_PROF, 2026-11-10). The start command
+# therefore copies the model's shared files (112 GiB) into a memory-backed
+# volume mounted over their directory before the server starts. With the copy
+# the lookups cost 0.2 ms and decode went from 8.1 to 22.1 tok/s in the same
+# test. The copy adds about 150 s to a wake and counts against the memory limit.
+#
 # One request at a time (PARALLEL=1, containerConcurrency 1), 128K context.
 # Cold start reads ~250 GB from CephFS, so the progress deadline and request
 # timeouts are long. After 10 idle minutes the pod is retained 10 more, then
@@ -81,6 +89,16 @@ spec:
       containers:
         - name: strata
           image: ghcr.io/niko1221/strata:0.2.12-cuda13@sha256:c3a853420670f4c0f5a948c2d9e9904af4cedf52b11bc8cf167602dc5c578bcc
+          # The image's own entrypoint, run after the copy described above. A failed
+          # copy stops the start: the engine cannot load without these files.
+          command:
+            - /usr/bin/tini
+            - --
+            - /bin/sh
+            - -c
+            - >-
+              cp -r /engram-src/. /data/Strata-data/models/deepseek-v4.1-flash-shared/
+              && exec /opt/strata/entrypoint.sh run
           ports:
             - name: http1
               containerPort: 8080
@@ -105,12 +123,6 @@ spec:
             # already reported that path off without it.
             - name: STRATA_SET
               value: "cpu-threads=36"
-            # Strata's own DeepSeek tuner (tools/dsv41/tune.py), run once at the next start
-            # and kept in the preset on the volume. It measures the DSpark drafter and the
-            # CPU thread count against the baseline and keeps a change only above +5%.
-            # Adds roughly 5-10 minutes to that one wake.
-            - name: TUNE
-              value: quick
             - name: API_KEY_FILE
               value: /run/secrets/deepseek/API_KEY
             - name: STRATA_KEY_FILE
@@ -143,6 +155,12 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: data
+              mountPath: /engram-src
+              subPath: Strata-data/models/deepseek-v4.1-flash-shared
+              readOnly: true
+            - name: engram-ram
+              mountPath: /data/Strata-data/models/deepseek-v4.1-flash-shared
             - name: api-key
               mountPath: /run/secrets/deepseek
               readOnly: true
@@ -166,3 +184,7 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 2Gi
+        - name: engram-ram
+          emptyDir:
+            medium: Memory
+            sizeLimit: 116Gi
