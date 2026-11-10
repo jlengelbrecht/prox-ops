@@ -25,16 +25,14 @@
 # pin memory (the Docker image's --ulimit memlock=-1); it runs as root, as the
 # image requires.
 #
-# Engram tables: the model looks up a few rows of a 103 GiB table file for every
-# token. Read in place from CephFS, a cold 4 KiB read took about 12 ms and the
-# lookups cost 87 ms of a 123 ms token (DS4_PROF, 2026-11-10). The start command
-# therefore copies the model's shared files (112 GiB) into a memory-backed
-# volume mounted over their directory before the server starts. With the copy
-# the lookups cost 0.2 ms and decode went from 8.1 to 22.1 tok/s in the same
-# test. The copy adds about 150 s to a wake and counts against the memory limit.
+# Storage: the model lives on deepseek-local, a volume on k8s-work-7's own SSDs,
+# not on CephFS. The model looks up a few rows of a 103 GiB Engram table for
+# every token; over CephFS a cold 4 KiB read took about 12 ms and the lookups
+# cost 87 ms of a 123 ms token (DS4_PROF, 2026-11-10). The CephFS copy
+# (deepseek-data) is kept as the source to restore from.
 #
 # One request at a time (PARALLEL=1, containerConcurrency 1), 128K context.
-# Cold start reads ~250 GB from CephFS, so the progress deadline and request
+# Cold start reads ~250 GB from the volume, so the progress deadline and request
 # timeouts are long. After 10 idle minutes the pod is retained 10 more, then
 # the GPU is freed.
 apiVersion: serving.knative.dev/v1
@@ -89,16 +87,6 @@ spec:
       containers:
         - name: strata
           image: ghcr.io/niko1221/strata:0.2.12-cuda13@sha256:c3a853420670f4c0f5a948c2d9e9904af4cedf52b11bc8cf167602dc5c578bcc
-          # The image's own entrypoint, run after the copy described above. A failed
-          # copy stops the start: the engine cannot load without these files.
-          command:
-            - /usr/bin/tini
-            - --
-            - /bin/sh
-            - -c
-            - >-
-              cp -r /engram-src/. /data/Strata-data/models/deepseek-v4.1-flash-shared/
-              && exec /opt/strata/entrypoint.sh run
           ports:
             - name: http1
               containerPort: 8080
@@ -155,12 +143,6 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-            - name: data
-              mountPath: /engram-src
-              subPath: Strata-data/models/deepseek-v4.1-flash-shared
-              readOnly: true
-            - name: engram-ram
-              mountPath: /data/Strata-data/models/deepseek-v4.1-flash-shared
             - name: api-key
               mountPath: /run/secrets/deepseek
               readOnly: true
@@ -171,7 +153,7 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: deepseek-data
+            claimName: deepseek-local
         - name: api-key
           secret:
             secretName: deepseek-api
@@ -184,7 +166,3 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 2Gi
-        - name: engram-ram
-          emptyDir:
-            medium: Memory
-            sizeLimit: 116Gi
