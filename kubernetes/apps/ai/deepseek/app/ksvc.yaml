@@ -31,7 +31,10 @@
 # cost 87 ms of a 123 ms token (DS4_PROF, 2026-11-10). The CephFS copy
 # (deepseek-data) is kept as the source to restore from.
 #
-# One request at a time (PARALLEL=1, containerConcurrency 1), 128K context.
+# One request at a time (PARALLEL=1, containerConcurrency 1), 256K context. Against
+# 128K that costs 15 of 1,815 experts in VRAM and 0.12 GB of cache, with no change
+# in decode speed (tested 2026-11-10; a 149K-token prompt read in 205 s). A request
+# larger than the window gets HTTP 400 and is never truncated.
 # Cold start reads ~250 GB from the volume, so the progress deadline and request
 # timeouts are long. After 10 idle minutes the pod is retained 10 more, then
 # the GPU is freed.
@@ -97,7 +100,7 @@ spec:
             - name: MODEL
               value: ist-das-2.00bpw
             - name: CONTEXT
-              value: 128k
+              value: 256k
             - name: PARALLEL
               value: "1"
             # Experts the A5000 cannot hold are read in place from the model files (the
