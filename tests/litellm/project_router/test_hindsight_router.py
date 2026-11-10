@@ -60,10 +60,10 @@ class HindsightRouterConfigTests(unittest.TestCase):
     def test_operation_models_match_current_hindsight_intent(self):
         hindsight = yaml.safe_load(HINDSIGHT.read_text())
         env = hindsight["spec"]["values"]["api"]["env"]
-        self.assertEqual(env["HINDSIGHT_API_LLM_MODEL"], "gpt-5.6-luna")
-        self.assertEqual(env["HINDSIGHT_API_RETAIN_LLM_MODEL"], BACKENDS["hindsight-retain"][1])
-        self.assertEqual(env["HINDSIGHT_API_REFLECT_LLM_MODEL"], BACKENDS["hindsight-reflect"][1])
-        self.assertEqual(env["HINDSIGHT_API_CONSOLIDATION_LLM_MODEL"], BACKENDS["hindsight-reflect"][1])
+        self.assertEqual(env["HINDSIGHT_API_LLM_MODEL"], "hindsight-retain")
+        self.assertEqual(env["HINDSIGHT_API_RETAIN_LLM_MODEL"], "hindsight-retain")
+        self.assertEqual(env["HINDSIGHT_API_REFLECT_LLM_MODEL"], "hindsight-reflect")
+        self.assertEqual(env["HINDSIGHT_API_CONSOLIDATION_LLM_MODEL"], "hindsight-reflect")
 
     def test_operation_tiers_preserve_predefined_models(self):
         for operation, (backend_name, model) in BACKENDS.items():

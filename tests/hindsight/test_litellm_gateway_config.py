@@ -1,7 +1,6 @@
 """Offline guards for the Hindsight 0.9.2 gateway consumer cutover."""
 
 from pathlib import Path
-import subprocess
 import unittest
 
 import yaml
@@ -78,15 +77,15 @@ class HindsightGatewayConfigTest(unittest.TestCase):
                 "secretKeyRef": {"name": "hindsight-litellm", "key": "credential", "optional": False}}}], name)
         self.assertIn("hindsight-litellm", self.values["podAnnotations"]["secret.reloader.stakater.com/reload"])
 
-    def test_key_preparation_is_independent_of_consumer_switch(self):
-        # Stage 1 publishes only the new ExternalSecret and its kustomization
-        # entry. The baseline release still points at direct Codex then.
-        baseline = yaml.safe_load(subprocess.check_output(
-            ["git", "show", "HEAD:kubernetes/apps/ai/hermes-hindsight/app/hindsight.yaml"], cwd=ROOT))
-        self.assertEqual(baseline["spec"]["values"]["api"]["env"]["HINDSIGHT_API_LLM_PROVIDER"],
-                         "openai-codex")
+    def test_key_preparation_is_an_independent_resource(self):
+        # The credential can be published and reconciled separately from the
+        # HelmRelease consumer; this holds before and after the consumer switch.
         resources = documents("kustomization.yaml")[0]["resources"]
-        self.assertIn("./externalsecret-hindsight-litellm.yaml", resources)
+        self.assertEqual(resources.count("./externalsecret-hindsight-litellm.yaml"), 1)
+        self.assertIn("./hindsight.yaml", resources)
+        self.assertEqual(self.gateway_secret["kind"], "ExternalSecret")
+        self.assertEqual(self.gateway_secret["metadata"]["namespace"], "ai")
+        self.assertEqual(self.gateway_secret["spec"]["refreshInterval"], "1h")
 
     def test_gateway_egress_is_pod_scoped_for_api_and_worker(self):
         for name in ("hindsight-api", "hindsight-worker"):
