@@ -538,11 +538,24 @@
         "hermes-agent",
         "ghcr.io/vectorize-io/hindsight-api",
         "ghcr.io/vectorize-io/hindsight-control-plane",
-        "hindsight",
+        "ghcr.io/vectorize-io/charts/hindsight",
         // LiteLLM: the v1.81 to v1.106 upgrade recorded 149 migrations as applied while 55 tables
         // and many columns were missing, fixed by hand with `prisma migrate diff`; every bump needs that check.
         "/litellm/"
       ]
+    },
+    {
+      "description": "Group the Hindsight OCI chart and API/control-plane images for one reviewed upgrade; the API image anchor is one version decision",
+      "matchDatasources": ["docker"],
+      "matchFileNames": ["kubernetes/apps/ai/hermes-hindsight/app/hindsight.yaml"],
+      "matchPackageNames": [
+        "ghcr.io/vectorize-io/charts/hindsight",
+        "ghcr.io/vectorize-io/hindsight-api",
+        "ghcr.io/vectorize-io/hindsight-control-plane"
+      ],
+      "groupName": "Hindsight release",
+      "groupSlug": "hindsight-release",
+      "automerge": false
     },
     // Talos and Kubernetes cluster versions: patches auto-merge, minor and major are
     // manual. A merged version is what tuppr rolls out, so these rules sit after the
