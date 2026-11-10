@@ -111,6 +111,15 @@ spec:
             # already reported that path off without it.
             - name: STRATA_SET
               value: "cpu-threads=36"
+            # Copy the CPU-lane experts into huge-page memory. One-shot runs of the
+            # engine (2026-11-10, 36 threads) decoded at 23.2-23.3 tok/s with it and
+            # 22.3-22.4 without; thread counts from 28 to 56 made no difference.
+            - name: DS4_COPY_HUGETLB
+              value: "1"
+            # Temporary: per-stage decode timings in the engine log, to find why
+            # served requests decode slower than one-shot runs. Remove after the test.
+            - name: DS4_PROF
+              value: "1"
             - name: API_KEY_FILE
               value: /run/secrets/deepseek/API_KEY
             - name: STRATA_KEY_FILE
