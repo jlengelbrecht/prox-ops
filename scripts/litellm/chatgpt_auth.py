@@ -208,7 +208,6 @@ def _trusted_cli(path):
 
 
 def _stop_child(proc):
-    """End the complete native-login session before task files are removed."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -222,7 +221,6 @@ def _stop_child(proc):
 
 
 def _remove_task(task):
-    """Remove only this owned task, including restrictive child directories."""
     try:
         visited = 0
         for root, dirs, files in os.walk(task, topdown=True, followlinks=False):
@@ -252,7 +250,7 @@ def login(task, target, cli, timeout, ambient=None):
     task.mkdir(mode=0o700)
     proc = None
     old_handlers = {}
-    termination = (signal.SIGTERM, signal.SIGHUP)
+    termination = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     try:
         task.chmod(0o700)
         _safe_dir(task)

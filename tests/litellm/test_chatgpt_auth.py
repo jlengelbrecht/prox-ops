@@ -25,7 +25,6 @@ spec.loader.exec_module(auth)
 MARKER = 'SYNTHETIC_SECRET_MUST_NOT_PRINT'
 NOW = 1800000000
 
-
 def jwt(claims):
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip('=')
     return 'header.' + payload + '.signature'
@@ -225,14 +224,11 @@ class AuthTests(unittest.TestCase):
         cli = Path('/usr/bin/true')
         class Failed:
             pid = os.getpid()
-            def __init__(self, *args, **kwargs):
-                self.assertion = kwargs
-            def wait(self, timeout=None):
-                return 1
+            def __init__(self, *args, **kwargs): pass
+            def wait(self, timeout=None): return 1
         with patch.object(auth, '_trusted_cli', return_value=str(cli)), patch.object(auth.subprocess, 'Popen', Failed), patch.object(auth.os, 'killpg'):
             result, out, err = self.call('login', '--runtime-dir', str(self.task), '--output', str(self.target), '--cli', str(cli))
-        self.assertEqual(result, 1)
-        self.assertEqual(err, 'AUTH_PREP_LOGIN_FAILED_OR_CANCELLED\n')
+        self.assertEqual((result, out, err), (1, '', 'AUTH_PREP_LOGIN_FAILED_OR_CANCELLED\n'))
         self.assertFalse(self.task.exists())
         class Timeout(Failed):
             waits = []
@@ -244,55 +240,43 @@ class AuthTests(unittest.TestCase):
         child = Timeout()
         with patch.object(auth, '_trusted_cli', return_value=str(cli)), patch.object(auth.subprocess, 'Popen', return_value=child), patch.object(auth.os, 'killpg') as killed:
             result, out, err = self.call('login', '--runtime-dir', str(self.task), '--output', str(self.target), '--cli', str(cli), '--timeout', '60')
-        self.assertEqual(result, 1)
-        self.assertEqual(err, 'AUTH_PREP_LOGIN_TIMEOUT\n')
+        self.assertEqual((result, out, err), (1, '', 'AUTH_PREP_LOGIN_TIMEOUT\n'))
         killed.assert_called_once_with(child.pid, auth.signal.SIGKILL)
         self.assertEqual(child.waits, [60, 5])
         self.assertFalse(self.task.exists())
-
-    def test_cancel_terminates_group_and_reaps_before_cleanup(self):
-        shutil.rmtree(self.task)
-        cli = Path('/usr/bin/true')
-        events = []
-        class Cancelled:
-            pid = os.getpid()
-            def wait(self, timeout=None):
-                events.append(('wait', timeout))
-                if timeout == 300:
-                    raise KeyboardInterrupt()
-                return 0
-        def signal_group(pid, sig):
-            events.append(('kill', pid, sig))
-        original_remove = auth._remove_task
-        def remove_task(task):
-            self.assertEqual(events, [('wait', 300), ('kill', os.getpid(), auth.signal.SIGKILL), ('wait', 5)])
-            original_remove(task)
-        with patch.object(auth, '_trusted_cli', return_value=str(cli)), patch.object(auth.subprocess, 'Popen', return_value=Cancelled()), patch.object(auth.os, 'killpg', signal_group), patch.object(auth, '_remove_task', remove_task):
-            result, out, err = self.call('login', '--runtime-dir', str(self.task), '--output', str(self.target), '--cli', str(cli))
-        self.assertEqual((result, out, err), (1, '', 'AUTH_PREP_CANCELLED\n'))
-        self.assertFalse(self.task.exists())
-
-    def test_failed_leader_stops_surviving_group_before_task_removal(self):
-        shutil.rmtree(self.task)
-        cli = Path('/usr/bin/true')
-        events = []
-        class Failed:
-            pid = os.getpid()
-            def wait(self, timeout=None):
-                events.append(('wait', timeout))
-                return 1
-        original_remove = auth._remove_task
-        def remove_task(task):
-            self.assertEqual(events, [('wait', 300), ('kill', Failed.pid), ('wait', 5)])
-            original_remove(task)
-        with patch.object(auth, '_trusted_cli', return_value=str(cli)), patch.object(auth.subprocess, 'Popen', return_value=Failed()), patch.object(auth.os, 'killpg', side_effect=lambda pid, sig: events.append(('kill', pid))), patch.object(auth, '_remove_task', remove_task):
-            result, out, err = self.call('login', '--runtime-dir', str(self.task), '--output', str(self.target), '--cli', str(cli))
-        self.assertEqual((result, out, err), (1, '', 'AUTH_PREP_LOGIN_FAILED_OR_CANCELLED\n'))
-        self.assertFalse(self.task.exists())
-        with patch.object(auth, '_trusted_cli', return_value=str(cli)), patch.object(auth.subprocess, 'Popen', return_value=Failed()), patch.object(auth.os, 'killpg', side_effect=PermissionError('synthetic')):
+        with patch.object(auth, '_trusted_cli', return_value=str(cli)), patch.object(auth.subprocess, 'Popen', Failed), patch.object(auth.os, 'killpg', side_effect=PermissionError('synthetic')):
             result, out, err = self.call('login', '--runtime-dir', str(self.task), '--output', str(self.target), '--cli', str(cli))
         self.assertEqual((result, out, err), (1, '', 'AUTH_PREP_CLEANUP_REQUIRED\n'))
         self.assertTrue(self.task.exists())
+
+    def test_sigint_during_spawn_reaps_child_before_task_cleanup(self):
+        shutil.rmtree(self.task)
+        cli = Path('/usr/bin/true')
+        native_popen = subprocess.Popen
+        child = None
+        original_remove = auth._remove_task
+        def spawn_and_interrupt(*args, **kwargs):
+            nonlocal child
+            child = native_popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            os.kill(os.getpid(), signal.SIGINT)
+            return child
+        def remove(task):
+            self.assertIsNotNone(child.returncode)
+            original_remove(task)
+        try:
+            with patch.object(auth, '_trusted_cli', return_value=str(cli)), \
+                    patch.object(auth.subprocess, 'Popen', spawn_and_interrupt), \
+                    patch.object(auth, '_remove_task', remove):
+                result, out, err = self.call('login', '--runtime-dir', str(self.task),
+                                             '--output', str(self.target), '--cli', str(cli))
+            self.assertEqual((result, out, err), (1, '', 'AUTH_PREP_CANCELLED\n'))
+            self.assertFalse(self.task.exists())
+        finally:
+            if child is not None and child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait(timeout=5)
 
     def test_failed_leader_and_actual_signals_stop_synthetic_descendant(self):
         for termination in (None, signal.SIGTERM, signal.SIGHUP):
@@ -334,28 +318,6 @@ class AuthTests(unittest.TestCase):
                             os.kill(descendant, signal.SIGKILL)
                     fake.unlink(missing_ok=True)
                     marker.unlink(missing_ok=True)
-
-    def test_stop_child_ends_synthetic_process_tree(self):
-        marker = self.task / 'descendant.pid'
-        code = ('import subprocess,sys,time; '
-                'child=subprocess.Popen([sys.executable,"-c","import time;time.sleep(30)"]); '
-                'open(sys.argv[1],"w").write(str(child.pid)); time.sleep(30)')
-        parent = subprocess.Popen([sys.executable, '-c', code, str(marker)],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                  start_new_session=True)
-        try:
-            deadline = time.monotonic() + 3
-            while not marker.exists() and time.monotonic() < deadline:
-                time.sleep(0.02)
-            self.assertTrue(marker.exists(), 'synthetic descendant did not start')
-            descendant = int(marker.read_text())
-            auth._stop_child(parent)
-            self.assertIsNotNone(parent.returncode)
-            self.assert_descendant_stopped(descendant)
-        finally:
-            if parent.poll() is None:
-                os.killpg(parent.pid, auth.signal.SIGKILL)
-                parent.wait(timeout=5)
 
     def test_restrictive_child_cleanup_and_retained_state_status(self):
         shutil.rmtree(self.task)
