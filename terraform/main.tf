@@ -460,6 +460,7 @@ module "worker_nodes" {
   cpu_type     = var.cpu_type
   memory_mb    = coalesce(each.value.memory_mb, each.value.is_gpu ? var.gpu_worker_memory_mb : var.worker_memory_mb)
   numa_nodes   = each.value.numa_nodes
+  additional_disks = each.value.additional_disks
   disk_size_gb = each.value.is_gpu ? var.gpu_worker_disk_size_gb : var.worker_disk_size_gb
 
   vm_storage_pool = var.vm_storage_pool

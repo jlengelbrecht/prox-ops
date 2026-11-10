@@ -88,6 +88,21 @@ resource "proxmox_virtual_environment_vm" "talos_node" {
     discard      = "on"
   }
 
+  # Optional extra data disks (for example a host-local datastore for model files).
+  # Empty by default: no extra disk is emitted and behaviour is unchanged.
+  dynamic "disk" {
+    for_each = var.additional_disks
+    content {
+      datastore_id = disk.value.datastore_id
+      interface    = disk.value.interface
+      size         = disk.value.size_gb
+      iothread     = true
+      ssd          = true
+      discard      = "on"
+      backup       = disk.value.backup
+    }
+  }
+
   # Network Configuration
   # Primary network interface (VLAN 67 - Kubernetes cluster network)
   network_device {
