@@ -1,0 +1,71 @@
+---
+# Nyctr holds the keys that read (and later change) the network, so its egress
+# is an allow-list of exactly what it talks to.
+# - Ingress is the chart's own NetworkPolicy (helmrelease.yaml,
+#   networkPolicy.ingressFrom): the envoy-internal gateway pods on 8080 and
+#   nothing else. It is not repeated here.
+# - Egress: kube-dns, the shared CloudNativePG cluster on 5432, the gateway
+#   pods on 443/10443 for the Authentik issuer, and each source by name on
+#   443. No general internet rule.
+# The pod selector is the label the chart renders from the release name.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: nyctr-egress
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: nyctr
+      app.kubernetes.io/instance: nyctr
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          # L7 DNS visibility: the toFQDNs rule below only learns addresses
+          # from answers that pass through Cilium's DNS proxy, which this
+          # rule enables (same shape as the repository's other FQDN policies).
+          rules:
+            dns:
+              - matchPattern: "*"
+    # Shared CloudNativePG cluster (postgres-rw); its own policy already
+    # admits ingress from the security namespace on 5432.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # Authentik OIDC via the issuer hostname: discovery, token exchange and
+    # signing keys. In-cluster DNS answers authentik.homelab0.org with the
+    # envoy-internal VIP, and Cilium translates that VIP to the gateway pods
+    # (LB port 443, pod port 10443). envoy-external stays closed. L3/L4 only,
+    # so Nyctr can reach any envoy-internal route; each enforces its own auth.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP
+    # Sources: the NextDNS API for now. DNS-derived L3/L4 only: Cilium admits
+    # the addresses learned for these exact names on TCP443. Nyctr itself
+    # verifies the certificate and sends a key only to its source's host.
+    - toFQDNs:
+        - matchName: api.nextdns.io
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
