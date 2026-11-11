@@ -4,9 +4,9 @@
 # - Ingress is the chart's own NetworkPolicy (helmrelease.yaml,
 #   networkPolicy.ingressFrom): the envoy-internal gateway pods on 8080 and
 #   nothing else. It is not repeated here.
-# - Egress: kube-dns, Nyctr's own Postgres on 5432, the gateway pods on
-#   443/10443 for the Authentik issuer, and each source by name on 443. No
-#   general internet rule.
+# - Egress: kube-dns, the shared CloudNativePG cluster on 5432, the gateway
+#   pods on 443/10443 for the Authentik issuer, and each source by name on
+#   443. No general internet rule.
 # The pod selector is the label the chart renders from the release name.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -35,11 +35,12 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
-    # Nyctr's own Postgres (nyctr-db-rw); its policy admits this pod on 5432.
+    # Shared CloudNativePG cluster (postgres-rw); its own policy already
+    # admits ingress from the security namespace on 5432.
     - toEndpoints:
         - matchLabels:
-            io.kubernetes.pod.namespace: security
-            cnpg.io/cluster: nyctr-db
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
       toPorts:
         - ports:
             - port: "5432"
