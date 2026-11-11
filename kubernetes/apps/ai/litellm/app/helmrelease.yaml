@@ -67,12 +67,12 @@ spec:
                   name: PYTHONPATH
                   value: /opt/litellm-callbacks
   values:
-    # Image configuration - uses the litellm-database image (bundles Prisma)
+    # Qualified Grok image. The chart renders repository:tag; the digest pins
+    # the pull independently of the source commit tag.
     image:
-      repository: ghcr.io/berriai/litellm-database
+      repository: ghcr.io/jlengelbrecht/litellm-grok
       pullPolicy: Always
-      # renovate: datasource=docker depName=ghcr.io/berriai/litellm-database
-      tag: v1.108.0@sha256:80c91fd00cc039e8880474f539544b919f14cd258a22f22ce4218b864c4ff14a
+      tag: sha-c9c8091c333bc227417c1bf009f130643347971f@sha256:5d3875b49ad617ba1366f7e59b592f2e70e0e2b3b5c1d55720aa9888bd0f9d1b
 
     # Replica count. Must stay 1: the ChatGPT login (auth.json on the RWO PVC below) uses a
     # single-use refresh token and LiteLLM has no cross-process lock around the refresh. A
