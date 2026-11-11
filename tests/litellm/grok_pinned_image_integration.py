@@ -227,7 +227,7 @@ async def qualify():
     global STAGE, CASE
     import httpx
     import litellm
-    from fastapi import FastAPI
+    from fastapi import FastAPI, HTTPException
     from litellm.llms.xai.oauth import XAIOAuthAuthenticator
     from litellm.types.proxy.auth.user_api_key_auth import UserAPIKeyAuth
     from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
@@ -240,15 +240,25 @@ async def qualify():
     state = {"calls": [], "outbound": [], "token": "synthetic-oauth-token",
              "subject": "synthetic-subject", "grant": [ALIAS], "refresh_failure": False,
              "token_calls": 0, "bindings": [], "failure_mode": None,
-             "provider_calls": 0, "linked_content": None, "hook_fault": False}
+             "provider_calls": 0, "linked_content": None, "hook_fault": False,
+             "nonalias_hook_mode": None, "nonalias_hook_seen": False,
+             "nonalias_logs_at_hook": None}
     fake_error = "synthetic-provider-error " + state["token"] + " " + state["subject"]
     captured_logs = []
+    nonalias_diagnostics = []
 
     class Capture(logging.Handler):
         def emit(self, record):
             if record.levelno >= logging.INFO:
                 rendered = self.format(record)
                 captured_logs.append(rendered)
+                if (CASE in {"nonalias_endpoint_replace", "nonalias_stream_hook_fault"}
+                        and record.pathname.endswith(("/litellm/proxy/proxy_server.py",
+                                                      "/litellm/proxy/common_request_processing.py"))
+                        and record.exc_info is not None
+                        and "Traceback (most recent call last)" in rendered
+                        and fake_error in rendered):
+                    nonalias_diagnostics.append((record.funcName, rendered))
                 if CASE == "afterstream" and any(marker in rendered for marker in
                         ("synthetic-provider-error", state["token"], state["subject"])):
                     source = (record.pathname.split("/litellm/", 1)[1]
@@ -285,6 +295,12 @@ async def qualify():
     original_failure_hook = hook.async_post_call_failure_hook
 
     async def maybe_fault_hook(*args, **kwargs):
+        if state["nonalias_hook_mode"] is not None:
+            state["nonalias_hook_seen"] = True
+            state["nonalias_logs_at_hook"] = len(nonalias_diagnostics)
+            if state["nonalias_hook_mode"] == "endpoint_replace":
+                return HTTPException(status_code=418, detail="synthetic-replacement")
+            raise RuntimeError("synthetic-nonalias-hook-fault")
         if state["hook_fault"]:
             raise RuntimeError("synthetic-hook-fault " + fake_error)
         return await original_failure_hook(*args, **kwargs)
@@ -596,6 +612,36 @@ async def qualify():
                   and "Project Grok provider failed" not in other.text
                   and EVIDENCE["nonalias_body_sha256"] is not None
                   and [kind for kind, _ in state["outbound"][before:]] == ["provider"])
+            CASE = "nonalias_endpoint_replace"
+            state["nonalias_hook_mode"] = "endpoint_replace"
+            state["nonalias_hook_seen"] = False
+            state["nonalias_logs_at_hook"] = None
+            nonalias_diagnostics.clear()
+            before = len(state["outbound"])
+            replaced = await post(client, [{"role": "user", "content": "replace other error"}],
+                                  model="synthetic-other", stream=False)
+            check("nonalias_endpoint_original_logged_after_hook", lambda:
+                  state["nonalias_hook_seen"] and state["nonalias_logs_at_hook"] == 0
+                  and any(site == "log_llm_api_exception" and fake_error in rendered
+                          for site, rendered in nonalias_diagnostics)
+                  and replaced.status_code == 418
+                  and "synthetic-replacement" in replaced.text
+                  and [kind for kind, _ in state["outbound"][before:]] == ["provider"])
+            CASE = "nonalias_stream_hook_fault"
+            state["nonalias_hook_mode"] = "stream_fault"
+            state["nonalias_hook_seen"] = False
+            state["nonalias_logs_at_hook"] = None
+            state["failure_mode"] = "after"
+            nonalias_diagnostics.clear()
+            before = len(state["outbound"])
+            await post(client, [{"role": "user", "content": "stream other error"}],
+                       model="synthetic-other")
+            check("nonalias_stream_original_logged_before_hook_fault", lambda:
+                  state["nonalias_hook_seen"] and state["nonalias_logs_at_hook"] >= 1
+                  and any(site == "async_streaming_data_generator" and fake_error in rendered
+                          for site, rendered in nonalias_diagnostics)
+                  and [kind for kind, _ in state["outbound"][before:]] == ["provider"])
+            state["nonalias_hook_mode"] = None
             EVIDENCE["outbound_count"] = min(len(state["outbound"]), 12)
     check("installed_import", lambda: True)
 
