@@ -26,6 +26,7 @@ class Denied(Exception):
 
 
 def _load(path):
+    """Read required JSON evidence, denying missing or malformed input."""
     try:
         return json.loads(Path(path).read_text())
     except (OSError, ValueError):
@@ -100,6 +101,7 @@ def source_fresh(revision, runner=subprocess.run):
 
 
 def main():
+    """Dispatch publication decisions and source-freshness checks for CI."""
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     plan = sub.add_parser("decide")

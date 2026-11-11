@@ -18,6 +18,7 @@ EXISTING = "sha256:" + "c" * 64
 
 
 def evidence(digest, revision=SHA, source=SOURCE, passed=True):
+    """Build independent inspection and qualification evidence for one digest."""
     ref = f"{IMAGE}@{digest}"
     inspection = [{"RepoDigests": [ref], "Config": {"Labels": {
         "org.opencontainers.image.revision": revision,
@@ -33,6 +34,7 @@ def evidence(digest, revision=SHA, source=SOURCE, passed=True):
 
 class PublicationStateTests(unittest.TestCase):
     def plan(self, tag_state, existing=None):
+        """Ask publication_state to decide with a qualified candidate."""
         candidate_info, candidate_receipt = evidence(CANDIDATE)
         extra = {} if existing is None else {
             "existing_inspection": existing[0], "existing_receipt": existing[1]}
@@ -61,16 +63,19 @@ class PublicationStateTests(unittest.TestCase):
                          {"action": "reuse", "digest": EXISTING})
 
     def test_conflicting_tag_and_missing_provenance_fail_closed(self):
+        """Exercise each provenance failure without another failing field."""
         for inspection, receipt in (
             evidence(EXISTING, revision="d" * 40),
             evidence(EXISTING, source="https://github.com/other/repo"),
-            evidence(EXISTING),
         ):
-            if inspection[0]["Config"]["Labels"]["org.opencontainers.image.revision"] == SHA:
-                inspection[0]["RepoDigests"] = [f"{IMAGE}@{CANDIDATE}"]
             with self.assertRaises(state.Denied):
                 self.plan({"state": "present", "digest": EXISTING},
                           (inspection, receipt))
+        inspection, receipt = evidence(EXISTING)
+        inspection[0]["RepoDigests"] = [f"{IMAGE}@{CANDIDATE}"]
+        with self.assertRaises(state.Denied):
+            self.plan({"state": "present", "digest": EXISTING},
+                      (inspection, receipt))
         with self.assertRaises(state.Denied):
             self.plan({"state": "present", "digest": EXISTING})
         with self.assertRaises(state.Denied):

@@ -102,6 +102,12 @@ jobs:
             --candidate-image "$published" --receipt "$RUNNER_TEMP/grok-published/receipt.json"
           docker image inspect "$published" > "$RUNNER_TEMP/grok-published/inspection.json"
           echo "Qualified $published" >> "$GITHUB_STEP_SUMMARY"
+      - name: Require anonymous pull of candidate digest
+        run: |
+          set -euo pipefail
+          python3 services/litellm-grok/anonymous_pull.py \
+            --reference "$(cat "$RUNNER_TEMP/grok-published-ref")" \
+            --temporary-root "$RUNNER_TEMP"
       - name: Inspect commit tag after qualifying candidate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -124,6 +130,8 @@ jobs:
             digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["digest"])' "$RUNNER_TEMP/grok-tag-state.json")
             existing="$image@$digest"
             docker pull "$existing"
+            python3 services/litellm-grok/anonymous_pull.py \
+              --reference "$existing" --temporary-root "$RUNNER_TEMP"
             docker image inspect "$existing" > "$RUNNER_TEMP/grok-published/existing-inspection.json"
             base='ghcr.io/berriai/litellm-database:v1.108.0@sha256:80c91fd00cc039e8880474f539544b919f14cd258a22f22ce4218b864c4ff14a'
             base_id=$(docker image inspect --format '{{.Id}}' "$base")
