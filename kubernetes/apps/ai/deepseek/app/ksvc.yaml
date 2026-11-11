@@ -1,5 +1,5 @@
 ---
-# DeepSeek V4.1 Flash (ISTA-DAS 2.00 bpw) served by Strata on the RTX A5000
+# DeepSeek V4.1 Flash (ISTA-DAS 2.25 bpw) served by Strata on the RTX A5000
 # (k8s-work-7), as a cluster-local scale-to-zero Knative Service.
 #
 # Files: the one-off prepare Job downloaded the engine (strata-dsv41 0.1.58) and
@@ -30,6 +30,12 @@
 # every token; over CephFS a cold 4 KiB read took about 12 ms and the lookups
 # cost 87 ms of a 123 ms token (DS4_PROF, 2026-11-10). The CephFS copy
 # (deepseek-data) is kept as the source to restore from.
+#
+# Model set: 2.25 bpw. Against the 2.00 set it decoded as fast or faster in the
+# same test (2026-11-11: 24.3 / 22.7 / 21.7 / 23.2 tok/s against 24.3 / 21.4 /
+# 20.0 / 22.1), with 1,593 experts in VRAM instead of 1,800 and 133.6 GB of experts
+# in RAM instead of 116.6 GB. Upstream measures about half the quality loss of
+# 2.00. Both sets are on the volume; MODEL=ist-das-2.00bpw switches back.
 #
 # One request at a time (PARALLEL=1, containerConcurrency 1), 256K context. Against
 # 128K that costs 15 of 1,815 experts in VRAM and 0.12 GB of cache, with no change
@@ -98,7 +104,7 @@ spec:
             - name: FAMILY
               value: deepseek41
             - name: MODEL
-              value: ist-das-2.00bpw
+              value: ist-das-2.25bpw
             - name: CONTEXT
               value: 256k
             - name: PARALLEL
