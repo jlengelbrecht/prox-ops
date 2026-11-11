@@ -1766,8 +1766,10 @@ data:
           sub_mode: hashed_user_id
           issuer_mode: per_provider
       # Members of the two role groups only (one expression policy: with
-      # policy_engine_mode all, two group bindings would require both). Nyctr
-      # applies the same two groups again on its side.
+      # policy_engine_mode all, two group bindings would require both). Direct
+      # membership, not ak_is_group_member(): Nyctr applies the same two groups
+      # again from the token, which lists direct groups only, so an inherited
+      # member would pass here and then be refused by Nyctr.
       - model: authentik_core.application
         id: app-nyctr
         identifiers:
@@ -1785,10 +1787,7 @@ data:
           name: nyctr-access
         attrs:
           expression: |
-            return (
-                ak_is_group_member(request.user, name="nyctr-admins")
-                or ak_is_group_member(request.user, name="nyctr-members")
-            )
+            return request.user.groups.filter(name__in=["nyctr-admins", "nyctr-members"]).exists()
       - model: authentik_policies.policybinding
         id: binding-nyctr-access
         identifiers:
