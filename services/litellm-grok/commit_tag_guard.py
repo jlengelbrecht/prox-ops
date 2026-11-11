@@ -153,7 +153,7 @@ def _manifest(repository, reference, bearer, opener, allow_absent=False):
 
 def tag_state(repository, candidate_reference, candidate_digest, commit_sha,
               actor, token, opener=_default_open):
-    """Prove the candidate first, then classify the immutable commit tag."""
+    """Prove the candidate first, then return the commit tag digest or None."""
     if (not re.fullmatch(r"[a-z0-9][a-z0-9._/-]*", repository)
             or "//" in repository or repository.endswith("/")
             or DIGEST.fullmatch(candidate_digest) is None
@@ -174,7 +174,7 @@ def tag_state(repository, candidate_reference, candidate_digest, commit_sha,
         raise RemoteError("candidate manifest unavailable or changed")
     existing = _manifest(repository, "sha-" + commit_sha, bearer, opener,
                          allow_absent=True)
-    return "absent" if existing is None else "present"
+    return existing
 
 
 def main():
@@ -184,19 +184,22 @@ def main():
     parser.add_argument("--candidate-reference", required=True)
     parser.add_argument("--candidate-digest", required=True)
     parser.add_argument("--commit-sha", required=True)
+    parser.add_argument("--result-file", required=True)
     args = parser.parse_args()
     try:
-        state = tag_state(args.repository, args.candidate_reference,
+        existing = tag_state(args.repository, args.candidate_reference,
                           args.candidate_digest, args.commit_sha,
                           os.environ.get("GITHUB_ACTOR", ""),
                           os.environ.get("GITHUB_TOKEN", ""))
     except RemoteError as exc:
         print(f"commit tag guard: {exc}", file=sys.stderr)
         return 1
-    if state == "present":
-        print("commit tag already exists; refusing overwrite", file=sys.stderr)
-        return 1
-    print("commit tag confirmed absent")
+    with open(args.result_file, "x", encoding="utf-8") as result:
+        json.dump({"state": "absent" if existing is None else "present",
+                   "digest": existing}, result)
+        result.write("\n")
+    print("commit tag confirmed absent" if existing is None
+          else "existing commit tag requires independent qualification")
     return 0
 
 
