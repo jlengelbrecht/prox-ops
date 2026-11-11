@@ -7,6 +7,7 @@ on:
       - tests/litellm/grok_pinned_image_*.py
       - tests/litellm/run_grok_pinned_image.py
       - tests/litellm/test_grok_image_package.py
+      - tests/litellm/test_grok_publication.py
       - kubernetes/apps/ai/litellm/app/callbacks/project_grok_native.py
       - .github/workflows/litellm-grok.yaml
   push:
@@ -16,6 +17,7 @@ on:
       - tests/litellm/grok_pinned_image_*.py
       - tests/litellm/run_grok_pinned_image.py
       - tests/litellm/test_grok_image_package.py
+      - tests/litellm/test_grok_publication.py
       - kubernetes/apps/ai/litellm/app/callbacks/project_grok_native.py
       - .github/workflows/litellm-grok.yaml
   workflow_dispatch:
@@ -32,7 +34,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Package unit controls
-        run: python3 -m unittest tests/litellm/test_grok_image_package.py
+        run: python3 -m unittest tests/litellm/test_grok_image_package.py tests/litellm/test_grok_publication.py
       - name: Pull exact public base and qualify offline
         run: |
           set -euo pipefail
@@ -47,4 +49,156 @@ jobs:
         with:
           name: grok-verify-receipt
           path: ${{ runner.temp }}/grok-verify/receipt.json
+          if-no-files-found: ignore
+
+  publish:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: litellm-grok-publication
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push unique candidate
+        run: |
+          set -euo pipefail
+          base='ghcr.io/berriai/litellm-database:v1.108.0@sha256:80c91fd00cc039e8880474f539544b919f14cd258a22f22ce4218b864c4ff14a'
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/litellm-grok"
+          candidate="candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker pull "$base"
+          docker build --pull=false --network=none \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            -t "$image:$candidate" services/litellm-grok
+          docker push "$image:$candidate" | tee "$RUNNER_TEMP/grok-push.log"
+          digest=$(sed -nE 's/^candidate-[^:]+: digest: (sha256:[0-9a-f]{64}) size: .*$/\1/p' "$RUNNER_TEMP/grok-push.log")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s@%s\n' "$image" "$digest" > "$RUNNER_TEMP/grok-published-ref"
+          printf '%s\n' "$candidate" > "$RUNNER_TEMP/grok-candidate-tag"
+      - name: Pull and qualify actual published digest before moving main
+        run: |
+          set -euo pipefail
+          base='ghcr.io/berriai/litellm-database:v1.108.0@sha256:80c91fd00cc039e8880474f539544b919f14cd258a22f22ce4218b864c4ff14a'
+          published=$(cat "$RUNNER_TEMP/grok-published-ref")
+          docker image rm "${published%@*}:$(cat "$RUNNER_TEMP/grok-candidate-tag")" >/dev/null 2>&1 || true
+          docker pull "$published"
+          base_id=$(docker image inspect --format '{{.Id}}' "$base")
+          mkdir -p "$RUNNER_TEMP/grok-published"
+          python3 tests/litellm/run_grok_pinned_image.py --base-image-id "$base_id" \
+            --candidate-image "$published" --receipt "$RUNNER_TEMP/grok-published/receipt.json"
+          docker image inspect "$published" > "$RUNNER_TEMP/grok-published/inspection.json"
+          echo "Qualified $published" >> "$GITHUB_STEP_SUMMARY"
+      - name: Inspect commit tag after qualifying candidate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          published=$(cat "$RUNNER_TEMP/grok-published-ref")
+          python3 services/litellm-grok/commit_tag_guard.py \
+            --repository "${GITHUB_REPOSITORY_OWNER,,}/litellm-grok" \
+            --candidate-reference "$(cat "$RUNNER_TEMP/grok-candidate-tag")" \
+            --candidate-digest "${published#*@}" --commit-sha "$GITHUB_SHA" \
+            --result-file "$RUNNER_TEMP/grok-tag-state.json"
+      - name: Requalify existing commit digest and decide publication
+        run: |
+          set -euo pipefail
+          published=$(cat "$RUNNER_TEMP/grok-published-ref")
+          image=${published%@*}
+          state=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["state"])' "$RUNNER_TEMP/grok-tag-state.json")
+          existing_args=()
+          if [[ "$state" == present ]]; then
+            digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["digest"])' "$RUNNER_TEMP/grok-tag-state.json")
+            existing="$image@$digest"
+            docker pull "$existing"
+            docker image inspect "$existing" > "$RUNNER_TEMP/grok-published/existing-inspection.json"
+            base='ghcr.io/berriai/litellm-database:v1.108.0@sha256:80c91fd00cc039e8880474f539544b919f14cd258a22f22ce4218b864c4ff14a'
+            base_id=$(docker image inspect --format '{{.Id}}' "$base")
+            python3 tests/litellm/run_grok_pinned_image.py --base-image-id "$base_id" \
+              --candidate-image "$existing" --receipt "$RUNNER_TEMP/grok-published/existing-receipt.json"
+            existing_args=(--existing-inspection "$RUNNER_TEMP/grok-published/existing-inspection.json"
+                           --existing-receipt "$RUNNER_TEMP/grok-published/existing-receipt.json")
+          fi
+          python3 services/litellm-grok/publication_state.py decide \
+            --state-file "$RUNNER_TEMP/grok-tag-state.json" --image "$image" \
+            --candidate-digest "${published#*@}" \
+            --candidate-inspection "$RUNNER_TEMP/grok-published/inspection.json" \
+            --candidate-receipt "$RUNNER_TEMP/grok-published/receipt.json" \
+            --revision "$GITHUB_SHA" --source "https://github.com/$GITHUB_REPOSITORY" \
+            "${existing_args[@]}" --output "$RUNNER_TEMP/grok-publication-decision.json"
+      - name: Create or reuse commit tag, then promote current source
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          published=$(cat "$RUNNER_TEMP/grok-published-ref")
+          image=${published%@*}
+          action=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["action"])' "$RUNNER_TEMP/grok-publication-decision.json")
+          digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["digest"])' "$RUNNER_TEMP/grok-publication-decision.json")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          if [[ "$action" == create ]]; then
+            [[ "$digest" == "${published#*@}" ]]
+            # A tag created during qualification must never be replaced by this job.
+            # GHCR has no atomic create-if-absent here; trusted publication jobs
+            # are serialized, and external/manual writers are outside this boundary.
+            python3 services/litellm-grok/commit_tag_guard.py \
+              --repository "${GITHUB_REPOSITORY_OWNER,,}/litellm-grok" \
+              --candidate-reference "$(cat "$RUNNER_TEMP/grok-candidate-tag")" \
+              --candidate-digest "${published#*@}" --commit-sha "$GITHUB_SHA" \
+              --result-file "$RUNNER_TEMP/grok-pre-create-tag-state.json"
+            python3 services/litellm-grok/publication_state.py create-ready \
+              --decision-file "$RUNNER_TEMP/grok-publication-decision.json" \
+              --state-file "$RUNNER_TEMP/grok-pre-create-tag-state.json" \
+              --candidate-digest "$digest"
+            docker tag "$published" "$image:sha-$GITHUB_SHA"
+            docker push "$image:sha-$GITHUB_SHA" | tee "$RUNNER_TEMP/grok-commit-push.log"
+            commit_digest=$(sed -nE 's/^sha-[^:]+: digest: (sha256:[0-9a-f]{64}) size: .*$/\1/p' "$RUNNER_TEMP/grok-commit-push.log")
+            [[ "$commit_digest" == "$digest" ]]
+          else
+            [[ "$action" == reuse ]]
+          fi
+          python3 services/litellm-grok/commit_tag_guard.py \
+            --repository "${GITHUB_REPOSITORY_OWNER,,}/litellm-grok" \
+            --candidate-reference "$(cat "$RUNNER_TEMP/grok-candidate-tag")" \
+            --candidate-digest "${published#*@}" --commit-sha "$GITHUB_SHA" \
+            --result-file "$RUNNER_TEMP/grok-final-tag-state.json"
+          python3 - "$RUNNER_TEMP/grok-final-tag-state.json" "$digest" <<'PY'
+          import json, sys
+          state = json.load(open(sys.argv[1]))
+          if state != {"state": "present", "digest": sys.argv[2]}:
+              raise SystemExit("commit tag changed after qualification")
+          PY
+          git fetch --quiet origin main
+          if python3 services/litellm-grok/publication_state.py fresh --revision "$GITHUB_SHA"; then
+            :
+          else
+            code=$?
+            if [[ "$code" == 10 ]]; then
+              echo 'Newer package source is on main; leaving :main to its queued run' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            exit 1
+          fi
+          docker tag "$image@$digest" "$image:main"
+          docker push "$image:main" | tee "$RUNNER_TEMP/grok-main-push.log"
+          main_digest=$(sed -nE 's/^main: digest: (sha256:[0-9a-f]{64}) size: .*$/\1/p' "$RUNNER_TEMP/grok-main-push.log")
+          [[ "$main_digest" == "$digest" ]]
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: grok-published-receipt
+          path: ${{ runner.temp }}/grok-published/receipt.json
           if-no-files-found: ignore

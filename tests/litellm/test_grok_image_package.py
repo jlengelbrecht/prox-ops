@@ -127,7 +127,7 @@ class PackageTests(unittest.TestCase):
             except self.guard.RemoteError:
                 return "remote_error", calls
         state, calls = run()
-        self.assertEqual(state, "absent")
+        self.assertIsNone(state)
         self.assertEqual([request.full_url for request in calls], [
             "https://ghcr.io/v2/owner/litellm-grok/manifests/candidate-1-1",
             "https://ghcr.io/token?service=ghcr.io&scope=repository%3Aowner%2Flitellm-grok%3Apull",
@@ -142,11 +142,11 @@ class PackageTests(unittest.TestCase):
                          "Basic " + base64.b64encode(b"actor:token").decode())
         self.assertEqual([request.get_header("Authorization") for request in calls[2:]],
                          ["Bearer opaque-bearer"] * 2)
-        self.assertEqual(run(200)[0], "present")
+        self.assertEqual(run(200)[0], digest)
         for actor in ("github-actions[bot]", "dependabot[bot]"):
             with self.subTest(actor=actor):
-                self.assertEqual(run(actor=actor)[0], "absent")
-                self.assertEqual(run(200, actor=actor)[0], "present")
+                self.assertIsNone(run(actor=actor)[0])
+                self.assertEqual(run(200, actor=actor)[0], digest)
         for actor in ("", "[bot]", "actor[bot]extra", "actor[admin]",
                       "actor/name", "actor:token", "actor\r\nInjected: value",
                       "actor\x00name", "actor name"):
@@ -156,7 +156,7 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(calls, [])
         # An existing OCI index is still an existing tag (schemaVersion 2).
         self.assertEqual(run(200, final_media_type=
-            "application/vnd.oci.image.index.v1+json")[0], "present")
+            "application/vnd.oci.image.index.v1+json")[0], digest)
         for body in (b"", b"not-json", b"{}", b"[]", b"x" * 65537,
                      b'{"errors":[]}', b'{"errors":"MANIFEST_UNKNOWN"}',
                      b'{"errors":[{"code":"NAME_UNKNOWN"}]}',
@@ -178,8 +178,8 @@ class PackageTests(unittest.TestCase):
                      b'{"token":"a b"}', b'{"token":"one","access_token":"two"}',
                      b"not-json", b"x" * 65537):
             self.assertEqual(run(token_body=body)[0], "remote_error")
-        self.assertEqual(run(token_body=b'{"access_token":"opaque-bearer"}')[0], "absent")
-        self.assertEqual(run(token_body=b'{"token":"opaque-bearer","access_token":"opaque-bearer"}')[0], "absent")
+        self.assertIsNone(run(token_body=b'{"access_token":"opaque-bearer"}')[0])
+        self.assertIsNone(run(token_body=b'{"token":"opaque-bearer","access_token":"opaque-bearer"}')[0])
         for where in ("token", "manifest"):
             self.assertEqual(run(redirect=where)[0], "remote_error")
         def offline(request, timeout):
@@ -206,16 +206,25 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(requests, ["http://registry.test/token"])
         raised.exception.close()
 
-    def test_verification_workflow_coverage_and_permissions(self):
+    def test_release_workflow_coverage_and_permissions(self):
         workflow = (ROOT / ".github/workflows/litellm-grok.yaml").read_text()
         self.assertEqual(workflow.count("- tests/litellm/test_grok_image_package.py"), 2)
         self.assertIn("python3 -m unittest tests/litellm/test_grok_image_package.py", workflow)
         self.assertIn("python3 tests/litellm/run_grok_pinned_image.py --base-image-id", workflow)
         self.assertIn("name: grok-verify-receipt", workflow)
         self.assertIn("  contents: read\n", workflow)
-        self.assertNotIn("  publish:\n", workflow)
-        self.assertNotIn("packages: write", workflow)
-        self.assertNotIn("docker push", workflow)
+        self.assertIn("  publish:\n", workflow)
+        self.assertEqual(workflow.count("      packages: write\n"), 1)
+        self.assertIn("      queue: max\n", workflow)
+        self.assertIn("      cancel-in-progress: false\n", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("publication_state.py fresh", workflow)
+        self.assertIn("publication_state.py decide", workflow)
+        self.assertLess(workflow.index("grok-pre-create-tag-state.json"),
+                        workflow.index("publication_state.py create-ready"))
+        self.assertLess(workflow.index("publication_state.py create-ready"),
+                        workflow.index('docker push "$image:sha-$GITHUB_SHA"'))
+        self.assertEqual(workflow.count("- tests/litellm/test_grok_publication.py"), 2)
 
 
 if __name__ == "__main__":
