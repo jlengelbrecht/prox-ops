@@ -20,7 +20,7 @@ NATIVE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NATIVE)
 SQL = NATIVE.SQL.read_text()
 # The reviewed file; any edit is a new review, a new hash and so a new Job.
-SQL_SHA256 = 'bdd6ebca6f5e464984eb8e1cd747b47a46bf4282e7a4be34cfed92c26298a798'
+SQL_SHA256 = '490ee93e05b43379e8268b938bfe992762b8a0f8f72fa71d54e412f8edd6fd17'
 ACL_TREE = NATIVE.SQL.parent
 DATABASE = ROOT / 'kubernetes/apps/database'
 KUSTOMIZE = os.environ.get('HINDSIGHT_KUSTOMIZE', 'kustomize')
