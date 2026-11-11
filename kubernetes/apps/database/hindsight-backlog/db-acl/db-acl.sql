@@ -36,12 +36,14 @@ BEGIN
     OR EXISTS (SELECT 1 FROM pg_auth_members WHERE reader_oid IN (member, roleid)) THEN
   RAISE EXCEPTION 'hindsight_backlog_metrics attributes or memberships drifted';
  END IF;
- -- The managed application roles plus CNPG's app and streaming_replica. A new
+ -- The managed application roles plus CNPG's app and streaming_replica, and
+ -- cnpg_metrics_exporter, which the operator creates itself since 1.30 (login,
+ -- member of pg_monitor only; it reads statistics and needs no TEMPORARY). A new
  -- role must be reviewed for the lost TEMPORARY before this file accepts it.
  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname !~ '^pg_' AND NOT rolsuper
             AND rolname NOT IN ('hindsight', 'hindsight_backlog_metrics', 'app', 'streaming_replica',
                                 'toolhive', 'zabbix', 'glycemicgpt_bot', 'paperclip', 'groschen',
-                                'openbao', 'nyctr')) THEN
+                                'openbao', 'nyctr', 'cnpg_metrics_exporter')) THEN
   RAISE EXCEPTION 'a role outside the declared roster exists';
  END IF;
  -- The reader too: a backend that already created its temp namespace keeps
