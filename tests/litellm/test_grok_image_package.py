@@ -34,35 +34,102 @@ class PackageTests(unittest.TestCase):
         cls.guard = load("grok_commit_tag_guard", ROOT / "services/litellm-grok/commit_tag_guard.py")
         cls.anonymous = load("grok_anonymous_pull", ROOT / "services/litellm-grok/anonymous_pull.py")
 
-    def test_anonymous_pull_uses_isolated_empty_credentials(self):
-        """Public digest pulls have no login config or inherited auth variables."""
-        reference = "ghcr.io/jlengelbrecht/litellm-grok@sha256:" + "a" * 64
-        observed = []
-        def runner(command, check, env):
-            self.assertTrue(check)
-            self.assertEqual(command[:2], ["docker", "--config"])
-            self.assertEqual(command[3:], ["pull", reference])
-            self.assertEqual(env["DOCKER_CONFIG"], command[2])
-            self.assertEqual(env["HOME"], command[2])
-            self.assertEqual(set(env), {"PATH", "HOME", "DOCKER_CONFIG"})
-            self.assertEqual(json.loads(Path(command[2], "config.json").read_text()),
-                             {"auths": {}})
-            observed.append(reference)
-        with tempfile.TemporaryDirectory() as directory:
-            self.anonymous.pull_anonymously(reference, directory, runner)
-        self.assertEqual(observed, [reference])
+    def test_anonymous_manifest_transport_and_cache_independence(self):
+        """Even a cached image requires three direct GHCR requests and exact bytes."""
+        import hashlib
+        body = b'{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}'
+        digest = hashlib.sha256(body).hexdigest()
+        reference = "ghcr.io/jlengelbrecht/litellm-grok@sha256:" + digest
+        challenge = ('Bearer realm="https://ghcr.io/token",service="ghcr.io",'
+                     'scope="repository:jlengelbrecht/litellm-grok:pull"')
+        calls = []
 
-    def test_anonymous_pull_denies_private_and_invalid_reference(self):
-        """A private package blocks promotion and malformed refs never run Docker."""
-        reference = "ghcr.io/jlengelbrecht/litellm-grok@sha256:" + "a" * 64
-        def private_runner(command, check, env):
-            raise subprocess.CalledProcessError(1, command)
-        with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaises(subprocess.CalledProcessError):
-                self.anonymous.pull_anonymously(reference, directory, private_runner)
+        class Response:
+            def __init__(self, request, status, headers, body=b"", url=None):
+                self.status, self.headers, self.body = status, headers, body
+                self.url = url or request.full_url
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def geturl(self): return self.url
+            def read(self, limit): return self.body[:limit]
+
+        def transport(request, timeout):
+            self.assertEqual(timeout, 15)
+            calls.append(request)
+            if len(calls) == 1:
+                return Response(request, 401, {"WWW-Authenticate": challenge})
+            if len(calls) == 2:
+                return Response(request, 200, {}, b'{"token":"anonymous-token"}')
+            return Response(request, 200, {
+                "Content-Type": "application/vnd.oci.image.manifest.v1+json",
+                "Docker-Content-Digest": "sha256:" + digest}, body)
+
+        with patch("subprocess.run", side_effect=AssertionError("Docker cache used")):
+            self.anonymous.verify_anonymous_access(reference, transport)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([r.get_method() for r in calls], ["GET"] * 3)
+        self.assertEqual(calls[0].full_url, calls[2].full_url)
+        self.assertEqual(calls[1].full_url,
+            "https://ghcr.io/token?service=ghcr.io&scope=repository%3Ajlengelbrecht%2Flitellm-grok%3Apull")
+        self.assertIsNone(calls[0].get_header("Authorization"))
+        self.assertIsNone(calls[1].get_header("Authorization"))
+        self.assertEqual(calls[2].get_header("Authorization"), "Bearer anonymous-token")
+        self.assertEqual(calls[2].get_header("Accept"), self.anonymous.ACCEPT)
+
+    def test_anonymous_manifest_fails_closed(self):
+        """Reject private, redirected, malformed, and mismatched exchanges."""
+        import hashlib
+        body = b'{"schemaVersion":2}'
+        digest = hashlib.sha256(body).hexdigest()
+        reference = "ghcr.io/jlengelbrecht/litellm-grok@sha256:" + digest
+        challenge = ('Bearer realm="https://ghcr.io/token",service="ghcr.io",'
+                     'scope="repository:jlengelbrecht/litellm-grok:pull"')
+        class Response:
+            def __init__(self, request, status, headers=None, body=b"", url=None):
+                self.status, self.headers, self.body = status, headers or {}, body
+                self.url = url or request.full_url
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def geturl(self): return self.url
+            def read(self, limit): return self.body[:limit]
+        def run(first=None, second=None, third=None):
+            answers = [first, second, third]
+            calls = []
+            def transport(request, timeout):
+                calls.append(request)
+                default = (Response(request, 401, {"WWW-Authenticate": challenge})
+                           if len(calls) == 1 else
+                           Response(request, 200, {}, b'{"token":"public"}')
+                           if len(calls) == 2 else
+                           Response(request, 200, {
+                               "Content-Type": "application/vnd.oci.image.manifest.v1+json",
+                               "Docker-Content-Digest": "sha256:" + digest}, body))
+                selected = answers[len(calls)-1]
+                return selected(request) if selected else default
             with self.assertRaises(ValueError):
-                self.anonymous.pull_anonymously("ghcr.io/example/litellm-grok:main",
-                                                directory, private_runner)
+                self.anonymous.verify_anonymous_access(reference, transport)
+            return len(calls)
+        self.assertEqual(run(first=lambda r: Response(r, 403)), 1)
+        self.assertEqual(run(first=lambda r: Response(r, 401, {"WWW-Authenticate":
+            challenge.replace(":pull", ":push")})), 1)
+        self.assertEqual(run(first=lambda r: Response(r, 401, {"WWW-Authenticate":
+            challenge.replace("ghcr.io/token", "evil.example/token")})), 1)
+        self.assertEqual(run(second=lambda r: Response(r, 200, {}, b'{}')), 2)
+        self.assertEqual(run(second=lambda r: Response(r, 200, {},
+            b'{"token":"public"}', "https://evil.example/token")), 2)
+        self.assertEqual(run(third=lambda r: Response(r, 403)), 3)
+        self.assertEqual(run(third=lambda r: Response(r, 200, {
+            "Content-Type": "application/vnd.oci.image.manifest.v1+json",
+            "Docker-Content-Digest": "sha256:" + digest}, b'wrong')), 3)
+        self.assertEqual(run(third=lambda r: Response(r, 200, {
+            "Content-Type": "application/vnd.oci.image.manifest.v1+json",
+            "Docker-Content-Digest": "sha256:" + digest}, body,
+            "https://evil.example/manifest")), 3)
+        with self.assertRaises(ValueError):
+            self.anonymous.verify_anonymous_access("ghcr.io/x:main", lambda *_: None)
+        with self.assertRaises(ValueError):
+            self.anonymous.NoRedirect().redirect_request(None, None, 302, "", {},
+                "https://evil.example/manifest")
 
     def test_accepted_source_hashes(self):
         self.assertEqual(self.runner.CALLBACK_HASH, self.runner.sha(self.runner.CALLBACK))
@@ -258,7 +325,7 @@ class PackageTests(unittest.TestCase):
         self.assertLess(workflow.index("publication_state.py create-ready"),
                         workflow.index('docker push "$image:sha-$GITHUB_SHA"'))
         self.assertEqual(workflow.count("- tests/litellm/test_grok_publication.py"), 2)
-        candidate_gate = workflow.index("name: Require anonymous pull of candidate digest")
+        candidate_gate = workflow.index("name: Require anonymous registry read of candidate digest")
         self.assertLess(workflow.index("grok-published/receipt.json"), candidate_gate)
         self.assertLess(candidate_gate, workflow.index("name: Inspect commit tag"))
         self.assertLess(candidate_gate, workflow.index("publication_state.py create-ready"))

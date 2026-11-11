@@ -15,11 +15,11 @@ candidate with repository source and commit revision labels, pushes it, then
 pulls and qualifies its actual registry digest. The authenticated manifest
 guard checks the candidate before reading `sha-<commit>`.
 
-Before any commit tag or `:main` promotion, the workflow also pulls the exact
-candidate digest with an empty, isolated Docker credential configuration. On
-reuse it separately checks anonymous pull of the existing commit digest. The
+Before any commit tag or `:main` promotion, the workflow also reads and hashes the exact
+candidate manifest through an anonymous GHCR token exchange, with no Docker daemon or credentials. On
+reuse it separately checks anonymous manifest access for the existing commit digest. The
 first candidate push creates the package if needed; GitHub defaults a new GHCR
-package to private. If anonymous pull then fails, publication stops with the
+package to private. If anonymous registry read then fails, publication stops with the
 candidate present and no commit or `:main` tag promoted. The owner can open the
 new `litellm-grok` package settings, set visibility to **Public** if intended,
 and rerun the workflow. This action changes package visibility and belongs to
@@ -52,7 +52,7 @@ These labels are repository-workflow provenance within the trusted GHCR and
 repository boundary, not a cryptographic attestation. GHCR package write
 access and public visibility require owner validation for this publication PR.
 An absent or inaccessible package cannot be proven public before its first
-candidate push. The anonymous pull gate establishes public read access at
+candidate push. The anonymous registry gate establishes exact-manifest public read access at
 publication time, before commit or `:main` promotion. The owner must confirm
 the package access/bootstrap path before merging this PR.
 No provider or cluster credentials are used by the synthetic tests.
