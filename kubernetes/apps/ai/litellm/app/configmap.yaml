@@ -139,17 +139,6 @@ data:
         model_info:
           description: "Project pilot native Claude subscription bearer passthrough"
 
-      # Owner-only Grok subscription route. The callback supplies native OAuth
-      # after verifying the exact isolated key grant and a Claude bearer header shape.
-      - model_name: "project-grok-native"
-        litellm_params:
-          model: "xai/grok-4.7-build-fast"
-          use_xai_oauth: false
-          timeout: 90
-          max_retries: 0
-        model_info:
-          description: "Project pilot isolated native Grok subscription"
-
       - model_name: "project-router"
         litellm_params:
           model: "auto_router/complexity_router"
@@ -338,7 +327,6 @@ data:
     litellm_settings:
       callbacks:
         - project_router_guard.proxy_handler_instance
-        - project_grok_native.proxy_handler_instance
       # Drop unsupported params instead of erroring
       drop_params: true
       # Forward client headers (the Claude Code login) to the anthropic/* models only

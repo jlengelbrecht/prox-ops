@@ -103,19 +103,13 @@ class HindsightRouterConfigTests(unittest.TestCase):
 
     def test_existing_aliases_and_proxy_settings_are_unchanged(self):
         self.assertEqual(set(self.models), set(EXISTING_MODELS) | set(BACKENDS)
-                         | {name for name, _ in BACKENDS.values()}
-                         | {"project-grok-native"})
+                         | {name for name, _ in BACKENDS.values()})
         for name, expected in EXISTING_MODELS.items():
             with self.subTest(model=name):
                 self.assertEqual(digest(self.models[name]), expected)
         for name, expected in EXISTING_SETTINGS.items():
             with self.subTest(setting=name):
-                setting = self.config[name]
-                if name == "litellm_settings":
-                    setting = {**setting, "callbacks": [
-                        callback for callback in setting["callbacks"]
-                        if callback != "project_grok_native.proxy_handler_instance"]}
-                self.assertEqual(digest(setting), expected)
+                self.assertEqual(digest(self.config[name]), expected)
 
 
 if __name__ == "__main__":
