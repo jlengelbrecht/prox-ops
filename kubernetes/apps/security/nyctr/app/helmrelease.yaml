@@ -48,12 +48,19 @@ spec:
 
     # Peers allowed to supply X-Forwarded-*: the pod CIDR the envoy-internal
     # gateway pods live in (talos/talconfig.yaml clusterPodNets), same range
-    # Paperclip trusts. Every peer in the range that can connect is believed,
-    # so the range is only as safe as the ingress rules: ingressFrom below
-    # admits the envoy-internal pods and nothing else, and no other policy
-    # may select the Nyctr pod and admit more (networkpolicy.yaml is egress
-    # only). Nyctr recognises a member's device by the client address the
-    # gateway reports, so this must stay true.
+    # Paperclip trusts. ingressFrom below admits the envoy-internal pods and
+    # nothing else, and no other policy may select the Nyctr pod and admit
+    # more (networkpolicy.yaml is egress only).
+    #
+    # Known limit: a pod elsewhere in the cluster that reaches Nyctr through
+    # the gateway has an address inside this range too, so Nyctr skips that
+    # address and believes the X-Forwarded-For entry the pod supplied. A LAN
+    # client cannot do this: the gateway appends its real address, which is
+    # outside the range, and that is the one Nyctr takes. Nyctr grants
+    # nothing on the address alone (it only picks which of a signed-in
+    # member's own devices to highlight; its other use, the local sign-in
+    # quota, is off here), so treat the client address as a hint until Nyctr
+    # resolves it by hop count instead of by range.
     forwardedAllowIps:
       - 10.42.0.0/16
     networkPolicy:
