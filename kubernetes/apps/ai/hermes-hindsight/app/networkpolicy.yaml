@@ -367,16 +367,22 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
-    # Memory-reasoning LLM: the two hosts of the built-in `openai-codex`
-    # provider, chatgpt.com (Codex Responses backend) and auth.openai.com
-    # (OAuth token refresh). Coupled to HINDSIGHT_API_LLM_PROVIDER in
-    # hindsight.yaml.
+    # Retained native-auth egress for later cleanup after gateway canary.
     - toFQDNs:
         - matchName: chatgpt.com
         - matchName: auth.openai.com
       toPorts:
         - ports:
             - port: "443"
+              protocol: TCP
+    # Internal LiteLLM Responses endpoint only, selected by its pod label.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
               protocol: TCP
     # Shared CloudNativePG cluster in the database namespace (postgres-rw);
     # its own policy already admits ingress from this namespace on 5432.
@@ -392,7 +398,7 @@ spec:
 # Hindsight worker (component=worker, zero replicas until qualified). The
 # single empty ingress rule is Cilium's default-deny form: no peer may
 # connect. Egress is exactly the API's: DNS with the L7 rule the toFQDNs lane
-# needs, the two openai-codex provider hosts and the shared database.
+# needs, retained native-auth hosts, LiteLLM and the shared database.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -426,6 +432,14 @@ spec:
       toPorts:
         - ports:
             - port: "443"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
               protocol: TCP
     - toEndpoints:
         - matchLabels:

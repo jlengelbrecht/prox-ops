@@ -1,0 +1,14 @@
+# Model files on Odin's own SSDs (a second VM disk, scsi1 on the odin-ai
+# datastore; see terraform/terraform.tfvars). Talos partitions and formats it
+# and mounts it at /var/mnt/ai-models. The selector takes the one non-system
+# disk of about 1 TiB; the 100 GiB system disk can never match.
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: ai-models
+provisioning:
+  diskSelector:
+    match: "!system_disk && disk.size > 900u * GiB"
+  minSize: 900GiB
+  grow: true
+filesystem:
+  type: xfs

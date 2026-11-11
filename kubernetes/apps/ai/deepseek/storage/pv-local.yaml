@@ -1,0 +1,46 @@
+---
+# Host-local model volume on k8s-work-7: the Talos user volume ai-models
+# (/var/mnt/ai-models, xfs) on Odin's own SSDs. Static and node-bound, so only
+# pods on k8s-work-7 can use it. No redundancy: the files can be downloaded again.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: deepseek-local
+  labels:
+    app.kubernetes.io/name: deepseek
+    app.kubernetes.io/component: storage
+spec:
+  capacity:
+    storage: 900Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-ai-models
+  volumeMode: Filesystem
+  local:
+    path: /var/mnt/ai-models
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["k8s-work-7"]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deepseek-local
+  labels:
+    app.kubernetes.io/name: deepseek
+    app.kubernetes.io/component: storage
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-ai-models
+  volumeName: deepseek-local
+  resources:
+    requests:
+      storage: 900Gi

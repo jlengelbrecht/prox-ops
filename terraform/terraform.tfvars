@@ -361,6 +361,13 @@ worker_nodes = [
       { device = "numa0", cpus = "0-35", memory = 155648, hostnodes = "0", policy = "bind" },
       { device = "numa1", cpus = "36-71", memory = 155648, hostnodes = "1", policy = "bind" },
     ]
+    # Model files on Odin's own SSDs (three 1.92 TB drives, RAID 0 on the PERC,
+    # LVM datastore odin-ai). Per-token lookups in the 103 GiB Engram table cost
+    # about 12 ms per cold read over CephFS; a host-local disk avoids the network.
+    # No redundancy and no backup: the files can be downloaded again.
+    additional_disks = [
+      { interface = "scsi1", datastore_id = "odin-ai", size_gb = 1024 },
+    ]
     additional_network_devices = [
       {
         bridge  = "vmbr1"
