@@ -1,0 +1,50 @@
+name: LiteLLM Grok image
+
+on:
+  pull_request:
+    paths:
+      - services/litellm-grok/**
+      - tests/litellm/grok_pinned_image_*.py
+      - tests/litellm/run_grok_pinned_image.py
+      - tests/litellm/test_grok_image_package.py
+      - kubernetes/apps/ai/litellm/app/callbacks/project_grok_native.py
+      - .github/workflows/litellm-grok.yaml
+  push:
+    branches: [main]
+    paths:
+      - services/litellm-grok/**
+      - tests/litellm/grok_pinned_image_*.py
+      - tests/litellm/run_grok_pinned_image.py
+      - tests/litellm/test_grok_image_package.py
+      - kubernetes/apps/ai/litellm/app/callbacks/project_grok_native.py
+      - .github/workflows/litellm-grok.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Package unit controls
+        run: python3 -m unittest tests/litellm/test_grok_image_package.py
+      - name: Pull exact public base and qualify offline
+        run: |
+          set -euo pipefail
+          base='ghcr.io/berriai/litellm-database:v1.108.0@sha256:80c91fd00cc039e8880474f539544b919f14cd258a22f22ce4218b864c4ff14a'
+          docker pull "$base"
+          base_id=$(docker image inspect --format '{{.Id}}' "$base")
+          mkdir -p "$RUNNER_TEMP/grok-verify"
+          python3 tests/litellm/run_grok_pinned_image.py --base-image-id "$base_id" \
+            --receipt "$RUNNER_TEMP/grok-verify/receipt.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: grok-verify-receipt
+          path: ${{ runner.temp }}/grok-verify/receipt.json
+          if-no-files-found: ignore
