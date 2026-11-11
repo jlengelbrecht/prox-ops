@@ -14,6 +14,7 @@ EXPECTED = {
 
 
 def replace_once(source, old, new):
+    """Replace exactly one verified upstream fragment or fail closed."""
     if source.count(old) != 1:
         raise RuntimeError("patch context mismatch")
     return source.replace(old, new, 1)
@@ -28,17 +29,22 @@ def patch_endpoint(source):
         )
         log_llm_api_exception(e, base_llm_response_processor.litellm_call_id)
 '''
-    new = '''        transformed_exception = await proxy_logging_obj.post_call_failure_hook(
-            user_api_key_dict=user_api_key_dict, original_exception=e, request_data=base_llm_response_processor.data
-        )
-        # This callback owns the fixed alias failure contract. If its replacement
-        # disappears, close the alias error rather than returning provider text.
+    new = '''        # Grok's raw provider error must not reach the endpoint logger.
         request_data = base_llm_response_processor.data
         carrier = request_data.get("proxy_server_request") if isinstance(request_data, dict) else None
         carrier_body = carrier.get("body") if isinstance(carrier, dict) else None
         is_grok_alias = (isinstance(request_data, dict) and request_data.get("model") == "project-grok-native") or (
             isinstance(carrier_body, dict) and carrier_body.get("model") == "project-grok-native"
         )
+        transformed_exception = await proxy_logging_obj.post_call_failure_hook(
+            user_api_key_dict=user_api_key_dict, original_exception=e, request_data=request_data
+        )
+        # Preserve upstream's original non-Grok diagnostic even if the callback
+        # replaces the client-facing exception.
+        if not is_grok_alias:
+            log_llm_api_exception(e, base_llm_response_processor.litellm_call_id)
+        # This callback owns the fixed alias failure contract. If its replacement
+        # disappears, close the alias error rather than returning provider text.
         # The frozen callback also returns a 502 for its own request denials.
         # Preserve their existing 401 response while selecting provider errors.
         is_alias_denial = (is_grok_alias and isinstance(e, CallerCredentialAuthenticationError)
@@ -49,10 +55,11 @@ def patch_endpoint(source):
             e = transformed_exception
         elif is_grok_alias:
             e = HTTPException(status_code=502, detail="Project Grok provider failed")
-        log_llm_api_exception(
-            e, base_llm_response_processor.litellm_call_id,
-            redacted=not is_alias_denial and (transformed_exception is not None or is_grok_alias),
-        )
+        if is_grok_alias:
+            log_llm_api_exception(
+                e, base_llm_response_processor.litellm_call_id,
+                redacted=not is_alias_denial,
+            )
 '''
     return replace_once(source, old, new)
 
@@ -170,6 +177,15 @@ def patch_common(source):
             transformed_exception: Final = await proxy_logging_obj.post_call_failure_hook(
 '''
     new = '''        except Exception as e:
+            carrier = request_data.get("proxy_server_request")
+            carrier_body = carrier.get("body") if isinstance(carrier, dict) else None
+            is_grok_alias = request_data.get("model") == "project-grok-native" or (
+                isinstance(carrier_body, dict) and carrier_body.get("model") == "project-grok-native"
+            )
+            if not is_grok_alias:
+                verbose_proxy_logger.exception(
+                    "litellm.proxy.proxy_server.async_data_generator(): Exception occured - %s", e
+                )
             transformed_exception: Final = await proxy_logging_obj.post_call_failure_hook(
 '''
     source = replace_once(source, old, new)
@@ -177,22 +193,13 @@ def patch_common(source):
                 e = transformed_exception
             verbose_proxy_logger.debug(
 '''
-    new = '''            if transformed_exception is None:
-                carrier = request_data.get("proxy_server_request")
-                carrier_body = carrier.get("body") if isinstance(carrier, dict) else None
-                is_grok_alias = request_data.get("model") == "project-grok-native" or (
-                    isinstance(carrier_body, dict) and carrier_body.get("model") == "project-grok-native"
-                )
-                if is_grok_alias:
-                    transformed_exception = HTTPException(status_code=502, detail="Project Grok provider failed")
+    new = '''            if transformed_exception is None and is_grok_alias:
+                transformed_exception = HTTPException(status_code=502, detail="Project Grok provider failed")
             if transformed_exception is not None:
                 e = transformed_exception
+            if is_grok_alias:
                 # The active exception frame contains the raw provider error.
                 log_llm_api_exception(e, request_litellm_call_id(request_data), redacted=True)
-            else:
-                verbose_proxy_logger.exception(
-                    "litellm.proxy.proxy_server.async_data_generator(): Exception occured - %s", e
-                )
             verbose_proxy_logger.debug(
 '''
     source = replace_once(source, old, new)
@@ -207,12 +214,7 @@ def patch_common(source):
                 code=stream_error_status,
             )
 ''',
-        '''            carrier = request_data.get("proxy_server_request")
-            carrier_body = carrier.get("body") if isinstance(carrier, dict) else None
-            is_grok_alias = request_data.get("model") == "project-grok-native" or (
-                isinstance(carrier_body, dict) and carrier_body.get("model") == "project-grok-native"
-            )
-            if isinstance(e, HTTPException) and transformed_exception is not None and is_grok_alias:
+        '''            if isinstance(e, HTTPException) and transformed_exception is not None and is_grok_alias:
                 # Headers have gone out. Emit the fixed error as an SSE frame.
                 proxy_exception = proxy_exception_from_http_exception(e, {})
             else:
@@ -317,6 +319,7 @@ PATCHERS = {
 
 
 def main():
+    """Verify the pinned source, compile all replacements, then write them."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path)
     args = parser.parse_args()
