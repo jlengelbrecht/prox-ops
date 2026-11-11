@@ -20,7 +20,7 @@ NATIVE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NATIVE)
 SQL = NATIVE.SQL.read_text()
 # The reviewed file; any edit is a new review, a new hash and so a new Job.
-SQL_SHA256 = '490ee93e05b43379e8268b938bfe992762b8a0f8f72fa71d54e412f8edd6fd17'
+SQL_SHA256 = 'b564da418fe5a247d1f9f3a40121bc8f5b171616adf0ddd6c3da49f22bee76d6'
 ACL_TREE = NATIVE.SQL.parent
 DATABASE = ROOT / 'kubernetes/apps/database'
 KUSTOMIZE = os.environ.get('HINDSIGHT_KUSTOMIZE', 'kustomize')
@@ -132,7 +132,7 @@ class SqlTests(unittest.TestCase):
         roster = re.search(r'rolname NOT IN \(([^)]*)\)', SQL).group(1)
         release = yaml.safe_load((DATABASE / 'cluster/app/helmrelease.yaml').read_text())
         managed = [role['name'] for role in release['spec']['values']['cluster']['roles']]
-        self.assertEqual(sorted(re.findall(r"'(\w+)'", roster)), sorted(managed + ['app', 'streaming_replica']))
+        self.assertEqual(sorted(re.findall(r"'(\w+)'", roster)), sorted(managed + ['app', 'streaming_replica', 'cnpg_metrics_exporter']))
 
     def test_workflow_triggers_on_every_file_the_activation_depends_on(self):
         workflow = (ROOT / '.github/workflows/hindsight-baseline.yaml').read_text()
