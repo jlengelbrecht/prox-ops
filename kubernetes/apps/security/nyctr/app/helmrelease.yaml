@@ -37,14 +37,24 @@ spec:
   values:
     image:
       repository: ghcr.io/homelab-0/nyctr
-      # v0.1.0-alpha.2 (amd64 and arm64), from that release's notes. This
+      # v0.1.0-alpha.3 (amd64 and arm64), from that release's notes. This
       # digest and the chart tag in ocirepository.yaml move together. The
       # chart takes a digest or a tag, never both.
-      digest: sha256:24c55af3105e2a9470cb5fb1541a1c80650b46e1e36e1bc8ccfc6f1d305288ab
+      digest: sha256:b1e25070da31e31aad58be1fc63fe89a2ed4d1ba4520e464645cbc54677a846f
 
-    # Origin people open, and the origin of the OIDC callback
-    # (<publicUrl>/api/auth/oidc/callback, declared in the Authentik blueprint).
+    # Two addresses, one application.
+    #   nyctr.homelab0.org    the console, for administrators
+    #   blocked.homelab0.org  where someone with a blocked site goes
+    # On the portal address every session has member rights, an
+    # administrator's included, and the console does not answer there. On the
+    # console address a member is not signed in and is sent to the portal.
+    # Sign-in returns to the address it started from, so both callbacks
+    # (<address>/api/auth/oidc/callback) are declared in the Authentik
+    # blueprint. Nyctr tells the two apart by the Host header: this limits
+    # what a session can do on each name, and both names sit on the same
+    # internal gateway, so it is not a network boundary between them.
     publicUrl: https://nyctr.homelab0.org
+    portalUrl: https://blocked.homelab0.org
 
     # Peers allowed to supply X-Forwarded-*: the pod CIDR the envoy-internal
     # gateway pods live in (talos/talconfig.yaml clusterPodNets), same range
@@ -75,10 +85,10 @@ spec:
 
     httpRoute:
       enabled: true
-      # The record nyctr.homelab0.org is created from this route by the
-      # existing DNS automation (k8s-gateway, unifi external-dns).
+      # The chart puts both hostnames on the route; the existing DNS
+      # automation (k8s-gateway, unifi external-dns) creates both records.
       annotations:
-        external-dns.alpha.kubernetes.io/hostname: nyctr.homelab0.org
+        external-dns.alpha.kubernetes.io/hostname: nyctr.homelab0.org,blocked.homelab0.org
       parentRefs:
         - name: envoy-internal
           namespace: network

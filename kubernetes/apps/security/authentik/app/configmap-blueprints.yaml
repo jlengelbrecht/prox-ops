@@ -1715,8 +1715,10 @@ data:
       # Role groups. Membership is managed in authentik, not here, and must be
       # direct: Nyctr reads the role from the "groups" claim of the managed
       # profile mapping, which lists a user's own groups and not inherited ones.
-      #   nyctr-admins   the console: sources, findings, requests, guests, rules
-      #   nyctr-members  the portal: their own devices' blocks and access requests
+      #   nyctr-admins   the console at nyctr.homelab0.org: sources, findings,
+      #                  requests, guests, rules
+      #   nyctr-members  the portal at blocked.homelab0.org: their own devices'
+      #                  blocks and access requests
       - model: authentik_core.group
         id: group-nyctr-admins
         identifiers:
@@ -1756,9 +1758,13 @@ data:
             - !Context scope_email
             - !Context scope_profile
             - !Context scope_openid
+          # One callback per address: the console, and the member portal.
+          # Nyctr sends the one for the address the person started on.
           redirect_uris:
             - matching_mode: strict
               url: https://nyctr.homelab0.org/api/auth/oidc/callback
+            - matching_mode: strict
+              url: https://blocked.homelab0.org/api/auth/oidc/callback
           access_code_validity: minutes=1
           access_token_validity: minutes=5
           # Nyctr reads the role from the ID token, not from userinfo.
