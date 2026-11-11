@@ -94,7 +94,7 @@ class PackageTests(unittest.TestCase):
         challenge = 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:owner/litellm-grok:pull"'
         def run(final=404, challenge_value=challenge, token_body=None,
                 token_status=200, candidate_status=200, redirect=None,
-                final_body=absent_body, final_media_type=None):
+                final_body=absent_body, final_media_type=None, actor="actor"):
             calls = []
             def opener(request, timeout):
                 self.assertEqual(timeout, 15)
@@ -104,7 +104,8 @@ class PackageTests(unittest.TestCase):
                 if len(calls) == 2:
                     self.assertEqual(request.full_url,
                         "https://ghcr.io/token?service=ghcr.io&scope=repository%3Aowner%2Flitellm-grok%3Apull")
-                    self.assertTrue(request.get_header("Authorization").startswith("Basic "))
+                    self.assertEqual(request.get_header("Authorization"),
+                        "Basic " + base64.b64encode(f"{actor}:token".encode()).decode())
                     return Response(request, token_status, body=token_body if token_body is not None
                                     else b'{"token":"opaque-bearer"}',
                                     url="https://evil.example/token" if redirect == "token" else None)
@@ -121,7 +122,7 @@ class PackageTests(unittest.TestCase):
                                     "manifests": []} if final_media_type else {})}).encode()))
             try:
                 state = self.guard.tag_state("owner/litellm-grok", "candidate-1-1",
-                    digest, sha, "actor", "token", opener)
+                    digest, sha, actor, "token", opener)
                 return state, calls
             except self.guard.RemoteError:
                 return "remote_error", calls
@@ -142,6 +143,17 @@ class PackageTests(unittest.TestCase):
         self.assertEqual([request.get_header("Authorization") for request in calls[2:]],
                          ["Bearer opaque-bearer"] * 2)
         self.assertEqual(run(200)[0], "present")
+        for actor in ("github-actions[bot]", "dependabot[bot]"):
+            with self.subTest(actor=actor):
+                self.assertEqual(run(actor=actor)[0], "absent")
+                self.assertEqual(run(200, actor=actor)[0], "present")
+        for actor in ("", "[bot]", "actor[bot]extra", "actor[admin]",
+                      "actor/name", "actor:token", "actor\r\nInjected: value",
+                      "actor\x00name", "actor name"):
+            with self.subTest(invalid_actor=actor):
+                state, calls = run(actor=actor)
+                self.assertEqual(state, "remote_error")
+                self.assertEqual(calls, [])
         # An existing OCI index is still an existing tag (schemaVersion 2).
         self.assertEqual(run(200, final_media_type=
             "application/vnd.oci.image.index.v1+json")[0], "present")

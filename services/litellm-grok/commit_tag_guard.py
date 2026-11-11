@@ -159,7 +159,7 @@ def tag_state(repository, candidate_reference, candidate_digest, commit_sha,
             or DIGEST.fullmatch(candidate_digest) is None
             or SHA.fullmatch(commit_sha) is None
             or not re.fullmatch(r"candidate-[0-9]+-[0-9]+", candidate_reference)
-            or not re.fullmatch(r"[A-Za-z0-9-]+", actor)
+            or not re.fullmatch(r"[A-Za-z0-9-]+(?:\[bot\])?", actor)
             or not token or "\r" in token or "\n" in token):
         raise RemoteError("invalid guard input")
     url = f"https://ghcr.io/v2/{repository}/manifests/{candidate_reference}"
