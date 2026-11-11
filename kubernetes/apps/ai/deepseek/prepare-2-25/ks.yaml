@@ -1,0 +1,25 @@
+---
+# One-off: downloads and packs the 2.25 bpw set on the host-local volume.
+# Remove once the Job has completed.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: deepseek-prepare-2-25
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  dependsOn:
+    - name: deepseek-storage
+      namespace: ai
+    # The deepseek Kustomization carries the deepseek-prepare network policy this
+    # Job runs under; it must be applied first.
+    - name: deepseek
+      namespace: ai
+  interval: 1h
+  path: ./kubernetes/apps/ai/deepseek/prepare-2-25
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: false
