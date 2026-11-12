@@ -1,4 +1,6 @@
 """Fast local controls for the tracked Grok image package."""
+import asyncio
+import ast
 import base64
 import importlib.util
 from io import BytesIO
@@ -7,7 +9,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPHandler
 from urllib.response import addinfourl
@@ -135,7 +139,254 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(self.runner.CALLBACK_HASH, self.runner.sha(self.runner.CALLBACK))
         for path, expected in self.runner.FILES.items():
             self.assertEqual(expected, self.runner.sha(Path(path)), path)
-        self.assertEqual(len(self.runner.CHECKS), 26)
+        self.assertEqual(len(self.runner.CHECKS), 35)
+        self.assertIn("routed_asgi_litellm_metadata_only_fixed_502", self.runner.CHECKS)
+        self.assertIn("routed_afterstream_selected_fixed_terminal", self.runner.CHECKS)
+
+    def test_baseline_check_path_and_candidate_reachability(self):
+        """Walk the fixture's actual mode branches without importing LiteLLM."""
+        tree = ast.parse((HERE / "grok_pinned_image_integration.py").read_text())
+        qualify = next(node for node in tree.body
+                       if isinstance(node, ast.AsyncFunctionDef) and node.name == "qualify")
+
+        def path_checks(baseline):
+            seen = []
+            env = {"GROK_BASELINE_NONALIAS": "1"} if baseline else {}
+
+            def walk(statements):
+                for statement in statements:
+                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                              ast.ClassDef)):
+                        continue
+                    if isinstance(statement, ast.Return):
+                        return True
+                    if (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+                            and isinstance(statement.value.func, ast.Name)
+                            and statement.value.func.id == "check"):
+                        name = statement.value.args[0]
+                        seen.append(name.value if isinstance(name, ast.Constant) else "dynamic")
+                    if isinstance(statement, ast.If):
+                        if "GROK_BASELINE_NONALIAS" in ast.unparse(statement.test):
+                            selected = eval(compile(ast.Expression(statement.test), "<fixture-mode>", "eval"),
+                                            {"os": SimpleNamespace(environ=env)})
+                            if walk(statement.body if selected else statement.orelse):
+                                return True
+                        else:
+                            walk(statement.body)
+                            walk(statement.orelse)
+                    elif isinstance(statement, (ast.With, ast.AsyncWith, ast.For,
+                                                ast.AsyncFor, ast.While)):
+                        if walk(statement.body):
+                            return True
+                        walk(getattr(statement, "orelse", []))
+                    elif isinstance(statement, ast.Try):
+                        walk(statement.body)
+                        for handler in statement.handlers:
+                            walk(handler.body)
+                        walk(statement.orelse)
+                        walk(statement.finalbody)
+                return False
+
+            walk(qualify.body)
+            return seen
+
+        self.assertEqual(path_checks(True),
+                         ["baseline_generic_denied", "baseline_nonalias_reached"])
+        candidate = path_checks(False)
+        self.assertTrue({"common_litellm_metadata_fixed_502",
+                         "common_metadata_spoof_rejected", "common_canonical_denial_401",
+                         "common_prefixed_denial_closed",
+                         "common_unrelated_original_preserved",
+                         "routed_asgi_litellm_metadata_only_fixed_502",
+                         "routed_afterstream_selected_fixed_terminal"}.issubset(candidate))
+
+    def test_routed_boundary_requires_router_selected_deployment(self):
+        tree = ast.parse((HERE / "grok_pinned_image_integration.py").read_text())
+        qualify = next(node for node in tree.body
+                       if isinstance(node, ast.AsyncFunctionDef) and node.name == "qualify")
+        hooks = [node for node in ast.walk(qualify)
+                 if isinstance(node, ast.AsyncFunctionDef) and node.name == "maybe_fault_hook"]
+        self.assertEqual(len(hooks), 1)
+        self.assertNotIn("pre_call_with_selected_deployment",
+                         (HERE / "grok_pinned_image_integration.py").read_text())
+
+        async def original_failure_hook(*_, **__):
+            return None
+
+        state = {"nonalias_hook_mode": None, "hook_fault": False}
+        evidence = {}
+        scope = {"CASE": "routed_litellm_metadata", "state": state, "EVIDENCE": evidence,
+                 "ALIAS": "project-grok-native", "BACKEND": "xai/grok-4.7-build-fast",
+                 "original_failure_hook": original_failure_hook}
+        exec(compile(ast.Module(body=hooks, type_ignores=[]), "<fixture-hook>", "exec"), scope)
+        selected_metadata = {
+            "deployment_model_name": "project-router", "deployment": "xai/grok-4.7-build-fast",
+            "model_info": {"id": "synthetic-grok-route"}}
+        data = {"model": "project-router", "proxy_server_request": {
+            "body": {"model": "project-router", "litellm_metadata": selected_metadata}},
+            "litellm_metadata": selected_metadata}
+
+        def inspect(data, stamp="synthetic-grok-route"):
+            original = RuntimeError("synthetic failure")
+            if stamp is not None:
+                original.failed_deployment_id = stamp
+            asyncio.run(scope["maybe_fault_hook"](request_data=data, original_exception=original))
+            return state["routed_failure_boundary"], dict(evidence["routed_trace"])
+
+        selected, trace = inspect(data)
+        self.assertTrue(selected)
+        self.assertEqual(trace, {"request_model": "router", "carrier_model": "router",
+            "selected_group": "router", "selected_backend": "backend", "selected_id": True,
+            "router_stamped_id": True, "original_selected_fields": True,
+            "other_selected_fields": False})
+        self.assertFalse(inspect(data, stamp=None)[0])
+        self.assertFalse(inspect(data, stamp="other-deployment")[0])
+        for changed in (
+            {"litellm_metadata": {"deployment_model_name": "project-grok-native"}},
+            {"litellm_metadata": {**data["litellm_metadata"], "deployment": "other"}},
+            {"metadata": {"deployment_model_name": "project-router"}},
+        ):
+            with self.subTest(changed=changed):
+                self.assertFalse(inspect({**data, **changed})[0])
+
+    def test_patch_classifiers_match_real_router_stamp_and_reject_caller_stamp(self):
+        tree = ast.parse((ROOT / "services/litellm-grok/patch_image.py").read_text())
+        fragments = [node.value for node in ast.walk(tree)
+                     if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                     and 'get("deployment_model_name") == "project-router"' in node.value]
+        self.assertEqual(len(fragments), 4)
+        expressions = []
+        for fragment in fragments:
+            marker = "grok_alias_failure =" if "grok_alias_failure =" in fragment else "is_grok_alias ="
+            lines = fragment[fragment.index(marker):].splitlines()
+            for count in range(1, len(lines) + 1):
+                try:
+                    parsed = ast.parse(textwrap.dedent("\n".join(lines[:count])))
+                except SyntaxError:
+                    continue
+                if len(parsed.body) == 1 and isinstance(parsed.body[0], ast.Assign):
+                    break
+            else:
+                self.fail("patched classifier expression did not parse")
+            expressions.append(compile(ast.Expression(parsed.body[0].value), "<routed-classifier>", "eval"))
+
+        data = {"model": "project-router", "proxy_server_request": {"body": {
+            "model": "project-router"}}, "litellm_metadata": {
+            "deployment_model_name": "project-router", "deployment": "xai/grok-4.7-build-fast",
+            "model_info": {"id": "synthetic-grok-route"}}}
+        def classified(expression, data, stamp="synthetic-grok-route"):
+            body = data["proxy_server_request"]["body"]
+            original = RuntimeError("synthetic failure")
+            if stamp is not None:
+                original.failed_deployment_id = stamp
+            return eval(expression, {"request_data": data, "self": SimpleNamespace(data=data),
+                                     "carrier_body": body, "e": original,
+                                     "original_exception": original})
+
+        for expression in expressions:
+            self.assertTrue(classified(expression, data))
+            self.assertFalse(classified(expression, data, stamp=None))
+            self.assertFalse(classified(expression, data, stamp="other-deployment"))
+            alias_tag = {**data, "litellm_metadata": {"deployment_model_name": "project-grok-native",
+                "deployment": "xai/grok-4.7-build-fast", "model_info": {"id": "synthetic-alias"}}}
+            self.assertFalse(classified(expression, alias_tag, stamp=None))
+            self.assertTrue(classified(expression, alias_tag, stamp="synthetic-alias"))
+            forged = {**data, "litellm_metadata": {**data["litellm_metadata"],
+                "deployment": "synthetic-other"}, "metadata": {
+                "deployment_model_name": "project-grok-native",
+                "deployment": "xai/grok-4.7-build-fast",
+                "model_info": {"id": "synthetic-grok-route"}}}
+            self.assertFalse(classified(expression, forged))
+            self.assertFalse(classified(expression, {**forged, "litellm_metadata": {}}))
+            self.assertTrue(classified(expression, {**data, "metadata": {
+                "deployment_model_name": "synthetic-other", "deployment": "synthetic-other",
+                "model_info": {"id": "synthetic-grok-route"}}}))
+            self.assertFalse(classified(expression, {**data, "model": "synthetic-other"}))
+            self.assertFalse(classified(expression, {**data, "litellm_metadata": {
+                **data["litellm_metadata"], "deployment": "synthetic-other"}}))
+            self.assertFalse(classified(expression, {**data, "litellm_metadata": {
+                **data["litellm_metadata"], "model_info": {}}}))
+            self.assertFalse(classified(expression, {**data, "proxy_server_request": {
+                "body": {"model": "synthetic-other"}}}))
+
+    def test_docker_command_output_is_discarded(self):
+        with patch.object(self.runner.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 7)) as run:
+            self.assertEqual(self.runner.run_closed(["docker", "build"], 240), 7)
+        self.assertEqual(run.call_args.args[0], ["docker", "build"])
+        self.assertEqual(run.call_args.kwargs, {
+            "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+            "timeout": 240, "check": False})
+
+    def test_inspect_accepts_narrow_output_and_rejects_oversize(self):
+        real_popen = subprocess.Popen
+        image_id = "sha256:" + "a" * 64
+        digest = "example/image@sha256:" + "b" * 64
+        valid = (json.dumps(image_id) + "|" + json.dumps([digest])).encode()
+        processes = []
+
+        def inspect_with_output(data):
+            def launch(command, **kwargs):
+                self.assertEqual(command, ["docker", "image", "inspect", "--format",
+                    "{{json .Id}}|{{json .RepoDigests}}", "synthetic-image"])
+                self.assertEqual(kwargs, {"stdout": subprocess.PIPE,
+                                          "stderr": subprocess.DEVNULL})
+                process = real_popen([sys.executable, "-c",
+                    "import os; os.write(1, " + repr(data) + ")"], **kwargs)
+                processes.append(process)
+                return process
+            with patch.object(self.runner.subprocess, "Popen", side_effect=launch):
+                return self.runner.inspect("synthetic-image")
+
+        self.assertEqual(inspect_with_output(valid), {"Id": image_id, "RepoDigests": [digest]})
+        self.assertIsNone(inspect_with_output(b"x" * 8193))
+        self.assertTrue(all(process.poll() is not None for process in processes))
+
+    def test_inspect_timeout_kills_child(self):
+        real_popen = subprocess.Popen
+        processes = []
+
+        class NoEvents:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def register(self, *_): pass
+            def select(self, *_): return []
+
+        def launch(_command, **kwargs):
+            process = real_popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                 **kwargs)
+            processes.append(process)
+            return process
+
+        with patch.object(self.runner.subprocess, "Popen", side_effect=launch), \
+                patch.object(self.runner.selectors, "DefaultSelector", NoEvents):
+            self.assertIsNone(self.runner.inspect("synthetic-image"))
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
+
+    def test_receipt_transport_has_hard_bounds(self):
+        for baseline in (False, True):
+            command = self.runner.container_command(
+                "synthetic-run", "sha256:" + "a" * 64, Path("/synthetic/input"), baseline)
+            mounts = [command[index + 1] for index, value in enumerate(command[:-1])
+                      if value == "--mount"]
+            self.assertEqual(mounts, ["type=bind,source=/synthetic/input,target=/opt/grok,readonly"])
+            self.assertEqual(command[command.index("--log-driver") + 1], "none")
+            self.assertIn(self.runner.RECEIPT_TMPFS, command)
+            self.assertIn("size=128k", self.runner.RECEIPT_TMPFS)
+            self.assertEqual("GROK_BASELINE_NONALIAS=1" in command, baseline)
+            self.assertEqual(command[command.index("--entrypoint") + 1], "/bin/sh")
+            self.assertIn("/opt/grok-result/result.json", command[-1])
+        with patch.object(self.runner, "run_bounded", return_value=(0, b"{}")) as run:
+            self.assertEqual(self.runner.run_receipt(["docker", "run"]), (0, b"{}"))
+        run.assert_called_once_with(["docker", "run"], 240, 65536)
+
+        exact = b"x" * self.runner.RECEIPT_LIMIT
+        def emit(data):
+            return self.runner.run_bounded([sys.executable, "-c",
+                "import os; os.write(1, " + repr(data) + ")"], 2, self.runner.RECEIPT_LIMIT)
+        self.assertEqual(emit(exact), (0, exact))
+        self.assertEqual(emit(exact + b"x"), (-1, None))
 
     def test_wrong_base_rejected_before_write(self):
         with tempfile.TemporaryDirectory() as directory:

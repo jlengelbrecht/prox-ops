@@ -189,8 +189,18 @@ def traced_hook(base, state, record, backend):
         async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
             state["calls"].append(("request", str(call_type), data.get("model")))
             record("request", str(call_type), data.get("model"), data.get("proxy_server_request"))
-            return await super().async_pre_call_hook(
-                user_api_key_dict=user_api_key_dict, cache=cache, data=data, call_type=call_type)
+            try:
+                return await super().async_pre_call_hook(
+                    user_api_key_dict=user_api_key_dict, cache=cache, data=data, call_type=call_type)
+            except Exception as exc:
+                state["denial_provenance"].append(
+                    type(exc).__name__ == "CallerCredentialAuthenticationError"
+                    and getattr(exc, "message", None) ==
+                    "litellm.AuthenticationError: Project Grok request rejected"
+                    and getattr(exc, "llm_provider", None) == "xai"
+                    and getattr(exc, "model", None) == "project-grok-native"
+                    and getattr(exc, "status_code", None) == 401)
+                raise
 
         async def async_pre_call_deployment_hook(self, kwargs, call_type):
             carrier = kwargs.get("proxy_server_request")
@@ -227,13 +237,15 @@ async def qualify():
     global STAGE, CASE
     import httpx
     import litellm
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from litellm.llms.xai.oauth import XAIOAuthAuthenticator
     from litellm.types.proxy.auth.user_api_key_auth import UserAPIKeyAuth
     from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
     from litellm.proxy.anthropic_endpoints.endpoints import router as messages_router
     from litellm.proxy import proxy_server
     from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
+    from litellm.exceptions import CallerCredentialAuthenticationError
+    import project_grok_native as grok_callback
     from project_grok_native import ProjectGrokNative, ALIAS, BACKEND, BASE, USERINFO, _PROOF
     STAGE = "setup"
 
@@ -242,7 +254,7 @@ async def qualify():
              "token_calls": 0, "bindings": [], "failure_mode": None,
              "provider_calls": 0, "linked_content": None, "hook_fault": False,
              "nonalias_hook_mode": None, "nonalias_hook_seen": False,
-             "nonalias_logs_at_hook": None}
+             "nonalias_logs_at_hook": None, "denial_provenance": []}
     fake_error = "synthetic-provider-error " + state["token"] + " " + state["subject"]
     captured_logs = []
     nonalias_diagnostics = []
@@ -295,6 +307,46 @@ async def qualify():
     original_failure_hook = hook.async_post_call_failure_hook
 
     async def maybe_fault_hook(*args, **kwargs):
+        if CASE in {"routed_litellm_metadata", "routed_afterstream"}:
+            request_data = kwargs.get("request_data")
+            carrier = request_data.get("proxy_server_request") if isinstance(request_data, dict) else None
+            body = carrier.get("body") if isinstance(carrier, dict) else None
+            selected = request_data.get("litellm_metadata") if isinstance(request_data, dict) else None
+            other = request_data.get("metadata") if isinstance(request_data, dict) else None
+            original_selected = body.get("litellm_metadata") if isinstance(body, dict) else None
+            selected_fields = ("deployment", "deployment_model_name")
+            selected_model_info = selected.get("model_info") if isinstance(selected, dict) else None
+            def model_kind(value):
+                return ("router" if value == "project-router" else "alias" if value == ALIAS
+                        else "backend" if value == BACKEND else "absent" if value is None else "other")
+            EVIDENCE["routed_trace"] = {
+                "request_model": model_kind(request_data.get("model")),
+                "carrier_model": model_kind(body.get("model") if isinstance(body, dict) else None),
+                "selected_group": model_kind(selected.get("deployment_model_name")
+                                             if isinstance(selected, dict) else None),
+                "selected_backend": model_kind(selected.get("deployment")
+                                               if isinstance(selected, dict) else None),
+                "selected_id": isinstance(selected_model_info, dict)
+                    and selected_model_info.get("id") == "synthetic-grok-route",
+                "router_stamped_id": isinstance(selected_model_info, dict)
+                    and isinstance(selected_model_info.get("id"), str)
+                    and selected_model_info.get("id") ==
+                        getattr(kwargs.get("original_exception"), "failed_deployment_id", None),
+                "original_selected_fields": isinstance(original_selected, dict)
+                    and any(key in original_selected for key in selected_fields),
+                "other_selected_fields": isinstance(other, dict)
+                    and any(key in other for key in selected_fields),
+            }
+            state["routed_failure_boundary"] = (
+                isinstance(body, dict) and body.get("model") == "project-router"
+                and request_data.get("model") == "project-router"
+                and isinstance(selected, dict)
+                and selected.get("deployment_model_name") == "project-router"
+                and selected.get("deployment") == BACKEND
+                and isinstance(selected_model_info, dict)
+                and selected_model_info.get("id") == "synthetic-grok-route"
+                and EVIDENCE["routed_trace"]["router_stamped_id"] is True
+                and EVIDENCE["routed_trace"]["other_selected_fields"] is False)
         if state["nonalias_hook_mode"] is not None:
             state["nonalias_hook_seen"] = True
             state["nonalias_logs_at_hook"] = len(nonalias_diagnostics)
@@ -321,10 +373,119 @@ async def qualify():
         "litellm_params": {"model": BACKEND, "timeout": 10, "max_retries": 0}}],
         num_retries=0)
     litellm.callbacks = [hook]
+
+    # The base image lacks the patched handler. Keep its receipt limited to the
+    # two baseline checks; exercise common-handler cases only in candidate mode.
+    if os.environ.get("GROK_BASELINE_NONALIAS") != "1":
+        # Exercise the installed, patched common handler with synthetic Messages
+        # request carriers. The unchanged callback returns None for project-router.
+        async def common_case(bucket, original):
+            data = {"model": "project-router", "litellm_call_id": "synthetic-common",
+                    "proxy_server_request": {"body": {"model": "project-router"}, "headers": {}}}
+            if bucket == "forged_metadata":
+                # Caller metadata claims Grok with the Router's selected ID,
+                # while Router's own bucket selects a different backend.
+                data["litellm_metadata"] = {"deployment_model_name": "project-router",
+                                            "deployment": "synthetic-other",
+                                            "model_info": {"id": "synthetic-common"}}
+                data["metadata"] = {"deployment_model_name": ALIAS, "deployment": BACKEND,
+                                    "model_info": {"id": "synthetic-common"}}
+                original.failed_deployment_id = "synthetic-common"
+            elif bucket:
+                data[bucket] = {"deployment_model_name": ALIAS, "deployment": BACKEND,
+                                "model_info": {"id": "synthetic-common"}}
+                original.failed_deployment_id = "synthetic-common"
+            processor = ProxyBaseLLMRequestProcessing(data)
+            logs_before = len(captured_logs)
+            hook_logs_at_call = []
+            hook_results = []
+            class CommonHooks:
+                async def post_call_failure_hook(self, **kwargs):
+                    hook_logs_at_call.append("\n".join(captured_logs[logs_before:]))
+                    transformed = await original_failure_hook(**kwargs)
+                    hook_results.append(kwargs.get("original_exception") is original and transformed is None)
+                    return transformed
+
+                async def post_call_response_headers_hook(self, **kwargs):
+                    return None
+            with patch.object(ProxyBaseLLMRequestProcessing, "get_custom_headers", return_value={}), \
+                 patch.object(ProxyBaseLLMRequestProcessing, "maybe_get_model_id", return_value=None):
+                try:
+                    await processor.handle_llm_api_exception(original, owner, CommonHooks())
+                except Exception as exc:
+                    result = exc
+                else:
+                    result = None
+            response = await proxy_server.openai_exception_handler(Request({
+                "type": "http", "method": "POST", "path": "/v1/messages", "headers": [],
+                "scheme": "http", "server": ("asgi.local", 80),
+            }), result)
+            return (response.status_code, json.loads(response.body),
+                    "\n".join(captured_logs[logs_before:]), hook_logs_at_call, hook_results)
+
+        CASE = "common_selected"
+        status, body, logs, at_hook, hook_results = await common_case(
+            "litellm_metadata", RuntimeError(fake_error))
+        EVIDENCE.setdefault("common_handler", {})["litellm_metadata"] = {
+            "status": status,
+            "closed_logs": fake_error not in logs and state["token"] not in logs,
+            "closed_response": fake_error not in json.dumps(body) and state["token"] not in json.dumps(body),
+            "redacted_before_hook": len(at_hook) == 1 and "sanitized failure" in at_hook[0]
+                and fake_error not in at_hook[0],
+        }
+        check("common_litellm_metadata_fixed_502", lambda:
+              status == 502 and body.get("error", {}).get("message") == "Project Grok provider failed"
+              and all(EVIDENCE["common_handler"]["litellm_metadata"][key]
+                      for key in ("closed_logs", "closed_response", "redacted_before_hook"))
+              and hook_results == [True])
+        CASE = "common_forgery"
+        status, body, logs, at_hook, hook_results = await common_case(
+            "forged_metadata", RuntimeError(fake_error))
+        EVIDENCE["common_handler"]["forged_metadata"] = {
+            "status": status, "original_logged": fake_error in logs,
+            "original_response": fake_error in body.get("error", {}).get("message", ""),
+            "original_before_hook": len(at_hook) == 1 and fake_error in at_hook[0],
+        }
+        check("common_metadata_spoof_rejected", lambda:
+              status == 500 and all(EVIDENCE["common_handler"]["forged_metadata"][key]
+                  for key in ("original_logged", "original_response", "original_before_hook"))
+              and hook_results == [True])
+        CASE = "common_denial"
+        status, body, logs, at_hook, hook_results = await common_case("litellm_metadata", grok_callback._deny())
+        check("common_canonical_denial_401", lambda:
+              status == 401 and "Project Grok request rejected" in body.get("error", {}).get("message", "")
+              and fake_error not in logs and state["token"] not in logs
+              and len(at_hook) == 1 and "sanitized failure" in at_hook[0]
+              and hook_results == [True])
+        adverse_denial = CallerCredentialAuthenticationError(
+            message=fake_error + " Project Grok request rejected", llm_provider="xai", model=ALIAS)
+        status, body, logs, at_hook, hook_results = await common_case("litellm_metadata", adverse_denial)
+        check("common_prefixed_denial_closed", lambda:
+              status == 502 and body.get("error", {}).get("message") == "Project Grok provider failed"
+              and fake_error not in logs and fake_error not in json.dumps(body)
+              and len(at_hook) == 1 and "sanitized failure" in at_hook[0]
+              and hook_results == [True])
+        CASE = "common_unrelated"
+        status, body, logs, at_hook, hook_results = await common_case(None, RuntimeError(fake_error))
+        check("common_unrelated_original_preserved", lambda:
+              status == 500 and fake_error in logs
+              and fake_error in body.get("error", {}).get("message", "")
+              and len(at_hook) == 1 and fake_error in at_hook[0]
+              and hook_results == [True])
+    CASE = "setup"
     original_send = httpx.AsyncClient.send
     original_process = ProxyBaseLLMRequestProcessing.base_process_llm_request
 
     async def process_with_closed_diagnostic(self, *args, **kwargs):
+        if CASE in {"routed_litellm_metadata", "routed_afterstream"}:
+            request = kwargs.get("request")
+            state["routed_endpoint_entered"] = (
+                kwargs.get("route_type") == "anthropic_messages"
+                and isinstance(request, Request) and request.url.path == "/v1/messages"
+                and self.data.get("model") == "project-router"
+                and all(not isinstance(self.data.get(bucket), dict)
+                        or self.data[bucket].get("deployment_model_name") != ALIAS
+                        for bucket in ("metadata", "litellm_metadata")))
         try:
             return await original_process(self, *args, **kwargs)
         except Exception as exc:
@@ -490,6 +651,24 @@ async def qualify():
             EVIDENCE["denial_statuses"]["owner"] = denied.status_code
             check("alias_only_owner", lambda: denied_at_boundary(denied, state["calls"],
                   calls_before, state["outbound"], before, ["request"]))
+            check("canonical_denial_provenance", lambda: state["denial_provenance"] == [True])
+            CASE = "prefixed_denial"
+            logs_before = len(captured_logs)
+            calls_before = len(state["calls"])
+            adverse = CallerCredentialAuthenticationError(
+                message=fake_error + " Project Grok request rejected",
+                llm_provider="xai", model=ALIAS)
+            with patch.object(grok_callback, "_deny", return_value=adverse):
+                prefixed = await post(client, [{"role": "user", "content": "deny"}])
+            check("prefixed_denial_closed", lambda: prefixed.status_code == 502
+                  and prefixed.json() == {"type": "error", "error": {"type": "api_error",
+                      "message": "Project Grok provider failed"}}
+                  and [item[0] for item in state["calls"][calls_before:]] == ["request"]
+                  and len(state["outbound"]) == before
+                  and state["denial_provenance"] == [True, False]
+                  and all(marker not in prefixed.text
+                          and marker not in "\n".join(captured_logs[logs_before:])
+                          for marker in ("synthetic-provider-error", state["token"], state["subject"])))
             state["grant"] = [ALIAS]
             CASE = "override_denial"
             calls_before = len(state["calls"])
@@ -642,6 +821,62 @@ async def qualify():
                           for site, rendered in nonalias_diagnostics)
                   and [kind for kind, _ in state["outbound"][before:]] == ["provider"])
             state["nonalias_hook_mode"] = None
+
+            # Send a real HTTP request through the installed Messages endpoint
+            # and Router. The Router stamps the selected deployment into its
+            # internal litellm_metadata bucket after pre-call processing.
+            CASE = "routed_litellm_metadata"
+            state["grant"] = ["project-router"]
+            state["failure_mode"] = "pre"
+            state["routed_endpoint_entered"] = False
+            state["routed_failure_boundary"] = False
+            proxy_server.llm_router = litellm.Router(model_list=[{
+                "model_name": "project-router", "litellm_params": {
+                    "model": BACKEND, "api_base": BASE,
+                    "api_key": "synthetic-provider-key", "timeout": 10,
+                    "max_retries": 0}, "model_info": {"id": "synthetic-grok-route"}}], num_retries=0)
+            before = len(state["outbound"])
+            logs_before = len(captured_logs)
+            calls_before = len(state["calls"])
+            routed = await post(client, [{"role": "user", "content": "routed provider error"}],
+                                model="project-router", stream=False)
+            routed_logs = "\n".join(captured_logs[logs_before:])
+            EVIDENCE["routed_asgi"] = {
+                "status": routed.status_code,
+                "endpoint_entered": state["routed_endpoint_entered"],
+                "selected_only_in_litellm_metadata": state["routed_failure_boundary"],
+                "provider_reached": [kind for kind, _ in state["outbound"][before:]] == ["provider"],
+                "redacted_log": "sanitized failure" in routed_logs and fake_error not in routed_logs,
+            }
+            check("routed_asgi_litellm_metadata_only_fixed_502", lambda:
+                  EVIDENCE["routed_asgi"] == {
+                      "status": 502, "endpoint_entered": True,
+                      "selected_only_in_litellm_metadata": True,
+                      "provider_reached": True, "redacted_log": True}
+                  and routed.json() == {"type": "error", "error": {"type": "api_error",
+                      "message": "Project Grok provider failed"}}
+                  and any(item[0] == "request" and item[2] == "project-router"
+                          for item in state["calls"][calls_before:])
+                  and all(marker not in routed.text and marker not in routed_logs
+                          for marker in ("synthetic-provider-error", state["token"], state["subject"])))
+            CASE = "routed_afterstream"
+            state["failure_mode"] = "after"
+            state["routed_endpoint_entered"] = False
+            state["routed_failure_boundary"] = False
+            before = len(state["outbound"])
+            logs_before = len(captured_logs)
+            routed_stream = await post(client, [{"role": "user", "content": "late routed error"}],
+                                       model="project-router")
+            routed_logs = "\n".join(captured_logs[logs_before:])
+            check("routed_afterstream_selected_fixed_terminal", lambda:
+                  routed_stream.status_code == 200 and state["routed_endpoint_entered"]
+                  and state["routed_failure_boundary"]
+                  and "before-error" in routed_stream.text
+                  and terminal_error_event(routed_stream.text)
+                  and "Project Grok provider failed" in routed_stream.text
+                  and [kind for kind, _ in state["outbound"][before:]] == ["provider"]
+                  and all(marker not in routed_stream.text and marker not in routed_logs
+                          for marker in ("synthetic-provider-error", state["token"], state["subject"])))
             EVIDENCE["outbound_count"] = min(len(state["outbound"]), 12)
     check("installed_import", lambda: True)
 

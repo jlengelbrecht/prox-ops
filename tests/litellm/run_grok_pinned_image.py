@@ -5,9 +5,11 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import selectors
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 
 HERE = Path(__file__).resolve().parent
@@ -28,15 +30,23 @@ CHECKS = {"installed_import", "userinfo_bearer", "same_token_subject", "fixed_tr
           "nonalias_endpoint_original_logged_after_hook",
           "nonalias_stream_original_logged_before_hook_fault",
           "generic_denial_preserved", "generic_failure_closed", "hook_fault_fixed_terminal",
-          "malformed_terminal_error_rejected"}
+          "malformed_terminal_error_rejected", "canonical_denial_provenance",
+          "prefixed_denial_closed", "common_litellm_metadata_fixed_502",
+          "common_metadata_spoof_rejected", "common_canonical_denial_401",
+          "common_prefixed_denial_closed",
+          "common_unrelated_original_preserved",
+          "routed_asgi_litellm_metadata_only_fixed_502",
+          "routed_afterstream_selected_fixed_terminal"}
 PACKAGE_HASHES = {"Dockerfile": "353681f1accce38b327d94687ef2aa991ec9a8217538c76585ef5388d42d70e2",
                   ".dockerignore": "7c59f2a71619924c2f4b917dcce62f522f959d61762d00cafcc9dec8dd7f2612",
-                  "patch_image.py": "fdfa0804ceb8e62a5294c0d730002a530cdc4f9bf9478affb43f7c96a2924552"}
-FIXTURE_HASHES = {"grok_pinned_image_integration.py": "10951732fc42d24039a75a2d5a568fe5d7cf9a9750442dcda6905d528df0c5a5",
+                  "patch_image.py": "594d9b0b8c39e5662a790d6c07d80065487f6efc4f119933e4ff43ded340fb39"}
+FIXTURE_HASHES = {"grok_pinned_image_integration.py": "2de031ca00bbd50ba0ce9e46878b612697c0cefd2a525d05aae6ccacd2e8394f",
                   "grok_pinned_image_bootstrap.py": "a79b47a1561f4093b9687eb789ee304d07b114496fad30f31238b434338b3094"}
 FILES = {**{str(PACKAGE / name): expected for name, expected in PACKAGE_HASHES.items()},
          **{str(HERE / name): expected for name, expected in FIXTURE_HASHES.items()}}
 PUBLISHED = re.compile(r"ghcr\.io/jlengelbrecht/litellm-grok@sha256:[a-f0-9]{64}")
+RECEIPT_LIMIT = 65536
+RECEIPT_TMPFS = "/opt/grok-result:rw,nosuid,noexec,size=128k,mode=1777"
 
 
 def sha(path):
@@ -45,23 +55,75 @@ def sha(path):
 
 def run_closed(command, timeout):
     try:
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            process = subprocess.run(command, stdout=out, stderr=err, timeout=timeout, check=False)
+        process = subprocess.run(command, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, timeout=timeout, check=False)
         return process.returncode
     except (OSError, subprocess.TimeoutExpired):
         return -1
 
 
+def run_bounded(command, timeout, limit):
+    process = None
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + timeout
+        output = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                events = selector.select(max(0, deadline - time.monotonic()))
+                if not events:
+                    return -1, None
+                chunk = process.stdout.read1(limit + 1 - len(output))
+                if not chunk:
+                    break
+                output.extend(chunk)
+                if len(output) > limit:
+                    return -1, None
+        return process.wait(timeout=max(0.01, deadline - time.monotonic())), bytes(output)
+    except (OSError, subprocess.TimeoutExpired):
+        return -1, None
+    finally:
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if process.stdout is not None:
+                process.stdout.close()
+
+
 def inspect(image):
     try:
-        process = subprocess.run(["docker", "image", "inspect", image], capture_output=True,
-                                 timeout=15, check=False)
-        if process.returncode:
+        code, output = run_bounded(["docker", "image", "inspect", "--format",
+            "{{json .Id}}|{{json .RepoDigests}}", image], 15, 8192)
+        if code != 0 or output is None:
             return None
-        parsed = json.loads(process.stdout)
-        return parsed[0] if len(parsed) == 1 else None
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+        image_id, sep, digests = output.decode("utf-8").strip().partition("|")
+        if not sep:
+            return None
+        return {"Id": json.loads(image_id), "RepoDigests": json.loads(digests)}
+    except (ValueError, UnicodeError):
         return None
+
+
+def container_command(name, image, snap, baseline=False):
+    command = ["docker", "run", "--rm", "--pull=never", "--name", name,
+               "--log-driver", "none", "--network", "none", "--read-only",
+               "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+               "--pids-limit", "256", "--memory", "2g",
+               "--tmpfs", "/tmp:rw,nosuid,size=32m", "--tmpfs", RECEIPT_TMPFS,
+               "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTHONPATH=/opt/grok"]
+    if baseline:
+        command += ["--env", "GROK_BASELINE_NONALIAS=1"]
+    return command + ["--mount", f"type=bind,source={snap},target=/opt/grok,readonly",
+                      "--entrypoint", "/bin/sh", image, "-c",
+                      "python3 /opt/grok/grok_pinned_image_bootstrap.py "
+                      "/opt/grok-result/result.json >/dev/null 2>&1; "
+                      "status=$?; cat /opt/grok-result/result.json 2>/dev/null; exit \"$status\""]
+
+
+def run_receipt(command):
+    return run_bounded(command, 240, RECEIPT_LIMIT)
 
 
 def qualify(base_id, candidate_image=None):
@@ -160,33 +222,19 @@ def qualify_tagged(base_id, base_tag, receipt, candidate_image):
             receipt["published_digest"] = candidate_image
         receipt["candidate_image_id"] = candidate_id
         snap = work / "input"
-        out = work / "output"
         snap.mkdir(mode=0o755)
-        out.mkdir(mode=0o777)
-        out.chmod(0o777)
         for name in ("grok_pinned_image_integration.py", "grok_pinned_image_bootstrap.py"):
             shutil.copyfile(HERE / name, snap / name)
         shutil.copyfile(CALLBACK, snap / "project_grok_native.py")
         snap.chmod(0o755)
         receipt["phase"] = "asgi"
         name = "grok-error-candidate-" + uuid.uuid4().hex
-        command = ["docker", "run", "--rm", "--pull=never", "--name", name,
-                   "--network", "none", "--read-only", "--cap-drop", "ALL",
-                   "--security-opt", "no-new-privileges", "--pids-limit", "256",
-                   "--memory", "2g", "--tmpfs", "/tmp:rw,nosuid,size=32m",
-                   "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTHONPATH=/opt/grok",
-                   "--mount", f"type=bind,source={snap},target=/opt/grok,readonly",
-                   "--mount", f"type=bind,source={out},target=/opt/grok-result",
-                   "--entrypoint", "python3", image_to_run,
-                   "/opt/grok/grok_pinned_image_bootstrap.py", "/opt/grok-result/result.json"]
-        code = run_closed(command, 240)
+        command = container_command(name, image_to_run, snap)
+        code, raw = run_receipt(command)
         if code == -1:
             run_closed(["docker", "rm", "-f", name], 15)
         try:
-            data_path = out / "result.json"
-            if data_path.stat().st_size > 65536:
-                raise ValueError
-            child = json.loads(data_path.read_text())
+            child = json.loads(raw)
             if (not isinstance(child, dict)
                     or set(child) != {"schema", "checks", "failures", "fatal", "evidence"}
                     or child.get("schema") != "litellm-grok-image-result/2"):
@@ -205,7 +253,9 @@ def qualify_tagged(base_id, base_tag, receipt, candidate_image):
             allowed_cases = {"setup", "positive", "owner_denial", "override_denial",
                              "duplicate_denial", "refresh_denial", "prestream", "afterstream", "nonalias",
                              "generic", "hook_fault", "nonalias_endpoint_replace",
-                             "nonalias_stream_hook_fault"}
+                             "nonalias_stream_hook_fault", "prefixed_denial", "common_selected",
+                             "common_denial", "common_forgery", "common_unrelated",
+                             "routed_litellm_metadata", "routed_afterstream"}
             if (set(denial_statuses) != {"owner", "override", "duplicate"}
                     or any(type(value) is not int or not 100 <= value <= 599
                            for value in denial_statuses.values())
@@ -236,6 +286,25 @@ def qualify_tagged(base_id, base_tag, receipt, candidate_image):
             receipt["afterstream_log_sites"] = log_sites
             receipt["failure_cases"] = {key: detail["case"] for key, detail in failure_details.items()}
             receipt["fatal"] = child.get("fatal") is not None
+            routed_asgi = evidence.get("routed_asgi")
+            if (not isinstance(routed_asgi, dict)
+                    or set(routed_asgi) != {"status", "endpoint_entered",
+                        "selected_only_in_litellm_metadata", "provider_reached", "redacted_log"}
+                    or type(routed_asgi["status"]) is not int
+                    or not 100 <= routed_asgi["status"] <= 599
+                    or any(type(routed_asgi[key]) is not bool for key in routed_asgi if key != "status")):
+                raise ValueError
+            receipt["routed_asgi"] = routed_asgi
+            routed_trace = evidence.get("routed_trace")
+            model_keys = {"request_model", "carrier_model", "selected_group", "selected_backend"}
+            flag_keys = {"selected_id", "router_stamped_id", "original_selected_fields",
+                         "other_selected_fields"}
+            if (not isinstance(routed_trace, dict) or set(routed_trace) != model_keys | flag_keys
+                    or any(routed_trace[key] not in {"router", "alias", "backend", "absent", "other"}
+                           for key in model_keys)
+                    or any(type(routed_trace[key]) is not bool for key in flag_keys)):
+                raise ValueError
+            receipt["routed_trace"] = routed_trace
             nonalias_status = evidence.get("nonalias_status")
             nonalias_digest = evidence.get("nonalias_body_sha256")
             generic_reached = evidence.get("generic_reached")
@@ -259,24 +328,12 @@ def qualify_tagged(base_id, base_tag, receipt, candidate_image):
         # Run the same synthetic ASGI fixture in baseline mode against the
         # digest-verified, unmodified cached base. The child digest is confined
         # to temporary storage; the parent receipt publishes only comparison.
-        baseline_out = work / "baseline-output"
-        baseline_out.mkdir(mode=0o777)
-        baseline_out.chmod(0o777)
-        baseline_command = command.copy()
-        baseline_command[baseline_command.index(image_to_run)] = base_id
-        baseline_command[baseline_command.index(f"type=bind,source={out},target=/opt/grok-result")] = (
-            f"type=bind,source={baseline_out},target=/opt/grok-result")
-        baseline_command[baseline_command.index(name)] = name + "-base"
-        baseline_command[baseline_command.index("--entrypoint"):baseline_command.index("--entrypoint")] = [
-            "--env", "GROK_BASELINE_NONALIAS=1"]
-        baseline_code = run_closed(baseline_command, 240)
+        baseline_command = container_command(name + "-base", base_id, snap, baseline=True)
+        baseline_code, baseline_raw = run_receipt(baseline_command)
         if baseline_code == -1:
             run_closed(["docker", "rm", "-f", name + "-base"], 15)
         try:
-            baseline_path = baseline_out / "result.json"
-            if baseline_path.stat().st_size > 65536:
-                raise ValueError
-            baseline = json.loads(baseline_path.read_text())
+            baseline = json.loads(baseline_raw)
             baseline_evidence = baseline["evidence"]
             receipt["baseline_checks"] = baseline.get("checks")
             receipt["baseline_fatal"] = baseline.get("fatal")
