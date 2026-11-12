@@ -72,19 +72,56 @@ class ConfigTests(unittest.TestCase):
         for name, expected in golden.items():
             self.assertEqual(self.models[name], expected)
 
+    def test_grok_alias_contract_and_global_fallback_boundary(self):
+        """Bind the isolated backend contract to the deployed proxy config."""
+        grok = self.models["project-grok-native"]
+        params = grok["litellm_params"]
+        self.assertEqual(params["model"], "xai/grok-4.7-build-fast")
+        self.assertIs(params["use_xai_oauth"], False)
+        self.assertEqual(params["timeout"], 90)
+        self.assertEqual(params["max_retries"], 0)
+        for field in ("api_key", "api_base", "base_url", "litellm_credential_name",
+                      "fallbacks", "context_window_fallbacks", "default_fallbacks"):
+            self.assertNotIn(field, params)
+            self.assertNotIn(field, grok)
+        router = self.config["router_settings"]
+        for field in ("fallbacks", "context_window_fallbacks", "default_fallbacks"):
+            self.assertNotIn(field, router)
+        self.assertNotIn("project-grok-native", self.models["project-router"]
+                         ["litellm_params"]["complexity_router_config"]["tiers"].values())
+
     def test_rendered_guard_wiring(self):
         """Verify rendered guard wiring."""
         self.assertEqual(self.config["litellm_settings"]["callbacks"],
-                         ["project_router_guard.proxy_handler_instance"])
+                         ["project_router_guard.proxy_handler_instance",
+                          "project_grok_native.proxy_handler_instance"])
         kust = yaml.safe_load((APP / "kustomization.yaml").read_text())
         self.assertIn("project_router_guard.py=callbacks/project_router_guard.py",
                       kust["configMapGenerator"][0]["files"])
+        generator = kust["configMapGenerator"][0]
+        callback = self.config["litellm_settings"]["callbacks"][1]
+        module_name, instance_name = callback.split(".")
+        entry = f"{module_name}.py=callbacks/{module_name}.py"
+        self.assertIn(entry, generator["files"])
+        self.assertTrue((APP / "callbacks" / f"{module_name}.py").is_file())
+        self.assertIn(instance_name, (APP / "callbacks" / f"{module_name}.py").read_text())
         helm = yaml.safe_load((APP / "helmrelease.yaml").read_text())
         annotations = helm["spec"]["values"]["podAnnotations"]
         self.assertIn("litellm-copilot-session-guard", annotations["configmap.reloader.stakater.com/reload"])
         patch_text = helm["spec"]["postRenderers"][0]["kustomize"]["patches"][0]["patch"]
-        self.assertIn("mountPath: /opt/litellm-callbacks", patch_text)
-        self.assertIn("name: PYTHONPATH", patch_text)
+        patch_ops = yaml.safe_load(patch_text)
+        volume = next(op["value"] for op in patch_ops
+                      if op["path"] == "/spec/template/spec/volumes/-"
+                      and op["value"]["name"] == "copilot-session-guard")
+        mount = next(op["value"] for op in patch_ops
+                     if op["path"] == "/spec/template/spec/containers/0/volumeMounts/-"
+                     and op["value"]["name"] == volume["name"])
+        pythonpath = next(op["value"]["value"] for op in patch_ops
+                          if op["path"] == "/spec/template/spec/containers/0/env/-"
+                          and op["value"]["name"] == "PYTHONPATH")
+        self.assertEqual(volume["configMap"]["name"], generator["name"])
+        self.assertEqual(mount["mountPath"], pythonpath)
+        self.assertTrue(mount["readOnly"])
 
 
 class GuardTests(unittest.TestCase):
