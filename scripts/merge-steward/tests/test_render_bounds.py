@@ -24,7 +24,7 @@ def test_ordinary_versions_still_parse(tag, expected):
 @pytest.mark.parametrize("tag,expected", [("1.2.3", (1, 2, 3, True)), ("v0.20.3-rc.1", (0, 20, 3, False)),
                                          ("999999999.999999999.999999999", (999999999, 999999999, 999999999, True))])
 def test_ordinary_release_tags_still_order(tag, expected):
-    assert render._release_order(tag) == expected
+    assert render._release_order(tag)[:4] == expected
 
 
 def test_nine_digits_is_the_limit():

@@ -42,6 +42,7 @@ ignore_checks: ["merge-steward", "merge-steward evaluate", "merge-steward review
 required_checks:
   - {name: "Flux Local Pre-Job", app_id: 15368}
   - {name: "Flux Local Success", app_id: 15368}
+  - {name: "Nyctr Release Match", app_id: 15368}
   - {name: "GitGuardian Security Checks", app_id: 46505}
   - {name: "Labeler", app_id: 15368}
   - {name: "Security Gate", app_id: 15368}
@@ -104,12 +105,14 @@ pass_update_types: [digest, pinDigest, pin, patch, minor]
 
 # Releases that keep merging on required checks, including 0.x minors and prereleases that
 # Renovate marks as breaking. An exception applies only when the PR is that one package in
-# that one file, so anything else in the PR gets the normal verdict. The render stage
+# that one file (or the exact companion package/file set), so anything else
+# in the PR gets the normal verdict. The render stage
 # accepts its tag and digest only on the named object, and only for tags matching
 # tag_pattern. Spektr mirrors the Renovate rule "Auto-merge Spektr release and digest
 # updates after required CI" in .github/renovate.json5: upstream releases are tested once
 # they land in the cluster. test_policy_drift.py keeps the two in step. Majors are not on
-# the list and stay needs-human.
+# the Spektr list and stay needs-human there. Nyctr explicitly permits majors
+# under the owner's paired-release policy and required version/digest guard.
 release_exceptions:
   - package: ghcr.io/jlengelbrecht/agent-router-base
     file: kubernetes/apps/ai/agent-router/app/ocirepository.yaml
@@ -119,6 +122,20 @@ release_exceptions:
       namespace: ai
       name: agent-router-base
       url: oci://ghcr.io/jlengelbrecht/agent-router-base
+
+  # Owner-approved paired Nyctr releases, gated by Flux Local Success's
+  # required version/digest check. No other package or file may join this exception.
+  - package: ghcr.io/homelab-0/charts/nyctr
+    file: kubernetes/apps/security/nyctr/app/ocirepository.yaml
+    companions:
+      - package: ghcr.io/homelab-0/nyctr
+        file: kubernetes/apps/security/nyctr/app/helmrelease.yaml
+    update_types: [digest, pinDigest, patch, minor, major]
+    tag_pattern: '^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+    oci_repository:
+      namespace: security
+      name: nyctr
+      url: oci://ghcr.io/homelab-0/charts/nyctr
 
 # Any changed file matching one of these globs gets needs-human.
 protected_paths:
@@ -146,8 +163,6 @@ protected_paths:
   - kubernetes/apps/kube-system/**
   - kubernetes/apps/network/**
   # Renovate rules that match on file names with "automerge": false
-  - kubernetes/apps/security/nyctr/app/helmrelease.yaml
-  - kubernetes/apps/security/nyctr/app/ocirepository.yaml
   - services/yubihsm-tools/**
   - services/openbao-hsm/**
   - services/obsidian-mcp/**

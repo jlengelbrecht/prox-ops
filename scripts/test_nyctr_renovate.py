@@ -69,14 +69,14 @@ process.stdout.write(JSON.stringify(result));
         self.assertEqual(image[0]['currentValue'].removeprefix('v'), chart[0]['currentValue'])
         self.assertRegex(image[0]['currentDigest'], r'^sha256:[a-f0-9]{64}$')
 
-    def test_prereleases_and_manual_group(self):
+    def test_prereleases_and_automerge_group(self):
         for candidates in self.result['eligible']:
             self.assertIn('v0.1.0-alpha.4', candidates)
             self.assertIn('v0.2.0-alpha.1', candidates)
             self.assertNotIn('latest', candidates)
             self.assertNotIn('main', candidates)
         for rule in self.result['rules']:
-            self.assertEqual(rule, dict(group='Nyctr release', automerge=False,
+            self.assertEqual(rule, dict(group='Nyctr release', automerge=True,
                                       ignoreTests=False, enabled=True, approval=False, pin=True))
 
     def test_policy_survives_release_progression(self):
