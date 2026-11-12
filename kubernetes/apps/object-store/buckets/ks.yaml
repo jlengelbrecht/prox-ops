@@ -21,7 +21,9 @@ spec:
   retryInterval: 1m
   timeout: 5m
   dependsOn:
+    # The group kustomization places every Flux Kustomization of this group in
+    # object-store, so the dependency is looked up there, not in flux-system.
     - name: rgw
-      namespace: flux-system
+      namespace: object-store
     - name: 1password-connect
       namespace: flux-system
