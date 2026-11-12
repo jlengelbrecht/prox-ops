@@ -1,0 +1,24 @@
+---
+# The UNAS `proxmox` share, the same export the etcd, OpenBao and Authentik
+# backups use. This job writes only under s3/.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: s3-unas-sync-nfs
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=3
+    - hard
+    - noatime
+  nfs:
+    server: 10.20.66.109
+    path: /var/nfs/shared/proxmox
+  claimRef:
+    name: s3-unas-sync-nfs
+    namespace: object-store

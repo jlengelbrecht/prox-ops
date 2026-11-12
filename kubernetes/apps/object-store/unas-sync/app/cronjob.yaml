@@ -1,0 +1,143 @@
+---
+# Hourly copy of the tofu-state bucket to the UNAS `proxmox` share, so state
+# survives the loss of the cluster or of Ceph.
+#
+# Layout on the share, under s3/tofu-state/:
+#   current/            mirror of the bucket's live objects
+#   history/<UTC time>/ files a run replaced or removed, one folder per run
+#                       that changed something; folders older than 90 days
+#                       are pruned
+#   LAST_SYNC           time of the last successful run
+#
+# State objects are encrypted by OpenTofu before upload, so the share only
+# ever holds ciphertext. The job reads the bucket as the read-only user.
+#
+# Restore: copy the object from current/ (or a history folder) back into the
+# bucket, or point a local backend at the file. The decryption passphrase is
+# in 1Password, not in the cluster.
+#
+# Pinned to three non-GPU workers, one per Proxmox host, whose IPs are on the
+# share's NFS allowlist (same set as the etcd snapshots).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: s3-unas-sync
+  namespace: object-store
+spec:
+  schedule: "41 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: s3-unas-sync
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: kubernetes.io/hostname
+                        operator: In
+                        values:
+                          - k8s-work-1
+                          - k8s-work-5
+                          - k8s-work-7
+          containers:
+            - name: sync
+              image: docker.io/rclone/rclone:1.76.0@sha256:7cbeec24a44f206067597c0368be4de90ae19a64d5113c7d1938bd737a81e466
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  umask 077
+                  base=/backup/s3/tofu-state
+                  ts=$(date -u +%Y%m%dT%H%M%SZ)
+                  mkdir -p "$base/current" "$base/history"
+
+                  # --checksum compares MD5s, so no per-object HEAD is needed.
+                  # --backup-dir keeps whatever this run replaces or removes.
+                  rclone sync "s3:tofu-state" "$base/current" \
+                    --backup-dir "$base/history/$ts" \
+                    --checksum \
+                    --s3-no-check-bucket \
+                    --contimeout 10s --timeout 60s --retries 3 \
+                    --stats 0 --log-level INFO
+
+                  # A second pass that only compares. It fails the run if the
+                  # share and the bucket differ.
+                  rclone check "s3:tofu-state" "$base/current" --one-way \
+                    --contimeout 10s --timeout 60s --log-level NOTICE
+
+                  find "$base/history" -mindepth 1 -maxdepth 1 -type d -mtime +90 \
+                    -exec rm -rf {} +
+
+                  date -u +%Y-%m-%dT%H:%M:%SZ > "$base/LAST_SYNC"
+                  echo "synced: $(find "$base/current" -type f | wc -l) files in current," \
+                    "$(find "$base/history" -mindepth 1 -maxdepth 1 -type d | wc -l) history folders"
+              env:
+                - name: RCLONE_CONFIG
+                  value: /tmp/rclone.conf
+                - name: HOME
+                  value: /tmp
+                - name: XDG_CACHE_HOME
+                  value: /tmp
+                - name: RCLONE_CONFIG_S3_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_S3_PROVIDER
+                  value: Ceph
+                - name: RCLONE_CONFIG_S3_ENDPOINT
+                  value: http://rgw.object-store.svc.cluster.local
+                - name: RCLONE_CONFIG_S3_FORCE_PATH_STYLE
+                  value: "true"
+                - name: RCLONE_CONFIG_S3_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: rgw-users
+                      key: SYNC_RO_ACCESS_KEY
+                - name: RCLONE_CONFIG_S3_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: rgw-users
+                      key: SYNC_RO_SECRET_KEY
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: s3-unas-sync-nfs
+            - name: tmp
+              emptyDir:
+                sizeLimit: 100Mi
