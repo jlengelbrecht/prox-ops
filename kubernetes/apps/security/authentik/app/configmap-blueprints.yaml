@@ -1147,7 +1147,7 @@ data:
       # never auto-links to an existing Authentik account (akadmin included).
       # Who may sign in is controlled in Entra: the app requires assignment
       # and only the authentik-users group is assigned.
-      # Group sync from Entra, test stage. At each Entra login Authentik reads
+      # Group sync from Entra. At each Entra login Authentik reads
       # the user's Entra groups and copies membership for the names on the
       # allow-list below, and for nothing else. An Entra group links to the
       # Authentik group of the same name, so a name on this list hands that
@@ -1174,7 +1174,7 @@ data:
         attrs:
           name: entra-allowed-groups-user
           expression: |
-            allowed = {"sso-sync-test"}
+            allowed = {"sso-sync-test", "nyctr-admins", "nyctr-members"}
             raw = info.get("raw_groups")
             if not isinstance(raw, dict):
                 raw = {}
@@ -1203,7 +1203,7 @@ data:
         attrs:
           name: entra-allowed-groups-group
           expression: |
-            allowed = {"sso-sync-test"}
+            allowed = {"sso-sync-test", "nyctr-admins", "nyctr-members"}
             if properties.get("name") not in allowed:
                 return {"name": "entra-unlisted-" + str(group_id)}
             return None
@@ -1777,9 +1777,12 @@ data:
       scope_profile: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
       scope_openid: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
     entries:
-      # Role groups. Membership is managed in authentik, not here, and must be
-      # direct: Nyctr reads the role from the "groups" claim of the managed
-      # profile mapping, which lists a user's own groups and not inherited ones.
+      # Role groups. For people who sign in through Entra, membership comes
+      # from the Entra groups of the same names and is rewritten at each Entra
+      # login (see the allow-list in source-entra.yaml); a manual change in
+      # authentik lasts only until then. It must be direct: Nyctr reads the
+      # role from the "groups" claim of the managed profile mapping, which
+      # lists a user's own groups and not inherited ones.
       #   nyctr-admins   the console at nyctr.homelab0.org: sources, findings,
       #                  requests, guests, rules
       #   nyctr-members  the portal at blocked.homelab0.org: their own devices'
