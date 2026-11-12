@@ -1,0 +1,55 @@
+---
+# RGW gateway containment.
+# - Ingress: GitHub Actions runner pods (OpenTofu state access), the
+#   envoy-internal gateway pods (s3.homelab0.org route) and this namespace,
+#   on the gateway port only.
+# - Egress: cluster DNS, and the Ceph monitors (3300, 6789) and OSD/MGR range
+#   (6800-7568) on the four Proxmox Ceph hosts. Nothing else.
+# Monitor addresses match rook-ceph-cluster/app/configmaps.yaml.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: rgw
+  namespace: object-store
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: rgw
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: github-actions
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+        - matchLabels:
+            io.kubernetes.pod.namespace: object-store
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toCIDR:
+        - 10.20.66.4/32
+        - 10.20.66.6/32
+        - 10.20.66.7/32
+        - 10.20.66.8/32
+      toPorts:
+        - ports:
+            - port: "3300"
+              protocol: TCP
+            - port: "6789"
+              protocol: TCP
+            - port: "6800"
+              endPort: 7568
+              protocol: TCP
