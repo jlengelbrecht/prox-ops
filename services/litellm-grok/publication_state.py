@@ -58,7 +58,7 @@ def qualified(image, digest, inspection, receipt, revision, source):
             or receipt.get("child_exit_zero") is not True
             or receipt.get("nonalias_paired_equal") is not True
             or receipt.get("generic_denial_paired_equal") is not True
-            or not isinstance(checks, dict) or len(checks) != 26
+            or not isinstance(checks, dict) or len(checks) != 35
             or any(value != "pass" for value in checks.values())):
         raise Denied("published digest is not qualified")
     return ref
