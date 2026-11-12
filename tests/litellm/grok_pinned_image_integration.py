@@ -307,7 +307,7 @@ async def qualify():
     original_failure_hook = hook.async_post_call_failure_hook
 
     async def maybe_fault_hook(*args, **kwargs):
-        if CASE == "routed_litellm_metadata":
+        if CASE in {"routed_litellm_metadata", "routed_afterstream"}:
             request_data = kwargs.get("request_data")
             carrier = request_data.get("proxy_server_request") if isinstance(request_data, dict) else None
             body = carrier.get("body") if isinstance(carrier, dict) else None
@@ -477,7 +477,7 @@ async def qualify():
     original_process = ProxyBaseLLMRequestProcessing.base_process_llm_request
 
     async def process_with_closed_diagnostic(self, *args, **kwargs):
-        if CASE == "routed_litellm_metadata":
+        if CASE in {"routed_litellm_metadata", "routed_afterstream"}:
             request = kwargs.get("request")
             state["routed_endpoint_entered"] = (
                 kwargs.get("route_type") == "anthropic_messages"
@@ -858,6 +858,24 @@ async def qualify():
                   and any(item[0] == "request" and item[2] == "project-router"
                           for item in state["calls"][calls_before:])
                   and all(marker not in routed.text and marker not in routed_logs
+                          for marker in ("synthetic-provider-error", state["token"], state["subject"])))
+            CASE = "routed_afterstream"
+            state["failure_mode"] = "after"
+            state["routed_endpoint_entered"] = False
+            state["routed_failure_boundary"] = False
+            before = len(state["outbound"])
+            logs_before = len(captured_logs)
+            routed_stream = await post(client, [{"role": "user", "content": "late routed error"}],
+                                       model="project-router")
+            routed_logs = "\n".join(captured_logs[logs_before:])
+            check("routed_afterstream_selected_fixed_terminal", lambda:
+                  routed_stream.status_code == 200 and state["routed_endpoint_entered"]
+                  and state["routed_failure_boundary"]
+                  and "before-error" in routed_stream.text
+                  and terminal_error_event(routed_stream.text)
+                  and "Project Grok provider failed" in routed_stream.text
+                  and [kind for kind, _ in state["outbound"][before:]] == ["provider"]
+                  and all(marker not in routed_stream.text and marker not in routed_logs
                           for marker in ("synthetic-provider-error", state["token"], state["subject"])))
             EVIDENCE["outbound_count"] = min(len(state["outbound"]), 12)
     check("installed_import", lambda: True)

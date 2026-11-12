@@ -329,6 +329,30 @@ def patch_router(source):
     # callback runs. Keep the error object for routing/accounting, but close
     # this specific alias log surface.
     source = replace_once(source,
+        '''        """Turns a source-iterator failure into a fallback attempt or the error reaching the caller."""
+        from litellm.exceptions import MidStreamFallbackError
+''',
+        '''        """Turns a source-iterator failure into a fallback attempt or the error reaching the caller."""
+        from litellm.exceptions import MidStreamFallbackError
+        # The attempt snapshot receives model_info from Router selection, not
+        # from the request. Confirm its ID against the configured deployment
+        # before the late error reaches proxy logging and failure callbacks.
+        if model == "project-router" and has_generated_content:
+            selected = initial_kwargs.get("litellm_metadata")
+            info = selected.get("model_info") if isinstance(selected, dict) else None
+            selected_id = info.get("id") if isinstance(info, dict) else None
+            if isinstance(selected_id, str) and selected_id and any(
+                deployment.get("model_info", {}).get("id") == selected_id
+                and deployment.get("model_name") == model
+                and deployment.get("litellm_params", {}).get("model") == "xai/grok-4.7-build-fast"
+                for deployment in (self.get_model_list(model_name=model) or ())
+            ):
+                failed = getattr(stream_error, "original_exception", None)
+                if isinstance(failed, Exception):
+                    self._set_failed_deployment_id_on_exception(failed, {"model_info": info})
+                self._set_failed_deployment_id_on_exception(stream_error, {"model_info": info})
+''')
+    source = replace_once(source,
         '''                except Exception as fallback_error:
                     # If fallback also fails, log and re-raise original error
                     verbose_router_logger.error("Fallback also failed: %s", fallback_error)

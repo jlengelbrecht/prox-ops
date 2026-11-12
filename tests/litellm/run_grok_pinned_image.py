@@ -35,11 +35,12 @@ CHECKS = {"installed_import", "userinfo_bearer", "same_token_subject", "fixed_tr
           "common_metadata_spoof_rejected", "common_canonical_denial_401",
           "common_prefixed_denial_closed",
           "common_unrelated_original_preserved",
-          "routed_asgi_litellm_metadata_only_fixed_502"}
+          "routed_asgi_litellm_metadata_only_fixed_502",
+          "routed_afterstream_selected_fixed_terminal"}
 PACKAGE_HASHES = {"Dockerfile": "353681f1accce38b327d94687ef2aa991ec9a8217538c76585ef5388d42d70e2",
                   ".dockerignore": "7c59f2a71619924c2f4b917dcce62f522f959d61762d00cafcc9dec8dd7f2612",
-                  "patch_image.py": "d5cdcc7061848b3cd7958009ab4acadf331a2f3a85f6cef1ed0a0a7c477ae4a6"}
-FIXTURE_HASHES = {"grok_pinned_image_integration.py": "469081bb84de1325bf11b7c7170a8be20979bc28d9370b122179632456d6b136",
+                  "patch_image.py": "594d9b0b8c39e5662a790d6c07d80065487f6efc4f119933e4ff43ded340fb39"}
+FIXTURE_HASHES = {"grok_pinned_image_integration.py": "2de031ca00bbd50ba0ce9e46878b612697c0cefd2a525d05aae6ccacd2e8394f",
                   "grok_pinned_image_bootstrap.py": "a79b47a1561f4093b9687eb789ee304d07b114496fad30f31238b434338b3094"}
 FILES = {**{str(PACKAGE / name): expected for name, expected in PACKAGE_HASHES.items()},
          **{str(HERE / name): expected for name, expected in FIXTURE_HASHES.items()}}
@@ -254,7 +255,7 @@ def qualify_tagged(base_id, base_tag, receipt, candidate_image):
                              "generic", "hook_fault", "nonalias_endpoint_replace",
                              "nonalias_stream_hook_fault", "prefixed_denial", "common_selected",
                              "common_denial", "common_forgery", "common_unrelated",
-                             "routed_litellm_metadata"}
+                             "routed_litellm_metadata", "routed_afterstream"}
             if (set(denial_statuses) != {"owner", "override", "duplicate"}
                     or any(type(value) is not int or not 100 <= value <= 599
                            for value in denial_statuses.values())

@@ -139,8 +139,9 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(self.runner.CALLBACK_HASH, self.runner.sha(self.runner.CALLBACK))
         for path, expected in self.runner.FILES.items():
             self.assertEqual(expected, self.runner.sha(Path(path)), path)
-        self.assertEqual(len(self.runner.CHECKS), 34)
+        self.assertEqual(len(self.runner.CHECKS), 35)
         self.assertIn("routed_asgi_litellm_metadata_only_fixed_502", self.runner.CHECKS)
+        self.assertIn("routed_afterstream_selected_fixed_terminal", self.runner.CHECKS)
 
     def test_baseline_check_path_and_candidate_reachability(self):
         """Walk the fixture's actual mode branches without importing LiteLLM."""
@@ -196,7 +197,8 @@ class PackageTests(unittest.TestCase):
                          "common_metadata_spoof_rejected", "common_canonical_denial_401",
                          "common_prefixed_denial_closed",
                          "common_unrelated_original_preserved",
-                         "routed_asgi_litellm_metadata_only_fixed_502"}.issubset(candidate))
+                         "routed_asgi_litellm_metadata_only_fixed_502",
+                         "routed_afterstream_selected_fixed_terminal"}.issubset(candidate))
 
     def test_routed_boundary_requires_router_selected_deployment(self):
         tree = ast.parse((HERE / "grok_pinned_image_integration.py").read_text())
