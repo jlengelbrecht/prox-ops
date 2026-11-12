@@ -1,0 +1,35 @@
+---
+# The sync pod reads from the gateway pods and resolves their Service name.
+# Nothing else. The NFS mount is made by the kubelet on the host, outside the
+# pod's network. The gateway's ingress policy already admits this namespace.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: s3-unas-sync
+  namespace: object-store
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: s3-unas-sync
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: object-store
+            app.kubernetes.io/name: rgw
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
