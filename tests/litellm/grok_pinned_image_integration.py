@@ -189,8 +189,18 @@ def traced_hook(base, state, record, backend):
         async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
             state["calls"].append(("request", str(call_type), data.get("model")))
             record("request", str(call_type), data.get("model"), data.get("proxy_server_request"))
-            return await super().async_pre_call_hook(
-                user_api_key_dict=user_api_key_dict, cache=cache, data=data, call_type=call_type)
+            try:
+                return await super().async_pre_call_hook(
+                    user_api_key_dict=user_api_key_dict, cache=cache, data=data, call_type=call_type)
+            except Exception as exc:
+                state["denial_provenance"].append(
+                    type(exc).__name__ == "CallerCredentialAuthenticationError"
+                    and getattr(exc, "message", None) ==
+                    "litellm.AuthenticationError: Project Grok request rejected"
+                    and getattr(exc, "llm_provider", None) == "xai"
+                    and getattr(exc, "model", None) == "project-grok-native"
+                    and getattr(exc, "status_code", None) == 401)
+                raise
 
         async def async_pre_call_deployment_hook(self, kwargs, call_type):
             carrier = kwargs.get("proxy_server_request")
@@ -234,6 +244,8 @@ async def qualify():
     from litellm.proxy.anthropic_endpoints.endpoints import router as messages_router
     from litellm.proxy import proxy_server
     from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
+    from litellm.exceptions import CallerCredentialAuthenticationError
+    import project_grok_native as grok_callback
     from project_grok_native import ProjectGrokNative, ALIAS, BACKEND, BASE, USERINFO, _PROOF
     STAGE = "setup"
 
@@ -242,7 +254,7 @@ async def qualify():
              "token_calls": 0, "bindings": [], "failure_mode": None,
              "provider_calls": 0, "linked_content": None, "hook_fault": False,
              "nonalias_hook_mode": None, "nonalias_hook_seen": False,
-             "nonalias_logs_at_hook": None}
+             "nonalias_logs_at_hook": None, "denial_provenance": []}
     fake_error = "synthetic-provider-error " + state["token"] + " " + state["subject"]
     captured_logs = []
     nonalias_diagnostics = []
@@ -490,6 +502,24 @@ async def qualify():
             EVIDENCE["denial_statuses"]["owner"] = denied.status_code
             check("alias_only_owner", lambda: denied_at_boundary(denied, state["calls"],
                   calls_before, state["outbound"], before, ["request"]))
+            check("canonical_denial_provenance", lambda: state["denial_provenance"] == [True])
+            CASE = "prefixed_denial"
+            logs_before = len(captured_logs)
+            calls_before = len(state["calls"])
+            adverse = CallerCredentialAuthenticationError(
+                message=fake_error + " Project Grok request rejected",
+                llm_provider="xai", model=ALIAS)
+            with patch.object(grok_callback, "_deny", return_value=adverse):
+                prefixed = await post(client, [{"role": "user", "content": "deny"}])
+            check("prefixed_denial_closed", lambda: prefixed.status_code == 502
+                  and prefixed.json() == {"type": "error", "error": {"type": "api_error",
+                      "message": "Project Grok provider failed"}}
+                  and [item[0] for item in state["calls"][calls_before:]] == ["request"]
+                  and len(state["outbound"]) == before
+                  and state["denial_provenance"] == [True, False]
+                  and all(marker not in prefixed.text
+                          and marker not in "\n".join(captured_logs[logs_before:])
+                          for marker in ("synthetic-provider-error", state["token"], state["subject"])))
             state["grant"] = [ALIAS]
             CASE = "override_denial"
             calls_before = len(state["calls"])

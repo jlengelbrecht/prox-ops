@@ -135,7 +135,86 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(self.runner.CALLBACK_HASH, self.runner.sha(self.runner.CALLBACK))
         for path, expected in self.runner.FILES.items():
             self.assertEqual(expected, self.runner.sha(Path(path)), path)
-        self.assertEqual(len(self.runner.CHECKS), 26)
+        self.assertEqual(len(self.runner.CHECKS), 28)
+
+    def test_docker_command_output_is_discarded(self):
+        with patch.object(self.runner.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 7)) as run:
+            self.assertEqual(self.runner.run_closed(["docker", "build"], 240), 7)
+        self.assertEqual(run.call_args.args[0], ["docker", "build"])
+        self.assertEqual(run.call_args.kwargs, {
+            "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+            "timeout": 240, "check": False})
+
+    def test_inspect_accepts_narrow_output_and_rejects_oversize(self):
+        real_popen = subprocess.Popen
+        image_id = "sha256:" + "a" * 64
+        digest = "example/image@sha256:" + "b" * 64
+        valid = (json.dumps(image_id) + "|" + json.dumps([digest])).encode()
+        processes = []
+
+        def inspect_with_output(data):
+            def launch(command, **kwargs):
+                self.assertEqual(command, ["docker", "image", "inspect", "--format",
+                    "{{json .Id}}|{{json .RepoDigests}}", "synthetic-image"])
+                self.assertEqual(kwargs, {"stdout": subprocess.PIPE,
+                                          "stderr": subprocess.DEVNULL})
+                process = real_popen([sys.executable, "-c",
+                    "import os; os.write(1, " + repr(data) + ")"], **kwargs)
+                processes.append(process)
+                return process
+            with patch.object(self.runner.subprocess, "Popen", side_effect=launch):
+                return self.runner.inspect("synthetic-image")
+
+        self.assertEqual(inspect_with_output(valid), {"Id": image_id, "RepoDigests": [digest]})
+        self.assertIsNone(inspect_with_output(b"x" * 8193))
+        self.assertTrue(all(process.poll() is not None for process in processes))
+
+    def test_inspect_timeout_kills_child(self):
+        real_popen = subprocess.Popen
+        processes = []
+
+        class NoEvents:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def register(self, *_): pass
+            def select(self, *_): return []
+
+        def launch(_command, **kwargs):
+            process = real_popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                 **kwargs)
+            processes.append(process)
+            return process
+
+        with patch.object(self.runner.subprocess, "Popen", side_effect=launch), \
+                patch.object(self.runner.selectors, "DefaultSelector", NoEvents):
+            self.assertIsNone(self.runner.inspect("synthetic-image"))
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
+
+    def test_receipt_transport_has_hard_bounds(self):
+        for baseline in (False, True):
+            command = self.runner.container_command(
+                "synthetic-run", "sha256:" + "a" * 64, Path("/synthetic/input"), baseline)
+            mounts = [command[index + 1] for index, value in enumerate(command[:-1])
+                      if value == "--mount"]
+            self.assertEqual(mounts, ["type=bind,source=/synthetic/input,target=/opt/grok,readonly"])
+            self.assertEqual(command[command.index("--log-driver") + 1], "none")
+            self.assertIn(self.runner.RECEIPT_TMPFS, command)
+            self.assertIn("size=128k", self.runner.RECEIPT_TMPFS)
+            self.assertEqual("GROK_BASELINE_NONALIAS=1" in command, baseline)
+            self.assertEqual(command[command.index("--entrypoint") + 1], "/bin/sh")
+            self.assertIn("/opt/grok-result/result.json", command[-1])
+        with patch.object(self.runner, "run_bounded", return_value=(0, b"{}")) as run:
+            self.assertEqual(self.runner.run_receipt(["docker", "run"]), (0, b"{}"))
+        run.assert_called_once_with(["docker", "run"], 240, 65536)
+
+        exact = b"x" * self.runner.RECEIPT_LIMIT
+        def emit(data):
+            return self.runner.run_bounded([sys.executable, "-c",
+                "import os; os.write(1, " + repr(data) + ")"], 2, self.runner.RECEIPT_LIMIT)
+        self.assertEqual(emit(exact), (0, exact))
+        self.assertEqual(emit(exact + b"x"), (-1, None))
 
     def test_wrong_base_rejected_before_write(self):
         with tempfile.TemporaryDirectory() as directory:
