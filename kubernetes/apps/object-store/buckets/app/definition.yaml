@@ -2,7 +2,9 @@
 # The single place to edit users, buckets and bucket policies. The rgw-buckets
 # CronJob reads this on every run, so a merged change applies within the hour.
 #
-# users.txt    uid | display name | credential prefix in the rgw-users Secret
+# users.txt    uid | display name | credential prefix in the rgw-users Secret | max buckets
+#              Max buckets: a negative value means the user cannot create
+#              buckets (0 would mean no limit). Only the provisioner creates them.
 # buckets.txt  bucket | versioning (Enabled or Suspended) | policy file below
 #
 # Policies use RGW's principal form for users in the default tenant:
@@ -16,10 +18,10 @@ metadata:
   namespace: object-store
 data:
   users.txt: |
-    provisioner|Bucket provisioner|PROVISIONER
-    tofu-proxmox|OpenTofu state, proxmox|TOFU_PROXMOX
-    tofu-oci|OpenTofu state, oci|TOFU_OCI
-    sync-ro|State sync, read-only|SYNC_RO
+    provisioner|Bucket provisioner|PROVISIONER|20
+    tofu-proxmox|OpenTofu state, proxmox|TOFU_PROXMOX|-1
+    tofu-oci|OpenTofu state, oci|TOFU_OCI|-1
+    sync-ro|State sync, read-only|SYNC_RO|-1
   buckets.txt: |
     tofu-state|Enabled|tofu-state.policy.json
   tofu-state.policy.json: |

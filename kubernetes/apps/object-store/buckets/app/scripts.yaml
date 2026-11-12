@@ -12,8 +12,12 @@ data:
     set -euo pipefail
     RGW=(radosgw-admin --id rgw.k8s --keyring /etc/ceph-keyring/keyring)
 
-    while IFS='|' read -r uid display prefix; do
+    while IFS='|' read -r uid display prefix maxbuckets; do
       [[ -z "${uid}" || "${uid}" == \#* ]] && continue
+      if [[ ! "${maxbuckets}" =~ ^-?[0-9]+$ ]]; then
+        echo "user ${uid}: max buckets is missing or not a number"
+        exit 1
+      fi
       akvar="${prefix}_ACCESS_KEY"
       skvar="${prefix}_SECRET_KEY"
       AK="${!akvar:-}"
@@ -26,12 +30,14 @@ data:
 
       if ! info="$("${RGW[@]}" user info --uid="${uid}" 2>/dev/null)"; then
         "${RGW[@]}" user create --uid="${uid}" --display-name="${display}" \
+          --max-buckets="${maxbuckets}" \
           --access-key="${AK}" --secret-key="${SK}" >/dev/null
         echo "user ${uid}: created"
         continue
       fi
 
-      "${RGW[@]}" user modify --uid="${uid}" --display-name="${display}" >/dev/null
+      "${RGW[@]}" user modify --uid="${uid}" --display-name="${display}" \
+        --max-buckets="${maxbuckets}" >/dev/null
 
       # Remove any S3 key that is not exactly the declared pair (rotation),
       # then add the declared pair if it is not there yet.
