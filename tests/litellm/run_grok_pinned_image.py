@@ -31,11 +31,15 @@ CHECKS = {"installed_import", "userinfo_bearer", "same_token_subject", "fixed_tr
           "nonalias_stream_original_logged_before_hook_fault",
           "generic_denial_preserved", "generic_failure_closed", "hook_fault_fixed_terminal",
           "malformed_terminal_error_rejected", "canonical_denial_provenance",
-          "prefixed_denial_closed"}
+          "prefixed_denial_closed", "common_litellm_metadata_fixed_502",
+          "common_metadata_spoof_rejected", "common_canonical_denial_401",
+          "common_prefixed_denial_closed",
+          "common_unrelated_original_preserved",
+          "routed_asgi_litellm_metadata_only_fixed_502"}
 PACKAGE_HASHES = {"Dockerfile": "353681f1accce38b327d94687ef2aa991ec9a8217538c76585ef5388d42d70e2",
                   ".dockerignore": "7c59f2a71619924c2f4b917dcce62f522f959d61762d00cafcc9dec8dd7f2612",
-                  "patch_image.py": "87d42a8cda9ec3b2900c785cb9a050ee65aa96857976eacc8f92a9a14c101ae7"}
-FIXTURE_HASHES = {"grok_pinned_image_integration.py": "dcc993e9d4dcf89d2045f036c2fb07277652493e03e27bbddcf19f6acc56e69b",
+                  "patch_image.py": "d5cdcc7061848b3cd7958009ab4acadf331a2f3a85f6cef1ed0a0a7c477ae4a6"}
+FIXTURE_HASHES = {"grok_pinned_image_integration.py": "469081bb84de1325bf11b7c7170a8be20979bc28d9370b122179632456d6b136",
                   "grok_pinned_image_bootstrap.py": "a79b47a1561f4093b9687eb789ee304d07b114496fad30f31238b434338b3094"}
 FILES = {**{str(PACKAGE / name): expected for name, expected in PACKAGE_HASHES.items()},
          **{str(HERE / name): expected for name, expected in FIXTURE_HASHES.items()}}
@@ -248,7 +252,9 @@ def qualify_tagged(base_id, base_tag, receipt, candidate_image):
             allowed_cases = {"setup", "positive", "owner_denial", "override_denial",
                              "duplicate_denial", "refresh_denial", "prestream", "afterstream", "nonalias",
                              "generic", "hook_fault", "nonalias_endpoint_replace",
-                             "nonalias_stream_hook_fault", "prefixed_denial"}
+                             "nonalias_stream_hook_fault", "prefixed_denial", "common_selected",
+                             "common_denial", "common_forgery", "common_unrelated",
+                             "routed_litellm_metadata"}
             if (set(denial_statuses) != {"owner", "override", "duplicate"}
                     or any(type(value) is not int or not 100 <= value <= 599
                            for value in denial_statuses.values())
@@ -279,6 +285,25 @@ def qualify_tagged(base_id, base_tag, receipt, candidate_image):
             receipt["afterstream_log_sites"] = log_sites
             receipt["failure_cases"] = {key: detail["case"] for key, detail in failure_details.items()}
             receipt["fatal"] = child.get("fatal") is not None
+            routed_asgi = evidence.get("routed_asgi")
+            if (not isinstance(routed_asgi, dict)
+                    or set(routed_asgi) != {"status", "endpoint_entered",
+                        "selected_only_in_litellm_metadata", "provider_reached", "redacted_log"}
+                    or type(routed_asgi["status"]) is not int
+                    or not 100 <= routed_asgi["status"] <= 599
+                    or any(type(routed_asgi[key]) is not bool for key in routed_asgi if key != "status")):
+                raise ValueError
+            receipt["routed_asgi"] = routed_asgi
+            routed_trace = evidence.get("routed_trace")
+            model_keys = {"request_model", "carrier_model", "selected_group", "selected_backend"}
+            flag_keys = {"selected_id", "router_stamped_id", "original_selected_fields",
+                         "other_selected_fields"}
+            if (not isinstance(routed_trace, dict) or set(routed_trace) != model_keys | flag_keys
+                    or any(routed_trace[key] not in {"router", "alias", "backend", "absent", "other"}
+                           for key in model_keys)
+                    or any(type(routed_trace[key]) is not bool for key in flag_keys)):
+                raise ValueError
+            receipt["routed_trace"] = routed_trace
             nonalias_status = evidence.get("nonalias_status")
             nonalias_digest = evidence.get("nonalias_body_sha256")
             generic_reached = evidence.get("generic_reached")

@@ -37,8 +37,21 @@ def patch_endpoint(source):
             isinstance(carrier_body, dict) and carrier_body.get("model") == "project-grok-native"
         ) or (isinstance(carrier_body, dict) and carrier_body.get("model") == "project-router"
               and (request_data.get("model") in ("project-grok-native", "xai/grok-4.7-build-fast")
-                   or (isinstance(request_data.get("metadata"), dict) and
-                       request_data["metadata"].get("deployment_model_name") == "project-grok-native")))
+                   or (isinstance(request_data.get("litellm_metadata"), dict)
+                       and request_data["litellm_metadata"].get("deployment_model_name") == "project-grok-native"
+                       and request_data["litellm_metadata"].get("deployment") == "xai/grok-4.7-build-fast"
+                       and isinstance(request_data["litellm_metadata"].get("model_info"), dict)
+                       and isinstance(request_data["litellm_metadata"]["model_info"].get("id"), str)
+                       and request_data["litellm_metadata"]["model_info"]["id"] ==
+                           getattr(e, "failed_deployment_id", None))
+                   or (request_data.get("model") == "project-router"
+                       and isinstance(request_data.get("litellm_metadata"), dict)
+                       and request_data["litellm_metadata"].get("deployment_model_name") == "project-router"
+                       and request_data["litellm_metadata"].get("deployment") == "xai/grok-4.7-build-fast"
+                       and isinstance(request_data["litellm_metadata"].get("model_info"), dict)
+                       and isinstance(request_data["litellm_metadata"]["model_info"].get("id"), str)
+                       and request_data["litellm_metadata"]["model_info"]["id"] ==
+                           getattr(e, "failed_deployment_id", None))))
         transformed_exception = await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=request_data
         )
@@ -87,8 +100,21 @@ def patch_utils(source):
             isinstance(carrier_body, dict) and carrier_body.get("model") == "project-grok-native"
         ) or (isinstance(carrier_body, dict) and carrier_body.get("model") == "project-router"
               and (request_data.get("model") == "xai/grok-4.7-build-fast"
-                   or (isinstance(request_data.get("metadata"), dict) and
-                       request_data["metadata"].get("deployment_model_name") == "project-grok-native")))
+                   or (isinstance(request_data.get("litellm_metadata"), dict)
+                       and request_data["litellm_metadata"].get("deployment_model_name") == "project-grok-native"
+                       and request_data["litellm_metadata"].get("deployment") == "xai/grok-4.7-build-fast"
+                       and isinstance(request_data["litellm_metadata"].get("model_info"), dict)
+                       and isinstance(request_data["litellm_metadata"]["model_info"].get("id"), str)
+                       and request_data["litellm_metadata"]["model_info"]["id"] ==
+                           getattr(original_exception, "failed_deployment_id", None))
+                   or (request_data.get("model") == "project-router"
+                       and isinstance(request_data.get("litellm_metadata"), dict)
+                       and request_data["litellm_metadata"].get("deployment_model_name") == "project-router"
+                       and request_data["litellm_metadata"].get("deployment") == "xai/grok-4.7-build-fast"
+                       and isinstance(request_data["litellm_metadata"].get("model_info"), dict)
+                       and isinstance(request_data["litellm_metadata"]["model_info"].get("id"), str)
+                       and request_data["litellm_metadata"]["model_info"]["id"] ==
+                           getattr(original_exception, "failed_deployment_id", None))))
         log_exception = (
             HTTPException(status_code=502, detail="Project Grok provider failed")
             if grok_alias_failure else original_exception
@@ -167,30 +193,59 @@ def patch_common(source):
     if getattr(e, "status_code", None) == 499'''
     source = replace_once(source, old, new)
     source = replace_once(source,
-        '''        # Use transformed exception if callback returned one, otherwise use original
-        if transformed_exception is not None:
-            e = transformed_exception
-        litellm_debug_info:''',
-        '''        # Keep the callback's own bounded request denials at their original 401.
+        '''        log_llm_api_exception(e, self.litellm_call_id)
+        # Allow callbacks to transform the error response
+''',
+        '''        # Classify before the first common-handler log. The callback still
+        # receives the original exception for accounting and dispatch.
         carrier = self.data.get("proxy_server_request")
         carrier_body = carrier.get("body") if isinstance(carrier, dict) else None
         is_grok_alias = self.data.get("model") == "project-grok-native" or (
             isinstance(carrier_body, dict) and carrier_body.get("model") == "project-grok-native"
         ) or (isinstance(carrier_body, dict) and carrier_body.get("model") == "project-router"
               and (self.data.get("model") == "xai/grok-4.7-build-fast"
-                   or (isinstance(self.data.get("metadata"), dict) and
-                       self.data["metadata"].get("deployment_model_name") == "project-grok-native")))
+                   or (isinstance(self.data.get("litellm_metadata"), dict)
+                       and self.data["litellm_metadata"].get("deployment_model_name") == "project-grok-native"
+                       and self.data["litellm_metadata"].get("deployment") == "xai/grok-4.7-build-fast"
+                       and isinstance(self.data["litellm_metadata"].get("model_info"), dict)
+                       and isinstance(self.data["litellm_metadata"]["model_info"].get("id"), str)
+                       and self.data["litellm_metadata"]["model_info"]["id"] ==
+                           getattr(e, "failed_deployment_id", None))
+                   or (self.data.get("model") == "project-router"
+                       and isinstance(self.data.get("litellm_metadata"), dict)
+                       and self.data["litellm_metadata"].get("deployment_model_name") == "project-router"
+                       and self.data["litellm_metadata"].get("deployment") == "xai/grok-4.7-build-fast"
+                       and isinstance(self.data["litellm_metadata"].get("model_info"), dict)
+                       and isinstance(self.data["litellm_metadata"]["model_info"].get("id"), str)
+                       and self.data["litellm_metadata"]["model_info"]["id"] ==
+                           getattr(e, "failed_deployment_id", None))))
         is_alias_denial = (is_grok_alias and type(e) is CallerCredentialAuthenticationError
             and getattr(e, "message", None) == "litellm.AuthenticationError: Project Grok request rejected"
             and getattr(e, "llm_provider", None) == "xai"
             and getattr(e, "model", None) == "project-grok-native"
             and getattr(e, "status_code", None) == 401)
-        if is_alias_denial:
-            e = CallerCredentialAuthenticationError(
+        if is_grok_alias:
+            fixed_exception = (CallerCredentialAuthenticationError(
                 message="Project Grok request rejected", llm_provider="xai", model="project-grok-native"
-            )
+            ) if is_alias_denial else HTTPException(status_code=502, detail="Project Grok provider failed"))
+            log_llm_api_exception(fixed_exception, self.litellm_call_id, redacted=True)
+        else:
+            fixed_exception = None
+            log_llm_api_exception(e, self.litellm_call_id)
+        # Allow callbacks to transform the error response
+''')
+    source = replace_once(source,
+        '''        # Use transformed exception if callback returned one, otherwise use original
+        if transformed_exception is not None:
+            e = transformed_exception
+        litellm_debug_info:''',
+        '''        # Keep the callback's own bounded request denials at their original 401.
+        if is_alias_denial:
+            e = fixed_exception
         elif transformed_exception is not None:
             e = transformed_exception
+        elif is_grok_alias:
+            e = fixed_exception
         litellm_debug_info:''')
     old = '''        except Exception as e:
             verbose_proxy_logger.exception(
@@ -205,8 +260,21 @@ def patch_common(source):
                 isinstance(carrier_body, dict) and carrier_body.get("model") == "project-grok-native"
             ) or (isinstance(carrier_body, dict) and carrier_body.get("model") == "project-router"
                   and (request_data.get("model") == "xai/grok-4.7-build-fast"
-                   or (isinstance(request_data.get("metadata"), dict) and
-                       request_data["metadata"].get("deployment_model_name") == "project-grok-native")))
+                   or (isinstance(request_data.get("litellm_metadata"), dict)
+                       and request_data["litellm_metadata"].get("deployment_model_name") == "project-grok-native"
+                       and request_data["litellm_metadata"].get("deployment") == "xai/grok-4.7-build-fast"
+                       and isinstance(request_data["litellm_metadata"].get("model_info"), dict)
+                       and isinstance(request_data["litellm_metadata"]["model_info"].get("id"), str)
+                       and request_data["litellm_metadata"]["model_info"]["id"] ==
+                           getattr(e, "failed_deployment_id", None))
+                   or (request_data.get("model") == "project-router"
+                       and isinstance(request_data.get("litellm_metadata"), dict)
+                       and request_data["litellm_metadata"].get("deployment_model_name") == "project-router"
+                       and request_data["litellm_metadata"].get("deployment") == "xai/grok-4.7-build-fast"
+                       and isinstance(request_data["litellm_metadata"].get("model_info"), dict)
+                       and isinstance(request_data["litellm_metadata"]["model_info"].get("id"), str)
+                       and request_data["litellm_metadata"]["model_info"]["id"] ==
+                           getattr(e, "failed_deployment_id", None))))
             if not is_grok_alias:
                 verbose_proxy_logger.exception(
                     "litellm.proxy.proxy_server.async_data_generator(): Exception occured - %s", e

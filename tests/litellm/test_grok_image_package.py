@@ -1,4 +1,6 @@
 """Fast local controls for the tracked Grok image package."""
+import asyncio
+import ast
 import base64
 import importlib.util
 from io import BytesIO
@@ -7,7 +9,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPHandler
 from urllib.response import addinfourl
@@ -135,7 +139,173 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(self.runner.CALLBACK_HASH, self.runner.sha(self.runner.CALLBACK))
         for path, expected in self.runner.FILES.items():
             self.assertEqual(expected, self.runner.sha(Path(path)), path)
-        self.assertEqual(len(self.runner.CHECKS), 28)
+        self.assertEqual(len(self.runner.CHECKS), 34)
+        self.assertIn("routed_asgi_litellm_metadata_only_fixed_502", self.runner.CHECKS)
+
+    def test_baseline_check_path_and_candidate_reachability(self):
+        """Walk the fixture's actual mode branches without importing LiteLLM."""
+        tree = ast.parse((HERE / "grok_pinned_image_integration.py").read_text())
+        qualify = next(node for node in tree.body
+                       if isinstance(node, ast.AsyncFunctionDef) and node.name == "qualify")
+
+        def path_checks(baseline):
+            seen = []
+            env = {"GROK_BASELINE_NONALIAS": "1"} if baseline else {}
+
+            def walk(statements):
+                for statement in statements:
+                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                              ast.ClassDef)):
+                        continue
+                    if isinstance(statement, ast.Return):
+                        return True
+                    if (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+                            and isinstance(statement.value.func, ast.Name)
+                            and statement.value.func.id == "check"):
+                        name = statement.value.args[0]
+                        seen.append(name.value if isinstance(name, ast.Constant) else "dynamic")
+                    if isinstance(statement, ast.If):
+                        if "GROK_BASELINE_NONALIAS" in ast.unparse(statement.test):
+                            selected = eval(compile(ast.Expression(statement.test), "<fixture-mode>", "eval"),
+                                            {"os": SimpleNamespace(environ=env)})
+                            if walk(statement.body if selected else statement.orelse):
+                                return True
+                        else:
+                            walk(statement.body)
+                            walk(statement.orelse)
+                    elif isinstance(statement, (ast.With, ast.AsyncWith, ast.For,
+                                                ast.AsyncFor, ast.While)):
+                        if walk(statement.body):
+                            return True
+                        walk(getattr(statement, "orelse", []))
+                    elif isinstance(statement, ast.Try):
+                        walk(statement.body)
+                        for handler in statement.handlers:
+                            walk(handler.body)
+                        walk(statement.orelse)
+                        walk(statement.finalbody)
+                return False
+
+            walk(qualify.body)
+            return seen
+
+        self.assertEqual(path_checks(True),
+                         ["baseline_generic_denied", "baseline_nonalias_reached"])
+        candidate = path_checks(False)
+        self.assertTrue({"common_litellm_metadata_fixed_502",
+                         "common_metadata_spoof_rejected", "common_canonical_denial_401",
+                         "common_prefixed_denial_closed",
+                         "common_unrelated_original_preserved",
+                         "routed_asgi_litellm_metadata_only_fixed_502"}.issubset(candidate))
+
+    def test_routed_boundary_requires_router_selected_deployment(self):
+        tree = ast.parse((HERE / "grok_pinned_image_integration.py").read_text())
+        qualify = next(node for node in tree.body
+                       if isinstance(node, ast.AsyncFunctionDef) and node.name == "qualify")
+        hooks = [node for node in ast.walk(qualify)
+                 if isinstance(node, ast.AsyncFunctionDef) and node.name == "maybe_fault_hook"]
+        self.assertEqual(len(hooks), 1)
+        self.assertNotIn("pre_call_with_selected_deployment",
+                         (HERE / "grok_pinned_image_integration.py").read_text())
+
+        async def original_failure_hook(*_, **__):
+            return None
+
+        state = {"nonalias_hook_mode": None, "hook_fault": False}
+        evidence = {}
+        scope = {"CASE": "routed_litellm_metadata", "state": state, "EVIDENCE": evidence,
+                 "ALIAS": "project-grok-native", "BACKEND": "xai/grok-4.7-build-fast",
+                 "original_failure_hook": original_failure_hook}
+        exec(compile(ast.Module(body=hooks, type_ignores=[]), "<fixture-hook>", "exec"), scope)
+        selected_metadata = {
+            "deployment_model_name": "project-router", "deployment": "xai/grok-4.7-build-fast",
+            "model_info": {"id": "synthetic-grok-route"}}
+        data = {"model": "project-router", "proxy_server_request": {
+            "body": {"model": "project-router", "litellm_metadata": selected_metadata}},
+            "litellm_metadata": selected_metadata}
+
+        def inspect(data, stamp="synthetic-grok-route"):
+            original = RuntimeError("synthetic failure")
+            if stamp is not None:
+                original.failed_deployment_id = stamp
+            asyncio.run(scope["maybe_fault_hook"](request_data=data, original_exception=original))
+            return state["routed_failure_boundary"], dict(evidence["routed_trace"])
+
+        selected, trace = inspect(data)
+        self.assertTrue(selected)
+        self.assertEqual(trace, {"request_model": "router", "carrier_model": "router",
+            "selected_group": "router", "selected_backend": "backend", "selected_id": True,
+            "router_stamped_id": True, "original_selected_fields": True,
+            "other_selected_fields": False})
+        self.assertFalse(inspect(data, stamp=None)[0])
+        self.assertFalse(inspect(data, stamp="other-deployment")[0])
+        for changed in (
+            {"litellm_metadata": {"deployment_model_name": "project-grok-native"}},
+            {"litellm_metadata": {**data["litellm_metadata"], "deployment": "other"}},
+            {"metadata": {"deployment_model_name": "project-router"}},
+        ):
+            with self.subTest(changed=changed):
+                self.assertFalse(inspect({**data, **changed})[0])
+
+    def test_patch_classifiers_match_real_router_stamp_and_reject_caller_stamp(self):
+        tree = ast.parse((ROOT / "services/litellm-grok/patch_image.py").read_text())
+        fragments = [node.value for node in ast.walk(tree)
+                     if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                     and 'get("deployment_model_name") == "project-router"' in node.value]
+        self.assertEqual(len(fragments), 4)
+        expressions = []
+        for fragment in fragments:
+            marker = "grok_alias_failure =" if "grok_alias_failure =" in fragment else "is_grok_alias ="
+            lines = fragment[fragment.index(marker):].splitlines()
+            for count in range(1, len(lines) + 1):
+                try:
+                    parsed = ast.parse(textwrap.dedent("\n".join(lines[:count])))
+                except SyntaxError:
+                    continue
+                if len(parsed.body) == 1 and isinstance(parsed.body[0], ast.Assign):
+                    break
+            else:
+                self.fail("patched classifier expression did not parse")
+            expressions.append(compile(ast.Expression(parsed.body[0].value), "<routed-classifier>", "eval"))
+
+        data = {"model": "project-router", "proxy_server_request": {"body": {
+            "model": "project-router"}}, "litellm_metadata": {
+            "deployment_model_name": "project-router", "deployment": "xai/grok-4.7-build-fast",
+            "model_info": {"id": "synthetic-grok-route"}}}
+        def classified(expression, data, stamp="synthetic-grok-route"):
+            body = data["proxy_server_request"]["body"]
+            original = RuntimeError("synthetic failure")
+            if stamp is not None:
+                original.failed_deployment_id = stamp
+            return eval(expression, {"request_data": data, "self": SimpleNamespace(data=data),
+                                     "carrier_body": body, "e": original,
+                                     "original_exception": original})
+
+        for expression in expressions:
+            self.assertTrue(classified(expression, data))
+            self.assertFalse(classified(expression, data, stamp=None))
+            self.assertFalse(classified(expression, data, stamp="other-deployment"))
+            alias_tag = {**data, "litellm_metadata": {"deployment_model_name": "project-grok-native",
+                "deployment": "xai/grok-4.7-build-fast", "model_info": {"id": "synthetic-alias"}}}
+            self.assertFalse(classified(expression, alias_tag, stamp=None))
+            self.assertTrue(classified(expression, alias_tag, stamp="synthetic-alias"))
+            forged = {**data, "litellm_metadata": {**data["litellm_metadata"],
+                "deployment": "synthetic-other"}, "metadata": {
+                "deployment_model_name": "project-grok-native",
+                "deployment": "xai/grok-4.7-build-fast",
+                "model_info": {"id": "synthetic-grok-route"}}}
+            self.assertFalse(classified(expression, forged))
+            self.assertFalse(classified(expression, {**forged, "litellm_metadata": {}}))
+            self.assertTrue(classified(expression, {**data, "metadata": {
+                "deployment_model_name": "synthetic-other", "deployment": "synthetic-other",
+                "model_info": {"id": "synthetic-grok-route"}}}))
+            self.assertFalse(classified(expression, {**data, "model": "synthetic-other"}))
+            self.assertFalse(classified(expression, {**data, "litellm_metadata": {
+                **data["litellm_metadata"], "deployment": "synthetic-other"}}))
+            self.assertFalse(classified(expression, {**data, "litellm_metadata": {
+                **data["litellm_metadata"], "model_info": {}}}))
+            self.assertFalse(classified(expression, {**data, "proxy_server_request": {
+                "body": {"model": "synthetic-other"}}}))
 
     def test_docker_command_output_is_discarded(self):
         with patch.object(self.runner.subprocess, "run",
