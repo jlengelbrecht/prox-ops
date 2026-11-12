@@ -1777,6 +1777,14 @@ data:
       scope_profile: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
       scope_openid: !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
     entries:
+      # The local browser-test account and its existing Paperclip grant must
+      # exist before the path/group lookups below. Blueprint discovery order
+      # is otherwise unspecified.
+      - model: authentik_blueprints.metaapplyblueprint
+        attrs:
+          identifiers:
+            name: Applications
+          required: true
       # Role groups. For people who sign in through Entra, membership comes
       # from the Entra groups of the same names and is rewritten at each Entra
       # login (see the allow-list in source-entra.yaml); a manual change in
@@ -1801,6 +1809,34 @@ data:
         attrs:
           name: nyctr-members
           attributes: {}
+      # Separate application grant, like Paperclip's. Do not use the identity
+      # classification group as an application grant.
+      - model: authentik_core.group
+        id: group-ai-browser-test-nyctr
+        identifiers:
+          name: ai-browser-test-nyctr
+        attrs:
+          name: ai-browser-test-nyctr
+          is_superuser: false
+          parents: []
+          roles: []
+      # Manage only this account's explicit, reviewed group list. Updating the
+      # shared role groups' users would replace their human membership. Keep
+      # the identity classification and Paperclip grant alongside Nyctr's
+      # application grant and both direct role memberships. Do not manage
+      # password, MFA, active status or account attributes from this entry.
+      - model: authentik_core.user
+        id: user-ai-browser-test-nyctr-memberships
+        state: present
+        identifiers:
+          path: agents/browser-test/ai-browser-test
+        attrs:
+          groups:
+            - !Find [authentik_core.group, [name, ai-browser-test-identity]]
+            - !Find [authentik_core.group, [name, ai-browser-test-paperclip]]
+            - !KeyOf group-ai-browser-test-nyctr
+            - !KeyOf group-nyctr-admins
+            - !KeyOf group-nyctr-members
       # Confidential client with PKCE (Nyctr always sends an S256 challenge).
       # The client id is a public identifier, declared literally here and in
       # the Nyctr HelmRelease; the secret comes from the authentik-nyctr Secret
@@ -1839,10 +1875,10 @@ data:
           include_claims_in_id_token: true
           sub_mode: hashed_user_id
           issuer_mode: per_provider
-      # Members of the two role groups only (one expression policy: with
-      # policy_engine_mode all, two group bindings would require both). Direct
-      # membership, not ak_is_group_member(): Nyctr applies the same two groups
-      # again from the token, which lists direct groups only, so an inherited
+      # Human role access and the explicit browser-test grant are alternatives,
+      # as on Paperclip. Direct membership, not ak_is_group_member(): Nyctr
+      # applies the same two groups again from the token, which lists direct
+      # groups only, so an inherited
       # member would pass here and then be refused by Nyctr.
       - model: authentik_core.application
         id: app-nyctr
@@ -1852,7 +1888,7 @@ data:
           name: Nyctr
           slug: nyctr
           group: Tools
-          policy_engine_mode: all
+          policy_engine_mode: any
           meta_launch_url: https://nyctr.homelab0.org
           provider: !KeyOf provider-nyctr
       - model: authentik_policies_expression.expressionpolicy
@@ -1870,14 +1906,21 @@ data:
         attrs:
           policy: !KeyOf policy-nyctr-access
           enabled: true
-      # Exclude the agent account from every ungranted app.
       - model: authentik_policies.policybinding
+        id: binding-nyctr-ai-browser-test
+        identifiers:
+          target: !KeyOf app-nyctr
+          order: 10
+        attrs:
+          group: !KeyOf group-ai-browser-test-nyctr
+          enabled: true
+      # Removing an entry from a blueprint does not remove the live binding.
+      # Retire the old ungranted-app guard now that this app has a grant.
+      - model: authentik_policies.policybinding
+        state: absent
         identifiers:
           target: !KeyOf app-nyctr
           order: 90
-        attrs:
-          policy: !Find [authentik_policies_expression.expressionpolicy, [name, deny-ungranted-ai-browser-test]]
-          enabled: true
 
   # =============================================================
   # NOTIFICATIONS BLUEPRINT
