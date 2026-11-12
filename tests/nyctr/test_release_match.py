@@ -98,7 +98,7 @@ class ReleaseMatchTests(unittest.TestCase):
         with self.assertRaises(guard.ReleaseError):
             guard.check(self.root)
 
-    def test_ci_checks_effective_chart_pin_and_published_chart(self):
+    def _assert_effective_chart_pin_cases(self):
         image_body, chart_body = b'image manifest fixture', b'chart manifest fixture'
         image_digest = 'sha256:' + hashlib.sha256(image_body).hexdigest()
         chart_digest = 'sha256:' + hashlib.sha256(chart_body).hexdigest()
@@ -111,6 +111,9 @@ class ReleaseMatchTests(unittest.TestCase):
         for pin, response, expected in cases:
             with self.subTest(pin=pin, expected=expected):
                 chart = copy.deepcopy(self.chart)
+                # Each case owns its pin; a real repository pin must not leak
+                # into the unpinned fixture when Renovate updates the manifest.
+                chart['spec']['ref'].pop('digest', None)
                 if pin is not None:
                     chart['spec']['ref']['digest'] = pin
                 self.save(hr, chart)
@@ -121,6 +124,16 @@ class ReleaseMatchTests(unittest.TestCase):
                         contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                     self.assertEqual(guard.main(), expected)
                 self.assertNotIn('private', output.getvalue())
+
+    def test_ci_checks_effective_chart_pin_and_published_chart(self):
+        for inherited_pin in (None, 'sha256:' + 'f' * 64):
+            with self.subTest(inherited_pin=inherited_pin):
+                chart = copy.deepcopy(self.chart)
+                chart['spec']['ref'].pop('digest', None)
+                if inherited_pin is not None:
+                    chart['spec']['ref']['digest'] = inherited_pin
+                with patch.object(self, 'chart', chart):
+                    self._assert_effective_chart_pin_cases()
 
     def test_workflow_required_aggregate_cannot_skip_guard(self):
         workflow = yaml.safe_load((ROOT / '.github/workflows/flux-local.yaml').read_text())
