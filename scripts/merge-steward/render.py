@@ -65,7 +65,7 @@ _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 # version that long is not one we can compare, which already means needs-human.
 _SEMVER = re.compile(r"^v?(\d{1,9})\.(\d{1,9})(?!\d)")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-_RELEASE = re.compile(r"^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?!\d)(-)?")
+_RELEASE = re.compile(r"^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$")
 _RELEASE_FIELDS = (("spec", "ref", "tag"), ("spec", "ref", "digest"))
 _MISSING = object()
 STALE = "the PR merge ref was stale; re-run the render (pull_request_target run)"
@@ -207,20 +207,28 @@ def _release_exception(before, after, exceptions):
 
 def _release_order(tag):
     """Sort key for a release tag: a prerelease comes before its final release."""
-    m = _RELEASE.match(str(tag))
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4) is None) if m else None
+    m = _RELEASE.fullmatch(str(tag))
+    if not m or any(len(p) > 1 and p.startswith("0") for p in m.groups()[:3]):
+        return None
+    parts = (m.group(4) or "").split(".") if m.group(4) else []
+    if any(p.isdigit() and len(p) > 1 and p.startswith("0") for p in parts):
+        return None
+    prerelease = tuple((0, len(p), p) if p.isdigit() else (1, p) for p in parts)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4) is None, prerelease)
 
 
 def _release_flag(rule, path, old, new):
     """Tag and digest of an excepted release: well formed, same major, and not going backwards."""
     if path[-1] == "digest":
+        if rule.get("companions") and old is _MISSING and _DIGEST.fullmatch(str(new)):
+            return None
         return None if all(_DIGEST.fullmatch(str(v)) for v in (old, new)) else "changed"
     if not all(re.fullmatch(rule["tag_pattern"], str(v)) for v in (old, new)):
         return "version"
     a, b = _release_order(old), _release_order(new)
     if not a or not b:
         return "version"
-    if a[0] != b[0]:
+    if a[0] != b[0] and "major" not in rule["update_types"]:
         return "major"
     return "version" if b < a else None
 
