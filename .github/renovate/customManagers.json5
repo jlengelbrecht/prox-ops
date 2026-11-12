@@ -92,6 +92,18 @@
     },
     {
       "customType": "regex",
+      "description": "Monitor OpenTofu version in GitHub Actions workflows",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        // YAML env format: TOFU_VERSION: "1.13.9"
+        "TOFU_VERSION:\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "opentofu/opentofu",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
       "description": "Monitor Gitleaks version in GitHub Actions workflows",
       "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
       "matchStrings": [

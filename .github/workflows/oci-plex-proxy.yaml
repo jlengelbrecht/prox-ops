@@ -17,6 +17,7 @@ on:
           - destroy
           - recreate
           - plan-only
+          - migrate
         default: plan-only
       availability_domain:
         description: 'Availability Domain index (0=AD-1, 1=AD-2, 2=AD-3)'
@@ -31,20 +32,22 @@ on:
         type: boolean
         default: true
 
-# Prevent concurrent operations (Terraform state lock protection)
+# Prevent concurrent operations (state lock protection)
 concurrency:
   group: oci-plex-proxy
   cancel-in-progress: false
 
 env:
-  AWS_REGION: us-east-2
-  TERRAFORM_VERSION: "1.17.1"
+  TOFU_VERSION: "1.13.9"
   WORKING_DIR: ./terraform/oci
 
 jobs:
   terraform:
     name: ${{ inputs.action || 'recreate (scheduled)' }} OCI Plex Proxy
-    runs-on: ubuntu-latest
+    # In-cluster runner: the state store is only reachable inside the cluster.
+    runs-on: gha-runner-scale-set
+    # Holds the state passphrase and the S3 keys of the tofu-oci user.
+    environment: oci
     timeout-minutes: 30
 
     # Resolve inputs with fallbacks for scheduled runs
@@ -52,6 +55,27 @@ jobs:
       ACTION: ${{ inputs.action || 'recreate' }}
       AD_INDEX: ${{ inputs.availability_domain || '0' }}
       NGINX_ENABLED: ${{ inputs.enable_nginx_proxy == '' && 'true' || inputs.enable_nginx_proxy }}
+      # State backend: in-cluster S3 store, tofu-oci user (oci/ prefix only)
+      AWS_ACCESS_KEY_ID: ${{ secrets.TOFU_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.TOFU_S3_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      # Client-side encryption of state and plan files. The passphrase is kept
+      # in 1Password; losing it makes the state unreadable.
+      TF_ENCRYPTION: |
+        key_provider "pbkdf2" "main" {
+          passphrase = "${{ secrets.TOFU_STATE_PASSPHRASE }}"
+        }
+        method "aes_gcm" "main" {
+          keys = key_provider.pbkdf2.main
+        }
+        state {
+          method   = method.aes_gcm.main
+          enforced = true
+        }
+        plan {
+          method   = method.aes_gcm.main
+          enforced = true
+        }
 
     steps:
       # =======================================================================
@@ -95,25 +119,152 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - name: Setup OpenTofu and jq
+        # renovate: datasource=github-releases depName=jdx/mise-action
+        uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
         with:
-          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          install: true
+          install_args: "aqua:opentofu/opentofu aqua:jqlang/jq"
+          cache: true
+          # Only the tools this workflow needs
+          mise_toml: |
+            [tools]
+            "aqua:opentofu/opentofu" = "${{ env.TOFU_VERSION }}"
+            "aqua:jqlang/jq" = "1.8.1"
 
-      - name: Configure AWS credentials (for S3 backend)
-        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+      # =======================================================================
+      # MIGRATE (one time): copy the state from the old AWS bucket into the
+      # in-cluster store. Removed once a normal run has passed on the new store.
+      # =======================================================================
+      - name: Pull state from the old AWS bucket (migrate)
+        if: inputs.action == 'migrate'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$RUNNER_TEMP/old-backend"
+          cd "$RUNNER_TEMP/old-backend"
+          cat > backend.tf <<'EOF'
+          terraform {
+            backend "s3" {
+              bucket       = "prox-ops-terraform-state"
+              key          = "oci/terraform.tfstate"
+              region       = "us-east-2"
+              encrypt      = true
+              use_lockfile = true
+            }
+          }
+          EOF
+          # The old state is not client-side encrypted, so read it without TF_ENCRYPTION.
+          env -u TF_ENCRYPTION tofu init -input=false > /dev/null
+          env -u TF_ENCRYPTION tofu state pull > "$RUNNER_TEMP/old.tfstate"
+          if ! jq -e '.version == 4 and (.resources | length) > 0' "$RUNNER_TEMP/old.tfstate" > /dev/null; then
+            echo "::error::The state pulled from AWS is empty or not a version 4 state file"
+            exit 1
+          fi
+          echo "Pulled from AWS: serial $(jq -r '.serial' "$RUNNER_TEMP/old.tfstate"), $(jq -r '.resources | length' "$RUNNER_TEMP/old.tfstate") resources"
 
-      - name: Initialize Terraform
+      - name: Initialize OpenTofu
         working-directory: ${{ env.WORKING_DIR }}
         run: |
-          # Use -upgrade to handle new providers when lock file is not committed
-          terraform init -upgrade
+          # Provider versions come from the committed .terraform.lock.hcl
+          tofu init -input=false
 
-      - name: Clear stale Terraform locks
+      - name: Push state to the in-cluster store (migrate)
+        if: inputs.action == 'migrate'
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          set -euo pipefail
+          umask 077
+          cleanup() { shred -u "$RUNNER_TEMP/old.tfstate" "$RUNNER_TEMP/new.tfstate" 2>/dev/null || true; }
+          trap cleanup EXIT
+
+          if ! existing=$(tofu state pull 2>/dev/null); then
+            echo "::error::Could not read the in-cluster store; not pushing"
+            exit 1
+          fi
+          if [ -n "$existing" ]; then
+            echo "::error::The in-cluster store already holds state for this root; refusing to overwrite it"
+            exit 1
+          fi
+          unset existing
+          tofu state push "$RUNNER_TEMP/old.tfstate"
+          tofu state pull > "$RUNNER_TEMP/new.tfstate"
+          # OpenTofu drops Terraform's resource identity fields when it rewrites
+          # the state; it does not use them. Compare everything else.
+          norm() { jq -S '{lineage, outputs, resources: [.resources[] | .instances |= map(del(.identity_schema_version, .identity))]}' "$1" | sha256sum; }
+          if [ "$(norm "$RUNNER_TEMP/old.tfstate")" != "$(norm "$RUNNER_TEMP/new.tfstate")" ]; then
+            echo "::error::The state read back from the in-cluster store differs from the AWS state"
+            exit 1
+          fi
+          echo "State moved: lineage, outputs and resources match the AWS copy. The AWS copy is unchanged."
+
+      - name: Check state locking on the in-cluster store (migrate)
+        if: inputs.action == 'migrate'
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/lock-test"
+          cd "$RUNNER_TEMP/lock-test"
+          cat > main.tf <<'EOF'
+          terraform {
+            backend "s3" {
+              bucket               = "tofu-state"
+              key                  = "oci/_test/lock.tfstate"
+              workspace_key_prefix = "oci/env:"
+              region               = "us-east-1"
+              use_lockfile         = true
+              endpoints = {
+                s3 = "http://rgw.object-store.svc.cluster.local"
+              }
+              use_path_style              = true
+              skip_credentials_validation = true
+              skip_region_validation      = true
+              skip_requesting_account_id  = true
+              skip_metadata_api_check     = true
+              skip_s3_checksum            = true
+            }
+          }
+          resource "terraform_data" "slow" {
+            input = timestamp()
+            provisioner "local-exec" {
+              command = "sleep 25"
+            }
+          }
+          EOF
+          tofu init -input=false > /dev/null || { echo "::error::lock test: init failed"; exit 1; }
+          tofu apply -auto-approve -input=false > apply.log 2>&1 &
+          FIRST=$!
+          sleep 10
+          if tofu plan -input=false -lock-timeout=0s > plan.log 2>&1; then
+            echo "::error::A second run was not refused while the first held the lock"
+            wait $FIRST || true
+            exit 1
+          fi
+          if ! grep -qiE 'lock' plan.log; then
+            echo "::error::The second run failed, but not with a lock error"
+            wait $FIRST || true
+            exit 1
+          fi
+          echo "Second run refused with a lock error"
+          wait $FIRST || { echo "::error::The first run failed"; exit 1; }
+          tofu plan -input=false -lock-timeout=0s > /dev/null 2>&1 || { echo "::error::The lock was not released"; exit 1; }
+          echo "Lock released after the first run"
+          tofu destroy -auto-approve -input=false > /dev/null 2>&1 || true
+
+      # Until the state has been migrated, the new store has no state for this
+      # root, and a deploy or recreate would build a second copy of everything.
+      - name: Refuse to run without state
+        if: inputs.action != 'migrate'
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          if [ -z "$(tofu state pull 2>/dev/null)" ]; then
+            echo "::error::No state found in the in-cluster store (or it could not be read). Run this workflow with action 'migrate' first."
+            exit 1
+          fi
+
+      - name: Clear stale state locks
         working-directory: ${{ env.WORKING_DIR }}
         continue-on-error: true
         env:
@@ -141,12 +292,12 @@ jobs:
           TF_VAR_nginx_backend_url: ${{ secrets.NGINX_BACKEND_URL }}
           TF_VAR_plex_loadbalancer_ip: ${{ secrets.PLEX_LOADBALANCER_IP }}
         run: |
-          echo "Checking for stale Terraform state locks..."
-          if ! LOCK_OUTPUT=$(terraform plan -input=false -lock-timeout=1s 2>&1); then
+          echo "Checking for stale state locks..."
+          if ! LOCK_OUTPUT=$(tofu plan -input=false -lock-timeout=1s 2>&1); then
             LOCK_ID=$(echo "$LOCK_OUTPUT" | grep -oP 'ID:\s*\K[a-f0-9-]{36}' | head -1)
             if [ -n "$LOCK_ID" ]; then
               echo "Found stale lock: $LOCK_ID"
-              terraform force-unlock -force "$LOCK_ID" || true
+              tofu force-unlock -force "$LOCK_ID" || true
             fi
           fi
 
@@ -161,7 +312,7 @@ jobs:
           # Taint the compute instance to force recreation on next apply
           # This preserves the static IP (which has prevent_destroy=true)
           # The static IP will be updated in-place to point to the new instance
-          if terraform taint 'module.plex_proxy[0].oci_core_instance.main' 2>/dev/null; then
+          if tofu taint 'module.plex_proxy[0].oci_core_instance.main' 2>/dev/null; then
             echo "Instance marked for recreation"
           else
             echo "No existing instance to taint (fresh deploy)"
@@ -202,7 +353,7 @@ jobs:
           # SECURITY: Suppress detailed plan output to prevent secret leakage
           # user_data contains base64-encoded cloud-init with WireGuard/TLS private keys
           # Save full plan to file, show only summary in logs
-          terraform plan -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
+          tofu plan -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
           PLAN_EXIT=$?
           # Show only high-level summary (exclude any lines with sensitive patterns)
           grep -E '^(Plan:|No changes|Error:|Warning:|Terraform will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
@@ -242,7 +393,7 @@ jobs:
 
           echo "::group::Terraform Plan Destroy"
           # SECURITY: Suppress detailed plan output (same as plan step)
-          terraform plan -destroy -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
+          tofu plan -destroy -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
           PLAN_EXIT=$?
           grep -E '^(Plan:|No changes|Error:|Warning:|Terraform will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
           echo "::endgroup::"
@@ -280,7 +431,7 @@ jobs:
 
           echo "::group::Terraform Apply"
           # SECURITY: Suppress detailed apply output (contains user_data with secrets)
-          terraform apply -input=false tfplan > /tmp/tfapply.txt 2>&1
+          tofu apply -input=false tfplan > /tmp/tfapply.txt 2>&1
           APPLY_EXIT=$?
           # Show only resource status (exclude any lines with sensitive patterns)
           grep -E '^(Apply complete|Error:|Warning:|module\.[^:]+: (Creating|Creation complete|Destroying|Destruction complete))' /tmp/tfapply.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -30 || true
@@ -315,8 +466,8 @@ jobs:
           TF_VAR_plex_loadbalancer_ip: ${{ secrets.PLEX_LOADBALANCER_IP }}
         run: |
           # Get outputs (suppress from logs)
-          PUBLIC_IP=$(terraform output -raw plex_proxy_public_ip 2>/dev/null || echo "N/A")
-          VPS_WG_PUB=$(terraform output -raw plex_proxy_wireguard_public_key 2>/dev/null || echo "N/A")
+          PUBLIC_IP=$(tofu output -raw plex_proxy_public_ip 2>/dev/null || echo "N/A")
+          VPS_WG_PUB=$(tofu output -raw plex_proxy_wireguard_public_key 2>/dev/null || echo "N/A")
 
           # SECURITY: Mask sensitive values to prevent log exposure
           # GitHub Actions will replace these values with *** in all subsequent log output
@@ -465,8 +616,19 @@ jobs:
       - name: Public Endpoint Test
         if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '') && steps.dns.outputs.dns_updated == 'true'
         id: public_test
+        env:
+          PUBLIC_IP: ${{ steps.outputs.outputs.public_ip }}
         run: |
           echo "Testing public endpoint: https://streaming.homelab0.org"
+          # This job runs inside the cluster, where the name may resolve to an
+          # internal address. Pin it to the VPS public IP so the test goes out
+          # to the VPS and back through the tunnel.
+          # (The record is DNS-only, so this is the address public DNS returns.)
+          if ! echo "$PUBLIC_IP" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+            echo "::error::No valid public IP to test against"
+            exit 1
+          fi
+          RESOLVE="streaming.homelab0.org:443:$PUBLIC_IP"
 
           # Wait for DNS propagation (Cloudflare is fast, but give it a moment)
           echo "Waiting 15 seconds for DNS propagation..."
@@ -479,7 +641,7 @@ jobs:
           # Test 1: Check if nginx is responding (any response = nginx is up)
           echo "Test 1: Checking nginx responsiveness..."
           for attempt in 1 2 3 4 5; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "https://streaming.homelab0.org/" 2>/dev/null || echo "000")
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 --resolve "$RESOLVE" "https://streaming.homelab0.org/" 2>/dev/null || echo "000")
             if [ "$HTTP_CODE" != "000" ] && [ "$HTTP_CODE" != "502" ] && [ "$HTTP_CODE" != "503" ] && [ "$HTTP_CODE" != "504" ] && [ "$HTTP_CODE" != "523" ] && [ "$HTTP_CODE" != "524" ]; then
               NGINX_OK="true"
               echo "Nginx responding (HTTP $HTTP_CODE)"
@@ -494,7 +656,7 @@ jobs:
           if [ "$NGINX_OK" = "true" ]; then
             echo "Test 2: Checking Plex accessibility..."
             for attempt in 1 2 3; do
-              if curl -s --connect-timeout 10 --max-time 30 "https://streaming.homelab0.org/identity" 2>/dev/null | grep -q "MediaContainer"; then
+              if curl -s --connect-timeout 10 --max-time 30 --resolve "$RESOLVE" "https://streaming.homelab0.org/identity" 2>/dev/null | grep -q "MediaContainer"; then
                 PLEX_OK="true"
                 PUBLIC_ENDPOINT_OK="true"
                 echo "Plex is accessible via public endpoint"
@@ -612,3 +774,11 @@ jobs:
           echo "The OCI Plex Proxy VM has been destroyed." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "To redeploy, run this workflow with action: **deploy**" >> $GITHUB_STEP_SUMMARY
+
+      # The migrate steps write the plaintext state under RUNNER_TEMP. Remove it
+      # whatever happened above.
+      - name: Remove state copies from the runner
+        if: always()
+        run: |
+          shred -u "$RUNNER_TEMP/old.tfstate" "$RUNNER_TEMP/new.tfstate" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/old-backend" "$RUNNER_TEMP/lock-test"
