@@ -1147,6 +1147,66 @@ data:
       # never auto-links to an existing Authentik account (akadmin included).
       # Who may sign in is controlled in Entra: the app requires assignment
       # and only the authentik-users group is assigned.
+      # Group sync from Entra, test stage. At each Entra login Authentik reads
+      # the user's Entra groups and copies membership for the names on the
+      # allow-list below, and for nothing else. An Entra group links to the
+      # Authentik group of the same name, so a name on this list hands that
+      # group's membership to Entra. Keep the two lists identical, and keep
+      # privileged groups (authentik Admins, openbao-admins, warpgate-admins)
+      # off them.
+      #
+      # Entra must have granted GroupMember.Read.All to the authentik app
+      # before the source asks for it, or every Entra sign-in is refused.
+      - model: authentik_core.group
+        id: group-sso-sync-test
+        identifiers:
+          name: sso-sync-test
+        attrs:
+          name: sso-sync-test
+          attributes: {}
+      # Drops every group that is not on the allow-list before Authentik
+      # looks at it. A mapping's return value is merged into the built-in
+      # list and cannot remove entries, so the list is edited in place.
+      - model: authentik_sources_oauth.oauthsourcepropertymapping
+        id: mapping-entra-user-groups
+        identifiers:
+          name: entra-allowed-groups-user
+        attrs:
+          name: entra-allowed-groups-user
+          expression: |
+            allowed = {"sso-sync-test"}
+            raw = info.get("raw_groups")
+            if not isinstance(raw, dict):
+                raw = {}
+
+            def name_of(gid):
+                entry = raw.get(gid)
+                return entry.get("displayName") if isinstance(entry, dict) else None
+
+            groups = properties.get("groups")
+            if isinstance(groups, list):
+                names = [name_of(gid) for gid in groups]
+                # Entra display names are not unique. Two groups with the
+                # same allow-listed name cannot both link to one Authentik
+                # group, so neither is used.
+                groups[:] = [
+                    gid for gid, name in zip(groups, names)
+                    if name in allowed and names.count(name) == 1
+                ]
+            return None
+      # Backstop for the filter above: a group that is not on the allow-list
+      # gets a name that cannot match any existing Authentik group.
+      - model: authentik_sources_oauth.oauthsourcepropertymapping
+        id: mapping-entra-group-name
+        identifiers:
+          name: entra-allowed-groups-group
+        attrs:
+          name: entra-allowed-groups-group
+          expression: |
+            allowed = {"sso-sync-test"}
+            if properties.get("name") not in allowed:
+                return {"name": "entra-unlisted-" + str(group_id)}
+            return None
       - model: authentik_sources_oauth.oauthsource
         id: source-entra
         identifiers:
@@ -1160,7 +1220,12 @@ data:
           enrollment_flow: !Context enrollment_flow
           policy_engine_mode: any
           user_matching_mode: identifier
-          group_matching_mode: identifier
+          group_matching_mode: name_link
+          additional_scopes: https://graph.microsoft.com/GroupMember.Read.All
+          user_property_mappings:
+            - !KeyOf mapping-entra-user-groups
+          group_property_mappings:
+            - !KeyOf mapping-entra-group-name
           provider_type: entraid
           consumer_key: !Env AUTHENTIK_ENTRA_CLIENT_ID
           consumer_secret: !Env AUTHENTIK_ENTRA_CLIENT_SECRET
