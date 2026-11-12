@@ -1,6 +1,7 @@
 ---
 # RGW gateway containment.
-# - Ingress: GitHub Actions runner pods (OpenTofu state access), the
+# - Ingress: runner pods of the prox-ops scale set (gha-runner-scale-set only,
+#   not the per-repo sets; OpenTofu state access), the
 #   envoy-internal gateway pods (s3.homelab0.org route) and this namespace,
 #   on the gateway port only.
 # - Egress: cluster DNS, and the Ceph monitors (3300, 6789) and OSD/MGR range
@@ -19,6 +20,8 @@ spec:
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: github-actions
+            actions.github.com/scale-set-name: gha-runner-scale-set
+            app.kubernetes.io/component: runner
         - matchLabels:
             io.kubernetes.pod.namespace: network
             gateway.envoyproxy.io/owning-gateway-name: envoy-internal
