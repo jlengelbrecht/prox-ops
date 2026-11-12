@@ -3,6 +3,19 @@
   "customManagers": [
     {
       "customType": "regex",
+      "description": "Track Nyctr image release and digest without adding an image tag value",
+      "managerFilePatterns": [
+        "/^kubernetes/apps/security/nyctr/app/helmrelease\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=docker depName=ghcr\\.io/homelab-0/nyctr version=(?<currentValue>v\\d+\\.\\d+\\.\\d+[^\\s]*)\\n\\s*digest:\\s*(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/homelab-0/nyctr",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
       // Process annotated dependencies in non-Kubernetes YAML files
       // NOTE: kubernetes/ files are handled by built-in managers (flux, helm-values, kubernetes)
       // This custom manager only targets files that built-in managers don't process
