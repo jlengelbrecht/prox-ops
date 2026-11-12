@@ -1,0 +1,74 @@
+---
+# The single place to edit users, buckets and bucket policies. The rgw-buckets
+# CronJob reads this on every run, so a merged change applies within the hour.
+#
+# users.txt    uid | display name | credential prefix in the rgw-users Secret
+# buckets.txt  bucket | versioning (Enabled or Suspended) | policy file below
+#
+# Policies use RGW's principal form for users in the default tenant:
+# arn:aws:iam:::user/<uid>. OpenTofu's S3 native lock (use_lockfile) writes
+# <key>.tflock next to the state object, so each tofu user gets
+# Get/Put/DeleteObject on its whole prefix; the lock file falls inside it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rgw-buckets-definition
+  namespace: object-store
+data:
+  users.txt: |
+    provisioner|Bucket provisioner|PROVISIONER
+    tofu-proxmox|OpenTofu state, proxmox|TOFU_PROXMOX
+    tofu-oci|OpenTofu state, oci|TOFU_OCI
+    sync-ro|State sync, read-only|SYNC_RO
+  buckets.txt: |
+    tofu-state|Enabled|tofu-state.policy.json
+  tofu-state.policy.json: |
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "ProxmoxStateObjects",
+          "Effect": "Allow",
+          "Principal": {"AWS": ["arn:aws:iam:::user/tofu-proxmox"]},
+          "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+          "Resource": ["arn:aws:s3:::tofu-state/proxmox/*"]
+        },
+        {
+          "Sid": "ProxmoxStateList",
+          "Effect": "Allow",
+          "Principal": {"AWS": ["arn:aws:iam:::user/tofu-proxmox"]},
+          "Action": ["s3:ListBucket"],
+          "Resource": ["arn:aws:s3:::tofu-state"],
+          "Condition": {"StringLike": {"s3:prefix": ["proxmox/*"]}}
+        },
+        {
+          "Sid": "OciStateObjects",
+          "Effect": "Allow",
+          "Principal": {"AWS": ["arn:aws:iam:::user/tofu-oci"]},
+          "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+          "Resource": ["arn:aws:s3:::tofu-state/oci/*"]
+        },
+        {
+          "Sid": "OciStateList",
+          "Effect": "Allow",
+          "Principal": {"AWS": ["arn:aws:iam:::user/tofu-oci"]},
+          "Action": ["s3:ListBucket"],
+          "Resource": ["arn:aws:s3:::tofu-state"],
+          "Condition": {"StringLike": {"s3:prefix": ["oci/*"]}}
+        },
+        {
+          "Sid": "SyncReadObjects",
+          "Effect": "Allow",
+          "Principal": {"AWS": ["arn:aws:iam:::user/sync-ro"]},
+          "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+          "Resource": ["arn:aws:s3:::tofu-state/*"]
+        },
+        {
+          "Sid": "SyncReadBucket",
+          "Effect": "Allow",
+          "Principal": {"AWS": ["arn:aws:iam:::user/sync-ro"]},
+          "Action": ["s3:ListBucket", "s3:ListBucketVersions", "s3:GetBucketVersioning"],
+          "Resource": ["arn:aws:s3:::tofu-state"]
+        }
+      ]
+    }

@@ -1,0 +1,85 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rgw-buckets-scripts
+  namespace: object-store
+data:
+  users.sh: |
+    #!/bin/bash
+    # Step A: converge RGW users and their S3 keys. Prints names and outcomes only.
+    # radosgw-admin stdout is discarded because "user info" prints keys.
+    set -euo pipefail
+    RGW=(radosgw-admin --id rgw.k8s --keyring /etc/ceph-keyring/keyring)
+
+    while IFS='|' read -r uid display prefix; do
+      [[ -z "${uid}" || "${uid}" == \#* ]] && continue
+      akvar="${prefix}_ACCESS_KEY"
+      skvar="${prefix}_SECRET_KEY"
+      AK="${!akvar:-}"
+      SK="${!skvar:-}"
+      if [[ -z "${AK}" || -z "${SK}" ]]; then
+        echo "user ${uid}: credentials missing from the environment"
+        exit 1
+      fi
+      export AK SK
+
+      if ! info="$("${RGW[@]}" user info --uid="${uid}" 2>/dev/null)"; then
+        "${RGW[@]}" user create --uid="${uid}" --display-name="${display}" \
+          --access-key="${AK}" --secret-key="${SK}" >/dev/null
+        echo "user ${uid}: created"
+        continue
+      fi
+
+      "${RGW[@]}" user modify --uid="${uid}" --display-name="${display}" >/dev/null
+
+      # Remove any S3 key that is not exactly the declared pair (rotation),
+      # then add the declared pair if it is not there yet.
+      have="$(jq -r '[.keys[] | select(.access_key == env.AK and .secret_key == env.SK)] | length' <<<"${info}")"
+      while IFS= read -r stale; do
+        [[ -z "${stale}" ]] && continue
+        "${RGW[@]}" key rm --uid="${uid}" --key-type=s3 --access-key="${stale}" >/dev/null
+        echo "user ${uid}: removed a stale key"
+      done < <(jq -r '.keys[] | select((.access_key == env.AK and .secret_key == env.SK) | not) | .access_key' <<<"${info}")
+      if [[ "${have}" == "0" ]]; then
+        "${RGW[@]}" key create --uid="${uid}" --key-type=s3 \
+          --access-key="${AK}" --secret-key="${SK}" >/dev/null
+        echo "user ${uid}: key set"
+      else
+        echo "user ${uid}: present"
+      fi
+    done </config/users.txt
+  buckets.sh: |
+    #!/bin/bash
+    # Step B: converge buckets, versioning and policies as the provisioner user.
+    # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY come from the environment.
+    set -euo pipefail
+    cat >/tmp/aws-config <<'CFG'
+    [default]
+    region = us-east-1
+    s3 =
+        addressing_style = path
+    CFG
+    export AWS_CONFIG_FILE=/tmp/aws-config
+    export AWS_SHARED_CREDENTIALS_FILE=/dev/null
+    S3=(aws --endpoint-url "${S3_ENDPOINT}" s3api)
+
+    while IFS='|' read -r bucket versioning policy; do
+      [[ -z "${bucket}" || "${bucket}" == \#* ]] && continue
+      if "${S3[@]}" head-bucket --bucket "${bucket}" >/dev/null 2>&1; then
+        echo "bucket ${bucket}: present"
+      else
+        "${S3[@]}" create-bucket --bucket "${bucket}" >/dev/null
+        echo "bucket ${bucket}: created"
+      fi
+      "${S3[@]}" put-bucket-versioning --bucket "${bucket}" \
+        --versioning-configuration "Status=${versioning}"
+      got="$("${S3[@]}" get-bucket-versioning --bucket "${bucket}" --query Status --output text)"
+      if [[ "${got}" != "${versioning}" ]]; then
+        echo "bucket ${bucket}: versioning is ${got}, wanted ${versioning}"
+        exit 1
+      fi
+      echo "bucket ${bucket}: versioning ${got}"
+      "${S3[@]}" put-bucket-policy --bucket "${bucket}" --policy "file:///config/${policy}"
+      echo "bucket ${bucket}: policy applied"
+    done </config/buckets.txt

@@ -1,0 +1,154 @@
+---
+# Converges the RGW users and buckets declared in definition.yaml, then exits.
+# A CronJob rather than a Job: a completed Job is immutable, so a changed
+# definition or a Renovate image bump would break the Kustomization, while a
+# CronJob template can change freely. Hourly runs also repair drift.
+# Init container: radosgw-admin creates users and keys. Main container: the S3
+# API creates buckets, versioning and policies. Either failing fails the run.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rgw-buckets
+  namespace: object-store
+spec:
+  schedule: "23 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: rgw-buckets
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 167
+            runAsGroup: 167
+            fsGroup: 167
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: users
+              # Same image as the gateway (Ceph 20.2.x; keep them in step).
+              image: quay.io/ceph/ceph:v20.2.4@sha256:6bb1c8a42fbc0bf87938946990b65174466997bc11c31eb5a323225a779fd8f9
+              command: ["/bin/bash", "/scripts/users.sh"]
+              envFrom:
+                - secretRef:
+                    name: rgw-users
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/ceph
+                  readOnly: true
+                - name: keyring
+                  mountPath: /etc/ceph-keyring
+                  readOnly: true
+                - name: definition
+                  mountPath: /config
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: var-lib-ceph
+                  mountPath: /var/lib/ceph
+                - name: var-log-ceph
+                  mountPath: /var/log/ceph
+                - name: run-ceph
+                  mountPath: /run/ceph
+                - name: tmp
+                  mountPath: /tmp
+          containers:
+            - name: buckets
+              image: amazon/aws-cli:2.39.7@sha256:bba262340b0bc7cbf3a8a48612531263b56f4b280c4f036a07816af1b271bda0
+              command: ["/bin/bash", "/scripts/buckets.sh"]
+              env:
+                - name: S3_ENDPOINT
+                  value: http://rgw.object-store.svc.cluster.local
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: rgw-users
+                      key: PROVISIONER_ACCESS_KEY
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: rgw-users
+                      key: PROVISIONER_SECRET_KEY
+                - name: HOME
+                  value: /tmp
+                - name: AWS_PAGER
+                  value: ""
+                - name: AWS_RETRY_MODE
+                  value: standard
+                - name: AWS_MAX_ATTEMPTS
+                  value: "3"
+                # Send checksums only where the API requires them.
+                - name: AWS_REQUEST_CHECKSUM_CALCULATION
+                  value: when_required
+                - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+                  value: when_required
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              volumeMounts:
+                - name: definition
+                  mountPath: /config
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: config
+              configMap:
+                name: rgw-config
+            - name: keyring
+              secret:
+                secretName: rgw-keyring
+                defaultMode: 0440
+            - name: definition
+              configMap:
+                name: rgw-buckets-definition
+            - name: scripts
+              configMap:
+                name: rgw-buckets-scripts
+            - name: var-lib-ceph
+              emptyDir:
+                sizeLimit: 100Mi
+            - name: var-log-ceph
+              emptyDir:
+                sizeLimit: 100Mi
+            - name: run-ceph
+              emptyDir:
+                sizeLimit: 10Mi
+            - name: tmp
+              emptyDir:
+                sizeLimit: 100Mi
