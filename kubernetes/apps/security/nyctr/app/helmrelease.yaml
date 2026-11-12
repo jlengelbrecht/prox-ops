@@ -10,11 +10,27 @@ apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
   name: nyctr
+  labels:
+    app.kubernetes.io/name: nyctr
 spec:
   chartRef:
     kind: OCIRepository
     name: nyctr
   interval: 1h
+  timeout: 10m
+  # A database outage can outlast Helm's readiness wait. Retry the same
+  # release rather than rolling back before a successful revision exists.
+  install:
+    crds: CreateReplace
+    strategy:
+      name: RetryOnFailure
+      retryInterval: 2m
+  upgrade:
+    cleanupOnFail: true
+    crds: CreateReplace
+    strategy:
+      name: RetryOnFailure
+      retryInterval: 2m
   # The source egress rules in networkpolicy.yaml are toFQDNs, which only
   # enforce correctly when the pod asks cluster DNS for the exact policed
   # name; the default ndots:5 search path would try
@@ -37,9 +53,10 @@ spec:
   values:
     image:
       repository: ghcr.io/homelab-0/nyctr
-      # v0.1.0-alpha.3 (amd64 and arm64), from that release's notes. This
-      # digest and the chart tag in ocirepository.yaml move together. The
-      # chart takes a digest or a tag, never both.
+      # The chart takes a digest or a tag, never both. Renovate tracks the
+      # image tag in this comment and keeps the runtime image digest pinned.
+      # Chart and image updates share a manual-review PR; check versions match.
+      # renovate: datasource=docker depName=ghcr.io/homelab-0/nyctr version=v0.1.0-alpha.3
       digest: sha256:b1e25070da31e31aad58be1fc63fe89a2ed4d1ba4520e464645cbc54677a846f
 
     # Two addresses, one application.

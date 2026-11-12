@@ -1000,6 +1000,35 @@
       minimumReleaseAge: '7 days',
     },
     {
+      "description": "Track Nyctr chart and image releases together for manual review",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/homelab-0/nyctr",
+        "ghcr.io/homelab-0/charts/nyctr"
+      ],
+      "matchFileNames": [
+        "kubernetes/apps/security/nyctr/app/helmrelease.yaml",
+        "kubernetes/apps/security/nyctr/app/ocirepository.yaml"
+      ],
+      "enabled": true,
+      "versioning": "semver",
+      "allowedVersions": "/^v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/",
+      "ignoreUnstable": false,
+      "respectLatest": false,
+      "pinDigests": true,
+      "groupName": "Nyctr release",
+      "groupSlug": "nyctr-release",
+      "automerge": false,
+      "ignoreTests": false,
+      "minimumReleaseAge": "0",
+      "dependencyDashboardApproval": false,
+      "addLabels": [
+        "nyctr"
+      ]
+    },
+    {
       description: 'Groschen is manual by default; only production main digest updates below opt in',
       matchDatasources: ['docker'],
       matchPackageNames: ['ghcr.io/jlengelbrecht/groschen'],
