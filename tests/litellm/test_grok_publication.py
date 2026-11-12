@@ -1,4 +1,5 @@
 """Mocked release-state tests; no Docker or registry access."""
+import ast
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,19 @@ CANDIDATE = "sha256:" + "a" * 64
 EXISTING = "sha256:" + "c" * 64
 
 
+def required_checks():
+    """Read the runner's direct check names without executing it."""
+    tree = ast.parse((ROOT / "tests/litellm/run_grok_pinned_image.py").read_text())
+    assignment = next(node for node in tree.body
+                      if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "CHECKS"
+                              for target in node.targets))
+    return ast.literal_eval(assignment.value)
+
+
+CHECKS = required_checks()
+
+
 def evidence(digest, revision=SHA, source=SOURCE, passed=True):
     """Build independent inspection and qualification evidence for one digest."""
     ref = f"{IMAGE}@{digest}"
@@ -28,7 +42,7 @@ def evidence(digest, revision=SHA, source=SOURCE, passed=True):
                "published_digest": ref, "child_exit_zero": passed,
                "nonalias_paired_equal": passed,
                "generic_denial_paired_equal": passed,
-               "checks": {f"check_{number}": "pass" for number in range(26)}}
+               "checks": {check: "pass" for check in CHECKS}}
     return inspection, receipt
 
 
@@ -42,8 +56,23 @@ class PublicationStateTests(unittest.TestCase):
                             candidate_receipt, SHA, SOURCE, **extra)
 
     def test_first_publication_uses_qualified_candidate(self):
+        self.assertEqual(len(CHECKS), 35)
         self.assertEqual(self.plan({"state": "absent", "digest": None}),
                          {"action": "create", "digest": CANDIDATE})
+
+    def test_stale_and_incomplete_direct_check_receipts_are_denied(self):
+        inspection, receipt = evidence(CANDIDATE)
+        for checks in (
+            dict(list(receipt["checks"].items())[:26]),
+            {name: result for name, result in receipt["checks"].items()
+             if name != "installed_import"},
+            {**receipt["checks"], "unexpected_check": "pass"},
+            {**receipt["checks"], "installed_import": "fail"},
+        ):
+            with self.subTest(checks=checks):
+                with self.assertRaises(state.Denied):
+                    state.qualified(IMAGE, CANDIDATE, inspection,
+                                    {**receipt, "checks": checks}, SHA, SOURCE)
 
     def test_writer_creates_commit_tag_between_lookup_and_push(self):
         decision = self.plan({"state": "absent", "digest": None})
