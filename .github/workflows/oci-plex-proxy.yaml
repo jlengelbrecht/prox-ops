@@ -188,7 +188,11 @@ jobs:
             echo "::error::Could not read the in-cluster store; not pushing"
             exit 1
           fi
-          if [ -n "$existing" ]; then
+          # With a remote backend, "state pull" prints an empty state document
+          # (no resources) when nothing has been written yet. A document that
+          # tracks resources means the store already holds state. If the store
+          # holds a different lineage, "state push" refuses on its own.
+          if [ -n "$existing" ] && ! jq -e '(.resources | length) == 0' <<<"$existing" > /dev/null; then
             echo "::error::The in-cluster store already holds state for this root; refusing to overwrite it"
             exit 1
           fi
@@ -265,7 +269,10 @@ jobs:
         if: inputs.action != 'migrate'
         working-directory: ${{ env.WORKING_DIR }}
         run: |
-          if [ -z "$(tofu state pull 2>/dev/null)" ]; then
+          # A store that was never written to returns nothing, or an empty
+          # state document. Both mean "not migrated yet". This also refuses a
+          # deploy after a destroy; the step goes away once the move is done.
+          if ! tofu state pull 2>/dev/null | jq -e '(.lineage // "") != "" and (.resources | length) > 0' > /dev/null; then
             echo "::error::No state found in the in-cluster store (or it could not be read). Run this workflow with action 'migrate' first."
             exit 1
           fi
