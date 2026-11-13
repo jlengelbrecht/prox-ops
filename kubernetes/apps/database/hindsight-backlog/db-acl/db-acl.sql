@@ -43,7 +43,7 @@ BEGIN
  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname !~ '^pg_' AND NOT rolsuper
             AND rolname NOT IN ('hindsight', 'hindsight_backlog_metrics', 'app', 'streaming_replica',
                                 'toolhive', 'zabbix', 'glycemicgpt_bot', 'paperclip', 'groschen',
-                                'openbao', 'nyctr', 'cnpg_metrics_exporter')) THEN
+                                'openbao', 'nyctr', 'cnpg_metrics_exporter', 'langfuse')) THEN
   RAISE EXCEPTION 'a role outside the declared roster exists';
  END IF;
  -- The reader too: a backend that already created its temp namespace keeps
