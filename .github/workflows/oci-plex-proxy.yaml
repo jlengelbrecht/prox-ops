@@ -213,12 +213,18 @@ jobs:
           jq -rn --slurpfile a "$RUNNER_TEMP/old.tfstate" --slurpfile b "$RUNNER_TEMP/new.tfstate" '
             def norm: {lineage, outputs, resources: [.resources[] | .instances |= map(del(.identity_schema_version, .identity))]};
             def leaves: paths(type as $t | ($t != "object" and $t != "array") or length == 0);
-            def at($p): try getpath($p) catch "unreachable";
+            # A key that is missing is not the same as a key that is null.
+            def at($p): try (getpath($p[:-1]) as $o
+              | if ($o | type) == "object" and ($o | has($p[-1]) | not) then "missing" else getpath($p) end)
+              catch "unreachable";
             ($a[0] | norm) as $x | ($b[0] | norm) as $y
             | [($x | leaves), ($y | leaves)] | unique
             | map(select(. as $p | ($x | at($p)) != ($y | at($p))))
-            | map(map(tostring) | join("."))
-            | .[]
+            | map(map(tostring) | join(".")) as $d
+            # Whole-document equality decides the result; the paths only explain it.
+            | if $x == $y then empty
+              elif ($d | length) == 0 then "(the copies differ, but not in any single field this check can name)"
+              else $d[] end
           ' > "$RUNNER_TEMP/state-diff.txt"
           if [ -s "$RUNNER_TEMP/state-diff.txt" ]; then
             echo "::error::The state in the in-cluster store differs from the AWS state in $(wc -l < "$RUNNER_TEMP/state-diff.txt") field(s)"
