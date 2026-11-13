@@ -144,6 +144,9 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          # This step leaves the checkout, where the mise shims have no
+          # version to resolve. Put the real binaries first on PATH.
+          PATH="$(dirname "$(mise which tofu)"):$(dirname "$(mise which jq)"):$PATH"
           mkdir -p "$RUNNER_TEMP/old-backend"
           cd "$RUNNER_TEMP/old-backend"
           cat > backend.tf <<'EOF'
@@ -205,6 +208,9 @@ jobs:
         if: inputs.action == 'migrate'
         run: |
           set -uo pipefail
+          # This step leaves the checkout, where the mise shims have no
+          # version to resolve. Put the real binaries first on PATH.
+          PATH="$(dirname "$(mise which tofu)"):$PATH"
           mkdir -p "$RUNNER_TEMP/lock-test"
           cd "$RUNNER_TEMP/lock-test"
           cat > main.tf <<'EOF'
