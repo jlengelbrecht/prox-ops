@@ -1,0 +1,186 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: langfuse
+  namespace: ai
+spec:
+  interval: 30m
+  timeout: 15m
+  chart:
+    spec:
+      chart: langfuse
+      version: 2.2.4
+      sourceRef:
+        kind: HelmRepository
+        name: langfuse
+        namespace: ai
+  values:
+    langfuse:
+      salt:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: SALT
+      encryptionKey:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: ENCRYPTION_KEY
+      features:
+        telemetryEnabled: false
+      replicas: 1
+      web:
+        replicas: 1
+        service:
+          port: 3000
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 2Gi
+      worker:
+        replicas: 1
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 2Gi
+      nextauth:
+        url: https://langfuse.homelab0.org
+        secret:
+          secretKeyRef:
+            name: langfuse-secrets
+            key: NEXTAUTH_SECRET
+      auth:
+        # The chart renders disableUsernamePassword as AUTH_DISABLE_USERNAME_PASSWORD.
+        disableUsernamePassword: true
+      additionalEnv:
+        - name: AUTH_AUTHENTIK_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: OIDC_CLIENT_ID
+        - name: AUTH_AUTHENTIK_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: OIDC_CLIENT_SECRET
+        - name: AUTH_AUTHENTIK_ISSUER
+          value: https://authentik.homelab0.org/application/o/langfuse/
+        - name: DATABASE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: POSTGRES_USER
+        - name: LANGFUSE_INIT_ORG_ID
+          value: homelab
+        - name: LANGFUSE_INIT_ORG_NAME
+          value: Homelab
+        - name: LANGFUSE_INIT_PROJECT_ID
+          value: litellm
+        - name: LANGFUSE_INIT_PROJECT_NAME
+          value: LiteLLM
+        - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: LANGFUSE_PUBLIC_KEY
+        - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: LANGFUSE_SECRET_KEY
+        - name: LANGFUSE_DEFAULT_ORG_ID
+          value: homelab
+        - name: LANGFUSE_DEFAULT_ORG_ROLE
+          value: OWNER
+        - name: LANGFUSE_DEFAULT_PROJECT_ID
+          value: litellm
+        - name: LANGFUSE_DEFAULT_PROJECT_ROLE
+          value: OWNER
+    postgresql:
+      deploy: false
+      host: postgres-rw.database.svc.cluster.local
+      port: 5432
+      args: sslmode=require
+      auth:
+        username: ""
+        existingSecret: langfuse-secrets
+        secretKeys:
+          userPasswordKey: POSTGRES_PASSWORD
+          adminPasswordKey: POSTGRES_PASSWORD
+    s3:
+      deploy: false
+      storageProvider: s3
+      bucket: langfuse
+      region: us-east-1
+      endpoint: http://rgw.object-store.svc.cluster.local
+      forcePathStyle: true
+      accessKeyId:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: S3_ACCESS_KEY
+      secretAccessKey:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: S3_SECRET_KEY
+      eventUpload:
+        bucket: langfuse
+        region: us-east-1
+        endpoint: http://rgw.object-store.svc.cluster.local
+        forcePathStyle: true
+      mediaUpload:
+        bucket: langfuse
+        region: us-east-1
+        endpoint: http://rgw.object-store.svc.cluster.local
+        forcePathStyle: true
+      batchExport:
+        enabled: true
+        bucket: langfuse
+        region: us-east-1
+        endpoint: http://rgw.object-store.svc.cluster.local
+        forcePathStyle: true
+    clickhouse:
+      deploy: true
+      crdCheck: false
+      auth:
+        username: default
+        existingSecret: langfuse-secrets
+        existingSecretKey: CLICKHOUSE_PASSWORD
+      cluster:
+        replicas: 1
+        storage:
+          size: 50Gi
+          className: ceph-block
+        resources:
+          requests:
+            cpu: "1"
+            memory: 4Gi
+          limits:
+            memory: 8Gi
+      keeper:
+        enabled: true
+        replicas: 1
+        storage:
+          size: 5Gi
+          className: ceph-block
+    redis:
+      deploy: true
+      auth:
+        existingSecret: langfuse-valkey
+        existingSecretPasswordKey: password
+        usersExistingSecret: langfuse-valkey
+      image:
+        # renovate: datasource=docker depName=docker.io/valkey/valkey
+        tag: 8.0.12
+      dataStorage:
+        enabled: true
+        requestedSize: 2Gi
+        className: ceph-block
+      valkeyConfig: |
+        maxmemory-policy noeviction
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
