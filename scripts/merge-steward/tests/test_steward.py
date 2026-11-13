@@ -557,12 +557,18 @@ def test_permission_lookup_403_fails_closed_and_keeps_the_label():
 
 
 def test_missing_required_check_holds_then_needs_human_after_the_deadline(monkeypatch):
-    partial = [r for r in REQUIRED if r["name"] != "Labeler"] + [recorded()]
+    partial = [r for r in REQUIRED if r["name"] != "Security Gate"] + [recorded()]
     verdict, check, _ = run(renovate_pr(), runs=partial)
-    assert verdict == "hold" and "Labeler" in check["output"]["title"]
+    assert verdict == "hold" and "Security Gate" in check["output"]["title"]
     monkeypatch.setattr(steward, "head_age_minutes", lambda *a: POLICY["required_checks_deadline_minutes"] + 1)
     verdict, check, _ = run(renovate_pr(), runs=partial)
-    assert verdict == "needs-human" and "Labeler (never reported)" in check["output"]["title"]
+    assert verdict == "needs-human" and "Security Gate (never reported)" in check["output"]["title"]
+
+
+def test_labeler_is_not_a_required_check():
+    assert "Labeler" not in {c["name"] for c in POLICY["required_checks"]}
+    without_labeler = [r for r in REQUIRED if r["name"] != "Labeler"] + [recorded()]
+    assert run(renovate_pr(), runs=without_labeler)[0] != "hold"
 
 
 def test_required_check_from_another_app_does_not_count():
