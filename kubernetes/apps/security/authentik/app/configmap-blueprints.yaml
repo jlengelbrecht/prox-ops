@@ -252,6 +252,32 @@ data:
           include_claims_in_id_token: true
           sub_mode: hashed_user_id
           issuer_mode: per_provider
+      # Langfuse - Direct OIDC
+      - model: authentik_providers_oauth2.oauth2provider
+        id: provider-langfuse
+        identifiers:
+          name: Langfuse
+        attrs:
+          name: Langfuse
+          client_id: !Env AUTHENTIK_LANGFUSE_CLIENT_ID
+          client_secret: !Env AUTHENTIK_LANGFUSE_CLIENT_SECRET
+          client_type: confidential
+          authorization_flow: !Context authorization_flow
+          invalidation_flow: !Context invalidation_flow
+          signing_key: !Context signing_key
+          property_mappings:
+            - !Context scope_email
+            - !Context scope_profile
+            - !Context scope_openid
+          redirect_uris:
+            - matching_mode: strict
+              url: https://langfuse.homelab0.org/api/auth/callback/authentik
+          access_code_validity: minutes=1
+          access_token_validity: minutes=5
+          refresh_token_validity: days=30
+          include_claims_in_id_token: true
+          sub_mode: hashed_user_id
+          issuer_mode: per_provider
       # Grafana - Direct OIDC, confidential client with PKCE. The client id is
       # a public identifier, declared literally here and in the Grafana
       # HelmRelease; the secret comes from the 1Password item grafana-oidc.
@@ -608,6 +634,16 @@ data:
           group: AI
           policy_engine_mode: all
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "LiteLLM"]]
+      - model: authentik_core.application
+        id: app-langfuse
+        identifiers:
+          slug: langfuse
+        attrs:
+          name: Langfuse
+          slug: langfuse
+          group: AI
+          policy_engine_mode: all
+          provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "Langfuse"]]
       # Forward Auth Applications
       - model: authentik_core.application
         id: app-n8n
@@ -1022,6 +1058,9 @@ data:
         attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
       - model: authentik_policies.policybinding
         identifiers: {target: !Find [authentik_core.application, [slug, lite-llm]], order: 90}
+        attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
+      - model: authentik_policies.policybinding
+        identifiers: {target: !Find [authentik_core.application, [slug, langfuse]], order: 90}
         attrs: {policy: !KeyOf policy-deny-ungranted-ai-browser-test, enabled: true}
       - model: authentik_policies.policybinding
         identifiers: {target: !Find [authentik_core.application, [slug, n8n]], order: 90}
