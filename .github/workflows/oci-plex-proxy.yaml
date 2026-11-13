@@ -170,6 +170,7 @@ jobs:
           echo "Pulled from AWS: serial $(jq -r '.serial' "$RUNNER_TEMP/old.tfstate"), $(jq -r '.resources | length' "$RUNNER_TEMP/old.tfstate") resources"
 
       - name: Initialize OpenTofu
+        id: init
         working-directory: ${{ env.WORKING_DIR }}
         run: |
           # Provider versions come from the committed .terraform.lock.hcl
@@ -189,27 +190,48 @@ jobs:
             exit 1
           fi
           # With a remote backend, "state pull" prints an empty state document
-          # (no resources) when nothing has been written yet. A document that
-          # tracks resources means the store already holds state. If the store
-          # holds a different lineage, "state push" refuses on its own.
-          if [ -n "$existing" ] && ! jq -e '(.resources | length) == 0' <<<"$existing" > /dev/null; then
-            echo "::error::The in-cluster store already holds state for this root; refusing to overwrite it"
+          # (no resources) when nothing has been written yet. If the store
+          # already tracks resources, an earlier run has pushed: do not push
+          # again, only compare what is there with the AWS copy.
+          if [ -z "$existing" ] || jq -e '(.resources | length) == 0' <<<"$existing" > /dev/null; then
+            unset existing
+            tofu state push "$RUNNER_TEMP/old.tfstate"
+            echo "Pushed the AWS state to the in-cluster store"
+          elif jq -e '.resources | length > 0' <<<"$existing" > /dev/null; then
+            unset existing
+            echo "The in-cluster store already holds state for this root; not pushing, comparing only"
+          else
+            echo "::error::The in-cluster store returned something that is not a state document; not pushing"
             exit 1
           fi
-          unset existing
-          tofu state push "$RUNNER_TEMP/old.tfstate"
           tofu state pull > "$RUNNER_TEMP/new.tfstate"
+
           # OpenTofu drops Terraform's resource identity fields when it rewrites
-          # the state; it does not use them. Compare everything else.
-          norm() { jq -S '{lineage, outputs, resources: [.resources[] | .instances |= map(del(.identity_schema_version, .identity))]}' "$1" | sha256sum; }
-          if [ "$(norm "$RUNNER_TEMP/old.tfstate")" != "$(norm "$RUNNER_TEMP/new.tfstate")" ]; then
-            echo "::error::The state read back from the in-cluster store differs from the AWS state"
+          # the state; it does not use them. Compare everything else, and report
+          # where the two copies differ by field path only. Values stay out of
+          # the log: the state holds private keys.
+          jq -rn --slurpfile a "$RUNNER_TEMP/old.tfstate" --slurpfile b "$RUNNER_TEMP/new.tfstate" '
+            def norm: {lineage, outputs, resources: [.resources[] | .instances |= map(del(.identity_schema_version, .identity))]};
+            def leaves: paths(type as $t | ($t != "object" and $t != "array") or length == 0);
+            def at($p): try getpath($p) catch "unreachable";
+            ($a[0] | norm) as $x | ($b[0] | norm) as $y
+            | [($x | leaves), ($y | leaves)] | unique
+            | map(select(. as $p | ($x | at($p)) != ($y | at($p))))
+            | map(map(tostring) | join("."))
+            | .[]
+          ' > "$RUNNER_TEMP/state-diff.txt"
+          if [ -s "$RUNNER_TEMP/state-diff.txt" ]; then
+            echo "::error::The state in the in-cluster store differs from the AWS state in $(wc -l < "$RUNNER_TEMP/state-diff.txt") field(s)"
+            echo "Field paths that differ (first 60, values not shown):"
+            head -60 "$RUNNER_TEMP/state-diff.txt"
+            rm -f "$RUNNER_TEMP/state-diff.txt"
             exit 1
           fi
+          rm -f "$RUNNER_TEMP/state-diff.txt"
           echo "State moved: lineage, outputs and resources match the AWS copy. The AWS copy is unchanged."
 
       - name: Check state locking on the in-cluster store (migrate)
-        if: inputs.action == 'migrate'
+        if: ${{ !cancelled() && inputs.action == 'migrate' && steps.init.outcome == 'success' }}
         run: |
           set -uo pipefail
           # This step leaves the checkout, where the mise shims have no
@@ -366,10 +388,18 @@ jobs:
           # SECURITY: Suppress detailed plan output to prevent secret leakage
           # user_data contains base64-encoded cloud-init with WireGuard/TLS private keys
           # Save full plan to file, show only summary in logs
-          tofu plan -input=false -out=tfplan > /tmp/tfplan.txt 2>&1
-          PLAN_EXIT=$?
+          PLAN_EXIT=0
+          tofu plan -no-color -input=false -out=tfplan > /tmp/tfplan.txt 2>&1 || PLAN_EXIT=$?
           # Show only high-level summary (exclude any lines with sensitive patterns)
-          grep -E '^(Plan:|No changes|Error:|Warning:|Terraform will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
+          grep -E '^(Plan:|No changes|Error:|Warning:|OpenTofu will perform)' /tmp/tfplan.txt | grep -v -E '(user_data|base64|PRIVATE KEY)' | head -20 || true
+          if [ "$PLAN_EXIT" -eq 0 ]; then
+            # Count of planned actions and the addresses they apply to. No values.
+            echo "Planned actions:"
+            tofu show -json tfplan | jq -r '
+              [.resource_changes[]? | {a: (.change.actions | join("+")), r: .address}]
+              | (group_by(.a) | map("  \(.[0].a): \(length)") | .[]),
+                (map(select(.a != "no-op")) | .[] | "  \(.a)  \(.r)")'
+          fi
           echo "Plan saved to tfplan file"
           echo "::endgroup::"
           exit $PLAN_EXIT
