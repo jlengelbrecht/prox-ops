@@ -11,6 +11,37 @@ spec:
   values:
     controllers:
       wireguard-gateway:
+        # The tunnel config forwards everything that arrives on wg0. Narrow that
+        # inside the pod, so the NetworkPolicy is not the only thing keeping the
+        # VPS on Plex. The rules are inserted at the top of each chain and stay
+        # for the life of the pod; the accept rules the tunnel config appends
+        # later are never reached.
+        initContainers:
+          forward-filter:
+            image:
+              repository: lscr.io/linuxserver/wireguard
+              # renovate: datasource=docker depName=lscr.io/linuxserver/wireguard
+              tag: 1.0.20250521
+            command:
+              - /bin/sh
+              - -ec
+              - |
+                # Plex LoadBalancer address the tunnel config DNATs to
+                PLEX=10.20.81.100
+                # Stateless on purpose: these matches are the ones the tunnel
+                # config already uses, so no extra kernel module is needed.
+                iptables -I FORWARD 1 -i wg0 -p tcp -d "$PLEX" --dport 32400 -j ACCEPT
+                # Replies to the VPS. No source match: the reply's source address
+                # depends on where in the path address translation is undone.
+                iptables -I FORWARD 2 -o wg0 -p tcp --sport 32400 -j ACCEPT
+                iptables -I FORWARD 3 -j DROP
+                # Nothing from the tunnel may talk to the pod itself
+                iptables -I INPUT 1 -i wg0 -j DROP
+                iptables -S FORWARD
+                iptables -S INPUT
+            securityContext:
+              capabilities:
+                add: [NET_ADMIN]
         containers:
           app:
             image:
@@ -117,20 +148,27 @@ spec:
         type: hostPath
         hostPath: /dev/net/tun
         hostPathType: CharDevice
-        globalMounts:
-          - path: /dev/net/tun
+        advancedMounts:
+          wireguard-gateway:
+            app:
+              - path: /dev/net/tun
       # Config from encrypted secret
       config:
         enabled: true
         type: secret
         name: wireguard-gateway-config
-        globalMounts:
-          - path: /config/wg_confs/wg0.conf
-            subPath: wg0.conf
-            readOnly: true
+        # Only the tunnel container gets the key
+        advancedMounts:
+          wireguard-gateway:
+            app:
+              - path: /config/wg_confs/wg0.conf
+                subPath: wg0.conf
+                readOnly: true
 
     # Pod options - sysctls (net.ipv4.ip_forward, net.ipv4.conf.all.src_valid_mark) set by
     # linuxserver/wireguard entrypoint; privileged mode required on Talos to allow runtime sysctl changes
     defaultPodOptions:
       # Never evicted when a large model wakes (kubernetes/apps/kube-system/priorityclasses).
       priorityClassName: homelab-critical
+      # The gateway never talks to the Kubernetes API
+      automountServiceAccountToken: false
