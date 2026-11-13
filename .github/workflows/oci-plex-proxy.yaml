@@ -408,6 +408,12 @@ jobs:
             echo "::error::No valid public IP, cannot wait for the VPS"
             exit 1
           fi
+          if [ "$NGINX_ENABLED" != "true" ]; then
+            # Direct mode has no HTTPS endpoint to poll; keep the fixed wait.
+            echo "nginx proxy disabled: waiting 450 seconds for cloud-init"
+            sleep 450
+            exit 0
+          fi
           H=streaming.homelab0.org
           echo "Polling https://$H/web/index.html every 15s, for up to 20 minutes"
           for i in $(seq 1 80); do
