@@ -60,11 +60,12 @@ spec:
               protocol: TCP
             - port: "10443"
               protocol: TCP
-    # Sources: the NextDNS API for now. DNS-derived L3/L4 only: Cilium admits
+    # Sources: NextDNS and Ubiquiti cloud APIs. DNS-derived L3/L4 only: Cilium admits
     # the addresses learned for these exact names on TCP443. Nyctr itself
     # verifies the certificate and sends a key only to its source's host.
     - toFQDNs:
         - matchName: api.nextdns.io
+        - matchName: api.ui.com
       toPorts:
         - ports:
             - port: "443"

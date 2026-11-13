@@ -135,18 +135,20 @@ spec:
         allowedGroups:
           - nyctr-members
 
-    # Sources. In the console a source is connected by the environment name,
-    # never the key. NextDNS uses its own fixed origin, so it needs no entry
-    # under connectors.hosts; every other source does, because a key is sent
-    # only to a host listed there. Certificates are always verified and no CA
-    # bundle is mounted, so a host must present a publicly trusted
-    # certificate for its name. The UniFi console and Proxmox follow once
-    # their hostnames, as resolved from inside the cluster, are settled.
+    # Sources use environment references, never API keys in the console.
+    # UniFi uses Ubiquiti's cloud API with publicly trusted TLS; no local
+    # console hostname or additional CA bundle is required.
     connectors:
+      hosts:
+        - api.nextdns.io
+        - api.ui.com
       secrets:
         - envName: NYCTR_CONNECTOR_SECRET_NEXTDNS
           existingSecret: nyctr-connectors
           key: nextdns-api-key
+        - envName: NYCTR_CONNECTOR_SECRET_UNIFI
+          existingSecret: nyctr-connectors
+          key: unifi-api-key
 
     # Read-only: Nyctr changes nothing at any source. Later, one integration
     # at a time: [nextdns] first, then [nextdns, unifi_network].
