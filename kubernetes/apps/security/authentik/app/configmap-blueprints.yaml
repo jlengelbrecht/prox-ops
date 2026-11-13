@@ -644,6 +644,21 @@ data:
           group: AI
           policy_engine_mode: all
           provider: !Find [authentik_providers_oauth2.oauth2provider, [name, "Langfuse"]]
+      - model: authentik_policies_expression.expressionpolicy
+        id: policy-langfuse-access
+        identifiers:
+          name: langfuse-access
+        attrs:
+          expression: |
+            return ak_is_group_member(request.user, name="authentik Admins")
+      - model: authentik_policies.policybinding
+        id: binding-langfuse-access
+        identifiers:
+          target: !Find [authentik_core.application, [slug, langfuse]]
+          order: 0
+        attrs:
+          policy: !KeyOf policy-langfuse-access
+          enabled: true
       # Forward Auth Applications
       - model: authentik_core.application
         id: app-n8n
