@@ -1,0 +1,300 @@
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: langfuse-web
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: langfuse
+      app.kubernetes.io/instance: langfuse
+      app.kubernetes.io/component: web
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            clickhouse.com/role: clickhouse-server
+            clickhouse.com/cluster: langfuse
+      toPorts:
+        - ports:
+            - port: "8123"
+              protocol: TCP
+            - port: "9000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: redis
+            app.kubernetes.io/instance: langfuse
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: object-store
+            app.kubernetes.io/name: rgw
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: network
+            gateway.envoyproxy.io/owning-gateway-name: envoy-internal
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "10443"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: langfuse-worker
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: langfuse
+      app.kubernetes.io/instance: langfuse
+      app.kubernetes.io/component: worker
+  # Nothing connects to the worker.
+  ingress:
+    - {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            cnpg.io/cluster: postgres
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            clickhouse.com/role: clickhouse-server
+            clickhouse.com/cluster: langfuse
+      toPorts:
+        - ports:
+            - port: "8123"
+              protocol: TCP
+            - port: "9000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: redis
+            app.kubernetes.io/instance: langfuse
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: object-store
+            app.kubernetes.io/name: rgw
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: langfuse-clickhouse
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      clickhouse.com/role: clickhouse-server
+      clickhouse.com/cluster: langfuse
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: langfuse
+            app.kubernetes.io/instance: langfuse
+            app.kubernetes.io/component: web
+        - matchLabels:
+            app.kubernetes.io/name: langfuse
+            app.kubernetes.io/instance: langfuse
+            app.kubernetes.io/component: worker
+      toPorts:
+        - ports:
+            - port: "8123"
+              protocol: TCP
+            - port: "9000"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            clickhouse.com/role: clickhouse-server
+            clickhouse.com/cluster: langfuse
+      toPorts:
+        - ports:
+            - port: "9009"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            app.kubernetes.io/name: clickhouse-operator
+      toPorts:
+        - ports:
+            - port: "9001"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            clickhouse.com/role: clickhouse-server
+            clickhouse.com/cluster: langfuse
+      toPorts:
+        - ports:
+            - port: "9009"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            clickhouse.com/role: clickhouse-keeper
+            app.kubernetes.io/instance: langfuse-keeper
+      toPorts:
+        - ports:
+            - port: "2181"
+              protocol: TCP
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: langfuse-keeper
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      clickhouse.com/role: clickhouse-keeper
+      app.kubernetes.io/instance: langfuse-keeper
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            clickhouse.com/role: clickhouse-server
+            clickhouse.com/cluster: langfuse
+        - matchLabels:
+            clickhouse.com/role: clickhouse-keeper
+            app.kubernetes.io/instance: langfuse-keeper
+      toPorts:
+        - ports:
+            - port: "2181"
+              protocol: TCP
+            - port: "9234"
+              protocol: TCP
+            - port: "9123"
+              protocol: TCP
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: database
+            app.kubernetes.io/name: clickhouse-operator
+      toPorts:
+        - ports:
+            - port: "2181"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            clickhouse.com/role: clickhouse-keeper
+            app.kubernetes.io/instance: langfuse-keeper
+      toPorts:
+        - ports:
+            - port: "9234"
+              protocol: TCP
+
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: langfuse-valkey
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/instance: langfuse
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: langfuse
+            app.kubernetes.io/instance: langfuse
+            app.kubernetes.io/component: web
+        - matchLabels:
+            app.kubernetes.io/name: langfuse
+            app.kubernetes.io/instance: langfuse
+            app.kubernetes.io/component: worker
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
