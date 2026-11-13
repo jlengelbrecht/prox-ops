@@ -22,8 +22,30 @@ data:
     tofu-proxmox|OpenTofu state, proxmox|TOFU_PROXMOX|-1
     tofu-oci|OpenTofu state, oci|TOFU_OCI|-1
     sync-ro|State sync, read-only|SYNC_RO|-1
+    langfuse|Langfuse object storage|LANGFUSE|-1
   buckets.txt: |
     tofu-state|Enabled|tofu-state.policy.json
+    langfuse|Enabled|langfuse.policy.json
+  langfuse.policy.json: |
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "LangfuseObjects",
+          "Effect": "Allow",
+          "Principal": {"AWS": ["arn:aws:iam:::user/langfuse"]},
+          "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+          "Resource": ["arn:aws:s3:::langfuse/*"]
+        },
+        {
+          "Sid": "LangfuseList",
+          "Effect": "Allow",
+          "Principal": {"AWS": ["arn:aws:iam:::user/langfuse"]},
+          "Action": ["s3:ListBucket"],
+          "Resource": ["arn:aws:s3:::langfuse"]
+        }
+      ]
+    }
   tofu-state.policy.json: |
     {
       "Version": "2012-10-17",
