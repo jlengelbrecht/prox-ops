@@ -161,6 +161,23 @@ def reused_review(gh, pr, files, policy):
     return None
 
 
+def advisory_stands(gh, pr, files, policy):
+    """True when the advisory comment already on the PR reviewed this exact diff.
+
+    Same fingerprint as a Renovate reuse, so a rebase or an update-branch merge that leaves the
+    base...head changes as they were needs no new review. Only a comment by the steward app's
+    bot user counts, and only when it is the one such comment. Any doubt is False: a new review.
+    """
+    fp = diff_fingerprint(pr, files)
+    if not fp:
+        return False
+    login = policy["steward_app_login"]
+    ours = [c for c in gh.paginate(f"issues/{pr['number']}/comments")
+            if (c.get("user") or {}).get("login") == login and (c.get("user") or {}).get("type") == "Bot"
+            and (c.get("body") or "").startswith(fold.ADVISORY_MARKER)]
+    return len(ours) == 1 and review.advisory_reusable(ours[0]["body"], fp, policy)
+
+
 def llm_stage(gh, pr, files, policy, review_dir, age_minutes):
     """Return (Stage, result to show and record, or None).
 
@@ -201,7 +218,9 @@ def post_advisory(gh, app_gh, pr, review_dir, policy, dry_run):
                 placed = publish.post_inline(gh, app_gh, number, sha, anchored, result["findings"], policy)
             except GitHubError as err:  # the summary below still carries every finding
                 print(f"PR #{number}: inline comments failed: {err}", file=sys.stderr)
-            publish.upsert_advisory(gh, app_gh, number, fold.advisory(result, sha, placed), policy)
+            body = fold.advisory(result, sha, placed)
+            record = review.advisory_record(diff_fingerprint(pr, files), result)
+            publish.upsert_advisory(gh, app_gh, number, f"{body}\n{record}" if record else body, policy)
     except GitHubError as err:  # advisory: the PR's verdict must not depend on this comment
         print(f"PR #{number}: advisory comment failed: {err}", file=sys.stderr)
     except Exception as err:  # evaluate calls this before it publishes the verdict; never let it stop that

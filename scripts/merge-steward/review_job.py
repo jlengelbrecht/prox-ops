@@ -1,7 +1,8 @@
 """The two steward steps of the AI review job, on either side of PR-Agent.
 
 gate runs first, on a GitHub-hosted runner, and says whether a rebase left the diff of an
-earlier review unchanged, so that no steward runner is queued for nothing. prepare decides
+earlier review unchanged, so that no steward runner is queued for nothing. advisory-gate asks
+the same of the advisory comment on any other same-repo PR. prepare decides
 whether the PR gets a review and writes the context file. collect reads what PR-Agent wrote
 and leaves one filtered result file for the evaluate job. None of them sees the model key.
 
@@ -103,6 +104,14 @@ def gate(gh, args, policy):
     return steward.reused_review(gh, pr, gh.paginate(f"pulls/{args.pr}/files"), policy) is not None
 
 
+def advisory_gate(gh, args, policy):
+    """True when the advisory comment on this PR already covers this head's diff. Any doubt is False."""
+    pr = gh.get(f"pulls/{args.pr}")
+    if pr["state"] != "open" or pr["head"]["sha"] != args.sha or review.mode(pr, policy) != review.ADVISORY:
+        return False
+    return steward.advisory_stands(gh, pr, gh.paginate(f"pulls/{args.pr}/files"), policy)
+
+
 def prepare(gh, args, policy):
     """Write the context file. Returns the outputs for the workflow."""
     pr = gh.get(f"pulls/{args.pr}")
@@ -145,7 +154,7 @@ def collect(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("step", choices=["gate", "prepare", "collect"])
+    parser.add_argument("step", choices=["gate", "advisory-gate", "prepare", "collect"])
     parser.add_argument("--out", help="the review directory")
     parser.add_argument("--pr", type=int)
     parser.add_argument("--sha", default="", help="the commit under review")
@@ -153,16 +162,17 @@ def main(argv=None):
     parser.add_argument("--status", default="failed", help="what happened to PR-Agent")
     parser.add_argument("--model", default="", help="the model alias PR-Agent used")
     args = parser.parse_args(argv)
-    if args.step != "gate" and not args.out:
+    if args.step not in ("gate", "advisory-gate") and not args.out:
         parser.error("--out is required")
     if args.step == "collect":
         collect(args)
         return 0
     policy = classify.load_policy(steward.POLICY)
     gh = GitHub(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
-    if args.step == "gate":
+    if args.step in ("gate", "advisory-gate"):
+        check = gate if args.step == "gate" else advisory_gate
         try:
-            outputs = {"reuse": "true" if gate(gh, args, policy) else "false"}
+            outputs = {"reuse": "true" if check(gh, args, policy) else "false"}
         except Exception as err:  # never blocks a review; prints no response body
             print(f"gate failed: {type(err).__name__}", file=sys.stderr)
             outputs = {"reuse": "false"}
