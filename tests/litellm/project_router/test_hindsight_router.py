@@ -32,6 +32,7 @@ EXISTING_MODELS = {
     "project-claude-native": "1cf770905b8784293cf9de335cb0a19003742aa52f24daa4462bdb2574f32d00",
     "project-router": "f22493c577ac6f53932f786a83e156bbe0aae54d47e0fcbb7bf379649067c657",
     "dub-text": "a12ef119fa0f159d77abbe712b348a78e40dceee9a4af10813539bf95a972205",
+    "deepseek-v4.1-flash": "2609dcaaed9e24715d679e341aecd62a0b7af19f400483e2bf820b5ca2f77559",
 }
 EXISTING_SETTINGS = {
     "router_settings": "266ab498cbfa7bf99840061fdca8950dc9b229702e7eb3f3003232ba289658db",
