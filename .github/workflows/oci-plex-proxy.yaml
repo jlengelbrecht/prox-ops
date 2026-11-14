@@ -17,7 +17,7 @@ on:
           - destroy
           - recreate
           - plan-only
-          - migrate
+          - verify
         default: plan-only
       availability_domain:
         description: 'Availability Domain index (0=AD-1, 1=AD-2, 2=AD-3)'
@@ -48,7 +48,7 @@ jobs:
     runs-on: gha-runner-scale-set
     # Holds the state passphrase and the S3 keys of the tofu-oci user.
     environment: oci
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     # Resolve inputs with fallbacks for scheduled runs
     env:
@@ -132,43 +132,6 @@ jobs:
             "aqua:opentofu/opentofu" = "${{ env.TOFU_VERSION }}"
             "aqua:jqlang/jq" = "1.8.1"
 
-      # =======================================================================
-      # MIGRATE (one time): copy the state from the old AWS bucket into the
-      # in-cluster store. Removed once a normal run has passed on the new store.
-      # =======================================================================
-      - name: Pull state from the old AWS bucket (migrate)
-        if: inputs.action == 'migrate'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        run: |
-          set -euo pipefail
-          umask 077
-          # This step leaves the checkout, where the mise shims have no
-          # version to resolve. Put the real binaries first on PATH.
-          PATH="$(dirname "$(mise which tofu)"):$(dirname "$(mise which jq)"):$PATH"
-          mkdir -p "$RUNNER_TEMP/old-backend"
-          cd "$RUNNER_TEMP/old-backend"
-          cat > backend.tf <<'EOF'
-          terraform {
-            backend "s3" {
-              bucket       = "prox-ops-terraform-state"
-              key          = "oci/terraform.tfstate"
-              region       = "us-east-2"
-              encrypt      = true
-              use_lockfile = true
-            }
-          }
-          EOF
-          # The old state is not client-side encrypted, so read it without TF_ENCRYPTION.
-          env -u TF_ENCRYPTION tofu init -input=false > /dev/null
-          env -u TF_ENCRYPTION tofu state pull > "$RUNNER_TEMP/old.tfstate"
-          if ! jq -e '.version == 4 and (.resources | length) > 0' "$RUNNER_TEMP/old.tfstate" > /dev/null; then
-            echo "::error::The state pulled from AWS is empty or not a version 4 state file"
-            exit 1
-          fi
-          echo "Pulled from AWS: serial $(jq -r '.serial' "$RUNNER_TEMP/old.tfstate"), $(jq -r '.resources | length' "$RUNNER_TEMP/old.tfstate") resources"
-
       - name: Initialize OpenTofu
         id: init
         working-directory: ${{ env.WORKING_DIR }}
@@ -176,136 +139,34 @@ jobs:
           # Provider versions come from the committed .terraform.lock.hcl
           tofu init -input=false
 
-      - name: Push state to the in-cluster store (migrate)
-        if: inputs.action == 'migrate'
-        working-directory: ${{ env.WORKING_DIR }}
-        run: |
-          set -euo pipefail
-          umask 077
-          cleanup() { shred -u "$RUNNER_TEMP/old.tfstate" "$RUNNER_TEMP/new.tfstate" 2>/dev/null || true; }
-          trap cleanup EXIT
-
-          if ! existing=$(tofu state pull 2>/dev/null); then
-            echo "::error::Could not read the in-cluster store; not pushing"
-            exit 1
-          fi
-          # With a remote backend, "state pull" prints an empty state document
-          # (no resources) when nothing has been written yet. If the store
-          # already tracks resources, an earlier run has pushed: do not push
-          # again, only compare what is there with the AWS copy.
-          if [ -z "$existing" ] || jq -e '(.resources | length) == 0' <<<"$existing" > /dev/null; then
-            unset existing
-            tofu state push "$RUNNER_TEMP/old.tfstate"
-            echo "Pushed the AWS state to the in-cluster store"
-          elif jq -e '.resources | length > 0' <<<"$existing" > /dev/null; then
-            unset existing
-            echo "The in-cluster store already holds state for this root; not pushing, comparing only"
-          else
-            echo "::error::The in-cluster store returned something that is not a state document; not pushing"
-            exit 1
-          fi
-          tofu state pull > "$RUNNER_TEMP/new.tfstate"
-
-          # OpenTofu drops Terraform's resource identity fields when it rewrites
-          # the state; it does not use them. Compare everything else, and report
-          # where the two copies differ by field path only. Values stay out of
-          # the log: the state holds private keys.
-          jq -rn --slurpfile a "$RUNNER_TEMP/old.tfstate" --slurpfile b "$RUNNER_TEMP/new.tfstate" '
-            def norm: {lineage, outputs, resources: [.resources[] | .instances |= map(del(.identity_schema_version, .identity))]};
-            def leaves: paths(type as $t | ($t != "object" and $t != "array") or length == 0);
-            # A key that is missing is not the same as a key that is null.
-            def at($p): try (getpath($p[:-1]) as $o
-              | if ($o | type) == "object" and ($o | has($p[-1]) | not) then "missing" else getpath($p) end)
-              catch "unreachable";
-            ($a[0] | norm) as $x | ($b[0] | norm) as $y
-            | [($x | leaves), ($y | leaves)] | unique
-            | map(select(. as $p | ($x | at($p)) != ($y | at($p))))
-            | map(map(tostring) | join(".")) as $d
-            # Whole-document equality decides the result; the paths only explain it.
-            | if $x == $y then empty
-              elif ($d | length) == 0 then "(the copies differ, but not in any single field this check can name)"
-              else $d[] end
-          ' > "$RUNNER_TEMP/state-diff.txt"
-          if [ -s "$RUNNER_TEMP/state-diff.txt" ]; then
-            echo "::error::The state in the in-cluster store differs from the AWS state in $(wc -l < "$RUNNER_TEMP/state-diff.txt") field(s)"
-            echo "Field paths that differ (first 60, values not shown):"
-            head -60 "$RUNNER_TEMP/state-diff.txt"
-            rm -f "$RUNNER_TEMP/state-diff.txt"
-            exit 1
-          fi
-          rm -f "$RUNNER_TEMP/state-diff.txt"
-          echo "State moved: lineage, outputs and resources match the AWS copy. The AWS copy is unchanged."
-
-      - name: Check state locking on the in-cluster store (migrate)
-        if: ${{ !cancelled() && inputs.action == 'migrate' && steps.init.outcome == 'success' }}
-        run: |
-          set -uo pipefail
-          # This step leaves the checkout, where the mise shims have no
-          # version to resolve. Put the real binaries first on PATH.
-          PATH="$(dirname "$(mise which tofu)"):$PATH"
-          mkdir -p "$RUNNER_TEMP/lock-test"
-          cd "$RUNNER_TEMP/lock-test"
-          cat > main.tf <<'EOF'
-          terraform {
-            backend "s3" {
-              bucket               = "tofu-state"
-              key                  = "oci/_test/lock.tfstate"
-              workspace_key_prefix = "oci/env:"
-              region               = "us-east-1"
-              use_lockfile         = true
-              endpoints = {
-                s3 = "http://rgw.object-store.svc.cluster.local"
-              }
-              use_path_style              = true
-              skip_credentials_validation = true
-              skip_region_validation      = true
-              skip_requesting_account_id  = true
-              skip_metadata_api_check     = true
-              skip_s3_checksum            = true
-            }
-          }
-          resource "terraform_data" "slow" {
-            input = timestamp()
-            provisioner "local-exec" {
-              command = "sleep 25"
-            }
-          }
-          EOF
-          tofu init -input=false > /dev/null || { echo "::error::lock test: init failed"; exit 1; }
-          tofu apply -auto-approve -input=false > apply.log 2>&1 &
-          FIRST=$!
-          sleep 10
-          if tofu plan -input=false -lock-timeout=0s > plan.log 2>&1; then
-            echo "::error::A second run was not refused while the first held the lock"
-            wait $FIRST || true
-            exit 1
-          fi
-          if ! grep -qiE 'lock' plan.log; then
-            echo "::error::The second run failed, but not with a lock error"
-            wait $FIRST || true
-            exit 1
-          fi
-          echo "Second run refused with a lock error"
-          wait $FIRST || { echo "::error::The first run failed"; exit 1; }
-          tofu plan -input=false -lock-timeout=0s > /dev/null 2>&1 || { echo "::error::The lock was not released"; exit 1; }
-          echo "Lock released after the first run"
-          tofu destroy -auto-approve -input=false > /dev/null 2>&1 || true
-
-      # Until the state has been migrated, the new store has no state for this
-      # root, and a deploy or recreate would build a second copy of everything.
+      # A recreate, plan or destroy against a store with no state would build
+      # a second copy of everything or do nothing useful. An empty S3 key
+      # returns an empty state document, so check for tracked resources.
       - name: Refuse to run without state
-        if: inputs.action != 'migrate'
         working-directory: ${{ env.WORKING_DIR }}
         run: |
-          # A store that was never written to returns nothing, or an empty
-          # state document. Both mean "not migrated yet". This also refuses a
-          # deploy after a destroy; the step goes away once the move is done.
-          if ! tofu state pull 2>/dev/null | jq -e '(.lineage // "") != "" and (.resources | length) > 0' > /dev/null; then
-            echo "::error::No state found in the in-cluster store (or it could not be read). Run this workflow with action 'migrate' first."
+          # A store that cannot be read is not the same as an empty one.
+          if ! STATE=$(tofu state pull 2>/dev/null); then
+            echo "::error::Could not read the state store; not running '$ACTION'"
             exit 1
           fi
+          if jq -e '(.resources | length) > 0' <<<"$STATE" > /dev/null 2>&1; then
+            exit 0
+          fi
+          if [ -n "$STATE" ] && ! jq -e 'type == "object"' <<<"$STATE" > /dev/null 2>&1; then
+            echo "::error::The state store returned something that is not a state document"
+            exit 1
+          fi
+          unset STATE
+          if [ "$ACTION" = "deploy" ]; then
+            echo "::warning::The state store holds no resources for this root. Deploying from scratch."
+            exit 0
+          fi
+          echo "::error::No state found in the in-cluster store (or it could not be read). See the restore runbook before running '$ACTION'."
+          exit 1
 
       - name: Clear stale state locks
+        if: (inputs.action || 'recreate') != 'verify'
         working-directory: ${{ env.WORKING_DIR }}
         continue-on-error: true
         env:
@@ -361,7 +222,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Terraform Plan
-        if: (inputs.action || 'recreate') != 'destroy'
+        if: (inputs.action || 'recreate') != 'destroy' && (inputs.action || 'recreate') != 'verify'
         working-directory: ${{ env.WORKING_DIR }}
         env:
           TF_VAR_oci_tenancy_ocid: ${{ secrets.OCI_TENANCY_OCID }}
@@ -488,7 +349,7 @@ jobs:
           exit $APPLY_EXIT
 
       - name: Get Outputs
-        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
+        if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate' || (inputs.action || 'recreate') == 'verify'
         id: outputs
         working-directory: ${{ env.WORKING_DIR }}
         env:
@@ -533,37 +394,46 @@ jobs:
           echo "outputs_retrieved=true" >> $GITHUB_OUTPUT
 
       # =======================================================================
-      # Wait for VPS Boot - Fixed delay for cloud-init completion
-      # NOTE: SSH from GitHub Actions is blocked by firewall (ssh_allowed_cidrs)
-      # No SSH check is performed; we wait for cloud-init then test public endpoint
+      # Wait for the VPS: poll until Plex answers through nginx and the tunnel.
+      # cloud-init upgrades packages, installs nginx and WireGuard and requests
+      # the certificate; that has taken 7 to 13 minutes. SSH is not open to the
+      # runner, so the public endpoint is the only signal.
       # =======================================================================
       - name: Wait for VPS Boot
         if: (inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate'
+        env:
+          PUBLIC_IP: ${{ steps.outputs.outputs.public_ip }}
         run: |
-          PUBLIC_IP="${{ steps.outputs.outputs.public_ip }}"
-
-          # Validate PUBLIC_IP before proceeding
-          if [ "$PUBLIC_IP" = "N/A" ] || [ -z "$PUBLIC_IP" ]; then
-            echo "Error: Public IP not available, cannot wait for VPS boot"
+          if ! [[ "$PUBLIC_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            echo "::error::No valid public IP, cannot wait for the VPS"
             exit 1
           fi
-
-          echo "Waiting for VPS to boot..."
-          echo "Note: SSH port check skipped - GitHub Actions IPs are not in firewall allowlist"
-          echo "This is expected behavior for security (ssh_allowed_cidrs restricts access)"
-
-          # Wait for cloud-init to complete
-          # Timing analysis (from actual VPS boot logs):
-          #   - package_update_upgrade_install: ~390s (apt update + install wireguard, nginx)
-          #   - Custom scripts (WireGuard, nginx config): ~7s
-          #   - Total cloud-init: ~406s (~6.8 min)
-          #   - Boot to services ready: ~450s (~7.5 min)
-          # Using 450s to ensure nginx and WireGuard are fully operational
-          echo "Waiting 450 seconds (7.5 min) for cloud-init to complete..."
-          echo "  - apt update/install: ~390s (~6.5 min)"
-          echo "  - WireGuard/nginx setup: ~10s"
-          sleep 450
-          echo "Wait complete - proceeding to public endpoint test"
+          if [ "$NGINX_ENABLED" != "true" ]; then
+            # Direct mode has no HTTPS endpoint to poll; keep the fixed wait.
+            echo "nginx proxy disabled: waiting 450 seconds for cloud-init"
+            sleep 450
+            exit 0
+          fi
+          H=streaming.homelab0.org
+          echo "Polling https://$H/web/index.html for up to 20 minutes"
+          # SECONDS counts from the start of this step. Each request and each
+          # pause is capped by the time left, so the deadline holds even if
+          # the VPS accepts connections and then stalls.
+          DEADLINE=1200
+          CODE=none
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            LEFT=$((DEADLINE - SECONDS))
+            T=$((LEFT < 15 ? LEFT : 15))
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time "$T" --resolve "$H:443:$PUBLIC_IP" "https://$H/web/index.html" 2>/dev/null) || true
+            if [ "$CODE" = "200" ]; then
+              echo "Plex answered through the proxy after about ${SECONDS}s"
+              exit 0
+            fi
+            LEFT=$((DEADLINE - SECONDS))
+            [ "$LEFT" -gt 0 ] && sleep "$((LEFT < 15 ? LEFT : 15))"
+          done
+          echo "::error::The proxy did not serve Plex within 20 minutes (last HTTP code: ${CODE:-none})"
+          exit 1
 
       # =======================================================================
       # Cloudflare DNS Management - Update/Create A record
@@ -662,83 +532,101 @@ jobs:
       # Public Endpoint Test - The REAL health check
       # Tests full user path: User -> Cloudflare -> VPS (nginx) -> WireGuard -> Plex
       # =======================================================================
-      - name: Public Endpoint Test
-        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '') && steps.dns.outputs.dns_updated == 'true'
+      - name: Post-rebuild checks
+        if: ((inputs.action || 'recreate') == 'deploy' || (inputs.action || 'recreate') == 'recreate' || (inputs.action || 'recreate') == 'verify') && (inputs.enable_nginx_proxy == true || inputs.enable_nginx_proxy == '')
         id: public_test
         env:
           PUBLIC_IP: ${{ steps.outputs.outputs.public_ip }}
         run: |
-          echo "Testing public endpoint: https://streaming.homelab0.org"
+          set -uo pipefail
           # This job runs inside the cluster, where the name may resolve to an
-          # internal address. Pin it to the VPS public IP so the test goes out
-          # to the VPS and back through the tunnel.
-          # (The record is DNS-only, so this is the address public DNS returns.)
-          if ! echo "$PUBLIC_IP" | grep -qE '^[0-9]{1,3}(\.[0-9]{1,3}){3}$'; then
+          # internal address. Pin it to the VPS public IP so every probe goes out
+          # to the VPS and, for Plex paths, back through the tunnel.
+          if ! [[ "$PUBLIC_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
             echo "::error::No valid public IP to test against"
             exit 1
           fi
-          RESOLVE="streaming.homelab0.org:443:$PUBLIC_IP"
+          H=streaming.homelab0.org
+          R=(--resolve "$H:443:$PUBLIC_IP" --resolve "$H:80:$PUBLIC_IP")
+          code() { curl -s -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 "$@" 2>/dev/null || true; }
 
-          # Wait for DNS propagation (Cloudflare is fast, but give it a moment)
-          echo "Waiting 15 seconds for DNS propagation..."
-          sleep 15
+          FAILED=0
+          {
+            echo "## Post-rebuild checks"
+            echo ""
+            echo "| Check | Expected | Got | Result |"
+            echo "|-------|----------|-----|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          check() { # name, expected (regex), got
+            local result="pass"
+            if ! echo "$3" | grep -qE "^($2)$"; then result="FAIL"; FAILED=$((FAILED + 1)); fi
+            echo "$result  $1: expected $2, got $3"
+            echo "| $1 | $2 | $3 | $result |" >> "$GITHUB_STEP_SUMMARY"
+          }
 
-          PUBLIC_ENDPOINT_OK="false"
-          NGINX_OK="false"
-          PLEX_OK="false"
+          # Plex reachable through nginx and the tunnel
+          WEB=$(code "${R[@]}" "https://$H/web/index.html")
+          check "Plex web app over HTTPS" "200" "$WEB"
+          check "HTTP redirects to HTTPS" "301" "$(code "${R[@]}" "http://$H/")"
 
-          # Test 1: Check if nginx is responding (any response = nginx is up)
-          echo "Test 1: Checking nginx responsiveness..."
-          for attempt in 1 2 3 4 5; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 --resolve "$RESOLVE" "https://streaming.homelab0.org/" 2>/dev/null || echo "000")
-            if [ "$HTTP_CODE" != "000" ] && [ "$HTTP_CODE" != "502" ] && [ "$HTTP_CODE" != "503" ] && [ "$HTTP_CODE" != "504" ] && [ "$HTTP_CODE" != "523" ] && [ "$HTTP_CODE" != "524" ]; then
-              NGINX_OK="true"
-              echo "Nginx responding (HTTP $HTTP_CODE)"
-              break
-            else
-              echo "Attempt $attempt/5: nginx not ready (HTTP $HTTP_CODE), waiting 20s..."
-              sleep 20
-            fi
+          # Nothing but Plex, and Plex enforces its own sign-in. nginx only
+          # checks that a token is present, so a made-up token must be turned
+          # away by Plex itself.
+          check "Server identity endpoint blocked" "403" "$(code "${R[@]}" "https://$H/identity")"
+          check "Library API without a token" "401|403" "$(code "${R[@]}" "https://$H/library/sections")"
+          check "Library API with a made-up token" "401" "$(code "${R[@]}" -H 'X-Plex-Token: not-a-real-token' "https://$H/library/sections")"
+          check "Accounts API with a made-up token" "401" "$(code "${R[@]}" -H 'X-Plex-Token: not-a-real-token' "https://$H/accounts")"
+
+          # Requests that do not name the site are dropped
+          check "HTTPS by IP address" "000" "$(code -k "https://$PUBLIC_IP/")"
+          check "HTTPS with an unknown host name" "000" "$(code -k --resolve "unknown.invalid:443:$PUBLIC_IP" "https://unknown.invalid/")"
+          check "HTTP with an unknown host name" "000|444" "$(code -H 'Host: unknown.invalid' "http://$PUBLIC_IP/")"
+
+          # TLS: certificate chain is verified by every probe above that omits -k
+          # Offer TLS 1.1 only. A local TLS library that will not offer it fails
+          # the same way as a server that refuses it, so read curl's error: only
+          # a protocol alert from the server counts as a refusal.
+          OLD_TLS=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 --ciphers 'DEFAULT@SECLEVEL=0' --tls-max 1.1 "${R[@]}" "https://$H/web/index.html" 2>&1) || true
+          case "$OLD_TLS" in
+            *"alert protocol version"*|*"alert handshake failure"*) OLD_TLS="refused by server" ;;
+            *"no protocols available"*|*"not supported"*|*"unsupported"*) OLD_TLS="not tested" ;;
+            *000) OLD_TLS="failed without a server alert" ;;
+            *) OLD_TLS="accepted" ;;
+          esac
+          if [ "$OLD_TLS" = "not tested" ]; then
+            echo "skip  TLS 1.1 and older refused: this runner cannot offer TLS 1.1"
+            echo "| TLS 1.1 and older refused | refused by server | not tested: the runner cannot offer TLS 1.1 | skipped |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            check "TLS 1.1 and older refused" "refused by server" "$OLD_TLS"
+          fi
+          check "TLS 1.2 accepted" "200" "$(code --tlsv1.2 --tls-max 1.2 "${R[@]}" "https://$H/web/index.html")"
+          check "TLS 1.3 accepted" "200" "$(code --tlsv1.3 "${R[@]}" "https://$H/web/index.html")"
+          EXPIRY=$(curl -sv -o /dev/null --connect-timeout 10 --max-time 30 "${R[@]}" "https://$H/web/index.html" 2>&1 | sed -n 's/^\* *expire date: //p' | head -1)
+          if [ -n "$EXPIRY" ] && EXP_S=$(date -d "$EXPIRY" +%s 2>/dev/null); then
+            DAYS=$(( (EXP_S - $(date +%s)) / 86400 ))
+            check "Certificate valid for at least 14 more days" "yes" "$([ "$DAYS" -ge 14 ] && echo yes || echo "no, $DAYS days")"
+          else
+            check "Certificate valid for at least 14 more days" "yes" "could not read the expiry date"
+          fi
+
+          # Ports. The runner leaves through the home address, so SSH and
+          # WireGuard may be allowed from here; they are not judged.
+          port() { timeout 5 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$PUBLIC_IP" "$1" 2>/dev/null && echo open || echo closed; }
+          check "Port 80" "open" "$(port 80)"
+          check "Port 443" "open" "$(port 443)"
+          # Port 53 is left out: the home router answers DNS for every address.
+          for p in 21 23 25 111 3306 5432 6379 8080 8443 9090 32400; do
+            check "Port $p" "closed" "$(port "$p")"
           done
 
-          # Test 2: Check if Plex is accessible through the full chain
-          if [ "$NGINX_OK" = "true" ]; then
-            echo "Test 2: Checking Plex accessibility..."
-            for attempt in 1 2 3; do
-              if curl -s --connect-timeout 10 --max-time 30 --resolve "$RESOLVE" "https://streaming.homelab0.org/identity" 2>/dev/null | grep -q "MediaContainer"; then
-                PLEX_OK="true"
-                PUBLIC_ENDPOINT_OK="true"
-                echo "Plex is accessible via public endpoint"
-                break
-              else
-                echo "Attempt $attempt/3: Plex not responding, waiting 15s..."
-                sleep 15
-              fi
-            done
+          echo "nginx_ok=$([ "$WEB" != "000" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "plex_ok=$([ "$WEB" = "200" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::$FAILED post-rebuild check(s) failed"
+            exit 1
           fi
-
-          if [ "$PUBLIC_ENDPOINT_OK" = "false" ]; then
-            echo ""
-            echo "Public endpoint not fully operational. Possible causes:"
-            if [ "$NGINX_OK" = "false" ]; then
-              echo "  - nginx is still starting (cloud-init not complete)"
-              echo "  - Cloudflare cannot reach origin (error 523)"
-            else
-              echo "  - WireGuard tunnel not established with K8s cluster"
-              echo "  - Plex pod not running or not accessible"
-              echo "  - K8s WireGuard gateway pod may need restart (kubectl rollout restart -n network deploy/wireguard-gateway)"
-            fi
-          fi
-
-          # Emit warning if endpoint not operational (visible in Actions UI)
-          if [ "$PUBLIC_ENDPOINT_OK" = "false" ]; then
-            echo "::warning::Public endpoint is not fully operational - check WireGuard tunnel and K8s connectivity"
-          fi
-
-          # Export results
-          echo "nginx_ok=$NGINX_OK" >> $GITHUB_OUTPUT
-          echo "plex_ok=$PLEX_OK" >> $GITHUB_OUTPUT
-          echo "public_endpoint_ok=$PUBLIC_ENDPOINT_OK" >> $GITHUB_OUTPUT
+          echo "All post-rebuild checks passed"
 
       # =======================================================================
       # Deployment Summary - Security-conscious status report
@@ -803,9 +691,7 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ DNS-only mode (Cloudflare ToS compliant for video streaming)" >> $GITHUB_STEP_SUMMARY
             echo "- ✅ Let's Encrypt TLS certificate (auto-renewed)" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ Port 32400: Closed (traffic via nginx reverse proxy)" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ SSH: Restricted to configured CIDRs" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ WireGuard: Restricted to configured CIDRs" >> $GITHUB_STEP_SUMMARY
+            echo "- Port, TLS and Plex sign-in results are in the post-rebuild checks table above" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "> **Note**: DNS-only mode exposes VPS IP but is required for Cloudflare ToS compliance with video streaming." >> $GITHUB_STEP_SUMMARY
           else
@@ -823,11 +709,3 @@ jobs:
           echo "The OCI Plex Proxy VM has been destroyed." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "To redeploy, run this workflow with action: **deploy**" >> $GITHUB_STEP_SUMMARY
-
-      # The migrate steps write the plaintext state under RUNNER_TEMP. Remove it
-      # whatever happened above.
-      - name: Remove state copies from the runner
-        if: always()
-        run: |
-          shred -u "$RUNNER_TEMP/old.tfstate" "$RUNNER_TEMP/new.tfstate" 2>/dev/null || true
-          rm -rf "$RUNNER_TEMP/old-backend" "$RUNNER_TEMP/lock-test"
