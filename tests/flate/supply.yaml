@@ -1,0 +1,12 @@
+---
+# Reference-only objects for flate (`--supply`). They stand in for objects that
+# only exist in the cluster, so anything that waits on them can render in CI.
+# They are never rendered or applied, and they carry no data.
+#
+# The repo-runner-sets ResourceSet waits on this Secret, which an ExternalSecret
+# creates in the cluster.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-runner-registration
+  namespace: github-actions
