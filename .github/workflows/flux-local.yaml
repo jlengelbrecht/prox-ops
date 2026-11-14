@@ -211,37 +211,44 @@ jobs:
               -v "$PWD:/github/workspace:ro" -w /github/workspace \
               "ghcr.io/home-operations/flate:${FLATE_VERSION}" "$@"
           }
-          common=(--path kubernetes/flux/cluster --no-progress
+          opts=(--no-progress --supply tests/flate/supply.yaml
             --allow-missing-kinds Secret,CustomResourceDefinition)
+          names=()
+          rows=()
+          trial() {
+            local name="$1" rc=0 start=$SECONDS
+            shift
+            flate "$@" "${opts[@]}" > "$out/$name.out" 2> "$out/$name.err" || rc=$?
+            names+=("$name")
+            rows+=("| $name | $rc | $((SECONDS - start)) |")
+            echo "$name: exit $rc in $((SECONDS - start))s"
+          }
 
-          start=$SECONDS
-          test_rc=0
-          flate test "${common[@]}" > "$out/test.out" 2> "$out/test.err" || test_rc=$?
-          test_secs=$((SECONDS - start))
-
-          start=$SECONDS
-          diff_rc=0
-          flate diff "${common[@]}" --base "origin/${BASE_REF}" -o github \
-            > "$out/diff.out" 2> "$out/diff.err" || diff_rc=$?
-          diff_secs=$((SECONDS - start))
+          trial test test --path kubernetes/flux/cluster
+          # flate looks for changed files inside --path only, so the diff needs a
+          # path that contains kubernetes/apps. Try the candidates side by side.
+          trial diff-kubernetes diff --path kubernetes --base "origin/${BASE_REF}" -o github
+          trial diff-root diff --base "origin/${BASE_REF}" -o github
+          # Temporary: compare against an older commit so the diff has content
+          # even on a pull request that changes no manifests.
+          trial diff-older diff --path kubernetes --base "origin/${BASE_REF}~12" -o github
 
           fence='```'
           {
             echo "## Flate trial"
             echo
-            echo "| Command | Exit code | Seconds |"
+            echo "| Run | Exit code | Seconds |"
             echo "| --- | --- | --- |"
-            echo "| flate test | $test_rc | $test_secs |"
-            echo "| flate diff | $diff_rc | $diff_secs |"
-            for name in test diff; do
+            printf '%s\n' "${rows[@]}"
+            for name in "${names[@]}"; do
               echo
-              echo "### flate $name: output (last 150 lines)"
+              echo "### $name: output (last 150 lines)"
               echo
               echo "$fence"
               tail -n 150 "$out/$name.out" | cut -c1-400
               echo "$fence"
               echo
-              echo "### flate $name: messages (last 80 lines)"
+              echo "### $name: messages (last 80 lines)"
               echo
               echo "$fence"
               tail -n 80 "$out/$name.err" | cut -c1-400
@@ -249,7 +256,6 @@ jobs:
             done
           } > "$out/summary.md" || true
           head -c 900000 "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          echo "flate test exit $test_rc in ${test_secs}s, flate diff exit $diff_rc in ${diff_secs}s"
 
       # The job summary cannot be read through the API, so keep the full output
       # as an artifact for comparing against flux-local.
