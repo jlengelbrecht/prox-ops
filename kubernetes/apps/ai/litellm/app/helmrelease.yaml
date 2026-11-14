@@ -262,6 +262,18 @@ spec:
           secretKeyRef:
             name: litellm-valkey
             key: password
+      - name: LANGFUSE_PUBLIC_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-langfuse
+            key: LANGFUSE_PUBLIC_KEY
+      - name: LANGFUSE_SECRET_KEY
+        valueFrom:
+          secretKeyRef:
+            name: litellm-langfuse
+            key: LANGFUSE_SECRET_KEY
+      - name: LANGFUSE_OTEL_HOST
+        value: "http://langfuse-web.ai.svc.cluster.local:3000"
       # EPIC-022: Lakera AI API key for UI-managed guardrails
       # Used for prompt injection detection via database-managed guardrails
       - name: LAKERA_API_KEY

@@ -231,6 +231,8 @@ data:
           model: "openai/qwen3-4b-instruct"
           api_base: "http://qwen3-4b-dub-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
+          # Record content for this local model.
+          turn_off_message_logging: false
           timeout: 180        # Cold start (~30-60s) plus generation
         model_info:
           description: "KServe Qwen3-4B-Instruct on A2000 (~3GB VRAM, scale-to-zero, ~30-60s cold start)"
@@ -339,6 +341,9 @@ data:
       callbacks:
         - project_router_guard.proxy_handler_instance
         - project_grok_native.proxy_handler_instance
+        - langfuse_otel
+      # Record content only for models that opt in.
+      turn_off_message_logging: true
       # Drop unsupported params instead of erroring
       drop_params: true
       # Forward client headers (the Claude Code login) to the anthropic/* models only

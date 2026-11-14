@@ -123,6 +123,17 @@ spec:
         - ports:
             - port: "6379"
               protocol: TCP
+    # Allow egress to the Langfuse web service for trace export
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: langfuse
+            app.kubernetes.io/instance: langfuse
+            app.kubernetes.io/component: web
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
     # Allow HTTPS egress for Prisma CLI download (first startup only)
     - toEntities:
         - world
