@@ -120,7 +120,14 @@ spec:
       deploy: false
       host: postgres-rw.database.svc.cluster.local
       port: 5432
-      args: sslmode=require
+      # connection_limit sizes the Prisma pool in each of web and worker. The
+      # langfuse role is capped at 20 connections, and Prisma's default pool
+      # is twice the node's core count plus one, so one process on a large
+      # node can take the whole allowance and leave none for the migration a
+      # new web pod runs at start. Four each is 16 when old and new pods of
+      # both deployments overlap in a rolling update, which leaves room for
+      # that migration.
+      args: sslmode=require&connection_limit=4
       auth:
         username: ""
         existingSecret: langfuse-secrets
