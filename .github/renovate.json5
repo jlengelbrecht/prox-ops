@@ -12,7 +12,7 @@
   ],
   dependencyDashboard: true,
   dependencyDashboardTitle: '🤖 Renovate Dashboard 🤖',
-  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flux-local |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Patch and minor updates flow continuously with per-package soak windows and are not held back by the PR limits. Major updates wait here until you tick their box. Check a box to create that PR now.\n\n---\n',
+  dependencyDashboardHeader: '## 🏠 Homelab Dependency Management\n\nThis dashboard tracks all dependencies across the cluster. Updates are organized by category:\n\n| Emoji | Category | Description |\n|-------|----------|-------------|\n| 🎬 | **Media** | Plex, *arr apps, request management |\n| 📚 | **Homelab** | Documentation (BookStack) |\n| 🌐 | **Network** | Ingress, VPN, DNS, Cloudflare |\n| 🔧 | **Core** | Flux, Cilium, CNI, system utilities |\n| 📊 | **Observability** | Prometheus, Grafana, Loki |\n| 💾 | **Storage** | Rook-Ceph |\n| 🔐 | **Security** | Authentik, External Secrets, cert-manager |\n| 🖥️ | **CI/CD** | GitHub Actions, ARC runners, flate |\n| 🎮 | **GPU** | NVIDIA support |\n| 🏠 | **IoT** | Home Assistant |\n| 🤖 | **AI/ML** | Ollama, Open WebUI, LiteLLM, LightRAG |\n| 🔌 | **MCP** | Model Context Protocol servers |\n| 🗄️ | **Cache** | Valkey |\n| 🐘 | **Database** | CloudNative-PG, PostgreSQL |\n| 🛠️ | **Tools** | CLI tools (helm, flux, talos, sops, age) |\n| 🏗️ | **Terraform** | Providers and IaC |\n| 📦 | **Runtime** | Node.js, Python |\n\n**Schedule:** Patch and minor updates flow continuously with per-package soak windows and are not held back by the PR limits. Major updates wait here until you tick their box. Check a box to create that PR now.\n\n---\n',
   dependencyDashboardFooter: '\n---\n\n📚 **Documentation:** [Renovate Docs](https://docs.renovatebot.com/) | ⚙️ **Config:** `.github/renovate.json5`',
   suppressNotifications: [
     'prEditedNotification',
@@ -322,8 +322,7 @@
       matchPackageNames: [
         '/actions-runner/',
         '/gha-runner/',
-        '/flux-local/',
-        '/allenporter/',
+        '/home-operations/flate/',
       ],
     },
     {
@@ -621,13 +620,13 @@
       ],
     },
     {
-      description: 'Wait 3 days for flux-local CI validation tool updates',
+      description: 'Wait 3 days for flate CI validation tool updates',
       minimumReleaseAge: '3 days',
       prBodyNotes: [
-        '🖥️ **CI Validation**: flux-local is a required validation step for all PRs. Test locally with `flux-local test` before merging. Known issue: [#986](https://github.com/allenporter/flux-local/issues/986) affects CloudNative-PG charts.',
+        '🖥️ **CI Validation**: flate renders the cluster for the required Flux Local checks and for the merge steward. Check that the test job and a steward render both pass on this PR before merging.',
       ],
       matchPackageNames: [
-        'ghcr.io/allenporter/flux-local',
+        'ghcr.io/home-operations/flate',
       ],
     },
     {
