@@ -1,0 +1,166 @@
+# Pod Security baseline currently supplies seccomp, AppArmor, procMount, sysctl and
+# capability limits. Do not raise enforce to privileged unless the same change
+# adds equivalent rules to this policy.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-poc-pod-isolation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: factory-poc
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods", "pods/ephemeralcontainers"]
+  validations:
+    - expression: "has(object.spec.hostUsers) && object.spec.hostUsers == false"
+      message: "Pod must set hostUsers to false."
+    - expression: >-
+        (!has(object.spec.hostNetwork) || !object.spec.hostNetwork) &&
+        (!has(object.spec.hostPID) || !object.spec.hostPID) &&
+        (!has(object.spec.hostIPC) || !object.spec.hostIPC)
+      message: "Pod must not enable hostNetwork, hostPID or hostIPC."
+    - expression: >-
+        !has(object.spec.volumes) || object.spec.volumes.all(v,
+          has(v.emptyDir) || has(v.configMap) || has(v.downwardAPI) ||
+          has(v.persistentVolumeClaim) || has(v.ephemeral) ||
+          (has(v.projected) && (!has(v.projected.sources) ||
+            v.projected.sources.all(s, !has(s.serviceAccountToken) && !has(s.podCertificate)))))
+      message: "Volumes must use the allowlist and projected sources must exclude serviceAccountToken and podCertificate."
+    - expression: >-
+        object.spec.containers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.privileged) ||
+          !c.securityContext.privileged) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.privileged) ||
+          !c.securityContext.privileged)) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.privileged) ||
+          !c.securityContext.privileged))
+      message: "Containers, init containers and ephemeral containers must not set privileged true."
+    - expression: >-
+        object.spec.containers.all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort))) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort)))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.ports) || c.ports.all(p, !has(p.hostPort))))
+      message: "Containers, init containers and ephemeral containers must not set hostPort."
+    - expression: >-
+        has(object.spec.automountServiceAccountToken) &&
+        object.spec.automountServiceAccountToken == false
+      message: "Pod must set automountServiceAccountToken to false."
+    - expression: >-
+        object.spec.containers.all(c,
+          (!has(c.livenessProbe) ||
+            ((!has(c.livenessProbe.httpGet) || !has(c.livenessProbe.httpGet.host)) &&
+             (!has(c.livenessProbe.tcpSocket) || !has(c.livenessProbe.tcpSocket.host)))) &&
+          (!has(c.readinessProbe) ||
+            ((!has(c.readinessProbe.httpGet) || !has(c.readinessProbe.httpGet.host)) &&
+             (!has(c.readinessProbe.tcpSocket) || !has(c.readinessProbe.tcpSocket.host)))) &&
+          (!has(c.startupProbe) ||
+            ((!has(c.startupProbe.httpGet) || !has(c.startupProbe.httpGet.host)) &&
+             (!has(c.startupProbe.tcpSocket) || !has(c.startupProbe.tcpSocket.host)))) &&
+          (!has(c.lifecycle) ||
+            ((!has(c.lifecycle.postStart) ||
+              ((!has(c.lifecycle.postStart.httpGet) || !has(c.lifecycle.postStart.httpGet.host)) &&
+               (!has(c.lifecycle.postStart.tcpSocket) || !has(c.lifecycle.postStart.tcpSocket.host)))) &&
+             (!has(c.lifecycle.preStop) ||
+              ((!has(c.lifecycle.preStop.httpGet) || !has(c.lifecycle.preStop.httpGet.host)) &&
+               (!has(c.lifecycle.preStop.tcpSocket) || !has(c.lifecycle.preStop.tcpSocket.host))))))
+        )
+      message: "Container probes and lifecycle hooks must not set httpGet.host or tcpSocket.host."
+    - expression: >-
+        !has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          (!has(c.livenessProbe) ||
+            ((!has(c.livenessProbe.httpGet) || !has(c.livenessProbe.httpGet.host)) &&
+             (!has(c.livenessProbe.tcpSocket) || !has(c.livenessProbe.tcpSocket.host)))) &&
+          (!has(c.readinessProbe) ||
+            ((!has(c.readinessProbe.httpGet) || !has(c.readinessProbe.httpGet.host)) &&
+             (!has(c.readinessProbe.tcpSocket) || !has(c.readinessProbe.tcpSocket.host)))) &&
+          (!has(c.startupProbe) ||
+            ((!has(c.startupProbe.httpGet) || !has(c.startupProbe.httpGet.host)) &&
+             (!has(c.startupProbe.tcpSocket) || !has(c.startupProbe.tcpSocket.host)))) &&
+          (!has(c.lifecycle) ||
+            ((!has(c.lifecycle.postStart) ||
+              ((!has(c.lifecycle.postStart.httpGet) || !has(c.lifecycle.postStart.httpGet.host)) &&
+               (!has(c.lifecycle.postStart.tcpSocket) || !has(c.lifecycle.postStart.tcpSocket.host)))) &&
+             (!has(c.lifecycle.preStop) ||
+              ((!has(c.lifecycle.preStop.httpGet) || !has(c.lifecycle.preStop.httpGet.host)) &&
+               (!has(c.lifecycle.preStop.tcpSocket) || !has(c.lifecycle.preStop.tcpSocket.host))))))
+        )
+      message: "Init container probes and lifecycle hooks must not set httpGet.host or tcpSocket.host."
+    - expression: >-
+        !has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          (!has(c.livenessProbe) ||
+            ((!has(c.livenessProbe.httpGet) || !has(c.livenessProbe.httpGet.host)) &&
+             (!has(c.livenessProbe.tcpSocket) || !has(c.livenessProbe.tcpSocket.host)))) &&
+          (!has(c.readinessProbe) ||
+            ((!has(c.readinessProbe.httpGet) || !has(c.readinessProbe.httpGet.host)) &&
+             (!has(c.readinessProbe.tcpSocket) || !has(c.readinessProbe.tcpSocket.host)))) &&
+          (!has(c.startupProbe) ||
+            ((!has(c.startupProbe.httpGet) || !has(c.startupProbe.httpGet.host)) &&
+             (!has(c.startupProbe.tcpSocket) || !has(c.startupProbe.tcpSocket.host)))) &&
+          (!has(c.lifecycle) ||
+            ((!has(c.lifecycle.postStart) ||
+              ((!has(c.lifecycle.postStart.httpGet) || !has(c.lifecycle.postStart.httpGet.host)) &&
+               (!has(c.lifecycle.postStart.tcpSocket) || !has(c.lifecycle.postStart.tcpSocket.host)))) &&
+             (!has(c.lifecycle.preStop) ||
+              ((!has(c.lifecycle.preStop.httpGet) || !has(c.lifecycle.preStop.httpGet.host)) &&
+               (!has(c.lifecycle.preStop.tcpSocket) || !has(c.lifecycle.preStop.tcpSocket.host))))))
+        )
+      message: "Ephemeral container probes and lifecycle hooks must not set httpGet.host or tcpSocket.host."
+    - expression: "!has(object.spec.runtimeClassName)"
+      message: "Pod must not set runtimeClassName."
+    - expression: "!has(object.spec.resourceClaims)"
+      message: "Pod must not set resourceClaims."
+    # Multus writes network-status after creation; allow that key so later pod updates work.
+    - expression: >-
+        !has(object.metadata.annotations) ||
+        object.metadata.annotations.all(k,
+          k == 'k8s.v1.cni.cncf.io/network-status' || (!k.contains('cni.cncf.io') && !k.contains('multus') && !k.contains('cilium.io')))
+      message: "Pod annotation keys must not contain cni.cncf.io, multus or cilium.io."
+    - expression: >-
+        object.spec.containers.all(c,
+          !has(c.resources) ||
+          ((!has(c.resources.limits) || c.resources.limits.all(k, !k.contains('/'))) &&
+           (!has(c.resources.requests) || c.resources.requests.all(k, !k.contains('/'))) &&
+           (!has(c.resources.claims) || size(c.resources.claims) == 0))) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c,
+          !has(c.resources) ||
+          ((!has(c.resources.limits) || c.resources.limits.all(k, !k.contains('/'))) &&
+           (!has(c.resources.requests) || c.resources.requests.all(k, !k.contains('/'))) &&
+           (!has(c.resources.claims) || size(c.resources.claims) == 0)))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c,
+          !has(c.resources) ||
+          ((!has(c.resources.limits) || c.resources.limits.all(k, !k.contains('/'))) &&
+           (!has(c.resources.requests) || c.resources.requests.all(k, !k.contains('/'))) &&
+           (!has(c.resources.claims) || size(c.resources.claims) == 0))))
+      message: "Containers, init containers and ephemeral containers must not request extended resources or resource claims."
+    - expression: "!has(object.spec.priorityClassName) || object.spec.priorityClassName == ''"
+      message: "Pod must not set priorityClassName."
+    - expression: >-
+        request.operation != 'CREATE' || !has(object.spec.nodeName) || object.spec.nodeName == ''
+      message: "Pod CREATE must not set nodeName."
+    - expression: >-
+        !has(object.spec.tolerations) || object.spec.tolerations.all(t,
+          (!has(t.key) || t.key != 'node-role.kubernetes.io/control-plane') &&
+          !(has(t.operator) && t.operator == 'Exists' && (!has(t.key) || t.key == '')))
+      message: "Pod must not tolerate control-plane or all taints."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-poc-pod-isolation
+spec:
+  policyName: factory-poc-pod-isolation
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: factory-poc

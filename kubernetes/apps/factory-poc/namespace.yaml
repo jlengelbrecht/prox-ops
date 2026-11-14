@@ -1,0 +1,12 @@
+---
+# Start at baseline while the guards are proved live. Docker's required capabilities
+# need privileged enforcement later, when the admission policy replaces its safeguards.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: factory-poc
+  labels:
+    kubernetes.io/metadata.name: factory-poc
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
