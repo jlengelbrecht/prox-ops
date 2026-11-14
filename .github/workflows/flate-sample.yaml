@@ -1,0 +1,61 @@
+---
+# Temporary, for a draft pull request only: collect flate's build output as an artifact, to build the merge-steward render port against. Not for merge.
+name: "Flate Sample"
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths: [".github/workflows/flate-sample.yaml"]
+
+permissions: {}
+
+jobs:
+  sample:
+    name: Flate Sample
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    env:
+      FLATE_VERSION: "0.7.3@sha256:a68959461e12234f030adf3a8c51b50af419326dd4ca35ad35048ad01005fedd"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Collect samples
+        run: |
+          set -u
+          out="$RUNNER_TEMP/flate-sample"
+          mkdir -p "$out"
+          flate() {
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+              --tmpfs /tmp:exec,mode=1777 \
+              -v "$PWD:/github/workspace:ro" -w /github/workspace \
+              "ghcr.io/home-operations/flate:${FLATE_VERSION}" "$@"
+          }
+          sample() {
+            local name="$1" rc=0
+            shift
+            flate "$@" > "$out/$name.out" 2> "$out/$name.err" || rc=$?
+            echo "$name: exit $rc, $(wc -c < "$out/$name.out") bytes"
+          }
+          sample help-build-all build all --help
+          opts=(--path kubernetes/flux/cluster --no-progress --supply tests/flate/supply.yaml
+            --allow-missing-kinds Secret,CustomResourceDefinition --skip-kinds Secret)
+          sample build-json build all -o json "${opts[@]}"
+          sample build-yaml build all -o yaml "${opts[@]}"
+          sample build-hr-json build hr -o json "${opts[@]}"
+          sample get-json get -o json --path kubernetes/flux/cluster --no-progress
+
+      - name: Upload samples
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flate-sample
+          path: ${{ runner.temp }}/flate-sample
+          retention-days: 3
+          if-no-files-found: warn
