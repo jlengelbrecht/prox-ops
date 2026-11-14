@@ -1,5 +1,5 @@
 ---
-# Hindsight memory API + control-plane UI, official chart 0.9.2, images
+# Hindsight memory API + control-plane UI, official chart 1.2.1, images
 # pinned by digest. External database on the shared CloudNativePG cluster
 # (see `postgresql` below), no TEI/HPA/ingress. The dedicated worker is
 # rendered at zero replicas (see `worker` below). Secrets arrive through
@@ -14,7 +14,7 @@ spec:
     spec:
       chart: hindsight
       # renovate: datasource=helm registryUrl=oci://ghcr.io/vectorize-io/charts
-      version: 0.10.3
+      version: 1.2.1
       sourceRef:
         kind: HelmRepository
         name: vectorize
@@ -36,10 +36,10 @@ spec:
   install:
     remediation:
       retries: 3
-  # Post-render patches for fields chart 0.9.2 cannot express; drop each when
-  # the chart grows a value:
-  #   1. automountServiceAccountToken: the chart has no switch, so this is the
-  #      only way to keep a Kubernetes API token out of the API/UI pods.
+  # Retained post-render safety patches, qualified against chart 1.2.1.
+  # Revisit native chart values in a separate reviewed change:
+  #   1. automountServiceAccountToken: keep Kubernetes API tokens out of
+  #      the API/UI pods.
   #   2. hindsight-api strategy Recreate: the default RollingUpdate would run
   #      a second API pod (migrations at start-up, in-process worker with the
   #      fixed HINDSIGHT_API_WORKER_ID) beside the old one; the two would reset
@@ -183,7 +183,7 @@ spec:
         # Full image: local embeddings/reranker with the default model weights
         # baked in (BAAI/bge-small-en-v1.5, cross-encoder/ms-marco-MiniLM-L-6-v2).
         # renovate: datasource=docker depName=ghcr.io/vectorize-io/hindsight-api
-        tag: "0.9.2@sha256:7b14a1f4062252992d0176758753615e0a2071d9a269995be007be223ab01812"
+        tag: "1.2.1@sha256:662109ece429871a81e036427fb93fbb09ba9dc4b01d320d356f114c0e1aedd8"
         pullPolicy: IfNotPresent
       env:
         # The worker below reuses this map through the anchor; only the
@@ -256,15 +256,9 @@ spec:
           # Outer attempts for consolidation batch calls (default 3), distinct
           # from the per-call retries above.
           HINDSIGHT_API_CONSOLIDATION_MAX_ATTEMPTS: "1"
-          # Automatic consolidation OFF on this release. In 0.9.2 a consolidation
-          # batch's writes are not atomic: a schema-invalid LLM response can
-          # delete the source memories without creating their replacements, and
-          # the operation still reports completed (upstream issue #3876; fixed by
-          # PR #3923, merged 2026-08-31, in no tagged release as of 2026-09-13).
-          # Retain, recall and reflect keep working; observations are only
-          # produced when consolidation is called explicitly, and that call
-          # should follow a database export. Remove this line, restoring the
-          # default, once the pinned release contains #3923.
+          # Keep automatic consolidation OFF through this upgrade. Rehearse
+          # target-version migration and data integrity on a restored copy
+          # before evaluating a separate change to this setting.
           HINDSIGHT_API_ENABLE_AUTO_CONSOLIDATION: "false"
           # Built-in shared-bearer tenant auth: every API request must carry
           # `Authorization: Bearer <HINDSIGHT_API_TENANT_API_KEY>`. The key
@@ -292,7 +286,7 @@ spec:
           # openai-responses reads the API key, not this OAuth directory.
           CODEX_HOME: "/home/hindsight/codex-auth"
         HINDSIGHT_API_WORKER_ID: "hindsight-api"
-      # Liveness budget (chart 0.9.2 has no startupProbe value). Earliest
+      # Liveness budget retained from the previous release. Earliest
       # restart = initialDelay + (failureThreshold - 1) x period = 140 s. The
       # chart default (~50 s) is shorter than the ~55 s start measured with an
       # unreachable LLM endpoint; 140 s also covers the ~105 s hung-endpoint
@@ -367,7 +361,7 @@ spec:
       image:
         repository: ghcr.io/vectorize-io/hindsight-control-plane
         # renovate: datasource=docker depName=ghcr.io/vectorize-io/hindsight-control-plane
-        tag: "0.9.2@sha256:d9bf57083f7cb0a53ee5011bdfde6aae2490dbf5c360d2d1bff10473b45eb112"
+        tag: "1.2.1@sha256:74a113e1f02ace9e8feed954e6b42282e9e3d33b7e0b6d528158d05902552a9a"
         pullPolicy: IfNotPresent
       # The UI reaches the API server-side with HINDSIGHT_CP_DATAPLANE_API_KEY.
       # Its own login (HINDSIGHT_CP_ACCESS_KEY) is deliberately NOT set: the
