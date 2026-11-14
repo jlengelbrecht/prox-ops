@@ -34,6 +34,8 @@ jobs:
           files: |
             kubernetes/**
             tests/flate/**
+            scripts/flate/**
+            scripts/merge-steward/render_pairs.py
             .github/workflows/flux-local.yaml
 
   nyctr-release-match:
@@ -84,6 +86,9 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+
+      - name: Test the diff comment builder
+        run: python3 -m unittest discover -s tests/flate -p 'test*.py'
 
       # The container gets no token, a read-only checkout and no capabilities.
       # Sources that need credentials (the private homelab-identity repository and
@@ -136,44 +141,76 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     timeout-minutes: 30
     if: ${{ needs.pre-job.outputs.any_changed == 'true' }}
-    env:
-      BASE_REF: ${{ github.base_ref }}
+    outputs:
+      diff: ${{ steps.diff.outputs.diff }}
     steps:
-      - name: Checkout
+      # This job reads pull request content and holds no secret and no write token.
+      # The comment is posted by a separate job that only receives the text.
+      # The default ref of a pull request run is the PR merged into its base.
+      - name: Checkout the PR merged into its base
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          fetch-depth: 0
+          path: pull
+          fetch-depth: 2
           persist-credentials: false
 
-      # The diff is given the cluster entry directory, the same path the test uses.
-      # Given the whole kubernetes tree or the repository root, flate reads the app
-      # Kustomizations without the namespace their parent assigns, and reports
-      # dependencies in other namespaces as missing.
-      # flate diff renders only what it decides a change reaches. With this path it
-      # can show nothing for a change to a Flux Kustomization object alone, so an
-      # empty diff is not proof that nothing changed. The job is informational: a
-      # render problem is reported in the comment and the summary, and the test job
-      # is what fails the check.
-      - name: Run flate diff
+      - name: Find the base of that merge
+        id: base
+        run: |
+          set -euo pipefail
+          sha="$(git -C pull rev-parse --verify --quiet 'HEAD^1^{commit}')"
+          if [ -z "$sha" ] || [ "$sha" = "$(git -C pull rev-parse HEAD)" ]; then
+            echo "::error::could not find the base of the merge commit"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout that base
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ steps.base.outputs.sha }}
+          path: base
+          persist-credentials: false
+
+      # Both sides are rendered in full with `flate build all` and compared object by
+      # object, the same way the merge steward does it. `flate diff` renders only what
+      # it decides a change can reach, and showed nothing for some changes.
+      # The comparison script comes from the base checkout when the base has it, so a
+      # pull request cannot change how its own diff is escaped.
+      # The job is informational: a render problem is reported in the comment and the
+      # summary, and the test job is what fails the check.
+      - name: Render both sides and compare
         id: diff
         run: |
           set -u
           out="$RUNNER_TEMP/flate"
           mkdir -p "$out"
+          # Messages are built from pull request content: keep printable ASCII and
+          # break up anything that could close a code block.
+          clean() { LC_ALL=C tr -cd '[:print:]\t\n' | cut -c1-300 | sed -E 's/`{3,}|~{3,}/` ` `/g'; }
           rc=0
-          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
-            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
-            --tmpfs /tmp:exec,mode=1777 \
-            -v "$PWD:/github/workspace:ro" -w /github/workspace \
-            "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
-            diff --path kubernetes/flux/cluster --base "origin/${BASE_REF}" -o github --no-progress \
-            --supply tests/flate/supply.yaml \
-            --allow-missing-kinds Secret,CustomResourceDefinition \
-            > "$out/diff.out" 2> "$out/diff.err" || rc=$?
-          echo "flate diff exit $rc, $(wc -c < "$out/diff.out") bytes"
+          for side in base pull; do
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+              --tmpfs /tmp:exec,mode=1777 \
+              -v "$PWD:/github/workspace:ro" -w "/github/workspace/$side" \
+              "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
+              build all -o json --path kubernetes/flux/cluster --no-progress \
+              --supply "/github/workspace/$side/tests/flate/supply.yaml" \
+              --allow-missing-kinds Secret,CustomResourceDefinition --skip-kinds Secret \
+              > "$out/$side.json" 2> "$out/$side.err" || rc=1
+            echo "$side: flate exit $rc, $(wc -c < "$out/$side.json") bytes"
+          done
+          : > "$out/diff.out"
+          if [ "$rc" = 0 ]; then
+            script=base/scripts/flate/render_comment.py
+            [ -f "$script" ] || script=pull/scripts/flate/render_comment.py
+            python3 -I "$script" "$out/base.json" "$out/pull.json" \
+              > "$out/diff.out" 2> "$out/compare.err" || rc=1
+            echo "compare: exit $rc, $(wc -c < "$out/diff.out") bytes"
+          fi
 
           # A pull request comment holds 65536 characters.
           limit=55000
@@ -183,45 +220,51 @@ jobs:
           fi
           if [ "$rc" -ne 0 ]; then
             {
-              echo
-              echo "! flate diff exited $rc. Its messages:"
-              grep -E '✗|DiffSuppressed' "$out/diff.err" | head -n 20 | cut -c1-300 | sed 's/^/! /'
-            } >> "$out/comment.diff"
+              echo "! The render or the comparison failed, so there is no diff to show. Messages:"
+              for side in base pull; do
+                grep -E '✗' "$out/$side.err" | head -n 10 | clean | sed "s/^/! $side: /"
+                tail -n 2 "$out/$side.err" | clean | sed "s/^/! $side (last lines): /"
+              done
+              tail -n 3 "$out/compare.err" 2>/dev/null | clean | sed 's/^/! compare: /'
+            } > "$out/comment.diff"
           fi
 
-          if [ -s "$out/comment.diff" ]; then
-            delim="diff_$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-            {
-              echo "diff<<$delim"
-              cat "$out/comment.diff"
-              echo
-              echo "$delim"
-            } >> "$GITHUB_OUTPUT"
-          fi
+          delim="diff_$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          {
+            echo "diff<<$delim"
+            cat "$out/comment.diff"
+            echo
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
 
           fence='```'
           {
-            echo "## flate diff (exit $rc)"
+            echo "## flate render comparison (exit $rc)"
             echo
-            if [ -s "$out/diff.out" ]; then
-              echo "${fence}diff"
-              head -c 800000 "$out/diff.out"
-              echo
-              echo "$fence"
-            else
-              echo "No rendered changes."
-            fi
-            echo
-            echo "### Messages (last 80 lines)"
+            echo "${fence}diff"
+            if [ "$rc" = 0 ]; then head -c 800000 "$out/diff.out"; else cat "$out/comment.diff"; fi
             echo
             echo "$fence"
-            tail -n 80 "$out/diff.err" | cut -c1-400
+            echo
+            echo "### Messages (last 40 lines per side)"
+            echo
+            echo "$fence"
+            tail -n 40 "$out/base.err" | clean
+            tail -n 40 "$out/pull.err" | clean
             echo "$fence"
           } > "$out/summary.md" || true
           head -c 900000 "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
 
+  diff-comment:
+    name: Flux Local Diff Comment
+    needs: diff
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    if: ${{ needs.diff.outputs.diff != '' }}
+    steps:
+      # Nothing from the pull request is checked out or run here.
       - name: Generate GitHub App Token
-        if: ${{ steps.diff.outputs.diff != '' }}
         id: generate-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
@@ -229,7 +272,6 @@ jobs:
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
       - name: Add Comment
-        if: ${{ steps.diff.outputs.diff != '' }}
         continue-on-error: true
         uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
         with:
@@ -238,7 +280,7 @@ jobs:
           message-failure: Diff was not successful
           message: |
             ```diff
-            ${{ steps.diff.outputs.diff }}
+            ${{ needs.diff.outputs.diff }}
             ```
 
   flux-local-status:
