@@ -45,12 +45,18 @@ jobs:
           }
           opts=(--no-progress --supply tests/flate/supply.yaml
             --allow-missing-kinds Secret,CustomResourceDefinition)
-          sample root-github diff --base origin/main~40 -o github "${opts[@]}"
-          sample root-json diff --base origin/main~40 -o json "${opts[@]}"
-          sample entry-github diff --path kubernetes/flux/cluster --base origin/main~40 -o github "${opts[@]}"
-          sample tree-github diff --path kubernetes --base origin/main~40 -o github "${opts[@]}"
-          sample root-recent diff --base origin/main~6 -o github "${opts[@]}"
-          sample tree-recent diff --path kubernetes --base origin/main~6 -o github "${opts[@]}"
+          # Two pull requests whose diff job reported missing dependencies, and one
+          # whose diff was fine. Render each merge ref against main with every path choice.
+          for pr in 1885 2118 1817; do
+            if ! git fetch --quiet --no-tags origin "+refs/pull/$pr/merge:refs/remotes/origin/sample-$pr" ||
+              ! git checkout --quiet --force --detach "refs/remotes/origin/sample-$pr"; then
+              echo "pr$pr: could not check out the merge ref"
+              continue
+            fi
+            sample "pr$pr-root" diff --base origin/main -o github "${opts[@]}"
+            sample "pr$pr-entry" diff --path kubernetes/flux/cluster --base origin/main -o github "${opts[@]}"
+            sample "pr$pr-tree" diff --path kubernetes --base origin/main -o github "${opts[@]}"
+          done
 
       - name: Upload samples
         if: ${{ always() }}
