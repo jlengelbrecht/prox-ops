@@ -69,6 +69,14 @@ spec:
               protocol: TCP
     - toEndpoints:
         - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
             io.kubernetes.pod.namespace: network
             gateway.envoyproxy.io/owning-gateway-name: envoy-internal
       toPorts:
@@ -136,6 +144,14 @@ spec:
       toPorts:
         - ports:
             - port: "8080"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: litellm
+      toPorts:
+        - ports:
+            - port: "4000"
               protocol: TCP
 ---
 apiVersion: cilium.io/v2

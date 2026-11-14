@@ -99,6 +99,23 @@ spec:
           value: litellm
         - name: LANGFUSE_DEFAULT_PROJECT_ROLE
           value: OWNER
+        - name: LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST
+          value: litellm.ai.svc.cluster.local
+        - name: LANGFUSE_IN_APP_AGENT_ENABLED
+          value: "true"
+        - name: LANGFUSE_AI_PROVIDER
+          value: openai
+        - name: LANGFUSE_AI_BASE_URL
+          value: http://litellm.ai.svc.cluster.local:4000/v1
+        - name: LANGFUSE_AI_MODEL
+          value: chatgpt-gpt-6.1-sol
+        - name: LANGFUSE_AI_SMALL_MODEL
+          value: chatgpt-gpt-6-luna
+        - name: LANGFUSE_AI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-litellm
+              key: LITELLM_API_KEY
     postgresql:
       deploy: false
       host: postgres-rw.database.svc.cluster.local
