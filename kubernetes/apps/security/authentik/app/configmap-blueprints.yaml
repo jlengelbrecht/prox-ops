@@ -272,6 +272,11 @@ data:
           redirect_uris:
             - matching_mode: strict
               url: https://langfuse.homelab0.org/api/auth/callback/authentik
+          # New providers get an empty grant list from the blueprint API
+          # (authentik >= 2026.2); see the Hermes provider below.
+          grant_types:
+            - authorization_code
+            - refresh_token
           access_code_validity: minutes=1
           access_token_validity: minutes=5
           refresh_token_validity: days=30
