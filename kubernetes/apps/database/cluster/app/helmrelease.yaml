@@ -86,11 +86,18 @@ spec:
           cpu: 1000m
           memory: 2Gi
 
-      # Enable monitoring if Prometheus is available
+      # Enable CNPG metrics and alerts. A separate PodMonitor scrapes the pod;
+      # the chart's podMonitor switch uses a deprecated Cluster field.
+      # Exclude HA and zone-spread alerts for this single-instance cluster.
       monitoring:
-        enabled: false
+        enabled: true
         podMonitor:
           enabled: false
+        prometheusRule:
+          excludeRules:
+            - CNPGClusterHACritical
+            - CNPGClusterHAWarning
+            - CNPGClusterZoneSpreadWarning
 
       # Superuser credentials from ExternalSecret
       superuserSecret: postgres-superuser
