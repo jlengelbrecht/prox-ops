@@ -9,30 +9,32 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # flate renders the cluster for the test and diff jobs. It replaced flux-local,
+  # which is deprecated upstream.
+  # renovate: datasource=docker depName=ghcr.io/home-operations/flate
+  FLATE_VERSION: "0.7.3@sha256:a68959461e12234f030adf3a8c51b50af419326dd4ca35ad35048ad01005fedd"
+
 jobs:
   pre-job:
     name: Flux Local Pre-Job
     runs-on: ubuntu-latest
     outputs:
       any_changed: ${{ steps.changed-files.outputs.any_changed }}
-      workflow_changed: ${{ steps.workflow-changed.outputs.any_changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # The render also reruns when its own inputs change: this workflow and the
+      # reference objects handed to flate.
       - name: Get Changed Files
         id: changed-files
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
-          files: kubernetes/**
-
-      # Only the flate trial reads this, so a change to this file can be tried
-      # on its own pull request.
-      - name: Get Workflow Changes
-        id: workflow-changed
-        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
-        with:
-          files: .github/workflows/flux-local.yaml
+          files: |
+            kubernetes/**
+            tests/flate/**
+            .github/workflows/flux-local.yaml
 
   nyctr-release-match:
     name: Nyctr Release Match
@@ -73,21 +75,60 @@ jobs:
     name: Flux Local Test
     needs: pre-job
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
     if: ${{ needs.pre-job.outputs.any_changed == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Run flux-local test
-        uses: docker://ghcr.io/allenporter/flux-local:v8.4.0
         with:
-          # homelab-identity is a private repo, so its Kustomizations build
-          # against empty stubs here. Listing sources drops any Git source
-          # that isn't named, so flagger-pilot (this repo) is listed too.
-          args: >-
-            test --enable-helm --all-namespaces
-            --sources "flux-system,flagger-pilot,homelab-identity=tests/flux-local/homelab-identity"
-            --path /github/workspace/kubernetes/flux/cluster -v
+          persist-credentials: false
+
+      # The container gets no token, a read-only checkout and no capabilities.
+      # Sources that need credentials (the private homelab-identity repository and
+      # the agent-router-base chart) are skipped and listed as skipped.
+      # tests/flate/supply.yaml stands in for objects that only exist in the cluster.
+      - name: Run flate test
+        run: |
+          set -u
+          out="$RUNNER_TEMP/flate"
+          mkdir -p "$out"
+          rc=0
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+            --tmpfs /tmp:exec,mode=1777 \
+            -v "$PWD:/github/workspace:ro" -w /github/workspace \
+            "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
+            test --path kubernetes/flux/cluster --no-progress \
+            --supply tests/flate/supply.yaml \
+            --allow-missing-kinds Secret,CustomResourceDefinition \
+            > "$out/test.out" 2> "$out/test.err" || rc=$?
+
+          # The output is built from pull request content, so print it with
+          # workflow commands switched off.
+          stop="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          echo "::stop-commands::$stop"
+          cat "$out/test.out"
+          tail -n 200 "$out/test.err"
+          echo "::$stop::"
+
+          fence='```'
+          {
+            echo "## flate test (exit $rc)"
+            echo
+            echo "$fence"
+            grep -v '✓' "$out/test.out" | tail -n 150 | cut -c1-400
+            echo "$fence"
+            echo
+            echo "### Messages (last 80 lines)"
+            echo
+            echo "$fence"
+            tail -n 80 "$out/test.err" | cut -c1-400
+            echo "$fence"
+          } > "$out/summary.md" || true
+          head -c 900000 "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
 
   diff:
     name: Flux Local Diff
@@ -96,61 +137,82 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    strategy:
-      matrix:
-        resources: ["helmrelease", "kustomization"]
-      max-parallel: 4
-      fail-fast: false
+    timeout-minutes: 30
     if: ${{ needs.pre-job.outputs.any_changed == 'true' }}
+    env:
+      BASE_REF: ${{ github.base_ref }}
     steps:
-      - name: Checkout Pull Request Branch
+      - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          path: pull
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Checkout Default Branch
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          ref: "${{ github.event.repository.default_branch }}"
-          path: default
-
-      - name: Run flux-local diff
-        # continue-on-error due to flux-local bug #986 with spec.template string fields
-        continue-on-error: true
-        uses: docker://ghcr.io/allenporter/flux-local:v8.4.0
-        with:
-          args: >-
-            diff ${{ matrix.resources }}
-            --unified 6
-            --path /github/workspace/pull/kubernetes/flux/cluster
-            --path-orig /github/workspace/default/kubernetes/flux/cluster
-            --strip-attrs "helm.sh/chart,checksum/config,app.kubernetes.io/version,chart"
-            --limit-bytes 10000
-            --all-namespaces
-            --sources "flux-system,homelab-identity=tests/flux-local/homelab-identity"
-            --output-file diff.patch
-
-      - name: Generate Diff
+      # flate looks for changed files inside --path, so the diff is given the whole
+      # kubernetes tree. The job is informational: a render problem is reported in
+      # the comment and the summary, and the test job is what fails the check.
+      - name: Run flate diff
         id: diff
         run: |
-          if [ -f diff.patch ]; then
-            cat diff.patch;
-            {
-                echo 'diff<<EOF'
-                cat diff.patch
-                echo EOF
-            } >> "$GITHUB_OUTPUT";
-            {
-                echo "### Diff"
-                echo '```diff'
-                cat diff.patch
-                echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No diff.patch generated (flux-local may have encountered an error)"
-            echo "### Diff" >> "$GITHUB_STEP_SUMMARY"
-            echo "No diff generated - see workflow logs for details" >> "$GITHUB_STEP_SUMMARY"
+          set -u
+          out="$RUNNER_TEMP/flate"
+          mkdir -p "$out"
+          rc=0
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+            --tmpfs /tmp:exec,mode=1777 \
+            -v "$PWD:/github/workspace:ro" -w /github/workspace \
+            "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
+            diff --path kubernetes --base "origin/${BASE_REF}" -o github --no-progress \
+            --supply tests/flate/supply.yaml \
+            --allow-missing-kinds Secret,CustomResourceDefinition \
+            > "$out/diff.out" 2> "$out/diff.err" || rc=$?
+          echo "flate diff exit $rc, $(wc -c < "$out/diff.out") bytes"
+
+          # A pull request comment holds 65536 characters.
+          limit=55000
+          head -c "$limit" "$out/diff.out" > "$out/comment.diff"
+          if [ "$(wc -c < "$out/diff.out")" -gt "$limit" ]; then
+            printf '\n\n! Diff cut at %s bytes. The job summary has more.\n' "$limit" >> "$out/comment.diff"
           fi
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo
+              echo "! flate diff exited $rc. Its messages:"
+              grep -E '✗|DiffSuppressed' "$out/diff.err" | head -n 20 | cut -c1-300 | sed 's/^/! /'
+            } >> "$out/comment.diff"
+          fi
+
+          if [ -s "$out/comment.diff" ]; then
+            delim="diff_$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+            {
+              echo "diff<<$delim"
+              cat "$out/comment.diff"
+              echo
+              echo "$delim"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+          fence='```'
+          {
+            echo "## flate diff (exit $rc)"
+            echo
+            if [ -s "$out/diff.out" ]; then
+              echo "${fence}diff"
+              head -c 800000 "$out/diff.out"
+              echo
+              echo "$fence"
+            else
+              echo "No rendered changes."
+            fi
+            echo
+            echo "### Messages (last 80 lines)"
+            echo
+            echo "$fence"
+            tail -n 80 "$out/diff.err" | cut -c1-400
+            echo "$fence"
+          } > "$out/summary.md" || true
+          head -c 900000 "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate GitHub App Token
         if: ${{ steps.diff.outputs.diff != '' }}
@@ -166,107 +228,12 @@ jobs:
         uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
         with:
           repo-token: ${{ steps.generate-token.outputs.token }}
-          message-id: "${{ github.event.pull_request.number }}/kubernetes/${{ matrix.resources }}"
+          message-id: "${{ github.event.pull_request.number }}/kubernetes/flate"
           message-failure: Diff was not successful
           message: |
             ```diff
             ${{ steps.diff.outputs.diff }}
             ```
-
-  # flux-local is deprecated upstream in favour of flate. This job runs flate next to
-  # it so the two can be compared on real pull requests before anything is swapped.
-  # It is informational: Flux Local Success does not depend on it, and a flate
-  # failure is reported in the job summary without failing the job.
-  flate-trial:
-    name: Flate Trial
-    needs: pre-job
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    timeout-minutes: 30
-    if: ${{ needs.pre-job.outputs.any_changed == 'true' || needs.pre-job.outputs.workflow_changed == 'true' }}
-    env:
-      # renovate: datasource=docker depName=ghcr.io/home-operations/flate
-      FLATE_VERSION: "0.7.3@sha256:a68959461e12234f030adf3a8c51b50af419326dd4ca35ad35048ad01005fedd"
-      BASE_REF: ${{ github.base_ref }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      # The container gets no token, a read-only checkout and no capabilities.
-      # The private homelab-identity source has no credentials here, so
-      # --allow-missing-kinds lets flate skip it and say so in its warnings.
-      - name: Run flate test and diff
-        run: |
-          set -u
-          out="$RUNNER_TEMP/flate"
-          mkdir -p "$out"
-          flate() {
-            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
-              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
-              --tmpfs /tmp:exec,mode=1777 \
-              -v "$PWD:/github/workspace:ro" -w /github/workspace \
-              "ghcr.io/home-operations/flate:${FLATE_VERSION}" "$@"
-          }
-          opts=(--no-progress --supply tests/flate/supply.yaml
-            --allow-missing-kinds Secret,CustomResourceDefinition)
-          names=()
-          rows=()
-          trial() {
-            local name="$1" rc=0 start=$SECONDS
-            shift
-            flate "$@" "${opts[@]}" > "$out/$name.out" 2> "$out/$name.err" || rc=$?
-            names+=("$name")
-            rows+=("| $name | $rc | $((SECONDS - start)) |")
-            echo "$name: exit $rc in $((SECONDS - start))s"
-          }
-
-          trial test test --path kubernetes/flux/cluster
-          # flate looks for changed files inside --path only, so the diff needs a
-          # path that contains kubernetes/apps. Try the candidates side by side.
-          trial diff-kubernetes diff --path kubernetes --base "origin/${BASE_REF}" -o github
-          trial diff-root diff --base "origin/${BASE_REF}" -o github
-          # Temporary: compare against an older commit so the diff has content
-          # even on a pull request that changes no manifests.
-          trial diff-older diff --path kubernetes --base "origin/${BASE_REF}~12" -o github
-
-          fence='```'
-          {
-            echo "## Flate trial"
-            echo
-            echo "| Run | Exit code | Seconds |"
-            echo "| --- | --- | --- |"
-            printf '%s\n' "${rows[@]}"
-            for name in "${names[@]}"; do
-              echo
-              echo "### $name: output (last 150 lines)"
-              echo
-              echo "$fence"
-              tail -n 150 "$out/$name.out" | cut -c1-400
-              echo "$fence"
-              echo
-              echo "### $name: messages (last 80 lines)"
-              echo
-              echo "$fence"
-              tail -n 80 "$out/$name.err" | cut -c1-400
-              echo "$fence"
-            done
-          } > "$out/summary.md" || true
-          head -c 900000 "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
-
-      # The job summary cannot be read through the API, so keep the full output
-      # as an artifact for comparing against flux-local.
-      - name: Upload flate output
-        if: ${{ always() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: flate-trial
-          path: ${{ runner.temp }}/flate
-          retention-days: 7
-          if-no-files-found: warn
 
   flux-local-status:
     name: Flux Local Success
