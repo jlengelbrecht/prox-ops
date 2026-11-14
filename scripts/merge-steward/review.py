@@ -213,7 +213,7 @@ def context(pr, render_lines, evidence, policy, upstream=None):
     notes = release_notes(pr.get("body"))[:limits["release_notes"]]
     heading, notes = (_NOTES_HEADING, notes) if notes else _upstream_notes(upstream, limits["release_notes"])
     return "\n".join([
-        "## Render classifier (steward code, from flux-local against this PR)",
+        "## Render classifier (steward code, from a flate render of this PR)",
         "\n".join(render_lines)[:limits["render"]] or "Not available for this PR.",
         "",
         "## Cluster evidence (steward code)",

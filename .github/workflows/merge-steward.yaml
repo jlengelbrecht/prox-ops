@@ -12,7 +12,7 @@
 # default branch. It never checks out or runs PR code: it reads PR data through the API. It never merges anything.
 #
 # The render job is the one place PR content is read from disk: it checks out the PR merge
-# ref and renders it with flux-local in a pinned container. It holds no secrets and no app
+# ref and renders it with flate in a pinned container. It holds no secrets and no app
 # token, has a read-only token that is not persisted, and runs nothing from the PR. Its
 # JSON goes to an artifact of this run, which the evaluate job classifies with
 # default-branch code.
@@ -52,12 +52,13 @@ permissions: {}
 env:
   # renovate: datasource=pypi depName=pyyaml
   PYYAML_VERSION: "6.0.3"
-  # renovate: datasource=docker depName=ghcr.io/allenporter/flux-local
-  FLUX_LOCAL_VERSION: "v8.4.0@sha256:c0be852e30f299ce6a220cc992b0c21a2a0b0684cc17713b9d718e18d9c8beff"
+  # renovate: datasource=docker depName=ghcr.io/home-operations/flate
+  FLATE_VERSION: "0.7.3@sha256:a68959461e12234f030adf3a8c51b50af419326dd4ca35ad35048ad01005fedd"
 
 jobs:
-  # Renders the PR merge ref and its first parent (the base it merges into) with
-  # flux-local and uploads the JSON. Renovate PRs from this repository only.
+  # Renders the PR merge ref and its first parent (the base it merges into) with flate,
+  # pairs the two renders and uploads the objects that differ. Renovate PRs from this
+  # repository only.
   render:
     name: merge-steward render
     if: >-
@@ -120,13 +121,21 @@ jobs:
           path: base
           persist-credentials: false
 
-      # Full context (--unified 100000) so each object diff carries the whole object;
-      # CRDs included and Secrets skipped; app.kubernetes.io/version labels kept so
-      # version skew stays visible. Logs go to files, never to the job log.
-      # flux build writes kustomization files into both trees, so they stay writable.
-      # meta.json is written after flux-local exits, outside the container, with the head
-      # the merge ref was verified to contain. The container drops all capabilities.
-      - name: Render with flux-local
+      # Both sides are rendered in full with `flate build all`, once in each checkout, so
+      # nothing depends on a tool deciding which objects a change can reach. Secrets are
+      # skipped. The checkouts are mounted read-only and the container drops all
+      # capabilities; its only writable path is a tmpfs. The supply file comes from the base
+      # checkout for both sides, so the PR cannot change what the render is given.
+      # render_pairs.py, run from the base checkout with the standard library only, pairs
+      # the two renders into changes.json: every object that differs, whole on both sides,
+      # with app.kubernetes.io/version labels kept so version skew stays visible.
+      # A second, HelmRelease-only render of each side tells the pairing which objects a
+      # release rendered, so a manifest cannot claim that by carrying the release labels.
+      # Render output and logs go to files, never to the job log. A failure on either side
+      # or in the pairing is recorded as a failed render.
+      # meta.json is written after this step, outside the container, with the head the
+      # merge ref was verified to contain.
+      - name: Render with flate
         id: flux
         if: steps.base.outputs.fresh == 'true'
         run: |
@@ -134,20 +143,27 @@ jobs:
           out="$RUNNER_TEMP/render"
           mkdir -p "$out"
           rc=0
-          for res in helmrelease kustomization; do
-            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
-              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
-              -v "$PWD:/github/workspace" -v "$out:/out" -w /github/workspace/pull \
-              "ghcr.io/allenporter/flux-local:${FLUX_LOCAL_VERSION}" \
-              diff "$res" --output json --unified 100000 --limit-bytes 0 \
-              --all-namespaces --no-skip-crds --skip-secrets \
-              --path /github/workspace/pull/kubernetes/flux/cluster \
-              --path-orig /github/workspace/base/kubernetes/flux/cluster \
-              --sources "flux-system,homelab-identity=tests/flux-local/homelab-identity" \
-              --strip-attrs "helm.sh/chart,checksum/config" \
-              --output-file "/out/$res.json" > "$RUNNER_TEMP/flux-$res.log" 2>&1 || rc=1
-            echo "$res: flux-local exit $rc"
+          for side in base pull; do
+            for what in all hr; do
+              docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+                --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+                --tmpfs /tmp:exec,mode=1777 \
+                -v "$PWD:/github/workspace:ro" -w "/github/workspace/$side" \
+                "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
+                build "$what" -o json --path kubernetes/flux/cluster --no-progress \
+                --supply /github/workspace/base/tests/flate/supply.yaml \
+                --allow-missing-kinds Secret,CustomResourceDefinition --skip-kinds Secret \
+                > "$RUNNER_TEMP/flate-$side-$what.json" 2> "$RUNNER_TEMP/flate-$side-$what.log" || rc=1
+            done
+            echo "$side: flate exit $rc"
           done
+          if [ "$rc" = 0 ]; then
+            python3 -I base/scripts/merge-steward/render_pairs.py \
+              "$RUNNER_TEMP/flate-base-all.json" "$RUNNER_TEMP/flate-pull-all.json" \
+              "$RUNNER_TEMP/flate-base-hr.json" "$RUNNER_TEMP/flate-pull-hr.json" \
+              > "$out/changes.json" 2> "$RUNNER_TEMP/render-pairs.log" || rc=1
+            echo "pairing: exit $rc"
+          fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
 
       - name: Record the render outcome
@@ -173,8 +189,7 @@ jobs:
           name: merge-steward-render
           path: |
             ${{ runner.temp }}/render/meta.json
-            ${{ runner.temp }}/render/helmrelease.json
-            ${{ runner.temp }}/render/kustomization.json
+            ${{ runner.temp }}/render/changes.json
           if-no-files-found: warn
           retention-days: 3
 
@@ -305,7 +320,7 @@ jobs:
         run: |
           set -euo pipefail
           names=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[] | .filename, (.previous_filename // empty)')
-          if grep -Eq '^(kubernetes|tests/flux-local)/' <<<"$names"; then
+          if grep -Eq '^(kubernetes|tests/flate)/' <<<"$names"; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "relevant=false" >> "$GITHUB_OUTPUT"
@@ -357,7 +372,10 @@ jobs:
           path: base
           persist-credentials: false
 
-      - name: Render with flux-local
+      # Same step as the render job: both sides rendered in full from read-only checkouts,
+      # the supply file and the pairing code taken from the base checkout, and the render
+      # output and logs kept in files, out of the job log.
+      - name: Render with flate
         id: flux
         if: steps.base.outputs.fresh == 'true'
         run: |
@@ -365,20 +383,27 @@ jobs:
           out="$RUNNER_TEMP/render"
           mkdir -p "$out"
           rc=0
-          for res in helmrelease kustomization; do
-            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
-              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
-              -v "$PWD:/github/workspace" -v "$out:/out" -w /github/workspace/pull \
-              "ghcr.io/allenporter/flux-local:${FLUX_LOCAL_VERSION}" \
-              diff "$res" --output json --unified 100000 --limit-bytes 0 \
-              --all-namespaces --no-skip-crds --skip-secrets \
-              --path /github/workspace/pull/kubernetes/flux/cluster \
-              --path-orig /github/workspace/base/kubernetes/flux/cluster \
-              --sources "flux-system,homelab-identity=tests/flux-local/homelab-identity" \
-              --strip-attrs "helm.sh/chart,checksum/config" \
-              --output-file "/out/$res.json" > "$RUNNER_TEMP/flux-$res.log" 2>&1 || rc=1
-            echo "$res: flux-local exit $rc"
+          for side in base pull; do
+            for what in all hr; do
+              docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+                --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+                --tmpfs /tmp:exec,mode=1777 \
+                -v "$PWD:/github/workspace:ro" -w "/github/workspace/$side" \
+                "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
+                build "$what" -o json --path kubernetes/flux/cluster --no-progress \
+                --supply /github/workspace/base/tests/flate/supply.yaml \
+                --allow-missing-kinds Secret,CustomResourceDefinition --skip-kinds Secret \
+                > "$RUNNER_TEMP/flate-$side-$what.json" 2> "$RUNNER_TEMP/flate-$side-$what.log" || rc=1
+            done
+            echo "$side: flate exit $rc"
           done
+          if [ "$rc" = 0 ]; then
+            python3 -I base/scripts/merge-steward/render_pairs.py \
+              "$RUNNER_TEMP/flate-base-all.json" "$RUNNER_TEMP/flate-pull-all.json" \
+              "$RUNNER_TEMP/flate-base-hr.json" "$RUNNER_TEMP/flate-pull-hr.json" \
+              > "$out/changes.json" 2> "$RUNNER_TEMP/render-pairs.log" || rc=1
+            echo "pairing: exit $rc"
+          fi
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
 
       - name: Record the render outcome
@@ -407,8 +432,7 @@ jobs:
           name: merge-steward-advisory-render
           path: |
             ${{ runner.temp }}/render/meta.json
-            ${{ runner.temp }}/render/helmrelease.json
-            ${{ runner.temp }}/render/kustomization.json
+            ${{ runner.temp }}/render/changes.json
           if-no-files-found: warn
           retention-days: 3
 
