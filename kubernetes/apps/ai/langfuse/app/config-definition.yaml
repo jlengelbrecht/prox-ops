@@ -1,0 +1,47 @@
+---
+# Declares the model prices and LiteLLM playground connection reconciled each hour.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langfuse-config-definition
+  namespace: ai
+data:
+  definition.yaml: |
+    # Prices are public list prices in USD per million tokens. The ChatGPT routes run on a
+    # subscription, so these figures show what the same usage would cost at API rates; they
+    # are not a bill. Local models cost nothing per token.
+    models:
+      - name: gpt-6.1-sol
+        names: [gpt-6.1-sol, chatgpt-gpt-6.1-sol, merge-steward-review, project-chatgpt-responses]
+        inputPerMillion: 2
+        outputPerMillion: 10
+      - name: gpt-6-sol
+        names: [gpt-6-sol, chatgpt-gpt-6-sol]
+        inputPerMillion: 2
+        outputPerMillion: 10
+      - name: gpt-6-luna
+        names: [gpt-6-luna, chatgpt-gpt-6-luna]
+        inputPerMillion: 0.10
+        outputPerMillion: 0.50
+      - name: gpt-5.6-luna
+        names: [gpt-5.6-luna, automation-chatgpt-luna-responses]
+        inputPerMillion: 0.20
+        outputPerMillion: 1.20
+      - name: gpt-5.6-terra
+        names: [gpt-5.6-terra, automation-chatgpt-terra-responses]
+        inputPerMillion: 2
+        outputPerMillion: 12
+      - name: qwen3-4b-instruct
+        names: [qwen3-4b-instruct, dub-text]
+        inputPerMillion: 0
+        outputPerMillion: 0
+      - name: deepseek-v4.1-flash
+        names: [deepseek-v4.1-flash]
+        inputPerMillion: 0
+        outputPerMillion: 0
+    llmConnection:
+      provider: litellm
+      adapter: openai
+      baseURL: http://litellm.ai.svc.cluster.local:4000/v1
+      withDefaultModels: false
+      customModels: [chatgpt-gpt-6.1-sol, chatgpt-gpt-6-luna]
