@@ -148,9 +148,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # flate looks for changed files inside --path, so the diff is given the whole
-      # kubernetes tree. The job is informational: a render problem is reported in
-      # the comment and the summary, and the test job is what fails the check.
+      # The diff is given the cluster entry directory, the same path the test uses.
+      # Given the whole kubernetes tree or the repository root, flate reads the app
+      # Kustomizations without the namespace their parent assigns, and reports
+      # dependencies in other namespaces as missing.
+      # flate diff renders only what it decides a change reaches. With this path it
+      # can show nothing for a change to a Flux Kustomization object alone, so an
+      # empty diff is not proof that nothing changed. The job is informational: a
+      # render problem is reported in the comment and the summary, and the test job
+      # is what fails the check.
       - name: Run flate diff
         id: diff
         run: |
@@ -163,7 +169,7 @@ jobs:
             --tmpfs /tmp:exec,mode=1777 \
             -v "$PWD:/github/workspace:ro" -w /github/workspace \
             "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
-            diff --path kubernetes --base "origin/${BASE_REF}" -o github --no-progress \
+            diff --path kubernetes/flux/cluster --base "origin/${BASE_REF}" -o github --no-progress \
             --supply tests/flate/supply.yaml \
             --allow-missing-kinds Secret,CustomResourceDefinition \
             > "$out/diff.out" 2> "$out/diff.err" || rc=$?
