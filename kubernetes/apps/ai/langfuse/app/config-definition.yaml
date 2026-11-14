@@ -7,30 +7,9 @@ metadata:
   namespace: ai
 data:
   definition.yaml: |
-    # Prices are public list prices in USD per million tokens. The ChatGPT routes run on a
-    # subscription, so these figures show what the same usage would cost at API rates; they
-    # are not a bill. Local models cost nothing per token.
+    # Subscription routes are not priced here: they cost nothing per token, and LiteLLM
+    # already reports each call's cost. Local models are listed at zero.
     models:
-      - name: gpt-6.1-sol
-        names: [gpt-6.1-sol, chatgpt-gpt-6.1-sol, merge-steward-review, project-chatgpt-responses]
-        inputPerMillion: 2
-        outputPerMillion: 10
-      - name: gpt-6-sol
-        names: [gpt-6-sol, chatgpt-gpt-6-sol]
-        inputPerMillion: 2
-        outputPerMillion: 10
-      - name: gpt-6-luna
-        names: [gpt-6-luna, chatgpt-gpt-6-luna]
-        inputPerMillion: 0.10
-        outputPerMillion: 0.50
-      - name: gpt-5.6-luna
-        names: [gpt-5.6-luna, automation-chatgpt-luna-responses]
-        inputPerMillion: 0.20
-        outputPerMillion: 1.20
-      - name: gpt-5.6-terra
-        names: [gpt-5.6-terra, automation-chatgpt-terra-responses]
-        inputPerMillion: 2
-        outputPerMillion: 12
       - name: qwen3-4b-instruct
         names: [qwen3-4b-instruct, dub-text]
         inputPerMillion: 0
@@ -39,6 +18,14 @@ data:
         names: [deepseek-v4.1-flash]
         inputPerMillion: 0
         outputPerMillion: 0
+    # Custom entries this job created earlier and must now delete. Listing a name here removes
+    # every custom entry with that name; built-in entries are never touched.
+    removedModels:
+      - gpt-6.1-sol
+      - gpt-6-sol
+      - gpt-6-luna
+      - gpt-5.6-luna
+      - gpt-5.6-terra
     llmConnection:
       provider: litellm
       adapter: openai

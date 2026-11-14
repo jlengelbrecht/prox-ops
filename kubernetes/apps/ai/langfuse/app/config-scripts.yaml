@@ -72,6 +72,18 @@ data:
       echo "name listed under two models: ${duplicate}" >&2
       exit 1
     fi
+    if ! jq -e '(.removedModels // []) as $names |
+      ($names | type == "array") and
+      ($names | all(.[]; type == "string" and length > 0 and
+        (contains("\n") | not) and (contains("\r") | not)))' <<<"${definition}" >/dev/null; then
+      echo "removedModels: entries must be non-empty single-line strings" >&2
+      exit 1
+    fi
+    overlap="$(jq -r '[.models[].name | ascii_downcase] as $declared | [.removedModels // [] | unique | .[] | select((ascii_downcase | IN($declared[])))] | first // empty' <<<"${definition}")"
+    if [[ -n "${overlap}" ]]; then
+      echo "model declared and removed: ${overlap}" >&2
+      exit 1
+    fi
     printf '[]' >"${models_file}"
     page=1
     while :; do
@@ -89,15 +101,15 @@ data:
     done
     jq 'unique_by(.id)' "${models_file}" >"${next_file}"
     mv "${next_file}" "${models_file}"
-    declared_names="$(jq -c '[.models[].name]' <<<"${definition}")"
+    declared_names="$(jq -c '[.models[].name] + (.removedModels // [] | unique)' <<<"${definition}")"
     while IFS= read -r foreign; do
       echo "model ${foreign}: undeclared custom entry"
     done < <(jq -r --argjson names "${declared_names}" \
       '.[] | select(.isLangfuseManaged == false) | .modelName as $name | select(($names | index($name)) == null) | $name' "${models_file}")
 
     # Escape each regex metacharacter before joining exact model names.
-    while IFS= read -r entry; do
-      wanted="$(jq -c '
+    wanted_for_entry() {
+      jq -c '
         def escape_name:
           explode | map(. as $c | if ([46, 92, 94, 36, 124, 63, 42, 43, 40, 41, 91, 93, 123, 125] | index($c)) != null
             then [92, $c] else [$c] end) | flatten | implode;
@@ -105,24 +117,59 @@ data:
          matchPattern: ("(?i)^(" + (.names | map(escape_name) | join("|")) + ")$"),
          unit: "TOKENS",
          inputPrice: (.inputPerMillion / 1000000),
-         outputPrice: (.outputPerMillion / 1000000)}' <<<"${entry}")"
-      name="$(jq -r '.modelName' <<<"${wanted}")"
-      existing="$(jq -c --arg name "${name}" '[.[] | select(.isLangfuseManaged == false and .modelName == $name)]' "${models_file}")"
-      if jq -e --argjson wanted "${wanted}" '
+         outputPrice: (.outputPerMillion / 1000000)}' <<<"$1"
+    }
+    model_is_current() {
+      jq -e --argjson wanted "$1" '
         length == 1 and
         (.[0].matchPattern == $wanted.matchPattern) and
         (.[0].unit == $wanted.unit) and
         (((.[0].inputPrice // -999) - $wanted.inputPrice) | fabs < 1e-15) and
         (((.[0].outputPrice // -999) - $wanted.outputPrice) | fabs < 1e-15)
-      ' <<<"${existing}" >/dev/null; then
-        echo "model ${name}: unchanged"
-        continue
-      fi
-      count="$(jq 'length' <<<"${existing}")"
+      ' <<<"$2" >/dev/null
+    }
+
+    # Check every planned deletion before making any write.
+    while IFS= read -r name; do
+      existing="$(jq -c --arg name "${name}" '[.[] | select(.isLangfuseManaged == false and .modelName == $name)]' "${models_file}")"
       if ! jq -e 'all(.[]; (.id | type == "string" and test("^[A-Za-z0-9_-]+$")))' <<<"${existing}" >/dev/null; then
         echo "model ${name}: invalid custom model id" >&2
         exit 1
       fi
+    done < <(jq -r '.removedModels // [] | unique | .[]' <<<"${definition}")
+    while IFS= read -r entry; do
+      wanted="$(wanted_for_entry "${entry}")"
+      name="$(jq -r '.modelName' <<<"${wanted}")"
+      existing="$(jq -c --arg name "${name}" '[.[] | select(.isLangfuseManaged == false and .modelName == $name)]' "${models_file}")"
+      if ! model_is_current "${wanted}" "${existing}" &&
+         ! jq -e 'all(.[]; (.id | type == "string" and test("^[A-Za-z0-9_-]+$")))' <<<"${existing}" >/dev/null; then
+        echo "model ${name}: invalid custom model id" >&2
+        exit 1
+      fi
+    done < <(jq -c '.models[]' <<<"${definition}")
+
+    while IFS= read -r name; do
+      existing="$(jq -c --arg name "${name}" '[.[] | select(.isLangfuseManaged == false and .modelName == $name)]' "${models_file}")"
+      count="$(jq 'length' <<<"${existing}")"
+      while IFS= read -r id; do
+        api DELETE "/api/public/models/${id}" >/dev/null
+      done < <(jq -r '.[].id' <<<"${existing}")
+      if (( count > 0 )); then
+        echo "model ${name}: removed"
+      else
+        echo "model ${name}: absent"
+      fi
+    done < <(jq -r '.removedModels // [] | unique | .[]' <<<"${definition}")
+
+    while IFS= read -r entry; do
+      wanted="$(wanted_for_entry "${entry}")"
+      name="$(jq -r '.modelName' <<<"${wanted}")"
+      existing="$(jq -c --arg name "${name}" '[.[] | select(.isLangfuseManaged == false and .modelName == $name)]' "${models_file}")"
+      if model_is_current "${wanted}" "${existing}"; then
+        echo "model ${name}: unchanged"
+        continue
+      fi
+      count="$(jq 'length' <<<"${existing}")"
       while IFS= read -r id; do
         api DELETE "/api/public/models/${id}" >/dev/null
       done < <(jq -r '.[].id' <<<"${existing}")
