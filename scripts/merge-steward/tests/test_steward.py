@@ -632,10 +632,9 @@ def test_missing_render_evidence_needs_human_after_the_deadline(monkeypatch):
     assert verdict == "needs-human" and "render evidence unavailable" in check["output"]["summary"]
 
 
-def artifact(tmp_path, head=SHA, failed=0, helmrelease=()):
+def artifact(tmp_path, head=SHA, failed=0, changes=()):
     (tmp_path / "meta.json").write_text(json.dumps({"head_sha": head, "failed": failed}))
-    (tmp_path / "helmrelease.json").write_text(json.dumps(list(helmrelease)))
-    (tmp_path / "kustomization.json").write_text("[]")
+    (tmp_path / "changes.json").write_text(json.dumps({"base": 3, "head": 3, "changes": list(changes)}))
     return str(tmp_path)
 
 
@@ -661,8 +660,9 @@ def test_artifact_for_an_older_head_publishes_nothing(tmp_path):
 
 
 def test_artifact_beats_an_older_record(tmp_path):
-    hr = {"kind": "Deployment", "name": "a", "namespace": "n", "diff": "@@ -0,0 +1,2 @@\n+kind: Deployment\n+x: 1"}
-    verdict, check = run_with_artifact(artifact(tmp_path, helmrelease=[{"diffs": [hr]}]), REQUIRED + [recorded()])
+    added = {"apiVersion": "apps/v1", "kind": "Deployment", "name": "a", "namespace": "n", "release": None,
+             "before": None, "after": {"kind": "Deployment", "x": 1}}
+    verdict, check = run_with_artifact(artifact(tmp_path, changes=[added]), REQUIRED + [recorded()])
     assert verdict == "needs-human" and check["output"]["title"].startswith("render: added")
 
 
@@ -699,9 +699,9 @@ def spektr_pr(package="ghcr.io/jlengelbrecht/agent-router-base"):
 
 def spektr_verdict(tmp_path, pr):
     (tmp_path / "meta.json").write_text(json.dumps({"head_sha": SHA, "failed": 0}))
-    (tmp_path / "helmrelease.json").write_text("")
     fixture = Path(__file__).parent / "fixtures" / "pr-1880-agent-router-base.json"
-    (tmp_path / "kustomization.json").write_text(fixture.read_text())
+    result = {"base": 3, "head": 3, "changes": json.loads(fixture.read_text())}
+    (tmp_path / "changes.json").write_text(json.dumps(result))
     files = [dict(FILES[0], filename=SPEKTR_FILE)]
     gh, app = FakeGitHub(routes(pr, runs=REQUIRED, files=files)), FakeGitHub({})
     return steward.evaluate(gh, app, pr, POLICY, 0, False, render_dir=str(tmp_path)), app.writes[0][2]
