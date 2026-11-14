@@ -116,6 +116,11 @@ spec:
             secretKeyRef:
               name: langfuse-litellm
               key: LITELLM_API_KEY
+        # Use the in-cluster web service for the assistant's MCP connection.
+        - name: LANGFUSE_MCP_BASE_URL
+          value: http://langfuse-web.ai.svc.cluster.local:3000
+        - name: LANGFUSE_MCP_ALLOWED_HOSTS
+          value: langfuse-web.ai.svc.cluster.local
     postgresql:
       deploy: false
       host: postgres-rw.database.svc.cluster.local
