@@ -31,12 +31,12 @@ EXISTING_MODELS = {
     "project-chatgpt-responses": "f0f3d0ac971855a8fa80f5500a98c96c762fd7ae3fa570886146b8629ff39be1",
     "project-claude-native": "1cf770905b8784293cf9de335cb0a19003742aa52f24daa4462bdb2574f32d00",
     "project-router": "f22493c577ac6f53932f786a83e156bbe0aae54d47e0fcbb7bf379649067c657",
-    "dub-text": "989f66778c9f331482471dc6c68eb26fc94097243a7aee405b928f3cc844a3d1",
+    "dub-text": "a12ef119fa0f159d77abbe712b348a78e40dceee9a4af10813539bf95a972205",
 }
 EXISTING_SETTINGS = {
     "router_settings": "266ab498cbfa7bf99840061fdca8950dc9b229702e7eb3f3003232ba289658db",
     "general_settings": "5a68cea07eb029c10267bd873c3659a352a5fa0b4d2e44f4e93fa2adc23394e7",
-    "litellm_settings": "97d1d04234c42f101662cc9a1d8167df26fc6ae8073929091f91c243289bbeba",
+    "litellm_settings": "e272cdc487bc40725d2c0523198ffd097bcd8baf471b8dcf93329c7b12312fca",
     "guardrails": "6665cf83066600df5a623edd544f40f7eaa7e60f0bf0db87d7f9757f980ad1a1",
     "mcp_servers": "6460d43023e34af4eb3121a2d55a3cf4bf43a873fec0a942c1275103cf1a2587",
 }
