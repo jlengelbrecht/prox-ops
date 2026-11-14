@@ -237,6 +237,21 @@ data:
         model_info:
           description: "KServe Qwen3-4B-Instruct on A2000 (~3GB VRAM, scale-to-zero, ~30-60s cold start)"
 
+      # =====================================================
+      # DeepSeek V4.1 Flash on the A5000, scaled to zero
+      # Cold start can take one to six minutes
+      # =====================================================
+      - model_name: "deepseek-v4.1-flash"
+        litellm_params:
+          model: "openai/deepseek-v4.1-flash"
+          api_base: "http://deepseek.ai.svc.cluster.local/v1"
+          api_key: "os.environ/DEEPSEEK_STRATA_API_KEY"
+          timeout: 3600
+          # Record prompts and responses for this self-hosted model.
+          turn_off_message_logging: false
+        model_info:
+          description: "Self-hosted DeepSeek on the A5000, scale to zero, with a one to six minute cold start"
+
     router_settings:
       # STORY-150: Disable retries to prevent retry storms during KServe cold starts
       # Per-model num_retries in litellm_params is NOT supported - only router_settings applies
