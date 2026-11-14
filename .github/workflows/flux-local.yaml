@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       any_changed: ${{ steps.changed-files.outputs.any_changed }}
+      workflow_changed: ${{ steps.workflow-changed.outputs.any_changed }}
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -24,6 +25,14 @@ jobs:
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           files: kubernetes/**
+
+      # Only the flate trial reads this, so a change to this file can be tried
+      # on its own pull request.
+      - name: Get Workflow Changes
+        id: workflow-changed
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
+        with:
+          files: .github/workflows/flux-local.yaml
 
   nyctr-release-match:
     name: Nyctr Release Match
@@ -163,6 +172,84 @@ jobs:
             ```diff
             ${{ steps.diff.outputs.diff }}
             ```
+
+  # flux-local is deprecated upstream in favour of flate. This job runs flate next to
+  # it so the two can be compared on real pull requests before anything is swapped.
+  # It is informational: Flux Local Success does not depend on it, and a flate
+  # failure is reported in the job summary without failing the job.
+  flate-trial:
+    name: Flate Trial
+    needs: pre-job
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    if: ${{ needs.pre-job.outputs.any_changed == 'true' || needs.pre-job.outputs.workflow_changed == 'true' }}
+    env:
+      # renovate: datasource=docker depName=ghcr.io/home-operations/flate
+      FLATE_VERSION: "0.7.3@sha256:a68959461e12234f030adf3a8c51b50af419326dd4ca35ad35048ad01005fedd"
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The container gets no token, a read-only checkout and no capabilities.
+      # The private homelab-identity source has no credentials here, so
+      # --allow-missing-kinds lets flate skip it and say so in its warnings.
+      - name: Run flate test and diff
+        run: |
+          set -u
+          out="$RUNNER_TEMP/flate"
+          mkdir -p "$out"
+          flate() {
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+              --tmpfs /tmp:exec,mode=1777 \
+              -v "$PWD:/github/workspace:ro" -w /github/workspace \
+              "ghcr.io/home-operations/flate:${FLATE_VERSION}" "$@"
+          }
+          common=(--path kubernetes/flux/cluster --no-progress
+            --allow-missing-kinds Secret,CustomResourceDefinition)
+
+          start=$SECONDS
+          test_rc=0
+          flate test "${common[@]}" > "$out/test.out" 2> "$out/test.err" || test_rc=$?
+          test_secs=$((SECONDS - start))
+
+          start=$SECONDS
+          diff_rc=0
+          flate diff "${common[@]}" --base "origin/${BASE_REF}" -o github \
+            > "$out/diff.out" 2> "$out/diff.err" || diff_rc=$?
+          diff_secs=$((SECONDS - start))
+
+          fence='```'
+          {
+            echo "## Flate trial"
+            echo
+            echo "| Command | Exit code | Seconds |"
+            echo "| --- | --- | --- |"
+            echo "| flate test | $test_rc | $test_secs |"
+            echo "| flate diff | $diff_rc | $diff_secs |"
+            for name in test diff; do
+              echo
+              echo "### flate $name: output (last 150 lines)"
+              echo
+              echo "$fence"
+              tail -n 150 "$out/$name.out" | cut -c1-400
+              echo "$fence"
+              echo
+              echo "### flate $name: messages (last 80 lines)"
+              echo
+              echo "$fence"
+              tail -n 80 "$out/$name.err" | cut -c1-400
+              echo "$fence"
+            done
+          } > "$out/summary.md" || true
+          head -c 900000 "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "flate test exit $test_rc in ${test_secs}s, flate diff exit $diff_rc in ${diff_secs}s"
 
   flux-local-status:
     name: Flux Local Success
