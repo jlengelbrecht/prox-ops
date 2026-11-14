@@ -1,0 +1,142 @@
+---
+# Holds the script that reconciles Langfuse project settings through its public API.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langfuse-config-scripts
+  namespace: ai
+data:
+  reconcile.sh: |
+    #!/bin/bash
+    # Apply declared model prices and the LiteLLM connection without logging keys.
+    set -euo pipefail
+
+    for required in LANGFUSE_HOST LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LITELLM_API_KEY; do
+      if [[ -z "${!required:-}" ]]; then
+        echo "${required} is required" >&2
+        exit 1
+      fi
+    done
+    DEFINITION_FILE="${DEFINITION_FILE:-/config/definition.yaml}"
+    if [[ ! -s "${DEFINITION_FILE}" ]]; then
+      echo "DEFINITION_FILE is missing or empty: ${DEFINITION_FILE}" >&2
+      exit 1
+    fi
+
+    # Keep Basic authentication out of process arguments and logs.
+    auth_file="$(mktemp /tmp/langfuse-auth.XXXXXX)"
+    response_file="$(mktemp /tmp/langfuse-response.XXXXXX)"
+    models_file="$(mktemp /tmp/langfuse-models.XXXXXX)"
+    page_file="$(mktemp /tmp/langfuse-page.XXXXXX)"
+    next_file="$(mktemp /tmp/langfuse-next.XXXXXX)"
+    trap 'rm -f "${auth_file}" "${response_file}" "${models_file}" "${page_file}" "${next_file}"' EXIT
+    chmod 0600 "${auth_file}" "${response_file}"
+    basic="$(printf '%s:%s' "${LANGFUSE_PUBLIC_KEY}" "${LANGFUSE_SECRET_KEY}" | base64 | tr -d '\n')"
+    printf 'header = "Authorization: Basic %s"\n' "${basic}" >"${auth_file}"
+    unset basic
+
+    api() {
+      local method="$1" path="$2" status
+      shift 2
+      local -a retry=()
+      if [[ "${method}" == GET ]]; then retry=(--retry 3 --retry-connrefused); fi
+      status="$(curl --silent --show-error --connect-timeout 5 --max-time 30 "${retry[@]}" --config "${auth_file}" \
+        --request "${method}" --output "${response_file}" --write-out '%{http_code}' \
+        "${LANGFUSE_HOST%/}${path}" "$@")" || {
+          echo "${method} ${path}: transport error" >&2
+          return 1
+        }
+      if [[ ! "${status}" =~ ^2[0-9][0-9]$ ]]; then
+        echo "${method} ${path}: HTTP ${status}" >&2
+        if [[ "${path}" == /api/public/llm-connections ]]; then
+          jq -r '(.message // "") | tostring | split(env.LANGFUSE_PUBLIC_KEY) | join("***") | split(env.LANGFUSE_SECRET_KEY) | join("***") | split(env.LITELLM_API_KEY) | join("***") | .[:300]' "${response_file}" >&2 || true
+        else
+          head -c 500 "${response_file}" >&2
+          echo >&2
+        fi
+        return 1
+      fi
+      if [[ "${path}" != /api/public/llm-connections ]]; then
+        cat "${response_file}"
+      fi
+    }
+
+    definition="$(yq -o=json '.' "${DEFINITION_FILE}")"
+    duplicate="$(jq -r '[.models[].name] | group_by(ascii_downcase) | map(select(length > 1) | .[0]) | first // empty' <<<"${definition}")"
+    if [[ -n "${duplicate}" ]]; then
+      echo "duplicate model name: ${duplicate}" >&2
+      exit 1
+    fi
+    duplicate="$(jq -r '[.models[] | .name as $owner | .names[] | {name: ., lower: ascii_downcase, owner: $owner}] | group_by(.lower) | map(select([.[].owner] | unique | length > 1) | .[0].name) | first // empty' <<<"${definition}")"
+    if [[ -n "${duplicate}" ]]; then
+      echo "name listed under two models: ${duplicate}" >&2
+      exit 1
+    fi
+    printf '[]' >"${models_file}"
+    page=1
+    while :; do
+      path="/api/public/models?page=${page}&limit=100"
+      api GET "${path}" >"${page_file}"
+      if ! jq -e '.meta.totalPages | if type == "number" then (tostring | test("^(0|[1-9][0-9]*)$")) else false end' "${page_file}" >/dev/null; then
+        echo "GET ${path}: invalid meta.totalPages" >&2
+        exit 1
+      fi
+      total_pages="$(jq -r '.meta.totalPages' "${page_file}")"
+      jq -s '.[0] + .[1].data' "${models_file}" "${page_file}" >"${next_file}"
+      mv "${next_file}" "${models_file}"
+      if (( page >= total_pages )); then break; fi
+      ((page += 1))
+    done
+    jq 'unique_by(.id)' "${models_file}" >"${next_file}"
+    mv "${next_file}" "${models_file}"
+    declared_names="$(jq -c '[.models[].name]' <<<"${definition}")"
+    while IFS= read -r foreign; do
+      echo "model ${foreign}: undeclared custom entry"
+    done < <(jq -r --argjson names "${declared_names}" \
+      '.[] | select(.isLangfuseManaged == false) | .modelName as $name | select(($names | index($name)) == null) | $name' "${models_file}")
+
+    # Escape each regex metacharacter before joining exact model names.
+    while IFS= read -r entry; do
+      wanted="$(jq -c '
+        def escape_name:
+          explode | map(. as $c | if ([46, 92, 94, 36, 124, 63, 42, 43, 40, 41, 91, 93, 123, 125] | index($c)) != null
+            then [92, $c] else [$c] end) | flatten | implode;
+        {modelName: .name,
+         matchPattern: ("(?i)^(" + (.names | map(escape_name) | join("|")) + ")$"),
+         unit: "TOKENS",
+         inputPrice: (.inputPerMillion / 1000000),
+         outputPrice: (.outputPerMillion / 1000000)}' <<<"${entry}")"
+      name="$(jq -r '.modelName' <<<"${wanted}")"
+      existing="$(jq -c --arg name "${name}" '[.[] | select(.isLangfuseManaged == false and .modelName == $name)]' "${models_file}")"
+      if jq -e --argjson wanted "${wanted}" '
+        length == 1 and
+        (.[0].matchPattern == $wanted.matchPattern) and
+        (.[0].unit == $wanted.unit) and
+        (((.[0].inputPrice // -999) - $wanted.inputPrice) | fabs < 1e-15) and
+        (((.[0].outputPrice // -999) - $wanted.outputPrice) | fabs < 1e-15)
+      ' <<<"${existing}" >/dev/null; then
+        echo "model ${name}: unchanged"
+        continue
+      fi
+      count="$(jq 'length' <<<"${existing}")"
+      if ! jq -e 'all(.[]; (.id | type == "string" and test("^[A-Za-z0-9_-]+$")))' <<<"${existing}" >/dev/null; then
+        echo "model ${name}: invalid custom model id" >&2
+        exit 1
+      fi
+      while IFS= read -r id; do
+        api DELETE "/api/public/models/${id}" >/dev/null
+      done < <(jq -r '.[].id' <<<"${existing}")
+      printf '%s' "${wanted}" | api POST /api/public/models \
+        --header 'Content-Type: application/json' --data @- >/dev/null
+      if (( count > 0 )); then
+        echo "model ${name}: replaced"
+      else
+        echo "model ${name}: created"
+      fi
+    done < <(jq -c '.models[]' <<<"${definition}")
+
+    jq -cn --argjson connection "$(jq -c '.llmConnection' <<<"${definition}")" \
+      '$connection + {secretKey: env.LITELLM_API_KEY}' |
+      api PUT /api/public/llm-connections \
+        --header 'Content-Type: application/json' --data @- >/dev/null
+    echo "connection upserted"

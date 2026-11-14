@@ -22,6 +22,15 @@ spec:
         - ports:
             - port: "3000"
               protocol: TCP
+    # Allow the configuration job to call the public API.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: langfuse-config
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP
   egress:
     - toEndpoints:
         - matchLabels:
@@ -313,4 +322,38 @@ spec:
             - port: "53"
               protocol: UDP
             - port: "53"
+              protocol: TCP
+---
+# Configuration job: cluster DNS and the Langfuse web API only.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: langfuse-config
+  namespace: ai
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: langfuse-config
+  ingress:
+    - {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ai
+            app.kubernetes.io/name: langfuse
+            app.kubernetes.io/instance: langfuse
+            app.kubernetes.io/component: web
+      toPorts:
+        - ports:
+            - port: "3000"
               protocol: TCP
