@@ -137,6 +137,51 @@ class ContentLoggingTests(unittest.TestCase):
                     self.assertIs(details["turn_off_message_logging"], False)
                     self.assertIs(own["turn_off_message_logging"], False)
 
+    def test_redaction_headers_prevent_opt_in_without_latching(self):
+        for name in (
+            "x-litellm-enable-message-redaction",
+            "litellm-enable-message-redaction",
+            "X-LiteLLM-Enable-Message-Redaction",
+            "LiteLLM-Enable-Message-Redaction",
+        ):
+            with self.subTest(name=name):
+                logging_obj = LoggingObject(details={}, own={})
+                request = self.request(logging_obj=logging_obj)
+                request["proxy_server_request"] = {"headers": {name: "true"}}
+                self.run_hook(request)
+                self.assertEqual(logging_obj.model_call_details["standard_callback_dynamic_params"], {})
+                self.assertEqual(logging_obj.standard_callback_dynamic_params, {})
+                self.assertEqual(logging_obj._local_model_content_logging_state["changes"], [])
+                self.assertIs(logging_obj._local_model_content_logging_state["blocked"], False)
+                request["proxy_server_request"]["headers"][name] = ""
+                self.run_hook(request)
+                self.assertIs(logging_obj.model_call_details["standard_callback_dynamic_params"]["turn_off_message_logging"], False)
+                self.assertIs(logging_obj.standard_callback_dynamic_params["turn_off_message_logging"], False)
+
+    def test_falsy_or_malformed_redaction_headers_do_not_prevent_opt_in(self):
+        for proxy_request in (
+            {"headers": {"x-litellm-enable-message-redaction": False}},
+            {"headers": {"litellm-enable-message-redaction": ""}},
+            "untrusted",
+            {"headers": "untrusted"},
+        ):
+            with self.subTest(proxy_request=proxy_request):
+                logging_obj = LoggingObject(details={})
+                request = self.request(logging_obj=logging_obj)
+                request["proxy_server_request"] = proxy_request
+                self.run_hook(request)
+                self.assertIs(logging_obj.model_call_details["standard_callback_dynamic_params"]["turn_off_message_logging"], False)
+
+    def test_header_shaped_body_fields_do_not_prevent_opt_in(self):
+        logging_obj = LoggingObject(details={})
+        request = self.request(logging_obj=logging_obj)
+        request["data"] = {
+            "headers": {"x-litellm-enable-message-redaction": "true"},
+            "proxy_server_request": {"headers": {"litellm-enable-message-redaction": "true"}},
+        }
+        self.run_hook(request)
+        self.assertIs(logging_obj.model_call_details["standard_callback_dynamic_params"]["turn_off_message_logging"], False)
+
     def test_unflagged_deployment_preserves_unowned_value(self):
         logging_obj = LoggingObject(details={"turn_off_message_logging": "external"})
         self.run_hook(self.request(model_info={"id": "cloud-1"}, logging_obj=logging_obj))
