@@ -31,13 +31,13 @@ EXISTING_MODELS = {
     "project-chatgpt-responses": "f0f3d0ac971855a8fa80f5500a98c96c762fd7ae3fa570886146b8629ff39be1",
     "project-claude-native": "1cf770905b8784293cf9de335cb0a19003742aa52f24daa4462bdb2574f32d00",
     "project-router": "f22493c577ac6f53932f786a83e156bbe0aae54d47e0fcbb7bf379649067c657",
-    "dub-text": "a12ef119fa0f159d77abbe712b348a78e40dceee9a4af10813539bf95a972205",
-    "deepseek-v4.1-flash": "2609dcaaed9e24715d679e341aecd62a0b7af19f400483e2bf820b5ca2f77559",
+    "dub-text": "9ee754bd98abf742b069df66b381e160cf5daf02efec40d0386b9e7a7b4655db",
+    "deepseek-v4.1-flash": "67c7cf2798b98edf545f1998ddb42f733bb010e22291edc31f9257a4c7d27781",
 }
 EXISTING_SETTINGS = {
     "router_settings": "266ab498cbfa7bf99840061fdca8950dc9b229702e7eb3f3003232ba289658db",
     "general_settings": "5a68cea07eb029c10267bd873c3659a352a5fa0b4d2e44f4e93fa2adc23394e7",
-    "litellm_settings": "e272cdc487bc40725d2c0523198ffd097bcd8baf471b8dcf93329c7b12312fca",
+    "litellm_settings": "3aceed54358370cdd0b45fd8c9fc0e31b0a79e3742840b778294abb526694b0c",
     "guardrails": "6665cf83066600df5a623edd544f40f7eaa7e60f0bf0db87d7f9757f980ad1a1",
     "mcp_servers": "6460d43023e34af4eb3121a2d55a3cf4bf43a873fec0a942c1275103cf1a2587",
 }
