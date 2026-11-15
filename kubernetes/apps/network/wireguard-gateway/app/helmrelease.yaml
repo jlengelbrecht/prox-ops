@@ -21,7 +21,7 @@ spec:
             image:
               repository: lscr.io/linuxserver/wireguard
               # renovate: datasource=docker depName=lscr.io/linuxserver/wireguard
-              tag: 1.0.20250521
+              tag: 1.0.20250521@sha256:d3e46bc7a1510142afb30b4f5375c7d4470c75ed89483e798813c1acd6e7c1cb
             command:
               - /bin/sh
               - -ec
@@ -39,6 +39,22 @@ spec:
                 iptables -I INPUT 1 -i wg0 -j DROP
                 iptables -S FORWARD
                 iptables -S INPUT
+                # Facts for dropping privileged mode from the tunnel container.
+                # This container has NET_ADMIN only and shares the pod's network
+                # namespace, so what works here works there. Report only: none
+                # of these can stop the pod from starting.
+                echo "check ip_forward=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo unreadable)"
+                if ip link add wgcheck type wireguard 2>/dev/null; then
+                  ip link del wgcheck 2>/dev/null || true
+                  echo "check wireguard-link=ok"
+                else
+                  echo "check wireguard-link=failed"
+                fi
+                if iptables -t nat -S >/dev/null 2>&1; then
+                  echo "check nat-table=ok"
+                else
+                  echo "check nat-table=failed"
+                fi
             securityContext:
               capabilities:
                 add: [NET_ADMIN]
@@ -47,7 +63,7 @@ spec:
             image:
               repository: lscr.io/linuxserver/wireguard
               # renovate: datasource=docker depName=lscr.io/linuxserver/wireguard
-              tag: 1.0.20250521
+              tag: 1.0.20250521@sha256:d3e46bc7a1510142afb30b4f5375c7d4470c75ed89483e798813c1acd6e7c1cb
             env:
               # Container config
               - name: PUID

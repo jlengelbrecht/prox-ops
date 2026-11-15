@@ -30,19 +30,8 @@ spec:
       ports:
         - protocol: TCP
           port: 32400
-    # Allow DNS for container startup (required)
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
+    # No DNS: the tunnel config names the VPS by address and the container
+    # resolves nothing at startup.
     # Allow WireGuard handshake responses to Oracle VPS
     - to:
         - ipBlock:
