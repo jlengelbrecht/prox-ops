@@ -231,11 +231,10 @@ data:
           model: "openai/qwen3-4b-instruct"
           api_base: "http://qwen3-4b-dub-predictor.ai.svc.cluster.local/v1"
           api_key: "dummy"
-          # Record content for this local model.
-          turn_off_message_logging: false
           timeout: 180        # Cold start (~30-60s) plus generation
         model_info:
           description: "KServe Qwen3-4B-Instruct on A2000 (~3GB VRAM, scale-to-zero, ~30-60s cold start)"
+          log_message_content: true
 
       # =====================================================
       # DeepSeek V4.1 Flash on the A5000, scaled to zero
@@ -247,10 +246,9 @@ data:
           api_base: "http://deepseek.ai.svc.cluster.local/v1"
           api_key: "os.environ/DEEPSEEK_STRATA_API_KEY"
           timeout: 3600
-          # Record prompts and responses for this self-hosted model.
-          turn_off_message_logging: false
         model_info:
           description: "Self-hosted DeepSeek on the A5000, scale to zero, with a one to six minute cold start"
+          log_message_content: true
 
     router_settings:
       # STORY-150: Disable retries to prevent retry storms during KServe cold starts
@@ -356,6 +354,7 @@ data:
       callbacks:
         - project_router_guard.proxy_handler_instance
         - project_grok_native.proxy_handler_instance
+        - local_model_content_logging.proxy_handler_instance
         - langfuse_otel
       # Record content only for models that opt in.
       turn_off_message_logging: true
