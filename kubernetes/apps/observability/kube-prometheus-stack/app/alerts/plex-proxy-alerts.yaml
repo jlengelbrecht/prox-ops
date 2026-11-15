@@ -1,0 +1,49 @@
+---
+# The Plex proxy path: family members outside the house reach Plex through a VPS
+# that tunnels to the wireguard-gateway pod in the network namespace.
+#
+# These rules watch the cluster end of that path only. The gateway has no
+# exporter, so they read kube-state-metrics. The gateway's liveness probe
+# restarts the container when the tunnel has had no handshake for 3 minutes, so
+# a restart is the signal that the tunnel dropped. A VPS that is up and tunnelled
+# but serves errors is not seen here; the proxy workflow's verify job covers that.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: plex-proxy-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: plex-proxy-alerts
+      rules:
+        - alert: PlexProxyGatewayDown
+          expr: kube_deployment_status_replicas_available{namespace="network",deployment="wireguard-gateway"} < 1
+          for: 10m
+          labels:
+            severity: critical
+            component: plex-proxy
+          annotations:
+            summary: "The Plex proxy gateway has had no ready pod for 10 minutes"
+            description: "network/wireguard-gateway has no available replica, so streaming.homelab0.org cannot reach Plex. Check the pod's events and the app container's log in the network namespace."
+
+        - alert: PlexProxyTunnelRestarted
+          expr: increase(kube_pod_container_status_restarts_total{namespace="network",container="app",pod=~"wireguard-gateway-.*"}[30m]) > 0
+          labels:
+            severity: warning
+            component: plex-proxy
+          annotations:
+            summary: "The Plex proxy tunnel container restarted"
+            description: "The wireguard-gateway app container restarted {{ $value | humanize }} times in 30 minutes. Its liveness probe restarts it when the tunnel to the VPS has had no handshake for 3 minutes, so the VPS or the path to it was probably unreachable."
+
+        - alert: PlexProxyGatewayMissing
+          expr: absent(kube_deployment_status_replicas_available{namespace="network",deployment="wireguard-gateway"})
+          for: 30m
+          labels:
+            severity: warning
+            component: plex-proxy
+          annotations:
+            summary: "The Plex proxy gateway deployment is not reported"
+            description: "kube-state-metrics reports no network/wireguard-gateway deployment. It may have been removed, or kube-state-metrics is not being scraped."
