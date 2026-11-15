@@ -28,6 +28,25 @@ spec:
       features:
         telemetryEnabled: false
       replicas: 1
+      # Web and worker do not need Kubernetes API credentials.
+      serviceAccount:
+        automountServiceAccountToken: false
+      # Run web and worker as the image's non-root user with default seccomp.
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      # Prevent privilege escalation and remove Linux capabilities.
+      # Leave readOnlyRootFilesystem for later; Next.js cache and migrations need testing.
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      # Restart web and worker when their referenced Secrets change.
+      deployment:
+        annotations:
+          secret.reloader.stakater.com/reload: "langfuse-secrets,langfuse-valkey,langfuse-litellm"
       web:
         replicas: 1
         service:
