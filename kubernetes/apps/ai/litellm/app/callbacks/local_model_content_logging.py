@@ -3,7 +3,7 @@
 Only the selected deployment's model_info may override the proxy's global
 redaction policy; request fields can be supplied by clients.
 Validated against LiteLLM 1.108.0; re-validate on upgrade because this hook fails silent.
-The x-litellm-enable-message-redaction header is not checked here and can be overridden.
+Caller-supplied message redaction headers preserve the proxy's redaction policy.
 """
 
 from litellm.integrations.custom_logger import CustomLogger
@@ -36,6 +36,16 @@ class LocalModelContentLogging(CustomLogger):
                 state["changes"].clear()
                 return kwargs
             if state["blocked"]:
+                return kwargs
+
+            proxy_request = kwargs.get("proxy_server_request")
+            headers = proxy_request.get("headers") if isinstance(proxy_request, dict) else None
+            if isinstance(headers, dict) and any(
+                isinstance(name, str)
+                and name.lower() in ("x-litellm-enable-message-redaction", "litellm-enable-message-redaction")
+                and value
+                for name, value in headers.items()
+            ):
                 return kwargs
 
             details = logging_obj.model_call_details
