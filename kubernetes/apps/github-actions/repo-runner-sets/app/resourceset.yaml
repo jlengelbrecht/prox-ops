@@ -154,7 +154,7 @@ spec:
         # PostgreSQL's apt repository (PGDG): PostgreSQL 18 server and client
         # for runner-build. Ubuntu 24.04 ships only PostgreSQL 16.
         - apt.postgresql.org
-        # runner-steward: hash-locked Python wheels for pr-agent and flux-local
+        # runner-steward: hash-locked Python wheels for pr-agent
         # (PyPI index plus its file host), and helm from its release host (aqua
         # verifies the published checksum).
         - pypi.org
@@ -227,8 +227,8 @@ spec:
       minRunners: 0
       maxRunners: 1
       # Built by the private runner-images repository and pinned by digest:
-      # runner plus pr-agent, flux-local, helm and flux.
-      runnerImage: ghcr.io/jlengelbrecht/runner-steward@sha256:8c692169ae301ccd8ee35b39e3017b451e42f83a10c55b7984cacb403eecb7b0
+      # runner plus pr-agent, helm and flux.
+      runnerImage: ghcr.io/jlengelbrecht/runner-steward@sha256:e81bbd14ad81523f0b59c595314989b30c337faf383c55c7ff9804f3060c8d1b
       # LiteLLM, reached directly at http://litellm.ai.svc.cluster.local:4000.
       # Deliberately not through the envoy-internal gateway: that rule is
       # L3/L4 and would reach every internal route. Nothing else internal is
