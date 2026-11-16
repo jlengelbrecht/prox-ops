@@ -1,6 +1,5 @@
-# Pod Security baseline currently supplies seccomp, AppArmor, procMount, sysctl and
-# capability limits. Do not raise enforce to privileged unless the same change
-# adds equivalent rules to this policy.
+# Baseline safeguards now live here. Any further relaxation needs live evidence
+# that Docker cannot run without it.
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -126,6 +125,13 @@ spec:
           k == 'k8s.v1.cni.cncf.io/network-status' || (!k.contains('cni.cncf.io') && !k.contains('multus') && !k.contains('cilium.io')))
       message: "Pod annotation keys must not contain cni.cncf.io, multus or cilium.io."
     - expression: >-
+        !has(object.metadata.annotations) ||
+        object.metadata.annotations.all(k,
+          !k.startsWith('container.apparmor.security.beta.kubernetes.io/') ||
+          object.metadata.annotations[k] == 'runtime/default' ||
+          object.metadata.annotations[k].startsWith('localhost/'))
+      message: "Legacy AppArmor annotations must use runtime/default or localhost/ profiles."
+    - expression: >-
         object.spec.containers.all(c,
           !has(c.resources) ||
           ((!has(c.resources.limits) || c.resources.limits.all(k, !k.contains('/'))) &&
@@ -152,6 +158,48 @@ spec:
           (!has(t.key) || t.key != 'node-role.kubernetes.io/control-plane') &&
           !(has(t.operator) && t.operator == 'Exists' && (!has(t.key) || t.key == '')))
       message: "Pod must not tolerate control-plane or all taints."
+    - expression: >-
+        object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) || c.securityContext.capabilities.add.all(cap, cap in ['AUDIT_WRITE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'KILL', 'MKNOD', 'NET_BIND_SERVICE', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYS_CHROOT', 'SYS_ADMIN', 'NET_ADMIN', 'NET_RAW', 'SYS_RESOURCE'])) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c, !has(c.securityContext) || !has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) || c.securityContext.capabilities.add.all(cap, cap in ['AUDIT_WRITE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'KILL', 'MKNOD', 'NET_BIND_SERVICE', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYS_CHROOT', 'SYS_ADMIN', 'NET_ADMIN', 'NET_RAW', 'SYS_RESOURCE']))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, !has(c.securityContext) || !has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) || c.securityContext.capabilities.add.all(cap, cap in ['AUDIT_WRITE', 'CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'KILL', 'MKNOD', 'NET_BIND_SERVICE', 'SETFCAP', 'SETGID', 'SETPCAP', 'SETUID', 'SYS_CHROOT', 'SYS_ADMIN', 'NET_ADMIN', 'NET_RAW', 'SYS_RESOURCE'])))
+      message: "Only baseline capabilities and SYS_ADMIN, NET_ADMIN, NET_RAW, SYS_RESOURCE may be added."
+    - expression: >-
+        object.spec.containers.all(c, c.image.startsWith('docker.io/') || c.image.startsWith('ghcr.io/') || c.image.startsWith('quay.io/') || c.image.startsWith('registry.k8s.io/')) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c, c.image.startsWith('docker.io/') || c.image.startsWith('ghcr.io/') || c.image.startsWith('quay.io/') || c.image.startsWith('registry.k8s.io/'))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, c.image.startsWith('docker.io/') || c.image.startsWith('ghcr.io/') || c.image.startsWith('quay.io/') || c.image.startsWith('registry.k8s.io/')))
+      message: "Container images must use docker.io/, ghcr.io/, quay.io/ or registry.k8s.io/."
+    - expression: >-
+        has(object.spec.securityContext) && has(object.spec.securityContext.seccompProfile) && has(object.spec.securityContext.seccompProfile.type) && object.spec.securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.seccompProfile) || !has(c.securityContext.seccompProfile.type) || c.securityContext.seccompProfile.type == 'RuntimeDefault') &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c, !has(c.securityContext) || !has(c.securityContext.seccompProfile) || !has(c.securityContext.seccompProfile.type) || c.securityContext.seccompProfile.type == 'RuntimeDefault')) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, !has(c.securityContext) || !has(c.securityContext.seccompProfile) || !has(c.securityContext.seccompProfile.type) || c.securityContext.seccompProfile.type == 'RuntimeDefault'))
+      message: "Pod seccompProfile.type must be RuntimeDefault; container seccomp profiles must also be RuntimeDefault."
+    - expression: >-
+        (!has(object.spec.securityContext) || !has(object.spec.securityContext.appArmorProfile) || !has(object.spec.securityContext.appArmorProfile.type) || object.spec.securityContext.appArmorProfile.type != 'Unconfined') &&
+        object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.appArmorProfile) || !has(c.securityContext.appArmorProfile.type) || c.securityContext.appArmorProfile.type != 'Unconfined') &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c, !has(c.securityContext) || !has(c.securityContext.appArmorProfile) || !has(c.securityContext.appArmorProfile.type) || c.securityContext.appArmorProfile.type != 'Unconfined')) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, !has(c.securityContext) || !has(c.securityContext.appArmorProfile) || !has(c.securityContext.appArmorProfile.type) || c.securityContext.appArmorProfile.type != 'Unconfined'))
+      message: "Pod and container appArmorProfile must not be Unconfined."
+    - expression: >-
+        object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.procMount) || c.securityContext.procMount in ['Default', 'Unmasked']) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c, !has(c.securityContext) || !has(c.securityContext.procMount) || c.securityContext.procMount in ['Default', 'Unmasked'])) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, !has(c.securityContext) || !has(c.securityContext.procMount) || c.securityContext.procMount in ['Default', 'Unmasked']))
+      message: "Container procMount must be Default or Unmasked."
+    - expression: >-
+        !has(object.spec.securityContext) || !has(object.spec.securityContext.sysctls) || size(object.spec.securityContext.sysctls) == 0
+      message: "Pod sysctls must be absent or empty."
+    - expression: >-
+        (!has(object.spec.securityContext) || !has(object.spec.securityContext.seLinuxOptions)) &&
+        object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.seLinuxOptions)) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c, !has(c.securityContext) || !has(c.securityContext.seLinuxOptions))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, !has(c.securityContext) || !has(c.securityContext.seLinuxOptions)))
+      message: "Pod and container seLinuxOptions must be absent."
+    - expression: >-
+        (!has(object.spec.securityContext) || !has(object.spec.securityContext.windowsOptions)) &&
+        object.spec.containers.all(c, !has(c.securityContext) || !has(c.securityContext.windowsOptions)) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.all(c, !has(c.securityContext) || !has(c.securityContext.windowsOptions))) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, !has(c.securityContext) || !has(c.securityContext.windowsOptions)))
+      message: "Pod and container windowsOptions must be absent."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
