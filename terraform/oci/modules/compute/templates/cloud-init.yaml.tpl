@@ -13,6 +13,7 @@ packages:
   - jq
   - htop
   - vim
+  - unattended-upgrades
 %{ if enable_wireguard ~}
   - wireguard-tools
   - iptables-persistent
@@ -28,12 +29,39 @@ packages:
 %{ endif ~}
 
 write_files:
-  # Sysctl for IP forwarding
+  # Forwarding is only needed for the plain port-forward mode. With the nginx
+  # proxy, nginx on this host opens its own connection over wg0, so nothing is
+  # routed through the VPS and forwarding stays off.
   - path: /etc/sysctl.d/99-forwarding.conf
     permissions: '0644'
     content: |
+%{ if enable_wireguard && wg_forward_port > 0 && !enable_nginx_proxy ~}
       net.ipv4.ip_forward = 1
       net.ipv4.conf.all.forwarding = 1
+%{ else ~}
+      net.ipv4.ip_forward = 0
+      net.ipv4.conf.all.forwarding = 0
+%{ endif ~}
+
+  # SSH: keys only, no root login, no forwarding of any kind.
+  - path: /etc/ssh/sshd_config.d/10-hardening.conf
+    permissions: '0644'
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin no
+      MaxAuthTries 3
+      X11Forwarding no
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      PermitTunnel no
+
+  # Install security updates automatically between monthly rebuilds.
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: '0644'
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
 
 %{ if enable_wireguard ~}
   # WireGuard configuration
@@ -115,7 +143,7 @@ write_files:
         fi
       fi
 
-      log "Health check passed"
+      # Only failures are logged; a line every minute grew the log without limit.
       exit 0
 %{ endif ~}
 
@@ -599,6 +627,9 @@ runcmd:
   # Apply sysctl settings
   - sysctl -p /etc/sysctl.d/99-forwarding.conf
 
+  # Pick up the SSH hardening drop-in
+  - sshd -t && systemctl reload ssh || echo "ERROR: sshd config test failed" >> /var/log/cloud-init-custom.log
+
 %{ if enable_wireguard ~}
   # Enable and start WireGuard
   - systemctl enable wg-quick@wg0
@@ -737,13 +768,31 @@ runcmd:
     iptables -P OUTPUT ACCEPT || true
 
     echo "Flushed Oracle default iptables rules" >> /var/log/cloud-init-custom.log
+
+    # Save the flushed state so a reboot does not load the image's saved
+    # rules (with Oracle's REJECT) back in. ufw restores its own rules.
+    if command -v netfilter-persistent &> /dev/null; then
+      netfilter-persistent save || true
+    fi
   - |
     if command -v ufw &> /dev/null; then
-      ufw allow 22/tcp
+      ufw default deny incoming
+      ufw default allow outgoing
+      # Same sources as the OCI security list, so the host enforces them too.
+%{ for cidr in ssh_allowed_cidrs ~}
+      ufw allow from ${cidr} to any port 22 proto tcp
+%{ endfor ~}
 %{ if enable_wireguard ~}
-      ufw allow ${wg_listen_port}/udp
-      # Enable routing for forwarded traffic (required for NAT/DNAT to work)
+%{ for cidr in wg_peer_allowed_cidrs ~}
+      ufw allow from ${cidr} to any port ${wg_listen_port} proto udp
+%{ endfor ~}
+%{ if wg_forward_port > 0 && !enable_nginx_proxy ~}
+      # Port-forward mode routes client traffic into the tunnel
       ufw default allow routed
+%{ else ~}
+      # The nginx proxy connects to Plex itself; nothing is routed through
+      ufw default deny routed
+%{ endif ~}
 %{ endif ~}
 %{ if enable_nginx_proxy ~}
       # Allow HTTPS for nginx reverse proxy (Cloudflare traffic)
