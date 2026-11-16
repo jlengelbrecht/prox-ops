@@ -82,12 +82,6 @@ variable "ssh_allowed_cidrs" {
   description = "CIDR blocks allowed for SSH access"
   type        = list(string)
   default     = ["0.0.0.0/0"]
-
-  # The values are written into a shell command in cloud-init.
-  validation {
-    condition     = alltrue([for c in var.ssh_allowed_cidrs : can(cidrhost(c, 0)) && can(regex("^[0-9./]+$", c))])
-    error_message = "Each ssh_allowed_cidrs entry must be an IPv4 CIDR block."
-  }
 }
 
 variable "additional_ingress_ports" {
@@ -113,12 +107,6 @@ variable "wg_peer_allowed_cidrs" {
   description = "CIDR blocks allowed for WireGuard connections (recommend restricting to home IP)"
   type        = list(string)
   default     = ["0.0.0.0/0"]
-
-  # The values are written into a shell command in cloud-init.
-  validation {
-    condition     = alltrue([for c in var.wg_peer_allowed_cidrs : can(cidrhost(c, 0)) && can(regex("^[0-9./]+$", c))])
-    error_message = "Each wg_peer_allowed_cidrs entry must be an IPv4 CIDR block."
-  }
 }
 
 variable "wg_listen_port" {
