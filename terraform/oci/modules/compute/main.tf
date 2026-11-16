@@ -76,7 +76,7 @@ locals {
 
   wg_public_key = var.enable_wireguard ? (
     local.use_static_wg_key
-    ? var.wg_public_key # Use provided public key directly (no wg binary needed)
+    ? var.wg_public_key  # Use provided public key directly (no wg binary needed)
     : trimspace(data.local_file.wg_public_key[0].content)
   ) : ""
 }
@@ -273,7 +273,7 @@ resource "oci_core_instance" "main" {
   }
 
   create_vnic_details {
-    subnet_id = oci_core_subnet.main.id
+    subnet_id        = oci_core_subnet.main.id
     # Don't auto-assign public IP if using reserved IP
     assign_public_ip = var.use_reserved_public_ip ? false : true
     display_name     = "${var.instance_name}-vnic"
@@ -291,9 +291,6 @@ resource "oci_core_instance" "main" {
       wg_peer_allowed_ips  = "${var.wg_peer_allowed_ips},${var.wg_forward_target_ip}/32"
       wg_forward_port      = var.wg_forward_port
       wg_forward_target_ip = var.wg_forward_target_ip
-      # Host firewall uses the same sources as the security list
-      ssh_allowed_cidrs     = var.ssh_allowed_cidrs
-      wg_peer_allowed_cidrs = var.wg_peer_allowed_cidrs
       # Nginx reverse proxy configuration
       enable_nginx_proxy   = var.enable_nginx_proxy
       cloudflare_dns_only  = var.cloudflare_dns_only
@@ -304,13 +301,6 @@ resource "oci_core_instance" "main" {
       nginx_origin_key     = var.nginx_origin_key
       nginx_backend_url    = var.nginx_backend_url
     }))
-  }
-
-  # Metadata service v2 only: requests need the Oracle authorization header,
-  # so a request forged through the proxy cannot read user_data (which holds
-  # the tunnel key and the DNS token). cloud-init on Ubuntu uses v2.
-  instance_options {
-    are_legacy_imds_endpoints_disabled = true
   }
 
   freeform_tags = var.freeform_tags
