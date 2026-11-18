@@ -27,7 +27,7 @@ RENDERER = _load('backlog_function', 'scripts/hindsight-backlog-function.py')
 OWNER, READER, OTHER = 'hindsight', 'hindsight_backlog_metrics', 'hindsight_backlog_unrelated'
 CALL = 'SELECT hindsight_metrics.runnable_backlog();'
 # Written out, not read from the renderer: a drifted SUPPORTED_SCHEMA_HEAD must fail this proof.
-FIXTURE_HEAD = 'd1e2f3a4b5c6'
+FIXTURE_HEAD = '05867433a58c'
 UNKNOWN_ERROR = 'HSB01: hindsight backlog unknown'
 SECRETS = ('payload-secret', 'error-secret', 'synthetic-name', 'doc-a', 'w-stale', '00000000-0000')
 EMPTY_SERVER = {'db': 'postgres', 'major': 16, 'superuser': True, 'databases': ['postgres', 'template0', 'template1'],

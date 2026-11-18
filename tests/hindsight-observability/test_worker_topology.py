@@ -19,7 +19,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 APP = ROOT / 'kubernetes/apps/ai/hermes-hindsight/app'
 DATABASE_RELEASE = ROOT / 'kubernetes/apps/database/cluster/app/helmrelease.yaml'
-CHART = pathlib.Path(os.environ.get('HINDSIGHT_CHART', '/home/devbox/.cache/helm/repository/hindsight-0.9.2.tgz'))
+CHART = pathlib.Path(os.environ.get('HINDSIGHT_CHART', '/home/devbox/.cache/helm/repository/hindsight-1.2.1.tgz'))
 HELM = os.environ.get('HINDSIGHT_HELM', 'helm')
 NATIVE_KUSTOMIZE = pathlib.Path.home() / '.local/share/mise/installs/aqua-kubernetes-sigs-kustomize/5.7.1/kustomize'
 
@@ -35,7 +35,7 @@ OVERRIDES = {
     'HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP': 'false',
 }
 # Worker env the chart sets itself (worker.service.targetPort and the
-# worker.env defaults of chart 0.9.2).
+# worker.env defaults of chart 1.2.1).
 CHART_WORKER_ENV = {
     'HINDSIGHT_API_PORT': '8889',
     'HINDSIGHT_API_WORKER_HTTP_PORT': '8889',
@@ -50,7 +50,7 @@ JOB_RESERVE = 3
 # Room for the API's start-up migrations next to running workers. An
 # allowance, not a measured bound: the real migration peak is unobserved.
 MIGRATION_ALLOWANCE = 2
-# hindsight-api 0.9.2 defaults (config.py): pool min 5, worker slots 10,
+# hindsight-api 1.2.1 defaults (config.py): pool min 5, worker slots 10,
 # consolidation reserves 2 slots unless overridden.
 DEFAULT_POOL_MIN = 5
 DEFAULT_SLOTS = 10
@@ -199,15 +199,15 @@ class WorkerTopologyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if not CHART.is_file():
-            raise AssertionError(f'pinned chart missing at {CHART}; set HINDSIGHT_CHART to hindsight-0.9.2.tgz')
+            raise AssertionError(f'pinned chart missing at {CHART}; set HINDSIGHT_CHART to hindsight-1.2.1.tgz')
         if shutil.which(HELM) is None and not pathlib.Path(HELM).is_file():
             raise AssertionError(f'helm not found ({HELM})')
         cls.release = release()
         chart = yaml.safe_load(subprocess.run([HELM, 'show', 'chart', str(CHART)],
                                               capture_output=True, text=True, check=True).stdout)
         pinned = cls.release['spec']['chart']['spec']
-        if (chart['name'], chart['version']) != (pinned['chart'], pinned['version']) or pinned['version'] != '0.9.2':
-            raise AssertionError(f"archive {chart['name']}-{chart['version']} is not the pinned hindsight 0.9.2")
+        if (chart['name'], chart['version']) != (pinned['chart'], pinned['version']) or pinned['version'] != '1.2.1':
+            raise AssertionError(f"archive {chart['name']}-{chart['version']} is not the pinned hindsight 1.2.1")
         cls.values = cls.release['spec']['values']
         cls.patches = cls.release['spec']['postRenderers'][0]['kustomize']['patches']
         disabled = copy.deepcopy(cls.values)
@@ -228,7 +228,7 @@ class WorkerTopologyTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        print('\nRENDERED: chart 0.9.2 + Flux post-render, worker at zero replicas.'
+        print('\nRENDERED: chart 1.2.1 + Flux post-render, worker at zero replicas.'
               '\nNOT RUN (needs real pods): auth-file sharing, provider budget under load,'
               ' database connection peak, drain recovery, bank fairness.')
 
@@ -266,6 +266,14 @@ class WorkerTopologyTests(unittest.TestCase):
                 selector = current[(kind, name)]['spec'].get('selector') or {}
                 self.assertFalse(any(selects(selector, labels) for labels in served),
                                  f'new Service {name} selects an existing pod')
+
+    def test_api_and_control_plane_safety_patches(self):
+        for name in ('hindsight-api', 'hindsight-control-plane'):
+            deployment = find(self.rendered, 'Deployment', name)
+            self.assertIs(deployment['spec']['template']['spec'].get('automountServiceAccountToken'),
+                          False, f'{name} must not receive a Kubernetes API token')
+        self.assertEqual(self.api['spec'].get('strategy', {}).get('type'), 'Recreate',
+                         'API rollout must not overlap migration and worker processes')
 
     def test_ac3_statefulset_post_render(self):
         spec = self.worker['spec']
@@ -318,7 +326,9 @@ class WorkerTopologyTests(unittest.TestCase):
         secret_refs = [v['valueFrom']['secretKeyRef'] for v in worker.values()
                        if 'secretKeyRef' in v.get('valueFrom', {})]
         self.assertTrue(secret_refs, 'database password must arrive by secretKeyRef')
-        self.assertEqual({x['name'] for x in secret_refs}, {self.values['existingSecret']})
+        self.assertEqual({x['name'] for x in secret_refs}, {self.values['existingSecret'], 'hindsight-litellm'})
+        self.assertEqual(worker['HINDSIGHT_API_LLM_API_KEY']['valueFrom']['secretKeyRef'],
+                         {'name': 'hindsight-litellm', 'key': 'credential', 'optional': False})
         for name, entry in worker.items():
             if 'PASSWORD' in name:
                 self.assertNotIn('value', entry)

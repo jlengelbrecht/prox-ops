@@ -15,7 +15,7 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 APP = ROOT / 'kubernetes/apps/ai/hermes-hindsight/app'
 OBS = ROOT / 'kubernetes/apps/observability/kube-prometheus-stack/app'
-CHART = pathlib.Path(os.environ.get('HINDSIGHT_CHART', '/home/devbox/.cache/helm/repository/hindsight-0.9.2.tgz'))
+CHART = pathlib.Path(os.environ.get('HINDSIGHT_CHART', '/home/devbox/.cache/helm/repository/hindsight-1.2.1.tgz'))
 HELM = os.environ.get('HINDSIGHT_HELM', 'helm')
 
 
@@ -100,6 +100,22 @@ class ManifestTests(unittest.TestCase):
         self.assertIn('kube-prometheus-stack/app/helmrelease.yaml', workflow)
         self.assertIn('permissions:\n  contents: read', workflow)
         self.assertIn('hindsight-metrics-ci-assets.py', workflow)
+        self.assertIn('"$work/bin/helm" pull "$CHART_REPO/hindsight" --version "$CHART_VERSION"', workflow)
+        self.assertIn('[[ "$CHART_VERSION" == "1.2.1" ]]', workflow)
+        self.assertIn('[[ "$CHART_REPO" == "oci://ghcr.io/vectorize-io/charts" ]]', workflow)
+        self.assertIn('"$work/bin/helm" show chart "$work/hindsight-$CHART_VERSION.tgz"', workflow)
+        self.assertIn('967438cfbc5e3737da176cb33d52840268add6c84c2039c12513f3597748ecca', workflow)
+        self.assertIn('ea375e7372f9aa029129d4b2d16c66b7750b7f1213c4f66f910d981c895818d8', workflow)
+        self.assertIn('sha256sum -c', workflow)
+        self.assertIn('-p test_worker_topology.py', workflow)
+        self.assertIn('node-version: \'24\'', workflow)
+        self.assertIn('renovate@44.199.0', workflow)
+        self.assertIn('node tests/hindsight/qualify-renovate.mjs', workflow)
+        paths = yaml.safe_load(workflow)[True]['pull_request']['paths']
+        for path in ('tests/hindsight-observability/test_worker_topology.py',
+                     'tests/hindsight/qualify-renovate.mjs', '.github/renovate.json5',
+                     '.github/renovate/**'):
+            self.assertIn(path, paths)
         rule = docs(OBS / 'alerts/hindsight-alerts.yaml')[0]
         exprs = '\n'.join(x['expr'] for x in rule['spec']['groups'][0]['rules'])
         self.assertIn('hindsight_operation_operations_total', exprs)

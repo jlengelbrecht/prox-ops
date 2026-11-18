@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only, bounded Hindsight runnable-backlog snapshot; aggregate counts only.
 
-"runnable" is the hindsight-api 0.9.2 PostgreSQL claim predicate evaluated in
+"runnable" is the hindsight-api 1.2.1 PostgreSQL claim predicate evaluated in
 one read-only snapshot of the public schema. It ignores worker slots, provider
 availability and row locks, so it is not a guarantee that the next poll claims
 those rows.
@@ -41,9 +41,10 @@ SQL_SOURCES = """WITH ops AS NOT MATERIALIZED (
  SELECT bank_id FROM public.banks
 )"""
 
-# Mirrors claim_tasks / _claim_consolidation_* in hindsight-api 0.9.2:
-# bank_serialization_sql on every type, document_serialization_sql on every
-# type except consolidation, whose claim path does not apply it. worker_id is
+# Mirrors claim_tasks / _claim_consolidation_* in hindsight-api 1.2.1:
+# bank_serialization_sql on every type, key_serialization_sql on every
+# type except consolidation, whose claim path does not apply it. Key peers
+# must have the candidate's operation_type. worker_id is
 # deliberately not part of the predicate; the claim query does not read it.
 # active is MATERIALIZED so each row's correlated peer probes run once, not once per FILTER on runnable.
 SQL_BODY = """, active AS MATERIALIZED (
@@ -69,6 +70,7 @@ SQL_BODY = """, active AS MATERIALIZED (
             SELECT 1 FROM ops doc_peer
             WHERE doc_peer.bank_id = o.bank_id
               AND doc_peer.serialization_key = o.serialization_key
+              AND doc_peer.operation_type = o.operation_type
               AND (doc_peer.status = 'processing'
                    OR (doc_peer.status = 'pending'
                        AND doc_peer.task_payload IS NOT NULL
@@ -114,7 +116,7 @@ END)::jsonb;"""
 
 SEMANTICS = {
     'scope': 'public schema only; tenant or other non-default schemas are not covered',
-    'runnable': 'hindsight-api 0.9.2 claim predicate in one read-only snapshot; ignores worker slots, '
+    'runnable': 'hindsight-api 1.2.1 claim predicate in one read-only snapshot; ignores worker slots, '
                 'provider availability and row locks; not a claim guarantee',
     'serialization_blocked': 'due rows held back by bank or document serialization; retain peers may be folded '
                              'into the head row, so this is not separate claim demand or a worker-capacity signal',
