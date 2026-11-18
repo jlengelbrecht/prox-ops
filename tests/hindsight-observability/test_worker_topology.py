@@ -267,6 +267,14 @@ class WorkerTopologyTests(unittest.TestCase):
                 self.assertFalse(any(selects(selector, labels) for labels in served),
                                  f'new Service {name} selects an existing pod')
 
+    def test_api_and_control_plane_safety_patches(self):
+        for name in ('hindsight-api', 'hindsight-control-plane'):
+            deployment = find(self.rendered, 'Deployment', name)
+            self.assertIs(deployment['spec']['template']['spec'].get('automountServiceAccountToken'),
+                          False, f'{name} must not receive a Kubernetes API token')
+        self.assertEqual(self.api['spec'].get('strategy', {}).get('type'), 'Recreate',
+                         'API rollout must not overlap migration and worker processes')
+
     def test_ac3_statefulset_post_render(self):
         spec = self.worker['spec']
         template = pod(self.worker)['spec']
