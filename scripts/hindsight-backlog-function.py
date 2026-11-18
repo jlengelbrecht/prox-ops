@@ -21,13 +21,13 @@ TARGET = ROOT / 'kubernetes/apps/database/hindsight-backlog/app/runnable-backlog
 # head. An equal Alembic revision alone does not prove the claim code is
 # unchanged, so an image bump must fail --check until the predicate is
 # requalified and both values are updated together.
-SUPPORTED_API_IMAGE = ('ghcr.io/vectorize-io/hindsight-api:0.9.2'
-                       '@sha256:7b14a1f4062252992d0176758753615e0a2071d9a269995be007be223ab01812')
-# Head migration of v0.9.2: https://github.com/vectorize-io/hindsight/blob/v0.9.2/hindsight-api-slim/
-# hindsight_api/alembic/versions/d1e2f3a4b5c6_drop_v1_mental_model_structured_content.py
-# An authorised read-only qualification found it as both the pinned image's installed
-# migration head and the live database revision.
-SUPPORTED_SCHEMA_HEAD = 'd1e2f3a4b5c6'
+SUPPORTED_API_IMAGE = ('ghcr.io/vectorize-io/hindsight-api:1.2.1'
+                       '@sha256:662109ece429871a81e036427fb93fbb09ba9dc4b01d320d356f114c0e1aedd8')
+# v1.2.1 tag 0eb02d8c418eac6b489bc63883c993b2257dfac4 migration leaf:
+# hindsight_api/alembic/versions/05867433a58c_add_banks_with_attachments_in_window_routine.py
+# The tag source qualifies the predicate; the pinned image and restored database
+# still require independent runtime verification before activation.
+SUPPORTED_SCHEMA_HEAD = '05867433a58c'
 MAX_GROUPS = 256
 UNKNOWN_SQLSTATE = 'HSB01'
 REQUIRED_COLUMNS = ('operation_id', 'bank_id', 'operation_type', 'status', 'task_payload',
@@ -214,7 +214,8 @@ def check(path):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument('--check', metavar='PATH', help='fail unless PATH is the exact render')
+    mode.add_argument('--check', nargs='?', const=str(TARGET), metavar='PATH',
+                      help='fail unless PATH (default: committed target) is the exact render')
     mode.add_argument('--write', action='store_true', help='regenerate the one committed DDL target')
     args = parser.parse_args(argv)
     # An empty --check path must fail the check, never fall through to --write.

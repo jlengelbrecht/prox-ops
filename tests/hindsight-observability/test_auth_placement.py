@@ -119,7 +119,7 @@ class JobTests(unittest.TestCase):
 
     def test_one_unretried_bounded_job_and_a_deny_all_policy(self):
         self.assertEqual(sorted(self.docs), ['CiliumNetworkPolicy', 'Job'])
-        self.assertEqual(self.job['metadata'], {'name': NAME + '-v1'})
+        self.assertEqual(self.job['metadata'], {'name': NAME + '-v2'})
         # No ttlSecondsAfterFinished: the finished Job stays as the record Flux waits on.
         self.assertEqual({key: value for key, value in self.job['spec'].items() if key != 'template'},
                          {'backoffLimit': 0, 'activeDeadlineSeconds': 60, 'parallelism': 1, 'completions': 1})
@@ -159,7 +159,7 @@ class JobTests(unittest.TestCase):
         self.assertEqual(sorted(self.container), ['command', 'image', 'imagePullPolicy', 'name', 'resources',
                                                   'securityContext', 'volumeMounts'])
         self.assertEqual(self.container['image'], f"{image['repository']}:{image['tag']}")
-        self.assertRegex(image['tag'], r'^0\.9\.2@sha256:[0-9a-f]{64}$')
+        self.assertRegex(image['tag'], r'^1\.2\.1@sha256:[0-9a-f]{64}$')
         self.assertEqual(self.container['securityContext'], {
             'runAsNonRoot': True, 'runAsUser': container_security['runAsUser'], 'allowPrivilegeEscalation': False,
             'readOnlyRootFilesystem': True, 'capabilities': {'drop': ['ALL']}})

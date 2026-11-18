@@ -127,7 +127,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn('SELECT bank_id FROM public.banks', sources)
         body = function_body(MODULE.render())
         self.assertIn('ANY (ARRAY[' + ', '.join(f"'{c}'" for c in MODULE.REQUIRED_COLUMNS) + ']::name[])) <> 9', body)
-        self.assertIn("version_num = 'd1e2f3a4b5c6'", body)
+        self.assertIn("version_num = '05867433a58c'", body)
         self.assertIn('(SELECT count(*) FROM public.alembic_version) <> 1', body)
         self.assertLess(body.index('THEN\n  RAISE'), body.index('RETURN ('))
 
@@ -146,7 +146,7 @@ class VersionBindingTests(unittest.TestCase):
         text = self.MANIFEST
         self.assertEqual(text.count(tag), 1)
         bumps = {
-            'tag': text.replace(tag, tag.replace('0.9.2@', '0.9.3@')),
+            'tag': text.replace(tag, tag.replace('1.2.1@', '1.2.2@')),
             'digest': text.replace(tag, tag[:-4] + '0000'),
             'repository': text.replace('repository: ghcr.io/vectorize-io/hindsight-api\n',
                                        'repository: ghcr.io/example/hindsight-api\n'),
@@ -171,6 +171,7 @@ class MainTests(unittest.TestCase):
             self.assertEqual(run_main(['--write'], TARGET=target), (0, ''))
             self.assertEqual(target.read_bytes(), (ROOT / TARGET).read_bytes())
             self.assertEqual(run_main(['--check', str(target)])[0], 0)
+            self.assertEqual(run_main(['--check'], TARGET=target)[0], 0)
         for argv in (['--write', 'other.sql'], [], ['--check', TARGET, '--write']):
             with self.subTest(argv=argv):
                 self.assertEqual(run_main(argv)[0], 2)
@@ -377,7 +378,7 @@ class NativeFixtureSafetyTests(unittest.TestCase):
 
     def test_fixture_revision_is_independent_of_the_renderer(self):
         with mock.patch.object(NATIVE.RENDERER, 'SUPPORTED_SCHEMA_HEAD', 'ffffffffffff'):
-            self.assertIn("VALUES ('d1e2f3a4b5c6');", NATIVE.bootstrap_sql())
+            self.assertIn("VALUES ('05867433a58c');", NATIVE.bootstrap_sql())
 
     def test_drift_cases_cover_owners_acls_and_both_membership_directions(self):
         changes = ' '.join(change for change, _ in NATIVE.APPLY_REFUSALS.values())
