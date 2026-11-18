@@ -144,7 +144,7 @@ class FluxTests(unittest.TestCase):
                 self.assertEqual(entry, {'apiVersion': 'kustomize.toolkit.fluxcd.io/v1', 'kind': 'Kustomization',
                                          'metadata': {'name': name, 'namespace': 'flux-system'}, 'spec': spec})
 
-    def test_registered_once_after_the_existing_entries_and_nothing_else_waits_on_them(self):
+    def test_registered_once_after_the_existing_entries_and_consumers_wait_on_it(self):
         root = yaml.safe_load((BACKLOG.parent / 'kustomization.yaml').read_text())['resources']
         self.assertEqual(root.count('hindsight-backlog/collector.ks.yaml'), 1)
         self.assertEqual(root.index('hindsight-backlog/collector.ks.yaml'), root.index('hindsight-backlog/ks.yaml') + 1)
@@ -156,7 +156,8 @@ class FluxTests(unittest.TestCase):
                 depends = {item['name'] for item in (doc or {}).get('spec', {}).get('dependsOn', [])}
                 if depends & {'hindsight-backlog-collector-code', QUAL, APP}:
                     waiting.add((path.name, doc['metadata']['name']))
-        self.assertEqual(waiting, {('collector.ks.yaml', QUAL), ('collector.ks.yaml', APP)})
+        self.assertEqual(waiting, {('collector.ks.yaml', QUAL), ('collector.ks.yaml', APP),
+                                   ('ks.yaml', 'prometheus-adapter'), ('ks.yaml', 'hermes-hindsight')})
 
 
 class PodTests(unittest.TestCase):

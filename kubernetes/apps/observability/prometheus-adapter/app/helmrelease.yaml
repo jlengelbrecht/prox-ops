@@ -1,6 +1,6 @@
 ---
-# prometheus-adapter: one external metric, hindsight_worker_runnable, for the
-# inactive HPA in ai/hermes-hindsight/app/worker-autoscaling.yaml. Chart 5.3.0:
+# prometheus-adapter: one external metric, hindsight_worker_slot_demand, for the
+# HPA in ai/hermes-hindsight/app/worker-autoscaling.yaml. Chart 5.3.0:
 # rules.default false and no custom or resource rules render only the
 # external.metrics.k8s.io APIService (metrics-server keeps metrics.k8s.io).
 # rbac.externalMetrics.resources names only this metric in the chart role, but
@@ -59,7 +59,7 @@ spec:
     rbac:
       externalMetrics:
         resources:
-          - hindsight_worker_runnable
+          - hindsight_worker_slot_demand
     resources:
       requests:
         cpu: 10m
@@ -69,28 +69,60 @@ spec:
     rules:
       default: false
       external:
-        # Runnable root demand from the backlog collector's global count; its
-        # claim predicate already leaves out queued parents and failed,
-        # deferred and serialization-blocked rows. A sample exists only while
-        # one collector scrape is up, valid, within capacity and observed
-        # under 180 s ago (the collector's last-good bound) and not in the
-        # future, joined on that scrape's labels. Otherwise the result is
-        # empty, never zero, so the HPA holds; a known empty backlog is one 0.
-        # No <<.LabelMatchers>>: no HPA selector or namespace reaches the
-        # query. max, not sum, of one global count; disagreeing targets keep the higher.
-        # Before activation, prove live a single collector target with honorLabels false.
+        # Per-type runnable plus processing work, after the same source guards as
+        # the global collector sample. Max per bank/type/state avoids adding
+        # duplicate collector targets; sum across banks represents class demand.
+        # Refresh and consolidation each have a reserved slot per worker;
+        # other types share the third slot. The known-zero fallback is gated
+        # by a valid fresh global sample, so unknown never becomes zero.
         - seriesQuery: 'hindsight_backlog_runnable{namespace="database",service="hindsight-backlog-collector"}'
           resources:
-            # Source in database, HPA in ai.
             namespaced: false
           name:
             matches: ^hindsight_backlog_runnable$
-            as: hindsight_worker_runnable
+            as: hindsight_worker_slot_demand
           metricsQuery: |
             max(
-              hindsight_backlog_runnable{namespace="database",service="hindsight-backlog-collector"} >= 0
-              and on (namespace, service, job, instance) hindsight_backlog_sample_valid{namespace="database",service="hindsight-backlog-collector"} == 1
-              and on (namespace, service, job, instance) hindsight_backlog_capacity_exceeded{namespace="database",service="hindsight-backlog-collector"} == 0
-              and on (namespace, service, job, instance) up{namespace="database",service="hindsight-backlog-collector"} == 1
-              and on (namespace, service, job, instance) (time() - hindsight_backlog_observed_timestamp_seconds{namespace="database",service="hindsight-backlog-collector"}) >= 0 < 180
+              label_replace(
+                            sum(max by (bank_id, operation_type, state) (
+                              hindsight_backlog_tasks{namespace="database",service="hindsight-backlog-collector",operation_type="refresh_mental_model",state=~"runnable|processing"}
+                              and on (namespace, service, job, instance) (
+                              hindsight_backlog_runnable{namespace="database",service="hindsight-backlog-collector"} >= 0
+                              and on (namespace, service, job, instance) hindsight_backlog_sample_valid{namespace="database",service="hindsight-backlog-collector"} == 1
+                              and on (namespace, service, job, instance) hindsight_backlog_capacity_exceeded{namespace="database",service="hindsight-backlog-collector"} == 0
+                              and on (namespace, service, job, instance) up{namespace="database",service="hindsight-backlog-collector"} == 1
+                              and on (namespace, service, job, instance) (time() - hindsight_backlog_observed_timestamp_seconds{namespace="database",service="hindsight-backlog-collector"}) >= 0 < 180
+                              )
+                            )), "slot_class", "refresh", "__name__", ".*")
+              or
+              label_replace(
+                            sum(max by (bank_id, operation_type, state) (
+                              hindsight_backlog_tasks{namespace="database",service="hindsight-backlog-collector",operation_type="consolidation",state=~"runnable|processing"}
+                              and on (namespace, service, job, instance) (
+                              hindsight_backlog_runnable{namespace="database",service="hindsight-backlog-collector"} >= 0
+                              and on (namespace, service, job, instance) hindsight_backlog_sample_valid{namespace="database",service="hindsight-backlog-collector"} == 1
+                              and on (namespace, service, job, instance) hindsight_backlog_capacity_exceeded{namespace="database",service="hindsight-backlog-collector"} == 0
+                              and on (namespace, service, job, instance) up{namespace="database",service="hindsight-backlog-collector"} == 1
+                              and on (namespace, service, job, instance) (time() - hindsight_backlog_observed_timestamp_seconds{namespace="database",service="hindsight-backlog-collector"}) >= 0 < 180
+                              )
+                            )), "slot_class", "consolidation", "__name__", ".*")
+              or
+              label_replace(
+                            sum(max by (bank_id, operation_type, state) (
+                              hindsight_backlog_tasks{namespace="database",service="hindsight-backlog-collector",operation_type!~"refresh_mental_model|consolidation",state=~"runnable|processing"}
+                              and on (namespace, service, job, instance) (
+                              hindsight_backlog_runnable{namespace="database",service="hindsight-backlog-collector"} >= 0
+                              and on (namespace, service, job, instance) hindsight_backlog_sample_valid{namespace="database",service="hindsight-backlog-collector"} == 1
+                              and on (namespace, service, job, instance) hindsight_backlog_capacity_exceeded{namespace="database",service="hindsight-backlog-collector"} == 0
+                              and on (namespace, service, job, instance) up{namespace="database",service="hindsight-backlog-collector"} == 1
+                              and on (namespace, service, job, instance) (time() - hindsight_backlog_observed_timestamp_seconds{namespace="database",service="hindsight-backlog-collector"}) >= 0 < 180
+                              )
+                            )), "slot_class", "shared", "__name__", ".*")
+              or on() (0 * max(
+                          hindsight_backlog_runnable{namespace="database",service="hindsight-backlog-collector"} >= 0
+                              and on (namespace, service, job, instance) hindsight_backlog_sample_valid{namespace="database",service="hindsight-backlog-collector"} == 1
+                              and on (namespace, service, job, instance) hindsight_backlog_capacity_exceeded{namespace="database",service="hindsight-backlog-collector"} == 0
+                              and on (namespace, service, job, instance) up{namespace="database",service="hindsight-backlog-collector"} == 1
+                              and on (namespace, service, job, instance) (time() - hindsight_backlog_observed_timestamp_seconds{namespace="database",service="hindsight-backlog-collector"}) >= 0 < 180
+                        ))
             )

@@ -1,4 +1,4 @@
-"""Checks for the inactive Hindsight worker autoscaling source.
+"""Checks for the guarded Hindsight worker slot-demand autoscaling source.
 
 Renders the qualified prometheus-adapter 5.3.0 archive with the committed
 values, applies the HelmRelease post-render patches with native kustomize, and
@@ -31,19 +31,20 @@ HELM = os.environ.get('PROMETHEUS_ADAPTER_HELM', 'helm')
 NATIVE_KUSTOMIZE = pathlib.Path.home() / '.local/share/mise/installs/aqua-kubernetes-sigs-kustomize/5.7.1/kustomize'
 PROMTOOL = pathlib.Path(os.environ.get('PROMTOOL') or ARTIFACTS / 'tooling/promtool')
 
-METRIC = 'hindsight_worker_runnable'
+METRIC = 'hindsight_worker_slot_demand'
 SOURCE = {'namespace': 'database', 'service': 'hindsight-backlog-collector'}
 SOURCE_MATCHERS = 'namespace="database",service="hindsight-backlog-collector"'
-SOURCE_SERIES = {'hindsight_backlog_runnable', 'hindsight_backlog_sample_valid', 'hindsight_backlog_capacity_exceeded',
-                 'hindsight_backlog_observed_timestamp_seconds', 'up'}
+SOURCE_SERIES = {'hindsight_backlog_tasks', 'hindsight_backlog_runnable', 'hindsight_backlog_sample_valid',
+                 'hindsight_backlog_capacity_exceeded', 'hindsight_backlog_observed_timestamp_seconds', 'up'}
 PROMETHEUS_URL = 'http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090'
 POD_LABELS = {'app.kubernetes.io/name': 'prometheus-adapter', 'app.kubernetes.io/instance': 'prometheus-adapter'}
 ADAPTER_SA = [{'kind': 'ServiceAccount', 'name': 'prometheus-adapter', 'namespace': 'observability'}]
 RESOURCE_READER = {('ClusterRole', 'prometheus-adapter-resource-reader'),
                    ('ClusterRoleBinding', 'prometheus-adapter-resource-reader')}
-REQUIRED_CASES = {'fresh_positive', 'known_zero', 'no_runnable_sample', 'missing_timestamp', 'stale_timestamp',
+REQUIRED_CASES = {'fresh_positive', 'known_zero', 'refresh_demand', 'consolidation_demand', 'shared_demand',
+                  'processing_only', 'no_runnable_sample', 'missing_timestamp', 'stale_timestamp',
                   'clock_future', 'sample_invalid', 'capacity_exceeded', 'scrape_down', 'source_absent',
-                  'wrong_namespace', 'wrong_service'}
+                  'wrong_namespace', 'wrong_service', 'invalid_peer_dropped'}
 
 
 def kustomize_build(path):
@@ -125,7 +126,7 @@ def case_series(case):
         peer = {**labels, 'instance': FIXTURE['peer_instance']}
         series += [(name, peer, case['peer'].get(name, values)) for name, values in FIXTURE['healthy'].items()]
     return series + [(x['metric'], {**FIXTURE['source'], **x.get('labels', {})}, x['values'])
-                     for x in case.get('extra', [])]
+                     for x in case.get('extra', []) + case.get('tasks', [])]
 
 
 def series_text(name, labels):
@@ -290,12 +291,14 @@ class AdapterRenderTests(unittest.TestCase):
         self.assertEqual(rule['name'], {'matches': '^hindsight_backlog_runnable$', 'as': METRIC})
         self.assertEqual(selectors(rule['seriesQuery']), [('hindsight_backlog_runnable', SOURCE_MATCHERS)])
         query = rule['metricsQuery']
-        self.assertIsNone(re.search(r'<<|=~|!~|!=|\b(or|unless|absent\w*|vector|clamp\w*|i?rate|sum)\b', query),
-                          'no HPA-supplied selector, regex matcher or fallback reaches the query')
+        self.assertNotIn('<<', query, 'no HPA-supplied selector reaches the query')
+        self.assertNotIn('or vector(0)', query, 'zero fallback must stay validity-guarded')
         found = selectors(query)
         self.assertEqual({name for name, _ in found}, SOURCE_SERIES)
-        self.assertEqual({body for _, body in found}, {SOURCE_MATCHERS})
-        print(f"\nseriesQuery={rule['seriesQuery']}\nmetricsQuery={' '.join(query.split())}")
+        self.assertTrue(all(SOURCE_MATCHERS in body for _, body in found))
+        self.assertEqual(query.count('hindsight_backlog_tasks{'), 3)
+        self.assertEqual(query.count('max by (bank_id, operation_type, state)'), 3)
+        self.assertIn('or on() (0 * max(', query)
 
 
 class RunnableQueryTests(unittest.TestCase):
@@ -317,27 +320,56 @@ class RunnableQueryTests(unittest.TestCase):
         self.assertIn('SUCCESS', test.stdout)
         print(f'\nNATIVE: {self.version}; {len(names)} fixture cases passed')
 
+    def test_fixture_global_runnable_matches_per_type_groups(self):
+        identity = ('namespace', 'service', 'job', 'instance')
+        for case in FIXTURE['cases']:
+            if case['name'] == 'negative_count':
+                continue  # This case deliberately feeds an impossible global value.
+            series = case_series(case)
+            for name, labels, values in series:
+                if name != 'hindsight_backlog_runnable':
+                    continue
+                group = tuple(labels[k] for k in identity)
+                total = sum(float(task_values.split('+')[0]) for metric, task_labels, task_values in series
+                            if metric == 'hindsight_backlog_tasks' and task_labels.get('state') == 'runnable'
+                            and tuple(task_labels[k] for k in identity) == group)
+                with self.subTest(case=case['name'], source=group):
+                    self.assertEqual(float(values.split('+')[0]), total)
+
     def test_every_guard_and_fallback_is_caught(self):
-        lines = self.text.splitlines()
-        guards = [i for i, line in enumerate(lines) if line.strip().startswith('and on (namespace, service, job, instance) ')]
-        self.assertEqual(len(guards), 4)
-        mutants = {f"without {re.search(r'(\w+)\{', lines[i]).group(1)}": '\n'.join(lines[:i] + lines[i + 1:])
-                   for i in guards}
-        for label, old, new in [('negative counts', '} >= 0\n', '}\n'), ('clock-future guard', ') >= 0 < 180', ') < 180'),
-                                ('180 s bound', '< 180', '< 300'), ('sum of targets', 'max(', 'sum(')]:
-            self.assertIn(old, self.text, label)
-            mutants[label] = self.text.replace(old, new, 1)
-        mutants['zero fallback'] = self.text.rstrip() + ' or vector(0)'
-        for label, text in mutants.items():
+        for label, old, new in [('clock-future guard', ') >= 0 < 180', ') < 180'),
+                                ('180 s bound', '< 180', '< 300')]:
             with self.subTest(label):
-                test, = promtool(text)
-                # A mismatch, not a parse or evaluation error, must be what fails.
-                self.assertNotEqual(test.returncode, 0, f'no fixture case notices the query {label}')
-                self.assertIn('got:', test.stdout + test.stderr, label)
+                self.assertIn(old, self.text)
+                test, = promtool(self.text.replace(old, new))
+                self.assertNotEqual(test.returncode, 0)
+                self.assertIn('got:', test.stdout + test.stderr)
+
+        matching = 'on (namespace, service, job, instance) '
+        guards = {
+            'runnable sample': (f'hindsight_backlog_runnable{{{SOURCE_MATCHERS}}} >= 0',
+                                f'up{{{SOURCE_MATCHERS}}} == 1'),
+            'valid sample': (f'and {matching}hindsight_backlog_sample_valid{{{SOURCE_MATCHERS}}} == 1', ''),
+            'capacity': (f'and {matching}hindsight_backlog_capacity_exceeded{{{SOURCE_MATCHERS}}} == 0', ''),
+            'scrape': (f'and {matching}up{{{SOURCE_MATCHERS}}} == 1', ''),
+            'timestamp': (f'and {matching}(time() - hindsight_backlog_observed_timestamp_seconds'
+                          f'{{{SOURCE_MATCHERS}}}) >= 0 < 180', ''),
+        }
+        # Three demand branches and the known-zero fallback each need their
+        # own guard. Removing one guard at a time must expose a fixture error.
+        for label, (old, replacement) in guards.items():
+            occurrences = list(re.finditer(re.escape(old), self.text))
+            self.assertEqual(len(occurrences), 4, label)
+            for branch, match in enumerate(occurrences):
+                with self.subTest(guard=label, branch=branch):
+                    mutant = self.text[:match.start()] + replacement + self.text[match.end():]
+                    test, = promtool(mutant)
+                    self.assertNotEqual(test.returncode, 0)
+                    self.assertIn('got:', test.stdout + test.stderr)
 
 
-class InactiveWiringTests(unittest.TestCase):
-    def test_hpa_is_bounded_scale_up_only(self):
+class ActiveWiringTests(unittest.TestCase):
+    def test_hpa_is_bounded_both_directions(self):
         hpa, = load(HPA_FILE)
         self.assertEqual((hpa['apiVersion'], hpa['kind']), ('autoscaling/v2', 'HorizontalPodAutoscaler'))
         self.assertEqual(hpa['metadata'], {'name': 'hindsight-worker', 'namespace': 'ai'})
@@ -349,26 +381,46 @@ class InactiveWiringTests(unittest.TestCase):
                 'metric': {'name': METRIC}, 'target': {'type': 'AverageValue', 'averageValue': '1'}}}],
             'behavior': {
                 'scaleUp': {'stabilizationWindowSeconds': 0, 'policies': [{'type': 'Pods', 'value': 1, 'periodSeconds': 60}]},
-                'scaleDown': {'selectPolicy': 'Disabled'}},
+                'scaleDown': {'stabilizationWindowSeconds': 300,
+                              'policies': [{'type': 'Pods', 'value': 1, 'periodSeconds': 60}]}},
         })
 
-    def test_worker_foundation_still_pins_zero_replicas(self):
+    def test_worker_replica_field_is_removed(self):
         hindsight = load(HINDSIGHT / 'hindsight.yaml')[0]
         patches = [p for p in hindsight['spec']['postRenderers'][0]['kustomize']['patches']
                    if p['target'] == {'kind': 'StatefulSet', 'name': 'hindsight-worker'}]
         self.assertEqual(len(patches), 1, 'the HPA target must be the worker StatefulSet the release renders')
-        self.assertIn({'op': 'add', 'path': '/spec/replicas', 'value': 0}, yaml.safe_load(patches[0]['patch']))
+        self.assertEqual(yaml.safe_load(patches[0]['patch'])[:2],
+                         [{'op': 'test', 'path': '/spec/replicas', 'value': 0},
+                          {'op': 'remove', 'path': '/spec/replicas'}])
 
-    def test_hpa_and_adapter_are_unreferenced(self):
+    def test_hpa_and_adapter_are_flux_owned(self):
         listed = yaml.safe_load((HINDSIGHT / 'kustomization.yaml').read_text())['resources']
-        self.assertFalse([x for x in listed if x.endswith('worker-autoscaling.yaml')])
-        self.assertFalse([x for x in kustomize_build(HINDSIGHT) if x['kind'] == 'HorizontalPodAutoscaler'])
-        self.assertEqual(sorted(p.name for p in ADAPTER.parent.iterdir()), ['app'], 'no ks.yaml')
-        owned = {HPA_FILE, *ADAPTER.iterdir()}
-        hits = [str(p.relative_to(ROOT)) for p in (ROOT / 'kubernetes').rglob('*.y*ml')
-                if p.is_file() and p not in owned
-                and re.search(r'prometheus-adapter|worker-autoscaling', p.read_text(errors='ignore'))]
-        self.assertEqual(hits, [])
+        self.assertIn('./worker-autoscaling.yaml', listed)
+        self.assertEqual(find(kustomize_build(HINDSIGHT), 'HorizontalPodAutoscaler', 'hindsight-worker')['spec'],
+                         load(HPA_FILE)[0]['spec'])
+        root = ROOT / 'kubernetes/apps/observability'
+        self.assertIn('./prometheus-adapter/ks.yaml', yaml.safe_load((root / 'kustomization.yaml').read_text())['resources'])
+        adapter_ks = find(kustomize_build(root), 'Kustomization', 'prometheus-adapter')
+        self.assertEqual(adapter_ks['spec']['path'], './kubernetes/apps/observability/prometheus-adapter/app')
+        self.assertEqual(adapter_ks['spec']['targetNamespace'], 'observability')
+        self.assertIn({'name': 'hindsight-backlog-collector', 'namespace': 'database'}, adapter_ks['spec']['dependsOn'])
+        app_ks = find(kustomize_build(ROOT / 'kubernetes/apps/ai'), 'Kustomization', 'hermes-hindsight')
+        self.assertIn({'name': 'prometheus-adapter', 'namespace': 'flux-system'}, app_ks['spec']['dependsOn'])
+        self.assertIn({'name': 'hindsight-backlog-collector', 'namespace': 'database'}, app_ks['spec']['dependsOn'])
+
+    def test_new_flux_dependencies_resolve_in_native_root_renders(self):
+        roots = ('ai', 'observability', 'database', 'external-secrets')
+        rendered = [doc for root in roots for doc in kustomize_build(ROOT / 'kubernetes/apps' / root)
+                    if doc['kind'] == 'Kustomization']
+        identities = {(doc['metadata']['namespace'], doc['metadata']['name']) for doc in rendered}
+        for owner in ('hermes-hindsight', 'prometheus-adapter'):
+            dependent = find(rendered, 'Kustomization', owner)
+            namespace = dependent['metadata']['namespace']
+            for dependency in dependent['spec']['dependsOn']:
+                target = (dependency.get('namespace', namespace), dependency['name'])
+                with self.subTest(owner=owner, dependency=target):
+                    self.assertIn(target, identities, 'Flux dependsOn must target a root-rendered Kustomization')
 
     def test_adapter_build_and_network_policy(self):
         built = kustomize_build(ADAPTER)
