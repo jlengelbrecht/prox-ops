@@ -277,6 +277,9 @@ spec:
           # every slot from the other tenants. 20 is the driver's own default;
           # the managed role also carries connectionLimit 25 on the cluster side.
           HINDSIGHT_API_DB_POOL_MAX_SIZE: "20"
+          # Reserve one of the existing worker slots for page/mental-model
+          # refresh; this is a floor within the slot budget, not added capacity.
+          HINDSIGHT_API_WORKER_REFRESH_MENTAL_MODEL_RESERVED_SLOTS: "1"
           HINDSIGHT_API_LOG_LEVEL: "info"
           HINDSIGHT_API_LOG_FORMAT: "json"
           # The collector emits only recognized, fixed-shape events. These
