@@ -38,48 +38,60 @@ source_git() {
 # The selected paths must consist solely of regular Git blobs with no paths
 # outside the three documented runtime roots.
 source_git ls-tree -rz "$commit" -- bin lib adapters/runtime-scope.sh | \
-  python3 -c 'import sys
+  /usr/bin/python3 -I -c 'import sys
 entries = [e for e in sys.stdin.buffer.read().split(b"\0") if e]
-assert entries
+if not entries:
+    raise ValueError("empty source payload")
 for entry in entries:
     meta, path = entry.split(b"\t", 1)
     mode, kind, _ = meta.split(b" ")
-    assert mode in (b"100644", b"100755") and kind == b"blob"
-    assert path == b"adapters/runtime-scope.sh" or path.startswith((b"bin/", b"lib/"))' || {
+    if mode not in (b"100644", b"100755") or kind != b"blob":
+        raise ValueError("non-regular source payload")
+    if not (path == b"adapters/runtime-scope.sh" or path.startswith((b"bin/", b"lib/"))):
+        raise ValueError("unexpected source path")' || {
   printf 'test-local: invalid committed source payload\n' >&2; exit 1;
 }
 # mktemp owns this mode-0700 context for one run. Never inspect or modify the
 # repository's old ignored inputs cache, even if it contains links.
+stage=''; scratch=''; client_cfg=''
+release_temps() {
+  [[ -z "$scratch" ]] || rm -rf -- "$scratch"
+  [[ -z "$client_cfg" ]] || rm -rf -- "$client_cfg"
+  [[ -z "$stage" ]] || rm -rf -- "$stage"
+}
+trap release_temps EXIT
 stage=$(mktemp -d /tmp/factory-fixture.XXXXXXXX)
-trap 'rm -rf -- "$stage"' EXIT
 mkdir -m 0755 -- "$stage/inputs"
 install -d -m 0755 "$stage/inputs/afk"
 for file in Dockerfile checksums.sha256 safe-extract.py poll-supervisor.sh; do
   [[ -f "$here/$file" && ! -L "$here/$file" ]] || { printf 'test-local: invalid image source file: %s\n' "$file" >&2; exit 1; }
   cp -- "$here/$file" "$stage/$file"
 done
-source_git archive --format=tar "$commit" bin lib adapters/runtime-scope.sh | tar --same-permissions --no-same-owner -xf - -C "$stage/inputs/afk"
+source_git -c tar.umask=0022 archive --format=tar "$commit" bin lib adapters/runtime-scope.sh | tar --same-permissions --no-same-owner -xf - -C "$stage/inputs/afk"
 # Docker COPY leaves the source root-owned. Require every exported directory
 # to be traversable and each payload file readable by runtime UID 10001.
-python3 - "$stage/inputs/afk" <<'PY'
+/usr/bin/python3 -I - "$stage/inputs/afk" <<'PY'
 import pathlib, stat, sys
 
 root = pathlib.Path(sys.argv[1])
 for path in (root, *root.rglob("*")):
     mode = path.stat().st_mode
     if path.is_dir():
-        assert mode & stat.S_IROTH and mode & stat.S_IXOTH, path
+        if not (mode & stat.S_IROTH and mode & stat.S_IXOTH):
+            raise ValueError(f"unreadable directory: {path}")
     elif path.is_file():
-        assert mode & stat.S_IROTH, path
+        if not mode & stat.S_IROTH:
+            raise ValueError(f"unreadable file: {path}")
     else:
-        raise AssertionError(path)
+        raise ValueError(f"unexpected source type: {path}")
 cli = root / "bin/agent-flow-kit"
-assert cli.is_file() and cli.stat().st_mode & stat.S_IXOTH, cli
+if not (cli.is_file() and cli.stat().st_mode & stat.S_IXOTH):
+    raise ValueError(f"missing executable CLI: {cli}")
 PY
 # Compare every exported byte and mode with the exact committed blobs. This
 # also catches archive attributes that omit or substitute a selected file.
 source_git ls-tree -rz "$commit" -- bin lib adapters/runtime-scope.sh | \
-  python3 -c 'import hashlib, os, pathlib, subprocess, sys
+  /usr/bin/python3 -I -c 'import hashlib, os, pathlib, subprocess, sys
 root = pathlib.Path(sys.argv[1]); repo = sys.argv[2]
 entries = [e for e in sys.stdin.buffer.read().split(b"\0") if e]
 expected = set()
@@ -89,12 +101,16 @@ for entry in entries:
     mode, kind, oid = meta.split(b" ")
     name = path.decode("utf-8", "strict"); expected.add(name)
     exported = root / name
-    assert exported.is_file() and not exported.is_symlink()
-    assert bool(exported.stat().st_mode & 0o111) == (mode == b"100755")
+    if not exported.is_file() or exported.is_symlink():
+        raise ValueError(f"missing regular export: {name}")
+    if bool(exported.stat().st_mode & 0o111) != (mode == b"100755"):
+        raise ValueError(f"export mode differs: {name}")
     original = subprocess.check_output(["/usr/bin/git", "-C", repo, "cat-file", "blob", oid.decode("ascii")], env=env)
-    assert exported.read_bytes() == original
+    if exported.read_bytes() != original:
+        raise ValueError(f"export bytes differ: {name}")
 actual = {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
-assert actual == expected' "$stage/inputs/afk" "$source_repo" || {
+if actual != expected:
+    raise ValueError("export inventory differs")' "$stage/inputs/afk" "$source_repo" || {
   printf 'test-local: exported source differs from pinned tree\n' >&2; exit 1;
 }
 printf 'source_commit=%s source_tree=%s\n' "$commit" "$tree"
@@ -102,7 +118,7 @@ if [[ -n "$archive" ]]; then
   [[ -f "$archive" && ! -L "$archive" ]] || { printf 'test-local: archive must be a regular file\n' >&2; exit 1; }
   cp -- "$archive" "$stage/inputs/$asset.part"
 else
-  if ! env -i PATH="$PATH" curl --fail --location --silent --show-error --max-time 180 --output "$stage/inputs/$asset.part" "$url"; then
+  if ! env -i PATH="$PATH" curl --disable --fail --location --silent --show-error --max-time 180 --output "$stage/inputs/$asset.part" "$url"; then
     printf 'test-local: official archive unavailable; provide --archive PATH or permit the official public download\n' >&2
     exit 1
   fi
@@ -114,12 +130,25 @@ mv -- "$stage/inputs/$asset.part" "$stage/inputs/$asset"
 (cd "$stage" && sha256sum -c checksums.sha256)
 scratch=$(mktemp -d)
 client_cfg=$(mktemp -d)
-image_tag="factory-fixture:$(date +%s)-$$"
-container_name="factory-fixture-$(date +%s)-$$"
+nonce=$(/usr/bin/python3 -I -c 'import secrets; print(secrets.token_hex(16))')
+image_tag="factory-fixture:$nonce"
+container_name="factory-fixture-$nonce"
+smoke_container_name="$container_name-supervisor"
 container_id=''
+smoke_container_id=''
 image_built=0
 cleanup() {
   local status=$? owner
+  if [[ -n "${smoke_container_name:-}" ]]; then
+    owner=$(dock container inspect --format '{{ index .Config.Labels "factory.fixture.owner" }}' "$smoke_container_name" 2>/dev/null) || owner=''
+    if [[ "$owner" == "$container_name" ]]; then
+      if ! dock rm -f "$smoke_container_name" >/dev/null 2>&1; then
+        printf 'test-local: failed to remove owned supervisor container\n' >&2; status=1
+      fi
+    elif [[ -n "${smoke_container_id:-}" ]]; then
+      printf 'test-local: supervisor container ownership could not be verified\n' >&2; status=1
+    fi
+  fi
   # A failed detached run can create the container before returning its ID.
   # Name alone is insufficient ownership proof: require this run's label.
   owner=$(dock container inspect --format '{{ index .Config.Labels "factory.fixture.owner" }}' "$container_name" 2>/dev/null) || owner=''
@@ -146,7 +175,7 @@ dock() {
     docker --host unix:///run/docker.sock --config "$client_cfg" "$@"
 }
 trap cleanup EXIT
-python3 "$stage/safe-extract.py" "$stage/inputs/$asset" "$scratch/orca-server"
+/usr/bin/python3 -I "$stage/safe-extract.py" "$stage/inputs/$asset" "$scratch/orca-server"
 test -x "$scratch/orca-server/bin/orca-ide"
 printf 'orca_archive_sha256=%s archive_layout=bin/orca-ide\n' "$(sha256sum "$stage/inputs/$asset" | cut -d' ' -f1)"
 if [[ ! -S /run/docker.sock ]]; then
@@ -181,6 +210,76 @@ for _ in $(seq 1 40); do
 done
 [[ "$ready" == 1 ]] || { printf 'test-local: Orca readiness failed\n' >&2; exit 1; }
 printf 'orca_private_tcp_ready=true\n'
+stop_state() {
+  /usr/bin/python3 -I -c 'import json, sys
+state = json.loads(sys.argv[2])
+if sys.argv[1] == "before":
+    good = state.get("Running") is True and state.get("Status") == "running"
+else:
+    # Direct foreground vendor process: 0 means handled TERM and returned;
+    # 143 means default SIGTERM termination. 137 is SIGKILL, never graceful.
+    good = (state.get("Running") is False and state.get("Status") == "exited"
+            and type(state.get("ExitCode")) is int and state["ExitCode"] in (0, 143)
+            and state.get("OOMKilled") is False and state.get("Dead") is False
+            and state.get("Error") == "")
+if not good:
+    raise SystemExit("test-local: container stop state is not graceful")' "$1" "$2"
+}
+stop_state before "$(dock container inspect --format '{{json .State}}' "$container_id")"
 dock stop --time 15 "$container_id" >/dev/null
+stop_state after "$(dock container inspect --format '{{json .State}}' "$container_id")"
 printf 'orca_graceful_stop=true\n'
 # EXIT trap removes the stopped, labelled container and image exactly once.
+
+# Shadow only the CLI in one disposable container. Verify the bind before
+# launching the supervisor so a mount failure cannot invoke a real poll.
+fake_cli="$stage/fake-agent-flow-kit"
+printf '#!/usr/bin/env bash\n# fixture-token:%s\n' "$nonce" > "$fake_cli"
+cat >> "$fake_cli" <<'FAKE'
+[[ "$#" == 1 && "$1" == paperclip-poll ]] || exit 86
+sleep 300 & child=$!
+printf '%s\n' running > /scratch/fake-running
+on_term() {
+  wait "$child" || [[ "$?" == 143 ]] || exit 87
+  touch /scratch/fake-reaped
+  for ((i=0; i<100; i++)); do
+    [[ ! -e /scratch/fake-observed ]] || exit 0
+    sleep 0.1
+  done
+  exit 88
+}
+trap on_term TERM
+wait "$child"
+FAKE
+chmod 0755 "$fake_cli"
+fake_mount="type=bind,source=$fake_cli,target=/opt/afk/bin/agent-flow-kit,readonly"
+smoke_container_id=$(dock run -d --init --name "$smoke_container_name" \
+  --label "factory.fixture.owner=$container_name" --env AFK_POLL_CADENCE_SECONDS=86400 \
+  "${run_flags[@]}" --mount "$fake_mount" "$image_tag" /bin/bash -c \
+  'test "$(sed -n 2p /opt/afk/bin/agent-flow-kit)" = "# fixture-token:$1" || exit 86
+   exec /opt/factory/poll-supervisor.sh' _ "$nonce")
+running=0
+for _ in $(seq 1 100); do
+  if dock exec "$smoke_container_id" /bin/bash -c \
+    'test "$(cat /scratch/fake-running 2>/dev/null)" = running' >/dev/null 2>&1; then
+    running=1; break
+  fi
+  sleep 0.1
+done
+[[ "$running" == 1 ]] || { printf 'test-local: synthetic supervisor child did not start\n' >&2; exit 1; }
+stop_state before "$(dock container inspect --format '{{json .State}}' "$smoke_container_id")"
+dock exec "$smoke_container_id" /bin/bash -c '
+  for ((i=0; i<100; i++)); do
+    if [[ -f /scratch/fake-reaped ]]; then touch /scratch/fake-observed; exit 0; fi
+    sleep 0.1
+  done
+  exit 1' >/dev/null & observer=$!
+dock stop --time 15 "$smoke_container_id" >/dev/null & stopper=$!
+observer_ok=1
+wait "$observer" || observer_ok=0
+wait "$stopper"
+[[ "$observer_ok" == 1 ]] || { printf 'test-local: synthetic child was not reaped in time\n' >&2; exit 1; }
+smoke_state=$(dock container inspect --format '{{json .State}}' "$smoke_container_id")
+stop_state after "$smoke_state"
+/usr/bin/python3 -I -c 'import json,sys; raise SystemExit(json.loads(sys.argv[1])["ExitCode"] != 0)' "$smoke_state"
+printf 'supervisor_fake_child_stop=true\n'

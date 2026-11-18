@@ -19,7 +19,7 @@ def extract(archive: pathlib.Path, destination: pathlib.Path) -> None:
         else:
             strip = ""
         items = []
-        symlinks = set()
+        layout = {}
         for member, name in zip(members, names):
             if not name and member.isdir():
                 continue
@@ -37,12 +37,59 @@ def extract(archive: pathlib.Path, destination: pathlib.Path) -> None:
                 raise ValueError("unsafe archive path")
             if not (member.isdir() or member.isfile() or member.issym()):
                 raise ValueError("unsupported archive member")
-            if member.issym():
-                target = posixpath.normpath(posixpath.join(posixpath.dirname(relative), member.linkname))
-                if member.linkname.startswith("/") or target.startswith("../") or target == "..":
-                    raise ValueError("escaping archive symlink")
-                symlinks.add(relative)
+            if relative in layout:
+                raise ValueError("duplicate archive member")
+            if member.issym() and member.linkname.startswith("/"):
+                raise ValueError("escaping archive symlink")
+            layout[relative] = member
             items.append((member, relative))
+        # Resolve every planned link before creating any filesystem object. A
+        # lexical normpath misses `a -> .; link -> a/../outside`: the `..`
+        # applies after `a` is followed, and escapes the extraction root.
+        directories = {""}
+        for _, relative in items:
+            parent = posixpath.dirname(relative)
+            while parent:
+                directories.add(parent)
+                parent = posixpath.dirname(parent)
+        for name in directories - {""}:
+            if name in layout and not layout[name].isdir():
+                raise ValueError("member beneath non-directory")
+
+        def resolve(path, components, active):
+            current = path
+            for index, component in enumerate(components):
+                if component in ("", "."):
+                    continue
+                if component == "..":
+                    if not current:
+                        raise ValueError("escaping archive symlink")
+                    current = posixpath.dirname(current)
+                    continue
+                candidate = posixpath.join(current, component)
+                member = layout.get(candidate)
+                if member is not None and member.issym():
+                    if candidate in active:
+                        raise ValueError("archive symlink cycle")
+                    current = resolve(posixpath.dirname(candidate),
+                                      member.linkname.split("/"), active | {candidate})
+                elif member is not None and member.isfile():
+                    if index != len(components) - 1:
+                        raise ValueError("file in symlink parent")
+                    current = candidate
+                elif candidate in directories or member is not None:
+                    current = candidate
+                elif index == len(components) - 1:
+                    # A dangling final name is safe; a missing parent is not.
+                    current = candidate
+                else:
+                    raise ValueError("ambiguous symlink parent")
+            return current
+
+        for member, relative in items:
+            if member.issym():
+                resolve(posixpath.dirname(relative), member.linkname.split("/"), {relative})
+        symlinks = {name for name, member in layout.items() if member.issym()}
         for _, relative in items:
             ancestors = pathlib.PurePosixPath(relative).parents
             if any(str(a) in symlinks for a in ancestors):

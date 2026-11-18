@@ -5,8 +5,8 @@ the source CLI at AFK commit `f62d4efa4768a9ca985248f5ad931cc2e5c53f41`.
 The source candidate is not a release approval. The payload is the source CLI,
 libraries and runtime-scope adapter needed for read-only help and state commands.
 No harness binaries, credentials, Paperclip configuration or factory-stage
-route/stamp/validator binding are packaged. Never start the poll supervisor in
-the local fixture.
+route/stamp/validator binding are packaged. The local fixture starts the poll
+supervisor only with a synthetic CLI mounted over its polling command.
 
 Run from the repository root, with the **exact candidate Git checkout**:
 
@@ -34,15 +34,42 @@ container has no external network or host socket, no capabilities, read-only
 root, fixed UID/GID 10001, bounded tmpfs HOME/cache/scratch, CPU/memory/PID
 limits and no persisted logs. Cleanup requires the fixture ownership label,
 including after a partial detached start. It checks CLI help, versions, writes, private
-loopback TCP readiness, then stops and destroys the instance. It never prints
+loopback TCP readiness, then verifies a running state before stop and an exited
+state after stop. Exit 0 (handled TERM) or 143 (direct SIGTERM termination) is
+accepted only without OOM, forced kill, or Docker error; exit 137 is rejected.
+This verifies process termination, not application state flush or persistent
+recovery. The fixture then destroys the instance. It never prints
 Orca pairing data. Any server identity it generates lives only in tmpfs.
 
+After the Orca check, the same image runs one synthetic supervisor smoke under
+Docker's init process and the same UID, resource and isolation flags. A
+read-only bind shadows the AFK CLI; a token check verifies that exact fake
+before the wrapper starts. The fake starts a sleeping child, records its
+startup and reap in container tmpfs, and never contacts Paperclip or a model.
+The helper checks the markers, stops through PID 1 with a 15-second deadline,
+and requires an exit code of 0 without forced kill or Docker error. It removes
+the labelled smoke container with the same owned-resource cleanup.
+
 `poll-supervisor.sh` is a separate foreground wrapper for a future authorized
-controller. It runs one documented `paperclip-poll` at a time, discards child
+controller. It keeps one `paperclip-poll` process group active at a time, discards child
 stdout/stderr, and emits only pass exit status, timestamp and stop status.
-Cadence defaults to 90 seconds measured from each
-pass start; a long pass finishes before another begins. It forwards TERM/INT
-to its owned process group and waits for the leader. It is **not** enabled by
+Cadence defaults to 90 seconds and accepts decimal values from 1 to 86400
+seconds; the upper bound avoids Bash integer overflow and is a technical
+limit, not a measured capacity SLA. Cadence is measured from each
+pass start; a long pass finishes before another begins. After the CLI exits,
+the group leader waits for all active members of its process group before the
+wrapper starts another pass. It forwards TERM/INT to individually reverified
+members of its owned process group and checks every known active group member,
+including descendants after the leader exits. An ordinary pass has no
+deadline. Cancellation deadlines use the kernel monotonic uptime clock: it
+gives TERM three seconds, then sends KILL to
+individually reverified owned members that remain; it allows two more seconds
+to confirm the group has no active members and to reap the leader. If group
+ownership or emptiness cannot be verified, or KILL was needed, stop fails.
+This bounds the wrapper's stop wait; it does not prove
+application flush, persistence, or recovery. Workers that deliberately leave
+the owned process group are outside this lifecycle contract; this wrapper is
+not universal native worker fencing. It is **not** enabled by
 this image's default command. The local fixture does not connect to Paperclip.
 
 The Debian base digest and Orca archive are pinned, but apt indices and
