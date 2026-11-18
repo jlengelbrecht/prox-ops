@@ -14,7 +14,8 @@ COPY inputs/afk/bin/ /opt/afk/bin/
 COPY inputs/afk/lib/ /opt/afk/lib/
 COPY inputs/afk/adapters/runtime-scope.sh /opt/afk/adapters/runtime-scope.sh
 COPY poll-supervisor.sh /opt/factory/poll-supervisor.sh
-RUN test -x /opt/afk/bin/agent-flow-kit && chmod 755 /opt/factory/poll-supervisor.sh && /opt/afk/bin/agent-flow-kit --help >/dev/null && /opt/orca-server/bin/orca-ide --version >/dev/null
+COPY poll-supervisor.py /opt/factory/poll-supervisor.py
+RUN test -x /opt/afk/bin/agent-flow-kit && chmod 755 /opt/factory/poll-supervisor.sh && chmod 644 /opt/factory/poll-supervisor.py && /opt/afk/bin/agent-flow-kit --help >/dev/null && /opt/orca-server/bin/orca-ide --version >/dev/null
 ENV HOME=/home/factory XDG_CACHE_HOME=/cache XDG_STATE_HOME=/home/factory/.local/state TMPDIR=/scratch
 USER 10001:10001
 WORKDIR /home/factory

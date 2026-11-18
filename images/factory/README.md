@@ -14,6 +14,41 @@ Run from the repository root, with the **exact candidate Git checkout**:
 bash images/factory/test-local.sh --afk-repo /path/to/agent-flow-kit-checkout
 ```
 
+For a closed diagnostic result, pass `--report /tmp/unique-fixture-result.json`
+using a new path in a private directory. The helper writes a mode-0600 JSON
+object once, with `status`, `phase`, a fixed `reason` code and
+`observed_exit_status`. It writes and closes a private temporary file, then
+publishes it with Linux `renameat2(RENAME_NOREPLACE)`; an existing file or
+symlink is refused. Command output is
+discarded, including errors from Docker, Orca, Git, Python and extraction;
+the report contains no command output or exception text. A failed run remains
+a failure even when cleanup succeeds. If the report cannot be created, the
+helper exits nonzero. A controller must check the helper's exit status is zero,
+the complete report exactly says `PASS` / `complete` / `ok` / exit status zero,
+and the current source and input identities and hashes before accepting a run.
+A report file alone is not success evidence. Normal write or close failure
+cannot publish a partial `PASS`; an uncatchable kill, kernel stall, or failed
+temporary-file removal can leave an uncertain residual and requires controller
+rejection.
+
+If the synthetic supervisor never creates its readiness marker, the report
+also includes a fixed `readiness_diagnostic` code derived from Docker's
+running/exited state and recognized fixture startup stages or supervisor event
+codes. `entry_started` means the image shell command ran, `bind_verified`
+means its fake CLI token check passed, and `helper_started` means Python
+entered the supervisor's main function. A later fixed failure code takes
+precedence. The smoke redirects interpreter and wrapper stderr to `/dev/null`;
+only these fixed codes enter its private tmpfs event file. An
+`observed_container_exit_status` appears only when Docker reports an exited
+container with an integer code. Unknown Docker state yields
+`probe_unavailable`; unavailable event data leaves only the container-state
+code. No Docker error text, child output, path, or environment
+value is copied into the report. These fields narrow a failed run but do not
+establish a cause by exit code alone. If cleanup also fails, the earlier readiness phase and exit status
+remain in the report; a cleanup failure after otherwise successful checks is
+reported as a cleanup failure. The controller still requires helper exit 0
+and the complete current `PASS` report.
+
 If the sandbox cannot download the official archive, fetch
 `https://github.com/stablyai/orca/releases/download/v1.4.261/orca-server-linux-x64.tar.gz`
 through an authorized public network path and pass `--archive PATH`. The helper
@@ -28,6 +63,14 @@ private context. The helper never reads or changes an existing
 `images/factory/inputs/` cache. The context is removed on exit; host profiles
 and credentials do not enter it.
 
+The private context runs with `umask 077`. Its producer explicitly makes only
+the copied public `poll-supervisor.py` mode 0644, and the Dockerfile sets that
+installed helper to mode 0644. The image runs as UID 10001, which must be able
+to read the root-owned helper through `/opt/factory/`. No blanket permission
+change is made to other staged files or private data. Earlier physical smoke reports exited
+before readiness with code 2; they did not establish that file mode as the
+actual cause, so a new image fixture is still required.
+
 The helper uses only the explicit local Unix Docker socket and an empty private
 Docker configuration. It builds without cache export or push. The disposable
 container has no external network or host socket, no capabilities, read-only
@@ -35,10 +78,11 @@ root, fixed UID/GID 10001, bounded tmpfs HOME/cache/scratch, CPU/memory/PID
 limits and no persisted logs. Cleanup requires the fixture ownership label,
 including after a partial detached start. It checks CLI help, versions, writes, private
 loopback TCP readiness, then verifies a running state before stop and an exited
-state after stop. Exit 0 (handled TERM) or 143 (direct SIGTERM termination) is
-accepted only without OOM, forced kill, or Docker error; exit 137 is rejected.
-This verifies process termination, not application state flush or persistent
-recovery. The fixture then destroys the instance. It never prints
+state after stop. Exit 0 or 143 is accepted only without OOM, forced kill, or
+Docker error; exit 137 is rejected. This verifies an observed nonforced process
+exit after `docker stop`; the state alone cannot prove TERM delivery because the
+process may exit between the two observations. It cannot prove application
+state flush or persistent recovery. The fixture then destroys the instance. It never prints
 Orca pairing data. Any server identity it generates lives only in tmpfs.
 
 After the Orca check, the same image runs one synthetic supervisor smoke under
@@ -46,30 +90,47 @@ Docker's init process and the same UID, resource and isolation flags. A
 read-only bind shadows the AFK CLI; a token check verifies that exact fake
 before the wrapper starts. The fake starts a sleeping child, records its
 startup and reap in container tmpfs, and never contacts Paperclip or a model.
+The controller and Docker daemon must see the same absolute `/tmp` fixture path
+for this bind mount. A remote daemon or one with a different filesystem namespace
+cannot run this smoke with that path.
 The helper checks the markers, stops through PID 1 with a 15-second deadline,
 and requires an exit code of 0 without forced kill or Docker error. It removes
 the labelled smoke container with the same owned-resource cleanup.
 
-`poll-supervisor.sh` is a separate foreground wrapper for a future authorized
-controller. It keeps one `paperclip-poll` process group active at a time, discards child
-stdout/stderr, and emits only pass exit status, timestamp and stop status.
+`poll-supervisor.sh` is a thin entrypoint to the Linux Python helper for a future
+authorized controller. The helper uses `PR_SET_CHILD_SUBREAPER`, pidfds and
+`waitpid` to keep one local `paperclip-poll` child tree active at a time. It
+discards child stdout/stderr and emits pass status, timestamp and stop status.
 Cadence defaults to 90 seconds and accepts decimal values from 1 to 86400
-seconds; the upper bound avoids Bash integer overflow and is a technical
+seconds; the upper bound is a technical
 limit, not a measured capacity SLA. Cadence is measured from each
-pass start; a long pass finishes before another begins. After the CLI exits,
-the group leader waits for all active members of its process group before the
-wrapper starts another pass. It forwards TERM/INT to individually reverified
-members of its owned process group and checks every known active group member,
-including descendants after the leader exits. An ordinary pass has no
-deadline. Cancellation deadlines use the kernel monotonic uptime clock: it
-gives TERM three seconds, then sends KILL to
-individually reverified owned members that remain; it allows two more seconds
-to confirm the group has no active members and to reap the leader. If group
-ownership or emptiness cannot be verified, or KILL was needed, stop fails.
-This bounds the wrapper's stop wait; it does not prove
-application flush, persistence, or recovery. Workers that deliberately leave
-the owned process group are outside this lifecycle contract; this wrapper is
-not universal native worker fencing. It is **not** enabled by
+pass start; a long pass finishes before another begins. The kernel's empty
+child table, after adopting and reaping descendants, is the completion barrier;
+`/proc` child listings are used only to find signal targets. Cancellation
+retains each selected parent's pidfd while opening, verifying, and signalling
+its children, and checks that the parent is still live during selection. A
+child whose parent has exited is selected after subreaper adoption on a later
+scan; a numeric descendant PID alone is never treated as ownership proof.
+A handled TERM/INT blocks later CLI launches. During the final
+launch handoff, the parent masks TERM/INT until the close-on-exec startup pipe
+closes or the pre-exec child is retired. Pipe EOF alone does not prove exec:
+an uncatchable pre-exec signal also closes it. A signaled child is reported as
+an interrupted pass unless its changed live executable was observed in `/proc`;
+normal exits use the child path's explicit denial/failure markers to distinguish
+launch failures from CLI exit statuses. A signal delivered in the short startup
+window remains pending: exec may occur before the parent handles the
+signal, then the parent handles cancellation and drains the child tree. The
+startup window is bounded to two seconds; timeout or startup I/O failure
+enters the bounded owned-tree TERM/KILL/reap path before a pending stop is
+handled. The signal handler does not
+wait on a child-held lock. Cancellation gives owned children
+three monotonic seconds for TERM, then sends KILL to those still present and
+waits up to two more seconds for reaping. It reports a forced stop only when
+KILL delivery succeeded. A pass has no ordinary deadline. An uncertain or
+unreaped stop fails. This covers the wrapper's local descendant tree, including
+reparented children; jobs separately managed by Orca outside this tree are not
+owned by this helper. It does not prove application flush, persistence, recovery,
+or native worker fencing. It is **not** enabled by
 this image's default command. The local fixture does not connect to Paperclip.
 
 The Debian base digest and Orca archive are pinned, but apt indices and

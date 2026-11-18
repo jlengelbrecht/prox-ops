@@ -5,14 +5,88 @@ umask 077
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source_repo=''
 archive=''
+report_path=''
+phase=arguments
+reason=invalid_arguments
 while (($#)); do
   case "$1" in
     --afk-repo) source_repo="${2:?}"; shift 2 ;;
     --archive) archive="${2:?}"; shift 2 ;;
-    *) printf 'usage: %s --afk-repo PATH [--archive VERIFIED_ARCHIVE]\n' "$0" >&2; exit 2 ;;
+    --report) report_path="${2:?}"; shift 2 ;;
+    *) printf 'usage: %s --afk-repo PATH [--archive VERIFIED_ARCHIVE] [--report NEW_JSON_PATH]\n' "$0" >&2; exit 2 ;;
   esac
 done
+if [[ -n "$report_path" && ( -e "$report_path" || -L "$report_path" ) ]]; then
+  printf 'test-local: report path must be new\n' >&2
+  exit 2
+fi
+# Only fixed report fields are retained. Opaque Docker, Orca, Git, Python and
+# archive command output goes to /dev/null, including on unexpected failure.
+exec >/dev/null 2>&1
+stage=''; scratch=''; client_cfg=''; fixture_cleanup_active=0; cleanup_failed=0
+readiness_diagnostic=''; readiness_exit_status=''
+release_temps() {
+  local status=0
+  [[ -z "$scratch" ]] || rm -rf -- "$scratch" || status=1
+  [[ -z "$client_cfg" ]] || rm -rf -- "$client_cfg" || status=1
+  [[ -z "$stage" ]] || rm -rf -- "$stage" || status=1
+  return "$status"
+}
+finish() {
+  local status=$?
+  local initial_status=$status
+  trap - EXIT
+  if [[ "$fixture_cleanup_active" == 1 ]]; then
+    cleanup "$status" || status=1
+  else
+    release_temps || { status=1; cleanup_failed=1; }
+  fi
+  if [[ "$cleanup_failed" == 1 ]]; then
+    if [[ "$initial_status" == 0 ]]; then
+      phase=cleanup; reason=owned_cleanup_failed; status=1
+    else
+      status=$initial_status
+    fi
+  fi
+  if [[ "$status" == 0 ]]; then phase=complete; reason=ok; fi
+  if [[ -n "$report_path" ]]; then
+    /usr/bin/python3 -I - "$report_path" "$phase" "$reason" "$status" "$readiness_diagnostic" "$readiness_exit_status" <<'PY' || status=1
+import ctypes, json, os, sys, tempfile
+path, phase, reason, status, diagnostic, container_exit = sys.argv[1:]
+fd, temporary = tempfile.mkstemp(prefix=".factory-report-", dir=os.path.dirname(os.path.abspath(path)))
+try:
+    with os.fdopen(fd, "w", encoding="ascii") as out:
+        fd = -1
+        report = {"schema": "factory-fixture-report/1", "status": "PASS" if status == "0" else "FAIL",
+                  "phase": phase, "reason": reason, "observed_exit_status": int(status)}
+        if phase == "supervisor_readiness" and status != "0":
+            report["readiness_diagnostic"] = diagnostic or "probe_unavailable"
+            if container_exit:
+                report["observed_container_exit_status"] = int(container_exit)
+        json.dump(report, out)
+        out.write("\n")
+    # Linux renameat2 makes the complete, closed file visible exactly once.
+    # RENAME_NOREPLACE also refuses an existing file or symlink at path.
+    libc = ctypes.CDLL(None, use_errno=True)
+    rename = libc.renameat2
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    if rename(-100, os.fsencode(temporary), -100, os.fsencode(path), 1) != 0:
+        raise OSError(ctypes.get_errno(), "exclusive report publication failed")
+    temporary = None
+finally:
+    if fd >= 0:
+        os.close(fd)
+    if temporary is not None:
+        os.unlink(temporary)
+PY
+  fi
+  exit "$status"
+}
+trap finish EXIT
+phase=source_checkout; reason=invalid_source_checkout
 [[ -n "$source_repo" && -e "$source_repo/.git" ]] || { printf 'test-local: --afk-repo must name a Git checkout\n' >&2; exit 2; }
+phase=source_pin; reason=source_pin_failed
 lock() { sed -n "s/^$1=//p" "$here/versions.lock"; }
 commit=$(lock AFK_COMMIT)
 tree=$(lock AFK_SOURCE_TREE)
@@ -53,20 +127,17 @@ for entry in entries:
 }
 # mktemp owns this mode-0700 context for one run. Never inspect or modify the
 # repository's old ignored inputs cache, even if it contains links.
-stage=''; scratch=''; client_cfg=''
-release_temps() {
-  [[ -z "$scratch" ]] || rm -rf -- "$scratch"
-  [[ -z "$client_cfg" ]] || rm -rf -- "$client_cfg"
-  [[ -z "$stage" ]] || rm -rf -- "$stage"
-}
-trap release_temps EXIT
+phase=source_export; reason=source_export_failed
 stage=$(mktemp -d /tmp/factory-fixture.XXXXXXXX)
 mkdir -m 0755 -- "$stage/inputs"
 install -d -m 0755 "$stage/inputs/afk"
-for file in Dockerfile checksums.sha256 safe-extract.py poll-supervisor.sh; do
+for file in Dockerfile checksums.sha256 safe-extract.py poll-supervisor.sh poll-supervisor.py; do
   [[ -f "$here/$file" && ! -L "$here/$file" ]] || { printf 'test-local: invalid image source file: %s\n' "$file" >&2; exit 1; }
   cp -- "$here/$file" "$stage/$file"
 done
+# The private umask makes cp produce mode 0600 even for a public 0644 source.
+# Only this installed public helper needs other-UID read access at runtime.
+chmod 0644 -- "$stage/poll-supervisor.py"
 source_git -c tar.umask=0022 archive --format=tar "$commit" bin lib adapters/runtime-scope.sh | tar --same-permissions --no-same-owner -xf - -C "$stage/inputs/afk"
 # Docker COPY leaves the source root-owned. Require every exported directory
 # to be traversable and each payload file readable by runtime UID 10001.
@@ -114,6 +185,7 @@ if actual != expected:
   printf 'test-local: exported source differs from pinned tree\n' >&2; exit 1;
 }
 printf 'source_commit=%s source_tree=%s\n' "$commit" "$tree"
+phase=archive_acquire; reason=archive_acquire_failed
 if [[ -n "$archive" ]]; then
   [[ -f "$archive" && ! -L "$archive" ]] || { printf 'test-local: archive must be a regular file\n' >&2; exit 1; }
   cp -- "$archive" "$stage/inputs/$asset.part"
@@ -123,6 +195,7 @@ else
     exit 1
   fi
 fi
+phase=archive_verify; reason=archive_verification_failed
 [[ "$(sha256sum "$stage/inputs/$asset.part" | cut -d' ' -f1)" == "$(cut -d' ' -f1 "$stage/checksums.sha256")" ]] || {
   printf 'test-local: Orca archive checksum mismatch\n' >&2; exit 1;
 }
@@ -138,15 +211,15 @@ container_id=''
 smoke_container_id=''
 image_built=0
 cleanup() {
-  local status=$? owner
+  local status=$1 owner
   if [[ -n "${smoke_container_name:-}" ]]; then
     owner=$(dock container inspect --format '{{ index .Config.Labels "factory.fixture.owner" }}' "$smoke_container_name" 2>/dev/null) || owner=''
     if [[ "$owner" == "$container_name" ]]; then
       if ! dock rm -f "$smoke_container_name" >/dev/null 2>&1; then
-        printf 'test-local: failed to remove owned supervisor container\n' >&2; status=1
+        printf 'test-local: failed to remove owned supervisor container\n' >&2; status=1; cleanup_failed=1
       fi
     elif [[ -n "${smoke_container_id:-}" ]]; then
-      printf 'test-local: supervisor container ownership could not be verified\n' >&2; status=1
+      printf 'test-local: supervisor container ownership could not be verified\n' >&2; status=1; cleanup_failed=1
     fi
   fi
   # A failed detached run can create the container before returning its ID.
@@ -154,34 +227,37 @@ cleanup() {
   owner=$(dock container inspect --format '{{ index .Config.Labels "factory.fixture.owner" }}' "$container_name" 2>/dev/null) || owner=''
   if [[ "$owner" == "$container_name" ]]; then
     if ! dock rm -f "$container_name" >/dev/null 2>&1; then
-      printf 'test-local: failed to remove owned container\n' >&2; status=1
+      printf 'test-local: failed to remove owned container\n' >&2; status=1; cleanup_failed=1
     fi
   elif [[ -n "$container_id" ]]; then
-    printf 'test-local: reserved container ownership could not be verified\n' >&2; status=1
+    printf 'test-local: reserved container ownership could not be verified\n' >&2; status=1; cleanup_failed=1
   fi
   owner=$(dock image inspect --format '{{ index .Config.Labels "factory.fixture.owner" }}' "$image_tag" 2>/dev/null) || owner=''
   if [[ "$owner" == "$container_name" ]]; then
     if ! dock image rm "$image_tag" >/dev/null 2>&1; then
-      printf 'test-local: failed to remove owned image\n' >&2; status=1
+      printf 'test-local: failed to remove owned image\n' >&2; status=1; cleanup_failed=1
     fi
   elif [[ "$image_built" == 1 ]]; then
-    printf 'test-local: built image ownership could not be verified\n' >&2; status=1
+    printf 'test-local: built image ownership could not be verified\n' >&2; status=1; cleanup_failed=1
   fi
-  rm -rf -- "$scratch" "$client_cfg" "$stage"
+  rm -rf -- "$scratch" "$client_cfg" "$stage" || { status=1; cleanup_failed=1; }
   return "$status"
 }
 dock() {
   env -i PATH="$PATH" HOME="$client_cfg" XDG_CONFIG_HOME="$client_cfg" DOCKER_CONFIG="$client_cfg" DOCKER_HOST=unix:///run/docker.sock \
     docker --host unix:///run/docker.sock --config "$client_cfg" "$@"
 }
-trap cleanup EXIT
+fixture_cleanup_active=1
+phase=archive_extract; reason=archive_extract_failed
 /usr/bin/python3 -I "$stage/safe-extract.py" "$stage/inputs/$asset" "$scratch/orca-server"
 test -x "$scratch/orca-server/bin/orca-ide"
 printf 'orca_archive_sha256=%s archive_layout=bin/orca-ide\n' "$(sha256sum "$stage/inputs/$asset" | cut -d' ' -f1)"
+phase=docker_daemon; reason=docker_daemon_unavailable
 if [[ ! -S /run/docker.sock ]]; then
   printf 'test-local: explicit local Docker socket unavailable\n' >&2; exit 1
 fi
 dock version --format '{{.Server.Arch}}' | grep -qx amd64
+phase=image_build; reason=image_build_failed
 dock build --no-cache --pull --platform linux/amd64 --network default \
   --label "factory.fixture.owner=$container_name" --tag "$image_tag" "$stage" >/dev/null
 image_built=1
@@ -194,13 +270,18 @@ run_flags=(--network none --read-only --cap-drop ALL --security-opt no-new-privi
   --tmpfs /tmp:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m
   --tmpfs /run:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=16m
   --log-driver none)
+phase=afk_help; reason=afk_help_failed
 dock run --rm "${run_flags[@]}" "$image_tag" /opt/afk/bin/agent-flow-kit --help >/dev/null
+phase=orca_version; reason=orca_version_failed
 dock run --rm "${run_flags[@]}" "$image_tag" /opt/orca-server/bin/orca-ide --version
+phase=runtime_isolation; reason=runtime_isolation_failed
 dock run --rm "${run_flags[@]}" "$image_tag" /bin/bash -c 'test "$(id -u):$(id -g):$HOME" = "10001:10001:/home/factory" && touch "$HOME/w" /cache/w /scratch/w && test ! -e /run/docker.sock'
+phase=orca_start; reason=orca_start_failed
 container_id=$(dock run -d --name "$container_name" --hostname "$container_name" \
   --env "ORCA_INSTANCE_ID=$container_name" \
   --label "factory.fixture.owner=$container_name" "${run_flags[@]}" "$image_tag" \
   /opt/orca-server/bin/orca-ide serve --bind 127.0.0.1 --port 8765 --refuse-public 2>/dev/null)
+phase=orca_readiness; reason=orca_readiness_failed
 ready=0
 for _ in $(seq 1 40); do
   if dock exec "$container_id" python3 -c 'import socket; s=socket.socket(); s.settimeout(0.2); result=s.connect_ex(("127.0.0.1",8765)); s.close(); raise SystemExit(result != 0)' >/dev/null 2>&1; then
@@ -216,29 +297,30 @@ state = json.loads(sys.argv[2])
 if sys.argv[1] == "before":
     good = state.get("Running") is True and state.get("Status") == "running"
 else:
-    # Direct foreground vendor process: 0 means handled TERM and returned;
-    # 143 means default SIGTERM termination. 137 is SIGKILL, never graceful.
+    # 0/143 are accepted observed exits after stop; this does not prove TERM
+    # delivery. 137 indicates forced termination and is rejected.
     good = (state.get("Running") is False and state.get("Status") == "exited"
             and type(state.get("ExitCode")) is int and state["ExitCode"] in (0, 143)
             and state.get("OOMKilled") is False and state.get("Dead") is False
             and state.get("Error") == "")
 if not good:
-    raise SystemExit("test-local: container stop state is not graceful")' "$1" "$2"
+    raise SystemExit("test-local: container stop state is not an accepted observed exit")' "$1" "$2"
 }
+phase=orca_stop; reason=orca_stop_failed_or_unverified
 stop_state before "$(dock container inspect --format '{{json .State}}' "$container_id")"
 dock stop --time 15 "$container_id" >/dev/null
 stop_state after "$(dock container inspect --format '{{json .State}}' "$container_id")"
-printf 'orca_graceful_stop=true\n'
+printf 'orca_observed_nonforced_stop=true\n'
 # EXIT trap removes the stopped, labelled container and image exactly once.
 
 # Shadow only the CLI in one disposable container. Verify the bind before
 # launching the supervisor so a mount failure cannot invoke a real poll.
+phase=supervisor_start; reason=supervisor_start_failed
 fake_cli="$stage/fake-agent-flow-kit"
 printf '#!/usr/bin/env bash\n# fixture-token:%s\n' "$nonce" > "$fake_cli"
 cat >> "$fake_cli" <<'FAKE'
 [[ "$#" == 1 && "$1" == paperclip-poll ]] || exit 86
 sleep 300 & child=$!
-printf '%s\n' running > /scratch/fake-running
 on_term() {
   wait "$child" || [[ "$?" == 143 ]] || exit 87
   touch /scratch/fake-reaped
@@ -249,15 +331,20 @@ on_term() {
   exit 88
 }
 trap on_term TERM
+printf '%s\n' running > /scratch/fake-running
 wait "$child"
 FAKE
 chmod 0755 "$fake_cli"
 fake_mount="type=bind,source=$fake_cli,target=/opt/afk/bin/agent-flow-kit,readonly"
 smoke_container_id=$(dock run -d --init --name "$smoke_container_name" \
   --label "factory.fixture.owner=$container_name" --env AFK_POLL_CADENCE_SECONDS=86400 \
+  --env FACTORY_FIXTURE_DIAGNOSTICS=1 \
   "${run_flags[@]}" --mount "$fake_mount" "$image_tag" /bin/bash -c \
-  'test "$(sed -n 2p /opt/afk/bin/agent-flow-kit)" = "# fixture-token:$1" || exit 86
-   exec /opt/factory/poll-supervisor.sh' _ "$nonce")
+  'printf "fixture: entry_started\n" > /scratch/supervisor-events || exit 86
+   test "$(sed -n 2p /opt/afk/bin/agent-flow-kit)" = "# fixture-token:$1" || exit 86
+   printf "fixture: bind_verified\n" >> /scratch/supervisor-events || exit 86
+   exec /opt/factory/poll-supervisor.sh 2>/dev/null' _ "$nonce")
+phase=supervisor_readiness; reason=supervisor_readiness_failed
 running=0
 for _ in $(seq 1 100); do
   if dock exec "$smoke_container_id" /bin/bash -c \
@@ -266,7 +353,67 @@ for _ in $(seq 1 100); do
   fi
   sleep 0.1
 done
-[[ "$running" == 1 ]] || { printf 'test-local: synthetic supervisor child did not start\n' >&2; exit 1; }
+if [[ "$running" != 1 ]]; then
+  # Only fixed Docker state fields and our own supervisor events can enter
+  # this closed diagnostic. The private copied event file is removed on exit.
+  dock_probe() {
+    /usr/bin/timeout -k 2s 5s env -i PATH="$PATH" HOME="$client_cfg" XDG_CONFIG_HOME="$client_cfg" \
+      DOCKER_CONFIG="$client_cfg" DOCKER_HOST=unix:///run/docker.sock \
+      docker --host unix:///run/docker.sock --config "$client_cfg" "$@"
+  }
+  smoke_state=$(dock_probe container inspect --format '{{json .State}}' "$smoke_container_id" 2>/dev/null) || smoke_state=''
+  dock_probe cp "$smoke_container_id:/scratch/supervisor-events" "$stage/supervisor-events" >/dev/null 2>&1 || :
+  diagnostic=$(/usr/bin/python3 -I - "$smoke_state" "$stage/supervisor-events" <<'PY'
+import json, pathlib, sys
+try:
+    state = json.loads(sys.argv[1])
+except (ValueError, TypeError):
+    state = None
+code, exit_code = "probe_unavailable", ""
+if isinstance(state, dict):
+    if state.get("Running") is True and state.get("Status") == "running":
+        code = "container_running_marker_absent"
+    elif state.get("Running") is False and state.get("Status") == "exited":
+        code = "container_exited_before_marker"
+        value = state.get("ExitCode")
+        if type(value) is int and 0 <= value <= 255:
+            exit_code = str(value)
+events = pathlib.Path(sys.argv[2])
+if events.is_file():
+    known = ("invalid_configuration", "unsupported_linux_child_primitives", "subreaper_unavailable",
+             "launch_failed=", "pass_interrupted", "cancellation_children_unreaped",
+             "stop_outcome=forced_or_unreaped", "stopped")
+    try:
+        lines = events.read_text(encoding="ascii", errors="ignore")[:4096].splitlines()
+        stage = ""
+        for event in lines:
+            if event == "fixture: entry_started":
+                stage = "entry_started"
+            elif event == "fixture: bind_verified":
+                stage = "bind_verified"
+            if event.startswith("poll-supervisor: "):
+                value = event[len("poll-supervisor: "):]
+                if value == "helper_started":
+                    stage = "helper_started"
+                for prefix in known:
+                    if value.startswith(prefix):
+                        stage = prefix.removesuffix("=")
+                        break
+                else:
+                    continue
+                break
+        if stage:
+            code += "_event_" + stage
+    except OSError:
+        pass
+print(code, exit_code)
+PY
+  ) || diagnostic='probe_unavailable'
+  read -r readiness_diagnostic readiness_exit_status <<< "$diagnostic"
+  printf 'test-local: synthetic supervisor child did not start\n' >&2
+  exit 1
+fi
+phase=supervisor_stop; reason=supervisor_stop_failed_or_unverified
 stop_state before "$(dock container inspect --format '{{json .State}}' "$smoke_container_id")"
 dock exec "$smoke_container_id" /bin/bash -c '
   for ((i=0; i<100; i++)); do
