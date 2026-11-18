@@ -404,6 +404,14 @@
       ]
     },
     {
+      "description": "Ceph RGW gateway image (object-store): stay on the hosts' Ceph 20.2.x line, never automerge; a newer release needs a human and a host upgrade first",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["quay.io/ceph/ceph"],
+      "matchFileNames": ["kubernetes/apps/object-store/**"],
+      "allowedVersions": "/^v?20\\.2\\./",
+      "automerge": false
+    },
+    {
       "description": "authentik and goauthentik: minor and major are manual (SSO lockout risk); patch auto-merges after a 7 day soak",
       "matchDatasources": ["docker", "helm"],
       "automerge": false,

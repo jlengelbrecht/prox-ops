@@ -1,0 +1,23 @@
+---
+# Route-level policy for the S3 endpoint. It replaces the gateway-wide policy
+# for this route, and deliberately leaves compression out: with compression on,
+# Envoy drops the Accept-Encoding request header before it reaches the gateway
+# pods. Clients built on aws-sdk-go-v2 (Terraform, OpenTofu, rclone) sign that
+# header, so every request from them failed with SignatureDoesNotMatch.
+# The other settings mirror the gateway-wide policy.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: rgw
+  namespace: object-store
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: rgw
+  connection:
+    bufferLimit: 8Mi
+  tcpKeepalive: {}
+  timeout:
+    http:
+      requestTimeout: 0s

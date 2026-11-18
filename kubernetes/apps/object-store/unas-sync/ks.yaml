@@ -1,0 +1,28 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: &app s3-unas-sync
+  namespace: flux-system
+spec:
+  targetNamespace: object-store
+  commonMetadata:
+    labels:
+      app.kubernetes.io/name: *app
+  path: ./kubernetes/apps/object-store/unas-sync/app
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  # The CronJob runs on its own schedule; do not hold Flux on its first run.
+  wait: false
+  interval: 30m
+  retryInterval: 1m
+  timeout: 5m
+  dependsOn:
+    # Looked up in object-store: the group kustomization places every Flux
+    # Kustomization of this group there. rgw-buckets owns the rgw-users Secret
+    # and creates the bucket and the read-only user this job uses.
+    - name: rgw-buckets
+      namespace: object-store

@@ -1,0 +1,13 @@
+---
+# Langfuse database on the shared postgres cluster. The managed role owns it.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: langfuse
+  namespace: database
+spec:
+  name: langfuse
+  owner: langfuse
+  cluster:
+    name: postgres
+  ensure: present

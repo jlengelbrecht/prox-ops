@@ -1,0 +1,34 @@
+---
+# Declares the model prices and LiteLLM playground connection reconciled each hour.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langfuse-config-definition
+  namespace: ai
+data:
+  definition.yaml: |
+    # Subscription routes are not priced here: they cost nothing per token, and LiteLLM
+    # already reports each call's cost. Local models are listed at zero.
+    models:
+      - name: qwen3-4b-instruct
+        names: [qwen3-4b-instruct, dub-text]
+        inputPerMillion: 0
+        outputPerMillion: 0
+      - name: deepseek-v4.1-flash
+        names: [deepseek-v4.1-flash]
+        inputPerMillion: 0
+        outputPerMillion: 0
+    # Custom entries this job created earlier and must now delete. Listing a name here removes
+    # every custom entry with that name; built-in entries are never touched.
+    removedModels:
+      - gpt-6.1-sol
+      - gpt-6-sol
+      - gpt-6-luna
+      - gpt-5.6-luna
+      - gpt-5.6-terra
+    llmConnection:
+      provider: litellm
+      adapter: openai
+      baseURL: http://litellm.ai.svc.cluster.local:4000/v1
+      withDefaultModels: false
+      customModels: [chatgpt-gpt-6.1-sol, chatgpt-gpt-6-luna]

@@ -1,0 +1,18 @@
+---
+# Nyctr database on the shared postgres cluster. The owner role is created by
+# the Cluster's managed roles block; this CR creates the database with that
+# role as owner. Nyctr creates its own tables at start and needs no extensions.
+# databaseReclaimPolicy defaults to retain: removing this CR leaves the
+# database in place. The cluster's daily dump (database/cluster/dump) covers
+# every database, this one included.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: nyctr
+  namespace: database
+spec:
+  name: nyctr
+  owner: nyctr
+  cluster:
+    name: postgres
+  ensure: present

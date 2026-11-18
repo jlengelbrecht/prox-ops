@@ -225,7 +225,7 @@ class FixtureSafetyTests(unittest.TestCase):
         self.assertEqual([line for line in tables if line.startswith(('CREATE ROLE', 'GRANT'))], [])
         self.assertEqual(NATIVE.TABLES.count('CREATE UNLOGGED TABLE public.async_operations ('), 1)
         self.assertEqual(NATIVE.TABLES.count('CREATE TABLE public.async_operations'), 0)
-        self.assertIn("INSERT INTO public.alembic_version VALUES ('d1e2f3a4b5c6');", tables)
+        self.assertIn("INSERT INTO public.alembic_version VALUES ('05867433a58c');", tables)
         self.assertEqual(NATIVE.CATALOG.count(f"has_function_privilege('{NATIVE.APP}', p.oid, 'EXECUTE')"), 1)
         self.assertNotIn(NATIVE.FUNCTION.OTHER, NATIVE.CATALOG)
 

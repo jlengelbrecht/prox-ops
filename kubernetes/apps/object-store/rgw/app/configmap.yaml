@@ -1,0 +1,25 @@
+---
+# Minimal ceph.conf for the gateway. Monitor addresses and fsid match
+# kubernetes/apps/rook-ceph/rook-ceph-cluster/app (external cluster).
+# All seven rgw pools already exist; the gateway only needs to use them.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rgw-config
+  namespace: object-store
+data:
+  ceph.conf: |
+    [global]
+    fsid = 98a8f0b5-4faa-4463-a637-f10d97012eb3
+    mon_host = 10.20.66.4:6789,10.20.66.6:6789,10.20.66.7:6789,10.20.66.8:6789
+    auth_cluster_required = cephx
+    auth_service_required = cephx
+    auth_client_required = cephx
+    log_to_file = false
+    log_to_stderr = true
+
+    [client.rgw.k8s]
+    rgw_frontends = beast port=8080
+    rgw_enable_usage_log = false
+    log_to_file = false
+    log_to_stderr = true

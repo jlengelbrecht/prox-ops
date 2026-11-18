@@ -1,5 +1,5 @@
 ---
-# DeepSeek V4.1 Flash (ISTA-DAS 2.00 bpw) served by Strata on the RTX A5000
+# DeepSeek V4.1 Flash (ISTA-DAS 2.25 bpw) served by Strata on the RTX A5000
 # (k8s-work-7), as a cluster-local scale-to-zero Knative Service.
 #
 # Files: the one-off prepare Job downloaded the engine (strata-dsv41 0.1.58) and
@@ -31,7 +31,16 @@
 # cost 87 ms of a 123 ms token (DS4_PROF, 2026-11-10). The CephFS copy
 # (deepseek-data) is kept as the source to restore from.
 #
-# One request at a time (PARALLEL=1, containerConcurrency 1), 128K context.
+# Model set: 2.25 bpw. Against the 2.00 set it decoded as fast or faster in the
+# same test (2026-11-11: 24.3 / 22.7 / 21.7 / 23.2 tok/s against 24.3 / 21.4 /
+# 20.0 / 22.1), with 1,593 experts in VRAM instead of 1,800 and 133.6 GB of experts
+# in RAM instead of 116.6 GB. Upstream measures about half the quality loss of
+# 2.00. Both sets are on the volume; MODEL=ist-das-2.00bpw switches back.
+#
+# One request at a time (PARALLEL=1, containerConcurrency 1), 256K context. Against
+# 128K that costs 15 of 1,815 experts in VRAM and 0.12 GB of cache, with no change
+# in decode speed (tested 2026-11-10; a 149K-token prompt read in 205 s). A request
+# larger than the window gets HTTP 400 and is never truncated.
 # Cold start reads ~250 GB from the volume, so the progress deadline and request
 # timeouts are long. After 10 idle minutes the pod is retained 10 more, then
 # the GPU is freed.
@@ -95,9 +104,9 @@ spec:
             - name: FAMILY
               value: deepseek41
             - name: MODEL
-              value: ist-das-2.00bpw
+              value: ist-das-2.25bpw
             - name: CONTEXT
-              value: 128k
+              value: 256k
             - name: PARALLEL
               value: "1"
             # Experts the A5000 cannot hold are read in place from the model files (the

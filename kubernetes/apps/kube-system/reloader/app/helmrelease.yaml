@@ -12,6 +12,14 @@ spec:
     fullnameOverride: reloader
     reloader:
       readOnlyRootFileSystem: true
+      # Also restart a workload when a Secret or ConfigMap it is annotated for is
+      # created after the workload started, not only when one changes. Authentik
+      # reads its optional blueprint secrets from the environment at start: twice
+      # (Grafana on 2026-11-03, Nyctr on 2026-11-11) the pods started before the
+      # 1Password-backed Secret existed and the blueprint kept failing until a
+      # manual restart. syncAfterRestart stays off, so objects that already exist
+      # when Reloader itself starts do not count as created.
+      reloadOnCreate: true
       podMonitor:
         enabled: true
         namespace: "{{ .Release.Namespace }}"

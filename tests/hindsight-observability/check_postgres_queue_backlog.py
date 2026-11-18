@@ -44,7 +44,9 @@ ROWS = [
     (27, 'gamma', 'graph_maintenance', 'pending', True, None, 7, None, None),
     (28, 'gamma', 'graph_maintenance', 'pending', False, None, 20, None, None),  # payload-null bank peer
     (29, 'gamma', 'graph_maintenance', 'pending', True, None, 30, 10, None),  # deferred bank peer
-    (30, 'alpha', 'retain', 'pending', True, 'doc-e', 30, None, None),       # held by row 14: document rule is type-agnostic
+    (30, 'alpha', 'retain', 'pending', True, 'doc-e', 30, None, None),       # independent of keyed consolidation
+    (31, 'alpha', 'refresh_mental_model', 'pending', True, 'doc-a', 18, None, None), # independent of keyed retain
+    (32, 'alpha', 'refresh_mental_model', 'processing', True, 'doc-c', 45, None, 'w1'), # other type does not block row 9
 ]
 BANKS = ('alpha', 'beta', 'empty', 'gamma')
 
@@ -78,8 +80,9 @@ EXPECTED = {
     'alpha': {
         'consolidation': group(2, due=2, runnable=1, serialization_blocked=1, age=2100.0),
         'graph_maintenance': group(1, due=1, serialization_blocked=1, processing=1),
-        'retain': group(10, payload_null_pending=1, deferred=2, due=7, runnable=3,
-                        serialization_blocked=4, processing=1, age=3000.0, lateness=420.0),
+        'retain': group(10, payload_null_pending=1, deferred=2, due=7, runnable=4,
+                        serialization_blocked=3, processing=1, age=3000.0, lateness=420.0),
+        'refresh_mental_model': group(1, due=1, runnable=1, processing=1, age=1080.0),
     },
     'beta': {
         'consolidation': group(1, due=1, runnable=1, age=600.0),
@@ -122,7 +125,7 @@ for bank, types in EXPECTED.items():
     assert actual == types, f'{bank} per-type counts mismatch'
     assert banks[bank]['totals'] == BACKLOG._rollup(list(types.values())), f'{bank} totals mismatch'
 totals = tuple(result['totals'][k] for k in ('runnable', 'payload_null_pending', 'future_created_runnable'))
-assert totals == (12, 2, 1), 'overall totals mismatch'
+assert totals == (14, 2, 1), 'overall totals mismatch'
 assert 'doc-' not in str(result) and 'w-stale' not in str(result) and 'synthetic' not in str(result), 'row content leaked'
 
 HOSTILE = '-c default_transaction_read_only=off -c statement_timeout=0 -c lock_timeout=0 -c search_path=public'

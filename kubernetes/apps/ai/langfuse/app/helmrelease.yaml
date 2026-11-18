@@ -1,0 +1,234 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: langfuse
+  namespace: ai
+spec:
+  interval: 30m
+  timeout: 15m
+  chart:
+    spec:
+      chart: langfuse
+      version: 2.2.4
+      sourceRef:
+        kind: HelmRepository
+        name: langfuse
+        namespace: ai
+  values:
+    langfuse:
+      salt:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: SALT
+      encryptionKey:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: ENCRYPTION_KEY
+      features:
+        telemetryEnabled: false
+      replicas: 1
+      # Web and worker do not need Kubernetes API credentials.
+      serviceAccount:
+        automountServiceAccountToken: false
+      # Run web and worker as the image's non-root user with default seccomp.
+      podSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      # Prevent privilege escalation and remove Linux capabilities.
+      # Leave readOnlyRootFilesystem for later; Next.js cache and migrations need testing.
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      # Restart web and worker when their referenced Secrets change.
+      deployment:
+        annotations:
+          secret.reloader.stakater.com/reload: "langfuse-secrets,langfuse-valkey,langfuse-litellm"
+      web:
+        replicas: 1
+        service:
+          port: 3000
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 2Gi
+      worker:
+        replicas: 1
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            memory: 2Gi
+      nextauth:
+        url: https://langfuse.homelab0.org
+        secret:
+          secretKeyRef:
+            name: langfuse-secrets
+            key: NEXTAUTH_SECRET
+      auth:
+        # The chart renders disableUsernamePassword as AUTH_DISABLE_USERNAME_PASSWORD.
+        disableUsernamePassword: true
+      additionalEnv:
+        - name: AUTH_AUTHENTIK_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: OIDC_CLIENT_ID
+        - name: AUTH_AUTHENTIK_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: OIDC_CLIENT_SECRET
+        - name: AUTH_AUTHENTIK_ISSUER
+          value: https://authentik.homelab0.org/application/o/langfuse/
+        - name: DATABASE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: POSTGRES_USER
+        - name: LANGFUSE_INIT_ORG_ID
+          value: homelab
+        - name: LANGFUSE_INIT_ORG_NAME
+          value: Homelab
+        - name: LANGFUSE_INIT_PROJECT_ID
+          value: litellm
+        - name: LANGFUSE_INIT_PROJECT_NAME
+          value: LiteLLM
+        - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: LANGFUSE_PUBLIC_KEY
+        - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-secrets
+              key: LANGFUSE_SECRET_KEY
+        - name: LANGFUSE_DEFAULT_ORG_ID
+          value: homelab
+        - name: LANGFUSE_DEFAULT_ORG_ROLE
+          value: OWNER
+        - name: LANGFUSE_DEFAULT_PROJECT_ID
+          value: litellm
+        - name: LANGFUSE_DEFAULT_PROJECT_ROLE
+          value: OWNER
+        - name: LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST
+          value: litellm.ai.svc.cluster.local
+        - name: LANGFUSE_IN_APP_AGENT_ENABLED
+          value: "true"
+        - name: LANGFUSE_AI_PROVIDER
+          value: openai
+        - name: LANGFUSE_AI_BASE_URL
+          value: http://litellm.ai.svc.cluster.local:4000/v1
+        - name: LANGFUSE_AI_MODEL
+          value: chatgpt-gpt-6.1-sol
+        - name: LANGFUSE_AI_SMALL_MODEL
+          value: chatgpt-gpt-6-luna
+        - name: LANGFUSE_AI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: langfuse-litellm
+              key: LITELLM_API_KEY
+        # Use the in-cluster web service for the assistant's MCP connection.
+        - name: LANGFUSE_MCP_BASE_URL
+          value: http://langfuse-web.ai.svc.cluster.local:3000
+        - name: LANGFUSE_MCP_ALLOWED_HOSTS
+          value: langfuse-web.ai.svc.cluster.local
+    postgresql:
+      deploy: false
+      host: postgres-rw.database.svc.cluster.local
+      port: 5432
+      # connection_limit sizes the Prisma pool in each of web and worker. The
+      # langfuse role is capped at 20 connections, and Prisma's default pool
+      # is twice the node's core count plus one, so one process on a large
+      # node can take the whole allowance and leave none for the migration a
+      # new web pod runs at start. Four each is 16 when old and new pods of
+      # both deployments overlap in a rolling update, which leaves room for
+      # that migration.
+      args: sslmode=require&connection_limit=4
+      auth:
+        username: ""
+        existingSecret: langfuse-secrets
+        secretKeys:
+          userPasswordKey: POSTGRES_PASSWORD
+          adminPasswordKey: POSTGRES_PASSWORD
+    s3:
+      deploy: false
+      storageProvider: s3
+      bucket: langfuse
+      region: us-east-1
+      endpoint: http://rgw.object-store.svc.cluster.local
+      forcePathStyle: true
+      accessKeyId:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: S3_ACCESS_KEY
+      secretAccessKey:
+        secretKeyRef:
+          name: langfuse-secrets
+          key: S3_SECRET_KEY
+      eventUpload:
+        bucket: langfuse
+        region: us-east-1
+        endpoint: http://rgw.object-store.svc.cluster.local
+        forcePathStyle: true
+      mediaUpload:
+        bucket: langfuse
+        region: us-east-1
+        endpoint: http://rgw.object-store.svc.cluster.local
+        forcePathStyle: true
+      batchExport:
+        enabled: true
+        bucket: langfuse
+        region: us-east-1
+        endpoint: http://rgw.object-store.svc.cluster.local
+        forcePathStyle: true
+    clickhouse:
+      deploy: true
+      crdCheck: false
+      auth:
+        username: default
+        existingSecret: langfuse-secrets
+        existingSecretKey: CLICKHOUSE_PASSWORD
+      cluster:
+        replicas: 1
+        storage:
+          size: 50Gi
+          className: ceph-block
+        resources:
+          requests:
+            cpu: "1"
+            memory: 4Gi
+          limits:
+            memory: 8Gi
+      keeper:
+        enabled: true
+        replicas: 1
+        storage:
+          size: 5Gi
+          className: ceph-block
+    redis:
+      deploy: true
+      auth:
+        existingSecret: langfuse-valkey
+        existingSecretPasswordKey: password
+        usersExistingSecret: langfuse-valkey
+      image:
+        # renovate: datasource=docker depName=docker.io/valkey/valkey
+        tag: 8.0.12
+      dataStorage:
+        enabled: true
+        requestedSize: 2Gi
+        className: ceph-block
+      valkeyConfig: |
+        maxmemory-policy noeviction
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi

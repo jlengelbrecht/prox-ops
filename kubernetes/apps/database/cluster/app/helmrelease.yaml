@@ -86,16 +86,23 @@ spec:
           cpu: 1000m
           memory: 2Gi
 
-      # Enable monitoring if Prometheus is available
+      # Enable CNPG metrics and alerts. A separate PodMonitor scrapes the pod;
+      # the chart's podMonitor switch uses a deprecated Cluster field.
+      # Exclude HA and zone-spread alerts for this single-instance cluster.
       monitoring:
-        enabled: false
+        enabled: true
         podMonitor:
           enabled: false
+        prometheusRule:
+          excludeRules:
+            - CNPGClusterHACritical
+            - CNPGClusterHAWarning
+            - CNPGClusterZoneSpreadWarning
 
       # Superuser credentials from ExternalSecret
       superuserSecret: postgres-superuser
 
-      # Host-based access for the backlog metrics and Groschen roles. CNPG places user
+      # Host-based access for the backlog metrics, Groschen and Nyctr roles. CNPG places user
       # rules after its fixed rules and before the default rule, and reloads
       # them without a restart. Line 1 admits the role over TLS to `hindsight`
       # only; line 2 rejects everything else it tries, including plain TCP to
@@ -110,6 +117,14 @@ spec:
           # PUBLIC CONNECT on the other databases remains untouched.
           - host groschen groschen all scram-sha-256
           - host all groschen all reject
+          # Nyctr can authenticate only to its own database, and only over
+          # TLS (its URL sets sslmode=require and channel binding). Same shape as above;
+          # both lines name the role.
+          - hostssl nyctr nyctr all scram-sha-256
+          - host all nyctr all reject
+          # Langfuse can authenticate only to its own database over TLS.
+          - hostssl langfuse langfuse all scram-sha-256
+          - host all langfuse all reject
 
       # Declarative role management - each app gets a dedicated user
       # Passwords managed via ExternalSecrets from 1Password
@@ -207,6 +222,30 @@ spec:
           connectionLimit: 24
           passwordSecret:
             name: groschen-db-credentials
+        # Nyctr network console (security/nyctr). Plain login role: owner of
+        # the `nyctr` database only. One application pod with a small pool.
+        - name: nyctr
+          ensure: present
+          login: true
+          superuser: false
+          createdb: false
+          createrole: false
+          replication: false
+          bypassrls: false
+          connectionLimit: 20
+          passwordSecret:
+            name: nyctr-db-credentials
+        - name: langfuse
+          ensure: present
+          login: true
+          superuser: false
+          createdb: false
+          createrole: false
+          replication: false
+          bypassrls: false
+          connectionLimit: 20
+          passwordSecret:
+            name: langfuse-db-credentials
 
     # Backups - disabled until S3 storage is available
     # When MinIO/S3 is ready, enable and configure:

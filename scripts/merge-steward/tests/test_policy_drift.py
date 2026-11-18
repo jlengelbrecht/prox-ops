@@ -94,14 +94,15 @@ def test_release_exceptions_mirror_a_renovate_automerge_rule():
     rules = json5(ROOT / ".github/renovate.json5")["packageRules"]
     assert POLICY["release_exceptions"], "found no release exceptions; the parser is broken"
     for exception in POLICY["release_exceptions"]:
-        package = exception["package"]
-        mirrored = [r for r in rules if package in r.get("matchPackageNames", []) and r.get("automerge") is True]
-        assert len(mirrored) == 1, f"{package} needs exactly one Renovate automerge rule"
-        assert mirrored[0]["matchFileNames"] == [exception["file"]]
-        assert mirrored[0]["allowedVersions"] == f"/{exception['tag_pattern']}/"
-        assert mirrored[0]["ignoreUnstable"] is False  # prereleases are part of the exception
-        manual = [r for r in manual_rules() if package in r.get("matchPackageNames", [])]
-        assert not manual, f"{package} has an exception here and a manual rule in Renovate"
+        for member in [exception, *exception.get("companions", [])]:
+            package = member["package"]
+            mirrored = [r for r in rules if package in r.get("matchPackageNames", []) and r.get("automerge") is True]
+            assert len(mirrored) == 1, f"{package} needs exactly one Renovate automerge rule"
+            assert set(mirrored[0]["matchFileNames"]) == {m["file"] for m in [exception, *exception.get("companions", [])]}
+            assert mirrored[0]["allowedVersions"] == f"/{exception['tag_pattern']}/"
+            assert mirrored[0]["ignoreUnstable"] is False  # prereleases are part of the exception
+            manual = [r for r in manual_rules() if package in r.get("matchPackageNames", [])]
+            assert not manual, f"{package} has an exception here and a manual rule in Renovate"
 
 
 def test_release_exceptions_name_the_real_object():
@@ -109,7 +110,11 @@ def test_release_exceptions_name_the_real_object():
         doc = yaml.safe_load((ROOT / exception["file"]).read_text())
         target = exception["oci_repository"]
         assert doc["kind"] == "OCIRepository" and doc["spec"]["url"] == target["url"]
-        assert (doc["metadata"]["namespace"], doc["metadata"]["name"]) == (target["namespace"], target["name"])
+        namespace = doc["metadata"].get("namespace")
+        if namespace is None:
+            ks = yaml.safe_load((ROOT / Path(exception["file"]).parents[1] / "ks.yaml").read_text())
+            namespace = ks["spec"]["targetNamespace"]
+        assert (namespace, doc["metadata"]["name"]) == (target["namespace"], target["name"])
         assert target["url"] == f"oci://{exception['package']}"
         assert not any(glob_match(g, exception["file"]) for g in POLICY["protected_paths"])
 

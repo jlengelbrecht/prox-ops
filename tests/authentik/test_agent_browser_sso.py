@@ -62,13 +62,13 @@ class Groups:
 
 def candidate(username="ai-browser-test", active=True, admin=False,
               identity=True, paperclip=True, pk=1, malformed_groups=False,
-              marker=True, malformed_marker=False):
+              marker=True, malformed_marker=False, path="agents/browser-test/ai-browser-test"):
     names = set()
     if identity:
         names.add("ai-browser-test-identity")
     if paperclip:
         names.add("ai-browser-test-paperclip")
-    return types.SimpleNamespace(pk=pk, username=username, is_active=active,
+    return types.SimpleNamespace(pk=pk, username=username, path=path, is_active=active,
                                  is_superuser=admin,
                                  groups=None if malformed_groups else Groups(names),
                                  attributes=None if malformed_marker else
@@ -246,7 +246,15 @@ def check_security(config, external_secret, helm, route, policy):
             (candidate(username="human", identity=False, paperclip=False, pk=2, marker=False), True),
             (candidate(username="admin", identity=False, paperclip=False, pk=2, marker=False), True),
         ]:
-            require(namespace["evaluate"](types.SimpleNamespace(user=user_case)) is expected, "application exclusion changes agent or human access")
+            try:
+                result = namespace["evaluate"](types.SimpleNamespace(user=user_case))
+            except (AttributeError, TypeError):
+                # Authentik denies on a policy error (failure_result defaults
+                # false). Only the deliberately malformed fixture may error.
+                if user_case.attributes is not None:
+                    raise
+                result = False
+            require(result is expected, "application exclusion changes agent or human access")
     except Exception as exc:
         problems.append(f"application exclusion failed to evaluate locally: {type(exc).__name__}")
     for slug, app in active_apps.items():

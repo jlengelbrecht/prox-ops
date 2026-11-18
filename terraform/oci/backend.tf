@@ -1,27 +1,39 @@
-# Terraform Remote State Backend Configuration for OCI
+# Remote state for the OCI root (OpenTofu).
 #
-# This configuration stores OCI Terraform state in AWS S3 with S3 native state locking.
-# Uses a separate key from the main Kubernetes cattle workflow state.
+# State lives in the in-cluster S3 store (Ceph RGW, namespace object-store),
+# bucket tofu-state, under the oci/ prefix. The store is copied to the UNAS
+# every hour. Locking uses an S3 lock file.
 #
-# Prerequisites:
-# - AWS credentials configured (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-# - S3 bucket: prox-ops-terraform-state (created in us-east-2)
+# The endpoint is the in-cluster Service, so this root runs on the in-cluster
+# runners. From a workstation on the LAN, override it:
+#   tofu init -backend-config='endpoints={s3="https://s3.homelab0.org"}'
 #
-# For GitHub Actions, configure these secrets:
-# - AWS_ACCESS_KEY_ID
-# - AWS_SECRET_ACCESS_KEY
-# - AWS_DEFAULT_REGION (us-east-2)
+# Credentials: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY of the tofu-oci user,
+# which can only touch keys under oci/.
 #
-# State Keys:
-# - terraform.tfstate        - Main K8s cattle workflow (terraform/)
-# - oci/terraform.tfstate    - OCI Plex proxy VM (terraform/oci/)
+# Encryption: state and plan files are encrypted on the client. The
+# configuration comes from the TF_ENCRYPTION environment variable so no key
+# material is in Git. Without it OpenTofu cannot read the state.
+#
+# workspace_key_prefix keeps workspace listings inside the oci/ prefix; the
+# default (env:/ at the bucket root) is outside what the user may list.
 
 terraform {
   backend "s3" {
-    bucket       = "prox-ops-terraform-state"
-    key          = "oci/terraform.tfstate"  # Separate from main K8s state
-    region       = "us-east-2"
-    encrypt      = true
-    use_lockfile = true  # S3 native state locking (Terraform 1.10+)
+    bucket               = "tofu-state"
+    key                  = "oci/terraform.tfstate"
+    workspace_key_prefix = "oci/env:"
+    region               = "us-east-1"
+    use_lockfile         = true
+
+    endpoints = {
+      s3 = "http://rgw.object-store.svc.cluster.local"
+    }
+    use_path_style              = true
+    skip_credentials_validation = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    skip_metadata_api_check     = true
+    skip_s3_checksum            = true
   }
 }

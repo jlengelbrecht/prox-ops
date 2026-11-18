@@ -9,6 +9,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # flate renders the cluster for the test and diff jobs. It replaced flux-local,
+  # which is deprecated upstream.
+  # renovate: datasource=docker depName=ghcr.io/home-operations/flate
+  FLATE_VERSION: "0.7.3@sha256:a68959461e12234f030adf3a8c51b50af419326dd4ca35ad35048ad01005fedd"
+
 jobs:
   pre-job:
     name: Flux Local Pre-Job
@@ -19,31 +25,115 @@ jobs:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # The render also reruns when its own inputs change: this workflow and the
+      # reference objects handed to flate.
       - name: Get Changed Files
         id: changed-files
         uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
-          files: kubernetes/**
+          files: |
+            kubernetes/**
+            tests/flate/**
+            scripts/flate/**
+            scripts/merge-steward/render_pairs.py
+            .github/workflows/flux-local.yaml
+
+  nyctr-release-match:
+    name: Nyctr Release Match
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.15'
+      - name: Install YAML parser
+        run: python -m pip install PyYAML==6.0.3
+      - name: Detect Nyctr release changes
+        id: nyctr-changes
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
+        with:
+          files: |
+            kubernetes/apps/security/nyctr/app/helmrelease.yaml
+            kubernetes/apps/security/nyctr/app/ocirepository.yaml
+            scripts/check_nyctr_release.py
+            tests/nyctr/**
+            .github/workflows/flux-local.yaml
+      - name: Test the release guard
+        run: python -m unittest discover -s tests/nyctr -p 'test*.py'
+      - name: Check chart and pinned image release
+        run: python scripts/check_nyctr_release.py
+      - name: Verify published image digest
+        if: ${{ steps.nyctr-changes.outputs.any_changed == 'true' }}
+        run: python scripts/check_nyctr_release.py --verify-digest
 
   test:
     name: Flux Local Test
     needs: pre-job
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
     if: ${{ needs.pre-job.outputs.any_changed == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-
-      - name: Run flux-local test
-        uses: docker://ghcr.io/allenporter/flux-local:v8.4.0
         with:
-          # homelab-identity is a private repo, so its Kustomizations build
-          # against empty stubs here. Listing sources drops any Git source
-          # that isn't named, so flagger-pilot (this repo) is listed too.
-          args: >-
-            test --enable-helm --all-namespaces
-            --sources "flux-system,flagger-pilot,homelab-identity=tests/flux-local/homelab-identity"
-            --path /github/workspace/kubernetes/flux/cluster -v
+          persist-credentials: false
+
+      - name: Test the diff comment builder
+        run: python3 -m unittest discover -s tests/flate -p 'test*.py'
+
+      # The container gets no token, a read-only checkout and no capabilities.
+      # Sources that need credentials (the private homelab-identity repository and
+      # the agent-router-base chart) are skipped and listed as skipped.
+      # tests/flate/supply.yaml stands in for objects that only exist in the cluster.
+      - name: Run flate test
+        run: |
+          set -u
+          out="$RUNNER_TEMP/flate"
+          mkdir -p "$out"
+          rc=0
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+            --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+            --tmpfs /tmp:exec,mode=1777 \
+            -v "$PWD:/github/workspace:ro" -w /github/workspace \
+            "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
+            test --path kubernetes/flux/cluster --no-progress \
+            --supply tests/flate/supply.yaml \
+            --allow-missing-kinds Secret,CustomResourceDefinition \
+            > "$out/test.out" 2> "$out/test.err" || rc=$?
+
+          # The output is built from pull request content, so print it with
+          # workflow commands switched off.
+          stop="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          echo "::stop-commands::$stop"
+          cat "$out/test.out"
+          tail -n 200 "$out/test.err"
+          echo "::$stop::"
+
+          fence='```'
+          {
+            echo "## flate test (exit $rc)"
+            echo
+            echo "$fence"
+            grep -v '✓' "$out/test.out" | tail -n 150 | cut -c1-400
+            echo "$fence"
+            echo
+            echo "### Messages (last 80 lines)"
+            echo
+            echo "$fence"
+            tail -n 80 "$out/test.err" | cut -c1-400
+            echo "$fence"
+          } > "$out/summary.md" || true
+          head -c 900000 "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
 
   diff:
     name: Flux Local Diff
@@ -51,65 +141,130 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
-    strategy:
-      matrix:
-        resources: ["helmrelease", "kustomization"]
-      max-parallel: 4
-      fail-fast: false
+    timeout-minutes: 30
     if: ${{ needs.pre-job.outputs.any_changed == 'true' }}
+    outputs:
+      diff: ${{ steps.diff.outputs.diff }}
     steps:
-      - name: Checkout Pull Request Branch
+      # This job reads pull request content and holds no secret and no write token.
+      # The comment is posted by a separate job that only receives the text.
+      # The default ref of a pull request run is the PR merged into its base.
+      - name: Checkout the PR merged into its base
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           path: pull
+          fetch-depth: 2
+          persist-credentials: false
 
-      - name: Checkout Default Branch
+      - name: Find the base of that merge
+        id: base
+        run: |
+          set -euo pipefail
+          sha="$(git -C pull rev-parse --verify --quiet 'HEAD^1^{commit}')"
+          if [ -z "$sha" ] || [ "$sha" = "$(git -C pull rev-parse HEAD)" ]; then
+            echo "::error::could not find the base of the merge commit"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout that base
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: "${{ github.event.repository.default_branch }}"
-          path: default
+          ref: ${{ steps.base.outputs.sha }}
+          path: base
+          persist-credentials: false
 
-      - name: Run flux-local diff
-        # continue-on-error due to flux-local bug #986 with spec.template string fields
-        continue-on-error: true
-        uses: docker://ghcr.io/allenporter/flux-local:v8.4.0
-        with:
-          args: >-
-            diff ${{ matrix.resources }}
-            --unified 6
-            --path /github/workspace/pull/kubernetes/flux/cluster
-            --path-orig /github/workspace/default/kubernetes/flux/cluster
-            --strip-attrs "helm.sh/chart,checksum/config,app.kubernetes.io/version,chart"
-            --limit-bytes 10000
-            --all-namespaces
-            --sources "flux-system,homelab-identity=tests/flux-local/homelab-identity"
-            --output-file diff.patch
-
-      - name: Generate Diff
+      # Both sides are rendered in full with `flate build all` and compared object by
+      # object, the same way the merge steward does it. `flate diff` renders only what
+      # it decides a change can reach, and showed nothing for some changes.
+      # The comparison script comes from the base checkout when the base has it, so a
+      # pull request cannot change how its own diff is escaped.
+      # The job is informational: a render problem is reported in the comment and the
+      # summary, and the test job is what fails the check.
+      - name: Render both sides and compare
         id: diff
         run: |
-          if [ -f diff.patch ]; then
-            cat diff.patch;
-            {
-                echo 'diff<<EOF'
-                cat diff.patch
-                echo EOF
-            } >> "$GITHUB_OUTPUT";
-            {
-                echo "### Diff"
-                echo '```diff'
-                cat diff.patch
-                echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No diff.patch generated (flux-local may have encountered an error)"
-            echo "### Diff" >> "$GITHUB_STEP_SUMMARY"
-            echo "No diff generated - see workflow logs for details" >> "$GITHUB_STEP_SUMMARY"
+          set -u
+          out="$RUNNER_TEMP/flate"
+          mkdir -p "$out"
+          # Messages are built from pull request content: keep printable ASCII and
+          # break up anything that could close a code block.
+          clean() { LC_ALL=C tr -cd '[:print:]\t\n' | cut -c1-300 | sed -E 's/`{3,}|~{3,}/` ` `/g'; }
+          rc=0
+          for side in base pull; do
+            docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
+              --cap-drop ALL --security-opt no-new-privileges --pids-limit 512 --memory 6g \
+              --tmpfs /tmp:exec,mode=1777 \
+              -v "$PWD:/github/workspace:ro" -w "/github/workspace/$side" \
+              "ghcr.io/home-operations/flate:${FLATE_VERSION}" \
+              build all -o json --path kubernetes/flux/cluster --no-progress \
+              --supply "/github/workspace/$side/tests/flate/supply.yaml" \
+              --allow-missing-kinds Secret,CustomResourceDefinition --skip-kinds Secret \
+              > "$out/$side.json" 2> "$out/$side.err" || rc=1
+            echo "$side: flate exit $rc, $(wc -c < "$out/$side.json") bytes"
+          done
+          : > "$out/diff.out"
+          if [ "$rc" = 0 ]; then
+            script=base/scripts/flate/render_comment.py
+            [ -f "$script" ] || script=pull/scripts/flate/render_comment.py
+            python3 -I "$script" "$out/base.json" "$out/pull.json" \
+              > "$out/diff.out" 2> "$out/compare.err" || rc=1
+            echo "compare: exit $rc, $(wc -c < "$out/diff.out") bytes"
           fi
 
+          # A pull request comment holds 65536 characters.
+          limit=55000
+          head -c "$limit" "$out/diff.out" > "$out/comment.diff"
+          if [ "$(wc -c < "$out/diff.out")" -gt "$limit" ]; then
+            printf '\n\n! Diff cut at %s bytes. The job summary has more.\n' "$limit" >> "$out/comment.diff"
+          fi
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo "! The render or the comparison failed, so there is no diff to show. Messages:"
+              for side in base pull; do
+                grep -E '✗' "$out/$side.err" | head -n 10 | clean | sed "s/^/! $side: /"
+                tail -n 2 "$out/$side.err" | clean | sed "s/^/! $side (last lines): /"
+              done
+              tail -n 3 "$out/compare.err" 2>/dev/null | clean | sed 's/^/! compare: /'
+            } > "$out/comment.diff"
+          fi
+
+          delim="diff_$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          {
+            echo "diff<<$delim"
+            cat "$out/comment.diff"
+            echo
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+          fence='```'
+          {
+            echo "## flate render comparison (exit $rc)"
+            echo
+            echo "${fence}diff"
+            if [ "$rc" = 0 ]; then head -c 800000 "$out/diff.out"; else cat "$out/comment.diff"; fi
+            echo
+            echo "$fence"
+            echo
+            echo "### Messages (last 40 lines per side)"
+            echo
+            echo "$fence"
+            tail -n 40 "$out/base.err" | clean
+            tail -n 40 "$out/pull.err" | clean
+            echo "$fence"
+          } > "$out/summary.md" || true
+          head -c 900000 "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+  diff-comment:
+    name: Flux Local Diff Comment
+    needs: diff
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    if: ${{ needs.diff.outputs.diff != '' }}
+    steps:
+      # Nothing from the pull request is checked out or run here.
       - name: Generate GitHub App Token
-        if: ${{ steps.diff.outputs.diff != '' }}
         id: generate-token
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
@@ -117,29 +272,33 @@ jobs:
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
       - name: Add Comment
-        if: ${{ steps.diff.outputs.diff != '' }}
         continue-on-error: true
         uses: mshick/add-pr-comment@b8f338c590a895d50bcbfa6c5859251edc8952fc # v2.8.2
         with:
           repo-token: ${{ steps.generate-token.outputs.token }}
-          message-id: "${{ github.event.pull_request.number }}/kubernetes/${{ matrix.resources }}"
+          message-id: "${{ github.event.pull_request.number }}/kubernetes/flate"
           message-failure: Diff was not successful
           message: |
             ```diff
-            ${{ steps.diff.outputs.diff }}
+            ${{ needs.diff.outputs.diff }}
             ```
 
   flux-local-status:
     name: Flux Local Success
-    needs: ["test", "diff"]
+    needs: ["pre-job", "test", "diff", "nyctr-release-match"]
     runs-on: ubuntu-latest
     if: ${{ always() }}
     steps:
-      # Check the test job - diff jobs are informational
-      - name: Test job failed?
-        if: ${{ needs.test.result == 'failure' }}
+      # This aggregate is already required by the main-branch ruleset.
+      # Missing, skipped or cancelled release checks must never count as green.
+      - name: Required release guard passed?
+        if: ${{ needs.nyctr-release-match.result != 'success' || needs.pre-job.result != 'success' }}
         run: exit 1
 
-      - name: All critical jobs passed or skipped?
-        if: ${{ needs.test.result != 'failure' }}
+      # Check the test job - diff jobs are informational
+      - name: Required Flux test passed?
+        if: ${{ needs.test.result == 'failure' || (needs.pre-job.outputs.any_changed == 'true' && needs.test.result != 'success') }}
+        run: exit 1
+
+      - name: All critical jobs passed or intentionally skipped?
         run: echo "All jobs passed or skipped" && echo "test=${{ needs.test.result }}, diff=${{ needs.diff.result }}"

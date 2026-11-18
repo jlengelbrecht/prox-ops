@@ -53,7 +53,12 @@ def load_policy(path):
         target = rule.get("oci_repository") or {}
         if not (rule.get("package") and rule.get("file") and all(target.get(k) for k in ("namespace", "name", "url"))):
             raise ValueError("a release exception needs a package, a file and an oci_repository")
-        if not rule.get("update_types") or not set(rule["update_types"]) <= set(policy["pass_update_types"]):
+        companions = rule.get("companions", [])
+        if not isinstance(companions, list) or any(not isinstance(c, dict) or set(c) != {"package", "file"}
+                or not all(isinstance(v, str) and v for v in c.values()) for c in companions):
+            raise ValueError("release companions need exact package/file pairs")
+        allowed = set(policy["pass_update_types"]) | ({"major"} if companions else set())
+        if not rule.get("update_types") or not set(rule["update_types"]) <= allowed:
             raise ValueError("a release exception may only name update types that can pass")
         re.compile(rule["tag_pattern"])
     _check_ai(policy.get("ai"))
@@ -262,10 +267,13 @@ def _label_update_type(labels):
 
 def release_exception(packages, files, policy):
     """The exception covering the whole PR, or None. Any other package or file in the PR rules it out."""
-    if len(packages) != 1 or len(files) != 1:
-        return None
-    return next((rule for rule in policy["release_exceptions"]
-                 if rule["package"] == packages[0]["name"] and rule["file"] == files[0]), None)
+    for rule in policy["release_exceptions"]:
+        members = [rule, *rule.get("companions", [])]
+        if (len(packages) == len(members) and len(files) == len(members)
+                and {p["name"] for p in packages} == {m["package"] for m in members}
+                and set(files) == {m["file"] for m in members}):
+            return rule
+    return None
 
 
 def policy_stage(pr, files, job_files, policy):
@@ -280,7 +288,7 @@ def policy_stage(pr, files, job_files, policy):
     packages = parse_packages(pr.get("body"))
     fallback = _label_update_type(labels)
     exception = release_exception(packages, files, policy)
-    if exception and (packages[0]["update"] or fallback) not in exception["update_types"]:
+    if exception and any((p["update"] or fallback) not in exception["update_types"] for p in packages):
         exception = None
     if not exception and ("breaking" in labels or "!:" in pr["title"]):
         return Stage("policy", NEEDS, "Renovate marked the update as breaking")
@@ -290,7 +298,7 @@ def policy_stage(pr, files, job_files, policy):
         kind = pkg["update"] or fallback
         if not pkg["name"] or not kind:
             return Stage("policy", NEEDS, f"cannot classify package {pkg['name'] or '?'}")
-        if kind not in policy["pass_update_types"]:
+        if kind not in policy["pass_update_types"] and not (exception and kind in exception["update_types"]):
             return Stage("policy", NEEDS, f"{pkg['name']} is a {kind} update")
         if kind == "minor" and not pkg["current"]:
             return Stage("policy", NEEDS, f"{pkg['name']} minor: cannot read the current version")

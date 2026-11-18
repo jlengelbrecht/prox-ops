@@ -23,7 +23,7 @@ import steward
 from ghapi import GitHub, GitHubError
 
 
-NO_RENDER = "render: not run, because the PR changes nothing under kubernetes/ or tests/flux-local/"
+NO_RENDER = "render: not run, because the PR changes nothing under kubernetes/ or tests/flate/"
 # The classifier's allowlist was written for dependency bumps. On any other PR it still lists
 # what the change does to the rendered cluster, which is the point, but a flag is not a defect.
 ADVISORY_NOTE = ("note: this PR is not a dependency update. A 'flagged' line names a kind of cluster change "
@@ -54,8 +54,8 @@ def _plain(line):
 def _render_lines(gh, sha, render_dir, policy):
     exceptions = policy["release_exceptions"]
     if render_dir:
-        sizes = [(Path(render_dir) / f"{n}.json") for n in ("helmrelease", "kustomization")]
-        if any(f.is_file() and f.stat().st_size > MAX_RENDER_BYTES for f in sizes):
+        found = Path(render_dir) / "changes.json"
+        if found.is_file() and found.stat().st_size > MAX_RENDER_BYTES:
             return [TOO_LARGE]
         try:
             meta = json.loads((Path(render_dir) / "meta.json").read_text())

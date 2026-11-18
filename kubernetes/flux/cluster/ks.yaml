@@ -52,6 +52,9 @@ spec:
               target:
                 group: helm.toolkit.fluxcd.io
                 kind: HelmRelease
+                # Nyctr explicitly retries without rollback: until its first
+                # successful install there is no revision to roll back to.
+                labelSelector: app.kubernetes.io/name!=nyctr
       target:
         group: kustomize.toolkit.fluxcd.io
         kind: Kustomization

@@ -1,0 +1,88 @@
+---
+# Reconciles Langfuse project settings from the definition in Git every hour.
+# A CronJob rather than a Job: a completed Job is immutable, so a changed
+# definition or image bump would break the Kustomization. Hourly runs repair drift.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: langfuse-config
+  namespace: ai
+spec:
+  schedule: "41 * * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 10800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: langfuse-config
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reconcile
+              image: alpine/k8s:1.37.2@sha256:dcb7185e112a453aa72f426754849a97357727ef8f40168fb208c8cf59952042
+              command: ["/bin/bash", "/scripts/reconcile.sh"]
+              env:
+                - name: LANGFUSE_HOST
+                  value: http://langfuse-web.ai.svc.cluster.local:3000
+                - name: LANGFUSE_PUBLIC_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: langfuse-secrets
+                      key: LANGFUSE_PUBLIC_KEY
+                - name: LANGFUSE_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: langfuse-secrets
+                      key: LANGFUSE_SECRET_KEY
+                - name: LITELLM_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: langfuse-litellm
+                      key: LITELLM_API_KEY
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+              volumeMounts:
+                - name: definition
+                  mountPath: /config
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: definition
+              configMap:
+                name: langfuse-config-definition
+            - name: scripts
+              configMap:
+                name: langfuse-config-scripts
+            - name: tmp
+              emptyDir:
+                medium: Memory
+                sizeLimit: 8Mi

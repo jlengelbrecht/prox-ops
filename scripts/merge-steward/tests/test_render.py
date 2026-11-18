@@ -1,9 +1,7 @@
-import difflib
 import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 import render
 from classify import NEEDS, PASS, load_policy
@@ -13,7 +11,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 def recorded(name):
     fixture = json.loads((FIXTURES / name).read_text())
-    return render.classify(fixture["reports"]["helmrelease"], fixture["reports"]["kustomization"])[0]
+    return render.classify(fixture["changes"])[0]
 
 
 def test_recorded_rook_ceph_minor_flags_the_crds():
@@ -31,11 +29,10 @@ def test_recorded_tetragon_shows_version_skew():
     assert stage.verdict == NEEDS and stage.reason.startswith("version skew: DaemonSet kube-system/tetragon")
 
 
-def obj_diff(kind, before, after, name="app"):
-    """Build an object diff the way flux-local does with --unified 100000."""
-    dump = lambda d: ("---\n" + yaml.safe_dump(d, sort_keys=False)).splitlines() if d else []  # noqa: E731
-    lines = list(difflib.unified_diff(dump(before), dump(after), "a", "b", n=100000, lineterm=""))
-    return [{"diffs": [{"kind": kind, "name": name, "namespace": "ns", "diff": "\n\n".join(lines[:3]) + "\n" + "\n".join(lines[3:])}]}]
+def obj_diff(kind, before, after, name="app", release=None, api="v1"):
+    """One changed object the way render_pairs.py records it."""
+    return [{"apiVersion": api, "kind": kind, "namespace": "ns", "name": name, "release": release,
+             "before": before, "after": after}]
 
 
 def pod(image, kind="Deployment", version=None, **spec):
@@ -89,10 +86,35 @@ def test_skew_needs_the_label_to_match_the_old_image():
     assert verdict("Deployment", pod("a:1.6.1", version="1.6.1"), pod("a:1.8.0", version="1.8.0")).verdict == PASS
 
 
-def test_partial_diff_fails_closed():
-    report = [{"diffs": [{"kind": "Deployment", "name": "a", "diff": "@@ -40,7 +40,7 @@\n-x: 1\n+x: 2"}]}]
-    with pytest.raises(ValueError):
-        render.classify(report)
+@pytest.mark.parametrize("side", ["kind: Deployment", ["kind"], 1, True])
+def test_a_change_without_whole_objects_fails_closed(tmp_path, side):
+    for before, after in ((side, pod("app:1.2.1")), (pod("app:1.2.0"), side)):
+        report = obj_diff("Deployment", before, after)
+        with pytest.raises(ValueError):
+            render.classify(report)
+        assert render.from_artifact(write_artifact(tmp_path, changes=report), "a" * 40).verdict == NEEDS
+
+
+@pytest.mark.parametrize("change", [
+    "Deployment", None, 1, ["kind", "Deployment"], {},
+    {"kind": "Deployment", "name": "app", "before": None},  # no after
+    {"kind": "Deployment", "name": "app", "after": None},  # no before
+    {"kind": "Deployment", "before": {}, "after": {}},  # no name
+    {"name": "app", "before": {}, "after": {}},  # no kind
+    {"kind": "Deployment", "name": "app", "before": {}, "after": {}, "release": 1},
+])
+def test_a_malformed_change_fails_closed(tmp_path, change):
+    with pytest.raises(Exception):
+        render.classify([change])
+    assert render.from_artifact(write_artifact(tmp_path, changes=[change]), "a" * 40).verdict == NEEDS
+    assert render.object_lines(tmp_path) == []
+
+
+def test_an_object_two_producers_render_is_flagged_even_for_an_allowlisted_change():
+    change = obj_diff("Deployment", pod("app:1.2.0"), pod("app:1.2.1"))[0]
+    assert render.classify([change])[0].verdict == PASS
+    stage = render.classify([dict(change, ambiguous=True)])[0]
+    assert stage.verdict == NEEDS and stage.reason.startswith("changed an object two producers render: Deployment ns/app")
 
 
 def test_added_object_is_flagged():
@@ -219,27 +241,67 @@ def test_helmrelease_values_pass_only_when_the_release_was_rendered():
     hr = lambda tag: {"kind": "HelmRelease", "metadata": {"name": "app"}, "spec": {"values": {"tag": tag}}}  # noqa: E731
     values = obj_diff("HelmRelease", hr("1.0.0"), hr("1.0.1"))
     assert render.classify(values)[0].reason.startswith("values")
-    output = [dict(r, kind="HelmRelease", name="app", namespace="ns") for r in obj_diff("Deployment", pod("app:1.0.0"), pod("app:1.0.1"))]
-    assert render.classify(output, values)[0].verdict == PASS
+    # The release counts as rendered when a changed object names it as its HelmRelease.
+    output = lambda release: obj_diff("Deployment", pod("app:1.0.0"), pod("app:1.0.1"), "app-web", release)  # noqa: E731
+    assert render.classify(output(["ns", "app"]) + values)[0].verdict == PASS
+    assert render.classify(values, output(["ns", "app"]))[0].verdict == PASS
+    # A changed object from no release, or from another one, says nothing about these values.
+    for release in (None, ["ns", "other"], ["other", "app"], ["app", "ns"]):
+        assert render.classify(output(release) + values)[0].reason.startswith("values"), release
+    # What the release rendered is still classified object by object.
+    major = obj_diff("Deployment", pod("app:1.0.0"), pod("app:2.0.0"), "app-web", ["ns", "app"])
+    assert render.classify(major + values)[0].reason.startswith("major")
 
 
-def write_artifact(tmp_path, head="a" * 40, failed=0, reports=([], [])):
+def write_artifact(tmp_path, head="a" * 40, failed=0, changes=(), counts=(3, 3)):
     (tmp_path / "meta.json").write_text(json.dumps({"head_sha": head, "failed": failed}))
-    for name, report in zip(("helmrelease", "kustomization"), reports):
-        (tmp_path / f"{name}.json").write_text(json.dumps(report))
+    result = {"base": counts[0], "head": counts[1], "changes": list(changes)}
+    (tmp_path / "changes.json").write_text(json.dumps(result))
     return tmp_path
 
 
-def test_empty_reports_after_a_clean_run_mean_no_rendered_change(tmp_path):
+def test_no_changes_after_a_clean_run_mean_no_rendered_change(tmp_path):
     directory = write_artifact(tmp_path)
-    (directory / "helmrelease.json").write_text("")
-    (directory / "kustomization.json").write_text("\n")
-    assert render.from_artifact(directory, "a" * 40).verdict == PASS
-    # A missing report is not an empty one, and a failed run never counts as clean.
-    (directory / "helmrelease.json").unlink()
+    stage = render.from_artifact(directory, "a" * 40)
+    assert stage.verdict == PASS and stage.reason == "no rendered changes"
+    # An empty file is not an empty list of changes.
+    for text in ("", "\n", "[]", "{}", "null"):
+        (directory / "changes.json").write_text(text)
+        assert render.from_artifact(directory, "a" * 40).verdict == NEEDS, text
+    # A missing result is not an empty one, and a failed run never counts as clean.
+    (directory / "changes.json").unlink()
     assert render.from_artifact(directory, "a" * 40).verdict == NEEDS
-    (directory / "helmrelease.json").write_text("")
     assert render.from_artifact(write_artifact(tmp_path, failed=1), "a" * 40).verdict == NEEDS
+
+
+def test_artifact_changes_reach_the_verdict(tmp_path):
+    bump = obj_diff("Deployment", pod("app:1.2.0"), pod("app:1.2.1"))
+    stage = render.from_artifact(write_artifact(tmp_path, changes=bump), "a" * 40)
+    assert stage.verdict == PASS and stage.reason == "1 Deployment"
+    added = obj_diff("Service", None, {"kind": "Service", "metadata": {"name": "app"}})
+    stage = render.from_artifact(write_artifact(tmp_path, changes=bump + added), "a" * 40)
+    assert stage.verdict == NEEDS and stage.reason.startswith("added: Service ns/app")
+    assert render.object_lines(tmp_path) == ["flagged: added: Service ns/app", "changed: 1 Deployment", "changed: 1 Service"]
+
+
+@pytest.mark.parametrize("result", [
+    [], "changes", None, 3, {},
+    {"base": 3, "head": 3}, {"base": 3, "head": 3, "changes": None}, {"base": 3, "head": 3, "changes": {}},
+    {"base": 3, "head": 3, "changes": "[]"},
+    {"changes": []}, {"base": 3, "changes": []}, {"head": 3, "changes": []},
+    {"base": 0, "head": 3, "changes": []}, {"base": 3, "head": 0, "changes": []}, {"base": 0, "head": 0, "changes": []},
+    {"base": -1, "head": 3, "changes": []}, {"base": "3", "head": 3, "changes": []},
+    {"base": 3.0, "head": 3, "changes": []}, {"base": True, "head": True, "changes": []},
+    {"base": None, "head": 3, "changes": []}, {"base": [3], "head": 3, "changes": []},
+])
+def test_a_result_that_does_not_record_a_render_of_both_sides_is_rejected(tmp_path, result):
+    write_artifact(tmp_path)
+    (tmp_path / "changes.json").write_text(json.dumps(result))
+    with pytest.raises(ValueError):
+        render._load(tmp_path)
+    stage = render.from_artifact(tmp_path, "a" * 40)
+    assert stage.verdict == NEEDS and stage.reason.startswith("render failed")
+    assert render.object_lines(tmp_path) == []
 
 
 def test_artifact_is_bound_to_the_head_and_fails_closed(tmp_path):
@@ -247,10 +309,19 @@ def test_artifact_is_bound_to_the_head_and_fails_closed(tmp_path):
     assert render.from_artifact(tmp_path, "b" * 40) is None
     assert render.from_artifact(write_artifact(tmp_path, failed=1), "a" * 40).verdict == NEEDS
     assert render.from_artifact(tmp_path / "missing", "a" * 40).reason == "render evidence unavailable"
-    (tmp_path / "kustomization.json").write_text("not json")
-    write_artifact(tmp_path, reports=([], []))
-    (tmp_path / "helmrelease.json").write_text("{")
+    for text in ("not json", "{"):
+        write_artifact(tmp_path)
+        (tmp_path / "changes.json").write_text(text)
+        assert render.from_artifact(tmp_path, "a" * 40).verdict == NEEDS
+    # The files of the retired render are not read: without changes.json there is no result.
+    write_artifact(tmp_path)
+    (tmp_path / "changes.json").unlink()
+    (tmp_path / "helmrelease.json").write_text("[]")
+    (tmp_path / "kustomization.json").write_text("[]")
     assert render.from_artifact(tmp_path, "a" * 40).verdict == NEEDS
+    write_artifact(tmp_path)
+    (tmp_path / "meta.json").write_text(json.dumps({"head_sha": "a" * 40}))
+    assert render.from_artifact(tmp_path, "a" * 40).verdict == NEEDS  # no exit status recorded
 
 
 def test_cli_fails_closed(tmp_path, capsys):
@@ -258,9 +329,24 @@ def test_cli_fails_closed(tmp_path, capsys):
     bad.write_text("not json")
     render.main([str(bad)])
     render.main(["--failed", str(bad)])
+    bad.write_text("[]")  # a bare list is not a render result
+    render.main([str(bad)])
+    bad.write_text(json.dumps({"base": 3, "head": 3}))
+    render.main([str(bad)])
+    render.main([str(tmp_path / "absent.json")])
     results = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert [r["verdict"] for r in results] == [NEEDS, NEEDS]
+    assert [r["verdict"] for r in results] == [NEEDS] * 5
     assert all(r["reason"].startswith("render failed") for r in results)
+
+
+def test_cli_classifies_a_render_result(tmp_path, capsys):
+    good = tmp_path / "changes.json"
+    good.write_text(json.dumps({"base": 3, "head": 3, "changes": obj_diff("Deployment", pod("app:1.2.0"), pod("app:1.2.1"))}))
+    render.main([str(good)])
+    assert json.loads(capsys.readouterr().out) == {"verdict": PASS, "reason": "1 Deployment", "counts": {"Deployment": 1}}
+    good.write_text(json.dumps({"base": 3, "head": 3, "changes": obj_diff("Role", {"rules": []}, {"rules": [{}]})}))
+    render.main([str(good)])
+    assert json.loads(capsys.readouterr().out)["verdict"] == NEEDS
 
 
 EXCEPTIONS = load_policy(Path(render.__file__).with_name("policy.yaml"))["release_exceptions"]
@@ -284,10 +370,14 @@ def test_real_render_of_1880_passes_with_the_exception_and_is_flagged_without_it
 
 
 def test_the_same_real_bump_on_another_package_is_flagged():
-    for old, new in (("name: agent-router-base", "name: other-base"),
-                     ("oci://ghcr.io/jlengelbrecht/agent-router-base", "oci://ghcr.io/jlengelbrecht/other-base"),
-                     ("namespace: ai", "namespace: other")):
-        other = json.loads(json.dumps(PR_1880).replace(old, new))
+    for section, field, new in (("metadata", "name", "other-base"),
+                                ("spec", "url", "oci://ghcr.io/jlengelbrecht/other-base"),
+                                ("metadata", "namespace", "other")):
+        other = json.loads(json.dumps(PR_1880))
+        [change] = other
+        for side in ("before", "after"):
+            assert change[side][section][field] != new
+            change[side][section][field] = new
         assert render.classify(other, exceptions=EXCEPTIONS)[0].verdict == NEEDS, new
 
 

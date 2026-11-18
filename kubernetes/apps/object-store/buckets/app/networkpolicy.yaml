@@ -1,0 +1,46 @@
+---
+# Reconcile pods: cluster DNS, the Ceph hosts (radosgw-admin talks to the
+# monitors and OSDs directly, same rule as the gateway) and the rgw pods on
+# 8080. The gateway's ingress policy already admits the object-store namespace.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: rgw-buckets
+  namespace: object-store
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: rgw-buckets
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    - toCIDR:
+        - 10.20.66.4/32
+        - 10.20.66.6/32
+        - 10.20.66.7/32
+        - 10.20.66.8/32
+      toPorts:
+        - ports:
+            - port: "3300"
+              protocol: TCP
+            - port: "6789"
+              protocol: TCP
+            - port: "6800"
+              endPort: 7568
+              protocol: TCP
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: object-store
+            app.kubernetes.io/name: rgw
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

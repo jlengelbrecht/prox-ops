@@ -1,0 +1,35 @@
+---
+# The object-store/s3-unas-sync CronJob copies the state bucket to the UNAS
+# every hour. These fire when no run has succeeded for three hours, because
+# then the only copy of recent state changes is the one inside the cluster.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: object-store-alerts
+  namespace: observability
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: object-store-alerts
+      rules:
+        - alert: S3StateSyncStale
+          expr: time() - kube_cronjob_status_last_successful_time{namespace="object-store",cronjob="s3-unas-sync"} > 3 * 3600
+          for: 15m
+          labels:
+            severity: warning
+            component: object-store
+          annotations:
+            summary: "No successful S3 state sync to the UNAS in over 3 hours"
+            description: "The last successful object-store/s3-unas-sync run finished {{ $value | humanizeDuration }} ago. Check the job logs in the object-store namespace."
+
+        - alert: S3StateSyncMissing
+          expr: absent(kube_cronjob_status_last_successful_time{namespace="object-store",cronjob="s3-unas-sync"})
+          for: 3h
+          labels:
+            severity: warning
+            component: object-store
+          annotations:
+            summary: "S3 state sync CronJob has no successful run on record"
+            description: "kube-state-metrics reports no last successful time for object-store/s3-unas-sync. The CronJob may be missing or has never succeeded."

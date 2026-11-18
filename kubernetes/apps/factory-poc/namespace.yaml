@@ -1,0 +1,12 @@
+---
+# Docker in a user namespace needs capabilities baseline forbids. The admission
+# policy now enforces baseline's safeguards with only the needed relaxations.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: factory-poc
+  labels:
+    kubernetes.io/metadata.name: factory-poc
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline

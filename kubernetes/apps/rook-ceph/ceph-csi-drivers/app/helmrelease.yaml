@@ -47,6 +47,47 @@ spec:
                 name: placeholder
                 annotations:
                   helm.sh/resource-policy: keep
+          #
+          # KMS tenant accounts and CSI-Addons are unused here; the Secret informer
+          # is dead code upstream in ceph-csi v3.17.1 (only in an uncalled function).
+          # Drop token minting, service account reads, token reviews and bulk Secret
+          # reads. Deliberate tests fail rendering if chart rule indexes drift.
+          # A failing test blocks the upgrade of this whole release and leaves the
+          # previous one running; update these indexes with any chart bump that
+          # reorders the rules in the same pull request.
+          # Restart a plugin pod on one node to prove mounts still work.
+          - target:
+              kind: ClusterRole
+              name: rook-ceph-rbd-csi-ceph-com-nodeplugin-cr
+            patch: |-
+              - {op: test, path: /rules/7/resources, value: [tokenreviews]}
+              - {op: test, path: /rules/7/verbs, value: [create]}
+              - {op: remove, path: /rules/7}
+              - {op: test, path: /rules/5/resources, value: [serviceaccounts/token]}
+              - {op: test, path: /rules/5/verbs, value: [create]}
+              - {op: remove, path: /rules/5}
+              - {op: test, path: /rules/4/resources, value: [serviceaccounts]}
+              - {op: test, path: /rules/4/verbs, value: [get]}
+              - {op: remove, path: /rules/4}
+              - {op: test, path: /rules/0/resources, value: [secrets]}
+              - {op: test, path: /rules/0/verbs, value: [get, list, watch]}
+              - {op: replace, path: /rules/0/verbs, value: [get]}
+          - target:
+              kind: ClusterRole
+              name: rook-ceph-cephfs-csi-ceph-com-nodeplugin-cr
+            patch: |-
+              - {op: test, path: /rules/7/resources, value: [tokenreviews]}
+              - {op: test, path: /rules/7/verbs, value: [create]}
+              - {op: remove, path: /rules/7}
+              - {op: test, path: /rules/4/resources, value: [serviceaccounts/token]}
+              - {op: test, path: /rules/4/verbs, value: [create]}
+              - {op: remove, path: /rules/4}
+              - {op: test, path: /rules/3/resources, value: [serviceaccounts]}
+              - {op: test, path: /rules/3/verbs, value: [get]}
+              - {op: remove, path: /rules/3}
+              - {op: test, path: /rules/1/resources, value: [secrets]}
+              - {op: test, path: /rules/1/verbs, value: [get, list, watch]}
+              - {op: replace, path: /rules/1/verbs, value: [get]}
   # Every per-driver value below is rendered into the Driver spec, and the chart's
   # per-driver defaults override operatorConfig. That's why each driver repeats the
   # settings instead of relying on driverSpecDefaults. The values match what

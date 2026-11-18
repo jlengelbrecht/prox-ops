@@ -1,17 +1,16 @@
 """Render stage: classify the rendered object diff of a PR against an allowlist.
 
-Input is `flux-local diff {helmrelease,kustomization} --output json --unified 100000`
-for the PR merge ref against its base. The huge context makes each object's diff carry
-the whole object, so the before and after documents can be rebuilt and compared field by
-field. Only these changes may pass:
+Input is the list render_pairs.py builds from two full `flate build` renders, one of the
+base and one of the PR merge ref. Each entry carries the whole object on both sides, so
+the before and after documents are compared field by field. Only these changes may pass:
 
 - a pod-template container image on a Deployment, DaemonSet, StatefulSet or ReplicaSet:
   same repository, a non-major tag change (or a new digest on the same tag), and no
   version skew against an unchanged app.kubernetes.io/version label
 - ConfigMap `data`
 - HelmRelease `spec.chart.spec.version`, non-major
-- HelmRelease `spec.values`, but only when flux-local rendered that release, so the
-  effect of the values is classified object by object
+- HelmRelease `spec.values`, but only when the render shows a changed object from that
+  release, so the effect of the values is classified object by object
 - OCIRepository `spec.ref.tag`, non-major
 - on the one OCIRepository a policy release exception names: `spec.ref.tag` and
   `spec.ref.digest`, where a 0.x minor and a prerelease also pass
@@ -20,7 +19,8 @@ field. Only these changes may pass:
   Annotations never pass: external-dns hostnames and Cilium LB IPs live there.
 
 Everything else is needs-human: any other field, any other kind, and any added or
-removed object. A parse problem or a flux-local failure is needs-human too.
+removed object, and an object two producers render when one copy changed. A parse
+problem or a failed render is needs-human too.
 """
 
 import argparse
@@ -29,8 +29,6 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
-
-import yaml
 
 from classify import HOLD, NEEDS, PASS, Stage
 from fold import clean
@@ -60,12 +58,11 @@ PRIORITY = ["render", "CRD", "webhook", "removed", "added", "privileged pod spec
             "network policy", "external secret", "CNPG cluster", "PVC", "Job template", "CronJob template",
             "StatefulSet", "major", "version", "version skew", "image", "replicas", "routing", "namespace", "values",
             "changed"]
-_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 # Each number is at most nine digits: int() refuses a longer one (a PR can put any text in a tag), and a
 # version that long is not one we can compare, which already means needs-human.
 _SEMVER = re.compile(r"^v?(\d{1,9})\.(\d{1,9})(?!\d)")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-_RELEASE = re.compile(r"^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?!\d)(-)?")
+_RELEASE = re.compile(r"^v?(\d{1,9})\.(\d{1,9})\.(\d{1,9})(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$")
 _RELEASE_FIELDS = (("spec", "ref", "tag"), ("spec", "ref", "digest"))
 _MISSING = object()
 STALE = "the PR merge ref was stale; re-run the render (pull_request_target run)"
@@ -74,31 +71,12 @@ OBJECT_LABELS = {"app.kubernetes.io/version", "app.kubernetes.io/managed-by", "h
 TEMPLATE_LABELS = {"app.kubernetes.io/version"}
 
 
-def rebuild(diff):
-    """Return (before, after) documents; None for a side that is empty (added or removed)."""
-    before, after, in_hunk = [], [], False
-    for line in diff.splitlines():
-        if line.startswith("@@"):
-            m = _HUNK.match(line)
-            if not m or not (m.group(1) in ("0", "1") and m.group(3) in ("0", "1")):
-                raise ValueError("diff does not carry the whole object")
-            if in_hunk:
-                raise ValueError("diff has more than one hunk")
-            in_hunk = True
-        elif not in_hunk or line == "":
-            continue
-        elif line[0] == " ":
-            before.append(line[1:]), after.append(line[1:])
-        elif line[0] == "-":
-            before.append(line[1:])
-        elif line[0] == "+":
-            after.append(line[1:])
-        else:
-            raise ValueError("unexpected diff line")
-    if not in_hunk:
-        raise ValueError("diff has no hunk")
-    load = lambda lines: yaml.safe_load("\n".join(lines)) if lines else None  # noqa: E731
-    return load(before), load(after)
+def sides(change):
+    """Return (before, after) for one change; None for a side the object is absent on."""
+    before, after = change["before"], change["after"]
+    if not all(doc is None or isinstance(doc, dict) for doc in (before, after)):
+        raise ValueError("a change does not carry whole objects")
+    return before, after
 
 
 def changes(before, after, path=()):
@@ -207,20 +185,28 @@ def _release_exception(before, after, exceptions):
 
 def _release_order(tag):
     """Sort key for a release tag: a prerelease comes before its final release."""
-    m = _RELEASE.match(str(tag))
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4) is None) if m else None
+    m = _RELEASE.fullmatch(str(tag))
+    if not m or any(len(p) > 1 and p.startswith("0") for p in m.groups()[:3]):
+        return None
+    parts = (m.group(4) or "").split(".") if m.group(4) else []
+    if any(p.isdigit() and len(p) > 1 and p.startswith("0") for p in parts):
+        return None
+    prerelease = tuple((0, len(p), p) if p.isdigit() else (1, p) for p in parts)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4) is None, prerelease)
 
 
 def _release_flag(rule, path, old, new):
     """Tag and digest of an excepted release: well formed, same major, and not going backwards."""
     if path[-1] == "digest":
+        if rule.get("companions") and old is _MISSING and _DIGEST.fullmatch(str(new)):
+            return None
         return None if all(_DIGEST.fullmatch(str(v)) for v in (old, new)) else "changed"
     if not all(re.fullmatch(rule["tag_pattern"], str(v)) for v in (old, new)):
         return "version"
     a, b = _release_order(old), _release_order(new)
     if not a or not b:
         return "version"
-    if a[0] != b[0]:
+    if a[0] != b[0] and "major" not in rule["update_types"]:
         return "major"
     return "version" if b < a else None
 
@@ -258,7 +244,7 @@ def field_flag(kind, path, old, new, before, after, rendered, exceptions=()):
 
 
 def object_flags(kind, before, after, rendered=False, exceptions=()):
-    """Flags for one object. rendered: flux-local rendered this HelmRelease's output."""
+    """Flags for one object. rendered: the render shows a changed object from this HelmRelease."""
     if before is None and after is None:
         return []
     if before is None:
@@ -279,7 +265,7 @@ def _rank(flag):
 
 
 def classify(*reports, exceptions=()):
-    """reports: parsed flux-local JSON lists. Returns (Stage, Counter of changed kinds).
+    """reports: lists of changes from render_pairs.py. Returns (Stage, Counter of changed kinds).
 
     exceptions: the policy's release_exceptions. Without them no release exception applies.
     """
@@ -297,21 +283,33 @@ def classify(*reports, exceptions=()):
 def _scan(reports, exceptions=()):
     """Returns (flags found as (flag, object) pairs, Counter of changed kinds)."""
     found, counts = [], Counter()
-    # HelmReleases whose rendered output flux-local diffed (the helmrelease report).
-    rendered = {(r.get("namespace"), r.get("name")) for report in reports for r in report
-                if r.get("kind") == "HelmRelease" and r.get("diffs")}
+    # HelmReleases with at least one changed rendered object.
+    rendered = {tuple(obj["release"]) for report in reports for obj in report if obj.get("release")}
     for report in reports:
-        for release in report:
-            for obj in release["diffs"]:
-                kind = obj["kind"]
-                counts[kind] += 1
-                if kind == "CustomResourceDefinition":
-                    found.append(("CRD", obj))  # flagged by kind; the body is not needed
-                    continue
-                before, after = rebuild(obj["diff"])
-                was_rendered = (obj.get("namespace"), obj["name"]) in rendered
-                found += [(flag, obj) for flag in object_flags(kind, before, after, was_rendered, exceptions)]
+        for obj in report:
+            kind = obj["kind"]
+            counts[kind] += 1
+            if kind == "CustomResourceDefinition":
+                found.append(("CRD", obj))  # flagged by kind; the body is not needed
+                continue
+            if obj.get("ambiguous"):
+                found.append(("changed an object two producers render", obj))
+                continue
+            before, after = sides(obj)
+            was_rendered = (obj.get("namespace"), obj["name"]) in rendered
+            found += [(flag, obj) for flag in object_flags(kind, before, after, was_rendered, exceptions)]
     return found, counts
+
+
+def _load(directory):
+    """The changes in the render artifact. Raises on anything that is not the expected shape."""
+    data = json.loads((Path(directory) / "changes.json").read_text())
+    if not isinstance(data, dict) or not isinstance(data.get("changes"), list):
+        raise ValueError("changes.json is not a render result")
+    # A render of nothing on either side would read as "no rendered changes".
+    if not all(type(data.get(side)) is int and data[side] > 0 for side in ("base", "head")):
+        raise ValueError("changes.json does not record a render of both sides")
+    return data["changes"]
 
 
 def from_artifact(directory, head_sha, exceptions=()):
@@ -331,12 +329,9 @@ def from_artifact(directory, head_sha, exceptions=()):
         # GitHub had not rebuilt the merge ref for this head within the render job's wait.
         return Stage("render", HOLD, STALE)
     if meta.get("failed") != 0:
-        return Stage("render", NEEDS, "render failed (flux-local exited non-zero)")
+        return Stage("render", NEEDS, "render failed (flate exited non-zero)")
     try:
-        # flux-local writes an empty file, not an empty list, when nothing rendered differently.
-        texts = [(Path(directory) / f"{name}.json").read_text() for name in ("helmrelease", "kustomization")]
-        reports = [json.loads(text) if text.strip() else [] for text in texts]
-        return classify(*reports, exceptions=exceptions)[0]
+        return classify(_load(directory), exceptions=exceptions)[0]
     except Exception as err:  # fail closed
         return Stage("render", NEEDS, f"render failed ({type(err).__name__})")
 
@@ -344,8 +339,7 @@ def from_artifact(directory, head_sha, exceptions=()):
 def object_lines(directory, exceptions=(), limit=40):
     """One line per flag found in the artifact, for the AI review's context. Empty on any problem."""
     try:
-        texts = [(Path(directory) / f"{name}.json").read_text() for name in ("helmrelease", "kustomization")]
-        found, counts = _scan([json.loads(text) if text.strip() else [] for text in texts], exceptions)
+        found, counts = _scan([_load(directory)], exceptions)
     except Exception:  # the review goes on without it; the verdict comes from the render stage
         return []
     lines = [f"flagged: {flag}: {obj['kind']} {obj.get('namespace') or '-'}/{obj['name']}" for flag, obj in found]
@@ -353,18 +347,18 @@ def object_lines(directory, exceptions=(), limit=40):
 
 
 def main(argv=None):
-    """Classify flux-local JSON reports locally and print the result."""
+    """Classify render_pairs.py output locally and print the result."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("reports", nargs="+", help="flux-local JSON files")
-    parser.add_argument("--failed", action="store_true", help="flux-local exited non-zero")
+    parser.add_argument("reports", nargs="+", help="render_pairs.py output files")
+    parser.add_argument("--failed", action="store_true", help="the render exited non-zero")
     args = parser.parse_args(argv)
     try:
         if args.failed:
-            raise RuntimeError("flux-local diff failed")
+            raise RuntimeError("render failed")
         reports = []
         for path in args.reports:
             with open(path) as handle:
-                reports.append(json.load(handle))
+                reports.append(json.load(handle)["changes"])
         stage, counts = classify(*reports)
     except Exception as err:  # fail closed
         stage, counts = Stage("render", NEEDS, f"render failed ({type(err).__name__})"), Counter()

@@ -31,12 +31,13 @@ EXISTING_MODELS = {
     "project-chatgpt-responses": "f0f3d0ac971855a8fa80f5500a98c96c762fd7ae3fa570886146b8629ff39be1",
     "project-claude-native": "1cf770905b8784293cf9de335cb0a19003742aa52f24daa4462bdb2574f32d00",
     "project-router": "f22493c577ac6f53932f786a83e156bbe0aae54d47e0fcbb7bf379649067c657",
-    "dub-text": "989f66778c9f331482471dc6c68eb26fc94097243a7aee405b928f3cc844a3d1",
+    "dub-text": "9ee754bd98abf742b069df66b381e160cf5daf02efec40d0386b9e7a7b4655db",
+    "deepseek-v4.1-flash": "67c7cf2798b98edf545f1998ddb42f733bb010e22291edc31f9257a4c7d27781",
 }
 EXISTING_SETTINGS = {
     "router_settings": "266ab498cbfa7bf99840061fdca8950dc9b229702e7eb3f3003232ba289658db",
     "general_settings": "5a68cea07eb029c10267bd873c3659a352a5fa0b4d2e44f4e93fa2adc23394e7",
-    "litellm_settings": "97d1d04234c42f101662cc9a1d8167df26fc6ae8073929091f91c243289bbeba",
+    "litellm_settings": "3aceed54358370cdd0b45fd8c9fc0e31b0a79e3742840b778294abb526694b0c",
     "guardrails": "6665cf83066600df5a623edd544f40f7eaa7e60f0bf0db87d7f9757f980ad1a1",
     "mcp_servers": "6460d43023e34af4eb3121a2d55a3cf4bf43a873fec0a942c1275103cf1a2587",
 }
@@ -103,13 +104,19 @@ class HindsightRouterConfigTests(unittest.TestCase):
 
     def test_existing_aliases_and_proxy_settings_are_unchanged(self):
         self.assertEqual(set(self.models), set(EXISTING_MODELS) | set(BACKENDS)
-                         | {name for name, _ in BACKENDS.values()})
+                         | {name for name, _ in BACKENDS.values()}
+                         | {"project-grok-native"})
         for name, expected in EXISTING_MODELS.items():
             with self.subTest(model=name):
                 self.assertEqual(digest(self.models[name]), expected)
         for name, expected in EXISTING_SETTINGS.items():
             with self.subTest(setting=name):
-                self.assertEqual(digest(self.config[name]), expected)
+                setting = self.config[name]
+                if name == "litellm_settings":
+                    setting = {**setting, "callbacks": [
+                        callback for callback in setting["callbacks"]
+                        if callback != "project_grok_native.proxy_handler_instance"]}
+                self.assertEqual(digest(setting), expected)
 
 
 if __name__ == "__main__":

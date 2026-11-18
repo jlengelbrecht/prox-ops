@@ -1,0 +1,15 @@
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: clickhouse-operator
+  namespace: database
+spec:
+  interval: 15m
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  # renovate: datasource=docker depName=ghcr.io/clickhouse/clickhouse-operator-helm
+  ref:
+    tag: 0.0.8
+  url: oci://ghcr.io/clickhouse/clickhouse-operator-helm

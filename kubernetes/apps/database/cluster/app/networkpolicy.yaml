@@ -79,6 +79,16 @@ spec:
             - port: "5432"
               protocol: TCP
 
+    # Admit Prometheus scrapes of CNPG metrics.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: observability
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "9187"
+              protocol: TCP
+
     # OpenBao servers (database engine: password rotation)
     - fromEndpoints:
         - matchLabels:

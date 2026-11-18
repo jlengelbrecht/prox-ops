@@ -1,0 +1,125 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rgw
+  namespace: object-store
+  annotations:
+    # Restart the pods when the keyring or config changes
+    secret.reloader.stakater.com/reload: rgw-keyring
+    configmap.reloader.stakater.com/reload: rgw-config
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rgw
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rgw
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 167
+        runAsGroup: 167
+        fsGroup: 167
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: rgw
+      containers:
+        - name: rgw
+          # Must stay on Ceph 20.2.x: client.rgw.k8s uses an aes256k key.
+          # Do not bump past the Proxmox hosts' Ceph version without a human.
+          image: quay.io/ceph/ceph:v20.2.4@sha256:6bb1c8a42fbc0bf87938946990b65174466997bc11c31eb5a323225a779fd8f9
+          command:
+            - radosgw
+            - -f
+            - --cluster
+            - ceph
+            - --name
+            - client.rgw.k8s
+            - --keyring
+            - /etc/ceph-keyring/keyring
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ceph
+              readOnly: true
+            - name: keyring
+              mountPath: /etc/ceph-keyring
+              readOnly: true
+            - name: var-lib-ceph
+              mountPath: /var/lib/ceph
+            - name: var-log-ceph
+              mountPath: /var/log/ceph
+            - name: run-ceph
+              mountPath: /run/ceph
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: rgw-config
+        - name: keyring
+          secret:
+            secretName: rgw-keyring
+            defaultMode: 0440
+        - name: var-lib-ceph
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: var-log-ceph
+          emptyDir:
+            sizeLimit: 100Mi
+        - name: run-ceph
+          emptyDir:
+            sizeLimit: 10Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
