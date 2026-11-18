@@ -387,6 +387,23 @@ class WorkerTopologyTests(unittest.TestCase):
         self.assertLessEqual(int(worker['HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS']),
                              int(worker['HINDSIGHT_API_WORKER_MAX_SLOTS']))
 
+    def test_refresh_reservation_uses_existing_worker_capacity(self):
+        api = {k: v.get('value') for k, v in env_by_name(only_container(self.api)).items()}
+        worker = {k: v.get('value') for k, v in env_by_name(only_container(self.worker)).items()}
+        reservation = 'HINDSIGHT_API_WORKER_REFRESH_MENTAL_MODEL_RESERVED_SLOTS'
+        self.assertEqual(api[reservation], '1')
+        self.assertEqual(worker[reservation], '1')
+        self.assertEqual(task_bound(api), DEFAULT_SLOTS)
+        self.assertEqual(task_bound(worker), 2)
+        self.assertNotIn('HINDSIGHT_API_WORKER_MAX_SLOTS', api)
+        self.assertEqual(worker['HINDSIGHT_API_WORKER_MAX_SLOTS'], '2')
+        self.assertEqual(self.api['spec']['replicas'], 1)
+        self.assertEqual(self.worker['spec']['replicas'], 0)
+        self.assertEqual(api['HINDSIGHT_API_LLM_MAX_CONCURRENT'], '2')
+        self.assertEqual(api['HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT'], '2')
+        self.assertEqual(worker['HINDSIGHT_API_LLM_MAX_CONCURRENT'], '1')
+        self.assertEqual(worker['HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT'], '1')
+
     def test_ac6_worker_network_policy(self):
         policies = [x for x in yaml.safe_load_all((APP / 'networkpolicy.yaml').read_text()) if x]
         by_name = {x['metadata']['name']: x for x in policies}
