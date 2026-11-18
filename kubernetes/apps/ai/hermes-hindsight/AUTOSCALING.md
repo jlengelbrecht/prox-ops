@@ -14,8 +14,7 @@ Do not use historical memory rows, production credentials or Kubernetes Secret
 objects as test fixtures. Use synthetic operations in two disposable banks.
 Record the tested revision, chart digest, image digest, values digest, start/end
 times, redacted counts, timings and controller conditions. Remove the temporary
-deployment after qualification. Do not merge the final Flux HPA change until
-every check below passes in a separate review.
+deployment after qualification.
 
 ## Repeatable sequence
 
@@ -70,7 +69,36 @@ runtime rows pending. Do not bypass access controls to collect them.
 If scale-down strands processing rows, stop activation and restore the removed
 ordinal with the same StatefulSet name. Hindsight 1.2.1 startup recovery only
 reclaims rows owned by that worker ID; verify the row returns to pending or
-completes once. For an unrecoverable ordinal, pause automatic scaling and
-escalate to the Hindsight operator for a reviewed, version-specific repair.
+completes once. The HPA is owned by Flux Kustomization
+`ai/hermes-hindsight-autoscaling`, whose source is `autoscaling/worker-autoscaling.yaml`.
+The API and its startup migrations are owned separately by `ai/hermes-hindsight`;
+suspending autoscaling does not suspend API reconciliation.
+
+For a recoverable ordinal, use this order in an approved recovery window:
+
+1. Suspend `ai/hermes-hindsight-autoscaling` reconciliation with
+   `flux suspend kustomization hermes-hindsight-autoscaling -n ai`. Confirm it
+   is suspended before changing the HPA; otherwise Flux can overwrite a live
+   policy patch.
+2. Patch only `hindsight-worker` HPA's
+   `spec.behavior.scaleDown.selectPolicy` to `Disabled`, preserving the 1..2
+   bounds and scale-up policy: `kubectl -n ai patch hpa hindsight-worker
+   --type=merge -p '{"spec":{"behavior":{"scaleDown":{"selectPolicy":"Disabled"}}}}'`.
+   Confirm the live HPA reports `Disabled` before restoring the ordinal. The
+   source policy is explicitly `Max` and remains untouched during this pause.
+3. Restore the same `hindsight-worker` StatefulSet ordinal through `/scale`
+   to two replicas with `kubectl -n ai scale statefulset/hindsight-worker
+   --replicas=2`. Observe that ordinal's startup recovery and verify each
+   stranded processing row is pending or completes once. Keep scale-down
+   disabled while recovery is still running. If recovery does not finish, leave
+   the pause in place and escalate to the Hindsight operator for a reviewed,
+   version-specific repair.
+4. After recovery finishes, patch `selectPolicy` back to the source value
+   `Max` with `kubectl -n ai patch hpa hindsight-worker --type=merge -p
+   '{"spec":{"behavior":{"scaleDown":{"selectPolicy":"Max"}}}}'`.
+   Resume with `flux resume kustomization hermes-hindsight-autoscaling -n ai`
+   and reconcile it; confirm the live HPA has the source's 300-second stabilization,
+   one-pod-per-minute policy and 1..2 bounds. Check that the Kustomization is Ready.
+
 Do not edit historical memory rows or run a migration as an ad hoc recovery.
 Keep the API available and preserve the existing network and auth boundaries.

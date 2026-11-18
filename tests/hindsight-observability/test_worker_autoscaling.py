@@ -24,7 +24,8 @@ QUALIFIED = json.loads((ARTIFACTS / 'adapter-artifact-qualification.json').read_
 PROMTOOL_QUALIFIED = json.loads((ARTIFACTS / 'native-promtool-provenance.json').read_text())
 ADAPTER = ROOT / 'kubernetes/apps/observability/prometheus-adapter/app'
 HINDSIGHT = ROOT / 'kubernetes/apps/ai/hermes-hindsight/app'
-HPA_FILE = HINDSIGHT / 'worker-autoscaling.yaml'
+AUTOSCALING = ROOT / 'kubernetes/apps/ai/hermes-hindsight/autoscaling'
+HPA_FILE = AUTOSCALING / 'worker-autoscaling.yaml'
 FIXTURE = yaml.safe_load((pathlib.Path(__file__).parent / 'fixtures/worker-autoscaling.yaml').read_text())
 CHART = pathlib.Path(os.environ.get('PROMETHEUS_ADAPTER_CHART', ARTIFACTS / 'prometheus-adapter-5.3.0.tgz'))
 HELM = os.environ.get('PROMETHEUS_ADAPTER_HELM', 'helm')
@@ -382,6 +383,7 @@ class ActiveWiringTests(unittest.TestCase):
             'behavior': {
                 'scaleUp': {'stabilizationWindowSeconds': 0, 'policies': [{'type': 'Pods', 'value': 1, 'periodSeconds': 60}]},
                 'scaleDown': {'stabilizationWindowSeconds': 300,
+                              'selectPolicy': 'Max',
                               'policies': [{'type': 'Pods', 'value': 1, 'periodSeconds': 60}]}},
         })
 
@@ -395,9 +397,11 @@ class ActiveWiringTests(unittest.TestCase):
                           {'op': 'remove', 'path': '/spec/replicas'}])
 
     def test_hpa_and_adapter_are_flux_owned(self):
-        listed = yaml.safe_load((HINDSIGHT / 'kustomization.yaml').read_text())['resources']
-        self.assertIn('./worker-autoscaling.yaml', listed)
-        self.assertEqual(find(kustomize_build(HINDSIGHT), 'HorizontalPodAutoscaler', 'hindsight-worker')['spec'],
+        self.assertFalse([doc for doc in kustomize_build(HINDSIGHT)
+                          if doc['kind'] == 'HorizontalPodAutoscaler'])
+        self.assertEqual([key(doc) for doc in kustomize_build(AUTOSCALING)],
+                         [('HorizontalPodAutoscaler', 'hindsight-worker')])
+        self.assertEqual(find(kustomize_build(AUTOSCALING), 'HorizontalPodAutoscaler', 'hindsight-worker')['spec'],
                          load(HPA_FILE)[0]['spec'])
         root = ROOT / 'kubernetes/apps/observability'
         self.assertIn('./prometheus-adapter/ks.yaml', yaml.safe_load((root / 'kustomization.yaml').read_text())['resources'])
@@ -405,22 +409,50 @@ class ActiveWiringTests(unittest.TestCase):
         self.assertEqual(adapter_ks['spec']['path'], './kubernetes/apps/observability/prometheus-adapter/app')
         self.assertEqual(adapter_ks['spec']['targetNamespace'], 'observability')
         self.assertIn({'name': 'hindsight-backlog-collector', 'namespace': 'database'}, adapter_ks['spec']['dependsOn'])
-        app_ks = find(kustomize_build(ROOT / 'kubernetes/apps/ai'), 'Kustomization', 'hermes-hindsight')
-        self.assertIn({'name': 'prometheus-adapter', 'namespace': 'flux-system'}, app_ks['spec']['dependsOn'])
-        self.assertIn({'name': 'hindsight-backlog-collector', 'namespace': 'database'}, app_ks['spec']['dependsOn'])
 
-    def test_new_flux_dependencies_resolve_in_native_root_renders(self):
+    def test_fresh_install_dependency_graph_and_api_readiness(self):
         roots = ('ai', 'observability', 'database', 'external-secrets')
         rendered = [doc for root in roots for doc in kustomize_build(ROOT / 'kubernetes/apps' / root)
                     if doc['kind'] == 'Kustomization']
-        identities = {(doc['metadata']['namespace'], doc['metadata']['name']) for doc in rendered}
-        for owner in ('hermes-hindsight', 'prometheus-adapter'):
-            dependent = find(rendered, 'Kustomization', owner)
-            namespace = dependent['metadata']['namespace']
-            for dependency in dependent['spec']['dependsOn']:
-                target = (dependency.get('namespace', namespace), dependency['name'])
-                with self.subTest(owner=owner, dependency=target):
-                    self.assertIn(target, identities, 'Flux dependsOn must target a root-rendered Kustomization')
+        by_id = {(doc['metadata']['namespace'], doc['metadata']['name']): doc for doc in rendered}
+        self.assertEqual(len(by_id), len(rendered), 'root renders must not duplicate Flux identities')
+        graph = {}
+        for identity, doc in by_id.items():
+            graph[identity] = {(dep.get('namespace', identity[0]), dep['name'])
+                               for dep in doc['spec'].get('dependsOn', [])}
+        app = ('ai', 'hermes-hindsight')
+        autoscaling = ('ai', 'hermes-hindsight-autoscaling')
+        qualification = ('database', 'hindsight-backlog-collector-qualification')
+        collector = ('database', 'hindsight-backlog-collector')
+        adapter = ('flux-system', 'prometheus-adapter')
+        self.assertEqual(by_id[autoscaling]['spec']['path'],
+                         './kubernetes/apps/ai/hermes-hindsight/autoscaling')
+        self.assertEqual(graph[autoscaling], {app, collector, adapter})
+        self.assertIn(app, graph[qualification], 'qualification must wait for the API migrator')
+        self.assertEqual(by_id[app]['spec']['healthChecks'], [
+            {'apiVersion': 'apps/v1', 'kind': 'Deployment', 'name': 'hindsight-api', 'namespace': 'ai'}])
+        self.assertFalse(by_id[app]['spec']['wait'])
+        focal = {app, autoscaling, qualification, collector, adapter}
+        for owner in focal:
+            for dependency in graph[owner]:
+                self.assertIn(dependency, by_id, f'{owner} dependency has no root-rendered identity')
+
+        visiting, visited = set(), set()
+
+        def visit(node):
+            self.assertNotIn(node, visiting, f'Flux dependency cycle at {node}')
+            if node in visited:
+                return
+            visiting.add(node)
+            for dependency in graph[node] & focal:
+                visit(dependency)
+            visiting.remove(node)
+            visited.add(node)
+
+        visit(app)
+        self.assertEqual(visited, {app}, 'API migration path must not depend on the collector or adapter')
+        for node in focal:
+            visit(node)
 
     def test_adapter_build_and_network_policy(self):
         built = kustomize_build(ADAPTER)
