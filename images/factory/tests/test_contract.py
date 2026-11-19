@@ -5,6 +5,7 @@ import io
 import json
 import os
 import ctypes
+import errno
 import base64
 from contextlib import contextmanager
 from pathlib import Path
@@ -2369,16 +2370,25 @@ client_cfg=$(mktemp -d)
         current = subprocess.Popen(["/usr/bin/sleep", "5"])
         current_fd = os.pidfd_open(current.pid)
         try:
-            self.assertNotEqual((os.fstat(old_fd).st_dev, os.fstat(old_fd).st_ino),
-                                (os.fstat(current_fd).st_dev, os.fstat(current_fd).st_ino))
             supervisor = module.Supervisor()
             supervisor.kill_sent[old.pid] = [os.dup(old_fd)]
             child = type("ExitedChild", (), {"si_pid": old.pid})()
             # Model the kernel assigning the old number to a different owned
-            # child. The pidfd returned for the waitable child is its identity.
-            with patch.object(module.os, "waitid", side_effect=[child, ChildProcessError()]), \
+            # child, with equal pidfd inodes as on older supported kernels.
+            def waitid(idtype, identifier, options):
+                if idtype == os.P_ALL:
+                    if not hasattr(waitid, "seen"):
+                        waitid.seen = True
+                        return child
+                    raise ChildProcessError()
+                self.assertEqual(idtype, os.P_PIDFD)
+                self.assertEqual(identifier, supervisor.kill_sent[old.pid][0])
+                raise ChildProcessError()  # The original task was reaped.
+
+            with patch.object(module.os, "waitid", side_effect=waitid), \
                  patch.object(module.os, "waitpid", return_value=(old.pid, 0)), \
-                 patch.object(module.os, "pidfd_open", return_value=os.dup(current_fd)):
+                 patch.object(module.os, "pidfd_open", return_value=os.dup(current_fd)), \
+                 patch.object(module.os, "fstat", return_value=os.fstat(old_fd)):
                 self.assertTrue(supervisor.reap())
             self.assertIn(old.pid, supervisor.kill_sent)
             with patch.object(supervisor, "reap", return_value=True):
@@ -2415,6 +2425,41 @@ client_cfg=$(mktemp -d)
             if supervisor.kill_sent:
                 os.close(held)
 
+    def test_unavailable_pidfd_status_retains_kill_record(self):
+        spec = importlib.util.spec_from_file_location("poll_supervisor", ROOT / "poll-supervisor.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        held = os.pidfd_open(pid)
+        supervisor = module.Supervisor()
+        supervisor.kill_sent[pid] = [held]
+        real_waitid = os.waitid
+
+        def unsupported_pidfd(idtype, identifier, options):
+            if idtype == os.P_PIDFD:
+                raise OSError(errno.EINVAL, "pidfd status unavailable")
+            return real_waitid(idtype, identifier, options)
+
+        try:
+            self.assertTrue(module.readable(held, 2))
+            with patch.object(module.os, "waitid", side_effect=unsupported_pidfd):
+                self.assertTrue(supervisor.reap())
+            self.assertIn(pid, supervisor.kill_sent)
+            self.assertTrue(supervisor.failed)
+            self.assertFalse(supervisor.forced)
+            with patch.object(supervisor, "reap", return_value=True):
+                supervisor.drain_pass(report=False)
+            self.assertEqual(supervisor.kill_sent, {})
+        finally:
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+            if supervisor.kill_sent:
+                os.close(held)
+
     def test_new_kill_identity_does_not_replace_old_pid_record(self):
         spec = importlib.util.spec_from_file_location("poll_supervisor", ROOT / "poll-supervisor.py")
         module = importlib.util.module_from_spec(spec)
@@ -2430,12 +2475,17 @@ client_cfg=$(mktemp -d)
                 return [current.pid] if pid == os.getpid() else []
 
             with patch.object(supervisor, "children_of", side_effect=children_of), \
-                 patch.object(supervisor, "parent_of", return_value=os.getpid()):
+                 patch.object(supervisor, "parent_of", return_value=os.getpid()), \
+                 patch.object(module.os, "fstat", return_value=os.fstat(old_fd)):
                 self.assertEqual(supervisor.signal_owned(signal.SIGKILL), (1, 1))
             records = supervisor.kill_sent[current.pid]
             self.assertEqual(len(records), 2)
-            self.assertEqual(os.fstat(records[0]).st_ino, os.fstat(old_fd).st_ino)
-            self.assertNotEqual(os.fstat(records[0]).st_ino, os.fstat(records[1]).st_ino)
+            with self.assertRaises(ChildProcessError):
+                os.waitid(os.P_PIDFD, records[0], os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            self.assertTrue(module.readable(records[1], 2))
+            self.assertEqual(os.waitid(os.P_PIDFD, records[1],
+                                       os.WEXITED | os.WNOHANG | os.WNOWAIT).si_pid,
+                             current.pid)
         finally:
             if current.poll() is None:
                 current.terminate()
@@ -2444,6 +2494,31 @@ client_cfg=$(mktemp -d)
                 for fd in records:
                     os.close(fd)
             os.close(old_fd)
+
+    def test_repeated_kill_to_live_owned_child_keeps_one_record(self):
+        spec = importlib.util.spec_from_file_location("poll_supervisor", ROOT / "poll-supervisor.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        current = subprocess.Popen(["/usr/bin/sleep", "5"])
+        supervisor = module.Supervisor()
+        try:
+            def children_of(pid):
+                return [current.pid] if pid == os.getpid() else []
+
+            with patch.object(supervisor, "children_of", side_effect=children_of), \
+                 patch.object(supervisor, "parent_of", return_value=os.getpid()), \
+                 patch.object(module.signal, "pidfd_send_signal") as send:
+                self.assertEqual(supervisor.signal_owned(signal.SIGKILL), (1, 1))
+                self.assertEqual(supervisor.signal_owned(signal.SIGKILL), (1, 1))
+            self.assertEqual(send.call_count, 2)
+            self.assertEqual(len(supervisor.kill_sent[current.pid]), 1)
+            self.assertFalse(supervisor.failed)
+        finally:
+            current.terminate()
+            current.wait(timeout=2)
+            for records in supervisor.kill_sent.values():
+                for fd in records:
+                    os.close(fd)
 
     def test_sleep_has_no_pass_status_and_handled_term_status_is_actual(self):
         with tempfile.TemporaryDirectory() as directory:

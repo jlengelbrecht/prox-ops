@@ -170,8 +170,7 @@ class Supervisor:
         self.observe_exec()
         while True:
             try:
-                # WNOWAIT keeps the exited child attached while its pidfd is
-                # opened. A numeric PID alone cannot identify a retained KILL.
+                # Keep the child waitable while checking retained KILL pidfds.
                 child = os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)
             except ChildProcessError:
                 return True
@@ -180,16 +179,19 @@ class Supervisor:
             if child is None:
                 return False
             pid = child.si_pid
-            identity = None
-            try:
-                identity = os.pidfd_open(pid)
-                reaped_identity = os.fstat(identity)
-            except OSError:
-                self.failed = True  # Never discard an uncertain KILL outcome.
-                reaped_identity = None
-            finally:
-                if identity is not None:
-                    os.close(identity)
+            records = self.kill_sent.get(pid, [])
+            matched = None
+            for held in records:
+                try:
+                    # A reaped old task yields ECHILD, even if this numeric
+                    # PID now names a different waitable child.
+                    same_child = self.waitable_pidfd(held, pid)
+                except OSError:
+                    same_child = False
+                if same_child:
+                    matched = held
+                    break
+                self.failed = True  # Retain an unproved KILL outcome.
             try:
                 _, status = os.waitpid(pid, 0)
             except InterruptedError:
@@ -199,24 +201,25 @@ class Supervisor:
                 self.main_signaled = self.main_status < 0
                 if self.main_status < 0:
                     self.main_status = 128 - self.main_status
-            records = self.kill_sent.get(pid, [])
-            for held in records[:]:
-                try:
-                    stat = os.fstat(held)
-                except OSError:
-                    self.failed = True
-                    continue
-                if (reaped_identity is not None and
-                        (stat.st_dev, stat.st_ino) ==
-                        (reaped_identity.st_dev, reaped_identity.st_ino)):
-                    records.remove(held)
-                    os.close(held)
-                    if not records:
-                        del self.kill_sent[pid]
-                    if os.waitstatus_to_exitcode(status) == -signal.SIGKILL and not self.forced:
-                        self.forced = True
-                        log("cancellation_escalated=kill")
-                    break
+            if matched is not None:
+                records.remove(matched)
+                os.close(matched)
+                if not records:
+                    del self.kill_sent[pid]
+                if os.waitstatus_to_exitcode(status) == -signal.SIGKILL and not self.forced:
+                    self.forced = True
+                    log("cancellation_escalated=kill")
+
+    @staticmethod
+    def waitable_pidfd(fd, pid):
+        """Confirm that a retained pidfd names this waitable child."""
+        while True:
+            try:
+                child = os.waitid(os.P_PIDFD, fd,
+                                  os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                return child is not None and child.si_pid == pid
+            except InterruptedError:
+                continue
 
     @staticmethod
     def children_of(pid):
@@ -297,9 +300,20 @@ class Supervisor:
                         successful += 1
                         if signum == signal.SIGKILL:
                             records = self.kill_sent.setdefault(parent, [])
-                            identity = os.fstat(parent_fd)
-                            if not any((os.fstat(fd).st_dev, os.fstat(fd).st_ino) ==
-                                       (identity.st_dev, identity.st_ino) for fd in records):
+                            already_recorded = False
+                            for fd in records:
+                                try:
+                                    # A live pidfd with this PID cannot name
+                                    # an older, already recycled task.
+                                    if (not readable(fd, 0) or
+                                            self.waitable_pidfd(fd, parent)):
+                                        already_recorded = True
+                                        break
+                                except ChildProcessError:
+                                    pass  # The earlier task was reaped.
+                                except OSError:
+                                    self.failed = True
+                            if not already_recorded:
                                 records.append(os.dup(parent_fd))
                         if term_sent is not None:
                             term_sent[parent] = held
