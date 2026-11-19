@@ -8,11 +8,28 @@ No harness binaries, credentials, Paperclip configuration or factory-stage
 route/stamp/validator binding are packaged. The local fixture starts the poll
 supervisor only with a synthetic CLI mounted over its polling command.
 
-Run from the repository root, with the **exact candidate Git checkout**:
+Run the executable helper directly from the repository root, with the **exact
+candidate Git checkout**:
 
 ```sh
-bash images/factory/test-local.sh --afk-repo /path/to/agent-flow-kit-checkout
+./images/factory/test-local.sh --afk-repo /path/to/agent-flow-kit-checkout
 ```
+
+This is the supported clean entry. Linux executes its GNU `/usr/bin/env -S -i`
+shebang before `/bin/bash`, with only `PATH=/usr/bin:/bin`,
+`HOME=/nonexistent`, `LANG=C`, and `LC_ALL=C`. The executable bit is part of
+the source contract. Keep optional `--archive PATH` and `--report NEW_JSON_PATH`
+after `--afk-repo PATH`; their paths are still caller-selected inputs subject
+to the checks below. The trusted controller must launch this executable as an
+argv vector from a trusted checkout and working directory, with a fresh
+environment before its own interpreter and any timeout process start. It must
+control the absolute `/usr/bin/env`, `/bin/bash`, Git, tar, curl, Docker and
+Python host tools and their loader/configuration boundary. `bash
+images/factory/test-local.sh` bypasses the clean shebang and is unsupported
+from a contaminated parent. This entry cannot undo code or loader execution
+that already happened in the parent or before `/usr/bin/env` clears its
+environment. The controller should pass only the four listed variables to
+the helper and any timeout wrapper.
 
 For a closed diagnostic result, pass `--report /tmp/unique-fixture-result.json`
 using a new path in a private directory. The helper writes a mode-0600 JSON
@@ -37,7 +54,9 @@ running/exited state and recognized fixture startup stages or supervisor event
 codes. `entry_started` means the image shell command ran, `bind_verified`
 means its fake CLI token check passed, and `helper_started` means Python
 entered the supervisor's main function. A later fixed failure code takes
-precedence. The smoke redirects interpreter and wrapper stderr to `/dev/null`;
+precedence; the event file records allowlisted codes such as `launch_failed`
+and `stop_outcome` without exception text or values. The smoke redirects
+interpreter and wrapper stderr to `/dev/null`;
 only these fixed codes enter its private tmpfs event file. An
 `observed_container_exit_status` appears only when Docker reports an exited
 container with an integer code. Unknown Docker state yields
@@ -62,6 +81,14 @@ archive is copied to a new temporary file, hashed, then renamed within that
 private context. The helper never reads or changes an existing
 `images/factory/inputs/` cache. The context is removed on exit; host profiles
 and credentials do not enter it.
+
+The receiving GNU tar runs as `/usr/bin/tar` under a fresh environment, so
+`TAR_OPTIONS` cannot add checkpoint actions or extraction flags. Git uses
+`/usr/bin/git` with cleared configuration and replacement settings. The
+download uses `/usr/bin/curl --disable` under a fresh environment; Docker uses
+`/usr/bin/docker`, the explicit Unix socket and a private configuration.
+The clean entry fixes `PATH` for all remaining host commands and excludes
+caller shell functions and startup/configuration variables before Bash starts.
 
 The private context runs with `umask 077`. Its producer explicitly makes only
 the copied public `poll-supervisor.py` mode 0644, and the Dockerfile sets that
@@ -89,13 +116,25 @@ After the Orca check, the same image runs one synthetic supervisor smoke under
 Docker's init process and the same UID, resource and isolation flags. A
 read-only bind shadows the AFK CLI; a token check verifies that exact fake
 before the wrapper starts. The fake starts a sleeping child, records its
-startup and reap in container tmpfs, and never contacts Paperclip or a model.
+startup and actual shell wait/reap in container tmpfs, and never contacts
+Paperclip or a model.
 The controller and Docker daemon must see the same absolute `/tmp` fixture path
 for this bind mount. A remote daemon or one with a different filesystem namespace
 cannot run this smoke with that path.
 The helper checks the markers, stops through PID 1 with a 15-second deadline,
 and requires an exit code of 0 without forced kill or Docker error. It removes
 the labelled smoke container with the same owned-resource cleanup.
+
+The offline contract suite launches each exclusive fake inside its own owner
+process. That owner is the subreaper for the fake tree, holds verified pidfds,
+signals and reaps its descendants, and requires a kernel `waitpid` child-table
+barrier before `wait` or `communicate` returns completed evidence. `poll` can
+report the root's intermediate exit status. A live descendant after root exit
+causes bounded forced retirement and a nonpassing result; its output is not
+published as completed evidence. The test runner uses bounded pipes to request fake operations;
+unrelated runner children never enter the owner's child table. Control failure
+is nonpassing and triggers bounded owner cleanup. The nonexclusive ancestry
+tests retain their separate, explicit foreign-child fixtures.
 
 `poll-supervisor.sh` is a thin entrypoint to the Linux Python helper for a future
 authorized controller. The helper uses `PR_SET_CHILD_SUBREAPER`, pidfds and
@@ -124,7 +163,9 @@ startup window is bounded to two seconds; timeout or startup I/O failure
 enters the bounded owned-tree TERM/KILL/reap path before a pending stop is
 handled. The signal handler does not
 wait on a child-held lock. Cancellation gives owned children
-three monotonic seconds for TERM, then sends KILL to those still present and
+three monotonic seconds for TERM. Each retained owned task gets TERM once
+during that grace while newly discovered or adopted children are still scanned;
+the helper then sends KILL to those still present and
 waits up to two more seconds for reaping. It reports a forced stop only when
 KILL delivery succeeded. A pass has no ordinary deadline. An uncertain or
 unreaped stop fails. This covers the wrapper's local descendant tree, including

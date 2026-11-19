@@ -17,6 +17,13 @@ PR_SET_CHILD_SUBREAPER = 36
 STOP_SIGNALS = {signal.SIGTERM, signal.SIGINT}
 
 
+def readable(fd, timeout):
+    """Poll one pipe or pidfd without select's FD_SETSIZE limit."""
+    watcher = select.poll()
+    watcher.register(fd, select.POLLIN | select.POLLHUP | select.POLLERR | select.POLLNVAL)
+    return bool(watcher.poll(max(0, int(timeout * 1000))))
+
+
 def log(message):
     print("poll-supervisor: " + message, file=sys.stderr, flush=True)
     if os.environ.get("FACTORY_FIXTURE_DIAGNOSTICS") == "1":
@@ -110,8 +117,7 @@ class Supervisor:
                 pass
             closing, writer = writer, None
             os.close(closing)
-            ready, _, _ = select.select([startup_reader], [], [], STARTUP_GRACE)
-            if not ready:
+            if not readable(startup_reader, STARTUP_GRACE):
                 raise OSError("startup deadline exceeded")
             self.startup = os.read(startup_reader, 1)
             self.observe_exec()
@@ -193,13 +199,13 @@ class Supervisor:
     @staticmethod
     def parent_of(pid):
         try:
-            with open(f"/proc/{pid}/stat", encoding="ascii") as stream:
-                fields = stream.read().rsplit(") ", 1)[1].split()
+            with open(f"/proc/{pid}/stat", "rb") as stream:
+                fields = stream.read().rsplit(b") ", 1)[1].split()
             return int(fields[1])
         except (OSError, IndexError, ValueError):
             return None
 
-    def signal_owned(self, signum):
+    def signal_owned(self, signum, term_sent=None):
         """Signal descendants child-first with live parent and child pidfds."""
         # Frames retain each selected parent's pidfd through its child scan.
         # If it exited, its numeric PID could have been reused: defer children
@@ -208,7 +214,7 @@ class Supervisor:
         attempted = successful = 0
         def live(fd):
             try:
-                return not select.select([fd], [], [], 0)[0]
+                return not readable(fd, 0)
             except OSError:
                 self.failed = True
                 return False
@@ -239,14 +245,28 @@ class Supervisor:
                 if parent_fd is None:
                     continue
                 try:
-                    attempted += 1
+                    previous = term_sent.get(parent) if term_sent is not None else None
+                    if previous is not None:
+                        if live(previous):
+                            continue  # Same retained task already received TERM.
+                        os.close(term_sent.pop(parent))
+                    held = None
                     try:
+                        if term_sent is not None:
+                            held = os.dup(parent_fd)
+                        attempted += 1
                         signal.pidfd_send_signal(parent_fd, signum)
                         successful += 1
+                        if term_sent is not None:
+                            term_sent[parent] = held
+                            held = None
                     except ProcessLookupError:
                         pass
                     except OSError:
                         self.failed = True
+                    finally:
+                        if held is not None:
+                            os.close(held)
                 finally:
                     os.close(parent_fd)
         finally:
@@ -257,25 +277,40 @@ class Supervisor:
 
     def drain_pass(self, report=True):
         term_at = kill_at = None
-        while not self.reap():
-            now = time.monotonic()
-            if self.stopping:
-                if term_at is None:
-                    term_at = now
-                if now - term_at < GRACE:
-                    self.signal_owned(signal.SIGTERM)
-                else:
-                    attempted, sent = self.signal_owned(signal.SIGKILL)
-                    if sent and not self.forced:
-                        self.forced = True
-                        log("cancellation_escalated=kill attempted=%d successful=%d" % (attempted, sent))
-                    if kill_at is None:
-                        kill_at = now
-                    if now - kill_at >= REAP_GRACE:
-                        log("cancellation_children_unreaped")
-                        self.failed = True
-                        return
-            time.sleep(0.02)
+        term_sent = {}
+        try:
+            while not self.reap():
+                now = time.monotonic()
+                if self.stopping:
+                    if term_at is None:
+                        term_at = now
+                    if now - term_at < GRACE:
+                        identities_uncertain = False
+                        for pid, fd in list(term_sent.items()):
+                            try:
+                                exited = readable(fd, 0)
+                            except OSError:
+                                self.failed = identities_uncertain = True
+                                continue
+                            if exited:
+                                os.close(term_sent.pop(pid))
+                        if not identities_uncertain:
+                            self.signal_owned(signal.SIGTERM, term_sent)
+                    else:
+                        attempted, sent = self.signal_owned(signal.SIGKILL)
+                        if sent and not self.forced:
+                            self.forced = True
+                            log("cancellation_escalated=kill attempted=%d successful=%d" % (attempted, sent))
+                        if kill_at is None:
+                            kill_at = now
+                        if now - kill_at >= REAP_GRACE:
+                            log("cancellation_children_unreaped")
+                            self.failed = True
+                            return
+                time.sleep(0.02)
+        finally:
+            for fd in term_sent.values():
+                os.close(fd)
         if self.stopping:
             log("cancellation_drained=true")
         # EOF alone is ambiguous: SIGKILL before exec closes the pipe too.

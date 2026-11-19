@@ -1,5 +1,7 @@
-#!/usr/bin/env bash
+#!/usr/bin/env -S -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C LC_ALL=C /bin/bash
 # Disposable, credential-free build and Orca startup fixture.
+# Execute this file directly. Its GNU env shebang clears the caller environment
+# before Bash starts; invoking it through bash bypasses that boundary.
 set -euo pipefail
 umask 077
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -101,7 +103,7 @@ url=$(lock ORCA_URL)
 # Ignore caller Git configuration, replacement refs, tracing, index overrides and
 # promisor/lazy fetch settings. Only already-present objects may supply the pin.
 source_git() {
-  env -i PATH=/usr/bin:/bin HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 \
+  /usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 \
     GIT_CONFIG_GLOBAL=/dev/null GIT_NO_REPLACE_OBJECTS=1 GIT_NO_LAZY_FETCH=1 \
     GIT_OPTIONAL_LOCKS=0 /usr/bin/git -C "$source_repo" "$@"
 }
@@ -138,7 +140,9 @@ done
 # The private umask makes cp produce mode 0600 even for a public 0644 source.
 # Only this installed public helper needs other-UID read access at runtime.
 chmod 0644 -- "$stage/poll-supervisor.py"
-source_git -c tar.umask=0022 archive --format=tar "$commit" bin lib adapters/runtime-scope.sh | tar --same-permissions --no-same-owner -xf - -C "$stage/inputs/afk"
+source_git -c tar.umask=0022 archive --format=tar "$commit" bin lib adapters/runtime-scope.sh | \
+  /usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C LC_ALL=C \
+    /usr/bin/tar --same-permissions --no-same-owner -xf - -C "$stage/inputs/afk"
 # Docker COPY leaves the source root-owned. Require every exported directory
 # to be traversable and each payload file readable by runtime UID 10001.
 /usr/bin/python3 -I - "$stage/inputs/afk" <<'PY'
@@ -190,7 +194,8 @@ if [[ -n "$archive" ]]; then
   [[ -f "$archive" && ! -L "$archive" ]] || { printf 'test-local: archive must be a regular file\n' >&2; exit 1; }
   cp -- "$archive" "$stage/inputs/$asset.part"
 else
-  if ! env -i PATH="$PATH" curl --disable --fail --location --silent --show-error --max-time 180 --output "$stage/inputs/$asset.part" "$url"; then
+  if ! /usr/bin/env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C LC_ALL=C \
+    /usr/bin/curl --disable --fail --location --silent --show-error --max-time 180 --output "$stage/inputs/$asset.part" "$url"; then
     printf 'test-local: official archive unavailable; provide --archive PATH or permit the official public download\n' >&2
     exit 1
   fi
@@ -244,8 +249,8 @@ cleanup() {
   return "$status"
 }
 dock() {
-  env -i PATH="$PATH" HOME="$client_cfg" XDG_CONFIG_HOME="$client_cfg" DOCKER_CONFIG="$client_cfg" DOCKER_HOST=unix:///run/docker.sock \
-    docker --host unix:///run/docker.sock --config "$client_cfg" "$@"
+  /usr/bin/env -i PATH=/usr/bin:/bin HOME="$client_cfg" XDG_CONFIG_HOME="$client_cfg" DOCKER_CONFIG="$client_cfg" DOCKER_HOST=unix:///run/docker.sock \
+    /usr/bin/docker --host unix:///run/docker.sock --config "$client_cfg" "$@"
 }
 fixture_cleanup_active=1
 phase=archive_extract; reason=archive_extract_failed
@@ -320,10 +325,33 @@ fake_cli="$stage/fake-agent-flow-kit"
 printf '#!/usr/bin/env bash\n# fixture-token:%s\n' "$nonce" > "$fake_cli"
 cat >> "$fake_cli" <<'FAKE'
 [[ "$#" == 1 && "$1" == paperclip-poll ]] || exit 86
-sleep 300 & child=$!
-on_term() {
-  wait "$child" || [[ "$?" == 143 ]] || exit 87
+# The child records the command's actual result. A failed initial sleep (127)
+# must not look like Bash's second wait on an already reaped child (also 127).
+(
+  printf '%s\n' started > /scratch/fake-child-started || exit 87
+  sleep 300 & sleeper=$!
+  # Keep this witness shell alive until its own child has a real wait status.
+  # The supervisor targets the sleep as a separate owned descendant.
+  trap '' TERM
+  wait "$sleeper"
+  status=$?
+  printf '%s\n' "$status" > /scratch/fake-child-status || exit 87
+  exit "$status"
+) & child=$!
+child_reaped=0
+reap_child() {
+  [[ "$child_reaped" == 0 ]] || return 0
+  # 127 from this wait can also mean the outer wait reaped the known child.
+  # The child's own status record distinguishes that from command failure.
+  wait "$child" || { wait_status=$?; [[ "$wait_status" == 143 || "$wait_status" == 127 ]] || exit 87; }
+  [[ -f /scratch/fake-child-started ]] || exit 87
+  child_status=$(cat /scratch/fake-child-status 2>/dev/null) || exit 87
+  [[ "$child_status" == 0 || "$child_status" == 143 ]] || exit 87
+  child_reaped=1
   touch /scratch/fake-reaped
+}
+on_term() {
+  reap_child
   for ((i=0; i<100; i++)); do
     [[ ! -e /scratch/fake-observed ]] || exit 0
     sleep 0.1
@@ -332,7 +360,8 @@ on_term() {
 }
 trap on_term TERM
 printf '%s\n' running > /scratch/fake-running
-wait "$child"
+reap_child
+while :; do sleep 0.1; done
 FAKE
 chmod 0755 "$fake_cli"
 fake_mount="type=bind,source=$fake_cli,target=/opt/afk/bin/agent-flow-kit,readonly"
@@ -357,9 +386,9 @@ if [[ "$running" != 1 ]]; then
   # Only fixed Docker state fields and our own supervisor events can enter
   # this closed diagnostic. The private copied event file is removed on exit.
   dock_probe() {
-    /usr/bin/timeout -k 2s 5s env -i PATH="$PATH" HOME="$client_cfg" XDG_CONFIG_HOME="$client_cfg" \
+    /usr/bin/timeout -k 2s 5s /usr/bin/env -i PATH=/usr/bin:/bin HOME="$client_cfg" XDG_CONFIG_HOME="$client_cfg" \
       DOCKER_CONFIG="$client_cfg" DOCKER_HOST=unix:///run/docker.sock \
-      docker --host unix:///run/docker.sock --config "$client_cfg" "$@"
+      /usr/bin/docker --host unix:///run/docker.sock --config "$client_cfg" "$@"
   }
   smoke_state=$(dock_probe container inspect --format '{{json .State}}' "$smoke_container_id" 2>/dev/null) || smoke_state=''
   dock_probe cp "$smoke_container_id:/scratch/supervisor-events" "$stage/supervisor-events" >/dev/null 2>&1 || :
@@ -380,12 +409,11 @@ if isinstance(state, dict):
             exit_code = str(value)
 events = pathlib.Path(sys.argv[2])
 if events.is_file():
-    known = ("invalid_configuration", "unsupported_linux_child_primitives", "subreaper_unavailable",
-             "launch_failed=", "pass_interrupted", "cancellation_children_unreaped",
-             "stop_outcome=forced_or_unreaped", "stopped")
+    failures = ("invalid_configuration", "unsupported_linux_child_primitives", "subreaper_unavailable",
+                "launch_failed", "pass_interrupted", "cancellation_children_unreaped", "stop_outcome")
     try:
         lines = events.read_text(encoding="ascii", errors="ignore")[:4096].splitlines()
-        stage = ""
+        stage = failure = ""
         for event in lines:
             if event == "fixture: entry_started":
                 stage = "entry_started"
@@ -395,15 +423,12 @@ if events.is_file():
                 value = event[len("poll-supervisor: "):]
                 if value == "helper_started":
                     stage = "helper_started"
-                for prefix in known:
-                    if value.startswith(prefix):
-                        stage = prefix.removesuffix("=")
-                        break
-                else:
-                    continue
-                break
-        if stage:
-            code += "_event_" + stage
+                elif value in failures:
+                    failure = value
+                elif value == "stopped" and not stage:
+                    stage = value
+        if failure or stage:
+            code += "_event_" + (failure or stage)
     except OSError:
         pass
 print(code, exit_code)

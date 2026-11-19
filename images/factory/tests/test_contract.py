@@ -5,12 +5,15 @@ import io
 import json
 import os
 import ctypes
+import base64
 from contextlib import contextmanager
 from pathlib import Path
 import re
 import select
 import signal
+import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -19,11 +22,10 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+FIXTURE_LAUNCH = [str(ROOT / "test-local.sh")]
 
-# This isolated test runner adopts escaped fake grandchildren. The kernel
-# child table, rather than a /proc snapshot, is the final cleanup barrier.
-if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
-    raise OSError(ctypes.get_errno(), "test subreaper unavailable")
+# Only the dedicated fake-owner process becomes a subreaper. The runner can
+# create unrelated siblings at any point without making them fake descendants.
 
 
 def ownership_operation(method):
@@ -42,18 +44,13 @@ class FakeOwnership:
         self.root_fd = os.pidfd_open(process.pid)
         try:
             self.exclusive = exclusive
-            direct = self.children(os.getpid()) if exclusive else set()
-            for pid in direct - {process.pid}:
-                # Earlier shell fixtures can leave already-dead adopted children.
-                # Reap those without signalling them; a live sibling is unsafe.
-                try:
-                    os.waitpid(pid, os.WNOHANG)
-                except ChildProcessError:
-                    pass
+            self.drained = False
+            self.completion_failed = False
             direct = self.children(os.getpid()) if exclusive else set()
             if exclusive and direct != {process.pid}:
-                raise AssertionError(f"fake test runner has other direct children: {direct}, expected {process.pid}")
+                raise AssertionError(f"fake owner has other direct children: {direct}, expected {process.pid}")
             self.fds = {}
+            self.seen_pids = {process.pid}
             # A signaler may have copied one of these descriptors. Keep every
             # captured pidfd open until the watcher and cleanup have finished.
             self.retired_fds = []
@@ -84,7 +81,7 @@ class FakeOwnership:
     @staticmethod
     def parent_of(pid):
         try:
-            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+            fields = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b") ", 1)[1].split()
             return int(fields[1])
         except (FileNotFoundError, ProcessLookupError, IndexError, ValueError):
             return None
@@ -125,6 +122,7 @@ class FakeOwnership:
                     with self.lock:
                         if pid not in self.fds:
                             self.fds[pid] = fd
+                            self.seen_pids.add(pid)
                             fd = None
                 finally:
                     if fd is not None:
@@ -144,6 +142,27 @@ class FakeOwnership:
             if self.thread.is_alive():
                 raise AssertionError("fake ownership watcher did not stop")
         self.capture()
+
+    @ownership_operation
+    def confirm_completion(self):
+        """Reap exited adopted children; only ECHILD proves the fake tree ended."""
+        if self.completion_failed:
+            return False
+        if self.drained:
+            return True
+        if not self.exclusive or self.process.returncode is None:
+            raise AssertionError("fake root must exit before completion proof")
+        self.capture()
+        while True:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                self.drained = True
+                return True
+            if pid == 0:
+                self.completion_failed = True
+                return False
+            self.seen_pids.add(pid)
 
     @staticmethod
     def send(fd, signum):
@@ -190,7 +209,7 @@ class FakeOwnership:
         while time.monotonic() < deadline:
             self.capture()
             # After an ancestor exits, its children become our direct children
-            # because this test runner is a subreaper. The exclusive-child
+            # because this dedicated owner is a subreaper. The exclusive-child
             # invariant makes newly adopted children attributable to this fake.
             for pid in self.children(os.getpid()) - {self.process.pid}:
                 with self.lock:
@@ -213,6 +232,7 @@ class FakeOwnership:
                         os.close(fd)
                     else:
                         self.fds[pid] = fd
+                        self.seen_pids.add(pid)
             with self.lock:
                 fds = list(self.fds.values())
             for fd in fds:
@@ -220,13 +240,14 @@ class FakeOwnership:
             if not select.select([self.root_fd], [], [], 0)[0] and time.monotonic() - started >= 1:
                 self.send(self.root_fd, signal.SIGKILL)
             if not root_reaped and select.select([self.root_fd], [], [], 0)[0]:
-                self.process.communicate(timeout=0.5)
+                self.process.wait(timeout=0.5)
                 root_reaped = True
             if root_reaped:
                 while True:
                     try:
                         pid, _ = os.waitpid(-1, os.WNOHANG)
                     except ChildProcessError:
+                        self.drained = True
                         return
                     if pid == 0:
                         break
@@ -241,7 +262,7 @@ class FakeOwnership:
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             if select.select([self.root_fd], [], [], 0)[0] and self.process.returncode is None:
-                self.process.communicate(timeout=0.5)
+                self.process.wait(timeout=0.5)
             for pid in self.children(os.getpid()) - {self.process.pid}:
                 try:
                     fd = os.pidfd_open(pid)
@@ -249,6 +270,7 @@ class FakeOwnership:
                     continue
                 try:
                     if self.parent_of(pid) == os.getpid():
+                        self.seen_pids.add(pid)
                         self.send(fd, signal.SIGKILL)
                 finally:
                     os.close(fd)
@@ -257,6 +279,7 @@ class FakeOwnership:
                     try:
                         pid, _ = os.waitpid(-1, os.WNOHANG)
                     except ChildProcessError:
+                        self.drained = True
                         return
                     if pid == 0:
                         break
@@ -265,6 +288,8 @@ class FakeOwnership:
 
     @ownership_operation
     def close(self):
+        if self.exclusive and not self.drained:
+            raise AssertionError("fake ownership cannot close before kernel child drain")
         self.done.set()
         if self.thread is not None:
             self.thread.join(timeout=1)
@@ -285,10 +310,17 @@ def cleanup_fake(process):
         try:
             owner.terminate()
             try:
-                process.communicate(timeout=3)
+                if isinstance(process, RemoteFakeProcess) and process.completion_failed:
+                    # A forced tree must never become caller-facing success.
+                    owner.request("communicate", timeout=4, timeout_arg=3)
+                else:
+                    process.communicate(timeout=3)
             except subprocess.TimeoutExpired:
                 owner.send(owner.root_fd, signal.SIGKILL)
-                process.communicate(timeout=3)
+                if isinstance(process, RemoteFakeProcess) and process.completion_failed:
+                    owner.request("communicate", timeout=4, timeout_arg=3)
+                else:
+                    process.communicate(timeout=3)
         except BaseException:
             if owner.exclusive:
                 owner.force_reap()
@@ -297,11 +329,16 @@ def cleanup_fake(process):
         try:
             owner.close_watch()
         finally:
-            owner.close()
+            try:
+                owner.close()
+            finally:
+                if isinstance(owner, RemoteFakeOwner):
+                    owner.finish()
 
 
-def launch_owned_fake(argv, **kwargs):
-    """Keep the new child before exec until exclusive pidfd ownership exists."""
+def _launch_in_owner(argv, kwargs):
+    """Keep the new child before exec until this process owns its pidfd."""
+    inject_owner_failure = kwargs.pop("_owner_fail", False)
     reader, writer = os.pipe()
     code = ('import os,sys\n'
             'fd=int(sys.argv[1])\n'
@@ -317,7 +354,11 @@ def launch_owned_fake(argv, **kwargs):
             pass_fds=(reader,), **kwargs)
         closing, reader = reader, None
         os.close(closing)
-        owner = FakeOwnership(process, exclusive=True)
+        if inject_owner_failure:
+            with patch.object(FakeOwnership, "__init__", side_effect=OSError("injected pidfd failure")):
+                owner = FakeOwnership(process, exclusive=True)
+        else:
+            owner = FakeOwnership(process, exclusive=True)
         process.fake_owner = owner
         os.write(writer, b"G")
         closing, writer = writer, None
@@ -342,6 +383,402 @@ def launch_owned_fake(argv, **kwargs):
         raise
     finally:
         for fd in (reader, writer):
+            if fd is not None:
+                os.close(fd)
+
+
+def _wire_value(value):
+    if isinstance(value, bytes):
+        return {"bytes": base64.b64encode(value).decode("ascii")}
+    if isinstance(value, tuple):
+        return [_wire_value(item) for item in value]
+    if isinstance(value, list):
+        return [_wire_value(item) for item in value]
+    if isinstance(value, dict):
+        if any(isinstance(key, bytes) for key in value):
+            return {"__afk_pairs__": [[_wire_value(key), _wire_value(item)]
+                                      for key, item in value.items()]}
+        return {key: _wire_value(item) for key, item in value.items()}
+    if isinstance(value, os.PathLike):
+        return _wire_value(os.fspath(value))
+    return value
+
+
+def _unwire_value(value):
+    if isinstance(value, dict):
+        if set(value) == {"bytes"}:
+            return base64.b64decode(value["bytes"], validate=True)
+        if set(value) == {"__afk_pairs__"}:
+            return {_unwire_value(key): _unwire_value(item)
+                    for key, item in value["__afk_pairs__"]}
+        return {key: _unwire_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_unwire_value(item) for item in value]
+    return value
+
+
+def _wire_message(channel, payload):
+    body = json.dumps(_wire_value(payload), ensure_ascii=True).encode("ascii")
+    if len(body) > 16 * 1024 * 1024:
+        raise AssertionError("fake owner control message too large")
+    packet = struct.pack("!I", len(body)) + body
+    deadline = time.monotonic() + 5
+    while packet:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("fake owner control write timed out")
+        poller = select.poll()
+        poller.register(channel.write_fd, select.POLLOUT | select.POLLHUP | select.POLLERR)
+        if not poller.poll(max(1, int(remaining * 1000))):
+            raise TimeoutError("fake owner control write timed out")
+        written = os.write(channel.write_fd, packet[:4096])
+        packet = packet[written:]
+
+
+def _read_message(channel, deadline):
+    def exact(length):
+        chunks = []
+        while length:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("fake owner control timed out")
+            poller = select.poll()
+            poller.register(channel.read_fd, select.POLLIN | select.POLLHUP | select.POLLERR)
+            if not poller.poll(max(1, int(remaining * 1000))):
+                raise TimeoutError("fake owner control timed out")
+            chunk = os.read(channel.read_fd, length)
+            if not chunk:
+                raise EOFError("fake owner control EOF")
+            chunks.append(chunk)
+            length -= len(chunk)
+        return b"".join(chunks)
+    size = struct.unpack("!I", exact(4))[0]
+    if size > 16 * 1024 * 1024:
+        raise ValueError("malformed fake owner response length")
+    return _unwire_value(json.loads(exact(size).decode("ascii")))
+
+
+class OwnerChannel:
+    def __init__(self, read_fd, write_fd):
+        self.read_fd = read_fd
+        self.write_fd = write_fd
+
+    def close(self):
+        for fd in (self.read_fd, self.write_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+class RemoteFakeOwner:
+    """Bounded channel to the process whose only child tree is this fake."""
+
+    exclusive = True
+
+    def __init__(self, channel, process):
+        self.channel = channel
+        self.process = process
+        self.drained = False
+        self.closed = False
+        self.root_fd = None  # The real pidfd stays in the owner process.
+        self.operation_lock = threading.RLock()
+        self.fake_process = None
+        self.seen_pids = set()
+        self.last_child_table = None
+
+    @ownership_operation
+    def request(self, op, timeout=8, **fields):
+        if self.closed:
+            raise AssertionError("fake owner channel already closed")
+        if timeout < 0 or timeout > 15:
+            raise ValueError("fake owner request bound exceeded")
+        try:
+            _wire_message(self.channel, dict(op=op, **fields))
+            response = _read_message(self.channel, time.monotonic() + timeout + 1)
+        except BaseException:
+            self.abandon()
+            raise
+        if not isinstance(response, dict) or response.get("op") != op or type(response.get("ok")) is not bool:
+            self.abandon()
+            raise ValueError("malformed fake owner response")
+        if not response["ok"]:
+            kind = response.get("type")
+            message = response.get("error", "fake owner error")
+            if kind == "TimeoutExpired":
+                raise subprocess.TimeoutExpired(self.process.pid, fields.get("timeout"))
+            if kind == "OSError":
+                raise OSError(message)
+            raise AssertionError(message)
+        return response.get("result")
+
+    def abandon(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.channel.close()
+        try:
+            self.process.wait(timeout=8)
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError("fake owner did not retire after control failure") from error
+
+    def terminate(self):
+        result = self.request("terminate", timeout=5)
+        self.fake_process.returncode = result["returncode"]
+        self.seen_pids.update(result["seen_pids"])
+        self.last_child_table = result["child_table"]
+        self.drained = True
+
+    def force_reap(self):
+        result = self.request("force_reap", timeout=4)
+        self.fake_process.returncode = result["returncode"]
+        self.seen_pids.update(result["seen_pids"])
+        self.last_child_table = result["child_table"]
+        self.drained = True
+
+    def close_watch(self):
+        self.request("close_watch", timeout=3)
+
+    def close(self):
+        self.request("close", timeout=3)
+
+    def finish(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.channel.close()
+        try:
+            self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError("fake owner process did not exit") from error
+        if self.process.returncode != 0:
+            raise AssertionError(f"fake owner exited {self.process.returncode}")
+
+    def send_root(self, signum):
+        self.request("send_root", signum=signum)
+
+    def capture(self):
+        return self.request("capture")
+
+    def child_table(self):
+        return self.request("child_table")
+
+    def signal_descendants(self, signum):
+        return self.request("signal_descendants", signum=signum)
+
+
+class RemoteFakeProcess:
+    def __init__(self, owner, pid, argv, text):
+        self.fake_owner = owner
+        self.pid = pid
+        self.args = argv
+        self.text_mode = text
+        self.returncode = None
+        self.output = None
+        self.error = None
+        self.completion_failed = False
+        self.completion_proved = False
+        self.output_collected = False
+
+    def _status(self, result):
+        self.returncode = result["returncode"]
+        return self.returncode
+
+    def poll(self):
+        if self.fake_owner.closed:
+            return self.returncode
+        return self._status(self.fake_owner.request("poll"))
+
+    def wait(self, timeout=None):
+        if self.completion_failed:
+            raise AssertionError("fake tree did not complete")
+        if self.fake_owner.closed:
+            if not self.completion_proved:
+                raise AssertionError("fake tree completion unavailable after owner failure")
+            return self.returncode
+        bound = 8 if timeout is None else timeout
+        result = self.fake_owner.request("wait", timeout=bound + 1, timeout_arg=bound)
+        if not isinstance(result, dict) or type(result.get("completed")) is not bool or type(result.get("returncode")) is not int:
+            self.fake_owner.abandon()
+            raise ValueError("malformed fake completion response")
+        self._status(result)
+        if not result["completed"]:
+            self.completion_failed = True
+            raise AssertionError("fake tree did not complete")
+        self.completion_proved = True
+        return self.returncode
+
+    def send_signal(self, signum):
+        if self.fake_owner.closed and self.returncode is not None:
+            return
+        self.fake_owner.send_root(signum)
+
+    def terminate(self):
+        self.send_signal(signal.SIGTERM)
+
+    def kill(self):
+        self.send_signal(signal.SIGKILL)
+
+    def communicate(self, timeout=None):
+        if self.completion_failed:
+            raise AssertionError("fake tree did not complete")
+        if self.fake_owner.closed:
+            if not self.completion_proved or not self.output_collected:
+                raise AssertionError("fake output unavailable after owner failure")
+            return self.output, self.error
+        bound = 8 if timeout is None else timeout
+        result = self.fake_owner.request("communicate", timeout=bound + 1, timeout_arg=bound)
+        if not isinstance(result, dict) or type(result.get("completed")) is not bool or type(result.get("returncode")) is not int:
+            self.fake_owner.abandon()
+            raise ValueError("malformed fake completion response")
+        self._status(result)
+        if not result["completed"]:
+            self.completion_failed = True
+            raise AssertionError("fake tree did not complete")
+        if "output" not in result or "error" not in result:
+            self.fake_owner.abandon()
+            raise ValueError("malformed fake output response")
+        self.completion_proved = True
+        self.output, self.error = result["output"], result["error"]
+        self.output_collected = True
+        return self.output, self.error
+
+
+def _fake_owner_main(read_fd, write_fd):
+    channel = OwnerChannel(read_fd, write_fd)
+    fake = None
+    owner = None
+    clean = False
+    try:
+        if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+            raise OSError("test pidfd ownership unavailable")
+        if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "test subreaper unavailable")
+        def interrupted(_signum, _frame):
+            raise InterruptedError("fake owner interrupted")
+        signal.signal(signal.SIGTERM, interrupted)
+        signal.signal(signal.SIGINT, interrupted)
+        launch = _read_message(channel, time.monotonic() + 5)
+        if launch.get("op") != "launch":
+            raise ValueError("malformed fake owner launch")
+        fake = _launch_in_owner(launch["argv"], launch["kwargs"])
+        owner = fake.fake_owner
+        _wire_message(channel, dict(op="launch", ok=True, result={"pid": fake.pid}))
+        while True:
+            request = _read_message(channel, time.monotonic() + 120)
+            op = request.get("op")
+            try:
+                if op == "fault_eof":
+                    return
+                if op == "fault_malformed":
+                    os.write(channel.write_fd, struct.pack("!I", 1) + b"{")
+                    return
+                if op == "poll":
+                    result = {"returncode": fake.poll()}
+                elif op == "wait":
+                    root_status = fake.wait(timeout=request["timeout_arg"])
+                    completed = owner.confirm_completion()
+                    if not completed:
+                        owner.force_reap()
+                    result = {"returncode": root_status, "completed": completed}
+                elif op == "communicate":
+                    output, error = fake.communicate(timeout=request["timeout_arg"])
+                    completed = owner.confirm_completion()
+                    if not completed:
+                        owner.force_reap()
+                    result = {"returncode": fake.returncode, "completed": completed}
+                    if completed:
+                        result.update(output=output, error=error)
+                elif op == "send_root":
+                    owner.send(owner.root_fd, request["signum"])
+                    result = None
+                elif op == "capture":
+                    owner.capture()
+                    with owner.lock:
+                        result = {str(pid): [os.fstat(held).st_dev, os.fstat(held).st_ino]
+                                  for pid, held in owner.fds.items()}
+                elif op == "child_table":
+                    result = sorted(FakeOwnership.children(os.getpid()))
+                elif op == "signal_descendants":
+                    owner.capture()
+                    with owner.lock:
+                        pairs = list(owner.fds.items())
+                    for _, held in pairs:
+                        owner.send(held, request["signum"])
+                    result = [pid for pid, _ in pairs]
+                elif op == "terminate":
+                    owner.terminate()
+                    result = {"returncode": fake.returncode, "seen_pids": sorted(owner.seen_pids),
+                              "child_table": sorted(FakeOwnership.children(os.getpid()))}
+                elif op == "force_reap":
+                    owner.force_reap()
+                    result = {"returncode": fake.returncode, "seen_pids": sorted(owner.seen_pids),
+                              "child_table": sorted(FakeOwnership.children(os.getpid()))}
+                elif op == "close_watch":
+                    owner.close_watch()
+                    result = None
+                elif op == "close":
+                    owner.close()
+                    clean = True
+                    result = None
+                else:
+                    raise ValueError("unknown fake owner operation")
+                _wire_message(channel, dict(op=op, ok=True, result=result))
+                if op == "close":
+                    return
+            except BaseException as error:
+                if isinstance(error, (InterruptedError, KeyboardInterrupt)):
+                    raise
+                _wire_message(channel, dict(op=op, ok=False, type=type(error).__name__, error=str(error)))
+    except BaseException as error:
+        try:
+            _wire_message(channel, dict(op="launch", ok=False, type=type(error).__name__, error=str(error)))
+        except (OSError, EOFError):
+            pass
+        raise
+    finally:
+        if owner is not None and not clean:
+            try:
+                if not owner.drained:
+                    owner.force_reap()
+                owner.close_watch()
+                owner.close()
+            except BaseException:
+                pass
+        channel.close()
+
+
+def launch_owned_fake(argv, **kwargs):
+    """Start a childless dedicated owner, then launch the fake inside it."""
+    request_read, request_write = os.pipe()
+    reply_read, reply_write = os.pipe()
+    parent = OwnerChannel(reply_read, request_write)
+    controller = None
+    try:
+        controller = subprocess.Popen(
+            [sys.executable, "-I", __file__, "--fake-owner", str(request_read), str(reply_write)],
+            pass_fds=(request_read, reply_write), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        os.close(request_read)
+        request_read = None
+        os.close(reply_write)
+        reply_write = None
+        _wire_message(parent, dict(op="launch", argv=argv, kwargs=kwargs))
+        response = _read_message(parent, time.monotonic() + 5)
+        if not isinstance(response, dict) or response.get("op") != "launch" or not response.get("ok"):
+            message = response.get("error", "malformed fake owner launch response") if isinstance(response, dict) else "malformed fake owner launch response"
+            raise OSError(message)
+        owner = RemoteFakeOwner(parent, controller)
+        fake = RemoteFakeProcess(owner, response["result"]["pid"], argv, kwargs.get("text", False))
+        owner.fake_process = fake
+        return fake
+    except BaseException:
+        parent.close()
+        if controller is not None:
+            controller.wait(timeout=5)
+        raise
+    finally:
+        for fd in (request_read, reply_write):
             if fd is not None:
                 os.close(fd)
 
@@ -668,6 +1105,182 @@ class PostPrFixTests(unittest.TestCase):
     def fixture(self):
         return (ROOT / "test-local.sh").read_text()
 
+    def test_high_descriptor_launch_and_owned_drain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = self.run_modified_supervisor(
+                directory,
+                'trap "exit 0" TERM\nprintf "ready\\n" > "$TEST_LOG"\n'
+                'sleep 30 & wait\n',
+                'log("helper_started")',
+                'high_fds = [os.open(os.devnull, os.O_RDONLY) for _ in range(1030)]\n'
+                '    log("helper_started")')
+            with managed_fake(process):
+                self.wait_for(Path(directory) / "events")
+                process.send_signal(signal.SIGTERM)
+                _, error = process.communicate(timeout=6)
+                self.assertEqual(process.returncode, 0, error)
+                self.assertNotIn("launch_failed", error)
+                self.assertNotIn("cancellation_children_unreaped", error)
+                self.assertEqual(FakeOwnership.children(os.getpid()),
+                                 {process.fake_owner.process.pid})
+
+    def test_nonascii_proc_name_is_selected_as_owned_child(self):
+        spec = importlib.util.spec_from_file_location("poll_supervisor", ROOT / "poll-supervisor.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        code = ('import ctypes,signal,time\n'
+                'ctypes.CDLL(None).prctl(15, b"\\xff", 0, 0, 0)\n'
+                'signal.signal(signal.SIGTERM, lambda *_: exit(0))\n'
+                'print("ready", flush=True)\n'
+                'while True: time.sleep(1)\n')
+        child = subprocess.Popen(["/usr/bin/python3", "-I", "-c", code],
+                                 stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "ready")
+            self.assertEqual(module.Supervisor.parent_of(child.pid), os.getpid())
+            self.assertEqual(FakeOwnership.children(os.getpid()), {child.pid})
+            attempted, successful = module.Supervisor().signal_owned(signal.SIGTERM)
+            self.assertEqual((attempted, successful), (1, 1))
+            self.assertEqual(child.wait(timeout=2), 0)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=2)
+            child.stdout.close()
+
+    def test_non_utf8_fake_descendant_drains_before_output_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            child_code = ('import ctypes,sys,time\n'
+                          'ctypes.CDLL(None).prctl(15, b"\\xff", 0, 0, 0)\n'
+                          'open(sys.argv[1], "w").write("ready")\n'
+                          'while True: time.sleep(1)\n')
+            root_code = ('import os,signal,subprocess,sys,time\n'
+                         'signal.signal(signal.SIGTERM, lambda *_: os._exit(0))\n'
+                         'child = subprocess.Popen(["/usr/bin/python3", "-I", "-c", '
+                         'sys.argv[2], sys.argv[3]])\n'
+                         'deadline = time.monotonic() + 2\n'
+                         'while not os.path.exists(sys.argv[3]) and time.monotonic() < deadline: '
+                         'time.sleep(0.01)\n'
+                         'open(sys.argv[1], "w").write(str(child.pid))\n'
+                         'while True: time.sleep(1)\n')
+            root = launch_owned_fake(
+                ["/usr/bin/python3", "-I", "-c", root_code,
+                 str(temp / "child_pid"), child_code, str(temp / "child_ready")],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            owner = root.fake_owner
+            root_probe = os.pidfd_open(root.pid)
+            child_probe = None
+            try:
+                self.wait_for(temp / "child_pid")
+                child_pid = int((temp / "child_pid").read_text())
+                child_probe = os.pidfd_open(child_pid)
+                self.wait_for(temp / "child_ready")
+                self.assertIn(b"\xff", Path(f"/proc/{child_pid}/stat").read_bytes())
+                self.assertEqual(FakeOwnership.parent_of(child_pid), root.pid)
+                captured = owner.capture()
+                self.assertIn(str(child_pid), captured)
+                self.assertEqual(captured[str(child_pid)],
+                                 [os.fstat(child_probe).st_dev, os.fstat(child_probe).st_ino])
+                original_communicate = root.communicate
+
+                def collect_after_drain(*args, **kwargs):
+                    self.assertTrue(owner.drained, "output collected before kernel child drain")
+                    self.assertEqual(owner.child_table(), [])
+                    self.assertTrue(select.select([child_probe], [], [], 0)[0])
+                    return original_communicate(*args, **kwargs)
+
+                with patch.object(root, "communicate", side_effect=collect_after_drain):
+                    cleanup_fake(root)
+                self.assertEqual(root.returncode, 0)
+                self.assertEqual(root.poll(), 0)
+                self.assertTrue(owner.closed)
+                self.assertEqual(owner.process.returncode, 0)
+                self.assertTrue(select.select([root_probe], [], [], 0)[0])
+            finally:
+                if not owner.closed:
+                    if child_probe is not None:
+                        FakeOwnership.send(child_probe, signal.SIGKILL)
+                    FakeOwnership.send(root_probe, signal.SIGKILL)
+                    cleanup_fake(root)
+                if child_probe is not None:
+                    os.close(child_probe)
+                os.close(root_probe)
+
+    def test_term_once_for_retained_identity_and_new_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            script = temp / "timer.py"
+            script.write_text(
+                'import os,signal,subprocess,time\n'
+                'deadline = None\n'
+                'def term(*_):\n'
+                '    global deadline\n'
+                '    with open(os.environ["TEST_TERMS"], "a") as out: out.write("T")\n'
+                '    subprocess.Popen(["/usr/bin/sleep", "0.2"])\n'
+                '    deadline = time.monotonic() + 0.35\n'
+                'signal.signal(signal.SIGTERM, term)\n'
+                'open(os.environ["TEST_LOG"], "w").write("ready")\n'
+                'while deadline is None or time.monotonic() < deadline: time.sleep(0.02)\n')
+            process = self.launch_supervisor(directory,
+                'exec /usr/bin/python3 -I "$TEST_SCRIPT"\n', cadence="86400",
+                extras=dict(TEST_SCRIPT=str(script), TEST_TERMS=str(temp / "terms")))
+            with managed_fake(process):
+                self.wait_for(temp / "events")
+                process.send_signal(signal.SIGTERM)
+                _, error = process.communicate(timeout=6)
+                self.assertEqual(process.returncode, 0, error)
+                self.assertEqual((temp / "terms").read_text(), "T")
+                self.assertNotIn("cancellation_escalated", error)
+                self.assertEqual(FakeOwnership.children(os.getpid()),
+                                 {process.fake_owner.process.pid})
+
+    def test_inherited_pipe_is_drained_before_output_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = ('import os,subprocess,time\n'
+                      'subprocess.Popen(["/usr/bin/sleep", "30"])\n'
+                      'open(os.environ["TEST_LOG"], "w").write("ready")\n'
+                      'while not os.path.exists(os.environ["TEST_RELEASE"]): time.sleep(0.01)\n')
+            process = launch_owned_fake(["/usr/bin/python3", "-I", "-c", script],
+                                        env=dict(os.environ, TEST_LOG=str(Path(directory) / "ready"),
+                                                 TEST_RELEASE=str(Path(directory) / "release")),
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            owner = process.fake_owner
+            with managed_fake(process):
+                root_fd = os.pidfd_open(process.pid)
+                try:
+                    self.wait_for(Path(directory) / "ready")
+                    self.assertIsNone(process.poll())  # The producer still awaits release.
+                    (Path(directory) / "release").write_text("go")
+                    self.assertTrue(select.select([root_fd], [], [], 3)[0],
+                                    "fake root did not exit after release")
+                    self.assertEqual(process.poll(), 0)  # Root exit is intermediate.
+                    with self.assertRaisesRegex(AssertionError, "fake tree did not complete"):
+                        process.wait(timeout=2)
+                    self.assertEqual(process.returncode, 0)
+                    self.assertTrue(process.completion_failed)
+                finally:
+                    os.close(root_fd)
+            self.assertTrue(owner.drained)
+            self.assertEqual(FakeOwnership.children(os.getpid()), set())
+            self.assertTrue(owner.closed)
+            self.assertEqual(owner.process.returncode, 0)
+
+    def test_missing_readiness_retires_fake_from_first_allocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = 'import signal,time\nsignal.signal(signal.SIGTERM, lambda *_: exit(0))\nwhile True: time.sleep(1)\n'
+            process = launch_owned_fake(["/usr/bin/python3", "-I", "-c", script],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            owner = process.fake_owner
+            with self.assertRaises(AssertionError):
+                with managed_fake(process):
+                    self.wait_for(Path(directory) / "missing", timeout=0.2)
+            self.assertTrue(owner.drained)
+            self.assertIsNotNone(process.returncode)
+            self.assertEqual(FakeOwnership.children(os.getpid()), set())
+            self.assertTrue(owner.closed)
+            self.assertEqual(owner.process.returncode, 0)
+
     def test_production_signal_scan_does_not_follow_recycled_descendant_pair(self):
         spec = importlib.util.spec_from_file_location("poll_supervisor", ROOT / "poll-supervisor.py")
         module = importlib.util.module_from_spec(spec)
@@ -709,10 +1322,9 @@ class PostPrFixTests(unittest.TestCase):
             if opened[fd] == 2000 and phase[0] == "foreign":
                 raise ProcessLookupError  # Original parent has exited.
 
-        def pidfd_ready(readers, _writers, _errors, _timeout):
-            fd = readers[0]
+        def pidfd_ready(fd, _timeout):
             os.fstat(fd)
-            return ([fd], [], []) if opened[fd] == 2000 and phase[0] == "foreign" else ([], [], [])
+            return opened[fd] == 2000 and phase[0] == "foreign"
 
         def first_scan():
             try:
@@ -723,7 +1335,7 @@ class PostPrFixTests(unittest.TestCase):
         with patch.object(module.Supervisor, "children_of", side_effect=children), \
              patch.object(module.Supervisor, "parent_of", side_effect=parent_of), \
              patch.object(module.os, "pidfd_open", side_effect=open_pidfd), \
-             patch.object(module.select, "select", side_effect=pidfd_ready), \
+             patch.object(module, "readable", side_effect=pidfd_ready), \
              patch.object(module.signal, "pidfd_send_signal", side_effect=send):
             worker = threading.Thread(target=first_scan)
             worker.start()
@@ -770,10 +1382,9 @@ class PostPrFixTests(unittest.TestCase):
             opened[fd] = pid
             return fd
 
-        def pidfd_ready(readers, _writers, _errors, _timeout):
-            fd = readers[0]
+        def pidfd_ready(fd, _timeout):
             os.fstat(fd)
-            return ([fd], [], []) if opened[fd] == 2000 and exited[0] else ([], [], [])
+            return opened[fd] == 2000 and exited[0]
 
         def send(fd, _signum):
             os.fstat(fd)
@@ -784,7 +1395,7 @@ class PostPrFixTests(unittest.TestCase):
         with patch.object(module.Supervisor, "children_of", side_effect=children), \
              patch.object(module.Supervisor, "parent_of", side_effect=parent_of), \
              patch.object(module.os, "pidfd_open", side_effect=open_pidfd), \
-             patch.object(module.select, "select", side_effect=pidfd_ready), \
+             patch.object(module, "readable", side_effect=pidfd_ready), \
              patch.object(module.signal, "pidfd_send_signal", side_effect=send):
             self.assertEqual(supervisor.signal_owned(signal.SIGTERM), (1, 0))
         self.assertTrue(exited[0])
@@ -819,26 +1430,24 @@ class PostPrFixTests(unittest.TestCase):
                     self.assertFalse(out.exists())
 
     def test_curl_disables_synthetic_config_first(self):
-        line = next(line for line in self.fixture().splitlines()
-                    if 'env -i PATH="$PATH" curl ' in line)
-        command = line.strip().removeprefix("if ! ").removesuffix("; then")
+        fixture = self.fixture()
+        command = "/usr/bin/env -i" + fixture.split("if ! /usr/bin/env -i", 1)[1].split("; then", 1)[0]
+        self.assertIn("/usr/bin/curl --disable", command)
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)
-            (temp / ".curlrc").write_text("trace = synthetic-marker\n")
-            fake = temp / "curl"
-            fake.write_text('#!/usr/bin/env bash\n'
-                            'printf "%s\\n" "$1" > "' + str(temp / "first") + '"\n'
-                            'if [[ "$1" != --disable && -f "' + str(temp / ".curlrc") +
-                            '" ]]; then touch "' + str(temp / "config-read") + '"; fi\n')
-            fake.chmod(0o755)
+            source = temp / "source"
+            source.write_bytes(b"synthetic archive")
+            marker = temp / "config-read"
+            (temp / ".curlrc").write_text(f'trace = "{marker}"\n')
             stage = temp / "stage"
             (stage / "inputs").mkdir(parents=True)
-            script = (f'PATH="{temp}:$PATH"; stage="{stage}"; '
-                      f'asset=archive; url=unused; {command}')
-            result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+            script = 'stage="$1"; asset=archive; url="$2"; ' + command
+            result = subprocess.run(["/bin/bash", "-c", script, "bash", str(stage), source.as_uri()],
+                                    env=dict(os.environ, HOME=str(temp), CURL_HOME=str(temp),
+                                             XDG_CONFIG_HOME=str(temp)), capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual((temp / "first").read_text().strip(), "--disable")
-            self.assertFalse((temp / "config-read").exists())
+            self.assertEqual((stage / "inputs/archive.part").read_bytes(), b"synthetic archive")
+            self.assertFalse(marker.exists())
 
     def test_stop_requires_running_then_clean_exit(self):
         stop = "stop_state() {\n" + self.fixture().split("stop_state() {\n", 1)[1].split(
@@ -877,7 +1486,7 @@ class PostPrFixTests(unittest.TestCase):
                 with self.subTest(label=label):
                     report = temp / f"{label}.json"
                     result = subprocess.run(
-                        ["bash", str(ROOT / "test-local.sh"), "--report", str(report),
+                        FIXTURE_LAUNCH + ["--report", str(report),
                          "--afk-repo", str(source)], text=True, capture_output=True, timeout=5)
                     self.assertEqual(result.returncode, expected_status)
                     self.assertEqual((result.stdout, result.stderr), ("", ""))
@@ -888,17 +1497,86 @@ class PostPrFixTests(unittest.TestCase):
                     self.assertEqual(report.stat().st_mode & 0o777, 0o600)
                     original = report.read_bytes()
                     repeated = subprocess.run(
-                        ["bash", str(ROOT / "test-local.sh"), "--report", str(report),
+                        FIXTURE_LAUNCH + ["--report", str(report),
                          "--afk-repo", str(source)], capture_output=True, timeout=5)
                     self.assertEqual(repeated.returncode, 2)
                     self.assertEqual(report.read_bytes(), original)
             link = temp / "linked.json"
             link.symlink_to(report)
             refused = subprocess.run(
-                ["bash", str(ROOT / "test-local.sh"), "--report", str(link),
+                FIXTURE_LAUNCH + ["--report", str(link),
                  "--afk-repo", str(repo)], capture_output=True, timeout=5)
             self.assertEqual(refused.returncode, 2)
             self.assertTrue(link.is_symlink())
+
+    def test_fixture_clean_entry_and_real_export_reject_hostile_environment(self):
+        fixture = self.fixture()
+        self.assertTrue(os.access(FIXTURE_LAUNCH[0], os.X_OK))
+        self.assertTrue(fixture.startswith("#!/usr/bin/env -S -i PATH=/usr/bin:/bin "))
+        source_git = "source_git() {\n" + fixture.split("source_git() {\n", 1)[1].split("\n[[", 1)[0]
+        export = "source_git -c tar.umask=0022 archive --format=tar " + fixture.split(
+            "source_git -c tar.umask=0022 archive --format=tar ", 1)[1].split("\n# Docker COPY", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            hook = temp / "hook"
+            bash_marker, tar_marker, path_marker = (temp / name for name in
+                                                     ("bash-ran", "tar-ran", "path-ran"))
+            hook.write_text(f'printf ran > "{bash_marker}"\n')
+            tar_hook = temp / "tar-hook"
+            tar_hook.write_text(f'#!/bin/sh\nprintf ran > "{tar_marker}"\n')
+            tar_hook.chmod(0o755)
+            fakebin = temp / "fakebin"
+            fakebin.mkdir()
+            for name in ("git", "tar", "curl", "docker", "env"):
+                fake = fakebin / name
+                fake.write_text(f'#!/bin/sh\nprintf ran > "{path_marker}"\nexit 89\n')
+                fake.chmod(0o755)
+            hostile = dict(os.environ, BASH_ENV=str(hook),
+                           TAR_OPTIONS=f"--checkpoint=1 --checkpoint-action=exec={tar_hook}",
+                           PATH=str(fakebin), GIT_TRACE=str(temp / "git-trace"),
+                           GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath",
+                           GIT_CONFIG_VALUE_0=str(fakebin),
+                           **{"BASH_FUNC_tar%%": f'() {{ printf ran > "{path_marker}"; }}'})
+            repo = temp / "repo"
+            repo.mkdir()
+            subprocess.run(["/usr/bin/git", "init", "-q", str(repo)], check=True,
+                           env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"})
+            for name, data, mode in (("bin/agent-flow-kit", b"#!/bin/sh\nexit 0\n", 0o755),
+                                     ("lib/module", b"payload\n", 0o644),
+                                     ("adapters/runtime-scope.sh", b"#!/bin/sh\n", 0o755)):
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                path.chmod(mode)
+            git_env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"}
+            subprocess.run(["/usr/bin/git", "-C", str(repo), "add", "."], check=True, env=git_env)
+            subprocess.run(["/usr/bin/git", "-C", str(repo), "-c", "user.name=Fixture",
+                            "-c", "user.email=fixture@example.invalid", "commit", "-qm", "pinned"],
+                           check=True, env=git_env)
+            report = temp / "report.json"
+            result = subprocess.run(FIXTURE_LAUNCH + ["--afk-repo", str(repo), "--report", str(report)],
+                                    env=hostile, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(json.loads(report.read_text())["status"], "FAIL")
+            self.assertFalse(any(p.exists() for p in (bash_marker, tar_marker, path_marker)))
+            stage = temp / "stage"
+            (stage / "inputs/afk").mkdir(parents=True)
+            script = ('set -euo pipefail\nsource_repo="$1"; stage="$2"; commit=HEAD\n'
+                      + source_git + '\n' + export)
+            # Run the actual production export/tar statement under TAR_OPTIONS.
+            # It clears both subprocess environments even when the parent is dirty.
+            result = subprocess.run(["/bin/bash", "-c", script, "bash", str(repo), str(stage)],
+                                    env=dict(hostile, BASH_ENV=""), capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((stage / "inputs/afk/bin/agent-flow-kit").read_bytes(), b"#!/bin/sh\nexit 0\n")
+            self.assertEqual((stage / "inputs/afk/lib/module").read_bytes(), b"payload\n")
+            self.assertTrue(os.access(stage / "inputs/afk/bin/agent-flow-kit", os.X_OK))
+            self.assertFalse(any(p.exists() for p in (bash_marker, tar_marker, path_marker)))
+            failed = subprocess.run(["/bin/bash", "-c", script.replace("commit=HEAD", "commit=missing"),
+                                     "bash", str(repo), str(stage)], env=dict(hostile, BASH_ENV=""),
+                                    capture_output=True, timeout=5)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertFalse(any(p.exists() for p in (bash_marker, tar_marker, path_marker)))
 
     def test_fixture_report_records_cleanup_failure_after_successful_checks(self):
         fixture = self.fixture()
@@ -1062,8 +1740,8 @@ client_cfg=$(mktemp -d)
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
-    def wait_for(self, path):
-        deadline = time.monotonic() + 5
+    def wait_for(self, path, timeout=5):
+        deadline = time.monotonic() + timeout
         while not path.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         self.assertTrue(path.exists(), str(path))
@@ -1264,90 +1942,182 @@ client_cfg=$(mktemp -d)
                     'open(sys.argv[1], "w").write(" ".join(str(p.pid) for p in children))\n'
                     'signal.signal(signal.SIGTERM, lambda *_: None)\n'
                     'while True: time.sleep(1)\n')
-            root = subprocess.Popen(["/usr/bin/python3", "-I", "-c", code,
-                                     str(children_file)])
-            owner = FakeOwnership(root, exclusive=True)
-            root.fake_owner = owner
-            foreign_fd = os.pidfd_open(os.getpid())
-            victim_probe = None
-            release = threading.Event()
-            worker = None
+            root = launch_owned_fake(["/usr/bin/python3", "-I", "-c", code,
+                                      str(children_file)])
+            owner = root.fake_owner
+            sibling = subprocess.Popen(["/usr/bin/sleep", "30"])
+            sibling_fd = os.pidfd_open(sibling.pid)
+            probes = []
             try:
                 self.wait_for(children_file)
-                victim, survivor = map(int, children_file.read_text().split())
-                deadline = time.monotonic() + 2
-                while time.monotonic() < deadline:
-                    owner.capture()
-                    with owner.lock:
-                        if {victim, survivor} <= owner.fds.keys():
-                            victim_fd = owner.fds[victim]
-                            break
-                    time.sleep(0.01)
-                else:
-                    self.fail("fake children were not captured")
-                victim_probe = os.dup(victim_fd)
-                entered = threading.Event()
-                observed = threading.Event()
-                recycled = threading.Event()
-                foreign_attempt = threading.Event()
-                original_close = os.close
-                original_capture = owner.capture
-                original_send = owner.send
-
-                def close_with_reuse(fd):
-                    original_close(fd)
-                    if fd == victim_fd and threading.current_thread() is owner.thread:
-                        # A premature close is immediately recycled onto a
-                        # controlled outside pidfd before cleanup resumes.
-                        os.dup2(foreign_fd, victim_fd)
-                        recycled.set()
-
-                def observed_capture():
-                    dead_before = bool(select.select([victim_probe], [], [], 0)[0])
-                    original_capture()
-                    if dead_before and threading.current_thread() is owner.thread:
-                        observed.set()
-
-                def guarded_send(fd, signum):
-                    if fd == victim_fd and signum == signal.SIGKILL and not entered.is_set():
-                        entered.set()
-                        if not release.wait(2):
-                            raise AssertionError("paused fake cleanup did not resume")
-                    if os.fstat(fd).st_ino == os.fstat(foreign_fd).st_ino:
-                        foreign_attempt.set()
-                        return
-                    original_send(fd, signum)
-
+                child_pids = [int(pid) for pid in children_file.read_text().split()]
+                probes = [os.pidfd_open(pid) for pid in child_pids]
+                captured = owner.capture()
+                self.assertTrue(all(str(pid) in captured for pid in child_pids))
+                for pid, fd in zip(child_pids, probes):
+                    self.assertEqual(captured[str(pid)],
+                                     [os.fstat(fd).st_dev, os.fstat(fd).st_ino])
                 errors = []
-                def run_cleanup():
+                def signal_children():
                     try:
-                        owner.terminate_exclusive()
+                        owner.signal_descendants(signal.SIGKILL)
                     except BaseException as error:
                         errors.append(error)
-
-                with patch.object(os, "close", side_effect=close_with_reuse), \
-                     patch.object(owner, "capture", side_effect=observed_capture), \
-                     patch.object(owner, "send", side_effect=guarded_send):
-                    worker = threading.Thread(target=run_cleanup)
-                    worker.start()
-                    self.assertTrue(entered.wait(2), "cleanup never reached captured pidfd")
-                    original_send(victim_probe, signal.SIGKILL)
-                    self.assertTrue(observed.wait(2), "watcher did not inspect dead child")
-                    release.set()
-                    worker.join(timeout=4)
-                    self.assertFalse(worker.is_alive(), "fake cleanup did not finish")
-                self.assertFalse(recycled.is_set(), "watcher closed a descriptor in use")
-                self.assertFalse(foreign_attempt.is_set(), "cleanup targeted outside pidfd")
+                worker = threading.Thread(target=signal_children)
+                worker.start()
+                owner.capture()
+                worker.join(timeout=3)
+                self.assertFalse(worker.is_alive())
                 self.assertEqual(errors, [])
-                self.assertEqual(FakeOwnership.children(os.getpid()), set())
-            finally:
-                release.set()
-                if worker is not None:
-                    worker.join(timeout=4)
-                if victim_probe is not None:
-                    os.close(victim_probe)
-                os.close(foreign_fd)
                 cleanup_fake(root)
+                self.assertTrue(owner.drained)
+                self.assertEqual(owner.last_child_table, [])
+                self.assertTrue(all(select.select([fd], [], [], 0)[0] for fd in probes))
+                self.assertFalse(select.select([sibling_fd], [], [], 0)[0])
+                self.assertIsNone(sibling.poll())
+                self.assertNotIn(sibling.pid, owner.seen_pids)
+            finally:
+                if not owner.closed:
+                    cleanup_fake(root)
+                signal.pidfd_send_signal(sibling_fd, signal.SIGKILL)
+                sibling.wait(timeout=3)
+                os.close(sibling_fd)
+                for fd in probes:
+                    os.close(fd)
+
+    def test_fake_owner_control_faults_retire_only_its_tree(self):
+        for fault in ("fault_eof", "fault_malformed", "caller_interrupt", "owner_interrupt"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                child_file = Path(directory) / "child"
+                code = ('import os,subprocess,sys,time\n'
+                        'child=subprocess.Popen(["/usr/bin/sleep","30"], start_new_session=True)\n'
+                        'open(sys.argv[1],"w").write(str(child.pid))\n'
+                        'while True: time.sleep(1)\n')
+                root = launch_owned_fake(["/usr/bin/python3", "-I", "-c", code,
+                                          str(child_file)])
+                owner = root.fake_owner
+                sibling = subprocess.Popen(["/usr/bin/sleep", "30"])
+                sibling_fd = os.pidfd_open(sibling.pid)
+                root_fd = os.pidfd_open(root.pid)
+                child_fd = None
+                try:
+                    self.wait_for(child_file)
+                    child_pid = int(child_file.read_text())
+                    child_fd = os.pidfd_open(child_pid)
+                    self.assertIn(str(child_pid), owner.capture())
+                    if fault == "caller_interrupt":
+                        with patch.object(sys.modules[__name__], "_read_message",
+                                          side_effect=KeyboardInterrupt):
+                            with self.assertRaises(KeyboardInterrupt):
+                                owner.capture()
+                    elif fault == "owner_interrupt":
+                        owner_fd = os.pidfd_open(owner.process.pid)
+                        try:
+                            signal.pidfd_send_signal(owner_fd, signal.SIGTERM)
+                        finally:
+                            os.close(owner_fd)
+                        with self.assertRaises((OSError, EOFError, ValueError, TimeoutError)):
+                            owner.capture()
+                    else:
+                        with self.assertRaises((EOFError, ValueError)):
+                            owner.request(fault)
+                    self.assertTrue(owner.closed)
+                    self.assertIsNotNone(owner.process.returncode)
+                    self.assertTrue(select.select([root_fd], [], [], 0)[0])
+                    self.assertTrue(select.select([child_fd], [], [], 0)[0])
+                    self.assertFalse(select.select([sibling_fd], [], [], 0)[0])
+                    self.assertIsNone(sibling.poll())
+                finally:
+                    if not owner.closed:
+                        cleanup_fake(root)
+                    signal.pidfd_send_signal(sibling_fd, signal.SIGKILL)
+                    sibling.wait(timeout=3)
+                    for fd in (child_fd, root_fd, sibling_fd):
+                        if fd is not None:
+                            os.close(fd)
+
+    def test_closed_stream_descendant_blocks_completed_output_and_spares_late_sibling(self):
+        for fault in (False, True):
+            with self.subTest(control_fault=fault), tempfile.TemporaryDirectory() as directory:
+                child_file = Path(directory) / "child"
+                code = ('import os,subprocess,sys\n'
+                        'child=subprocess.Popen(["/usr/bin/sleep", "30"], '
+                        'stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, '
+                        'stderr=subprocess.DEVNULL, start_new_session=True)\n'
+                        'open(sys.argv[1], "w").write(str(child.pid))\n'
+                        'print("root_done", flush=True)\n')
+                fake = launch_owned_fake(["/usr/bin/python3", "-I", "-c", code,
+                                          str(child_file)], stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE)
+                owner = fake.fake_owner
+                sibling = subprocess.Popen(["/usr/bin/sleep", "30"])
+                sibling_fd = os.pidfd_open(sibling.pid)
+                child_fd = None
+                try:
+                    self.wait_for(child_file)
+                    child_pid = int(child_file.read_text())
+                    child_fd = os.pidfd_open(child_pid)
+                    deadline = time.monotonic() + 2
+                    while fake.poll() is None and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertEqual(fake.poll(), 0)  # The root really exited zero.
+                    self.assertIn(child_pid, owner.child_table())
+                    self.assertFalse(select.select([child_fd], [], [], 0)[0])
+                    if fault:
+                        with self.assertRaises(EOFError):
+                            owner.request("fault_eof")
+                        self.assertTrue(owner.closed)
+                        with self.assertRaisesRegex(AssertionError, "completion unavailable"):
+                            fake.wait(timeout=3)
+                        with self.assertRaisesRegex(AssertionError, "output unavailable"):
+                            fake.communicate(timeout=3)
+                    else:
+                        with self.assertRaisesRegex(AssertionError, "fake tree did not complete"):
+                            fake.communicate(timeout=3)
+                        self.assertEqual(fake.returncode, 0)
+                        self.assertIsNone(fake.output)
+                        self.assertIsNone(fake.error)
+                        self.assertTrue(fake.completion_failed)
+                        with self.assertRaisesRegex(AssertionError, "fake tree did not complete"):
+                            fake.communicate(timeout=3)
+                        cleanup_fake(fake)
+                        self.assertTrue(owner.drained)
+                        self.assertEqual(owner.last_child_table, [])
+                    self.assertTrue(select.select([child_fd], [], [], 0)[0])
+                    self.assertFalse(Path(f"/proc/{child_pid}").exists())
+                    self.assertFalse(select.select([sibling_fd], [], [], 0)[0])
+                    self.assertIsNone(sibling.poll())
+                    self.assertNotIn(sibling.pid, owner.seen_pids)
+                    self.assertEqual(owner.process.returncode, 0)
+                finally:
+                    if not owner.closed:
+                        cleanup_fake(fake)
+                    signal.pidfd_send_signal(sibling_fd, signal.SIGKILL)
+                    sibling.wait(timeout=3)
+                    os.close(sibling_fd)
+                    if child_fd is not None:
+                        os.close(child_fd)
+
+    def test_fake_owner_high_fd_channel_and_byte_metadata(self):
+        held = []
+        try:
+            held = [os.open(os.devnull, os.O_RDONLY) for _ in range(1030)]
+            env = dict(os.environb)
+            env[b"OWNER_BYTE"] = b"\xff"
+            script = ('import os\n'
+                      'assert os.environb[b"OWNER_BYTE"] == b"\\xff"\n'
+                      'print("byte-ok")\n')
+            fake = launch_owned_fake([b"/usr/bin/python3", b"-I", b"-c", script.encode()],
+                                     env=env, stdout=subprocess.PIPE)
+            self.assertGreater(fake.fake_owner.channel.read_fd, 1024)
+            with managed_fake(fake):
+                output, _ = fake.communicate(timeout=3)
+                self.assertEqual(fake.returncode, 0)
+                self.assertEqual(output, b"byte-ok\n")
+            self.assertEqual(fake.fake_owner.last_child_table, [])
+        finally:
+            for fd in held:
+                os.close(fd)
 
     def test_fake_cleanup_retires_captured_child_after_supervisor_exit(self):
         root = subprocess.Popen(["/usr/bin/true"])
@@ -1378,72 +2148,48 @@ client_cfg=$(mktemp -d)
                              'signal.signal(signal.SIGTERM, stop)\n'
                              'open(os.environ["TEST_READY"], "w").close()\n'
                              'while True: time.sleep(1)\n')
-                root = subprocess.Popen(["/usr/bin/python3", "-I", "-c", root_code],
-                                        env=dict(os.environ, TEST_CHILD=str(temp / "child"),
-                                                 TEST_READY=str(temp / "ready")))
-                owner = FakeOwnership(root, exclusive=True)
-                root.fake_owner = owner
-                root_fd = os.dup(owner.root_fd)
-                self.wait_for(temp / "ready")
-                retained = []
-                original_send = owner.send
-                def retain_and_send(fd, signum):
-                    if signum == signal.SIGKILL and fd != owner.root_fd:
-                        retained.append(os.dup(fd))
-                    original_send(fd, signum)
+                root = launch_owned_fake(["/usr/bin/python3", "-I", "-c", root_code],
+                                         env=dict(os.environ, TEST_CHILD=str(temp / "child"),
+                                                  TEST_READY=str(temp / "ready")))
+                owner = root.fake_owner
+                sibling = subprocess.Popen(["/usr/bin/sleep", "30"])
+                sibling_fd = os.pidfd_open(sibling.pid)
                 try:
-                    with patch.object(owner, "send", side_effect=retain_and_send):
-                        if failure == "watch_close":
-                            original_close = owner.close_watch
-                            def failed_close():
-                                original_close()
-                                raise AssertionError("synthetic watcher close failure")
-                            with patch.object(owner, "close_watch", side_effect=failed_close):
-                                with self.assertRaisesRegex(AssertionError, "watcher close failure"):
-                                    cleanup_fake(root)
-                        elif failure == "terminate":
-                            def failed_terminate():
-                                owner.send(owner.root_fd, signal.SIGTERM)
-                                self.wait_for(temp / "child")
-                                raise AssertionError("synthetic termination failure")
-                            with patch.object(owner, "terminate", side_effect=failed_terminate):
-                                with self.assertRaisesRegex(AssertionError, "termination failure"):
-                                    cleanup_fake(root)
-                        else:
-                            cleanup_fake(root)
+                    self.wait_for(temp / "ready")
+                    if failure == "watch_close":
+                        original_close = owner.close_watch
+                        def failed_close():
+                            original_close()
+                            raise AssertionError("synthetic watcher close failure")
+                        with patch.object(owner, "close_watch", side_effect=failed_close):
+                            with self.assertRaisesRegex(AssertionError, "watcher close failure"):
+                                cleanup_fake(root)
+                    elif failure == "terminate":
+                        def failed_terminate():
+                            owner.send_root(signal.SIGTERM)
+                            self.wait_for(temp / "child")
+                            raise AssertionError("synthetic termination failure")
+                        with patch.object(owner, "terminate", side_effect=failed_terminate):
+                            with self.assertRaisesRegex(AssertionError, "termination failure"):
+                                cleanup_fake(root)
+                    else:
+                        cleanup_fake(root)
                     self.assertTrue((temp / "child").exists())
-                    self.assertTrue(retained, "TERM-spawned child was not captured")
-                    self.assertTrue(all(select.select([fd], [], [], 0)[0] for fd in retained))
+                    child_pid = int((temp / "child").read_text())
+                    self.assertIn(child_pid, owner.seen_pids)
+                    self.assertFalse(Path(f"/proc/{child_pid}").exists())
+                    self.assertTrue(owner.drained)
+                    self.assertEqual(owner.last_child_table, [])
                     self.assertIsNotNone(root.returncode)
+                    self.assertFalse(select.select([sibling_fd], [], [], 0)[0])
+                    self.assertIsNone(sibling.poll())
+                    self.assertNotIn(sibling.pid, owner.seen_pids)
                 finally:
-                    for fd in retained:
-                        original_send(fd, signal.SIGKILL)
-                        os.close(fd)
-                    if root.poll() is None:
-                        original_send(root_fd, signal.SIGKILL)
-                        root.wait(timeout=3)
-                    os.close(root_fd)
-                    # If the assertion fails, retire any newly adopted fake
-                    # child by verified direct parentage and a kernel wait.
-                    deadline = time.monotonic() + 2
-                    while time.monotonic() < deadline:
-                        try:
-                            pid, _ = os.waitpid(-1, os.WNOHANG)
-                        except ChildProcessError:
-                            break
-                        if pid:
-                            continue
-                        for candidate in owner.children(os.getpid()):
-                            try:
-                                fd = os.pidfd_open(candidate)
-                            except ProcessLookupError:
-                                continue
-                            try:
-                                if owner.parent_of(candidate) == os.getpid():
-                                    original_send(fd, signal.SIGKILL)
-                            finally:
-                                os.close(fd)
-                        time.sleep(0.01)
+                    if not owner.closed:
+                        cleanup_fake(root)
+                    signal.pidfd_send_signal(sibling_fd, signal.SIGKILL)
+                    sibling.wait(timeout=3)
+                    os.close(sibling_fd)
 
     def test_startup_failure_is_bounded_nonzero(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1464,7 +2210,9 @@ client_cfg=$(mktemp -d)
         paths = (
             ('grant_close', 'closing, writer = writer, None\n            os.close(closing)',
              'closing, writer = writer, None\n            os.close(closing)\n            ' + waits_for_fake),
-            ('select', 'ready, _, _ = select.select([startup_reader], [], [], STARTUP_GRACE)', waits_for_fake),
+            ('poll', 'if not readable(startup_reader, STARTUP_GRACE):',
+             'if True:\n                ' + waits_for_fake.replace('\n            ', '\n                ') +
+             '\n            if False:'),
             ('read', 'self.startup = os.read(startup_reader, 1)', waits_for_fake),
             ('pipe_close', 'closing, startup_reader = startup_reader, None\n            os.close(closing)', waits_for_fake),
         )
@@ -1481,13 +2229,15 @@ client_cfg=$(mktemp -d)
                     self.assertTrue((Path(directory) / "events").exists(), name)
                     self.assertIn("launch_failed=OSError", error)
                     self.assertNotIn("pass_exit=", error)
-                    self.assertEqual(FakeOwnership.children(os.getpid()), set(), name)
+                    self.assertEqual(FakeOwnership.children(os.getpid()),
+                                     {process.fake_owner.process.pid}, name)
 
     def test_fake_owner_constructor_failure_retires_ungranted_child(self):
         with tempfile.TemporaryDirectory() as directory:
-            with patch.object(FakeOwnership, "__init__", side_effect=OSError("injected pidfd failure")):
-                with self.assertRaisesRegex(OSError, "pidfd failure"):
-                    self.launch_supervisor(directory, 'touch "$TEST_LOG"\n')
+            with self.assertRaisesRegex(OSError, "pidfd failure"):
+                launch_owned_fake(["/usr/bin/python3", "-I", "-c",
+                                   'open("' + str(Path(directory) / "events") + '", "w").close()'],
+                                  _owner_fail=True)
             self.assertFalse((Path(directory) / "events").exists())
             self.assertEqual(FakeOwnership.children(os.getpid()), set())
 
@@ -1505,7 +2255,10 @@ client_cfg=$(mktemp -d)
                                         start_new_session=True)
             with managed_fake(process):
                 self.wait_for(child)
-                self.assertEqual(process.wait(timeout=3), 0)
+                self.assertEqual(process.poll(), 0)
+                with self.assertRaisesRegex(AssertionError, "fake tree did not complete"):
+                    process.wait(timeout=3)
+                self.assertEqual(process.returncode, 0)
             self.assertEqual(FakeOwnership.children(os.getpid()), set())
 
     def test_disappeared_escalation_targets_do_not_claim_kill(self):
@@ -1591,14 +2344,66 @@ client_cfg=$(mktemp -d)
             process = launch_owned_fake([str(script), "paperclip-poll"], start_new_session=True)
             with managed_fake(process):
                 self.wait_for(temp / "fake-running")
-                process.fake_owner.capture()
-                with process.fake_owner.lock:
-                    children = list(process.fake_owner.fds.values())
-                self.assertTrue(children)
-                process.fake_owner.send(process.fake_owner.root_fd, signal.SIGTERM)
-                for fd in children:
-                    process.fake_owner.send(fd, signal.SIGTERM)
+                deadline = time.monotonic() + 2
+                while True:
+                    children = process.fake_owner.capture()
+                    if len(children) >= 2 or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.01)
+                self.assertGreaterEqual(len(children), 2)
+                self.assertGreaterEqual(len(process.fake_owner.signal_descendants(signal.SIGTERM)), 2)
                 self.wait_for(temp / "fake-reaped")
+                # Child-first delivery can finish the shell's outer wait
+                # before the parent sees TERM. The marker must still exist.
+                self.assertIsNone(process.poll())
+                process.send_signal(signal.SIGTERM)
+                (temp / "fake-observed").touch()
+                self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_fake_cli_initial_child_command_127_cannot_publish_reap(self):
+        fixture = self.fixture()
+        fake = fixture.split("<<'FAKE'\n", 1)[1].split("\nFAKE", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            script = temp / "fake"
+            script.write_text("#!/usr/bin/env bash\n" + fake.replace("/scratch/", str(temp) + "/"))
+            script.chmod(0o755)
+            sleep_shim = temp / "sleep"
+            sleep_shim.write_text("#!/usr/bin/env bash\n"
+                                  "[[ \"$1\" != 300 ]] || exit 127\n"
+                                  "exec /bin/sleep \"$@\"\n")
+            sleep_shim.chmod(0o755)
+            env = dict(os.environ, PATH=f"{temp}:{os.environ['PATH']}")
+            process = launch_owned_fake([str(script), "paperclip-poll"], env=env,
+                                        start_new_session=True)
+            with managed_fake(process):
+                self.assertNotEqual(process.wait(timeout=5), 0)
+                self.assertTrue((temp / "fake-child-started").is_file())
+                self.assertEqual((temp / "fake-child-status").read_text().strip(), "127")
+                self.assertFalse((temp / "fake-reaped").exists())
+                self.assertFalse((temp / "fake-observed").exists())
+
+    def test_fake_cli_child_can_exit_before_parent_term(self):
+        fixture = self.fixture()
+        fake = fixture.split("<<'FAKE'\n", 1)[1].split("\nFAKE", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            script = temp / "fake"
+            script.write_text("#!/usr/bin/env bash\n" + fake.replace("/scratch/", str(temp) + "/"))
+            script.chmod(0o755)
+            sleep_shim = temp / "sleep"
+            sleep_shim.write_text("#!/usr/bin/env bash\n"
+                                  "[[ \"$1\" != 300 ]] || exit 0\n"
+                                  "exec /bin/sleep \"$@\"\n")
+            sleep_shim.chmod(0o755)
+            env = dict(os.environ, PATH=f"{temp}:{os.environ['PATH']}")
+            process = launch_owned_fake([str(script), "paperclip-poll"], env=env,
+                                        start_new_session=True)
+            with managed_fake(process):
+                self.wait_for(temp / "fake-reaped")
+                self.assertEqual((temp / "fake-child-status").read_text().strip(), "0")
+                self.assertIsNone(process.poll())
+                process.send_signal(signal.SIGTERM)
                 (temp / "fake-observed").touch()
                 self.assertEqual(process.wait(timeout=5), 0)
 
@@ -1645,7 +2450,7 @@ client_cfg=$(mktemp -d)
                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             with managed_fake(process):
                 self.wait_for(scratch / "fake-running")
-                process.fake_owner.send(process.fake_owner.root_fd, signal.SIGTERM)
+                process.send_signal(signal.SIGTERM)
                 self.wait_for(scratch / "fake-reaped")
                 (scratch / "fake-observed").touch()
                 _, stderr = process.communicate(timeout=5)
@@ -1682,7 +2487,7 @@ client_cfg=$(mktemp -d)
         code = fixture.split('diagnostic=$(/usr/bin/python3 -I - "$smoke_state" "$stage/supervisor-events" <<\'PY\'\n', 1)[1].split("\nPY", 1)[0]
         with tempfile.TemporaryDirectory() as directory:
             events = Path(directory) / "events"
-            events.write_text("arbitrary secret text\npoll-supervisor: launch_failed=PermissionError\n")
+            events.write_text("arbitrary secret text\npoll-supervisor: launch_failed\n")
             state = json.dumps(dict(Running=False, Status="exited", ExitCode=1,
                                     Error="secret-docker-error"))
             result = subprocess.run(["/usr/bin/python3", "-I", "-c", code, state, str(events)],
@@ -1708,6 +2513,40 @@ client_cfg=$(mktemp -d)
                                      str(events)], capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout.strip(),
                              "container_exited_before_marker_event_invalid_configuration 2")
+            events.write_text("fixture: entry_started\npoll-supervisor: helper_started\n"
+                              "poll-supervisor: stop_outcome\n")
+            result = subprocess.run(["/usr/bin/python3", "-I", "-c", code,
+                                     json.dumps(dict(Running=False, Status="exited", ExitCode=1)),
+                                     str(events)], capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.strip(),
+                             "container_exited_before_marker_event_stop_outcome 1")
+
+    def test_supervisor_event_writer_parser_roundtrip(self):
+        fixture = self.fixture()
+        parser = fixture.split('diagnostic=$(/usr/bin/python3 -I - "$smoke_state" "$stage/supervisor-events" <<\'PY\'\n', 1)[1].split("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "supervisor-events"
+            helper = Path(directory) / "poll-supervisor.py"
+            helper.write_text((ROOT / "poll-supervisor.py").read_text().replace(
+                "/scratch/supervisor-events", str(events)))
+            spec = importlib.util.spec_from_file_location("fixture_supervisor", helper)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            state = json.dumps(dict(Running=False, Status="exited", ExitCode=1))
+            with patch.dict(os.environ, FACTORY_FIXTURE_DIAGNOSTICS="1"):
+                module.log("helper_started")
+                module.log("launch_failed=OSError")
+            self.assertEqual(events.read_text().splitlines(),
+                             ["poll-supervisor: helper_started", "poll-supervisor: launch_failed"])
+            result = subprocess.run(["/usr/bin/python3", "-I", "-c", parser, state, str(events)],
+                                    capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.strip(), "container_exited_before_marker_event_launch_failed 1")
+            with patch.dict(os.environ, FACTORY_FIXTURE_DIAGNOSTICS="1"):
+                module.log("stop_outcome=forced_or_unreaped")
+            self.assertEqual(events.read_text().splitlines()[-1], "poll-supervisor: stop_outcome")
+            result = subprocess.run(["/usr/bin/python3", "-I", "-c", parser, state, str(events)],
+                                    capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.strip(), "container_exited_before_marker_event_stop_outcome 1")
 
     def test_repeated_term_reaps_descendant(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1865,4 +2704,7 @@ client_cfg=$(mktemp -d)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if len(sys.argv) == 4 and sys.argv[1] == "--fake-owner":
+        _fake_owner_main(int(sys.argv[2]), int(sys.argv[3]))
+    else:
+        unittest.main()
