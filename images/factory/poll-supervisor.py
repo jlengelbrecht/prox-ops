@@ -58,6 +58,7 @@ class Supervisor:
         self.forced = False
         self.failed = False
         self.main_pid = None
+        self.main_reaped = False
         self.main_status = None
         self.main_signaled = False
         self.exec_observed = False
@@ -104,6 +105,7 @@ class Supervisor:
                     os._exit(126)
             allocated = True
             self.main_pid = pid
+            self.main_reaped = False
             self.main_status = None
             self.main_signaled = False
             self.exec_observed = False
@@ -196,7 +198,10 @@ class Supervisor:
                 _, status = os.waitpid(pid, 0)
             except InterruptedError:
                 continue
-            if pid == self.main_pid:
+            if pid == self.main_pid and not self.main_reaped:
+                # A later owned child may reuse the leader's numeric PID while
+                # this pass waits for the whole descendant tree to drain.
+                self.main_reaped = True
                 self.main_status = os.waitstatus_to_exitcode(status)
                 self.main_signaled = self.main_status < 0
                 if self.main_status < 0:

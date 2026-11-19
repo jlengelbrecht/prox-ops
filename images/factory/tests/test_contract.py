@@ -2401,6 +2401,96 @@ client_cfg=$(mktemp -d)
             current.terminate()
             current.wait(timeout=2)
 
+    def test_reaped_leader_pid_alias_preserves_original_pass_status(self):
+        spec = importlib.util.spec_from_file_location("poll_supervisor", ROOT / "poll-supervisor.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        real_waitid, real_waitpid = os.waitid, os.waitpid
+        for leader_exit, alias_exit in ((7, 0), (0, 9), (-signal.SIGTERM, 0)):
+            with self.subTest(leader_exit=leader_exit, alias_exit=alias_exit):
+                supervisor = module.Supervisor()
+                children = []
+
+                def start_child(exit_code):
+                    pid = os.fork()
+                    if pid == 0:
+                        if exit_code < 0:
+                            signal.signal(-exit_code, signal.SIG_DFL)
+                            os.kill(os.getpid(), -exit_code)
+                        os._exit(exit_code)
+                    fd = os.pidfd_open(pid)
+                    children.append((pid, fd))
+                    self.assertTrue(module.readable(fd, 2))
+                    return pid
+
+                try:
+                    leader = start_child(leader_exit)
+                    supervisor.main_pid = leader
+                    self.assertTrue(supervisor.reap())
+                    expected = (128 - leader_exit if leader_exit < 0 else leader_exit)
+                    self.assertEqual((supervisor.main_status, supervisor.main_signaled),
+                                     (expected, leader_exit < 0))
+
+                    alias = start_child(alias_exit)
+                    self.assertNotEqual(leader, alias)  # Distinct live task identities.
+
+                    def aliased_waitid(idtype, identifier, options):
+                        child = real_waitid(idtype, identifier, options)
+                        if idtype == os.P_ALL and child is not None:
+                            self.assertEqual(child.si_pid, alias)
+                            return type("AliasedChild", (), {"si_pid": leader})()
+                        return child
+
+                    def aliased_waitpid(pid, options):
+                        self.assertEqual(pid, leader)
+                        actual_pid, status = real_waitpid(alias, options)
+                        self.assertEqual(actual_pid, alias)
+                        return leader, status
+
+                    with patch.object(module.os, "waitid", side_effect=aliased_waitid), \
+                         patch.object(module.os, "waitpid", side_effect=aliased_waitpid):
+                        self.assertTrue(supervisor.reap())
+                    self.assertEqual((supervisor.main_status, supervisor.main_signaled),
+                                     (expected, leader_exit < 0))
+                    self.assertFalse(supervisor.forced)
+                    self.assertFalse(supervisor.failed)
+                    supervisor.drain_pass(report=False)
+                    self.assertIsNone(supervisor.main_pid)
+                finally:
+                    for pid, fd in children:
+                        try:
+                            signal.pidfd_send_signal(fd, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        try:
+                            real_waitpid(pid, 0)
+                        except ChildProcessError:
+                            pass
+                        os.close(fd)
+
+    def test_new_launch_accepts_its_own_leader_after_prior_reap(self):
+        spec = importlib.util.spec_from_file_location("poll_supervisor", ROOT / "poll-supervisor.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        supervisor = module.Supervisor()
+        with tempfile.TemporaryDirectory() as directory:
+            cli = Path(directory) / "fake-cli"
+            cli.write_text("#!/bin/sh\nexit 3\n")
+            cli.chmod(0o755)
+            with patch.object(module, "CLI", str(cli)):
+                try:
+                    for _ in range(2):
+                        self.assertTrue(supervisor.launch())
+                        supervisor.drain_pass(report=True)
+                        self.assertEqual(supervisor.main_status, 3)
+                        self.assertTrue(supervisor.main_reaped)
+                        self.assertFalse(supervisor.failed)
+                        self.assertFalse(supervisor.forced)
+                finally:
+                    if supervisor.main_pid is not None:
+                        supervisor.stopping = True
+                        supervisor.drain_pass(report=False)
+
     def test_matching_reaped_identity_clears_normal_kill_record(self):
         spec = importlib.util.spec_from_file_location("poll_supervisor", ROOT / "poll-supervisor.py")
         module = importlib.util.module_from_spec(spec)
