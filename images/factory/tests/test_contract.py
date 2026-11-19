@@ -2319,6 +2319,40 @@ client_cfg=$(mktemp -d)
             finally:
                 cleanup_fake(process)
 
+    def test_parent_reaps_killed_descendant_before_own_kill(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            process = self.run_modified_supervisor(
+                directory,
+                'trap "" TERM\n'
+                '/usr/bin/sleep 30 &\n'
+                'child=$!\n'
+                'printf "%s\\n" "$child" > "$TEST_LOG"\n'
+                'wait "$child" || :\n'
+                'exit 0\n',
+                'self.kill_sent[parent] = os.dup(parent_fd)',
+                'self.kill_sent[parent] = os.dup(parent_fd)\n'
+                '                            if parent != self.main_pid:\n'
+                '                                with open(os.environ["TEST_ORDER"], "a") as trace:\n'
+                '                                    trace.write(str(parent) + "\\n")\n'
+                '                                time.sleep(0.2)', grace=0.0)
+            try:
+                self.wait_for(temp / "events")
+                child_pid = int((temp / "events").read_text().strip())
+                process.send_signal(signal.SIGTERM)
+                _, error = process.communicate(timeout=6)
+                self.assertEqual((temp / "order").read_text().splitlines(),
+                                 [str(child_pid)])
+                self.assertEqual(process.returncode, 1, error)
+                self.assertIn("stop_outcome=forced_or_unreaped", error)
+                self.assertIn("pass_exit=0", error)
+                self.assertIn("cancellation_drained=true", error)
+                state = subprocess.run(["ps", "-o", "stat=", "-p", str(child_pid)],
+                                       text=True, capture_output=True).stdout.strip()
+                self.assertTrue(not state or state.startswith("Z"), state)
+            finally:
+                cleanup_fake(process)
+
     def test_sleep_has_no_pass_status_and_handled_term_status_is_actual(self):
         with tempfile.TemporaryDirectory() as directory:
             temp = Path(directory)

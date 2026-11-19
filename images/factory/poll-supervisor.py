@@ -322,6 +322,12 @@ class Supervisor:
         finally:
             for fd in term_sent.values():
                 os.close(fd)
+            # A parent may reap a descendant after our KILL delivery. Its
+            # status is then unavailable here even after the child table
+            # drains, so a remaining retained identity cannot prove a
+            # nonforced stop.
+            if self.kill_sent:
+                self.failed = True
             for fd in self.kill_sent.values():
                 os.close(fd)
             self.kill_sent.clear()
