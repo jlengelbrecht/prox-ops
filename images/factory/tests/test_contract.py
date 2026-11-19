@@ -395,7 +395,7 @@ def _wire_value(value):
     if isinstance(value, list):
         return [_wire_value(item) for item in value]
     if isinstance(value, dict):
-        if any(isinstance(key, bytes) for key in value):
+        if any(isinstance(key, bytes) for key in value) or set(value) in ({"bytes"}, {"__afk_pairs__"}):
             return {"__afk_pairs__": [[_wire_value(key), _wire_value(item)]
                                       for key, item in value.items()]}
         return {key: _wire_value(item) for key, item in value.items()}
@@ -486,6 +486,7 @@ class RemoteFakeOwner:
         self.fake_process = None
         self.seen_pids = set()
         self.last_child_table = None
+        self.abandon_error = None
 
     @ownership_operation
     def request(self, op, timeout=8, **fields):
@@ -496,8 +497,8 @@ class RemoteFakeOwner:
         try:
             _wire_message(self.channel, dict(op=op, **fields))
             response = _read_message(self.channel, time.monotonic() + timeout + 1)
-        except BaseException:
-            self.abandon()
+        except BaseException as error:
+            self.abandon(interrupt=isinstance(error, (TimeoutError, KeyboardInterrupt, InterruptedError)))
             raise
         if not isinstance(response, dict) or response.get("op") != op or type(response.get("ok")) is not bool:
             self.abandon()
@@ -512,15 +513,31 @@ class RemoteFakeOwner:
             raise AssertionError(message)
         return response.get("result")
 
-    def abandon(self):
+    def abandon(self, interrupt=False):
         if self.closed:
             return
         self.closed = True
+        # Interrupt an active wait/capture in the dedicated owner before
+        # closing control. Its signal handler enters the bounded drain path.
+        if interrupt:
+            try:
+                fd = os.pidfd_open(self.process.pid)
+                try:
+                    signal.pidfd_send_signal(fd, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                finally:
+                    os.close(fd)
+            except OSError as error:
+                self.abandon_error = f"owner interruption unverified: {error}"
         self.channel.close()
         try:
             self.process.wait(timeout=8)
-        except subprocess.TimeoutExpired as error:
-            raise AssertionError("fake owner did not retire after control failure") from error
+        except subprocess.TimeoutExpired:
+            self.abandon_error = "fake owner did not retire after control failure"
+        else:
+            if self.process.returncode != 0:
+                self.abandon_error = f"fake owner drain unverified: exit {self.process.returncode}"
 
     def terminate(self):
         result = self.request("terminate", timeout=5)
@@ -649,12 +666,15 @@ def _fake_owner_main(read_fd, write_fd):
     fake = None
     owner = None
     clean = False
+    draining = False
     try:
         if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
             raise OSError("test pidfd ownership unavailable")
         if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
             raise OSError(ctypes.get_errno(), "test subreaper unavailable")
         def interrupted(_signum, _frame):
+            if draining:
+                return
             raise InterruptedError("fake owner interrupted")
         signal.signal(signal.SIGTERM, interrupted)
         signal.signal(signal.SIGINT, interrupted)
@@ -735,16 +755,15 @@ def _fake_owner_main(read_fd, write_fd):
             _wire_message(channel, dict(op="launch", ok=False, type=type(error).__name__, error=str(error)))
         except (OSError, EOFError):
             pass
-        raise
+        if not isinstance(error, (InterruptedError, KeyboardInterrupt)):
+            raise
     finally:
+        draining = True
         if owner is not None and not clean:
-            try:
-                if not owner.drained:
-                    owner.force_reap()
-                owner.close_watch()
-                owner.close()
-            except BaseException:
-                pass
+            if not owner.drained:
+                owner.force_reap()
+            owner.close_watch()
+            owner.close()
         channel.close()
 
 
@@ -1217,7 +1236,7 @@ class PostPrFixTests(unittest.TestCase):
                 'def term(*_):\n'
                 '    global deadline\n'
                 '    with open(os.environ["TEST_TERMS"], "a") as out: out.write("T")\n'
-                '    subprocess.Popen(["/usr/bin/sleep", "0.2"])\n'
+                '    subprocess.Popen(["/usr/bin/sleep", "30"])\n'
                 '    deadline = time.monotonic() + 0.35\n'
                 'signal.signal(signal.SIGTERM, term)\n'
                 'open(os.environ["TEST_LOG"], "w").write("ready")\n'
@@ -1347,9 +1366,9 @@ class PostPrFixTests(unittest.TestCase):
                 release.set()
                 worker.join(timeout=2)
             self.assertFalse(worker.is_alive())
-            self.assertEqual(result, [(1, 0)])
+            self.assertEqual(result, [(0, 0)])
             self.assertTrue(supervisor.stopping)
-            self.assertEqual(delivered, [(2000, signal.SIGTERM)])
+            self.assertEqual(delivered, [])
             self.assertNotIn(3000, opened.values())
 
             # Once the owned descendant is adopted, a fresh direct-child
@@ -1397,9 +1416,9 @@ class PostPrFixTests(unittest.TestCase):
              patch.object(module.os, "pidfd_open", side_effect=open_pidfd), \
              patch.object(module, "readable", side_effect=pidfd_ready), \
              patch.object(module.signal, "pidfd_send_signal", side_effect=send):
-            self.assertEqual(supervisor.signal_owned(signal.SIGTERM), (1, 0))
+            self.assertEqual(supervisor.signal_owned(signal.SIGTERM), (0, 0))
         self.assertTrue(exited[0])
-        self.assertEqual(delivered, [2000])
+        self.assertEqual(delivered, [])
 
     def test_planned_symlink_graph(self):
         spec = importlib.util.spec_from_file_location("safe_extract", ROOT / "safe-extract.py")
@@ -1939,7 +1958,9 @@ client_cfg=$(mktemp -d)
             children_file = Path(directory) / "children"
             code = ('import os, signal, subprocess, sys, time\n'
                     'children = [subprocess.Popen(["/usr/bin/sleep", "30"]) for _ in range(2)]\n'
-                    'open(sys.argv[1], "w").write(" ".join(str(p.pid) for p in children))\n'
+                    'with open(sys.argv[1] + ".tmp", "w") as out:\n'
+                    '    out.write(" ".join(str(p.pid) for p in children))\n'
+                    'os.replace(sys.argv[1] + ".tmp", sys.argv[1])\n'
                     'signal.signal(signal.SIGTERM, lambda *_: None)\n'
                     'while True: time.sleep(1)\n')
             root = launch_owned_fake(["/usr/bin/python3", "-I", "-c", code,
@@ -1951,6 +1972,8 @@ client_cfg=$(mktemp -d)
             try:
                 self.wait_for(children_file)
                 child_pids = [int(pid) for pid in children_file.read_text().split()]
+                self.assertEqual(len(child_pids), 2)
+                self.assertEqual(len(set(child_pids)), 2)
                 probes = [os.pidfd_open(pid) for pid in child_pids]
                 captured = owner.capture()
                 self.assertTrue(all(str(pid) in captured for pid in child_pids))
@@ -1986,7 +2009,7 @@ client_cfg=$(mktemp -d)
                     os.close(fd)
 
     def test_fake_owner_control_faults_retire_only_its_tree(self):
-        for fault in ("fault_eof", "fault_malformed", "caller_interrupt", "owner_interrupt"):
+        for fault in ("fault_eof", "fault_malformed", "caller_interrupt", "caller_wait_interrupt", "owner_interrupt"):
             with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
                 child_file = Path(directory) / "child"
                 code = ('import os,subprocess,sys,time\n'
@@ -2010,6 +2033,14 @@ client_cfg=$(mktemp -d)
                                           side_effect=KeyboardInterrupt):
                             with self.assertRaises(KeyboardInterrupt):
                                 owner.capture()
+                    elif fault == "caller_wait_interrupt":
+                        def interrupt_active_wait(channel, deadline):
+                            time.sleep(0.1)
+                            raise KeyboardInterrupt
+                        with patch.object(sys.modules[__name__], "_read_message",
+                                          side_effect=interrupt_active_wait):
+                            with self.assertRaises(KeyboardInterrupt):
+                                root.wait(timeout=5)
                     elif fault == "owner_interrupt":
                         owner_fd = os.pidfd_open(owner.process.pid)
                         try:
@@ -2023,6 +2054,7 @@ client_cfg=$(mktemp -d)
                             owner.request(fault)
                     self.assertTrue(owner.closed)
                     self.assertIsNotNone(owner.process.returncode)
+                    self.assertIsNone(owner.abandon_error)
                     self.assertTrue(select.select([root_fd], [], [], 0)[0])
                     self.assertTrue(select.select([child_fd], [], [], 0)[0])
                     self.assertFalse(select.select([sibling_fd], [], [], 0)[0])
@@ -2115,6 +2147,15 @@ client_cfg=$(mktemp -d)
                 self.assertEqual(fake.returncode, 0)
                 self.assertEqual(output, b"byte-ok\n")
             self.assertEqual(fake.fake_owner.last_child_table, [])
+            for ordinary in ({"bytes": "eA=="}, {"__afk_pairs__": [["a", 1]]}):
+                self.assertEqual(_unwire_value(_wire_value(ordinary)), ordinary)
+            env = dict(os.environ, OWNER_WIRE_TAG="eA==")
+            fake = launch_owned_fake(["/usr/bin/python3", "-I", "-c",
+                                      'import os; print(os.environ["OWNER_WIRE_TAG"])'],
+                                     env=env, stdout=subprocess.PIPE)
+            with managed_fake(fake):
+                output, _ = fake.communicate(timeout=3)
+                self.assertEqual(output, b"eA==\n")
         finally:
             for fd in held:
                 os.close(fd)
@@ -2266,8 +2307,8 @@ client_cfg=$(mktemp -d)
             temp = Path(directory)
             process = self.run_modified_supervisor(directory,
                 'touch "$TEST_LOG"\n/usr/bin/sleep 0.2\nexit 0\n',
-                'attempted, sent = self.signal_owned(signal.SIGKILL)',
-                'attempted, sent = (0, 0)', grace=0.0)
+                'self.signal_owned(signal.SIGKILL)',
+                'time.sleep(0.3); self.signal_owned(signal.SIGKILL)', grace=0.0)
             try:
                 self.wait_for(temp / "events")
                 process.send_signal(signal.SIGTERM)

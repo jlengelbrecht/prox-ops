@@ -62,6 +62,7 @@ class Supervisor:
         self.main_signaled = False
         self.exec_observed = False
         self.startup = None
+        self.kill_sent = {}
 
     def stop(self, _signum, _frame):
         self.stopping = True
@@ -181,6 +182,12 @@ class Supervisor:
                 self.main_signaled = self.main_status < 0
                 if self.main_status < 0:
                     self.main_status = 128 - self.main_status
+            held = self.kill_sent.pop(pid, None)
+            if held is not None:
+                os.close(held)
+                if os.waitstatus_to_exitcode(status) == -signal.SIGKILL and not self.forced:
+                    self.forced = True
+                    log("cancellation_escalated=kill")
 
     @staticmethod
     def children_of(pid):
@@ -252,11 +259,18 @@ class Supervisor:
                         os.close(term_sent.pop(parent))
                     held = None
                     try:
+                        if not live(parent_fd):
+                            continue  # An exited task cannot establish a forced stop.
                         if term_sent is not None:
                             held = os.dup(parent_fd)
                         attempted += 1
                         signal.pidfd_send_signal(parent_fd, signum)
                         successful += 1
+                        if signum == signal.SIGKILL:
+                            previous_kill = self.kill_sent.pop(parent, None)
+                            if previous_kill is not None:
+                                os.close(previous_kill)
+                            self.kill_sent[parent] = os.dup(parent_fd)
                         if term_sent is not None:
                             term_sent[parent] = held
                             held = None
@@ -297,10 +311,7 @@ class Supervisor:
                         if not identities_uncertain:
                             self.signal_owned(signal.SIGTERM, term_sent)
                     else:
-                        attempted, sent = self.signal_owned(signal.SIGKILL)
-                        if sent and not self.forced:
-                            self.forced = True
-                            log("cancellation_escalated=kill attempted=%d successful=%d" % (attempted, sent))
+                        self.signal_owned(signal.SIGKILL)
                         if kill_at is None:
                             kill_at = now
                         if now - kill_at >= REAP_GRACE:
@@ -311,6 +322,9 @@ class Supervisor:
         finally:
             for fd in term_sent.values():
                 os.close(fd)
+            for fd in self.kill_sent.values():
+                os.close(fd)
+            self.kill_sent.clear()
         if self.stopping:
             log("cancellation_drained=true")
         # EOF alone is ambiguous: SIGKILL before exec closes the pipe too.

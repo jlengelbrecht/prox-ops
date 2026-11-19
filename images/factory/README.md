@@ -166,9 +166,9 @@ wait on a child-held lock. Cancellation gives owned children
 three monotonic seconds for TERM. Each retained owned task gets TERM once
 during that grace while newly discovered or adopted children are still scanned;
 the helper then sends KILL to those still present and
-waits up to two more seconds for reaping. It reports a forced stop only when
-KILL delivery succeeded. A pass has no ordinary deadline. An uncertain or
-unreaped stop fails. This covers the wrapper's local descendant tree, including
+waits up to two more seconds for reaping. It reports a forced stop when an
+owned task sent KILL is reaped with a KILL exit status. A pass has no ordinary
+deadline. An uncertain or unreaped stop fails. This covers the wrapper's local descendant tree, including
 reparented children; jobs separately managed by Orca outside this tree are not
 owned by this helper. It does not prove application flush, persistence, recovery,
 or native worker fencing. It is **not** enabled by
