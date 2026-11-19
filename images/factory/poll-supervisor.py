@@ -170,24 +170,53 @@ class Supervisor:
         self.observe_exec()
         while True:
             try:
-                pid, status = os.waitpid(-1, os.WNOHANG)
+                # WNOWAIT keeps the exited child attached while its pidfd is
+                # opened. A numeric PID alone cannot identify a retained KILL.
+                child = os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)
             except ChildProcessError:
                 return True
             except InterruptedError:
                 continue
-            if pid == 0:
+            if child is None:
                 return False
+            pid = child.si_pid
+            identity = None
+            try:
+                identity = os.pidfd_open(pid)
+                reaped_identity = os.fstat(identity)
+            except OSError:
+                self.failed = True  # Never discard an uncertain KILL outcome.
+                reaped_identity = None
+            finally:
+                if identity is not None:
+                    os.close(identity)
+            try:
+                _, status = os.waitpid(pid, 0)
+            except InterruptedError:
+                continue
             if pid == self.main_pid:
                 self.main_status = os.waitstatus_to_exitcode(status)
                 self.main_signaled = self.main_status < 0
                 if self.main_status < 0:
                     self.main_status = 128 - self.main_status
-            held = self.kill_sent.pop(pid, None)
-            if held is not None:
-                os.close(held)
-                if os.waitstatus_to_exitcode(status) == -signal.SIGKILL and not self.forced:
-                    self.forced = True
-                    log("cancellation_escalated=kill")
+            records = self.kill_sent.get(pid, [])
+            for held in records[:]:
+                try:
+                    stat = os.fstat(held)
+                except OSError:
+                    self.failed = True
+                    continue
+                if (reaped_identity is not None and
+                        (stat.st_dev, stat.st_ino) ==
+                        (reaped_identity.st_dev, reaped_identity.st_ino)):
+                    records.remove(held)
+                    os.close(held)
+                    if not records:
+                        del self.kill_sent[pid]
+                    if os.waitstatus_to_exitcode(status) == -signal.SIGKILL and not self.forced:
+                        self.forced = True
+                        log("cancellation_escalated=kill")
+                    break
 
     @staticmethod
     def children_of(pid):
@@ -267,10 +296,11 @@ class Supervisor:
                         signal.pidfd_send_signal(parent_fd, signum)
                         successful += 1
                         if signum == signal.SIGKILL:
-                            previous_kill = self.kill_sent.pop(parent, None)
-                            if previous_kill is not None:
-                                os.close(previous_kill)
-                            self.kill_sent[parent] = os.dup(parent_fd)
+                            records = self.kill_sent.setdefault(parent, [])
+                            identity = os.fstat(parent_fd)
+                            if not any((os.fstat(fd).st_dev, os.fstat(fd).st_ino) ==
+                                       (identity.st_dev, identity.st_ino) for fd in records):
+                                records.append(os.dup(parent_fd))
                         if term_sent is not None:
                             term_sent[parent] = held
                             held = None
@@ -328,8 +358,9 @@ class Supervisor:
             # nonforced stop.
             if self.kill_sent:
                 self.failed = True
-            for fd in self.kill_sent.values():
-                os.close(fd)
+            for records in self.kill_sent.values():
+                for fd in records:
+                    os.close(fd)
             self.kill_sent.clear()
         if self.stopping:
             log("cancellation_drained=true")
