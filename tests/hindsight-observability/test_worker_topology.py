@@ -1,4 +1,4 @@
-"""Render checks for the dedicated Hindsight worker at zero replicas.
+"""Render checks for the HPA-owned dedicated Hindsight worker.
 
 Everything here is read from the pinned chart render, the Flux post-render
 patches and the committed manifests. Auth-file sharing between pods, the
@@ -29,9 +29,9 @@ OVERRIDES = {
     'HINDSIGHT_API_LLM_MAX_CONCURRENT': '1',
     'HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT': '1',
     'HINDSIGHT_API_DB_POOL_MIN_SIZE': '2',
-    'HINDSIGHT_API_DB_POOL_MAX_SIZE': '4',
-    'HINDSIGHT_API_WORKER_MAX_SLOTS': '2',
-    'HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS': '0',
+    'HINDSIGHT_API_DB_POOL_MAX_SIZE': '3',
+    'HINDSIGHT_API_WORKER_MAX_SLOTS': '3',
+    'HINDSIGHT_API_WORKER_CONSOLIDATION_RESERVED_SLOTS': '1',
     'HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP': 'false',
 }
 # Worker env the chart sets itself (worker.service.targetPort and the
@@ -60,7 +60,7 @@ CANDIDATE_API_POOL, CANDIDATE_REPLICAS = 8, 2
 OLD_API_POOL, OLD_WORKER_POOL = 10, 5
 # Concurrent subscription calls the account is budgeted for today; raised only
 # with a measured provider budget.
-LLM_BUDGET = 2
+LLM_BUDGET = 3
 
 
 def kustomize_binary():
@@ -106,7 +106,7 @@ def guarded_removals(patch):
 
 
 def check_removals(raw, patches):
-    """Fail with the actual env order when a guarded removal no longer lines up with the chart."""
+    """Fail if a guarded removal no longer lines up with the pinned chart."""
     for patch in patches:
         for path, expected in guarded_removals(patch):
             doc = find(raw, patch['target']['kind'], patch['target']['name'])
@@ -114,9 +114,10 @@ def check_removals(raw, patches):
             node = doc
             for part in parent:
                 node = node[int(part)] if isinstance(node, list) else node[part]
-            if int(index) >= len(node) or node[int(index)] != expected:
-                order = [f"{i}:{x.get('name')}" for i, x in enumerate(node)]
-                raise AssertionError(f'{key(doc)} {path} is not {expected}; rendered order {order}')
+            actual = node[int(index)] if isinstance(node, list) and int(index) < len(node) else (
+                node.get(index) if isinstance(node, dict) else None)
+            if actual != expected:
+                raise AssertionError(f'{key(doc)} {path} is not the pinned value')
 
 
 def key(doc):
@@ -216,8 +217,8 @@ class WorkerTopologyTests(unittest.TestCase):
         # worker values and none of the patches that exist only because of it.
         worker_only = [p for p in cls.patches
                        if p['target'].get('kind') == 'StatefulSet' or INLINE_WORKER in p['patch']]
-        if len(worker_only) != 2:
-            raise AssertionError(f'expected the StatefulSet patch and the {INLINE_WORKER} removal, '
+        if len(worker_only) != 1:
+            raise AssertionError(f'expected the StatefulSet patch, '
                                  f'found {len(worker_only)} worker-only patches')
         cls.raw = helm_template(cls.values)
         check_removals(cls.raw, cls.patches)
@@ -228,7 +229,7 @@ class WorkerTopologyTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        print('\nRENDERED: chart 1.2.1 + Flux post-render, worker at zero replicas.'
+        print('\nRENDERED: chart 1.2.1 + Flux post-render, HPA owns worker replicas.'
               '\nNOT RUN (needs real pods): auth-file sharing, provider budget under load,'
               ' database connection peak, drain recovery, bank fairness.')
 
@@ -242,7 +243,7 @@ class WorkerTopologyTests(unittest.TestCase):
               f"args={container.get('args')} chart replicas={raw['spec'].get('replicas')} "
               f"worker value keys={sorted(self.values['worker'])}")
 
-    def test_ac2_existing_render_unchanged(self):
+    def test_ac2_api_poller_is_disabled(self):
         baseline = {key(x): x for x in self.baseline}
         current = {key(x): x for x in self.rendered}
         self.assertIn(('Deployment', 'hindsight-api'), baseline)
@@ -250,12 +251,8 @@ class WorkerTopologyTests(unittest.TestCase):
                             for x in self.baseline if x['kind'] == 'Deployment'))
         raw_api = env_by_name(only_container(find(self.raw, 'Deployment', 'hindsight-api')))
         self.assertEqual(raw_api[INLINE_WORKER].get('value'), 'false',
-                         'chart no longer disables the API worker; drop the removal patch')
-        self.assertNotIn(INLINE_WORKER, env_by_name(only_container(self.api)),
-                         'API in-process worker must stay on while the worker has zero replicas')
-        self.maxDiff = None
-        for name, doc in baseline.items():
-            self.assertEqual(current.get(name), doc, f'{name} changed when the worker was added')
+                         'chart must disable the API poller when dedicated workers are enabled')
+        self.assertEqual(env_by_name(only_container(self.api))[INLINE_WORKER]['value'], 'false')
         added = sorted(set(current) - set(baseline))
         print(f'\nadded by worker.enabled: {added}')
         self.assertIn(('StatefulSet', WORKER), added)
@@ -278,11 +275,11 @@ class WorkerTopologyTests(unittest.TestCase):
     def test_ac3_statefulset_post_render(self):
         spec = self.worker['spec']
         template = pod(self.worker)['spec']
-        self.assertEqual(spec.get('replicas'), 0)
+        self.assertNotIn('replicas', spec, 'HPA must own StatefulSet /scale through reconciliation')
         self.assertNotIn('volumeClaimTemplates', spec)
         self.assertIs(template.get('automountServiceAccountToken'), False)
         self.assertEqual(template['dnsConfig'], {'options': [{'name': 'ndots', 'value': '1'}]})
-        self.assertEqual(template['terminationGracePeriodSeconds'], 60)
+        self.assertEqual(template['terminationGracePeriodSeconds'], 150)
         affinity = template['affinity']
         self.assertEqual(affinity['nodeAffinity'], pod(self.api)['spec']['affinity']['nodeAffinity'])
         terms = affinity['podAffinity']['requiredDuringSchedulingIgnoredDuringExecution']
@@ -313,7 +310,7 @@ class WorkerTopologyTests(unittest.TestCase):
         self.assertEqual(api[WORKER_ID]['value'], 'hindsight-api')
         for name, value in {**OVERRIDES, **CHART_WORKER_ENV}.items():
             self.assertEqual(worker[name], {'name': name, 'value': value})
-        skip = set(OVERRIDES) | set(CHART_WORKER_ENV) | {WORKER_ID}
+        skip = set(OVERRIDES) | set(CHART_WORKER_ENV) | {WORKER_ID, INLINE_WORKER}
         self.assertEqual({k: v for k, v in worker.items() if k not in skip},
                          {k: v for k, v in api.items() if k not in skip})
         self.assertEqual(only_container(self.worker).get('envFrom'), only_container(self.api).get('envFrom'))
@@ -338,11 +335,12 @@ class WorkerTopologyTests(unittest.TestCase):
         api = {k: v.get('value') for k, v in env_by_name(only_container(self.api)).items()}
         worker = {k: v.get('value') for k, v in env_by_name(only_container(self.worker)).items()}
         limit = role_connection_limit('hindsight')
-        replicas = self.worker['spec']['replicas']
+        replicas = CANDIDATE_REPLICAS
         self.assertEqual(limit, 25)
-        self.assertEqual(replicas, 0)
+        self.assertNotIn('replicas', self.worker['spec'])
         api_pool = int(api['HINDSIGHT_API_DB_POOL_MAX_SIZE'])
-        self.assertEqual(api_pool, 20, 'API pool is unchanged by this release')
+        self.assertEqual(api_pool, 8)
+        self.assertLessEqual(int(api['HINDSIGHT_API_DB_POOL_MIN_SIZE']), api_pool)
 
         worker_pool = int(worker['HINDSIGHT_API_DB_POOL_MAX_SIZE'])
         worker_min = int(worker.get('HINDSIGHT_API_DB_POOL_MIN_SIZE', DEFAULT_POOL_MIN))
@@ -350,7 +348,7 @@ class WorkerTopologyTests(unittest.TestCase):
         self.assertFalse([k for k in worker if re.fullmatch(r'HINDSIGHT_API_WORKER_[A-Z_]+_MAX_SLOTS', k)],
                          'deprecated reservation alias would bypass the bound below')
         worker_tasks = task_bound(worker)
-        self.assertEqual(worker_tasks, 2)
+        self.assertEqual(worker_tasks, 3)
         worker_peak = worker_pool + worker_tasks
 
         # Conditional activation budget only: an API pool of 8 with its
@@ -358,25 +356,21 @@ class WorkerTopologyTests(unittest.TestCase):
         # the migration peak and pool waits have been observed.
         self.assertTrue(db_fits(CANDIDATE_API_POOL, worker_peak, CANDIDATE_REPLICAS, limit))
         self.assertFalse(db_fits(CANDIDATE_API_POOL, worker_peak, CANDIDATE_REPLICAS + 1, limit))
-        self.assertFalse(db_fits(api_pool, worker_peak, CANDIDATE_REPLICAS, limit),
-                         'two workers next to the current API pool overrun the role')
         # The earlier 10 + 2 x 5 proposal fit only while direct connections
         # were left out.
         old_peak = OLD_WORKER_POOL + worker_tasks
         self.assertLessEqual(OLD_API_POOL + CANDIDATE_REPLICAS * OLD_WORKER_POOL + JOB_RESERVE, limit)
         self.assertFalse(db_fits(OLD_API_POOL, old_peak, CANDIDATE_REPLICAS, limit))
 
-        api_direct = task_bound(api)
         print(f'\nDB role limit {limit}; rendered: API pool {api_pool} + {replicas} workers.'
-              f'\nUNQUALIFIED (unchanged): API in-process worker may add up to {api_direct} direct'
-              f' connections ({api_pool + api_direct} potential); not shown to fit.'
               f'\nCONDITIONAL: {CANDIDATE_API_POOL} + {CANDIDATE_REPLICAS} x ({worker_pool} + {worker_tasks})'
               f' + reserve {JOB_RESERVE} + migration allowance {MIGRATION_ALLOWANCE}'
               f' = {CANDIDATE_API_POOL + CANDIDATE_REPLICAS * worker_peak + JOB_RESERVE + MIGRATION_ALLOWANCE}')
 
         api_global, worker_global = int(api['HINDSIGHT_API_LLM_MAX_CONCURRENT']), int(worker['HINDSIGHT_API_LLM_MAX_CONCURRENT'])
+        self.assertEqual((api_global, worker_global), (1, 1))
         self.assertTrue(llm_fits(api_global, worker_global, replicas))
-        self.assertFalse(llm_fits(api_global, worker_global, 1))
+        self.assertFalse(llm_fits(api_global, worker_global, replicas + 1))
         per_operation = {k: int(v) for k, v in worker.items()
                          if re.fullmatch(r'HINDSIGHT_API_[A-Z]+_LLM_MAX_CONCURRENT', k)}
         self.assertEqual(set(per_operation), {'HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT',
@@ -394,13 +388,13 @@ class WorkerTopologyTests(unittest.TestCase):
         self.assertEqual(api[reservation], '1')
         self.assertEqual(worker[reservation], '1')
         self.assertEqual(task_bound(api), DEFAULT_SLOTS)
-        self.assertEqual(task_bound(worker), 2)
+        self.assertEqual(task_bound(worker), 3)
         self.assertNotIn('HINDSIGHT_API_WORKER_MAX_SLOTS', api)
-        self.assertEqual(worker['HINDSIGHT_API_WORKER_MAX_SLOTS'], '2')
+        self.assertEqual(worker['HINDSIGHT_API_WORKER_MAX_SLOTS'], '3')
         self.assertEqual(self.api['spec']['replicas'], 1)
-        self.assertEqual(self.worker['spec']['replicas'], 0)
-        self.assertEqual(api['HINDSIGHT_API_LLM_MAX_CONCURRENT'], '2')
-        self.assertEqual(api['HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT'], '2')
+        self.assertNotIn('replicas', self.worker['spec'])
+        self.assertEqual(api['HINDSIGHT_API_LLM_MAX_CONCURRENT'], '1')
+        self.assertEqual(api['HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT'], '1')
         self.assertEqual(worker['HINDSIGHT_API_LLM_MAX_CONCURRENT'], '1')
         self.assertEqual(worker['HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT'], '1')
 

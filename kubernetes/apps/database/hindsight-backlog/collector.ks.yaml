@@ -42,6 +42,10 @@ spec:
       namespace: database
     - name: hindsight-backlog-function
       namespace: database
+    # The one-shot poll needs the schema migrated by the API. Its Flux entry
+    # checks hindsight-api Deployment readiness before becoming Ready.
+    - name: hermes-hindsight
+      namespace: ai
   path: ./kubernetes/apps/database/hindsight-backlog/collector-qualification
   prune: true
   sourceRef:

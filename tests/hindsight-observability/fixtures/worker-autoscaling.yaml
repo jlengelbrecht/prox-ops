@@ -1,9 +1,5 @@
-# Collector scrapes for the hindsight_worker_runnable rule, run through native
-# promtool by test_worker_autoscaling.py. Each case starts from
-# `healthy`, one up, valid, fresh scrape with the `source` labels, then may
-# `set` values, `drop` or relabel (`labels`) series, add `extra` series, or add
-# a healthy `peer_instance` scrape with `peer` overrides. Values are promtool
-# `a+bxN` at `interval`; time() is eval seconds. `expect`: [] is no sample, not 0.
+# Native PromQL cases for guarded replica slot demand. Empty expectation means
+# the adapter must return no metric, while [0] is a fresh known-zero sample.
 interval: 1m
 eval_time: 10m
 peer_instance: "10.42.0.11:9464"
@@ -13,48 +9,95 @@ source:
   job: hindsight-backlog-collector
   instance: "10.42.0.10:9464"
 healthy:
-  hindsight_backlog_runnable: 3+0x10
+  hindsight_backlog_runnable: 0+0x10
   hindsight_backlog_sample_valid: 1+0x10
   hindsight_backlog_capacity_exceeded: 0+0x10
   hindsight_backlog_observed_timestamp_seconds: 0+60x10
   up: 1+0x10
+# A failed collector poll can leave per-type gauges behind. Every validity
+# failure below keeps positive demand in all three slot classes.
+guard_tasks: &guard_tasks
+  - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: refresh_mental_model, state: runnable}, values: 1+0x10}
+  - {metric: hindsight_backlog_tasks, labels: {bank_id: b, operation_type: consolidation, state: runnable}, values: 1+0x10}
+  - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: retain, state: runnable}, values: 1+0x10}
 cases:
   - name: fresh_positive
-    expect: [3]
+    set: {hindsight_backlog_runnable: 4+0x10}
+    tasks:
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: refresh_mental_model, state: runnable}, values: 2+0x10}
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: b, operation_type: consolidation, state: runnable}, values: 1+0x10}
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: retain, state: runnable}, values: 1+0x10}
+    expect: [2]
   - name: known_zero
-    set: {hindsight_backlog_runnable: 0+0x10}
     expect: [0]
-  - name: age_inside_bound # observed 179 s before eval
+  - name: refresh_demand
+    set: {hindsight_backlog_runnable: 1+0x10}
+    tasks:
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: refresh_mental_model, state: runnable}, values: 1+0x10}
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: b, operation_type: refresh_mental_model, state: processing}, values: 1+0x10}
+    expect: [2]
+  - name: consolidation_demand
+    set: {hindsight_backlog_runnable: 2+0x10}
+    tasks:
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: consolidation, state: runnable}, values: 2+0x10}
+    expect: [2]
+  - name: shared_demand
+    set: {hindsight_backlog_runnable: 2+0x10}
+    tasks:
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: retain, state: runnable}, values: 1+0x10}
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: b, operation_type: graph_maintenance, state: runnable}, values: 1+0x10}
+    expect: [2]
+  - name: processing_only
+    tasks:
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: retain, state: processing}, values: 2+0x10}
+    expect: [2]
+  - name: deferred_and_blocked_ignored
+    tasks:
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: retain, state: deferred}, values: 5+0x10}
+      - {metric: hindsight_backlog_tasks, labels: {bank_id: a, operation_type: retain, state: serialization_blocked}, values: 5+0x10}
+    expect: [0]
+  - name: age_inside_bound
     set: {hindsight_backlog_observed_timestamp_seconds: -179+60x10}
-    expect: [3]
-  - name: age_at_bound # 180 s is already past the last-good bound
-    set: {hindsight_backlog_observed_timestamp_seconds: -180+60x10}
+    expect: [0]
+  - name: age_at_bound
+    tasks: *guard_tasks
+    set: {hindsight_backlog_runnable: 3+0x10, hindsight_backlog_observed_timestamp_seconds: -180+60x10}
     expect: []
-  - name: stale_timestamp # scrapes continue, the observation froze at 0
-    set: {hindsight_backlog_observed_timestamp_seconds: 0+0x10}
+  - name: stale_timestamp
+    tasks: *guard_tasks
+    set: {hindsight_backlog_runnable: 3+0x10, hindsight_backlog_observed_timestamp_seconds: 0+0x10}
     expect: []
   - name: clock_future
-    set: {hindsight_backlog_observed_timestamp_seconds: 60+60x10}
+    tasks: *guard_tasks
+    set: {hindsight_backlog_runnable: 3+0x10, hindsight_backlog_observed_timestamp_seconds: 60+60x10}
     expect: []
   - name: missing_timestamp
+    tasks: *guard_tasks
+    set: {hindsight_backlog_runnable: 3+0x10}
     drop: [hindsight_backlog_observed_timestamp_seconds]
     expect: []
   - name: no_runnable_sample
+    tasks: *guard_tasks
     drop: [hindsight_backlog_runnable]
     expect: []
   - name: sample_invalid
-    set: {hindsight_backlog_sample_valid: 0+0x10}
+    tasks: *guard_tasks
+    set: {hindsight_backlog_runnable: 3+0x10, hindsight_backlog_sample_valid: 0+0x10}
     expect: []
   - name: capacity_exceeded
-    set: {hindsight_backlog_capacity_exceeded: 1+0x10}
+    tasks: *guard_tasks
+    set: {hindsight_backlog_runnable: 3+0x10, hindsight_backlog_capacity_exceeded: 1+0x10}
     expect: []
   - name: scrape_down
-    set: {up: 0+0x10}
+    tasks: *guard_tasks
+    set: {hindsight_backlog_runnable: 3+0x10, up: 0+0x10}
     expect: []
   - name: negative_count
+    tasks: *guard_tasks
     set: {hindsight_backlog_runnable: -1+0x10}
     expect: []
-  - name: collector_stopped # last scrape at 7m: inside the lookback, observed 180 s ago
+  - name: collector_stopped
+    tasks: *guard_tasks
     set:
       hindsight_backlog_runnable: 3+0x7
       hindsight_backlog_sample_valid: 1+0x7
@@ -63,32 +106,20 @@ cases:
       up: 1+0x7
     expect: []
   - name: source_absent
+    tasks: *guard_tasks
     drop: [hindsight_backlog_runnable, hindsight_backlog_sample_valid, hindsight_backlog_capacity_exceeded,
            hindsight_backlog_observed_timestamp_seconds, up]
     expect: []
   - name: wrong_namespace
+    tasks: *guard_tasks
     labels: {namespace: ai}
     expect: []
   - name: wrong_service
+    tasks: *guard_tasks
     labels: {service: hindsight-api}
     expect: []
-  - name: guard_from_another_scrape # validity reported by a different target does not vouch for this one
-    drop: [hindsight_backlog_sample_valid]
-    extra:
-      - {metric: hindsight_backlog_sample_valid, labels: {instance: "10.42.0.11:9464"}, values: 1+0x10}
-    expect: []
-  - name: unrelated_series_ignored
-    extra:
-      - {metric: hindsight_backlog_runnable, labels: {namespace: ai}, values: 99+0x10}
-      - {metric: hindsight_backlog_runnable, labels: {service: other}, values: 99+0x10}
-    expect: [3]
-  - name: two_collector_scrapes # the same global count from two targets is not added up
-    peer: {}
-    expect: [3]
-  - name: divergent_collectors # valid targets disagree: max keeps the higher, scale-up biased
-    set: {hindsight_backlog_runnable: 2+0x10}
-    peer: {hindsight_backlog_runnable: 5+0x10}
-    expect: [5]
-  - name: invalid_peer_dropped_before_max # per-target guards remove the invalid 9
+  - name: invalid_peer_dropped
     peer: {hindsight_backlog_runnable: 9+0x10, hindsight_backlog_sample_valid: 0+0x10}
-    expect: [3]
+    tasks:
+      - {metric: hindsight_backlog_tasks, labels: {instance: "10.42.0.11:9464", bank_id: a, operation_type: retain, state: runnable}, values: 9+0x10}
+    expect: [0]

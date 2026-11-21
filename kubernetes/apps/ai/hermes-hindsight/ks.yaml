@@ -35,7 +35,7 @@ spec:
   commonMetadata:
     labels:
       app.kubernetes.io/name: *app
-  # The AI root applies `namespace: ai` to this tree, so both Kustomizations
+  # The AI root applies `namespace: ai` to this tree, so these Kustomizations
   # land in `ai` and the sibling resolves in this CR's own namespace (same
   # shape as litellm/ks.yaml). external-secrets-operator has no namespace
   # transform, so its CR stays in flux-system (same as agent-router/ks.yaml);
@@ -56,7 +56,15 @@ spec:
       namespace: database
   interval: 1h
   retryInterval: 2m
-  timeout: 10m
+  # A fresh API must finish its startup migrations before the collector's
+  # one-shot qualification polls the schema. Check the API Deployment, not
+  # unrelated Hermes resources or the worker's external metric.
+  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: hindsight-api
+      namespace: ai
+  timeout: 20m
   path: ./kubernetes/apps/ai/hermes-hindsight/app
   prune: true
   sourceRef:
@@ -64,3 +72,30 @@ spec:
     name: flux-system
     namespace: flux-system
   wait: false
+---
+# Only the HPA waits for the metric source. The API and its migrations above
+# can reconcile while the collector and adapter are still unavailable.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: hermes-hindsight-autoscaling
+  namespace: flux-system
+spec:
+  targetNamespace: ai
+  dependsOn:
+    - name: hermes-hindsight
+      namespace: ai
+    - name: hindsight-backlog-collector
+      namespace: database
+    - name: prometheus-adapter
+      namespace: flux-system
+  interval: 1h
+  retryInterval: 2m
+  timeout: 10m
+  path: ./kubernetes/apps/ai/hermes-hindsight/autoscaling
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+    namespace: flux-system
+  wait: true
