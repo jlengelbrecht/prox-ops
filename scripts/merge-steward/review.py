@@ -54,6 +54,9 @@ _RECORD = re.compile(r"^<!-- merge-steward-llm sha=(?P<sha>[0-9a-f]{40})(?: fp=(
                      r"data=(?P<data>[A-Za-z0-9_=-]+) -->$", re.MULTILINE)
 # Facts about a result that a stored copy may keep, each only in this exact form.
 _PROVENANCE = {"model": re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]*"), "reused_from": re.compile(r"[0-9a-f]{40}")}
+# The diff and model an advisory comment reviewed, on a line of its own in that comment.
+_ADVISORY_RECORD = re.compile(r"^<!-- merge-steward-review-diff fp=(?P<fp>[0-9a-f]{64}) "
+                              r"model=(?P<model>[A-Za-z0-9][A-Za-z0-9._:/-]*) -->$", re.MULTILINE)
 _CREDENTIAL = re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}"
                          r"|-----BEGIN|ENC\[AES256_GCM|age1[a-z0-9]{50,}|eyJ[A-Za-z0-9_-]{20,}\.")
 _REDACTIONS = (
@@ -371,6 +374,27 @@ def reusable(text, sha, fingerprint, policy):
     if not result or not result["available"] or result.get("model") != policy["ai"]["model"]["alias"]:
         return None
     return dict(result, reused_from=result.get("reused_from") or sha)
+
+
+def advisory_record(fingerprint, result):
+    """The line an advisory comment carries so a later push with the same diff can let it stand.
+
+    Empty without a fingerprint or a well-formed model name: that comment is never reused.
+    """
+    model = result.get("model")
+    if not fingerprint or not isinstance(model, str) or not _PROVENANCE["model"].fullmatch(model):
+        return ""
+    return f"<!-- merge-steward-review-diff fp={fingerprint} model={model} -->"
+
+
+def advisory_reusable(body, fingerprint, policy):
+    """True when an advisory comment's body names this diff and the model the policy names now.
+
+    Exactly one record line must be present. The caller passes only the steward app's comment.
+    """
+    found = _ADVISORY_RECORD.findall(body or "")
+    return (bool(fingerprint) and len(found) == 1 and found[0][0] == fingerprint
+            and found[0][1] == policy["ai"]["model"]["alias"])
 
 
 def stage(result, policy):
