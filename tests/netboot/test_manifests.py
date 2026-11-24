@@ -35,6 +35,9 @@ def policy_problems(policy, editor_routed=False):
     (port-forward only) unless editor_routed, and then only envoy-internal."""
     problems, boot_open, routed = [], False, False
     for rule in policy.get('ingress', []):
+        # L7 rules, TLS or SNI on a toPorts entry filter traffic; flattening would hide them.
+        problems += [f'toPorts entry with more than ports: {to}'
+                     for to in rule.get('toPorts', []) if set(to) - {'ports'}]
         entries = [p for to in rule.get('toPorts', []) for p in to.get('ports', [])]
         # A range (endPort) or any other key can open more than (port, protocol) says.
         problems += [f'port entry other than port/protocol: {p}'
@@ -140,6 +143,17 @@ class ManifestContract(unittest.TestCase):
         self.assertTrue(policy_problems({**policy, 'ingress': []}))  # PXE closed
         self.assertTrue(policy_problems({**policy, 'ingress': [  # cluster only, no LAN
             {**policy['ingress'][0], 'fromEntities': ['cluster']}]}))
+        # Boot ports split across entries, with an HTTP path rule on 80: menus would be denied.
+        self.assertTrue(policy_problems({**policy, 'ingress': [{
+            'fromEntities': ['world', 'cluster'],
+            'toPorts': [{'ports': [{'port': '69', 'protocol': 'UDP'}]},
+                        {'ports': [{'port': '80', 'protocol': 'TCP'}],
+                         'rules': {'http': [{'path': '/health'}]}}]}]}))
+        # The same split without restrictions is still an open boot rule.
+        self.assertEqual(policy_problems({**policy, 'ingress': [{
+            'fromEntities': ['world', 'cluster'],
+            'toPorts': [{'ports': [{'port': '69', 'protocol': 'UDP'}]},
+                        {'ports': [{'port': '80', 'protocol': 'TCP'}]}]}]}), [])
 
     def test_pinned_versions_and_single_port_tftp(self):
         # Pin shapes, not values, so Renovate bumps pass.
