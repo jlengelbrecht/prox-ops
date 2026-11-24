@@ -15,3 +15,21 @@ spec:
   resources:
     requests:
       storage: 2Gi
+---
+# Installer images downloaded from the management UI (/assets, served by nginx
+# on the boot port). Kept apart from the config volume so a full asset volume
+# cannot stop menu or settings writes. Same retention as the config volume:
+# a restart, an app removal or a Git mistake must not delete stored installers.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netbootxyz-assets
+  annotations:
+    kustomize.toolkit.fluxcd.io/prune: disabled
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ceph-block-retain
+  resources:
+    requests:
+      storage: 50Gi
