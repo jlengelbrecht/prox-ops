@@ -24,8 +24,10 @@ spec:
       targetPort: http
       protocol: TCP
 ---
-# Menu editor. ClusterIP only, never on the load balancer, and networkpolicy.yaml
-# admits no traffic to it. Reach it through the pod's loopback:
+# Menu editor. ClusterIP only, never on the load balancer. Browsers reach it
+# through https://netboot.homelab0.org (httproute.yaml) behind Authentik forward
+# auth; networkpolicy.yaml admits port 3000 from the envoy-internal gateway pods
+# only. Break-glass access without Authentik still uses the pod's loopback:
 #   kubectl -n network port-forward svc/netbootxyz-admin 3000:3000
 apiVersion: v1
 kind: Service

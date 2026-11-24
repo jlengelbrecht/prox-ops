@@ -1,14 +1,38 @@
 # netboot.xyz
 
 LAN PXE server. The UDM SE stays the only DHCP server and points clients at
-`10.20.67.28` (TFTP UDP 69, HTTP TCP 8080). Boot delivery needs no login.
+`10.20.67.28` (TFTP UDP 69, HTTP TCP 8080). Boot delivery needs no login and
+does not depend on Authentik.
 
 ## Management UI
 
-- The web app on port 3000 has no login of its own, so nothing routes to it:
-  it is not on the load balancer, and `networkpolicy.yaml` admits no pod or
-  LAN host to it.
-- Access is for cluster admins only, through the pod's loopback:
+- URL: `https://netboot.homelab0.org`, on the `envoy-internal` gateway only
+  (internal DNS and the gateway's TLS certificate; no Cloudflare record, no
+  external route).
+- Access: Authentik forward auth (`securitypolicy.yaml`, `failOpen: false`)
+  on every path, including Socket.IO (`/socket.io/`), which carries the
+  dashboard, menu editor and asset downloads. Only members of
+  `authentik Admins` pass (`app-netbootxyz` in the Authentik blueprints).
+  Everyone else is sent to sign-in or denied. Only an interactive browser
+  session opens the editor. The Authentik outpost would accept app passwords
+  and API tokens sent in an `Authorization` header even with header
+  authentication off, so the gateway answers 403 to any request on this
+  hostname that carries `Authorization` (the `deny-authorization` rules in
+  `httproute.yaml`), and forward auth never sees it.
+- The Socket.IO WebSocket upgrade is accepted only from
+  `https://netboot.homelab0.org` (exact `Origin` match in `httproute.yaml`);
+  an upgrade from any other origin, or with none, gets a gateway 500, so a
+  page on another `homelab0.org` host cannot drive the editor with an admin's
+  session.
+- `/outpost.goauthentik.io/` on the same hostname is the Authentik
+  login/callback route. It reaches Authentik only, never the pod.
+- The pod's editor port 3000 accepts traffic from the `envoy-internal`
+  gateway pods only (`networkpolicy.yaml`). It is not on the load balancer.
+- If Authentik is down, the UI is unavailable; PXE boot keeps working.
+- An open editor tab keeps its authenticated WebSocket until the tab closes,
+  so removing someone from `authentik Admins` takes full effect on their next
+  connection.
+- Break-glass access without Authentik, for cluster admins only:
   `kubectl -n network port-forward svc/netbootxyz-admin 3000:3000`.
 
 ## Menus: what is Git-managed and what the UI may change
@@ -30,14 +54,6 @@ LAN PXE server. The UDM SE stays the only DHCP server and points clients at
   restarts and menu-version upgrades (`entrypoint.sh` keeps `local/` and the
   Secure Boot files when it refetches a release). They are not in Git, so
   record any you rely on here or in the runbook.
-
-## Repair
-
-On every start `entrypoint.sh` checks that the served release is the complete
-pinned `MENU_VERSION` (and the Secure Boot files the pinned `IPXE_SB_VERSION`).
-Anything incomplete or out of date is fetched again, `local/` excepted; a
-failed fetch exits so the restart retries. To repair a pod that is unready,
-delete it and let the new one refetch.
 
 ## Storage
 

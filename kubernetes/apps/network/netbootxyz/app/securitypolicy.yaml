@@ -1,0 +1,53 @@
+---
+# Authentik forward auth (Envoy ext_authz) for the netbootxyz route, same shape
+# as notes/obsidian/app/securitypolicy.yaml. That route carries every path of
+# the management web app, including Socket.IO, so there is no ungated way to
+# edit boot menus or download installers. netbootxyz-outpost is deliberately
+# not targeted (httproute.yaml).
+# failOpen: false: if Authentik is unreachable, or the netboot.xyz provider is
+# not assigned to the embedded outpost, management is unavailable rather than
+# open. PXE boot on 10.20.67.28 does not pass through here and keeps working.
+# Who may pass is the netboot.xyz application's group binding in the Authentik
+# blueprints (authentik Admins only).
+# Targets are the route's rules with a backend, by name. deny-authorization
+# and websocket-deny have no backend and are left out on purpose, so forward
+# auth never runs ahead of their fixed responses and Authentik never sees an
+# Authorization header from this host. Every rule with a backend must be
+# listed here (tests/netboot/test_manifests.py checks it).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: netbootxyz-auth
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: netbootxyz
+      sectionName: socket-io
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: netbootxyz
+      sectionName: editor
+  extAuth:
+    headersToExtAuth:
+      - accept
+      - cookie
+      - authorization
+      - x-forwarded-proto
+      - x-forwarded-host
+      - x-forwarded-for
+      - x-forwarded-uri
+      - x-forwarded-method
+    failOpen: false
+    http:
+      backendRefs:
+        - name: authentik-server
+          namespace: security
+          port: 80
+      path: /outpost.goauthentik.io/auth/envoy
+      headersToBackend:
+        - X-authentik-username
+        - X-authentik-groups
+        - X-authentik-email
+        - X-authentik-name
+        - X-authentik-uid

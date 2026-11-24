@@ -1,0 +1,200 @@
+---
+# Management UI on one hostname, internal gateway only (no envoy-external
+# route, no Cloudflare record). Every rule of this route that has a backend,
+# including the Socket.IO endpoint (/socket.io/, polling and WebSocket
+# upgrade) that carries all editor and download actions, is gated by
+# securitypolicy.yaml with Authentik forward auth. The policy targets those
+# rules by name, so a new rule with a backend needs a name and a targetRef
+# there (tests/netboot/test_manifests.py fails otherwise). There is no API or
+# health bypass. The only other path on the hostname is the Authentik
+# login/callback flow on netbootxyz-outpost.
+#
+# Browser sessions only: the Authentik outpost accepts Basic and Bearer
+# credentials in the Authorization header whatever intercept_header_auth says,
+# and the gateway always forwards that header to it. So any request carrying
+# a non-empty Authorization header gets a 403 from the gateway on this host,
+# here and on the outpost route, before forward auth runs. The deny rules are
+# deliberately not targeted by the SecurityPolicy, so Authentik never sees
+# those credentials. They come first: the gateway ranks more header matches,
+# then more Exact header matches, then list order. The two-header match beats
+# the Origin rule (one Exact match); the one-header match ties with the
+# WebSocket deny and wins on order; the / match beats the plain / rule.
+#
+# Cross-site WebSocket: a page on any other *.homelab0.org host is same-site,
+# so the browser sends the Authentik session cookie with its WebSocket
+# handshake and forward auth admits it. The socket-io rule therefore accepts a
+# /socket.io/ WebSocket upgrade only when Origin is exactly this hostname;
+# any other upgrade there matches websocket-deny, which has no backend, so
+# the gateway answers 500 and never reaches the pod. Keep socket-io ahead of
+# websocket-deny. Socket.IO long-polling stays on the editor rule: browsers
+# omit Origin on same-origin GETs. A cross-site page cannot read the polling
+# session id: CORS is off in the app, and the JSONP form (?j=) is served as
+# text/plain, which the X-Content-Type-Options: nosniff set below stops
+# browsers from executing as a script. Keep that header on this rule
+# (tests/netboot/test_manifests.py requires it on every rule with a backend).
+#
+# Boot delivery is not routed here: PXE clients keep using the LoadBalancer at
+# 10.20.67.28 (TFTP 69, HTTP 8080) with no login.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: netbootxyz
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: netboot.homelab0.org
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - netboot.homelab0.org
+  rules:
+    # Any non-empty Authorization header: 403, no forward auth, no backend.
+    - name: deny-authorization
+      matches:
+        - path:
+            type: PathPrefix
+            value: /socket.io/
+          headers:
+            - name: Authorization
+              type: RegularExpression
+              value: .+
+            - name: Origin
+              type: Exact
+              value: https://netboot.homelab0.org
+        - path:
+            type: PathPrefix
+            value: /socket.io/
+          headers:
+            - name: Authorization
+              type: RegularExpression
+              value: .+
+        - path:
+            type: PathPrefix
+            value: /
+          headers:
+            - name: Authorization
+              type: RegularExpression
+              value: .+
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: netbootxyz-deny-authorization
+    # Socket.IO from the management page itself (WebSocket or polling).
+    - name: socket-io
+      matches:
+        - path:
+            type: PathPrefix
+            value: /socket.io/
+          headers:
+            - name: Origin
+              type: Exact
+              value: https://netboot.homelab0.org
+      backendRefs:
+        - name: netbootxyz-admin
+          port: 3000
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+    # Any other WebSocket upgrade on /socket.io/ (foreign or missing Origin):
+    # no backend, so the gateway returns 500.
+    - name: websocket-deny
+      matches:
+        - path:
+            type: PathPrefix
+            value: /socket.io/
+          headers:
+            - name: Upgrade
+              type: RegularExpression
+              value: (?i)websocket
+    - name: editor
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: netbootxyz-admin
+          port: 3000
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: "max-age=31536000; includeSubDomains"
+              - name: X-Frame-Options
+                value: "DENY"
+              - name: X-Content-Type-Options
+                value: "nosniff"
+              - name: Referrer-Policy
+                value: "strict-origin-when-cross-origin"
+---
+# Authentik outpost route for the netboot host (forward-auth login/callback
+# flow), matched on the outpost prefix only. No SecurityPolicy here (it would
+# loop) and it never reaches the netboot pod. The cross-namespace backendRef
+# is allowed by ReferenceGrant allow-network-namespace-extauth
+# (kubernetes/apps/security/authentik/app/referencegrant-network.yaml).
+# The outpost endpoints run the same credential check as forward auth and set
+# the session cookie on success, so Authorization is refused here as well:
+# same prefix plus a header match, which outranks the plain prefix rule.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: netbootxyz-outpost
+spec:
+  parentRefs:
+    - name: envoy-internal
+      namespace: network
+      sectionName: https
+  hostnames:
+    - netboot.homelab0.org
+  rules:
+    - name: deny-authorization
+      matches:
+        - path:
+            type: PathPrefix
+            value: /outpost.goauthentik.io/
+          headers:
+            - name: Authorization
+              type: RegularExpression
+              value: .+
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: gateway.envoyproxy.io
+            kind: HTTPRouteFilter
+            name: netbootxyz-deny-authorization
+    - name: outpost
+      matches:
+        - path:
+            type: PathPrefix
+            value: /outpost.goauthentik.io/
+      backendRefs:
+        - name: authentik-server
+          namespace: security
+          port: 80
+---
+# Fixed 403 for the deny-authorization rules above (same pattern as Grafana's
+# grafana-deny-basic-auth). Browsers never send Authorization to this host:
+# the app sets none and nothing here issues a Basic challenge.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: HTTPRouteFilter
+metadata:
+  name: netbootxyz-deny-authorization
+spec:
+  directResponse:
+    statusCode: 403
+    contentType: text/plain
+    body:
+      type: Inline
+      inline: "Authorization headers are not accepted here. Sign in through Authentik.\n"
