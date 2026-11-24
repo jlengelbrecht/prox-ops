@@ -253,6 +253,18 @@ data:
             href: https://access.homelab0.org
             description: Access Broker (SSH, VNC)
 
+        # No netboot.xyz widget exists, and its dashboard data comes over
+        # Socket.IO behind Authentik, so status comes from the Kubernetes API
+        # (pod state, CPU, memory) instead. Homepage never calls the editor.
+        - netboot.xyz:
+            icon: mdi-server-network
+            href: https://netboot.homelab0.org
+            description: PXE Boot Server (admin, Authentik)
+            namespace: network
+            app: netbootxyz
+            podSelector: app.kubernetes.io/name=netbootxyz
+            showStats: true
+
     - Servers & Containers:
         - Valhalla:
             icon: proxmox.png
@@ -516,9 +528,16 @@ data:
     ---
     # Docker integration is not used. See:
     # https://gethomepage.dev/configs/docker/
+  # In-cluster connection through the homepage ServiceAccount (rbac.yaml) for
+  # per-card pod status and CPU/memory. Automatic discovery stays off: cards
+  # come only from services.yaml, never from Ingress, HTTPRoute or Traefik
+  # annotations.
   kubernetes.yaml: |
     ---
-    # Kubernetes service discovery is not used here.
+    mode: cluster
+    ingress: false
+    gateway: false
+    traefik: false
   proxmox.yaml: |
     ---
     # Proxmox widgets connect via services.yaml (HOMEPAGE_VAR_* creds), not this file.
