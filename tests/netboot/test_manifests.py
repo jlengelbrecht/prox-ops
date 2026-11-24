@@ -86,24 +86,45 @@ ROUTE_FIELDS = {'parentRefs', 'hostnames', 'rules'}
 RULE_FIELDS = {'name', 'matches', 'filters', 'backendRefs'}
 
 
-def match_problems(where, match):
-    """Only explicit PathPrefix plus Exact/RegularExpression headers are modelled.
+def prefix(value, *headers):
+    match = {'path': {'type': 'PathPrefix', 'value': value}}
+    return {**match, 'headers': list(headers)} if headers else match
 
-    method, queryParams or a defaulted path/type would change what Envoy matches
-    while the matrix below ignored it, so they are reported instead.
-    """
-    if not isinstance(match, dict) or 'path' not in match or set(match) - {'path', 'headers'}:
-        extra = sorted(set(match) - {'path', 'headers'}) if isinstance(match, dict) else match
-        return [f'{where}: match needs a path; unsupported match fields {extra}']
-    path, headers = match['path'], match.get('headers', [])
-    if not (isinstance(path, dict) and set(path) == {'type', 'value'} and path['type'] == 'PathPrefix'
-            and str(path['value']).startswith('/')):
-        return [f'{where}: path must be an explicit PathPrefix: {path}']
-    if not (isinstance(headers, list) and all(
-            isinstance(h, dict) and set(h) == {'name', 'type', 'value'}
-            and h['type'] in ('Exact', 'RegularExpression') for h in headers)):
-        return [f'{where}: headers must be explicit Exact or RegularExpression matches: {headers}']
-    return []
+
+# Security-sensitive header guards, pinned to the exact values the gateway gets.
+# .+ means any non-empty Authorization value, with no length cap. (?i)websocket
+# catches every casing of the Upgrade value. Both are RE2 (Go regexp) syntax
+# that Envoy Gateway accepts.
+AUTHORIZATION = {'name': 'Authorization', 'type': 'RegularExpression', 'value': '.+'}
+SAME_ORIGIN = {'name': 'Origin', 'type': 'Exact', 'value': f'https://{HOST}'}
+UPGRADE = {'name': 'Upgrade', 'type': 'RegularExpression', 'value': '(?i)websocket'}
+
+# Every rule of both routes, in order, with its exact matches. This is the
+# whole routing contract; nothing here re-implements Envoy matching.
+#
+# The order is right for Envoy Gateway 1.9 (internal/gatewayapi/sort.go: path
+# type, then prefix length with '/' as 0, then header count, then Exact header
+# count, then list order). With Authorization set, every path reaches a 403
+# match before any backend: /outpost.goauthentik.io/ by its deny, /socket.io/
+# with the exact Origin by the two-header deny (beats socket-io's one), any
+# other /socket.io/ by the one-header deny (ties websocket-deny, listed first),
+# and everything else by the / deny (beats the headerless editor). An offline
+# egctl v1.9.3 translation of these manifests produced exactly that route
+# order. Changing any entry here needs that check again, not only a test edit.
+ROUTE_MATCHES = {
+    'netbootxyz': [
+        (DENY, [prefix('/socket.io/', AUTHORIZATION, SAME_ORIGIN),
+                prefix('/socket.io/', AUTHORIZATION),
+                prefix('/', AUTHORIZATION)]),
+        ('socket-io', [prefix('/socket.io/', SAME_ORIGIN)]),
+        ('websocket-deny', [prefix('/socket.io/', UPGRADE)]),
+        ('editor', [prefix('/')]),
+    ],
+    'netbootxyz-outpost': [
+        (DENY, [prefix('/outpost.goauthentik.io/', AUTHORIZATION)]),
+        ('outpost', [prefix('/outpost.goauthentik.io/')]),
+    ],
+}
 
 
 def rule_problems(route_name, rule):
@@ -113,15 +134,11 @@ def rule_problems(route_name, rule):
     name, where, problems = rule.get('name'), f'{route_name}/{rule.get("name")}', []
     if set(rule) - RULE_FIELDS:
         problems.append(f'{where}: unsupported rule fields {sorted(set(rule) - RULE_FIELDS)}')
-    if not isinstance(rule.get('matches'), list) or not rule['matches']:
-        problems.append(f'{where}: needs explicit matches (none would match every path)')
-    else:
-        problems += [p for m in rule['matches'] for p in match_problems(where, m)]
     if name == DENY:
         if 'backendRefs' in rule or rule.get('filters') != DENY_FILTER:
             problems.append(f'{route_name}: {DENY} must only return the 403 filter')
     elif name == 'websocket-deny':
-        # Checked here, not through policy targets or the matrix: a backend on this
+        # Checked here, not through policy targets or ROUTE_MATCHES: a backend on this
         # rule would proxy a foreign-Origin upgrade with the user's session cookie.
         if route_name != 'netbootxyz' or set(rule) != {'name', 'matches'}:
             problems.append(f'{where}: must have no backend and no filters (the gateway answers 500)')
@@ -136,15 +153,15 @@ def rule_problems(route_name, rule):
 
 
 def route_problems(routes):
-    """Both routes, on the internal HTTPS listener and this hostname only, in the modelled shape."""
+    """Both routes, on the internal HTTPS listener and this hostname only, with exactly ROUTE_MATCHES."""
     names = [route.get('metadata', {}).get('name') for route in routes]
     problems = [] if sorted(map(str, names)) == sorted(BACKENDS) else [
         f'HTTPRoutes must be exactly {sorted(BACKENDS)}, got {names}']
     for name, route in zip(names, routes):
         spec = route.get('spec') or {}
         if spec.get('parentRefs') != PARENT or spec.get('hostnames') != [HOST]:
-            # A rule set on another host or listener would not combine with the
-            # other route's rules the way the matrix assumes.
+            # On another host or listener the two routes' rules would no longer
+            # be ranked together, so the order in ROUTE_MATCHES would not hold.
             problems.append(f'{name}: must attach only to {PARENT} for {HOST}, got '
                             f'{spec.get("parentRefs")} {spec.get("hostnames")}')
         if set(spec) - ROUTE_FIELDS:
@@ -153,11 +170,17 @@ def route_problems(routes):
         if not isinstance(rules, list) or not rules:
             problems.append(f'{name}: needs rules')
             continue
-        rule_names = [rule.get('name') if isinstance(rule, dict) else None for rule in rules]
-        if None in rule_names or len(set(rule_names)) != len(rule_names):
-            problems.append(f'{name}: every rule needs a unique name')
-        if rule_names.count(DENY) != 1 or rule_names[0] != DENY:
-            problems.append(f'{name}: {DENY} must be the first rule')
+        got = [(rule.get('name'), rule.get('matches')) if isinstance(rule, dict) else (None, rule)
+               for rule in rules]
+        want = ROUTE_MATCHES.get(name, [])
+        if [n for n, _ in got] != [n for n, _ in want]:
+            problems.append(f'{name}: rules must be exactly {[n for n, _ in want]} in this order, '
+                            f'got {[n for n, _ in got]}')
+        # Exact equality: a method, queryParams, an extra deny-only prefix, a
+        # length-capped or rewritten regex, or a missing match all fail here.
+        expected = dict(want)
+        problems += [f'{name}/{n}: matches must be exactly {expected[n]}, got {m}'
+                     for n, m in got if isinstance(n, str) and n in expected and m != expected[n]]
         for rule in rules:
             problems += rule_problems(name, rule)
     return problems
@@ -185,100 +208,24 @@ def auth_policy_problems(docs, backend_rules):
     if 'grpc' in ext or http.get('backendRefs') != AUTHENTIK or http.get('path') != CHECK_PATH:
         # A target without this would attach a policy that authenticates nothing.
         problems.append(f'extAuth must call {AUTHENTIK} at {CHECK_PATH}')
+    # Envoy Gateway's HTTP ext_authz does not forward Cookie by default, and the
+    # Authentik session lives in a cookie: without it no one can sign in.
+    to_ext = ext.get('headersToExtAuth')
+    if not isinstance(to_ext, list) or 'cookie' not in to_ext:
+        problems.append('extAuth.headersToExtAuth must include cookie (the Authentik session)')
     if ext.get('failOpen', False) is not False:
         problems.append('extAuth must fail closed (failOpen false or omitted)')
     return problems
 
 
-def precedence(route_match):
-    """Envoy Gateway 1.9 route order (internal/gatewayapi/sort.go), highest first.
-
-    Path type (Exact > RegularExpression > PathPrefix), path length ('/' counts
-    0), header match count, then Exact header match count. Ties keep list
-    order; Python's sort with reverse=True is stable, like sort.Stable there.
-    """
-    path = route_match.get('path', {'type': 'PathPrefix', 'value': '/'})
-    headers = route_match.get('headers', [])
-    return ({'Exact': 2, 'RegularExpression': 1}.get(path.get('type', 'PathPrefix'), 0),
-            0 if path == {'type': 'PathPrefix', 'value': '/'} else len(path['value']),
-            len(headers), sum(h.get('type', 'Exact') == 'Exact' for h in headers))
-
-
-def matches_request(route_match, path, headers):
-    """route_problems() has already limited matches to PathPrefix plus headers."""
-    want = route_match.get('path', {'type': 'PathPrefix', 'value': '/'})
-    prefix, bare = want['value'], path.split('?')[0]
-    if not (prefix == '/' or bare == prefix.rstrip('/') or bare.startswith(prefix.rstrip('/') + '/')):
-        return False
-    for header in route_match.get('headers', []):
-        value = headers.get(header['name'].lower())
-        if value is None:
-            return False
-        if header.get('type', 'Exact') == 'Exact' and value != header['value']:
-            return False
-        if header.get('type') == 'RegularExpression' and not re.fullmatch(header['value'], value):
-            return False
-    return True
-
-
-def selected_rule(routes, path, headers):
-    """(route name, rule name) the gateway picks for a request on this hostname."""
-    candidates = sorted(((precedence(m), route['metadata']['name'], rule.get('name'), m)
-                         for route in routes for rule in route['spec']['rules']
-                         for m in rule['matches']), key=lambda c: c[0], reverse=True)
-    headers = {k.lower(): v for k, v in headers.items()}
-    return next(((route, rule) for _, route, rule, m in candidates
-                 if matches_request(m, path, headers)), None)
-
-
-def expected_rule(path, headers):
-    def under(prefix):
-        bare = path.split('?')[0]
-        return bare == prefix or bare.startswith(prefix + '/')
-
-    if headers.get('Authorization'):
-        return ('netbootxyz-outpost' if under('/outpost.goauthentik.io') else 'netbootxyz', DENY)
-    if under('/outpost.goauthentik.io'):
-        return ('netbootxyz-outpost', 'outpost')
-    if under('/socket.io') and headers.get('Origin') == f'https://{HOST}':
-        return ('netbootxyz', 'socket-io')
-    if under('/socket.io') and headers.get('Upgrade'):
-        return ('netbootxyz', 'websocket-deny')
-    return ('netbootxyz', 'editor')
-
-
-HEADERS = [{k: v for k, v in (('Origin', origin), ('Upgrade', upgrade), ('Authorization', auth)) if v}
-           for origin in (None, f'https://{HOST}', 'https://evil.homelab0.org')
-           for upgrade in (None, 'websocket', 'WebSocket')
-           for auth in (None, 'Basic YWRtaW46eA==', 'Bearer x', 'bearer x', 'x')]
-REQUESTS = [(path, headers)
-            for path in ('/', '/menus', '/socket.io/?EIO=4&transport=polling',
-                         '/socket.io/?EIO=4&transport=websocket', '/socket.io',
-                         '/outpost.goauthentik.io/auth/envoy', '/outpost.goauthentik.io/callback')
-            for headers in HEADERS]
-
-
-def requests(routes):
-    """REQUESTS plus every backend match prefix, so a newly added backend path is exercised too."""
-    known = {path for path, _ in REQUESTS}
-    prefixes = sorted({m['path']['value'] for route in routes for rule in route['spec']['rules']
-                       if rule.get('backendRefs') for m in rule['matches']} - known)
-    return REQUESTS + [(path, headers) for path in prefixes for headers in HEADERS]
-
-
 def authorization_problems(docs):
     """Requests carrying Authorization get the 403 rule; forward auth covers every backend rule.
 
-    Shape problems are reported instead of running the matrix, so an extra,
-    missing or malformed route or rule shows up as a finding, not an exception.
+    Every problem is a finding, never an exception, so an extra, missing or
+    malformed route or rule is reported by name.
     """
     routes = [d for d in docs if d['kind'] == 'HTTPRoute']
     problems = route_problems(routes)
-    if not problems:
-        for path, headers in requests(routes):
-            got, want = selected_rule(routes, path, headers), expected_rule(path, headers)
-            if got != want:
-                problems.append(f'{path} {sorted(headers)} goes to {got}, expected {want}')
     filters = [d for d in docs if d['kind'] == 'HTTPRouteFilter']
     if [(f['metadata']['name'], f['spec'].get('directResponse', {}).get('statusCode')) for f in filters] \
             != [('netbootxyz-deny-authorization', 403)]:
@@ -350,7 +297,6 @@ class ManifestContract(unittest.TestCase):
         2026.8.5 internal/outpost/proxyv2/application/auth.go checkAuth), so the gateway
         answers 403 first, and forward auth is attached only to rules with a backend."""
         self.assertEqual(authorization_problems(self.docs), [])
-        self.assertEqual(len(REQUESTS), 7 * 3 * 3 * 5)
 
     def test_authorization_guard_weakening_is_rejected(self):
         def ui(docs):
@@ -421,7 +367,7 @@ class ManifestContract(unittest.TestCase):
                 self.assertTrue(authorization_problems(docs))
 
     def test_route_and_policy_shape_weakening_is_reported(self):
-        """Each change below once left every check green; each must now fail for its own reason."""
+        """Each change below weakens the route or policy; each must fail for its own reason."""
         def route(docs, name):
             return next(d for d in docs if d['kind'] == 'HTTPRoute' and d['metadata']['name'] == name)
 
@@ -483,22 +429,56 @@ class ManifestContract(unittest.TestCase):
             extra['metadata']['name'] = 'netbootxyz-extra'
             docs.append(extra)
 
+        def length_limited_deny(docs):  # a longer Authorization value would reach the editor
+            ui(docs)[0]['matches'][2]['headers'][0]['value'] = '.{1,32}'
+
+        def outpost_length_limited_deny(docs):
+            route(docs, 'netbootxyz-outpost')['spec']['rules'][0]['matches'][0]['headers'][0][
+                'value'] = '.{1,32}'
+
+        def upgrade_lookahead(docs):  # Envoy Gateway's Go regexp rejects lookahead
+            ui(docs)[2]['matches'][0]['headers'][0]['value'] = '(?i)(?=websocket)websocket'
+
+        def upgrade_case_sensitive(docs):  # WEBSOCKET with a foreign Origin would reach the editor
+            ui(docs)[2]['matches'][0]['headers'][0]['value'] = 'websocket'
+
+        def origin_widened(docs):
+            ui(docs)[1]['matches'][0]['headers'][0] = {
+                'name': 'Origin', 'type': 'RegularExpression', 'value': r'https://.*\.homelab0\.org'}
+
+        def deny_only_child_prefix(docs):  # /menus/custom would always get the 403
+            ui(docs)[0]['matches'].append({'path': {'type': 'PathPrefix', 'value': '/menus/custom'}})
+
+        def cookie_not_sent(docs):
+            policy(docs)['extAuth']['headersToExtAuth'].remove('cookie')
+
+        def headers_to_ext_auth_removed(docs):  # the gateway default omits Cookie
+            del policy(docs)['extAuth']['headersToExtAuth']
+
+        ui_rules = f"netbootxyz: rules must be exactly {[n for n, _ in ROUTE_MATCHES['netbootxyz']]}"
         for change, reason in (
-                (method_limited_deny, "unsupported match fields ['method']"),
-                (query_limited_deny, "unsupported match fields ['queryParams']"),
+                (method_limited_deny, f'netbootxyz/{DENY}: matches must be exactly'),
+                (query_limited_deny, f'netbootxyz/{DENY}: matches must be exactly'),
                 (outpost_on_other_host, 'netbootxyz-outpost: must attach only'),
                 (outpost_on_other_listener, 'netbootxyz-outpost: must attach only'),
                 (editor_on_external_gateway, 'netbootxyz: must attach only'),
-                (targeted_api_rule, f"/api/ ['Authorization'] goes to ('netbootxyz', 'api'), "
-                                    f"expected ('netbootxyz', '{DENY}')"),
+                (targeted_api_rule, ui_rules),
                 (websocket_deny_proxies, 'netbootxyz/websocket-deny: must have no backend'),
                 (outpost_to_editor, 'netbootxyz-outpost/outpost: backend must be exactly'),
                 (ext_auth_removed, 'extAuth must call'),
                 (ext_auth_other_path, 'extAuth must call'),
                 (ext_auth_fail_open, 'extAuth must fail closed'),
-                (rule_without_matches, 'netbootxyz/editor: needs explicit matches'),
+                (rule_without_matches, 'netbootxyz/editor: matches must be exactly'),
                 (outpost_route_missing, 'HTTPRoutes must be exactly'),
-                (extra_route, 'HTTPRoutes must be exactly')):
+                (extra_route, 'HTTPRoutes must be exactly'),
+                (length_limited_deny, f'netbootxyz/{DENY}: matches must be exactly'),
+                (outpost_length_limited_deny, f'netbootxyz-outpost/{DENY}: matches must be exactly'),
+                (upgrade_lookahead, 'netbootxyz/websocket-deny: matches must be exactly'),
+                (upgrade_case_sensitive, 'netbootxyz/websocket-deny: matches must be exactly'),
+                (origin_widened, 'netbootxyz/socket-io: matches must be exactly'),
+                (deny_only_child_prefix, f'netbootxyz/{DENY}: matches must be exactly'),
+                (cookie_not_sent, 'headersToExtAuth must include cookie'),
+                (headers_to_ext_auth_removed, 'headersToExtAuth must include cookie')):
             with self.subTest(change=change.__name__):
                 docs = copy.deepcopy(self.docs)
                 change(docs)
