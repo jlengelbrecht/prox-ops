@@ -187,6 +187,22 @@ class ManifestContract(unittest.TestCase):
             self.assertIn('. /netboot/lib.sh', self.data[name])
         self.assertIn('-o nbxyz -g nbxyz', self.data['entrypoint.sh'])  # dnsmasq --tftp-secure
 
+    def test_config_and_assets_survive_restart_and_removal(self):
+        claims = {c['metadata']['name']: c for c in self.by_kind['PersistentVolumeClaim']}
+        self.assertEqual({n: c['spec']['resources']['requests']['storage'] for n, c in claims.items()},
+                         {'netbootxyz-config': '2Gi', 'netbootxyz-assets': '50Gi'})
+        for name, claim in claims.items():
+            with self.subTest(claim=name):
+                self.assertEqual(claim['metadata']['annotations']['kustomize.toolkit.fluxcd.io/prune'],
+                                 'disabled')
+        volumes = {v['name']: v for v in self.pod['volumes']}
+        mounts = {m['mountPath']: m['name'] for m in self.container['volumeMounts']}
+        for path, claim in (('/config', 'netbootxyz-config'), ('/assets', 'netbootxyz-assets')):
+            with self.subTest(path=path):
+                self.assertEqual(volumes[mounts[path]].get('persistentVolumeClaim'),
+                                 {'claimName': claim})
+        self.assertFalse([v for v in self.pod['volumes'] if 'emptyDir' in v])
+
     def test_git_managed_menus_are_installed_read_only(self):
         """Configuration check only: the web app (nbxyz, no DAC_OVERRIDE) cannot save them."""
         for source, target in (('custom.ipxe', '"${menus}/custom/custom.ipxe"'),
